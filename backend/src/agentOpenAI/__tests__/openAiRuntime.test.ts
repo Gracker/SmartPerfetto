@@ -1080,7 +1080,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(fetchMock).toHaveBeenCalledTimes(maxTurns);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(authorization).toHaveBeenCalledWith(expect.objectContaining({codebaseIds: ['codebase-a'], runId: 'recovery-run'}),
-      expect.any(Object), expect.stringMatching(/^[a-f0-9]{64}$/));
+      expect.any(Object), expect.stringMatching(/^acf2:[a-f0-9]{64}$/));
     const previousRequestOrder = fetchMock.mock.invocationCallOrder[maxTurns - 2];
     const deliveryRequestOrder = fetchMock.mock.invocationCallOrder[maxTurns - 1];
     expect(authorization.mock.invocationCallOrder.some(order => order > previousRequestOrder && order < deliveryRequestOrder)).toBe(true);
@@ -1778,6 +1778,21 @@ describe('OpenAI candidate-bound privacy projection', () => {
     expect((projected.mock.results[0].value as ReturnType<typeof sourceProjection.finalizeOwnerSourceAwareAnalysisResultWithProjection>).conclusionProjection.disposition).toBe('redacted');
     expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'assistant_stream', completion: {status: 'failed', reason: 'provider_error'}});
     expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
+  });
+  it('keeps what the run delivered when its failure candidate has no finalization context', async () => {
+    const knowledgeUse = {sources: [{knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection' as const,
+      generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}], locations: []};
+    const runtime = createOpenAiRuntimeForTest();
+    prepareStub(runtime, {getSourceUseDecision: () => undefined, getKnowledgeUse: () => knowledgeUse});
+    mockRun();
+    // A failure after the provider answered reaches the outer catch, which returns a failure candidate.
+    jest.spyOn(verifier, 'verifyConclusion').mockRejectedValue(new Error('failure after a knowledge read'));
+    const result = await runtime.analyze('query', 'openai-knowledge-failure', 'trace',
+      {providerId: null, runId: 'openai-knowledge-failure-run'});
+    expect(result).toMatchObject({success: false, completion: {status: 'failed', reason: 'provider_error'}});
+    expect(finalization.takeFinalizationContext(result)).toBeUndefined();
+    expect(finalization.takeRunDeliveryRecord(result)).toEqual({runId: 'openai-knowledge-failure-run',
+      sessionId: 'openai-knowledge-failure', knowledgeUse});
   });
   it('projects setup failure diagnostics before emitting them without inventing model output', async () => {
     const sessionId = 'projection-setup-failed'; privacySessions.push(sessionId); registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');

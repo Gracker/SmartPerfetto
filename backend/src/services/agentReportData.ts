@@ -135,6 +135,7 @@ interface ReportResultLike {
   conclusionContract?: unknown;
   sourceUseDecision?: SourceUseDecisionV1;
   sourceClaimVerificationResult?: AgentDrivenReportData['result']['sourceClaimVerificationResult'];
+  knowledgeUse?: AgentDrivenReportData['result']['knowledgeUse'];
   claimSupport?: AgentDrivenReportData['result']['claimSupport'];
   claimVerificationResult?: AgentDrivenReportData['result']['claimVerificationResult'];
   identityResolutions?: AgentDrivenReportData['result']['identityResolutions'];

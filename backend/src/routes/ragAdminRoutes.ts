@@ -90,9 +90,10 @@ import {SymbolResolver} from '../services/symbol/symbolResolver';
 import {codeAwareFeatureEnabled} from '../services/codebase/codeAwareFeature';
 import {
   ExternalKnowledgeSourceRegistry,
-  externalKnowledgeSourceHasActiveIndex,
   getDefaultExternalKnowledgeSourceRegistry,
   KnowledgeSourceRequestError,
+  projectKnowledgeSourceForManagement,
+  sanitizeExternalKnowledgeSource,
   type ExternalKnowledgeKind,
   type ExternalKnowledgeSource,
   type KnowledgeCleanupFence,
@@ -146,7 +147,9 @@ function isSensitiveKnowledgeChunk(chunk: RagChunk): boolean {
 
 function sanitizeChunk(chunk: RagChunk): RagChunk & {snippetHash?: string; snippetLength?: number} {
   if (!isSensitiveKnowledgeChunk(chunk)) return chunk;
-  const {snippet, knowledgeScopeFingerprint: _knowledgeScopeFingerprint, ...rest} = chunk;
+  // Wiki chunks stored before article tags stopped being indexed still carry them.
+  const {snippet, knowledgeScopeFingerprint: _knowledgeScopeFingerprint, sourceTags: _legacyTags, ...rest} =
+    chunk as RagChunk & {sourceTags?: unknown};
   return {
     ...rest,
     snippet: undefined as any,
@@ -155,7 +158,6 @@ function sanitizeChunk(chunk: RagChunk): RagChunk & {snippetHash?: string; snipp
           title: undefined,
           uri: undefined as any,
           filePath: undefined,
-          sourceTags: undefined,
         }
       : {}),
     snippetHash: snippetHash(snippet),
@@ -216,7 +218,6 @@ export const CALLER_FACING_RAG_REASONS: ReadonlySet<string> = new Set([
   'root_outside_allowlist',
   'knowledge_root_blocked',
   'knowledge_root_realpath_drift',
-  'knowledge_path_gate_excluded',
   'codebase_root_realpath_drift',
   'codebase_root_unavailable',
   'submodule_not_initialized',
@@ -281,20 +282,6 @@ function callerFacing(reason: string | undefined): string | undefined {
 
 function callerFacingRagReason(status: number): (reason: string) => number | undefined {
   return reason => (callerFacing(reason) ? status : undefined);
-}
-
-function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
-  const {rootRealpath: _rootRealpath, scope: _scope, ...safeSource} = source;
-  return safeSource;
-}
-
-/** A knowledge source as the `/knowledge` routes list it: no root, plus its index state. */
-function projectKnowledgeSource(source: ExternalKnowledgeSource) {
-  return {
-    ...sanitizeExternalKnowledgeSource(source),
-    documentCount: source.indexedArticleCount ?? 0,
-    hasActiveIndex: externalKnowledgeSourceHasActiveIndex(source),
-  };
 }
 
 const LEGACY_WIKI_KIND = 'android_internals_wiki';
@@ -731,15 +718,6 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           preview.acceptedFiles.map(file => file.relativePath),
           androidInternalsWikiIngester.getSourceReadLimits(),
         );
-        const acceptedPaths = new Set(
-          preview.acceptedFiles.map(file => file.relativePath.split('\\').join('/')),
-        );
-        const excludedArticleCount = corpus.articles.filter(
-          article => !acceptedPaths.has(article.relativePath),
-        ).length;
-        if (excludedArticleCount > 0) {
-          throw new Error(`knowledge_path_gate_excluded:${excludedArticleCount}_articles`);
-        }
         const identity = inspectAndroidInternalsWikiIdentity(corpus);
         const report = auditAndroidInternalsWiki(
           corpus,
@@ -772,7 +750,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     return res.json({
       success: true,
-      sources: externalKnowledgeRegistry.list(scope).map(projectKnowledgeSource),
+      sources: externalKnowledgeRegistry.list(scope).map(projectKnowledgeSourceForManagement),
     });
   });
 
@@ -794,37 +772,24 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     try {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const rootPath = requiredKnowledgeString(body.rootPath, 'rootPath');
-      if (body.rightsAcknowledged !== true) {
-        throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED',
-          '`rightsAcknowledged: true` is required: confirm you may use these documents');
-      }
       // Omitted keeps the consent in effect; a boolean grants or revokes it.
       if (body.sendToProvider !== undefined && typeof body.sendToProvider !== 'boolean') {
         throw new KnowledgeSourceRequestError('KNOWLEDGE_REQUEST_INVALID',
           '`sendToProvider` must be a boolean when provided');
       }
-      const displayName = optionalKnowledgeString(body.displayName, 'displayName')?.trim();
-      const description = optionalKnowledgeString(body.description, 'description');
-      const attribution = optionalKnowledgeString(body.attribution, 'attribution');
-      const license = optionalKnowledgeString(body.license, 'license');
-      const preview = await documentCollectionIngester.previewIndexable(rootPath);
       const context = requireRequestContext(req);
-      const source = externalKnowledgeRegistry.register({
-        kind: 'document_collection',
-        displayName: displayName || path.basename(preview.rootRealpath),
-        rootRealpath: preview.rootRealpath,
-        revision: `content-${preview.summary.contentFingerprint.slice(0, 40)}`,
-        contentFingerprint: preview.summary.contentFingerprint,
-        dirty: false,
-        description,
-        attribution,
-        license,
-        rightsAcknowledged: true,
+      const {source, preview} = await documentCollectionIngester.register({
+        rootPath,
+        displayName: optionalKnowledgeString(body.displayName, 'displayName'),
+        description: optionalKnowledgeString(body.description, 'description'),
+        attribution: optionalKnowledgeString(body.attribution, 'attribution'),
+        license: optionalKnowledgeString(body.license, 'license'),
+        rightsAcknowledged: body.rightsAcknowledged === true,
         sendToProvider: body.sendToProvider as boolean | undefined,
         consentedBy: context.userId,
         scope: knowledgeScopeFromRequestContext(context),
       });
-      return res.json({success: true, source: projectKnowledgeSource(source), preview: preview.summary});
+      return res.json({success: true, source: projectKnowledgeSourceForManagement(source), preview: preview.summary});
     } catch (error) {
       return sendRouteReasonError(res, error, callerFacingRagReason(400), {
         code: 'KNOWLEDGE_COLLECTION_REGISTER_FAILED',

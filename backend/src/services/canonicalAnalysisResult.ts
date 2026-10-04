@@ -286,6 +286,8 @@ export function canonicalizeAnalysisResult(
     delete result.claimSupport;
     delete result.claimVerificationResult;
     delete result.sourceClaimVerificationResult;
+    // Its citations were graded against the earlier body.
+    delete result.knowledgeUse;
     delete result.reportAssessment;
     delete result.investigationAssessment;
     delete result.deliveryAssurance;

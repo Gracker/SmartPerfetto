@@ -78,7 +78,12 @@ import {TransformStream} from 'node:stream/web';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
 import {runOpenAiIntentTransport} from './openAiIntentTransport';
-import {attachFinalizationContext, reportReviewUsesRemainingBudget} from '../../analysisFinalizationContext';
+import {
+  attachFinalizationContext,
+  attachRunDeliveryRecord,
+  reportReviewUsesRemainingBudget,
+  sourceUseFinalizationFields,
+} from '../../analysisFinalizationContext';
 import {buildRuntimeTracePairIdentityContext} from '../../runtimePromptContext';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
@@ -1084,8 +1089,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           strategyRegistry: intentResolver.strategyRegistry,
           selection: analysisRunSpec.selection,
           traceIdentity: {currentTraceId, referenceTraceId}, deliveryContext, protocolProjection,
-          sourceUse: sourceUse?.getSourceUseDecision(),
-          sourceScope: sourceUse?.getSourceExecutionScope?.(),
+          ...sourceUseFinalizationFields(sourceUse),
           evidenceReadView: this.artifactStores.get(sessionId)?.createEvidenceReadView({
             allowedTraces, ownerKey: evidenceOwnerKey, currentRunId: runId,
           }),
@@ -1111,6 +1115,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         runId, attemptId, finish: {status: 'failed', reason: 'provider_error'},
         outputOrigin: 'runtime_fallback', sourceUse,
       });
+      // No answer to finalize, but what the run delivered before failing still counts.
+      attachRunDeliveryRecord(result, {runId, sessionId, knowledgeUse: sourceUse?.getKnowledgeUse?.()});
       this.emitUpdate({type: 'error', content: {message: `AI analysis failed: ${result.terminationMessage ?? ''}`}, timestamp: Date.now()});
       return result;
     } finally {

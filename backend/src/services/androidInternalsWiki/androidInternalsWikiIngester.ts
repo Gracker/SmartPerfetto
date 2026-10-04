@@ -132,11 +132,6 @@ export class AndroidInternalsWikiIngester {
       preview.acceptedFiles.map(file => file.relativePath),
       this.gate.getSourceReadLimits(),
     );
-    const acceptedPaths = new Set(preview.acceptedFiles.map(file => file.relativePath.split('\\').join('/')));
-    const blockedArticles = corpus.articles.filter(article => !acceptedPaths.has(article.relativePath));
-    if (blockedArticles.length > 0) {
-      throw new Error(`knowledge_path_gate_excluded:${blockedArticles.length}_articles`);
-    }
     const identity = inspectAndroidInternalsWikiIdentity(corpus);
     const generation = `wiki_${createHash('sha256')
       .update(`${sourceId}\0${identity.revision}\0${identity.contentFingerprint}\0${lease.operationId}`)
@@ -184,7 +179,6 @@ export class AndroidInternalsWikiIngester {
             sourceStatus: article.status,
             sourceConfidence: article.confidence,
             lastVerifiedAgainst: article.lastVerifiedAgainst,
-            sourceTags: article.tags,
             ...(articleVerifiedAt !== undefined ? {verifiedAt: articleVerifiedAt} : {}),
           });
           indexedChunkCount++;

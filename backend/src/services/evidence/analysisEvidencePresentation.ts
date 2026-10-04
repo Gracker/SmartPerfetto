@@ -11,6 +11,7 @@ import type {
 } from '../../agent/core/conclusionContract';
 import {SOURCE_CLAIM_STATUS_VALUES, type SafeSourceProvenanceProjection, type SourceClaimStatusV1} from '../codebase/sourceClaimVerifier';
 import {SOURCE_CITATION_STATUS_VALUES, type SourceCitationV1} from '../codebase/sourceCitations';
+import {sanitizeKnowledgeUse, type KnowledgeUseV1} from '../knowledge/knowledgeUse';
 import type {ClaimSupportV1} from '../../types/evidenceContract';
 import type {ClaimVerificationResult} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
@@ -39,11 +40,13 @@ export interface AnalysisEvidencePresentation {
   sourceClaimStatuses?: SourceClaimStatusV1[];
   /** Source locations the answer cites; absent in historical bundles. */
   sourceCitations?: SourceCitationV1[];
+  /** Selected knowledge delivered and the answer's knowledge citations; absent when not recorded. */
+  knowledgeUse?: KnowledgeUseV1;
 }
 
 export type AnalysisEvidencePresentationInput = Pick<AnalysisResult,
   'claimSupport' | 'claimVerificationResult' | 'identityResolutions' |
-  'investigationAssessment' | 'deliveryAssurance'> & {conclusionContract?: unknown};
+  'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse'> & {conclusionContract?: unknown};
 
 const scalar = z.union([z.string(), z.number().finite(), z.boolean()]);
 const nullableScalar = scalar.nullable();
@@ -301,6 +304,13 @@ function schemas(strict: boolean) {
     status: z.enum(SOURCE_CITATION_STATUS_VALUES), sourceReferenceId: z.string().optional(),
     candidateReferenceIds: z.array(z.string()).optional(),
   });
+  // Its one closed shape check is sanitizeKnowledgeUse, which returns a fresh copy.
+  const knowledgeUse = z.unknown().transform((value, context): KnowledgeUseV1 => {
+    const record = sanitizeKnowledgeUse(value);
+    if (record) return record;
+    context.addIssue({code: 'custom', message: 'invalid knowledge_use@1'});
+    return z.NEVER;
+  });
 
   return object({
     conclusionBindingEligibility: z.enum(['eligible', 'ineligible', 'legacy_unchecked']).nullable(),
@@ -309,6 +319,7 @@ function schemas(strict: boolean) {
     deliveryAssurance: deliveryAssurance.nullable(), sourceUseDecision: sourceUseDecision.nullable(),
     sourceReferences: z.array(sourceReference), sourceClaimBindings: z.array(sourceBinding),
     sourceClaimStatuses: z.array(sourceClaimStatus).optional(), sourceCitations: z.array(sourceCitation).optional(),
+    knowledgeUse: knowledgeUse.optional(),
   });
 }
 
@@ -345,6 +356,9 @@ export function projectAnalysisEvidenceForDisplay(input: {
         return value === undefined ? [] : [[key, value]];
       })),
     };
+    // A malformed record is dropped by itself; it reads as not recorded.
+    const knowledgeUse = sanitizeKnowledgeUse(ownDataValue(input.result, 'knowledgeUse'));
+    if (knowledgeUse) Object.assign(candidate, {knowledgeUse});
     const prepared = prepareWriterTree(candidate);
     return deepFreeze(writeSchema.parse(prepared)) as AnalysisEvidencePresentation;
   } catch {

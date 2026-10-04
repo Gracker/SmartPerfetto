@@ -793,6 +793,21 @@ describe('owner narration of source tools', () => {
   });
 });
 
+describe('index generation refusal narration', () => {
+  it.each(['lookup_app_source', 'lookup_aosp_source', 'resolve_symbol', 'propose_patch'])(
+    'says %s refused a rebuilt index, from its external projection', toolName => {
+      const {projectToolResultForExternalSurface} =
+        require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+      const projected = projectToolResultForExternalSurface(toolName, createRuntimeToolResult({success: false,
+        action_required: 'use_search_codebase', unsupportedReason: 'codebase_index_generation_changed',
+        codebaseId: 'cb_private_canary'}, {isError: true}));
+      // The index lookups project to counts and the closed action; the others carry ids only.
+      if (toolName.startsWith('lookup_')) expect(JSON.stringify(projected)).not.toContain('cb_private_canary');
+      expect(formatToolResultNarration({toolName, privateContext: true, result: projected, isError: true}))
+        .toBe('该代码库没有本轮可用的索引（未建立或已重建），未查询索引，可改用源码搜索');
+    });
+});
+
 describe('knowledge tool narration', () => {
   const owner = (toolName: string, body: Record<string, unknown>, language?: 'en') =>
     formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body), language});

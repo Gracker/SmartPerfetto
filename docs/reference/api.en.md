@@ -654,6 +654,27 @@ occurrence or root-cause confidence alone; `metadata_only` is locate-only. The
 projection contains no absolute root, snippet, search query, or model-authored
 free-text binding reason.
 
+A run that selected knowledge bases also carries `knowledgeUse`
+(`knowledge_use@1`; absent means not recorded, never zero use): `sources[]`
+lists each base that delivered content (`knowledgeBaseId`, `kind`, the pinned
+index `generation`, distinct `deliveredReferenceCount`), and `citations[]`
+grades each `kb:path#Lx-Ly` written in the answer as `delivered` (its text was
+delivered), `located` (only its location), `unmatched` or `ambiguous`. It is
+background, never trace evidence, and no verdict reads it; strict projections
+keep the sources and drop the citations. The receipt may carry
+`nonEvidenceContext.knowledgeReferenceCount`; older receipts lack it.
+
+An index rebuild no longer revokes a session or run: the authorization
+fingerprint (format `acf2:`) covers consent, selection, lifecycle and deletion
+only. Index tools check the generation their run pinned and refuse a rebuilt
+index with `codebase_index_generation_changed` (`action_required:
+use_search_codebase`), `knowledge_index_generation_changed` for the Android
+Internals Wiki, or `knowledge_index_unavailable` once a document collection's
+pinned generation is gone or incomplete; an index whose stored data was lost
+under an unchanged registry refuses the same way. Sessions, conversations and history recorded before
+`acf2` do not match: a session starts fresh once, a conversation cannot be
+recovered, and earlier source-derived history no longer enters the model context.
+
 `uiActionProposals` only
 contains safe UI proposals derived from DataEnvelope evidence and column click
 metadata, such as navigating to a time range, opening an evidence table, or

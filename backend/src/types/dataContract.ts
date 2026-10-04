@@ -1091,6 +1091,12 @@ export interface AnalysisReceiptBase {
     memoryHintCount: number;
     conversationContextCount: number;
     strategyHintCount: number;
+    /**
+     * Selected-knowledge references the run delivered to the model (background,
+     * never evidence). Absent in older receipts and in runs that recorded none:
+     * absent means not recorded, not zero.
+     */
+    knowledgeReferenceCount?: number;
   };
   claimAudit: {
     totalClaims: number;
@@ -1192,6 +1198,8 @@ export interface AnalysisCompletedEvent {
     deliveryAssurance?: import('./analysisDelivery').AnalysisDeliveryAssurance;
     sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
     sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+    /** Selected knowledge the run delivered and the answer's knowledge citations; absent = not recorded. */
+    knowledgeUse?: import('../services/knowledge/knowledgeUse').KnowledgeUseV1;
     conclusion?: string;
     conclusionContract?: import('../agent/core/conclusionContract').ConclusionContract;
     claimSupport?: import('./evidenceContract').ClaimSupportV1[];

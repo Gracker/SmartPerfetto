@@ -430,6 +430,28 @@ describe('buildAnalysisReceipt', () => {
     expect(receipt.outputs).toEqual({ reportError: 'report failed' });
   });
 
+  it('counts delivered knowledge references only when the run recorded knowledge use', () => {
+    const base = {
+      runManifestId: 'manifest-knowledge',
+      session: {sessionId: 'session-knowledge', traceId: 'trace-knowledge', dataEnvelopes: []},
+    };
+    const result = {sessionId: 'session-knowledge', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+      confidence: 0.7, rounds: 1, totalDurationMs: 10};
+    const recorded = buildAnalysisReceipt({...base, result: {...result, knowledgeUse: {schemaVersion: 'knowledge_use@1',
+      sources: [
+        {knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`,
+          deliveredReferenceCount: 3},
+        {knowledgeBaseId: `eks_${'b'.repeat(24)}`, kind: 'android_internals_wiki', generation: 'wiki_1',
+          deliveredReferenceCount: 2},
+      ], citations: []}}});
+    expect(recorded.nonEvidenceContext.knowledgeReferenceCount).toBe(5);
+    const none = buildAnalysisReceipt({...base, result: {...result, knowledgeUse: {schemaVersion: 'knowledge_use@1',
+      sources: [], citations: []}}});
+    expect(none.nonEvidenceContext.knowledgeReferenceCount).toBe(0);
+    // Not recorded is not zero: the count is absent.
+    expect(buildAnalysisReceipt({...base, result}).nonEvidenceContext).not.toHaveProperty('knowledgeReferenceCount');
+  });
+
   it('projects a finalized report assessment into the generated report receipt', () => {
     const receipt = buildAnalysisReceipt({
       runManifestId: 'manifest-receipt-3',

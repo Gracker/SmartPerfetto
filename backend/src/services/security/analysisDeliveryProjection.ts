@@ -14,6 +14,7 @@ import {
   type AnalysisAssuranceStatus,
   type AnalysisReportBinding,
 } from '../../types/analysisDelivery';
+import {projectKnowledgeUseForAudience, sanitizeKnowledgeUse} from '../knowledge/knowledgeUse';
 import {
   sanitizeSourceClaimBindings,
   isLocateOnlyLookupKind,
@@ -23,7 +24,7 @@ import {
 
 export type AnalysisDeliveryFields = Pick<AnalysisResult,
   'turnIntent' | 'completion' | 'outputOrigin' | 'runtimeAppendix' |
-  'reportAssessment' | 'investigationAssessment' | 'deliveryAssurance'>;
+  'reportAssessment' | 'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse'>;
 
 /** Preserve surviving field order because existing bindings hash the serialized contract. */
 export function preserveProjectedFieldOrder<T>(original: unknown, projection: T, depth = 0): T {
@@ -294,6 +295,9 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       }),
     };
   }
+  // A display and audit record, copied only in its closed shape; it binds nothing.
+  const knowledgeUse = sanitizeKnowledgeUse(input.knowledgeUse);
+  if (knowledgeUse) output.knowledgeUse = knowledgeUse;
   return preserveProjectedFieldOrder(input, output);
 }
 
@@ -351,6 +355,12 @@ export function projectPrivateAnalysisDelivery(
       sourceCandidate: {...appendix.sourceCandidate,
         ...(!boundCandidate(appendix.sourceCandidate, projection.conclusion) || bodyChanged
           ? {conclusionFingerprint: ''} : {})}};
+  }
+  if (output.knowledgeUse) {
+    // Already in its closed shape (the copy above). The owner keeps the
+    // citations of their answer; other audiences keep the sources only.
+    output.knowledgeUse = projectKnowledgeUseForAudience(output.knowledgeUse,
+      {owner: options.privateMetadata === false, projectText});
   }
   if (output.investigationAssessment) {
     output.investigationAssessment = {...output.investigationAssessment,

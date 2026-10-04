@@ -583,8 +583,6 @@ export interface RagChunk {
   sourceConfidence?: string;
   /** Upstream platform/version boundary against which the article was last verified. */
   lastVerifiedAgainst?: string;
-  /** Upstream article tags used for deterministic retrieval. */
-  sourceTags?: string[];
   /** Required human-readable attribution for externally licensed knowledge. */
   attribution?: string;
   /** Exact corpus content identity used alongside a possibly dirty Git revision. */

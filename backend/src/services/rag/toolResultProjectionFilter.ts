@@ -412,7 +412,15 @@ export function projectToolResultForExternalSurface(toolName: string, raw: unkno
     const publicProjection = projectRawRetrievalResult(toolName, candidate as Record<string, unknown>);
     if (publicProjection) return publish(publicProjection);
   }
-  return isSensitiveRagToolName(toolName) ? publish(rejectedProjection(toolName)) : raw;
+  if (!isSensitiveRagToolName(toolName)) return raw;
+  // A refused lookup keeps its closed source-access action, so narration can
+  // say why nothing was read instead of calling it a failure.
+  const refusal = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {};
+  return publish({
+    ...rejectedProjection(toolName),
+    ...(refusal.success === false && isSourceAccessRefusalAction(refusal.action_required)
+      ? {action_required: refusal.action_required} : {}),
+  });
 }
 
 /** @deprecated Use projectSensitiveRagToolResult. */

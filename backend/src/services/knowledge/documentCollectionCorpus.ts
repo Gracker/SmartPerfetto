@@ -43,8 +43,15 @@ const MAX_WHOLE_BLOCK_CHARS = 2 * TARGET_CHUNK_CHARS;
 const MAX_TITLE_CHARS = 240;
 
 /** The gate every document-collection read goes through: the knowledge root allowlist and document extensions. */
-export function createDocumentCollectionGate(): PathSecurityGate {
+export function createDocumentCollectionGate(options: {
+  /**
+   * Roots the caller itself trusts, in place of `SMARTPERFETTO_KNOWLEDGE_ROOTS`:
+   * the local CLI user's own folder, as `smp codebase` trusts it.
+   */
+  allowlistRoots?: string[];
+} = {}): PathSecurityGate {
   return new PathSecurityGate({
+    ...(options.allowlistRoots ? {allowlistRoots: options.allowlistRoots} : {}),
     allowlistEnvironmentVariable: 'SMARTPERFETTO_KNOWLEDGE_ROOTS',
     allowedExtensions: DOCUMENT_EXTENSIONS,
     maxFileBytes: MAX_FILE_BYTES,

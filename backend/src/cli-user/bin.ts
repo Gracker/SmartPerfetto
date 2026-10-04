@@ -63,6 +63,14 @@ import {
   runKnowledgePackStatusCommand,
   runKnowledgePackUpdateCommand,
 } from './commands/knowledgePack';
+import {
+  runKnowledgeListCommand,
+  runKnowledgePreviewCommand,
+  runKnowledgeRegisterCommand,
+  runKnowledgeReindexCommand,
+  runKnowledgeRemoveCommand,
+  runKnowledgeSearchCommand,
+} from './commands/knowledge';
 import {runUpdateCheckCommand} from './commands/update';
 import {beginCliUpdateNotice} from './updateNotice';
 import { DEFAULT_ANALYSIS_QUERY } from './constants';
@@ -442,6 +450,85 @@ function main(): void {
         envFile: g.envFile,
         sessionDir: g.sessionDir,
         format: textJsonFormat(opts.format) === 'json' ? 'json' : 'text',
+      }));
+    });
+
+  const knowledgeCmd = program
+    .command('knowledge')
+    .description('register document folders as searchable knowledge bases for analysis');
+  knowledgeCmd
+    .command('preview <rootPath>')
+    .description('show how many documents a folder would index, and what it would skip')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (rootPath: string, opts: {format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgePreviewCommand({
+        rootPath, envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('register <rootPath>')
+    .description('register a document folder as a knowledge base (index it with `reindex`)')
+    .option('--accept-rights', 'confirm you have the right to use these documents (required)', false)
+    .option('--send-to-provider', 'allow retrieved text to be sent to the AI service')
+    .option('--no-send-to-provider', 'withdraw consent to send retrieved text to the AI service')
+    .option('--name <name>', 'display name')
+    .option('--description <text>', 'what the documents cover, shown to the model as data')
+    .option('--attribution <text>', 'attribution for the documents')
+    .option('--license <text>', 'license the documents are under')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (rootPath: string, opts: {
+      acceptRights?: boolean; sendToProvider?: boolean; name?: string; description?: string;
+      attribution?: string; license?: string; format?: string;
+    }) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeRegisterCommand({
+        rootPath, acceptRights: opts.acceptRights, sendToProvider: opts.sendToProvider, name: opts.name,
+        description: opts.description, attribution: opts.attribution, license: opts.license,
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('list')
+    .description('list registered knowledge sources')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (opts: {format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeListCommand({
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('reindex <sourceId>')
+    .description('index a registered document folder into a new generation')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, opts: {format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeReindexCommand({
+        sourceId, envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('remove <sourceId>')
+    .description('delete a document knowledge base and every index it has')
+    .option('--yes', 'confirm permanent deletion', false)
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, opts: {yes?: boolean; format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeRemoveCommand({
+        sourceId, yes: opts.yes, envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('search <sourceId> <query...>')
+    .description('try a search against a knowledge base\'s active index')
+    .option('--top-k <n>', 'maximum hits (default 5)', value => Number(value))
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, query: string[], opts: {topK?: number; format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeSearchCommand({
+        sourceId, query: query.join(' '), topK: opts.topK,
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
       }));
     });
 

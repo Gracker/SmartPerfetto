@@ -707,6 +707,9 @@ function narrateSourceAccessRefusal(result: unknown, language: OutputLanguage): 
     case 'continue_without_this_codebase':
       return localize(language, '该代码库未授权把源码发送给模型，未读取',
         'This codebase has no consent to send source to the model; nothing was read');
+    case 'use_search_codebase':
+      return localize(language, '该代码库没有本轮可用的索引（未建立或已重建），未查询索引，可改用源码搜索',
+        'This codebase has no index this run can use (none, or rebuilt since); the index was not queried, so search the source instead');
     case KNOWLEDGE_REFUSAL_ACTIONS.unauthorizedKnowledgeBase:
       return localize(language, '该知识库不在本轮所选范围内，未检索',
         'That knowledge base is not selected for this run; nothing was searched');

@@ -110,6 +110,8 @@ export interface AnalysisResult {
   sourceUseDecision?: import('../../services/codebase/sourceUseDecision').SourceUseDecisionV1;
   sourceReferences?: import('../../services/codebase/sourceUseDecision').SourceReferenceV1[];
   sourceClaimVerificationResult?: import('../../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+  /** Selected knowledge the run delivered and the answer's knowledge citations; absent = not recorded. */
+  knowledgeUse?: import('../../services/knowledge/knowledgeUse').KnowledgeUseV1;
   identityResolutions?: IdentityResolutionV1[];
   confidence: number;
   rounds: number;

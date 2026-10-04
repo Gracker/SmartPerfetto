@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it} from '@jest/globals';
+import {IndexGenerationPins} from '../indexGenerationPins';
 import {
   buildSmartDeepDiveAnalysisContext,
   resolveEffectiveAnalysisMode,
@@ -13,6 +14,7 @@ import {
   analysisContextMemoryPartitionKey,
   assertCurrentAnalysisContextAuthorization,
   buildAnalysisContextAuthorizationFingerprint,
+  readAnalysisContextRegistrations,
 } from '../resolvedAnalysisContext';
 
 describe('effective analysis mode', () => {
@@ -140,7 +142,7 @@ describe('effective analysis mode', () => {
     )).toThrow(AnalysisContextAuthorizationChangedError);
   });
 
-  it('fails the final run boundary when a knowledge generation loses its active chunks', () => {
+  it('leaves a knowledge index losing its chunks to the run\'s generation pin, not the run boundary', () => {
     let indexedChunkCount = 3;
     const knowledgeRegistry = {
       get: () => ({
@@ -161,14 +163,21 @@ describe('effective analysis mode', () => {
       scope,
       {knowledgeRegistry},
     );
+    const registrations = () => readAnalysisContextRegistrations(selection, scope, {knowledgeRegistry});
+    const pins = IndexGenerationPins.capture(registrations(), {countCodebaseGenerationChunks: () => 0,
+      countKnowledgeSourceGenerationChunks: () => 3, documentCollectionServes: () => false});
 
     indexedChunkCount = 0;
 
+    // Index state is not authorization: the run stays current...
     expect(() => assertCurrentAnalysisContextAuthorization(
       selection,
       scope,
       expected,
       {knowledgeRegistry},
-    )).toThrow(AnalysisContextAuthorizationChangedError);
+    )).not.toThrow();
+    // ...and the Wiki lookup refuses the emptied index instead of searching it.
+    expect(pins.refusal('wiki', ['wiki'], registrations())?.payload)
+      .toMatchObject({unsupportedReason: 'knowledge_index_generation_changed'});
   });
 });

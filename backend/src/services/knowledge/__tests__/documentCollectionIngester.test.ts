@@ -293,3 +293,35 @@ describe('DocumentCollectionIngester', () => {
     expect(ingester.search(source.sourceId, SCOPE, 'alpha', 5).hits).toHaveLength(1);
   });
 });
+
+describe('DocumentCollectionIngester registration and removal', () => {
+  it('registers only with acknowledged rights and keeps the consent in effect when it is left out', async () => {
+    writeDoc('a.md', '# A\n\nAlpha notes.');
+    await expect(ingester.register({rootPath: docsRoot, rightsAcknowledged: false, consentedBy: 'user-1', scope: SCOPE}))
+      .rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_RIGHTS_REQUIRED'});
+    expect(registry.list(SCOPE)).toEqual([]);
+    const first = await ingester.register({rootPath: docsRoot, rightsAcknowledged: true, sendToProvider: true,
+      consentedBy: 'user-1', scope: SCOPE});
+    expect(first.source).toMatchObject({kind: 'document_collection', displayName: 'docs', sendToProvider: true});
+    expect(first.preview.summary.documentCount).toBe(1);
+    const again = await ingester.register({rootPath: docsRoot, displayName: 'Team', rightsAcknowledged: true,
+      consentedBy: 'user-1', scope: SCOPE});
+    expect(again.source).toMatchObject({sourceId: first.source.sourceId, displayName: 'Team', sendToProvider: true});
+  });
+
+  it('removes a document collection with its index, and refuses another kind before revoking it', async () => {
+    writeDoc('a.md', '# A\n\nAlpha notes.');
+    const source = register(true);
+    await ingester.ingest(source.sourceId, SCOPE);
+    expect(indexFiles().length).toBeGreaterThan(0);
+    await ingester.remove(source.sourceId, SCOPE, 'user-1');
+    expect(registry.get(source.sourceId, SCOPE)).toBeUndefined();
+    expect(indexFiles()).toEqual([]);
+    const wiki = registry.register({kind: 'android_internals_wiki', displayName: 'Wiki', rootRealpath: docsRoot,
+      revision: 'r', contentFingerprint: 'f', dirty: false, license: 'internal', rightsAcknowledged: true,
+      sendToProvider: true, consentedBy: 'user-1', scope: SCOPE});
+    await expect(ingester.remove(wiki.sourceId, SCOPE, 'user-1')).rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_KIND_MISMATCH'});
+    // Refused before its tombstone: the Wiki is still readable.
+    expect(registry.get(wiki.sourceId, SCOPE)).toMatchObject({sourceId: wiki.sourceId, sendToProvider: true});
+  });
+});

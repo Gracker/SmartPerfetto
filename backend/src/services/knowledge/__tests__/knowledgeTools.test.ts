@@ -17,7 +17,9 @@ const binding = {
   generation: 'dc_' + 'b'.repeat(32),
   sectionId: 'd1:0',
   chunkId: 'd1:0:0',
+  relativePath: 'guides/a.md',
   lineRange: {start: 1, end: 4},
+  excerptComplete: false,
 };
 
 describe('KnowledgeReferenceLedger', () => {
@@ -34,10 +36,32 @@ describe('KnowledgeReferenceLedger', () => {
 
   it('remembers delivered parts per section, through any reference to it', () => {
     const ledger = new KnowledgeReferenceLedger();
-    ledger.recordDelivered(binding, 1, {partCount: 2, truncated: false});
+    const id = ledger.issue(binding);
+    ledger.recordDelivered(id, binding, 1, {partCount: 2, truncated: false, sectionRange: {start: 1, end: 20}});
     expect(ledger.deliveredPart({...binding, chunkId: 'd1:0:1'}, 1)).toEqual({partCount: 2, truncated: false});
     expect(ledger.deliveredPart(binding, 2)).toBeUndefined();
     expect(ledger.deliveredPart({...binding, generation: 'dc_' + 'c'.repeat(32)}, 1)).toBeUndefined();
+  });
+
+  it('reports a section as delivered whole only when every part arrived uncut', () => {
+    const ledger = new KnowledgeReferenceLedger();
+    const id = ledger.issue(binding);
+    const sectionLocation = () => ledger.deliveredLocations().find(location => location.lineRange.end === 20);
+    ledger.recordDelivered(id, binding, 1, {partCount: 2, truncated: false, sectionRange: {start: 1, end: 20}});
+    expect(sectionLocation()).toMatchObject({referenceId: id, relativePath: 'guides/a.md', bodyDelivered: false});
+    ledger.recordDelivered(id, binding, 2, {partCount: 2, truncated: true, sectionRange: {start: 1, end: 20}});
+    expect(sectionLocation()?.bodyDelivered).toBe(false);
+    const whole = new KnowledgeReferenceLedger();
+    const wholeId = whole.issue(binding);
+    whole.recordDelivered(wholeId, binding, 1, {partCount: 1, truncated: false, sectionRange: {start: 1, end: 20}});
+    expect(whole.deliveredLocations()).toEqual([
+      {referenceId: wholeId, knowledgeBaseId: binding.sourceId, generation: binding.generation,
+        relativePath: 'guides/a.md', lineRange: {start: 1, end: 4}, bodyDelivered: false},
+      {referenceId: wholeId, knowledgeBaseId: binding.sourceId, generation: binding.generation,
+        relativePath: 'guides/a.md', lineRange: {start: 1, end: 20}, bodyDelivered: true},
+    ]);
+    expect(whole.deliveredReferenceCounts()).toEqual(new Map([[binding.sourceId,
+      {generation: binding.generation, count: 1}]]));
   });
 });
 

@@ -208,6 +208,21 @@ const SOURCE_ID_PREFIX = 'eks_';
 const SOURCE_ID_HEX_CHARS = 24;
 const SOURCE_ID_PATTERN = new RegExp(`^${SOURCE_ID_PREFIX}[0-9a-f]{${SOURCE_ID_HEX_CHARS}}$`);
 
+/** A source as its owner's management surfaces show it: no root path, no scope. */
+export function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
+  const {rootRealpath: _rootRealpath, scope: _scope, ...safeSource} = source;
+  return safeSource;
+}
+
+/** A knowledge source as the `/knowledge` routes and `smp knowledge` list it: no root, plus its index state. */
+export function projectKnowledgeSourceForManagement(source: ExternalKnowledgeSource) {
+  return {
+    ...sanitizeExternalKnowledgeSource(source),
+    documentCount: source.indexedArticleCount ?? 0,
+    hasActiveIndex: externalKnowledgeSourceHasActiveIndex(source),
+  };
+}
+
 /** True only for an id this registry mints: safe as a path segment and in projected output. */
 export function isExternalKnowledgeSourceId(value: unknown): value is string {
   return typeof value === 'string' && SOURCE_ID_PATTERN.test(value);
@@ -514,11 +529,21 @@ export class ExternalKnowledgeSourceRegistry {
     scope: ExternalKnowledgeScope,
     actor: string,
     removeIndex: (tombstone: ExternalKnowledgeSource, fence: KnowledgeCleanupFence) => Promise<void> | void,
+    options: {kind?: ExternalKnowledgeKind} = {},
   ): Promise<ExternalKnowledgeSource> {
+    // A source of another kind is refused before its tombstone, which would revoke it.
+    const requireRemovable = () => {
+      const current = this.getIncludingDeleting(sourceId, scope);
+      if (!current) throw knowledgeSourceNotFound(sourceId);
+      if (options.kind && current.kind !== options.kind) {
+        throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_KIND_MISMATCH',
+          `External knowledge source '${sourceId}' is not a ${options.kind}`);
+      }
+    };
     // Checked before the lease too, so an unknown id never creates a lease record.
-    if (!this.getIncludingDeleting(sourceId, scope)) throw knowledgeSourceNotFound(sourceId);
+    requireRemovable();
     return this.withLease(sourceId, scope, async lease => {
-      if (!this.getIncludingDeleting(sourceId, scope)) throw knowledgeSourceNotFound(sourceId);
+      requireRemovable();
       const tombstone = this.mutateSourceWithLease(sourceId, scope, lease, current => {
         if (!current) throw knowledgeSourceNotFound(sourceId);
         return markDeleting(current, actor);

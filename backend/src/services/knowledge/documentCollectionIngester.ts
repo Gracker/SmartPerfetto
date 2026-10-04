@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'crypto';
+import * as path from 'path';
 
 import type {PathSecurityGate} from '../codebase/pathSecurityGate';
 import {
@@ -67,6 +68,53 @@ export class DocumentCollectionIngester {
     private readonly store: DocumentCollectionStore = getDefaultDocumentCollectionStore(),
     private readonly gate: PathSecurityGate = createDocumentCollectionGate(),
   ) {}
+
+  /**
+   * Register a folder as a document collection after previewing it. The
+   * owner must acknowledge the right to use the documents; provider-send
+   * consent left out keeps the consent in effect (none for a new source).
+   * Registration indexes nothing: a reindex does.
+   */
+  async register(input: {
+    rootPath: string;
+    displayName?: string;
+    description?: string;
+    attribution?: string;
+    license?: string;
+    rightsAcknowledged: boolean;
+    sendToProvider?: boolean;
+    consentedBy: string;
+    scope: ExternalKnowledgeScope;
+  }): Promise<{source: ExternalKnowledgeSource; preview: DocumentCollectionPreview}> {
+    if (input.rightsAcknowledged !== true) {
+      throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED',
+        '`rightsAcknowledged: true` is required: confirm you may use these documents');
+    }
+    const preview = await this.previewIndexable(input.rootPath);
+    const source = this.registry.register({
+      kind: 'document_collection',
+      displayName: input.displayName?.trim() || path.basename(preview.rootRealpath),
+      rootRealpath: preview.rootRealpath,
+      revision: `content-${preview.summary.contentFingerprint.slice(0, 40)}`,
+      contentFingerprint: preview.summary.contentFingerprint,
+      dirty: false,
+      description: input.description,
+      attribution: input.attribution,
+      license: input.license,
+      rightsAcknowledged: true,
+      sendToProvider: input.sendToProvider,
+      consentedBy: input.consentedBy,
+      scope: input.scope,
+    });
+    return {source, preview};
+  }
+
+  /** Delete a document collection and every index file it has, through the registry's fenced removal. */
+  async remove(sourceId: string, scope: ExternalKnowledgeScope, actor: string): Promise<void> {
+    // A deletion that stopped half way left a tombstone; running it again finishes it.
+    await this.registry.remove(sourceId, scope, actor, (_tombstone, fence) => this.removeIndex(scope, sourceId, fence),
+      {kind: 'document_collection'});
+  }
 
   /** What a folder would index; a blocked or empty folder is refused. */
   async previewIndexable(rootPath: string): Promise<DocumentCollectionPreview> {

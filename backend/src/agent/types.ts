@@ -436,6 +436,7 @@ export interface SubAgentResult {
   deliveryAssurance?: import('../types/analysisDelivery').AnalysisDeliveryAssurance;
   sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
   sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+  knowledgeUse?: import('../services/knowledge/knowledgeUse').KnowledgeUseV1;
   conclusionContract?: unknown;
   claimSupport?: ClaimSupportV1[];
   claimVerificationResult?: ClaimVerificationResult;

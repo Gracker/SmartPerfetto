@@ -312,6 +312,52 @@ describe('final delivery private projection', () => {
     expect(owner).toMatchObject({citations: [{citation, status: 'unmatched'}], issues: [{citation}]});
   });
 
+  it('keeps knowledge_use@1 on every surface, its citations for the owner only, and drops a malformed one whole', () => {
+    const current = deliveredResult();
+    const base = `eks_${'a'.repeat(24)}`;
+    const citation = 'kb:team/render notes.md#L12-L14';
+    current.knowledgeUse = {schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 2}],
+      citations: [{citation, relativePath: 'team/render notes.md', lineRange: {start: 12, end: 14}, status: 'located',
+        knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'}]};
+    const owner = projectOwnerAnalysisResult(current.sessionId, current, 'en');
+    expect(owner.knowledgeUse).toEqual(current.knowledgeUse);
+    const strict = projectPrivateAnalysisResult(current.sessionId, current, 'en');
+    expect(strict.knowledgeUse).toEqual({schemaVersion: 'knowledge_use@1', sources: current.knowledgeUse.sources, citations: []});
+    expect(JSON.stringify(strict.knowledgeUse)).not.toContain('render notes');
+    // Knowledge use binds nothing: the delivery verdict and report binding are untouched by it.
+    expect(owner.deliveryAssurance).toEqual(current.deliveryAssurance);
+    for (const stored of [copyAnalysisResultForSnapshot(owner), JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(owner)))]) {
+      expect(stored.knowledgeUse).toEqual(current.knowledgeUse);
+      expect(projectOwnerAnalysisResult(current.sessionId, stored, 'en').knowledgeUse).toEqual(current.knowledgeUse);
+    }
+    const forged = {...current, knowledgeUse: {...current.knowledgeUse, citations: [{...current.knowledgeUse.citations[0],
+      relativePath: '/Users/someone/private.md'}]}} as AnalysisResult;
+    for (const projected of [projectOwnerAnalysisResult(current.sessionId, forged, 'en'), copyAnalysisResultForSnapshot(forged)]) {
+      expect(projected).not.toHaveProperty('knowledgeUse');
+    }
+    // An older result has no record: absent, never an empty one.
+    const {knowledgeUse: _knowledgeUse, ...historical} = current;
+    expect(projectOwnerAnalysisResult(current.sessionId, historical, 'en')).not.toHaveProperty('knowledgeUse');
+  });
+
+  it('keeps a valid optional knowledge reference count and drops only a malformed one', () => {
+    const counted = deliveredResult();
+    counted.analysisReceipt!.nonEvidenceContext.knowledgeReferenceCount = 3;
+    for (const projected of [projectPrivateAnalysisResult(counted.sessionId, counted, 'en'), copyAnalysisResultForSnapshot(counted)]) {
+      expect(projected.analysisReceipt?.nonEvidenceContext.knowledgeReferenceCount).toBe(3);
+    }
+    const malformed = deliveredResult();
+    (malformed.analysisReceipt!.nonEvidenceContext as Record<string, unknown>).knowledgeReferenceCount = -1;
+    for (const projected of [projectPrivateAnalysisResult(malformed.sessionId, malformed, 'en'), copyAnalysisResultForSnapshot(malformed)]) {
+      expect(projected.analysisReceipt).toBeDefined();
+      expect(projected.analysisReceipt?.nonEvidenceContext).not.toHaveProperty('knowledgeReferenceCount');
+    }
+    // An older receipt without the count stays complete and reads as not recorded.
+    const legacy = projectPrivateAnalysisResult(deliveredResult().sessionId, deliveredResult(), 'en');
+    expect(legacy.analysisReceipt?.nonEvidenceContext).not.toHaveProperty('knowledgeReferenceCount');
+  });
+
   it('does not issue missing historical metadata, and invalidates report intent binding when dropping diagnostics', () => {
     const current = deliveredResult();
     current.turnIntent = {...current.turnIntent!, reason: 'PRIVATE_REASON', actualModel: 'PRIVATE_MODEL'};
@@ -562,12 +608,13 @@ function snapshot(): SessionStateSnapshot {
       patchCount: 0,
       referencedCodebaseIds: ['codebase-a', 'bad path'],
       usedCodebaseIds: ['codebase-a', '/Users/chris/Code/App'],
+      // A retired write-only field older snapshots still carry; knowledge_use@1 replaced it.
       usedKnowledgeSources: [{
         knowledgeSourceId: 'knowledge-a',
         sourceGenerations: ['generation-7'],
       }],
       sourceUseDecision,
-    },
+    } as SessionStateSnapshot['codeLookupSummary'],
     sourceUseDecision,
     codebaseSnapshot: [{
       codebaseId: 'codebase-a',
@@ -621,10 +668,6 @@ describe('private session snapshot provenance', () => {
       patchCount: 0,
       referencedCodebaseIds: ['codebase-a'],
       usedCodebaseIds: ['codebase-a'],
-      usedKnowledgeSources: [{
-        knowledgeSourceId: 'knowledge-a',
-        sourceGenerations: ['generation-7'],
-      }],
       sourceUseDecision: {
         schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
         codeAwareMode: 'provider_send',

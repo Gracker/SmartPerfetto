@@ -49,6 +49,22 @@ describe('typed analysis history', () => {
     expect(() => runtime.read({turnId: source.id})).toThrow('product_revoked');
   });
 
+  it('keeps pre-acf2 source-derived history stored but out of the model context', () => {
+    const current = `acf2:${'d'.repeat(64)}`;
+    const legacySource = {...turn(), sourceDerived: true, analysisContextFingerprint: 'd'.repeat(64), answer: 'LEGACY_SOURCE'};
+    const currentSource = {...turn(1), sourceDerived: true, analysisContextFingerprint: current, answer: 'CURRENT_SOURCE'};
+    const publicTurn = turn(2);
+    const stored = [legacySource, currentSource, publicTurn];
+    const reader = createRuntimeAnalysisHistoryReader({options: {analysisContextFingerprint: current,
+      codeAwareMode: 'provider_send', codebaseIds: ['A']}, sessionId: 'upgraded', traceId: 'trace',
+      getTurns: () => stored, assertActive: () => {}});
+    expect(reader.getTurns()).toEqual([currentSource, publicTurn]);
+    expect(reader.read({turnId: legacySource.id})).toMatchObject({success: false});
+    expect(renderAnalysisHistoryContext(reader.getTurns())).not.toContain('LEGACY_SOURCE');
+    // Nothing is re-stamped: the stored turn keeps the fingerprint it ran under.
+    expect(stored[0]!.analysisContextFingerprint).toBe('d'.repeat(64));
+  });
+
   it('does not recreate an issued reader or its restriction from serialized options', () => {
     const source = {...turn(), sourceDerived: true, analysisContextFingerprint: 'scope-A'};
     const productOnly = {...turn(1), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'PRODUCT_READER_ONLY'};

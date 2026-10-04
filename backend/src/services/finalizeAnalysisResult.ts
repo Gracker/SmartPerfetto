@@ -5,7 +5,11 @@
 import {randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import type {ConclusionBindingEligibility, ConclusionContract} from '../agent/core/conclusionContract';
-import {isIssuedFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
+import {
+  isIssuedFinalizationContext,
+  takeRunDeliveryRecord,
+  type RuntimeFinalizationContext,
+} from '../agentRuntime/analysisFinalizationContext';
 import type {ComparisonReportSection} from '../agentv3/sessionStateSnapshot';
 import {getFinalReportContract} from '../agentv3/strategyLoader';
 import type {DataEnvelope} from '../types/dataContract';
@@ -16,6 +20,7 @@ import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
 import type {ClaimVerificationResult, ClaimVerificationClaimResult, ClaimVerificationIssue} from '../types/claimVerification';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection} from './canonicalAnalysisResult';
 import {attachSourceUseToAnalysisResult, verifySourceClaimBindings} from './codebase/sourceClaimVerifier';
+import {buildKnowledgeUse} from './knowledge/knowledgeUse';
 import {prepareAnalysisRelations} from './evidence/analysisRelationPreparation';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedIdentityResolutions} from './evidence/claimEvidencePreparation';
 import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
@@ -431,6 +436,11 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       }
       consumedContexts.add(context);
     }
+    // A result without an answer to finalize still carries what its run delivered.
+    const deliveryRecord = takeRunDeliveryRecord(input.result);
+    if (deliveryRecord && (deliveryRecord.runId !== owner.runId || deliveryRecord.sessionId !== input.result.sessionId)) {
+      throw new Error('finalization_run_identity_mismatch');
+    }
     const query = input.query;
     const providerQuery = context?.getProviderQuery(owner.signal);
     if (providerQuery?.analysisContextFingerprint !== undefined &&
@@ -635,6 +645,14 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       result.conclusionContract = withRetrievedCaseRecommendations(result.sessionId, result.conclusionContract,
         caseRecommendations);
     }
+    // Only finalization records knowledge use, from the run's own delivery
+    // record (its context's, or the record a contextless failure keeps) and
+    // the final body; a runtime-supplied value never survives. It is display
+    // and audit: no verification or delivery verdict reads it.
+    const knowledgeUse = buildKnowledgeUse(context ? context.knowledgeUse : deliveryRecord?.knowledgeUse,
+      result.conclusion);
+    if (knowledgeUse) result.knowledgeUse = knowledgeUse;
+    else delete result.knowledgeUse;
     const claimsFingerprint = analysisDeliveryFingerprint(result.conclusionContract?.claims ?? []);
     const sourceUseFingerprint = analysisDeliveryFingerprint(result.sourceUseDecision);
     const sourceScopeFingerprint = sourceScope ? analysisDeliveryFingerprint(sourceScope) : undefined;

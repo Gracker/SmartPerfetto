@@ -65,6 +65,9 @@ Selection makes authorized source tools available to the current model. It does 
 - Calls respect the current run budget, path filters, provider consent, and bounded output capacity. The primary flow does not implicitly apply a fixed 1-search/2-read/6-second policy.
 - No lookup means no claim of source use. Actual calls continue updating the execution ledger even after an earlier explicit not-needed decision.
 - Source selection or authorization changes are checked against session identity and authorization fingerprints; invalid private context cannot be reused.
+- The authorization fingerprint covers consent, selection scope, lifecycle and deletion, not the index generation: a reindex elsewhere neither interrupts a session or conversation nor hides history. Each run pins its selected indexes' generations; when an index is rebuilt mid-analysis, the index lookup tools refuse explicitly (`codebase_index_generation_changed`, use the index-free `search_codebase` instead) rather than reporting "no hits". A pinned generation whose stored chunks or file were lost refuses the same way. A document knowledge base keeps serving the run while its retained previous generation is still whole.
+
+> **Upgrade note (one time)**: the authorization fingerprint moved to the `acf2` format. Fingerprints stored before the upgrade no longer equal new ones and are never rewritten: an existing session that selected source or knowledge starts over once on its next turn; a conversation from before the upgrade cannot be recovered (start a new one); source-derived history from before the upgrade stays stored locally but no longer enters the model context.
 
 Each run retains `SourceUseDecisionV1`:
 

@@ -74,10 +74,6 @@ export interface CodeLookupSummary {
   referencedCodebaseIds: string[];
   /** Roots that returned source/graph references successfully. */
   usedCodebaseIds?: string[];
-  usedKnowledgeSources?: Array<{
-    knowledgeSourceId: string;
-    sourceGenerations: string[];
-  }>;
   sourceUseDecision?: SourceUseDecisionV1;
   /**
    * Records that could not be read back: a crash cut them short. They may
@@ -359,8 +355,19 @@ export class CodeLookupLedger {
   }
 
   hasPriorLookupOf(chunkId: string): boolean {
-    return this.entries.some(entry =>
-      entry.outcome === 'success' && entry.chunkIds.includes(chunkId));
+    return this.priorLookupOf(chunkId) !== undefined;
+  }
+
+  /**
+   * The latest successful lookup that returned this chunk, with the codebase
+   * and generation it came from; the chunk itself may since be collected.
+   */
+  priorLookupOf(chunkId: string): CodeLookupLedgerEntry | undefined {
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const entry = this.entries[index]!;
+      if (entry.outcome === 'success' && entry.chunkIds.includes(chunkId)) return entry;
+    }
+    return undefined;
   }
 
   hasSuccessfulCodeLookup(): boolean {
@@ -380,7 +387,6 @@ export class CodeLookupLedger {
   toSnapshotSummary(): CodeLookupSummary {
     const codebaseIds = new Set<string>();
     const usedCodebaseIds = new Set<string>();
-    const knowledgeSources = new Map<string, Set<string>>();
     for (const entry of this.auditEntries) {
       if (entry.codebaseId) codebaseIds.add(entry.codebaseId);
       if (
@@ -390,16 +396,7 @@ export class CodeLookupLedger {
       ) {
         usedCodebaseIds.add(entry.codebaseId);
       }
-      if (entry.outcome === 'success' && entry.knowledgeSourceId) {
-        const generations = knowledgeSources.get(entry.knowledgeSourceId) ?? new Set<string>();
-        if (entry.sourceGeneration) generations.add(entry.sourceGeneration);
-        knowledgeSources.set(entry.knowledgeSourceId, generations);
-      }
     }
-    const usedKnowledgeSources = Array.from(knowledgeSources, ([knowledgeSourceId, generations]) => ({
-      knowledgeSourceId,
-      sourceGenerations: Array.from(generations).sort(),
-    })).sort((left, right) => left.knowledgeSourceId.localeCompare(right.knowledgeSourceId));
     const sourceUseDecision = [...this.entries]
       .reverse()
       .map(entry => sanitizeSourceUseDecision(entry.sourceUseDecision))
@@ -411,7 +408,6 @@ export class CodeLookupLedger {
       ...(usedCodebaseIds.size > 0
         ? {usedCodebaseIds: Array.from(usedCodebaseIds).sort()}
         : {}),
-      ...(usedKnowledgeSources.length > 0 ? {usedKnowledgeSources} : {}),
       ...(sourceUseDecision ? {sourceUseDecision} : {}),
       ...(this.unreadableRecords > 0 ? {unreadableRecordCount: this.unreadableRecords} : {}),
     };

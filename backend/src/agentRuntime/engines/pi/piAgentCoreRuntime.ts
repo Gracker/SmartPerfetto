@@ -7,7 +7,11 @@ import { EventEmitter } from 'events';
 import { createHash, randomUUID } from 'crypto';
 import {resolveAgentRuntimeBudgetConfig} from '../../../config';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisCandidateIdentity, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
-import {attachFinalizationContext} from '../../analysisFinalizationContext';
+import {
+  attachFinalizationContext,
+  attachRunDeliveryRecord,
+  sourceUseFinalizationFields,
+} from '../../analysisFinalizationContext';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
@@ -1277,11 +1281,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             selection: analysisRunSelection,
             traceIdentity: {currentTraceId: traceId || undefined, referenceTraceId: options.referenceTraceId},
             deliveryContext: projected.deliveryContext, protocolProjection: projected.protocolProjection,
-            sourceUse: sourceUse?.getSourceUseDecision(),
-            sourceScope: sourceUse?.getSourceExecutionScope?.(),
+            ...sourceUseFinalizationFields(sourceUse),
             evidenceReadView: createPiEvidenceReadView(currentArtifactStore, executionLease.key.runId!, sessionId, traceId, options),
           });
         }
+        // An interruption before the run resolved its intent has no context; what was delivered still counts.
+        attachRunDeliveryRecord(projected.result, {runId: executionLease.key.runId, sessionId,
+          knowledgeUse: sourceUse?.getKnowledgeUse?.()});
         return projected.result;
       }
       throw error;
@@ -1885,8 +1891,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         selection: prep.analysisRunSpec.selection,
         traceIdentity: {currentTraceId: traceId || undefined, referenceTraceId: options.referenceTraceId},
         deliveryContext: projected.deliveryContext, protocolProjection: projected.protocolProjection,
-        sourceUse: prep.sourceUse.getSourceUseDecision(),
-        sourceScope: prep.sourceUse.getSourceExecutionScope?.(),
+        ...sourceUseFinalizationFields(prep.sourceUse),
         evidenceReadView: createPiEvidenceReadView(prep.artifactStore, runId, sessionId, traceId, options),
         ...(result.completion?.status === 'completed' && result.success && result.conclusion
           && result.outputOrigin !== 'runtime_fallback' ? {

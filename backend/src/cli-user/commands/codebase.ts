@@ -5,6 +5,7 @@
 import * as path from 'path';
 
 import { bootstrap, resolveInvocationPath } from '../bootstrap';
+import {writeCliInputError, writeCliOperationError} from '../io/operationErrors';
 import {withConsoleLogToStderr} from '../io/stdio';
 import {cliCodebaseRegistry} from '../services/cliCodebaseRegistry';
 import {backendLogPath} from '../../runtimePaths';
@@ -55,47 +56,13 @@ function managementContext(
   return {service, scope};
 }
 
-/** Exit code from the error's HTTP status: input 2, not found 3, conflict 4, anything else 5. */
-function managementExitCode(error: CodebaseManagementError): number {
-  if (error.status === 400) return 2;
-  if (error.status === 404) return 3;
-  if (error.status === 409) return 4;
-  return 5;
+function writeManagementError(format: CodebaseOutputFormat, error: unknown): number {
+  return writeCliOperationError(format === 'json', error instanceof CodebaseManagementError ? error : undefined,
+    {code: 'CODEBASE_OPERATION_FAILED', message: 'Codebase management operation failed'});
 }
 
-function writeManagementError(
-  format: CodebaseOutputFormat,
-  error: unknown,
-): number {
-  const managementError = error instanceof CodebaseManagementError
-    ? error
-    : new CodebaseManagementError(
-        'CODEBASE_OPERATION_FAILED',
-        500,
-        'Codebase management operation failed',
-      );
-  const payload = {
-    success: false,
-    code: managementError.code,
-    error: managementError.message,
-    ...(managementError.details ? {details: managementError.details} : {}),
-  };
-  if (format === 'json') console.log(JSON.stringify(payload, null, 2));
-  else console.error(`${payload.code}: ${payload.error}`);
-  return managementExitCode(managementError);
-}
-
-function writeInputError(
-  format: CodebaseOutputFormat,
-  code: string,
-  message: string,
-): number {
-  if (format === 'json') {
-    console.log(JSON.stringify({success: false, code, error: message}, null, 2));
-  } else {
-    console.error(`${code}: ${message}`);
-  }
-  return 2;
+function writeInputError(format: CodebaseOutputFormat, code: string, message: string): number {
+  return writeCliInputError(format === 'json', code, message);
 }
 
 function printCodebaseTableRow(ref: RegisteredCodebase | Awaited<ReturnType<CodebaseManagementService['list']>>[number]): void {

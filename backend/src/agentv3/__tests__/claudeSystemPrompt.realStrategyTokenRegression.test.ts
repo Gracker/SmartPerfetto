@@ -135,9 +135,9 @@ describe('typed prompt with real strategy assets', () => {
     expect(boundary?.content).toContain('Corroborate them with trace');
     const promptsWithRetrievalBoundary = [parts.fullPrompt, buildQuickSystemPrompt(context)];
     for (const prompt of promptsWithRetrievalBoundary) {
-      expect(prompt).toContain('Owner output may quote authorized source');
+      expect(prompt).toContain('Expose authorized private source and knowledge only to its owner');
       for (const protectedContent of ['secrets', 'private canaries', 'absolute roots',
-        'unauthorized source', 'private Wiki text']) {
+        'unauthorized content']) {
         expect(prompt).toContain(protectedContent);
       }
       expect(prompt).not.toContain('Never quote or reproduce private source');

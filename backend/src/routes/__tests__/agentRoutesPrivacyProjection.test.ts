@@ -281,6 +281,26 @@ describe('agent route private projections', () => {
     expect(persisted.eventData).not.toContain('/Users/chris');
   });
 
+  it.each([true, false])('replays knowledge_use@1 for the owner only from a trusted private event (trusted=%s)', trusted => {
+    const base = `eks_${'a'.repeat(24)}`;
+    const knowledgeUse = {schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}],
+      citations: [{citation: 'kb:render/fence.md#L2', relativePath: 'render/fence.md', lineRange: {start: 2, end: 2},
+        status: 'located', knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'}]};
+    const replayed = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
+      {sessionId: 'session-knowledge-replay', query: 'q', traceId: 'trace-knowledge-replay',
+        knowledgeSourceIds: [base], dataEnvelopes: []} as any,
+      {eventType: 'analysis_completed', createdAt: 1, eventData: JSON.stringify({type: 'analysis_completed', data: {
+        ...(trusted ? {privateProjectionVersion: 1} : {}), success: true, conclusion: 'See kb:render/fence.md#L2.',
+        knowledgeUse}, timestamp: 1})} as any,
+      true,
+    );
+    const data = JSON.parse(replayed.eventData).data;
+    if (trusted) expect(data.knowledgeUse).toEqual(knowledgeUse);
+    // An event without the private projection marker supplies no delivery metadata.
+    else expect(data.knowledgeUse).toBeUndefined();
+  });
+
   it('passes the durable actual source decision into completed snapshot persistence', () => {
     const snapshotInput = completedSnapshotInputFromRoute();
     const sourceUseDecision = snapshotInput?.properties.find(

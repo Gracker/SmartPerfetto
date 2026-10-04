@@ -124,7 +124,7 @@ import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../a
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import {runOpenCodeIntentTransport, type OpenCodeClassifierHost, type OpenCodeIntentTransportInput} from './openCodeIntentTransport';
 import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
-import {attachFinalizationContext} from '../../analysisFinalizationContext';
+import {attachFinalizationContext, sourceUseFinalizationFields} from '../../analysisFinalizationContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import {resolveAgentRuntimeBudgetConfig} from '../../../config';
@@ -3019,8 +3019,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       selection: prep.analysisRunSpec.selection,
       traceIdentity: {currentTraceId: traceId, referenceTraceId: options.referenceTraceId},
       deliveryContext, protocolProjection,
-      sourceUse: prep.sourceUse?.getSourceUseDecision(),
-      sourceScope: prep.sourceUse?.getSourceExecutionScope?.(),
+      ...sourceUseFinalizationFields(prep.sourceUse),
       ...(artifactStore ? {evidenceReadView: artifactStore.createEvidenceReadView({
         currentRunId: runId,
         allowedTraces: [

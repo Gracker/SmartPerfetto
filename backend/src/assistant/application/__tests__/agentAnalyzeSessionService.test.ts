@@ -317,6 +317,30 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(prepared.sessionId).not.toBe(existing.sessionId);
   });
 
+  test('rebuilds a session stamped with a pre-acf2 fingerprint instead of continuing it', () => {
+    const securityCleanup = jest.fn();
+    service = new AgentAnalyzeSessionService<AnalyzeManagedSession>({
+      assistantAppService,
+      createSessionLogger: () => createLogger(),
+      sessionPersistenceService,
+      sessionContextManager: {set: jest.fn(), remove: jest.fn()},
+      buildRecoveredResultFromContext: () => null,
+      onSessionSecurityCleanup: securityCleanup,
+    });
+    const existing = createSession('agent-session-legacy', 'trace-1');
+    // The upgrade's one-time effect: the stored record is never re-stamped.
+    existing.analysisContextFingerprint = 'c'.repeat(64);
+    existing.orchestrator = {cleanupSession: jest.fn()} as any;
+    assistantAppService.setSession(existing.sessionId, existing);
+    const prepared = service.prepareSession({
+      traceId: 'trace-1', query: 'same selection after the upgrade', requestedSessionId: existing.sessionId,
+      analysisContextFingerprint: `acf2:${'c'.repeat(64)}`, options: {},
+    });
+    expect(securityCleanup).toHaveBeenCalledWith(existing.sessionId);
+    expect(prepared.isNewSession).toBe(true);
+    expect(existing.analysisContextFingerprint).toBe('c'.repeat(64));
+  });
+
   test('inherits reference trace identity when continuing an in-memory comparison session', () => {
     const existing = createSession('agent-session-1', 'trace-1');
     existing.referenceTraceId = 'ref-trace-1';

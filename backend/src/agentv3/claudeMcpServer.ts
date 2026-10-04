@@ -183,6 +183,17 @@ import {
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
 
+/**
+ * An index call refused because the generation its run pinned can no longer
+ * be served. An index tool's checkpoint throws it from wherever the call
+ * stands; the tool wrapper returns its refusal as the tool result.
+ */
+class IndexGenerationRefused extends Error {
+  constructor(readonly refusal: IndexGenerationRefusal) {
+    super(refusal.payload.unsupportedReason);
+  }
+}
+
 const tool: typeof sdkTool = ((
   name: string,
   description: string,
@@ -198,7 +209,13 @@ const tool: typeof sdkTool = ((
       ? evaluationExposureCursor()
       : undefined;
     try {
-      const result = await handler(...args);
+      let result: unknown;
+      try {
+        result = await handler(...args);
+      } catch (error) {
+        if (!(error instanceof IndexGenerationRefused)) throw error;
+        result = createRuntimeToolResult(error.refusal.payload, {isError: error.refusal.isError});
+      }
       if (cursor !== undefined) {
         commitEvaluationExposureSince(cursor, 'sdk_handoff_observed');
       }
@@ -225,7 +242,7 @@ import {
   type ToolRequestScope,
 } from './mcpToolRegistry';
 import { backendLogPath } from '../runtimePaths';
-import {activeCodebaseGeneration, CodebaseRegistry} from '../services/codebase/codebaseRegistry';
+import {CodebaseRegistry} from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {
   describeSelectedCodebases,
@@ -311,8 +328,19 @@ import {
   safeSliceEnd,
   splitKnowledgeSection,
 } from '../services/knowledge/knowledgeTools';
+import {KnowledgeUseRecorder, type KnowledgeUseRecord} from '../services/knowledge/knowledgeUse';
+import {
+  IndexGenerationPins,
+  indexGenerationRefusal,
+  type IndexGenerationPolicy,
+  type IndexGenerationRefusal,
+} from '../services/indexGenerationPins';
 import {SymbolResolver} from '../services/symbol/symbolResolver';
-import {buildAnalysisContextAuthorizationFingerprint} from '../services/resolvedAnalysisContext';
+import {
+  analysisContextFingerprintOf,
+  readAnalysisContextRegistrations,
+  type AnalysisContextRegistrations,
+} from '../services/resolvedAnalysisContext';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
@@ -1421,7 +1449,7 @@ export interface ClaudeMcpServerOptions {
   /** Test hook / alternate private external-knowledge registry. */
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
   /** Test hook / alternate document-collection index store. */
-  documentCollectionStore?: Pick<DocumentCollectionStore, 'search' | 'readSection'>;
+  documentCollectionStore?: Pick<DocumentCollectionStore, 'search' | 'readSection' | 'servesGeneration'>;
   /** Test hook / alternate registry. */
   codebaseRegistry?: CodebaseRegistry;
   /** Test hook / deterministic on-demand source backend. */
@@ -1456,6 +1484,8 @@ export interface SourceUseDecisionAccessor {
   getSourceUseDecision(): SourceUseDecisionV1 | undefined;
   /** Missing or invalidated scope cannot establish source non-applicability. */
   getSourceExecutionScope?(): SourceExecutionScopeV1 | undefined;
+  /** What the run delivered from its selected knowledge bases; undefined when none was selected. */
+  getKnowledgeUse?(): KnowledgeUseRecord | undefined;
 }
 
 /**
@@ -1682,16 +1712,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     : options.androidInternalsPackStore ?? undefined;
   const analysisContextSelection = {codeAwareMode, codebaseIds, knowledgeSourceIds};
   const privateAnalysisContext = analysisHasPrivateContext(analysisContextSelection);
+  // One read of the selected registrations: authorization and the index
+  // generation pins below are derived from the same moment.
+  const readSelectedRegistrations = (): AnalysisContextRegistrations => readAnalysisContextRegistrations(
+    analysisContextSelection, knowledgeScope ?? {}, {codebaseRegistry, knowledgeRegistry: externalKnowledgeRegistry});
+  const registrationsAtStart = readSelectedRegistrations();
   const pinnedAnalysisContextFingerprint = options.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(analysisContextSelection, knowledgeScope ?? {}, {
-      codebaseRegistry,
-      knowledgeRegistry: externalKnowledgeRegistry,
-    });
-  const pinnedCodebaseGenerations = Object.fromEntries(codebaseIds.flatMap(codebaseId => {
-    const ref = codebaseRegistry.get(codebaseId, knowledgeScope);
-    return ref ? [[codebaseId, activeCodebaseGeneration(ref)]] : [];
-  }));
-  // Decided once per run, like the generation pins above: tools for a
+    analysisContextFingerprintOf(analysisContextSelection, knowledgeScope ?? {}, registrationsAtStart);
+  // Decided once per run, like the generation pins below: tools for a
   // capability no selected codebase has are not registered, and a call naming a
   // codebase without it is refused before reaching any source.
   const selectedCodebases = describeSelectedCodebases(codebaseRegistry, codebaseIds, knowledgeScope, codeAwareMode);
@@ -1705,13 +1733,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const source = externalKnowledgeRegistry.get(sourceId, knowledgeScope ?? {});
     return source ? [[sourceId, source] as const] : [];
   }));
-  const pinnedKnowledgeSourceGenerations = Object.fromEntries([...selectedKnowledgeSources].flatMap(
-    ([sourceId, source]) => source.activeGeneration ? [[sourceId, source.activeGeneration]] : []));
   // Run authorization already refused a selection without rights,
   // provider-send consent or an active index (409), so every collection here
   // may send its text; there is no metadata-only tier, since titles and paths
   // are document content too.
   const documentCollectionStore = options.documentCollectionStore ?? getDefaultDocumentCollectionStore();
+  // The index generations this run reads, pinned once. The authorization
+  // fingerprint does not cover them; every index tool checks them itself.
+  const indexGenerationPins = IndexGenerationPins.capture(registrationsAtStart, {
+    countCodebaseGenerationChunks: (codebaseId, generation) =>
+      ragStore.countCodebaseGenerationChunks(codebaseId, generation, knowledgeScope),
+    countKnowledgeSourceGenerationChunks: (sourceId, generation) =>
+      ragStore.countKnowledgeSourceGenerationChunks(sourceId, generation, knowledgeScope),
+    documentCollectionServes: (sourceId, generation) =>
+      Boolean(knowledgeScope) && documentCollectionStore.servesGeneration(knowledgeScope!, sourceId, generation),
+  });
   const documentCollectionIds = knowledgeScope ? knowledgeSourceIds.filter(sourceId => {
     const source = selectedKnowledgeSources.get(sourceId);
     return source?.kind === 'document_collection' &&
@@ -1719,6 +1755,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       externalKnowledgeSourceHasActiveIndex(source);
   }) : [];
   const knowledgeReferences = new KnowledgeReferenceLedger();
+  // What this run delivered from its selected knowledge bases, for knowledge_use@1.
+  const knowledgeUse = new KnowledgeUseRecorder(knowledgeReferences);
   // The Wiki lookup serves every selected source but document collections,
   // which have their own tools; its hint and its default id say so.
   const wikiKnowledgeSourceIds = knowledgeSourceIds.filter(sourceId =>
@@ -1728,16 +1766,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const knowledgeSourceCapabilityHint = wikiKnowledgeSourceIds.length > 0
     ? ` Request-authorized Android Internals Wiki source ids: ${wikiKnowledgeSourceIds.join(', ')}.`
     : ' No private Android Internals Wiki source is authorized for this request.';
-  const assertPrivateAnalysisContextCurrent = (): void => {
-    const currentFingerprint = buildAnalysisContextAuthorizationFingerprint(
-      analysisContextSelection,
-      knowledgeScope ?? {},
-      {codebaseRegistry, knowledgeRegistry: externalKnowledgeRegistry},
-    );
-    if (currentFingerprint !== pinnedAnalysisContextFingerprint) {
+  const assertRegistrationsAuthorized = (registrations: AnalysisContextRegistrations): void => {
+    if (analysisContextFingerprintOf(analysisContextSelection, knowledgeScope ?? {}, registrations) !==
+      pinnedAnalysisContextFingerprint) {
       throw new Error('analysis_context_changed_restart_required');
     }
   };
+  const assertPrivateAnalysisContextCurrent = (): void => assertRegistrationsAuthorized(readSelectedRegistrations());
   const codeLookupLedger = options.codeLookupLedger ?? (
     options.sessionId
       ? CodeLookupLedger.restore(
@@ -1752,12 +1787,22 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // the audit trail and patch authority, not the budget.
   const sourceDepth = options.sourceDepthDecision?.effective ?? 'locate';
   const sourceBudget = new SourceBudget(sourceDepth, options.sourceDepthPolicy);
-  const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> => {
-    assertPrivateAnalysisContextCurrent();
-    return Object.fromEntries(ids.flatMap(codebaseId => {
-      const generation = pinnedCodebaseGenerations[codebaseId];
-      return generation ? [[codebaseId, generation]] : [];
-    }));
+  // Read after a checkpoint (below), which has just checked authorization.
+  const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> =>
+    indexGenerationPins.codebaseGenerations(ids);
+  /**
+   * One index checkpoint: the authorization fence and the pinned-generation
+   * check, from one read of the selected registrations. Authorization changes
+   * revoke the run; a generation that can no longer be served (moved, or its
+   * stored data no longer whole) refuses the call through the tool wrapper.
+   * Every index tool calls it before reading, after reading and right before
+   * delivering, so a rebuild during a call is never delivered as "no hits".
+   */
+  const indexCheckpoint = (policy: IndexGenerationPolicy, ids: readonly string[]): void => {
+    const registrations = readSelectedRegistrations();
+    assertRegistrationsAuthorized(registrations);
+    const refusal = indexGenerationPins.refusal(policy, ids, registrations);
+    if (refusal) throw new IndexGenerationRefused(refusal);
   };
   const toolRequestScope: ToolRequestScope = {
     sessionId: options.sessionId ?? traceId,
@@ -1802,6 +1847,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return undefined;
       }
     },
+    // Facts of delivery, kept whatever happened since: what reached the model did.
+    getKnowledgeUse: () => knowledgeSourceIds.length > 0 ? knowledgeUse.snapshot() : undefined,
   };
 
   // Admission precedes provider delivery. Never expose a new source body or
@@ -4702,10 +4749,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!access.source.activeGeneration) {
         return createRuntimeToolResult({success: false, unsupportedReason: 'private_knowledge_index_not_active'});
       }
-      const pinnedGeneration = pinnedKnowledgeSourceGenerations[sourceId];
-      if (!pinnedGeneration) {
-        throw new Error('analysis_context_changed_restart_required');
-      }
+      // A Wiki rebuild deletes the generation this run pinned: refuse rather
+      // than search a generation that may already be empty.
+      indexCheckpoint('wiki', [sourceId]);
+      const pinnedGeneration = indexGenerationPins.knowledgeGeneration(sourceId)!;
       const raw = ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['android_internals_wiki'],
@@ -4713,6 +4760,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         activeSourceGenerations: {[sourceId]: pinnedGeneration},
         scope: knowledgeScope,
       });
+      indexCheckpoint('wiki', [sourceId]);
       const filtered = await filterRagLookup(raw, {
         toolName: 'lookup_blog_knowledge',
         turn: 0,
@@ -4723,8 +4771,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         knowledgeScope,
       });
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
+      indexCheckpoint('wiki', [sourceId]);
       const evaluated = filterAndRecordKnowledgeDocuments(filtered);
+      // Usage counts what is returned: the evaluation filter has run, and a
+      // hit without its text delivered nothing.
+      knowledgeUse.recordWikiDelivery(sourceId, pinnedGeneration, evaluated.hits.flatMap(hit =>
+        hit.snippet !== undefined && hit.metadata?.knowledgeSourceId === sourceId ? [hit.chunkId] : []));
       return ragToolResult(evaluated, 'nested');
     },
     { annotations: { readOnlyHint: true } },
@@ -4738,17 +4790,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const knowledgeBudgetRefusal = (unsupportedReason: string) =>
     policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.budgetExhausted,
       retrievedData({unsupportedReason, budget: sourceBudget.knowledgeSnapshot()}));
-  const knowledgeIndexUnavailable = () =>
-    createRuntimeToolResult({success: false, unsupportedReason: 'knowledge_index_unavailable'}, {isError: true});
+  // A read that finds the file gone answers as the pinned-generation check does.
+  const knowledgeIndexUnavailable = () => {
+    const {payload, isError} = indexGenerationRefusal('document_collection', '');
+    return createRuntimeToolResult(payload, {isError});
+  };
   /**
-   * The generation this run pinned for a selected collection. The
-   * authorization fingerprint is the authority: it covers every selected
-   * source's rights, consent, active generation, index and deletion, so once
-   * `assertPrivateAnalysisContextCurrent()` passes the pin is current. Each
-   * call asserts it twice, before reading and before delivering.
+   * The generation this run pinned for a selected collection. Authorization
+   * (rights, consent, deletion) is the fingerprint's, which revokes the run;
+   * the generation is checked here: a rebuild keeps the previous generation,
+   * so the pinned one serves while its file exists. Each call checks before
+   * reading and again before delivering.
    */
   const pinnedDocumentCollectionGeneration = (sourceId: string): string => {
-    const pinned = pinnedKnowledgeSourceGenerations[sourceId];
+    const pinned = indexGenerationPins.knowledgeGeneration(sourceId);
     if (!pinned || !documentCollectionIds.includes(sourceId)) {
       throw new Error('analysis_context_changed_restart_required');
     }
@@ -4774,8 +4829,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           authorizedKnowledgeBaseIds: documentCollectionIds,
         }, {isError: true});
       }
-      const targets = (requested ? [requested] : documentCollectionIds)
-        .map(sourceId => ({sourceId, generation: pinnedDocumentCollectionGeneration(sourceId)}));
+      const targetIds = requested ? [requested] : documentCollectionIds;
+      const targets = targetIds.map(sourceId => ({sourceId, generation: pinnedDocumentCollectionGeneration(sourceId)}));
+      indexCheckpoint('document_collection', targetIds);
       const stop = sourceBudget.beginKnowledgeCall('search');
       if (stop) return knowledgeBudgetRefusal(stop);
       const limit = max_results ?? 5;
@@ -4806,8 +4862,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         items.map(item => JSON.stringify({id: KNOWLEDGE_REFERENCE_ID_PLACEHOLDER, ...item}).length),
         sourceBudget.knowledgeTokens.left(), {fixedChars: 2});
       if (items.length > 0 && fit === 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
-      // Nothing is admitted, issued or registered unless the run is still current.
-      assertPrivateAnalysisContextCurrent();
+      // Nothing is admitted, issued or registered unless the run is still
+      // current and every pinned generation it read is still there.
+      indexCheckpoint('document_collection', targetIds);
       const delivered: Array<{id: string} & typeof items[number]> = [];
       for (let index = 0; index < fit; index += 1) {
         const item = items[index]!;
@@ -4821,7 +4878,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         runManifestAttributionSink?.recordInjection('knowledgeDocs', injectionId, contentHash);
         const id = knowledgeReferences.issue({
           scopeKey: scopeKey(knowledgeScope!), sourceId, generation,
-          sectionId: hit.sectionId, chunkId: hit.chunkId, lineRange: item.lineRange,
+          sectionId: hit.sectionId, chunkId: hit.chunkId, relativePath: hit.relativePath,
+          lineRange: item.lineRange, excerptComplete: hit.snippetComplete,
         });
         delivered.push({id, ...item});
       }
@@ -4860,6 +4918,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (binding.scopeKey !== scopeKey(knowledgeScope!) || binding.generation !== generation) {
         throw new Error('analysis_context_changed_restart_required');
       }
+      indexCheckpoint('document_collection', [binding.sourceId]);
       const partNumber = part ?? 1;
       const earlier = knowledgeReferences.deliveredPart(binding, partNumber);
       if (earlier) {
@@ -4910,7 +4969,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (textChars <= 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
       const text = fullText.slice(0, textChars);
       const truncated = text.length < fullText.length;
-      assertPrivateAnalysisContextCurrent();
+      indexCheckpoint('document_collection', [binding.sourceId]);
       const injectionId = `${binding.sourceId}/${binding.sectionId}#${partNumber}`;
       const contentHash = canonicalContentHash({knowledgeBaseId: binding.sourceId, sectionId: binding.sectionId,
         part: partNumber, text});
@@ -4926,7 +4985,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         knowledgeBaseId: reference.knowledgeBaseId, referenceId, title: reference.title,
         headingPath: reference.headingPath, relativePath: reference.relativePath, text,
       }]);
-      knowledgeReferences.recordDelivered(binding, partNumber, {partCount: parts.length, truncated});
+      knowledgeReferences.recordDelivered(referenceId, binding, partNumber, {partCount: parts.length, truncated,
+        sectionRange: reference.lineRange});
       sourceBudget.knowledgeTokens.spend(estimateTextTokens(text) + estimateTextTokens(JSON.stringify(reference)));
       return createRuntimeToolResult(retrievedData({
         success: true,
@@ -5095,6 +5155,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (codebaseId && !selectedAospIds.includes(codebaseId)) {
         return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered AOSP source');
       }
+      indexCheckpoint('codebase', effectiveCodebaseIds);
       const budgetRefusal = await indexedSearchBudgetRefusal('lookup_aosp_source', effectiveCodebaseIds);
       if (budgetRefusal) return budgetRefusal;
       const result = await observeSourceOperation('lookup_aosp_source', effectiveCodebaseIds, () => ragStore.search(query, {
@@ -5107,6 +5168,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(effectiveCodebaseIds),
       }));
+      // After the read, whatever came back: a rebuild during the search must not read as none.
+      indexCheckpoint('codebase', effectiveCodebaseIds);
       if (result.results.some(hit => hit.chunk?.registryOrigin === 'codebase_registry')) {
         const scopedResult = {
           ...result,
@@ -5116,7 +5179,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
         const delivered = await filterIndexedSourceLookup('lookup_aosp_source', scopedResult, effectiveCodebaseIds);
         await codeLookupLedger?.flush();
-        assertPrivateAnalysisContextCurrent();
+        indexCheckpoint('codebase', effectiveCodebaseIds);
         return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
       }
       observeSourceLookup({
@@ -5155,6 +5218,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (codebaseId && !selectedOemIds.includes(codebaseId)) {
         return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered OEM SDK source');
       }
+      indexCheckpoint('codebase', effectiveCodebaseIds);
       const budgetRefusal = await indexedSearchBudgetRefusal('lookup_oem_sdk', effectiveCodebaseIds);
       if (budgetRefusal) return budgetRefusal;
       const result = await observeSourceOperation('lookup_oem_sdk', effectiveCodebaseIds, () => ragStore.search(query, {
@@ -5165,6 +5229,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(effectiveCodebaseIds),
       }));
+      // After the read, whatever came back: a rebuild during the search must not read as none.
+      indexCheckpoint('codebase', effectiveCodebaseIds);
       if (result.results.some(hit => hit.chunk?.registryOrigin === 'codebase_registry')) {
         const scopedResult = {
           ...result,
@@ -5174,7 +5240,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
         const delivered = await filterIndexedSourceLookup('lookup_oem_sdk', scopedResult, effectiveCodebaseIds);
         await codeLookupLedger?.flush();
-        assertPrivateAnalysisContextCurrent();
+        indexCheckpoint('codebase', effectiveCodebaseIds);
         return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
       }
       observeSourceLookup({
@@ -5941,6 +6007,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const lookupScope = indexedLookupScope(codebaseId);
       if (lookupScope.refusal) return lookupScope.refusal;
       const allowed = lookupScope.allowed;
+      indexCheckpoint('codebase', allowed);
       const budgetRefusal = await indexedSearchBudgetRefusal('lookup_app_source', allowed);
       if (budgetRefusal) return budgetRefusal;
       const raw = await observeSourceOperation('lookup_app_source', allowed, () => ragStore.search(query, {
@@ -5953,9 +6020,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(allowed),
       }));
+      indexCheckpoint('codebase', allowed);
       const delivered = await filterIndexedSourceLookup('lookup_app_source', raw, allowed);
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
+      indexCheckpoint('codebase', allowed);
       return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
     },
     {annotations: {readOnlyHint: true}},
@@ -5990,21 +6058,24 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           vendors: Array.from(vendors).sort(),
         }, {isError: true});
       }
-      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_kernel_source', kernelRefs.map(ref => ref!.codebaseId));
+      const kernelCodebaseIds = kernelRefs.map(ref => ref!.codebaseId);
+      indexCheckpoint('codebase', kernelCodebaseIds);
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_kernel_source', kernelCodebaseIds);
       if (budgetRefusal) return budgetRefusal;
-      const raw = await observeSourceOperation('lookup_kernel_source', kernelRefs.map(ref => ref!.codebaseId), () => ragStore.search(query, {
+      const raw = await observeSourceOperation('lookup_kernel_source', kernelCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['kernel_source'],
-        codebaseIds: kernelRefs.map(ref => ref!.codebaseId),
+        codebaseIds: kernelCodebaseIds,
         ...(vendorId ? {vendor: vendorId} : {}),
         ...(symbolExact ? {symbolExact} : {}),
         ...(pathPrefix ? {pathPrefix} : {}),
         scope: knowledgeScope,
-        activeCodebaseGenerations: activeCodebaseGenerations(kernelRefs.map(ref => ref!.codebaseId)),
+        activeCodebaseGenerations: activeCodebaseGenerations(kernelCodebaseIds),
       }));
-      const delivered = await filterIndexedSourceLookup('lookup_kernel_source', raw, kernelRefs.map(ref => ref!.codebaseId));
+      indexCheckpoint('codebase', kernelCodebaseIds);
+      const delivered = await filterIndexedSourceLookup('lookup_kernel_source', raw, kernelCodebaseIds);
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
+      indexCheckpoint('codebase', kernelCodebaseIds);
       return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
     },
     {annotations: {readOnlyHint: true}},
@@ -6033,9 +6104,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const lookupScope = indexedLookupScope(codebaseId);
       if (lookupScope.refusal) return lookupScope.refusal;
       const allowed = lookupScope.allowed;
+      indexCheckpoint('codebase', allowed);
       const budgetRefusal = await indexedSearchBudgetRefusal('resolve_symbol', allowed);
       if (budgetRefusal) return budgetRefusal;
-      const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry);
+      // Resolves against the generations this run pinned, never a newer one.
+      const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry,
+        indexGenerationPins.codebaseGenerations(allowed));
       const results = await observeSourceOperation('resolve_symbol', allowed, () => allowed.map(id => {
         const ref = codebaseRegistry.get(id, knowledgeScope);
         if (kind === 'kernel' || ref?.kind === 'kernel_source') {
@@ -6063,6 +6137,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           topK: top_k ?? 5,
         });
       }));
+      indexCheckpoint('codebase', allowed);
       // Checked before any reference is issued; charged for what is delivered.
       if (metadataTokens(results) > sourceBudget.sourceTokens.left()) {
         observeSourceLookup({toolName: 'resolve_symbol', codebaseIds: allowed, success: false});
@@ -6091,7 +6166,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       recordResolvedSymbolLookup(allowed, tokensSpent, admitted.references.length,
         results.some(result => result.success) ? 'success' : 'rejected');
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
+      indexCheckpoint('codebase', allowed);
       return {
         content: [{type: 'text' as const, text: JSON.stringify({
           success: results.some(result => result.success),
@@ -6116,6 +6191,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async ({context_chunk_ids, problem, proposed_diff, patch_sketch}) => {
       assertPrivateAnalysisContextCurrent();
+      // The codebases and generations the context was looked up from, as the
+      // lookup ledger recorded them: a rebuild may already have collected the
+      // chunks, so they cannot name their own codebase. A patch is checked
+      // against the generation this run pinned for each, before and after
+      // proposing; context from another generation is not this run's.
+      const lookedUp = context_chunk_ids.flatMap(chunkId => {
+        const entry = codeLookupLedger?.priorLookupOf(chunkId);
+        return entry?.codebaseId && codebaseIds.includes(entry.codebaseId)
+          ? [{codebaseId: entry.codebaseId, generation: entry.sourceGeneration}] : [];
+      });
+      const targetCodebaseIds = [...new Set(lookedUp.map(target => target.codebaseId))];
+      const foreign = lookedUp.find(target => target.generation !== undefined &&
+        target.generation !== indexGenerationPins.codebaseGenerations([target.codebaseId])[target.codebaseId]);
+      if (foreign) throw new IndexGenerationRefused(indexGenerationRefusal('codebase', foreign.codebaseId));
+      indexCheckpoint('codebase', targetCodebaseIds);
       const proposer = new PatchProposer(
         ragStore,
         codebaseRegistry,
@@ -6130,7 +6220,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         turn: 0,
       });
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
+      indexCheckpoint('codebase', targetCodebaseIds);
       if (result.patchStatus !== 'unverified') {
         return createRuntimeToolResult({success: true, result});
       }

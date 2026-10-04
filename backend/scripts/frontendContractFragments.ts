@@ -269,6 +269,7 @@ export const ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS = [
   'services/codebase/sourceCitations.ts',
   'services/codebase/sourceDepthPolicy.ts',
   'types/sourceNeed.ts',
+  'services/knowledge/knowledgeUse.ts',
 ] as const;
 
 /** Only reachable type declarations cross the boundary, never runtime code. */
@@ -368,5 +369,6 @@ export function analysisCompletedContractFragment(content: string): string {
     .replace(/import\('\.\/analysisInvestigationAssessment'\)\.FinalInvestigationAssessment/g, 'FinalInvestigationAssessment')
     .replace(/import\('\.\.\/services\/codebase\/sourceUseDecision'\)\.SourceUseDecisionV1/g, 'SourceUseDecisionV1')
     .replace(/import\('\.\.\/services\/codebase\/sourceClaimVerifier'\)\.(StoredSourceClaimVerificationResult|SourceClaimVerificationResult)/g, '$1')
+    .replace(/import\('\.\.\/services\/knowledge\/knowledgeUse'\)\.KnowledgeUseV1/g, 'KnowledgeUseV1')
     .replace(/Omit<\s*import\('\.\.\/agentv3\/sessionStateSnapshot'\)\.ComparisonReportSection,\s*'html'\s*>\s*&\s*\{html\?: string\}/g, 'Record<string, unknown>');
 }

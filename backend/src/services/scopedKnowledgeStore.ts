@@ -178,6 +178,11 @@ export interface ScopedRagMaintenanceFilter {
   codebaseId?: string;
   knowledgeSourceId?: string;
   sourceGeneration?: string;
+  /**
+   * With `sourceGeneration` `codebase_1`, also match chunks written before
+   * chunks carried a generation, as search does.
+   */
+  includeLegacyDefaultGeneration?: boolean;
   excludeSourceGeneration?: string;
   scopeFingerprint?: string;
 }
@@ -526,7 +531,10 @@ function scopedRagMaintenanceWhere(
   }
   if (filter.sourceGeneration) {
     params.sourceGeneration = filter.sourceGeneration;
-    clauses.push('rag_source_generation = @sourceGeneration');
+    clauses.push(filter.includeLegacyDefaultGeneration
+      ? `(rag_source_generation = @sourceGeneration
+          OR (rag_source_generation IS NULL AND @sourceGeneration = 'codebase_1'))`
+      : 'rag_source_generation = @sourceGeneration');
   }
   if (filter.excludeSourceGeneration) {
     params.excludeSourceGeneration = filter.excludeSourceGeneration;

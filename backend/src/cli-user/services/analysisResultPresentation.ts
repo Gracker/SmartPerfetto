@@ -168,6 +168,10 @@ export function renderCliAnalysisEvidence(
   if (evidence.sourceCitations) {
     appendJsonSection(lines, localize(language, '答案中的源码引用', 'Source locations cited in the answer'), evidence.sourceCitations);
   }
+  // Background the answer used, never evidence; present only on recorded results.
+  if (evidence.knowledgeUse) {
+    appendJsonSection(lines, localize(language, '引用的内部资料', 'Internal knowledge used'), evidence.knowledgeUse);
+  }
   return lines.join('\n');
 }
 

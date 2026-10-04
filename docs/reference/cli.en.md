@@ -213,6 +213,40 @@ content is not represented as trace evidence.
 See [Android Internals Knowledge Pack And Private Knowledge](../getting-started/android-internals-knowledge.en.md)
 for licensing, updates, and private-source boundaries.
 
+## Document Knowledge Bases
+
+```bash
+smp knowledge preview ./team-docs
+smp knowledge register ./team-docs --accept-rights --name "Team docs" \
+  --description "Render framework and trace tag notes" --send-to-provider
+smp knowledge reindex eks_xxx
+smp knowledge list --format json
+smp knowledge search eks_xxx XRenderCompositorWorker --top-k 5
+smp knowledge remove eks_xxx --yes
+smp analyze trace.pftrace --knowledge-source-id eks_xxx "Explain XRenderCompositorWorker in this trace"
+```
+
+`smp knowledge` manages document folders (`.md .markdown .mdx .txt .rst .adoc
+.html .htm`) as searchable knowledge bases with the same registry, indexer and
+store as the Web UI. `register` requires `--accept-rights` (you confirm you may
+use these documents) and indexes nothing; run `reindex` afterwards. Provider
+consent is explicit: `--send-to-provider` grants it, `--no-send-to-provider`
+withdraws it, and leaving both out keeps the consent in effect. An analysis can
+select a knowledge base only after it has rights, consent and an active index.
+The CLI trusts the folder you name as your own, in place of
+`SMARTPERFETTO_KNOWLEDGE_ROOTS`. Output never contains the registered absolute
+path; document text appears only in `search`, which you run to see it. `remove`
+requires `--yes` and deletes every index generation; a deletion that stopped
+half way finishes on the next `remove`. Exit codes: `0` success, `2` invalid
+input, `3` not found, `4` conflict (busy, deleting), `5` another failure. Every
+command accepts `--format text|json`.
+
+An analysis that used a knowledge base records `knowledgeUse` (`knowledge_use@1`)
+in the turn's evidence bundle: which bases delivered how many references at
+which index generation, and how each `kb:path#Lx-Ly` citation in the answer
+stands (`delivered`, `located`, `unmatched`, `ambiguous`). Knowledge is
+background, never trace evidence.
+
 ## Trace Query And Skills
 
 ```bash

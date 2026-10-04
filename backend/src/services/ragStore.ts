@@ -634,6 +634,10 @@ export class RagStore {
     return Math.max(enterpriseRemoved, legacyRemoved);
   }
 
+  /**
+   * The chunks one codebase generation holds, as search reads them: chunks
+   * written before chunks carried a generation belong to `codebase_1`.
+   */
   countCodebaseGenerationChunks(
     codebaseId: string,
     sourceGeneration: string,
@@ -643,13 +647,25 @@ export class RagStore {
       return countScopedRagRecords(scope, {
         codebaseId,
         sourceGeneration,
+        includeLegacyDefaultGeneration: true,
         scopeFingerprint: privateKnowledgeScopeFingerprint(scope),
       });
     }
-    return this.listChunks({scope}).filter(chunk =>
+    return this.countLocalChunks(scope, chunk =>
       chunk.codebaseId === codebaseId &&
       chunk.registryOrigin === 'codebase_registry' &&
-      chunk.sourceGeneration === sourceGeneration).length;
+      (chunk.sourceGeneration === sourceGeneration ||
+        (!chunk.sourceGeneration && sourceGeneration === 'codebase_1')));
+  }
+
+  /** Readable local chunks matching a predicate, without copying or sorting the store. */
+  private countLocalChunks(scope: KnowledgeScope | undefined, matches: (chunk: RagChunk) => boolean): number {
+    this.load();
+    let count = 0;
+    for (const chunk of this.chunks.values()) {
+      if (readableChunk(chunk, scope) && matches(chunk)) count += 1;
+    }
+    return count;
   }
 
   private removeCodebaseChunksMatching(
@@ -753,10 +769,10 @@ export class RagStore {
         scopeFingerprint: privateKnowledgeScopeFingerprint(scope),
       });
     }
-    return this.listChunks({scope}).filter(chunk =>
+    return this.countLocalChunks(scope, chunk =>
       chunk.knowledgeSourceId === sourceId &&
       chunk.registryOrigin === 'external_knowledge_registry' &&
-      chunk.sourceGeneration === sourceGeneration).length;
+      chunk.sourceGeneration === sourceGeneration);
   }
 
   private removeKnowledgeSourceChunksMatching(

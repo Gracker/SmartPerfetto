@@ -9,7 +9,11 @@ import {join} from 'path';
 import {afterEach, describe, expect, it} from '@jest/globals';
 
 import {authorizeAnalysisContext} from '../analysisContextAuthorization';
-import {buildAnalysisContextAuthorizationFingerprint} from '../resolvedAnalysisContext';
+import {
+  AnalysisContextAuthorizationChangedError,
+  assertCurrentAnalysisContextAuthorization,
+  buildAnalysisContextAuthorizationFingerprint,
+} from '../resolvedAnalysisContext';
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
 
@@ -141,5 +145,63 @@ describe('analysis context authorization fingerprint', () => {
 
     new CodebaseRegistry(registryPath).setProviderConsent(codebaseId, scope, false, scope.userId);
     expect(fingerprint(new CodebaseRegistry(registryPath))).not.toBe(afterPolicy);
+  });
+});
+
+describe('analysis context fingerprint format acf2', () => {
+  function registerIndexedSources() {
+    const codebaseId = registerCodebase();
+    const knowledgeRoot = roots[roots.length - 1];
+    const source = knowledgeRegistry.register({
+      kind: 'document_collection', displayName: 'Docs', rootRealpath: knowledgeRoot, revision: 'content-1',
+      contentFingerprint: 'fingerprint-1', dirty: false, rightsAcknowledged: true, sendToProvider: true,
+      consentedBy: scope.userId, scope,
+    });
+    return {codebaseId, sourceId: source.sourceId};
+  }
+
+  it('carries a format prefix, so a fingerprint stamped before it never matches', async () => {
+    const {codebaseId, sourceId} = registerIndexedSources();
+    const selection = {codeAwareMode: 'provider_send' as const, codebaseIds: [codebaseId], knowledgeSourceIds: [sourceId]};
+    const current = buildAnalysisContextAuthorizationFingerprint(selection, scope, {codebaseRegistry, knowledgeRegistry});
+    expect(current).toMatch(/^acf2:[0-9a-f]{64}$/);
+    // The same authorization under the previous format: a bare digest.
+    for (const stored of ['0'.repeat(64), current.slice('acf2:'.length)]) {
+      expect(() => assertCurrentAnalysisContextAuthorization(selection, scope, stored, {codebaseRegistry, knowledgeRegistry}))
+        .toThrow(AnalysisContextAuthorizationChangedError);
+    }
+    expect(() => assertCurrentAnalysisContextAuthorization(selection, scope, current, {codebaseRegistry, knowledgeRegistry}))
+      .not.toThrow();
+  });
+
+  it('ignores index rebuilds but follows consent, selection and deletion', async () => {
+    const {codebaseId, sourceId} = registerIndexedSources();
+    const selection = {codeAwareMode: 'provider_send' as const, codebaseIds: [codebaseId], knowledgeSourceIds: [sourceId]};
+    const fingerprint = () => buildAnalysisContextAuthorizationFingerprint(selection, scope, {codebaseRegistry, knowledgeRegistry});
+    const original = fingerprint();
+
+    // Codebase rebuilds: a new active generation, twice.
+    for (const generation of ['generation-1', 'generation-2']) {
+      const ref = codebaseRegistry.get(codebaseId, scope)!;
+      codebaseRegistry.activateIndexGeneration(codebaseId, scope, ref.indexGeneration, {lastIngestStatus: 'ok',
+        activeGeneration: generation, contentFingerprint: generation.padEnd(64, '0'), chunkCount: 3});
+      expect(fingerprint()).toBe(original);
+    }
+    // Knowledge rebuilds: a new active generation and content.
+    for (const generation of ['dc_' + '1'.repeat(32), 'dc_' + '2'.repeat(32)]) {
+      await knowledgeRegistry.withIngestLease(sourceId, scope, lease => lease.activateGeneration({generation,
+        revision: `content-${generation}`, contentFingerprint: generation, dirty: false,
+        indexedArticleCount: 2, indexedChunkCount: 5}));
+      expect(fingerprint()).toBe(original);
+    }
+
+    knowledgeRegistry.setProviderConsent(sourceId, scope, false, scope.userId);
+    const withoutKnowledgeConsent = fingerprint();
+    expect(withoutKnowledgeConsent).not.toBe(original);
+    codebaseRegistry.updateSelectionPolicy(codebaseId, scope, {pathFilters: ['app/']});
+    const afterSelection = fingerprint();
+    expect(afterSelection).not.toBe(withoutKnowledgeConsent);
+    await knowledgeRegistry.remove(sourceId, scope, scope.userId, () => undefined);
+    expect(fingerprint()).not.toBe(afterSelection);
   });
 });

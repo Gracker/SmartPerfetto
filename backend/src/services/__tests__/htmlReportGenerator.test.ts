@@ -133,6 +133,45 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('&lt;/span&gt;&lt;img');
   });
 
+  test('lists the internal knowledge a run delivered and grades its cited locations, never as evidence', () => {
+    const base = `eks_${'a'.repeat(24)}`;
+    const reportFor = (knowledgeUse?: unknown) => new HTMLReportGenerator().generateAgentDrivenHTML({
+      traceId: 'trace-knowledge', query: 'Explain XRenderCompositorWorker', outputLanguage: 'en', timestamp: Date.now(),
+      hypotheses: [], dialogue: [], dataEnvelopes: [],
+      result: {sessionId: 'session-knowledge', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.8, rounds: 1, totalDurationMs: 1, ...(knowledgeUse ? {knowledgeUse: knowledgeUse as never} : {}),
+        analysisReceipt: {schemaVersion: 1, runId: 'run', sessionId: 'session-knowledge', traceId: 'trace-knowledge',
+          mode: 'fast', resolvedMode: 'quick', providerId: null, generatedAt: 1,
+          traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
+          nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0,
+            ...(knowledgeUse ? {knowledgeReferenceCount: 2} : {})},
+          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+          qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable',
+            identityResolution: 'not_applicable'}, outputs: {}}},
+    });
+    const html = reportFor({schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 2}],
+      citations: [
+        {citation: 'kb:render/fence.md#L2-L3', relativePath: 'render/fence.md', lineRange: {start: 2, end: 3},
+          status: 'located', knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'},
+        {citation: 'kb:render/<b>.md#L1', relativePath: 'render/<b>.md', lineRange: {start: 1, end: 1}, status: 'unmatched'},
+      ]});
+    expect(html).toContain('Internal Knowledge Used');
+    expect(html).toContain('background, not trace evidence');
+    expect(html).toContain('kb:render/fence.md#L2-L3');
+    expect(html).toContain('Located only; full text not delivered in this run');
+    expect(html).toContain('Not returned in this run');
+    expect(html).toContain('2 reference(s) delivered');
+    expect(html).toContain('Knowledge references');
+    expect(html).not.toContain('<b>.md');
+    // Not recorded, or not a valid record: no section and no receipt row.
+    for (const absent of [undefined, {schemaVersion: 'knowledge_use@1', sources: [{knowledgeBaseId: '../x'}], citations: []}]) {
+      const other = reportFor(absent);
+      expect(other).not.toContain('Internal Knowledge Used');
+    }
+    expect(reportFor()).not.toContain('Knowledge references');
+  });
+
   test('renders partial warning for degraded agent results', () => {
     const generator = new HTMLReportGenerator();
     const message = '最终结果质量闸门发现 provider 没有产出可独立交付的完整结论';

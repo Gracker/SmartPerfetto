@@ -51,6 +51,11 @@ import type {
 import {sanitizeSourceReferences} from './codebase/sourceUseDecision';
 import type {SourceClaimStatus} from './codebase/sourceClaimVerifier';
 import type {SourceCitationStatus} from './codebase/sourceCitations';
+import {
+  sanitizeKnowledgeUse,
+  type KnowledgeBaseKind,
+  type KnowledgeCitationStatus,
+} from './knowledge/knowledgeUse';
 import {rowObject} from '../utils/traceProcessorRowUtils';
 
 interface ClaimSourceLookupEntry {
@@ -151,6 +156,7 @@ export interface AgentDrivenReportData {
     deliveryAssurance?: import('../types/analysisDelivery').AnalysisDeliveryAssurance;
     sourceUseDecision?: import('./codebase/sourceUseDecision').SourceUseDecisionV1;
     sourceClaimVerificationResult?: import('./codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+    knowledgeUse?: import('./knowledge/knowledgeUse').KnowledgeUseV1;
     conclusionContract?: unknown;
     claimSupport?: ClaimSupportV1[];
     claimVerificationResult?: ClaimVerificationResult;
@@ -4660,6 +4666,8 @@ export class HTMLReportGenerator {
       outputLanguage,
     )}
 
+    ${this.renderKnowledgeUseSection(result.knowledgeUse, outputLanguage)}
+
     ${this.renderCaseRecommendationsSection(result.conclusionContract, outputLanguage)}
 
     <div class="section">
@@ -4979,6 +4987,9 @@ export class HTMLReportGenerator {
           <div class="receipt-row"><span>Memory hints</span><span>${receipt.nonEvidenceContext.memoryHintCount}</span></div>
           <div class="receipt-row"><span>Conversation context</span><span>${receipt.nonEvidenceContext.conversationContextCount}</span></div>
           <div class="receipt-row"><span>Strategy hints</span><span>${receipt.nonEvidenceContext.strategyHintCount}</span></div>
+          ${receipt.nonEvidenceContext.knowledgeReferenceCount !== undefined
+            ? `<div class="receipt-row"><span>Knowledge references</span><span>${receipt.nonEvidenceContext.knowledgeReferenceCount}</span></div>`
+            : ''}
         </div>
         <div class="receipt-card">
           <div class="receipt-card-title">${localize(outputLanguage, '声明审计', 'Claim Audit')}</div>
@@ -5220,6 +5231,65 @@ export class HTMLReportGenerator {
         'These references explain system background only and do not replace current-trace SQL/Skill evidence.',
       )}</div>
       ${items}
+    </div>`;
+  }
+
+  /**
+   * The selected internal knowledge this run delivered and the knowledge
+   * locations its answer cites. Background, not evidence: nothing here
+   * supports or contradicts a claim, and no label says a passage was read
+   * unless its text was delivered.
+   */
+  private renderKnowledgeUseSection(
+    value: unknown,
+    outputLanguage: OutputLanguage,
+  ): string {
+    const knowledgeUse = sanitizeKnowledgeUse(value);
+    if (!knowledgeUse || (knowledgeUse.sources.length === 0 && knowledgeUse.citations.length === 0)) return '';
+    const kindLabel: Record<KnowledgeBaseKind, string> = {
+      document_collection: localize(outputLanguage, '文档知识库', 'Document knowledge base'),
+      android_internals_wiki: 'Android Internals Wiki',
+    };
+    const citationLabel: Record<KnowledgeCitationStatus, string> = {
+      delivered: localize(outputLanguage, '本轮交付过该段正文', 'Text delivered in this run'),
+      located: localize(outputLanguage, '本轮仅定位到，未交付完整正文', 'Located only; full text not delivered in this run'),
+      unmatched: localize(outputLanguage, '本轮未检索到该位置', 'Not returned in this run'),
+      ambiguous: localize(outputLanguage, '多个知识库或版本都匹配，未能确定', 'Several knowledge bases or versions match; not pinned'),
+    };
+    const sourcesHtml = knowledgeUse.sources.length > 0
+      ? `<ul class="source-context-list">${knowledgeUse.sources.map(source => `
+          <li class="source-context-item">
+            <div class="source-context-name"><code>${this.escapeHtml(source.knowledgeBaseId)}</code> · ${this.escapeHtml(kindLabel[source.kind])}</div>
+            <div class="source-context-meta">${this.escapeHtml(localize(outputLanguage,
+              `版本 ${source.generation} · 交付 ${source.deliveredReferenceCount} 条引用`,
+              `generation ${source.generation} · ${source.deliveredReferenceCount} reference(s) delivered`))}</div>
+          </li>`).join('')}</ul>`
+      : `<div class="empty-state">${localize(outputLanguage, '本轮没有从已选知识库交付内容。', 'No content was delivered from the selected knowledge bases in this run.')}</div>`;
+    const citationsHtml = knowledgeUse.citations.length > 0
+      ? `<div class="source-context-column">
+          <div class="source-context-title">${localize(outputLanguage, '答案中的知识库引用', 'Knowledge locations cited in the answer')}</div>
+          <ul class="source-context-list">${knowledgeUse.citations.map(citation => `
+            <li class="source-context-item">
+              <div class="source-context-name"><code>${this.escapeHtml(citation.citation)}</code></div>
+              <div class="source-context-meta">${this.escapeHtml(citationLabel[citation.status])}</div>
+            </li>`).join('')}</ul>
+          ${knowledgeUse.citationsTruncated ? `<div class="empty-state">${localize(outputLanguage,
+            '引用过多，其余未核对。', 'Too many citations; the rest were not checked.')}</div>` : ''}
+        </div>`
+      : '';
+    return `
+    <div class="section">
+      <h2 class="section-title">${localize(outputLanguage, '引用的内部资料', 'Internal Knowledge Used')}</h2>
+      <div class="claim-source-note">${this.escapeHtml(localize(outputLanguage,
+        '内部资料只提供背景，不是 Trace 证据；结论是否发生仍以 Trace、Skill 和 SQL 证据为准。',
+        'Internal knowledge is background, not trace evidence; whether something happened rests on Trace, Skill, and SQL evidence.'))}</div>
+      <div class="source-context-grid">
+        <div class="source-context-column">
+          <div class="source-context-title">${localize(outputLanguage, '本轮交付的知识库', 'Knowledge bases delivered in this run')}</div>
+          ${sourcesHtml}
+        </div>
+        ${citationsHtml}
+      </div>
     </div>`;
   }
 

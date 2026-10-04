@@ -5,7 +5,11 @@
 import {afterEach, describe, expect, it, jest} from '@jest/globals';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {parseConclusionContractDeclaration, renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
-import {attachFinalizationContext, takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
+import {
+  attachFinalizationContext,
+  attachRunDeliveryRecord,
+  takeFinalizationContext,
+} from '../../agentRuntime/analysisFinalizationContext';
 import type {IntentTransportInput, IntentTransportResult} from '../../agentRuntime/intentTransport';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {buildStrategyRegistrySnapshotFromDefinitions, type StrategyDefinition} from '../../agentv3/strategyLoader';
@@ -22,6 +26,7 @@ import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticAssessment';
 import {clearAllCodeAwareOutputGuards, registerCodeAwareCanary,
   registerPrivateAnalysisQueryForEcho, registerOnDemandSourceLookupForEcho, sanitizeCodeAwareText} from '../security/codeAwareOutputRegistry';
 import {sanitizeSourceReference, type SourceUseDecisionV1} from '../codebase/sourceUseDecision';
+import type {KnowledgeUseRecord} from '../knowledge/knowledgeUse';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {canonicalizeAnalysisResult} from '../canonicalAnalysisResult';
 import {claimVerificationStatusLine, deriveDeliveryVerdict, summarizeClaimVerification} from '../analysisInvestigationPresentation';
@@ -34,6 +39,7 @@ import type {AnalysisInvestigationRequirement} from '../../types/analysisInvesti
 import {investigationRequirementNeedsReview} from '../finalInvestigationContractGate';
 import {createRunManifestLifecycle, withRunManifestLifecycle, clearRunManifestLifecyclesForTests} from '../selfEvolution/runManifestLifecycle';
 import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
+import {buildAnalysisReceipt} from '../analysisReceiptBuilder';
 
 const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'final-result-test'});
 
@@ -64,6 +70,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   nativeProjection?: boolean;
   /** The run had source access but made no source call. */
   sourceAccessOnly?: boolean;
+  /** What the run delivered from its selected knowledge bases. */
+  knowledgeUse?: KnowledgeUseRecord;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
   const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
@@ -176,6 +184,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       rows: Array.from({length: options.capabilityRows}, () => [options.capabilityCell ?? 0])},
       {type: 'sql_result', source: 'capability_fixture', title: 'Capabilities'})] : undefined,
     sourceUse, protocolProjection: projection?.protocolProjection,
+    ...(options.knowledgeUse ? {knowledgeUse: options.knowledgeUse} : {}),
     ...(options.sourceAccessOnly ? {sourceScope: {codeAwareMode: 'provider_send' as const, selectedCodebaseIds: ['source-app'],
       hasCodebaseAccess: true, analysisContextFingerprint: 'source-auth'}} : {}),
     turnIntent: intentFor(pinnedRegistry.registryFingerprint),
@@ -190,6 +199,70 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 }
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
+
+describe('knowledge_use@1 in finalization', () => {
+  const base = `eks_${'a'.repeat(24)}`;
+  const record: KnowledgeUseRecord = {
+    sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}],
+    locations: [{referenceId: 'kref-00000000-0000-4000-8000-000000000000', knowledgeBaseId: base,
+      generation: `dc_${'1'.repeat(32)}`, relativePath: 'render/fence.md', lineRange: {start: 1, end: 9}, bodyDelivered: true}],
+  };
+  const body = 'The captured value is 49. Per internal documentation, kb:render/fence.md#L2-L3 and kb:render/other.md#L1.';
+
+  it('grades the final body\'s knowledge citations without touching claim verification or delivery', async () => {
+    const withKnowledge = await fixture({body, knowledgeUse: record}).run();
+    expect(withKnowledge.result.knowledgeUse).toEqual({schemaVersion: 'knowledge_use@1', sources: record.sources,
+      citations: [
+        {citation: 'kb:render/fence.md#L2-L3', relativePath: 'render/fence.md', lineRange: {start: 2, end: 3},
+          status: 'delivered', knowledgeBaseId: base, referenceId: record.locations[0]!.referenceId},
+        {citation: 'kb:render/other.md#L1', relativePath: 'render/other.md', lineRange: {start: 1, end: 1}, status: 'unmatched'},
+      ]});
+    const without = await fixture({body}).run();
+    expect(without.result).not.toHaveProperty('knowledgeUse');
+    // Knowledge is background: no verdict reads it, so an unmatched citation changes nothing.
+    expect(withKnowledge.result.claimVerificationResult).toEqual(without.result.claimVerificationResult);
+    expect(withKnowledge.result.deliveryAssurance).toEqual(without.result.deliveryAssurance);
+    expect(withKnowledge.result.success).toBe(without.result.success);
+  });
+
+  it('keeps what a failed run delivered when it returns no context, bound to that run', async () => {
+    const {owner, context} = fixture({body});
+    context.dispose();
+    const failed = (): AnalysisResult => ({sessionId: 'final-result-test', success: false, findings: [], hypotheses: [],
+      conclusion: 'See kb:render/fence.md#L2-L3.', confidence: 0, rounds: 1, totalDurationMs: 1, partial: true,
+      terminationReason: 'execution_error'});
+    const result = failed();
+    attachRunDeliveryRecord(result, {runId: owner.runId, sessionId: result.sessionId, knowledgeUse: record});
+    const finalized = (await finalizeAnalysisResult({result, owner, query: 'q'})).result;
+    expect(finalized.success).toBe(false);
+    expect(finalized.knowledgeUse).toEqual({schemaVersion: 'knowledge_use@1', sources: record.sources,
+      citations: [{citation: 'kb:render/fence.md#L2-L3', relativePath: 'render/fence.md', lineRange: {start: 2, end: 3},
+        status: 'delivered', knowledgeBaseId: base, referenceId: record.locations[0]!.referenceId}]});
+    // Every surface of the failed result keeps it: receipt, snapshot, the owner's stream and replay.
+    expect(buildAnalysisReceipt({runManifestId: 'manifest-failed-knowledge',
+      session: {sessionId: finalized.sessionId, traceId: 'trace', dataEnvelopes: []}, result: finalized})
+      .nonEvidenceContext.knowledgeReferenceCount).toBe(1);
+    expect(copyAnalysisResultForSnapshot(finalized).knowledgeUse).toEqual(finalized.knowledgeUse);
+    expect(projectOwnerAnalysisResult(finalized.sessionId, finalized, 'en').knowledgeUse).toEqual(finalized.knowledgeUse);
+    // Other audiences keep the sources, never the citation text.
+    expect(projectPrivateAnalysisResult(finalized.sessionId, finalized, 'en').knowledgeUse)
+      .toEqual({schemaVersion: 'knowledge_use@1', sources: record.sources, citations: []});
+
+    // Without the record a failure is "not recorded", never zero use.
+    expect((await finalizeAnalysisResult({result: failed(), owner, query: 'q'})).result).not.toHaveProperty('knowledgeUse');
+    // A record of another run is not this run's.
+    const foreign = failed();
+    attachRunDeliveryRecord(foreign, {runId: 'another-run', sessionId: foreign.sessionId, knowledgeUse: record});
+    await expect(finalizeAnalysisResult({result: foreign, owner, query: 'q'}))
+      .rejects.toThrow('finalization_run_identity_mismatch');
+  });
+
+  it('never keeps a knowledge record the runtime supplied itself', async () => {
+    const forged = fixture({body});
+    forged.result.knowledgeUse = {schemaVersion: 'knowledge_use@1', sources: record.sources, citations: []};
+    expect((await forged.run()).result).not.toHaveProperty('knowledgeUse');
+  });
+});
 
 /**
  * Owner surfaces project a result again, as does its reader after a JSON round

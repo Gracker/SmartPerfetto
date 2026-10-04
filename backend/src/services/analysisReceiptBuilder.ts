@@ -13,6 +13,7 @@ import {parseAdaptiveRoutingReceipt} from '../agentRuntime/adaptiveEvidenceRoute
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {summarizeClaimVerification} from './analysisInvestigationPresentation';
+import {knowledgeReferenceCount} from './knowledge/knowledgeUse';
 import type {
   AnalysisReceipt,
   AnalysisReceiptGateStatus,
@@ -128,6 +129,7 @@ function buildAnalysisReceiptBody(
     agentResponses: session.agentResponses,
   });
   const claimAudit = buildClaimAudit(claimSupport, claimVerificationResult);
+  const knowledgeReferences = knowledgeReferenceCount(result.knowledgeUse);
   const requestedMode = input.requestedMode ?? session.analysisMode ?? quickRun?.requestedMode ?? 'auto';
   const resolvedMode = input.resolvedMode ?? quickRun?.resolvedMode ?? 'full';
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
@@ -166,6 +168,7 @@ function buildAnalysisReceiptBody(
       memoryHintCount: countMemoryHints(quickRun),
       conversationContextCount: countConversationContext(quickRun, session.conversationSteps),
       strategyHintCount: countStrategyHints(quickRun),
+      ...(knowledgeReferences !== undefined ? {knowledgeReferenceCount: knowledgeReferences} : {}),
     },
     claimAudit,
     qualityGates: result.deliveryAssurance ? {

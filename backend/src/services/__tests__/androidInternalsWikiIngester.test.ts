@@ -127,6 +127,8 @@ describe('AndroidInternalsWikiIngester', () => {
       contentFingerprint: corpus.contentFingerprint,
       filePath: 'src/handler.md',
     }));
+    // Article tags had no reader; chunks no longer carry them.
+    expect(search.results[0]?.chunk).not.toHaveProperty('sourceTags');
     expect(store.search('review only', {
       kinds: ['android_internals_wiki'],
       knowledgeSourceIds: [source.sourceId],
@@ -140,7 +142,7 @@ describe('AndroidInternalsWikiIngester', () => {
       fs.readFileSync(handlerPath, 'utf8').replace('confidence: high', 'confidence: medium'),
       'utf8',
     );
-    const stagedCountFailure = jest.spyOn(store, 'listChunks').mockReturnValueOnce([]);
+    const stagedCountFailure = jest.spyOn(store, 'countKnowledgeSourceGenerationChunks').mockReturnValueOnce(0);
     await expect(ingester.ingest(source.sourceId, scope)).rejects.toThrow('staged_chunk_count_mismatch');
     stagedCountFailure.mockRestore();
     expect(registry.get(source.sourceId, scope)?.activeGeneration).toBe(result.generation);

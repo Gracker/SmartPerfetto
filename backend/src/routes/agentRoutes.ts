@@ -1691,6 +1691,7 @@ function sanitizePersistedAnalysisCompletedEvent(
         sourceUseDecision: undefined,
         turnIntent: undefined, completion: undefined, outputOrigin: undefined, runtimeAppendix: undefined,
         reportAssessment: undefined, investigationAssessment: undefined, deliveryAssurance: undefined,
+        knowledgeUse: undefined,
         identityResolutions: undefined,
         sceneTimeline: undefined, sceneReport: undefined,
         uiActionProposals: [],

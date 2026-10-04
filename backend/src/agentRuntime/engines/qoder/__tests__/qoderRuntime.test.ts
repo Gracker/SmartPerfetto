@@ -1291,8 +1291,11 @@ describe('QoderRuntime', () => {
     it.each([true, false])('keeps cancellation context and current source execution scope: current=%s', async current => {
       const scope = {codeAwareMode: 'off' as const, selectedCodebaseIds: [], hasCodebaseAccess: false,
         analysisContextFingerprint: 'qoder-source-scope'};
+      const knowledgeUse = {sources: [{knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection' as const,
+        generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}], locations: []};
       mockCreateClaudeMcpServer.mockReturnValue({server: {name: 'smartperfetto'}, allowedTools: [], toolDefinitions: [],
-        sourceUse: {getSourceUseDecision: () => undefined, getSourceExecutionScope: () => current ? scope : undefined}});
+        sourceUse: {getSourceUseDecision: () => undefined, getSourceExecutionScope: () => current ? scope : undefined,
+          getKnowledgeUse: () => knowledgeUse}});
       const late = createDeferred<void>();
       mockQuery.mockReturnValue({async *[Symbol.asyncIterator]() {await late.promise;}, interrupt: mockInterrupt, close: mockClose});
       const runtime = createRuntime({QODER_MODEL: 'main-model'});
@@ -1303,6 +1306,8 @@ describe('QoderRuntime', () => {
       const context = takeFinalizationContext(result)!;
       expect(context.hasSemanticTransport).toBe(false);
       expect(context.sourceScope).toEqual(current ? scope : undefined);
+      // What was delivered before the stop stays with the cancelled result.
+      expect(context.knowledgeUse).toEqual(knowledgeUse);
       expect(context.deliveryContext).toMatchObject({completion: {status: 'cancelled'}});
       late.resolve();
       context.dispose();

@@ -129,7 +129,7 @@ Trace 证据或源码引用。每次调用前后都复核授权上下文与固�
 | `resolve_symbol` | 解析 trace 符号到源码位置 | 保持源码引用可追踪；仅当有 active index 时提供 |
 | `propose_patch` | 生成 patch proposal | 必须标记 verified / sketch / unverified；仅当有 active index 时提供 |
 
-每个 run 的 MCP server 一次性判定所选库各自的能力（`search`、`read_body`、`index`、`graph`），只有某个所选库具备图谱或 active index 时才注册对应工具。同一份事实连同本轮源码深度和初始额度，以 `source_authorization` 数据段进入系统提示（`codebases[]`：`id`、`displayName`、`kind`、`pathScope`——`whole_root` 或 `registered_filters`，从不列出过滤规则本身——以及 `capabilities`）。调用指定了不具备该能力的库时，在触达任何源码之前拒绝：`unsupportedReason: codebase_index_unavailable | codebase_graph_unavailable`，`action_required: use_search_codebase`。源码使用状态只按实际调用记录，不再有由模型声明的源码使用决策工具。
+每个 run 的 MCP server 一次性判定所选库各自的能力（`search`、`read_body`、`index`、`graph`），只有某个所选库具备图谱或 active index 时才注册对应工具。同一份事实连同本轮源码深度和初始额度，以 `source_authorization` 数据段进入系统提示（`codebases[]`：`id`、`displayName`、`kind`、`pathScope`——`whole_root` 或 `registered_filters`，从不列出过滤规则本身——以及 `capabilities`）。调用指定了不具备该能力的库时，在触达任何源码之前拒绝：`unsupportedReason: codebase_index_unavailable | codebase_graph_unavailable`，`action_required: use_search_codebase`。每次运行还会固定所选索引的代次：索引工具（`lookup_app_source`、`lookup_kernel_source`、`lookup_aosp_source`、`lookup_oem_sdk`、`resolve_symbol`、`propose_patch`）在读取前、读取后和返回前各检查一次，索引被重建或下线时返回 `unsupportedReason: codebase_index_generation_changed`、`action_required: use_search_codebase`，绝不返回空结果冒充。Android Internals Wiki 查询在 Wiki 重建后返回 `knowledge_index_generation_changed`；文档知识库在固定代次文件仍保留时继续服务，之后返回 `knowledge_index_unavailable`。源码使用状态只按实际调用记录，不再有由模型声明的源码使用决策工具。
 
 五个无索引/图导航工具都需要 codebase permission，并使用当前请求已选择的代码库。只有恰好选择一个 codebase 时才可省略 `codebase_id`；选择多个时必须明确指定：
 

@@ -44,6 +44,28 @@ describe('analysis evidence presentation', () => {
     expect(Object.isFrozen(projected)).toBe(true);
   });
 
+  test('carries a recorded knowledge_use@1 through the writer and the strict reader, and drops a malformed one', () => {
+    const {result, sourceProvenance} = fixture();
+    const base = `eks_${'a'.repeat(24)}`;
+    const knowledgeUse = {schemaVersion: 'knowledge_use@1' as const,
+      sources: [{knowledgeBaseId: base, kind: 'document_collection' as const, generation: `dc_${'1'.repeat(32)}`,
+        deliveredReferenceCount: 1}],
+      citations: [{citation: 'kb:a b.md#L3', relativePath: 'a b.md', lineRange: {start: 3, end: 3},
+        status: 'delivered' as const, knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'},
+      {citation: 'kb:c.md#L9-L2', relativePath: 'c.md', status: 'unmatched' as const}]};
+    const projected = projectAnalysisEvidenceForDisplay({result: {...result, knowledgeUse}, sourceProvenance});
+    expect(projected?.knowledgeUse).toEqual(knowledgeUse);
+    expect(parseClosedAnalysisEvidencePresentation(JSON.parse(JSON.stringify(projected)))?.knowledgeUse).toEqual(knowledgeUse);
+    // Historical bundles have none; a malformed record never blocks the rest.
+    expect(projectAnalysisEvidenceForDisplay({result, sourceProvenance})).not.toHaveProperty('knowledgeUse');
+    const malformed = projectAnalysisEvidenceForDisplay({result: {...result,
+      knowledgeUse: {...knowledgeUse, sources: [{...knowledgeUse.sources[0], kind: 'blog'}]} as never}, sourceProvenance});
+    expect(malformed).toBeDefined();
+    expect(malformed).not.toHaveProperty('knowledgeUse');
+    expect(parseClosedAnalysisEvidencePresentation({...JSON.parse(JSON.stringify(projected)),
+      knowledgeUse: {...knowledgeUse, citations: [{...knowledgeUse.citations[0], status: 'unmatched'}]}})).toBeUndefined();
+  });
+
   test('keeps not-checked triage detail through the writer and the strict reader', () => {
     const input = fixture();
     Object.assign(input.result.claimVerificationResult!, {

@@ -49,13 +49,42 @@ export interface KnowledgeReferenceBinding {
   generation: string;
   sectionId: string;
   chunkId: string;
+  /** The document's path relative to its collection, as delivered with the hit. */
+  relativePath: string;
   /** The search hit's own source lines; a read reports the whole section's. */
   lineRange: {start: number; end: number};
+  /** The delivered excerpt was the hit's whole text, so its lines were delivered in full. */
+  excerptComplete: boolean;
 }
 
 interface DeliveredPart {
   partCount: number;
   truncated: boolean;
+}
+
+/** One section a read delivered parts of, through the reference first used to read it. */
+interface DeliveredSection {
+  referenceId: string;
+  binding: KnowledgeReferenceBinding;
+  sectionRange: {start: number; end: number};
+  partCount: number;
+  /** Delivered part numbers, each with whether the budget cut it. */
+  parts: Map<number, boolean>;
+}
+
+/**
+ * Lines of one document this run delivered to the model: a search hit's lines
+ * (whole only when its excerpt was its whole text) or a section a read
+ * delivered (whole only when every part arrived uncut). Knowledge citations in
+ * the answer are graded against these, never against lines that were only located.
+ */
+export interface KnowledgeDeliveredLocation {
+  referenceId: string;
+  knowledgeBaseId: string;
+  generation: string;
+  relativePath: string;
+  lineRange: {start: number; end: number};
+  bodyDelivered: boolean;
 }
 
 /**
@@ -67,7 +96,7 @@ interface DeliveredPart {
 export class KnowledgeReferenceLedger {
   private readonly bindings = new Map<string, KnowledgeReferenceBinding>();
   private readonly idsByHit = new Map<string, string>();
-  private readonly delivered = new Map<string, DeliveredPart>();
+  private readonly sections = new Map<string, DeliveredSection>();
 
   /** The reference for a hit actually returned to the model; the same hit keeps its id. */
   issue(binding: KnowledgeReferenceBinding): string {
@@ -86,16 +115,56 @@ export class KnowledgeReferenceLedger {
 
   /** A part of this section this run already delivered, through any reference to it. */
   deliveredPart(binding: KnowledgeReferenceBinding, part: number): DeliveredPart | undefined {
-    return this.delivered.get(sectionPartKey(binding, part));
+    const section = this.sections.get(sectionKey(binding));
+    const truncated = section?.parts.get(part);
+    return truncated === undefined ? undefined : {partCount: section!.partCount, truncated};
   }
 
-  recordDelivered(binding: KnowledgeReferenceBinding, part: number, delivered: DeliveredPart): void {
-    this.delivered.set(sectionPartKey(binding, part), Object.freeze({...delivered}));
+  recordDelivered(
+    referenceId: string,
+    binding: KnowledgeReferenceBinding,
+    part: number,
+    delivered: DeliveredPart & {sectionRange: {start: number; end: number}},
+  ): void {
+    const key = sectionKey(binding);
+    const section = this.sections.get(key) ?? {referenceId, binding, partCount: delivered.partCount,
+      sectionRange: Object.freeze({...delivered.sectionRange}), parts: new Map<number, boolean>()};
+    section.parts.set(part, delivered.truncated);
+    this.sections.set(key, section);
+  }
+
+  /** How many references this run delivered from each knowledge base. */
+  deliveredReferenceCounts(): Map<string, {generation: string; count: number}> {
+    const counts = new Map<string, {generation: string; count: number}>();
+    for (const binding of this.bindings.values()) {
+      const entry = counts.get(binding.sourceId) ?? {generation: binding.generation, count: 0};
+      entry.count += 1;
+      counts.set(binding.sourceId, entry);
+    }
+    return counts;
+  }
+
+  /** Every location this run delivered, search hits first, then the sections it read. */
+  deliveredLocations(): KnowledgeDeliveredLocation[] {
+    const hits = [...this.bindings].map(([referenceId, binding]) => ({
+      referenceId, knowledgeBaseId: binding.sourceId, generation: binding.generation,
+      relativePath: binding.relativePath, lineRange: {...binding.lineRange}, bodyDelivered: binding.excerptComplete,
+    }));
+    const sections = [...this.sections.values()].map(section => {
+      let whole = section.parts.size === section.partCount;
+      for (const truncated of section.parts.values()) whole &&= !truncated;
+      return {
+        referenceId: section.referenceId, knowledgeBaseId: section.binding.sourceId,
+        generation: section.binding.generation, relativePath: section.binding.relativePath,
+        lineRange: {...section.sectionRange}, bodyDelivered: whole,
+      };
+    });
+    return [...hits, ...sections];
   }
 }
 
-function sectionPartKey(binding: KnowledgeReferenceBinding, part: number): string {
-  return [binding.scopeKey, binding.sourceId, binding.generation, binding.sectionId, String(part)].join('\0');
+function sectionKey(binding: KnowledgeReferenceBinding): string {
+  return [binding.scopeKey, binding.sourceId, binding.generation, binding.sectionId].join('\0');
 }
 
 /** `end`, moved back one when it would split a surrogate pair. */

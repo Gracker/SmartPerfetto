@@ -138,6 +138,7 @@ export interface AnalysisSummary {
   deliveryAssurance?: import('./analysisDelivery').AnalysisDeliveryAssurance;
   sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
   sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+  knowledgeUse?: import('../services/knowledge/knowledgeUse').KnowledgeUseV1;
   details?: string[];
   risks?: string[];
   recommendations?: string[];

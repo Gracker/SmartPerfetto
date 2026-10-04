@@ -78,6 +78,8 @@ export interface DocumentCollectionSearchHit {
   startLine: number;
   endLine: number;
   snippet: string;
+  /** The snippet is the chunk's whole text, so its lines were all delivered. */
+  snippetComplete: boolean;
 }
 
 /** One whole section of a generation, as indexed (already redacted). */
@@ -379,6 +381,22 @@ export class DocumentCollectionStore {
     return {removed, failed};
   }
 
+  /**
+   * Whether a generation can still be served whole: its file is there, is
+   * that generation, and holds every document, section and chunk its manifest
+   * sealed. A run keeps serving the generation it pinned while it can (the
+   * current and previous ones are kept). The check is the one every read
+   * makes, cached per file identity, so a repeat costs one stat.
+   */
+  servesGeneration(scope: ExternalKnowledgeScope, sourceId: string, generation: string): boolean {
+    try {
+      this.reader(scope, sourceId, generation);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   search(
     scope: ExternalKnowledgeScope,
     sourceId: string,
@@ -400,7 +418,8 @@ export class DocumentCollectionStore {
       ORDER BY rank ASC, c.chunk_id ASC
       LIMIT ?
     `).all(expression, limit) as SearchRow[];
-    return rows.map(row => ({chunkId: row.chunk_id, ...locatedFields(row), snippet: row.body.slice(0, SNIPPET_CHARS)}));
+    return rows.map(row => ({chunkId: row.chunk_id, ...locatedFields(row), snippet: row.body.slice(0, SNIPPET_CHARS),
+      snippetComplete: row.body.length <= SNIPPET_CHARS}));
   }
 
   /** The section a search hit belongs to, from the same pinned generation; undefined when it has none. */
@@ -494,6 +513,16 @@ export class DocumentCollectionStore {
         manifest.get('sourceId') !== sourceId ||
         manifest.get('scopeHash') !== scopeHash(scope) ||
         manifest.get('generation') !== generation
+      ) {
+        throw new KnowledgeIndexUnavailableError();
+      }
+      // A generation that lost rows is not that generation: never served as fewer hits.
+      const rows = (table: 'documents' | 'sections' | 'chunks'): number =>
+        (db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {count: number}).count;
+      if (
+        rows('documents') !== manifest.get('documentCount') ||
+        rows('sections') !== manifest.get('sectionCount') ||
+        rows('chunks') !== manifest.get('chunkCount')
       ) {
         throw new KnowledgeIndexUnavailableError();
       }

@@ -288,4 +288,14 @@ describe('CodeLookupLedger torn-tail recovery', () => {
     } as unknown as Parameters<typeof projectPrivateSessionStateSnapshot>[0]);
     expect(projected.codeLookupSummary?.unreadableRecordCount).toBe(1);
   });
+
+  it('grants nothing from entries recorded under a pre-acf2 fingerprint, yet keeps them for audit', async () => {
+    const legacy = 'e'.repeat(64);
+    await writeLedger([lookup({chunkIds: ['chunk-legacy']})], legacy);
+    const upgraded = restore(`acf2:${legacy}`);
+    expect(upgraded.hasPriorLookupOf('chunk-legacy')).toBe(false);
+    expect(upgraded.hasSuccessfulCodeLookup()).toBe(false);
+    expect(restore(legacy).hasPriorLookupOf('chunk-legacy')).toBe(true);
+    expect(fs.readFileSync(ledgerPath, 'utf-8')).toContain(legacy);
+  });
 });

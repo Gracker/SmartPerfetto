@@ -186,6 +186,35 @@ snippet hash 投影到日志/SSE，正文片段不会作为 trace 证据。
 完整的许可证、更新和私有知识源边界见
 [Android Internals 知识包与私有知识库](../getting-started/android-internals-knowledge.md)。
 
+## 文档知识库
+
+```bash
+smp knowledge preview ./team-docs
+smp knowledge register ./team-docs --accept-rights --name "团队文档" \
+  --description "渲染框架与 trace tag 说明" --send-to-provider
+smp knowledge reindex eks_xxx
+smp knowledge list --format json
+smp knowledge search eks_xxx XRenderCompositorWorker --top-k 5
+smp knowledge remove eks_xxx --yes
+smp analyze trace.pftrace --knowledge-source-id eks_xxx "解释这个 trace 里的 XRenderCompositorWorker"
+```
+
+`smp knowledge` 把文档目录（`.md .markdown .mdx .txt .rst .adoc .html .htm`）
+注册为可检索的知识库，与 Web UI 使用同一个注册表、索引器和存储。`register`
+必须带 `--accept-rights`（确认你有权使用这些文档），注册本身不建索引，之后运行
+`reindex`。模型服务同意必须显式给出：`--send-to-provider` 授权，
+`--no-send-to-provider` 撤销，两者都不写则保持现有同意。只有具备权利确认、同意
+和激活索引的知识库才能被分析选用。CLI 把你给出的目录视为你自己的目录，代替
+`SMARTPERFETTO_KNOWLEDGE_ROOTS` 白名单。输出不包含注册的绝对路径；文档正文只在
+你主动运行的 `search` 中出现。`remove` 需要 `--yes`，会删除全部索引代次；删除中途
+失败时，再次执行 `remove` 会完成删除。退出码：`0` 成功，`2` 输入无效，`3` 未找到，
+`4` 冲突（忙或正在删除），`5` 其他失败。所有命令都支持 `--format text|json`。
+
+使用了知识库的分析会在该轮证据包里记录 `knowledgeUse`（`knowledge_use@1`）：
+哪些知识库在哪个索引代次交付了多少条引用，以及答案中每个 `kb:路径#L起-L止`
+引用的状态（`delivered`、`located`、`unmatched`、`ambiguous`）。知识库只是背景，
+不是 trace 证据。
+
 ## Trace 查询与 Skill
 
 ```bash

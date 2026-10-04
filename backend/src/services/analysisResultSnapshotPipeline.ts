@@ -623,6 +623,7 @@ export function buildCompletedAnalysisResultSnapshot(
     conclusion: input.conclusion ?? '', confidence: input.confidence ?? 0, rounds: 0, totalDurationMs: 0,
     turnIntent: input.turnIntent, completion: input.completion, outputOrigin: input.outputOrigin,
     runtimeAppendix: input.runtimeAppendix, reportAssessment: input.reportAssessment, investigationAssessment: input.investigationAssessment, deliveryAssurance: input.deliveryAssurance,
+    knowledgeUse: input.knowledgeUse,
     conclusionContract: input.conclusionContract as AnalysisResult['conclusionContract'],
     claimSupport: input.claimSupport, claimVerificationResult: input.claimVerificationResult,
     sourceUseDecision: input.sourceUseDecision, sourceClaimVerificationResult: input.sourceClaimVerificationResult,
@@ -765,6 +766,7 @@ export function persistCompletedAnalysisResultSnapshot(
     partial: input.partial, terminationReason: projectPrivateTerminationReason(input.terminationReason), terminationMessage: input.terminationMessage,
     turnIntent: input.turnIntent, completion: input.completion, outputOrigin: input.outputOrigin,
     runtimeAppendix: input.runtimeAppendix, reportAssessment: input.reportAssessment, investigationAssessment: input.investigationAssessment, deliveryAssurance: input.deliveryAssurance,
+    knowledgeUse: input.knowledgeUse,
     conclusionContract: input.conclusionContract as AnalysisResult['conclusionContract'],
     claimSupport: input.claimSupport, claimVerificationResult: input.claimVerificationResult,
     sourceUseDecision: input.sourceUseDecision, sourceClaimVerificationResult: input.sourceClaimVerificationResult,
@@ -773,7 +775,8 @@ export function persistCompletedAnalysisResultSnapshot(
     sceneReport: validatedSceneReportReference(input),
   }, outputLanguage) : undefined;
   const {turnIntent: _intent, completion: _completion, outputOrigin: _origin, runtimeAppendix: _appendix,
-    reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance, ...inputWithoutDelivery} = input;
+    reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance,
+    knowledgeUse: _knowledgeUse, ...inputWithoutDelivery} = input;
   const durableInput: CompletedAnalysisSnapshotInput = privateKnowledge
     ? {
         // The creator's snapshot keeps their question and trace label; the run store keeps none.

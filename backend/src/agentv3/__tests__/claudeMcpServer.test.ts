@@ -363,6 +363,13 @@ function capableCodebaseRegistry(ids: readonly string[], kind = 'app_source') {
   };
 }
 
+/** A store that holds the fake registry's indexes and matches nothing. */
+function emptyIndexedStore() {
+  return {search: jest.fn((query: string, options?: {kinds?: string[]}) => ({
+    ...makeSparkProvenance({source: 'empty-indexed-store'}), query, results: [],
+    probed: options?.kinds ?? [], retrievedAt: Date.now()}))};
+}
+
 /** Gives a registered codebase an active retrieval index, so the run offers its index tools. */
 function activateTestIndex(
   registry: CodebaseRegistry,
@@ -430,6 +437,12 @@ function createTestServer(options: {
   const uncertaintyFlags: UncertaintyFlag[] = [];
   const analysisPlan: { current: AnalysisPlanV3 | null } = { current: null };
   const watchdogWarning: { current: string | null } = { current: null };
+  // A partial store mock stands for a store that holds every chunk its
+  // registry indexed; a real RagStore counts what it actually holds.
+  if (options.ragStore && !('countCodebaseGenerationChunks' in options.ragStore)) {
+    options.ragStore.countCodebaseGenerationChunks = () => Number.MAX_SAFE_INTEGER;
+    options.ragStore.countKnowledgeSourceGenerationChunks = () => Number.MAX_SAFE_INTEGER;
+  }
   const emittedUpdates: any[] = [];
 
   const mockTpService = {
@@ -8421,7 +8434,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it.each(['revoked', 'registry-unavailable'])('withholds source execution scope without throwing when authorization is %s', reason => {
-      const fingerprint = jest.spyOn(resolvedAnalysisContext, 'buildAnalysisContextAuthorizationFingerprint').mockReturnValue('authorized');
+      const fingerprint = jest.spyOn(resolvedAnalysisContext, 'analysisContextFingerprintOf').mockReturnValue('authorized');
       try {
         const {sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a']});
         expect(sourceUse.getSourceExecutionScope?.()?.hasCodebaseAccess).toBe(true);
@@ -9403,11 +9416,16 @@ describe('createClaudeMcpServer', () => {
       }
     }
 
+    // Whatever the last run delivered from its document collections, by tools map.
+    const knowledgeUseByTools = new WeakMap<Map<string, ToolDef>, ReturnType<typeof createTestServer>['sourceUse']>();
+    const knowledgeServerUse = (tools: Map<string, ToolDef>) =>
+      knowledgeUseByTools.get(tools)?.getKnowledgeUse?.()?.sources[0];
+
     function knowledgeServer(
       fixture: {registry: ExternalKnowledgeSourceRegistry; store: DocumentCollectionStore; sourceId: string},
       extra: Partial<Parameters<typeof createTestServer>[0]> = {},
     ) {
-      return createTestServer({
+      const server = createTestServer({
         externalKnowledgeRegistry: fixture.registry,
         documentCollectionStore: fixture.store,
         knowledgeSourceIds: [fixture.sourceId],
@@ -9415,6 +9433,8 @@ describe('createClaudeMcpServer', () => {
         sessionId: 'knowledge-session',
         ...extra,
       });
+      knowledgeUseByTools.set(server.tools, server.sourceUse);
+      return server;
     }
 
     it('registers background tools only for a selected, consented, indexed collection', async () => {
@@ -9568,19 +9588,111 @@ describe('createClaudeMcpServer', () => {
       });
     });
 
-    it('restarts the run when consent is revoked or the collection is reindexed', async () => {
+    it('keeps serving the pinned generation across a reindex and refuses once it is collected', async () => {
       await withCollection({}, async fixture => {
         const {tools} = knowledgeServer(fixture);
         const [hit] = (await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'})).hits;
+        // A reindex keeps the previous generation: the run reads what it pinned.
         await fixture.ingest();
-        await expect(callTool(tools, 'read_knowledge_section', {reference_id: hit.id}))
-          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(await callTool(tools, 'read_knowledge_section', {reference_id: hit.id}))
+          .toMatchObject({success: true, part: 1});
+        // A second reindex collects it: an explicit unavailability, never "no hits".
+        await fixture.ingest();
+        const raw = await tools.get('search_knowledge')!.handler({query: 'XRenderCompositorWorker'});
+        expect(raw.isError).toBe(true);
+        expect(JSON.parse(raw.content[0].text)).toEqual({success: false, unsupportedReason: 'knowledge_index_unavailable'});
       });
+    });
+
+    it('refuses delivery when the pinned generation is collected during retrieval', async () => {
+      await withCollection({}, async fixture => {
+        const {tools} = knowledgeServer(fixture);
+        const generation = fixture.registry.get(fixture.sourceId, scope)!.activeGeneration!;
+        const realSearch = fixture.store.search.bind(fixture.store);
+        const search = jest.spyOn(fixture.store, 'search').mockImplementation((...args) => {
+          const hits = realSearch(...args);
+          // The read has finished; garbage collection then removes the file.
+          const indexRoot = path.join(path.dirname(fixture.registry.get(fixture.sourceId, scope)!.rootRealpath), 'index');
+          for (const file of fs.readdirSync(indexRoot, {recursive: true}) as string[]) {
+            if (path.basename(file).startsWith(`${generation}.sqlite`)) fs.rmSync(path.join(indexRoot, file), {force: true});
+          }
+          return hits;
+        });
+        try {
+          const raw = await tools.get('search_knowledge')!.handler({query: 'XRenderCompositorWorker'});
+          expect(search).toHaveBeenCalledTimes(1);
+          expect(JSON.parse(raw.content[0].text)).toEqual({success: false, unsupportedReason: 'knowledge_index_unavailable'});
+          expect(knowledgeServerUse(tools)).toBeUndefined();
+        } finally {
+          search.mockRestore();
+        }
+      });
+    });
+
+    it('refuses search and read once the pinned generation lost rows, though the registry still names it', async () => {
+      await withCollection({}, async fixture => {
+        const {tools} = knowledgeServer(fixture);
+        const [hit] = (await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'})).hits;
+        const generation = fixture.registry.get(fixture.sourceId, scope)!.activeGeneration!;
+        const indexRoot = path.join(path.dirname(fixture.registry.get(fixture.sourceId, scope)!.rootRealpath), 'index');
+        const file = (fs.readdirSync(indexRoot, {recursive: true}) as string[])
+          .find(entry => path.basename(entry) === `${generation}.sqlite`)!;
+        const db = new Database(path.join(indexRoot, file));
+        try {
+          db.exec('DELETE FROM chunks');
+        } finally {
+          db.close();
+        }
+        expect(fixture.registry.get(fixture.sourceId, scope)!.activeGeneration).toBe(generation);
+        // Never "no hits" from an emptied generation, nor a section from a partial one.
+        for (const [name, args] of [['search_knowledge', {query: 'XRenderCompositorWorker'}],
+          ['read_knowledge_section', {reference_id: hit.id}]] as const) {
+          const raw = await tools.get(name)!.handler({...args});
+          expect(raw.isError).toBe(true);
+          expect(JSON.parse(raw.content[0].text)).toEqual({success: false, unsupportedReason: 'knowledge_index_unavailable'});
+        }
+      });
+    });
+
+    it('restarts the run when consent is revoked or the collection is deleted', async () => {
       await withCollection({}, async fixture => {
         const {tools} = knowledgeServer(fixture);
         fixture.registry.setProviderConsent(fixture.sourceId, scope, false, 'user-a');
         await expect(callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'}))
           .rejects.toThrow('analysis_context_changed_restart_required');
+      });
+      await withCollection({}, async fixture => {
+        const {tools} = knowledgeServer(fixture);
+        const [hit] = (await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'})).hits;
+        await new DocumentCollectionIngester(fixture.registry, fixture.store).remove(fixture.sourceId, scope, 'user-a');
+        await expect(callTool(tools, 'read_knowledge_section', {reference_id: hit.id}))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+      });
+    });
+
+    it('records knowledge use from what was delivered, once per reference', async () => {
+      await withCollection({}, async fixture => {
+        const {tools, sourceUse} = knowledgeServer(fixture);
+        expect(sourceUse.getKnowledgeUse?.()).toEqual({sources: [], locations: []});
+        const {hits} = await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'});
+        const [hit] = hits;
+        // The same hits again, and the same part twice: each delivered reference counts once.
+        await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'});
+        await callTool(tools, 'read_knowledge_section', {reference_id: hit.id});
+        await callTool(tools, 'read_knowledge_section', {reference_id: hit.id});
+        const generation = fixture.registry.get(fixture.sourceId, scope)!.activeGeneration!;
+        const record = sourceUse.getKnowledgeUse?.();
+        expect(record?.sources).toEqual([{knowledgeBaseId: fixture.sourceId, kind: 'document_collection',
+          generation, deliveredReferenceCount: hits.length}]);
+        expect(record?.locations).toHaveLength(hits.length + 1);
+        expect(record?.locations).toEqual(expect.arrayContaining([
+          expect.objectContaining({referenceId: hit.id, relativePath: 'render/compositor.md', lineRange: hit.lineRange}),
+        ]));
+        // The section was read whole, in its one part.
+        expect(record?.locations[record.locations.length - 1]).toMatchObject({referenceId: hit.id, relativePath: 'render/compositor.md',
+          bodyDelivered: true});
+        // A run with no knowledge base selected records nothing.
+        expect(createTestServer().sourceUse.getKnowledgeUse?.()).toBeUndefined();
       });
     });
 
@@ -9595,6 +9707,290 @@ describe('createClaudeMcpServer', () => {
         const result = await withEvaluationInjectionContext({contract}, () =>
           callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'}));
         expect(result).toMatchObject({success: true, hits: []});
+        // Nothing was delivered, so nothing counts as knowledge use.
+        expect(knowledgeServerUse(tools)).toBeUndefined();
+      });
+    });
+  });
+
+  describe('index generation pins', () => {
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const refusalOf = (raw: any) => {
+      expect(isPolicyRefusalResult(raw)).toBe(true);
+      return JSON.parse(raw.content[0].text);
+    };
+
+    async function withIndexedCodebase<T>(
+      kind: 'app_source' | 'aosp' | 'oem_sdk' | 'kernel_source',
+      run: (fixture: {
+        registry: CodebaseRegistry; store: RagStore; codebaseId: string; ledger: CodeLookupLedger; rebuild: () => void;
+      }) => Promise<T>,
+    ): Promise<T> {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-generation-pin-'));
+      try {
+        const root = path.join(tmpDir, 'source');
+        fs.mkdirSync(root);
+        const registry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = registry.register({kind, displayName: 'Source', rootPath: root, sendToProvider: true,
+          ...(kind === 'kernel_source' ? {pathFilters: ['drivers']} : {}),
+          ...(kind === 'aosp' || kind === 'oem_sdk' ? {licenseTag: 'Apache-2.0'} : {}),
+          ...(kind === 'oem_sdk' || kind === 'kernel_source' ? {vendor: 'vendor-a'} : {}), ...scope});
+        activateTestIndex(registry, ref, scope, 'generation-1');
+        const store = new RagStore(path.join(tmpDir, 'rag.json'));
+        const filePath = kind === 'kernel_source' ? 'drivers/foo.c' : 'src/Foo.kt';
+        store.addChunk({chunkId: 'pinned-chunk', kind, registryOrigin: 'codebase_registry', codebaseId: ref.codebaseId,
+          sourceGeneration: 'generation-1', uri: `codebase://${ref.codebaseId}/${filePath}`, filePath,
+          lineRange: {start: 1, end: 3}, symbol: 'Foo', snippet: 'class Foo { void draw() {} }', license: 'Apache-2.0',
+          ...(kind === 'oem_sdk' || kind === 'kernel_source' ? {vendor: 'vendor-a'} : {}), indexedAt: Date.now()}, scope);
+        const ledger = new CodeLookupLedger(`generation-pin-${kind}`, 2, path.join(tmpDir, 'ledger.jsonl'));
+        const rebuild = () => {
+          const current = registry.get(ref.codebaseId, scope)!;
+          registry.activateIndexGeneration(ref.codebaseId, scope, current.indexGeneration, {lastIngestStatus: 'ok',
+            activeGeneration: `generation-${current.indexGeneration + 1}`, contentFingerprint: 'b'.repeat(64), chunkCount: 1});
+        };
+        return await run({registry, store, codebaseId: ref.codebaseId, ledger, rebuild});
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    }
+
+    const codebaseServer = (fixture: {registry: CodebaseRegistry; store: RagStore; codebaseId: string; ledger: CodeLookupLedger}) =>
+      createTestServer({codeAwareMode: 'provider_send', codebaseIds: [fixture.codebaseId], codebaseRegistry: fixture.registry,
+        ragStore: fixture.store, codeLookupLedger: fixture.ledger, knowledgeScope: scope, sourceDepth: 'mechanism'});
+
+    const lookups = [
+      ['app_source', 'lookup_app_source', {query: 'Foo'}],
+      ['aosp', 'lookup_aosp_source', {query: 'Foo'}],
+      ['oem_sdk', 'lookup_oem_sdk', {query: 'Foo'}],
+      ['kernel_source', 'lookup_kernel_source', {query: 'Foo', path_prefix: 'drivers'}],
+      ['app_source', 'resolve_symbol', {symbol: 'Foo'}],
+    ] as const;
+
+    it.each(lookups)('serves %s through %s while the pinned generation is active', async (kind, toolName, args) => {
+      await withIndexedCodebase(kind, async fixture => {
+        const raw = await codebaseServer(fixture).tools.get(toolName)!.handler({...args});
+        expect(isPolicyRefusalResult(raw)).toBe(false);
+        expect(raw.content[0].text).toContain('pinned-chunk');
+      });
+    });
+
+    it.each(lookups)('refuses %s through %s after a rebuild before the call, never as no hits', async (kind, toolName, args) => {
+      await withIndexedCodebase(kind, async fixture => {
+        const {tools, sourceUse} = codebaseServer(fixture);
+        fixture.rebuild();
+        expect(refusalOf(await tools.get(toolName)!.handler({...args}))).toMatchObject({success: false,
+          action_required: 'use_search_codebase', unsupportedReason: 'codebase_index_generation_changed',
+          codebaseId: fixture.codebaseId});
+        // Only the call is refused; the run's authorization is unchanged.
+        expect(sourceUse.getSourceExecutionScope?.()).toBeDefined();
+      });
+    });
+
+    it.each(lookups)('refuses %s through %s once its pinned chunks are lost under an unchanged registry', async (kind, toolName, args) => {
+      await withIndexedCodebase(kind, async fixture => {
+        const {tools} = codebaseServer(fixture);
+        const generation = fixture.registry.get(fixture.codebaseId, scope)!.activeGeneration;
+        fixture.store.removeCodebaseChunkIds(fixture.codebaseId, ['pinned-chunk'], scope);
+        expect(fixture.registry.get(fixture.codebaseId, scope)!.activeGeneration).toBe(generation);
+        expect(refusalOf(await tools.get(toolName)!.handler({...args}))).toMatchObject({success: false,
+          action_required: 'use_search_codebase', unsupportedReason: 'codebase_index_generation_changed',
+          codebaseId: fixture.codebaseId});
+      });
+    });
+
+    it.each(lookups)('refuses %s through %s when a rebuild lands during retrieval', async (kind, toolName, args) => {
+      await withIndexedCodebase(kind, async fixture => {
+        const {tools, sourceUse} = codebaseServer(fixture);
+        const realSearch = fixture.store.search.bind(fixture.store);
+        const search = jest.spyOn(fixture.store, 'search').mockImplementation((...searchArgs) => {
+          const result = realSearch(...searchArgs);
+          fixture.rebuild();
+          return result;
+        });
+        try {
+          expect(refusalOf(await tools.get(toolName)!.handler({...args})))
+            .toMatchObject({unsupportedReason: 'codebase_index_generation_changed'});
+          expect(search).toHaveBeenCalled();
+          // Refused before any reference to the read generation was issued.
+          expect(sourceUse.getSourceUseDecision()?.references ?? []).toEqual([]);
+        } finally {
+          search.mockRestore();
+        }
+      });
+    });
+
+    it('refuses an indexed lookup when a rebuild lands during filtering or the ledger flush', async () => {
+      await withIndexedCodebase('app_source', async fixture => {
+        const {tools} = codebaseServer(fixture);
+        const realFilter = ragLookupFilter.filterRagLookup;
+        const filter = jest.spyOn(ragLookupFilter, 'filterRagLookup').mockImplementationOnce(async (...filterArgs) => {
+          const result = await realFilter(...filterArgs);
+          fixture.rebuild();
+          return result;
+        });
+        try {
+          expect(refusalOf(await tools.get('lookup_app_source')!.handler({query: 'Foo'})))
+            .toMatchObject({unsupportedReason: 'codebase_index_generation_changed'});
+          expect(filter).toHaveBeenCalledTimes(1);
+        } finally {
+          filter.mockRestore();
+        }
+      });
+      await withIndexedCodebase('app_source', async fixture => {
+        const {tools} = codebaseServer(fixture);
+        const realFlush = fixture.ledger.flush.bind(fixture.ledger);
+        const flush = jest.spyOn(fixture.ledger, 'flush').mockImplementation(async () => {
+          await realFlush();
+          fixture.rebuild();
+        });
+        try {
+          expect(refusalOf(await tools.get('lookup_app_source')!.handler({query: 'Foo'})))
+            .toMatchObject({unsupportedReason: 'codebase_index_generation_changed'});
+          expect(flush).toHaveBeenCalled();
+        } finally {
+          flush.mockRestore();
+        }
+      });
+    });
+
+    it('refuses a patch proposal for context whose codebase was rebuilt', async () => {
+      await withIndexedCodebase('app_source', async fixture => {
+        const {tools} = codebaseServer(fixture);
+        await callTool(tools, 'lookup_app_source', {query: 'Foo'});
+        fixture.rebuild();
+        expect(refusalOf(await tools.get('propose_patch')!.handler({context_chunk_ids: ['pinned-chunk'],
+          problem: 'Frame drawing is slow', patch_sketch: 'Cache the draw state'})))
+          .toMatchObject({action_required: 'use_search_codebase', unsupportedReason: 'codebase_index_generation_changed',
+            codebaseId: fixture.codebaseId});
+      });
+    });
+
+    it('refuses a patch proposal whose looked-up context was collected by a rebuild, never as missing context', async () => {
+      await withIndexedCodebase('app_source', async fixture => {
+        const {tools} = codebaseServer(fixture);
+        await callTool(tools, 'lookup_app_source', {query: 'Foo'});
+        fixture.rebuild();
+        const active = fixture.registry.get(fixture.codebaseId, scope)!.activeGeneration!;
+        fixture.store.removeCodebaseChunksExceptGeneration(fixture.codebaseId, [active], scope);
+        expect(fixture.store.getChunk('pinned-chunk', scope)).toBeUndefined();
+        expect(refusalOf(await tools.get('propose_patch')!.handler({context_chunk_ids: ['pinned-chunk'],
+          problem: 'Frame drawing is slow', patch_sketch: 'Cache the draw state'})))
+          .toEqual({success: false, action_required: 'use_search_codebase',
+            codebaseId: fixture.codebaseId, unsupportedReason: 'codebase_index_generation_changed'});
+      });
+    });
+
+    it('refuses a patch proposal whose context was looked up from a generation this run did not pin', async () => {
+      await withIndexedCodebase('app_source', async fixture => {
+        // An earlier run of the session looked the chunk up from an older generation.
+        fixture.ledger.record({turn: 0, ts: Date.now(), toolName: 'lookup_app_source', codebaseId: fixture.codebaseId,
+          sourceGeneration: 'generation-0', chunkIds: ['pinned-chunk'], consentApplied: true, tokensSpent: 1,
+          outcome: 'success', legacyPath: false});
+        await fixture.ledger.flush();
+        const {tools} = codebaseServer(fixture);
+        expect(refusalOf(await tools.get('propose_patch')!.handler({context_chunk_ids: ['pinned-chunk'],
+          problem: 'Frame drawing is slow', patch_sketch: 'Cache the draw state'})))
+          .toMatchObject({unsupportedReason: 'codebase_index_generation_changed', codebaseId: fixture.codebaseId});
+      });
+    });
+
+    it('proposes a patch sketch from context this run looked up while its generation still serves', async () => {
+      await withIndexedCodebase('app_source', async fixture => {
+        const {tools} = codebaseServer(fixture);
+        await callTool(tools, 'lookup_app_source', {query: 'Foo'});
+        expect(await callTool(tools, 'propose_patch', {context_chunk_ids: ['pinned-chunk'],
+          problem: 'Frame drawing is slow', patch_sketch: 'Cache the draw state'}))
+          .toMatchObject({success: true, result: {patchStatus: 'sketch'}});
+      });
+    });
+
+    async function withWiki<T>(run: (fixture: {
+      registry: ExternalKnowledgeSourceRegistry; store: RagStore; sourceId: string; rebuild: () => Promise<void>;
+    }) => Promise<T>): Promise<T> {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-wiki-generation-pin-'));
+      try {
+        const root = path.join(tmpDir, 'wiki');
+        fs.mkdirSync(root);
+        const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'external-sources.json'));
+        const source = registry.register({kind: 'android_internals_wiki', displayName: 'Android Internals Wiki',
+          rootRealpath: root, revision: 'a'.repeat(40), contentFingerprint: 'b'.repeat(64), dirty: false,
+          license: 'CC-BY-NC-SA-4.0', rightsAcknowledged: true, sendToProvider: true, consentedBy: 'user-a', scope});
+        const activate = (generation: string) => registry.withIngestLease(source.sourceId, scope, lease =>
+          lease.activateGeneration({generation, revision: source.revision, contentFingerprint: source.contentFingerprint,
+            dirty: false, indexedArticleCount: 1, indexedChunkCount: 1}));
+        await activate('generation-a');
+        const store = new RagStore(path.join(tmpDir, 'rag.json'));
+        store.addChunk({chunkId: 'wiki-handler', kind: 'android_internals_wiki', registryOrigin: 'external_knowledge_registry',
+          knowledgeSourceId: source.sourceId, sourceGeneration: 'generation-a',
+          uri: `android-internals-wiki://${source.sourceId}/handler`, title: 'Handler internals',
+          snippet: 'Handler callback dispatch on the main looper.', indexedAt: Date.now(), license: 'CC-BY-NC-SA-4.0',
+          attribution: 'Android Internals Wiki', commitHash: source.revision, contentFingerprint: source.contentFingerprint,
+          filePath: 'src/handler.md'}, scope);
+        return await run({registry, store, sourceId: source.sourceId, rebuild: async () => {await activate('generation-b');}});
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    }
+
+    const wikiServer = (fixture: {registry: ExternalKnowledgeSourceRegistry; store: RagStore; sourceId: string}) =>
+      createTestServer({ragStore: fixture.store, externalKnowledgeRegistry: fixture.registry,
+        knowledgeSourceIds: [fixture.sourceId], knowledgeScope: scope});
+    const wikiQuery = {query: 'Handler callback', source: 'android_internals_wiki'};
+
+    it('counts Wiki chunks only after delivery, once each, and refuses after a Wiki rebuild', async () => {
+      await withWiki(async fixture => {
+        const {tools, sourceUse} = wikiServer(fixture);
+        expect(sourceUse.getKnowledgeUse?.()).toEqual({sources: [], locations: []});
+        await callTool(tools, 'lookup_blog_knowledge', wikiQuery);
+        await callTool(tools, 'lookup_blog_knowledge', wikiQuery);
+        expect(sourceUse.getKnowledgeUse?.()).toEqual({locations: [], sources: [{knowledgeBaseId: fixture.sourceId,
+          kind: 'android_internals_wiki', generation: 'generation-a', deliveredReferenceCount: 1}]});
+        await fixture.rebuild();
+        // A Wiki rebuild deletes the pinned generation: refused, never searched as empty.
+        expect(refusalOf(await tools.get('lookup_blog_knowledge')!.handler(wikiQuery))).toMatchObject({
+          action_required: 'continue_without_private_knowledge', unsupportedReason: 'knowledge_index_generation_changed'});
+      });
+    });
+
+    it('refuses a Wiki lookup once its pinned chunks are lost under an unchanged registry', async () => {
+      await withWiki(async fixture => {
+        const {tools, sourceUse} = wikiServer(fixture);
+        fixture.store.removeKnowledgeSourceChunks(fixture.sourceId, scope);
+        expect(fixture.registry.get(fixture.sourceId, scope)!.activeGeneration).toBe('generation-a');
+        expect(refusalOf(await tools.get('lookup_blog_knowledge')!.handler(wikiQuery))).toMatchObject({
+          action_required: 'continue_without_private_knowledge', unsupportedReason: 'knowledge_index_generation_changed'});
+        expect(sourceUse.getKnowledgeUse?.()?.sources).toEqual([]);
+      });
+    });
+
+    it('refuses a Wiki lookup when a rebuild lands during retrieval, and counts nothing an evaluation excludes', async () => {
+      await withWiki(async fixture => {
+        const {tools, sourceUse} = wikiServer(fixture);
+        const realSearch = fixture.store.search.bind(fixture.store);
+        let rebuilt: Promise<void> | undefined;
+        const search = jest.spyOn(fixture.store, 'search').mockImplementation((...args) => {
+          const result = realSearch(...args);
+          rebuilt = fixture.rebuild();
+          return result;
+        });
+        try {
+          const pending = tools.get('lookup_blog_knowledge')!.handler(wikiQuery);
+          await rebuilt;
+          expect(refusalOf(await pending)).toMatchObject({unsupportedReason: 'knowledge_index_generation_changed'});
+        } finally {
+          search.mockRestore();
+        }
+        expect(sourceUse.getKnowledgeUse?.()?.sources).toEqual([]);
+      });
+      await withWiki(async fixture => {
+        const {tools, sourceUse} = wikiServer(fixture);
+        const contract = createEvaluationRoleInjectionContract({
+          role: 'baseline', mode: 'off',
+          selected: {patterns: [], skillNotes: [], cases: [], phaseHints: [], knowledgeDocs: []},
+          reservedTreatmentNamespace: [], expectedMaterializedRefs: [], expectedObservedRefs: [], forbiddenObservedRefs: [],
+        });
+        await withEvaluationInjectionContext({contract}, () => callTool(tools, 'lookup_blog_knowledge', wikiQuery));
+        expect(sourceUse.getKnowledgeUse?.()?.sources).toEqual([]);
       });
     });
   });
@@ -9709,7 +10105,7 @@ describe('createClaudeMcpServer', () => {
       }
     });
 
-    it('fails closed when a selected codebase generation changes during the run', async () => {
+    it('keeps the run current when a selected codebase is reindexed; only its index tools refuse', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-codebase-generation-'));
       try {
         const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
@@ -9722,7 +10118,7 @@ describe('createClaudeMcpServer', () => {
           rootPath: root,
           ...scope,
         });
-        const {tools} = createTestServer({
+        const {tools, sourceUse} = createTestServer({
           codeAwareMode: 'metadata_only',
           codebaseIds: [ref.codebaseId],
           codebaseRegistry,
@@ -9734,6 +10130,11 @@ describe('createClaudeMcpServer', () => {
           lastIngestStatus: 'ok',
         });
 
+        // The authorization fingerprint holds no index generation: the run goes on.
+        expect(await callTool(tools, 'list_codebases')).toEqual(expect.objectContaining({success: true}));
+        expect(sourceUse.getSourceExecutionScope?.()).toMatchObject({selectedCodebaseIds: [ref.codebaseId]});
+        // Consent is authorization: changing it still restarts the run.
+        codebaseRegistry.setProviderConsent(ref.codebaseId, scope, true, 'user-a');
         await expect(callTool(tools, 'list_codebases'))
           .rejects.toThrow('analysis_context_changed_restart_required');
       } finally {
@@ -9775,6 +10176,8 @@ describe('createClaudeMcpServer', () => {
           chunkCount: 1,
         });
         const ragStore = new RagStore(path.join(tmpDir, 'rag.json'));
+        // The store holds each indexed generation; only the search is observed.
+        jest.spyOn(ragStore, 'countCodebaseGenerationChunks').mockReturnValue(1);
         const search = jest.spyOn(ragStore, 'search').mockImplementation((query, options) => ({
           ...makeSparkProvenance({source: 'claude-mcp-server-test'}),
           query,
@@ -10852,7 +11255,8 @@ describe('source and knowledge governance refusals', () => {
 
   it('counts resolve_symbol against the run search budget', async () => {
     const {tools} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
-      codebaseRegistry: capableCodebaseRegistry(['app-codebase']), sourceDepthPolicy: locatePolicy({searches: 1})});
+      codebaseRegistry: capableCodebaseRegistry(['app-codebase']), ragStore: emptyIndexedStore(),
+      sourceDepthPolicy: locatePolicy({searches: 1})});
     await callRaw(tools, 'resolve_symbol', {symbol: 'StartupHooks'});
 
     expectRefusal(await callRaw(tools, 'resolve_symbol', {symbol: 'StartupHooks'}), {
@@ -10863,7 +11267,8 @@ describe('source and knowledge governance refusals', () => {
 
   it('refuses a resolve_symbol result past the token budget before issuing any reference', async () => {
     const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
-      codebaseRegistry: capableCodebaseRegistry(['app-codebase']), sourceDepthPolicy: locatePolicy({tokens: 1})});
+      codebaseRegistry: capableCodebaseRegistry(['app-codebase']), ragStore: emptyIndexedStore(),
+      sourceDepthPolicy: locatePolicy({tokens: 1})});
 
     expectRefusal(await callRaw(tools, 'resolve_symbol', {symbol: 'StartupHooks'}), {
       unsupportedReason: 'budget_exceeded',

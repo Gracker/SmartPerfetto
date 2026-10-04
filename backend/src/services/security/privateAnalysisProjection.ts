@@ -49,7 +49,6 @@ const SAFE_TERMINATION_REASONS = new Set([
   'review_not_finished',
 ]);
 const MAX_PRIVATE_PROVENANCE_IDS = 100;
-const MAX_PRIVATE_SOURCE_GENERATIONS = 20;
 const MAX_PRIVATE_DISPLAY_NAME = 120;
 
 function boundedIdentifier(value: unknown): string | undefined {
@@ -128,21 +127,6 @@ function projectPrivateCodeLookupSummary(
     .filter((value): value is string => Boolean(value))
     .filter(value => privateSourceTextUnchanged(sessionId, value))
     .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
-  const usedKnowledgeSources = summary.usedKnowledgeSources
-    ?.map(source => {
-      const knowledgeSourceId = boundedIdentifier(source.knowledgeSourceId);
-      if (!knowledgeSourceId || !privateSourceTextUnchanged(sessionId, knowledgeSourceId)) return undefined;
-      return {
-        knowledgeSourceId,
-        sourceGenerations: source.sourceGenerations
-          .map(boundedIdentifier)
-          .filter((value): value is string => Boolean(value))
-          .filter(value => privateSourceTextUnchanged(sessionId, value))
-          .slice(0, MAX_PRIVATE_SOURCE_GENERATIONS),
-      };
-    })
-    .filter((value): value is NonNullable<typeof value> => Boolean(value))
-    .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
   const sourceUseDecision = projectPrivateSourceUseDecision(
     sessionId,
     summary.sourceUseDecision,
@@ -155,7 +139,6 @@ function projectPrivateCodeLookupSummary(
     patchCount: boundedCount(summary.patchCount),
     referencedCodebaseIds,
     ...(usedCodebaseIds?.length ? {usedCodebaseIds} : {}),
-    ...(usedKnowledgeSources?.length ? {usedKnowledgeSources} : {}),
     ...(sourceUseDecision ? {sourceUseDecision} : {}),
     ...(unreadableRecordCount > 0 ? {unreadableRecordCount} : {}),
   };
@@ -285,7 +268,7 @@ export function projectPrivateAnalysisReceipt(
     capabilityManifest: storedCapabilityManifest,
     traceSummary: storedTraceSummary,
     ...receiptWithoutAttribution
-  } = receipt;
+  } = withValidOptionalReceiptCounts(receipt);
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
     storedCapabilityManifest,
   );
@@ -315,6 +298,17 @@ function withdrawClaimAuditVerification(audit: AnalysisReceipt['claimAudit']): A
   return {...audit, verifiedClaims: 0, uncertainClaims: audit.uncertainClaims + audit.verifiedClaims,
     ...(audit.referencesMatchedClaims !== undefined ? {referencesMatchedClaims: 0} : {}),
     ...(audit.propositionProvedClaims !== undefined ? {propositionProvedClaims: 0} : {})};
+}
+
+/**
+ * Optional receipt counts are kept only when well formed. A malformed one is
+ * dropped by itself (absent reads as "not recorded"), never the whole receipt.
+ */
+function withValidOptionalReceiptCounts(receipt: AnalysisReceipt): AnalysisReceipt {
+  const {knowledgeReferenceCount, ...nonEvidenceContext} = receipt.nonEvidenceContext;
+  if (knowledgeReferenceCount === undefined) return receipt;
+  const valid = Number.isSafeInteger(knowledgeReferenceCount) && knowledgeReferenceCount >= 0;
+  return valid ? receipt : {...receipt, nonEvidenceContext};
 }
 
 /** Historical JSON may be incomplete; it cannot supply missing audit counts. */
@@ -819,6 +813,7 @@ export function copyAnalysisResultForSnapshot(result: AnalysisResult): AnalysisR
     ((result.deliveryAssurance?.report === 'passed' || result.deliveryAssurance?.report === 'not_applicable') &&
       delivery.deliveryAssurance?.report !== 'passed' && delivery.deliveryAssurance?.report !== 'not_applicable');
   if (stored.analysisReceipt && !isCompleteAnalysisReceipt(stored.analysisReceipt)) delete stored.analysisReceipt;
+  if (stored.analysisReceipt) stored.analysisReceipt = withValidOptionalReceiptCounts(stored.analysisReceipt);
   if (stored.analysisReceipt && (claimsChanged || sourceChanged || reportInvalidated)) {
     stored.analysisReceipt = {...stored.analysisReceipt,
       claimAudit: claimsChanged ? withdrawClaimAuditVerification(stored.analysisReceipt.claimAudit) : stored.analysisReceipt.claimAudit,

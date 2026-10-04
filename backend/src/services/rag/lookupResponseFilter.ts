@@ -548,6 +548,8 @@ export async function filterRagLookup(
       ts: Date.now(),
       toolName: ctx.toolName,
       codebaseId: chunk.codebaseId,
+      // The generation the chunk came from, so a later patch can tell it was rebuilt.
+      ...(chunk.sourceGeneration ? {sourceGeneration: chunk.sourceGeneration} : {}),
       chunkIds: [chunk.chunkId],
       consentApplied: true,
       tokensSpent: tokens,

@@ -20,7 +20,13 @@ import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runClaudeIntentTransport} from './claudeIntentTransport';
-import {reportReviewUsesRemainingBudget, attachFinalizationContext, type RuntimeFinalizationContextInput} from '../../analysisFinalizationContext';
+import {
+  attachFinalizationContext,
+  attachRunDeliveryRecord,
+  reportReviewUsesRemainingBudget,
+  sourceUseFinalizationFields,
+  type RuntimeFinalizationContextInput,
+} from '../../analysisFinalizationContext';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisCompletion, type AnalysisOutputOrigin, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import * as fs from 'fs';
@@ -633,8 +639,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         ...finalizationSetup.input, deliveryContext, protocolProjection,
         ...(runDeadline ? {deadlineMs: runDeadline.finalizationDeadlineAt(Date.now(), closeoutDeadlineAt, {
           useRemainingBudget: reportReviewUsesRemainingBudget({semanticCall, turnIntent: intent, result})})} : {}),
-        sourceUse: sourceUse?.getSourceUseDecision(),
-        sourceScope: sourceUse?.getSourceExecutionScope?.(),
+        ...sourceUseFinalizationFields(sourceUse),
         evidenceReadView: store?.createEvidenceReadView({allowedTraces, ownerKey: finalizationSetup.ownerKey,
           currentRunId: finalizationSetup.input.runId}),
         dispatchText: semanticCall ? finalizationSetup.input.dispatchText : undefined,
@@ -1910,6 +1915,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         sceneType: turnIntent?.sceneId, context: failedProjection.deliveryContext,
         deferFocusedEvidenceFinalization: true});
       attachAcceptedFinalization(failedResult, failedProjection.deliveryContext, false, failedProjection.protocolProjection);
+      // A failure before an accepted answer has no context; what was delivered still counts.
+      attachRunDeliveryRecord(failedResult, {runId, sessionId, knowledgeUse: sourceUse?.getKnowledgeUse?.()});
       return failedResult;
     } finally {
       const finalizationPhase = runtimePerformance.startPhase('finalization');

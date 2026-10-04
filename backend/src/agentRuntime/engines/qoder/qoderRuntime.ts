@@ -93,7 +93,11 @@ import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS, runIntentTransport} from '../../intentTransport';
 import {runQoderIntentTransport} from './qoderIntentTransport';
 import type {IntentTransportInput, IntentTransportResult} from '../../intentTransport';
-import {attachFinalizationContext} from '../../analysisFinalizationContext';
+import {
+  attachFinalizationContext,
+  attachRunDeliveryRecord,
+  sourceUseFinalizationFields,
+} from '../../analysisFinalizationContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {
   createRuntimeSkillNotesBudget,
@@ -508,8 +512,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             selection: sessionState.analysisRunSelection,
             traceIdentity: {currentTraceId: traceId, referenceTraceId: normalizedOptions.referenceTraceId},
             deliveryContext: sessionState.delivery.context, protocolProjection: sessionState.delivery.protocolProjection,
-            sourceUse: sessionState.sourceUse?.getSourceUseDecision(),
-            sourceScope: sessionState.sourceUse?.getSourceExecutionScope?.(),
+            ...sourceUseFinalizationFields(sessionState.sourceUse),
             evidenceReadView: sessionState.artifactStore?.createEvidenceReadView({
               currentRunId: executionLease.key.runId!,
               allowedTraces: [{traceId, traceSide: 'current'},
@@ -523,6 +526,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
                 dispatchText: sessionState.dispatchText,
               } : {}),
           });
+        }
+        // A result returned before the run resolved its intent has no context;
+        // what was delivered still counts (a no-op once a context is attached).
+        if (result) {
+          attachRunDeliveryRecord(result, {runId: executionLease.key.runId, sessionId,
+            knowledgeUse: sessionState.sourceUse?.getKnowledgeUse?.()});
         }
       } finally {
         try {

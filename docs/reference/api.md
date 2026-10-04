@@ -530,6 +530,22 @@ selected / queried / used codebase、status / reason code 和搜索 coverage；
 提高现象或根因置信度；`metadata_only` 为 locate-only。投影不包含绝对 root、
 snippet、检索 query 或模型自由文本 binding reason。
 
+选用了知识库的运行还携带 `knowledgeUse`（`knowledge_use@1`；缺失表示未记录，
+不表示零次使用）：`sources[]` 列出实际交付了内容的知识库（`knowledgeBaseId`、
+`kind`、固定的索引 `generation`、去重的 `deliveredReferenceCount`），`citations[]`
+把答案里写出的每个 `kb:路径#L起-L止` 分级为 `delivered`（正文已交付）、`located`
+（只交付了位置）、`unmatched` 或 `ambiguous`。它只是背景，不是 trace 证据，任何判决
+都不读取它；strict 投影保留 sources、删除 citations。回执可能携带
+`nonEvidenceContext.knowledgeReferenceCount`，旧回执没有该字段。
+
+重建索引不再撤销会话或运行：授权指纹（格式 `acf2:`）只覆盖同意、选择范围、生命
+周期与删除。索引工具检查本次运行固定的代次，索引被重建时返回
+`codebase_index_generation_changed`（`action_required: use_search_codebase`）、
+Android Internals Wiki 的 `knowledge_index_generation_changed`，或文档知识库固定代次
+已被回收或不完整时的 `knowledge_index_unavailable`；注册表未变而已存数据丢失的索引同样
+拒绝。`acf2` 之前记录的会话、对话和历史不再
+匹配：会话会重新开始一次，对话无法恢复，此前源码派生的历史不再进入模型上下文。
+
 `uiActionProposals` 只包含从
 DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转到时间范围、打开证据表
 或 `pin_evidence`。其中 `pin_evidence` 只把证据或结果快照收藏到当前 UI 会话并供 `/pins`

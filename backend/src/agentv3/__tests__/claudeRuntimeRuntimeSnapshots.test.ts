@@ -43,7 +43,7 @@ import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from 
 import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIntent';
 import {resolveRuntimeTurnPolicy} from '../../agentRuntime/runtimeTurnPolicy';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
-import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
+import {takeFinalizationContext, takeRunDeliveryRecord} from '../../agentRuntime/analysisFinalizationContext';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
@@ -858,6 +858,28 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(JSON.stringify(result)).toBe(snapshot);
       expect(result.conclusion).not.toBe('late result');
     } finally {release.resolve(); restoreEnvValue('CLAUDE_QUICK_MAX_TURNS', previousMaxTurns); jest.useRealTimers();}
+  });
+
+  it('keeps what the run delivered on a provider failure before any accepted answer', async () => {
+    intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
+    const knowledgeUse = {sources: [{knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection' as const,
+      generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}], locations: []};
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    const prepare = (runtime as any).prepareAnalysisContext.bind(runtime);
+    jest.spyOn(runtime as any, 'prepareAnalysisContext').mockImplementation(async (...args: unknown[]) => {
+      const context = await prepare(...args);
+      return {...context, sourceUse: {...context.sourceUse, getKnowledgeUse: () => knowledgeUse}};
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      throw new Error('provider failure after a knowledge read');
+    });
+    const result = await runtime.analyze('Question', 'claude-knowledge-failure', 'trace',
+      {analysisMode: 'fast', runId: 'claude-knowledge-failure-run'});
+    expect(result).toMatchObject({success: false, terminationReason: 'execution_error'});
+    expect(takeFinalizationContext(result)).toBeUndefined();
+    expect(takeRunDeliveryRecord(result)).toEqual({runId: 'claude-knowledge-failure-run',
+      sessionId: 'claude-knowledge-failure', knowledgeUse});
   });
 
   it('reports the chosen quick budget when preparation consumes the original deadline before SDK dispatch', async () => {

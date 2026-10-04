@@ -1015,6 +1015,19 @@ describe('ConversationSessionService', () => {
       terminationMessage: 'conversation_run_interrupted_before_final_commit'});
   });
 
+  it('refuses to recover a descriptor stamped with a pre-acf2 fingerprint; the user starts a new conversation', () => {
+    const {descriptor, input, turn} = recoveryFixture();
+    expect(input.analysisContextFingerprint).toMatch(/^acf2:/);
+    // The descriptor stored before the format change holds a bare digest; it is never re-stamped.
+    const legacy = {...descriptor, analysisContextFingerprint: input.analysisContextFingerprint.slice('acf2:'.length)};
+    const factory = jest.fn((): ConversationRuntimeAdapter => ({run: async () => ({kind: 'answered', message: ''}), cancel: async () => undefined}));
+    const service = new ConversationSessionService({createRuntime: factory});
+    expect(() => service.restoreSession(legacy, [turn], input))
+      .toThrow(expect.objectContaining({code: 'CONVERSATION_RECOVERY_UNAVAILABLE', status: 409}));
+    expect(factory).not.toHaveBeenCalled();
+    expect(legacy.analysisContextFingerprint).not.toMatch(/^acf2:/);
+  });
+
   it('denies changed owner, provider hash and revoked sources before recreating an adapter', () => {
     const {descriptor, input, turn} = recoveryFixture();
     const factory = jest.fn((): ConversationRuntimeAdapter => ({run: async () => ({kind: 'answered', message: ''}), cancel: async () => undefined}));
