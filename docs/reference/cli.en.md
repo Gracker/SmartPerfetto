@@ -363,8 +363,8 @@ check). A run is trace-only only when no codebase is selected and no
 knowledge-source ID is passed; knowledge sources are independent of the source
 mode. `--knowledge-source-id <id>` can enable an
 authorized document knowledge base alone or together with a codebase.
-Source, knowledge-base, and reference-trace selections resolve an explicit `fast`
-request to `full` so the lightweight runtime cannot silently drop capabilities.
+Selecting source, a knowledge base, or a reference trace leaves the requested
+budget mode unchanged; `fast` keeps those authorized capabilities too.
 `--source-depth auto|locate|mechanism` sizes the run's source budget (default `auto`, the same as the API's `options.sourceDepth`) and is kept in the session for later turns.
 `preview` and `register --dry-run` report the actual `ripgrep → git → node-walk`
 enumeration backend, fidelity, completeness, and truncation reason. A bounded

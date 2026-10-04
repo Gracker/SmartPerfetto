@@ -319,8 +319,8 @@ smp run trace.perfetto-trace \
 codebase ID（不再报错，也不触发任何源码授权或功能开关检查）。未选中任何源码库也
 未传 knowledge source ID 时才是 trace-only；知识源选择与源码模式无关。
 `--knowledge-source-id <id>` 可单独启用已授权的文档知识库，也可与 codebase
-叠加。源码、文档知识库或 reference trace 会把显式 `fast` 解析为 `full`，避免
-轻量 runtime 静默丢失能力。
+叠加。选择源码、文档知识库或 reference trace 不改变请求的分析预算模式，`fast` 下
+这些已授权能力同样保留。
 `--source-depth auto|locate|mechanism` 决定本次 run 的源码额度（默认 `auto`，含义同 API 的 `options.sourceDepth`），会记入 session 供后续轮次沿用。
 `preview` 和 `register --dry-run` 会输出实际使用的 `ripgrep → git → node-walk`
 枚举后端、fidelity、完整性和截断原因；截断只表示有界预览，不再用非零退出码冒充

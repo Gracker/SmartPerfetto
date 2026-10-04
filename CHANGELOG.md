@@ -25,6 +25,13 @@ Detailed commit-level history is available via `git log`.
   `GET /api/traces/:id/file` (or its workspace-scoped form), which is
   authenticated and ownership-checked.
 
+### Added
+- `smp knowledge consent <id> --enable|--disable` grants or revokes a
+  document knowledge base's provider-send consent after registration, through
+  the same registry operation as the Web UI's switch, and prints the same
+  disclosure when granting. Knowledge consent stays a boolean: a knowledge base
+  has no path filters, so the folder is what a grant covers.
+
 ### Removed
 - **Breaking:** the Android Internals Wiki is now an ordinary document
   knowledge base, not a built-in Pack or a connector of its own. Register its
@@ -98,8 +105,24 @@ Detailed commit-level history is available via `git log`.
   at the reverse proxy.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
+- Skills no longer have model-calling steps. No production path ever gave the
+  Skill executor a model, so `ai_summary`, `ai_decision` and a diagnostic's
+  `ai_assist` fallback always ended as "AI service not available";
+  `scene_reconstruction`'s `scene_summary` step (its only user) failed on every
+  run and is removed. A Skill or Self-Evolution overlay that declares one of
+  these step types now fails validation (`step_type_unsupported`), and
+  `aiPolicy.blockedFeatures` no longer lists `llm_skill_step`.
+- The enterprise acceptance load test and readiness audit no longer require
+  LLM cost and call counters, which the runtime never kept; they project daily
+  scale from completed analysis runs and say that model cost and call totals
+  are not measured.
 
 ### Fixed
+- Registering a document folder again keeps every channel it was registered
+  through. A folder the Web directory picker registered and the CLI then
+  registered again lost the picker's trust, so the server's next reindex
+  failed with `outside_allowlist`; the CLI now records its own `local_cli`
+  channel beside it.
 - A trace processor no longer outlives the process that started it. A backend,
   CLI or test process that ended without destroying its processors (SIGKILL,
   a default-handled SIGTERM, a crash, `jest --forceExit`) left

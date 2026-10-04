@@ -766,7 +766,7 @@ Base path: `/api/rag`
 | `GET` | `/stats` | RAG store 统计 |
 | `GET` | `/chunks/:chunkId` | 读取 chunk |
 | `DELETE` | `/chunks/:chunkId` | 删除 chunk |
-| `POST` | `/search` | 搜索代码/知识 chunk |
+| `POST` | `/search` | 搜索 RAG store：公共语料 chunk，或请求 `codebaseIds` 指定的 codebase 的索引 chunk（codebase chunk 只返回 `snippetHash`/`snippetLength`，不返回正文）；不搜索文档知识库，试搜索知识库用 `/knowledge/:sourceId/search` |
 | `*` | `/android-internals/*` | 已移除，返回 410（`migration.fallback` 为 `/api/rag/knowledge`）；改用下面的 `/knowledge/*`。旧版 Wiki 连接器注册的知识源仍由 `GET /knowledge` 列出（`kind: android_internals_wiki`，已停用、不可选），可用 `DELETE /knowledge/:sourceId` 删除 |
 | `GET` | `/knowledge` | 列出当前 scope 的全部外部知识源（含 `kind`、`description`、`documentCount`、`hasActiveIndex`、`retired`），不返回根路径；`retired: true` 的旧版 Wiki 记录只能撤销同意或删除，授予同意返回 409 `KNOWLEDGE_SOURCE_RETIRED` |
 | `POST` | `/knowledge/preview` | 预览文档集合（`rootPath`，可选 `directorySelectionId`）：可入库篇数、section/chunk 数与按原因分类的跳过数；0 篇返回 400 `KNOWLEDGE_COLLECTION_EMPTY` |
