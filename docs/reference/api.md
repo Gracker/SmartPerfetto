@@ -769,7 +769,6 @@ Base path: `/api/rag`
 | `POST` | `/codebases/register` | 注册本机代码库；不授予 provider-send：`sendToProvider: true` 返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`，不写入注册项、不消费目录选择；注册后用返回的 `contentDisclosure` 调 `PATCH /codebases/:id/consent`（`authorizeContent`） |
 | `GET` | `/codebases/:id` | codebase 详情（含 `rootAvailable` / `unavailableReason`、`contentDisclosure`） |
 | `GET` | `/codebases/:id/symbols` | 符号解析 |
-| `GET` | `/codebases/:id/excerpt` | 读取已索引片段 |
 | `POST` | `/codebases/:id/reindex` | 重新索引；request body 仍可用有界 `pathPrefix` 兼容输入，CLI `reindex` 无此选项 |
 | `GET` | `/codebases/:id/audit` | 索引审计 |
 | `PATCH` | `/codebases/:id/consent` | 四选一：`authorizeContent: true` 加 `contentDisclosureToken` 一次授权所披露的当前范围与全部语言（推荐）；`sendToProvider: false` 撤销（`true` 返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`，不改变任何状态：它会不经披露地恢复上一次授权的旧范围与旧语言）；用 `authorizeAvailableExtensions: true` 只授权新语言；用 `authorizeCurrentSelection: true` 只授权当前路径范围 |

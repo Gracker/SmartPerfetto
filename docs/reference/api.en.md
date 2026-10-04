@@ -911,7 +911,6 @@ Base path: `/api/rag`
 | `POST` | `/codebases/register` | Register a local codebase; it grants no provider-send consent: `sendToProvider: true` answers 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, registering nothing and leaving a directory selection unused; grant afterwards with the returned `contentDisclosure` through `PATCH /codebases/:id/consent` (`authorizeContent`) |
 | `GET` | `/codebases/:id` | Codebase detail (including `rootAvailable` / `unavailableReason`, `contentDisclosure`) |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
-| `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
 | `POST` | `/codebases/:id/reindex` | Reindex; the request body retains a bounded `pathPrefix` compatibility input, while CLI `reindex` has no such option |
 | `GET` | `/codebases/:id/audit` | Index audit |
 | `PATCH` | `/codebases/:id/consent` | Perform exactly one action: `authorizeContent: true` with `contentDisclosureToken` grants the disclosed current scope and every language at once (recommended); revoke with `sendToProvider: false` (`true` answers 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED` and changes nothing: it would revive the previous grant's old scope and languages without a disclosure); authorize only new languages with `authorizeAvailableExtensions: true`; or authorize only the current path scope with `authorizeCurrentSelection: true` |

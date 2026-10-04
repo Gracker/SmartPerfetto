@@ -12,6 +12,7 @@ import {
   credentialContextForPath,
   credentialValues,
   endsInDanglingCredentialPrefix,
+  isCredentialFieldValue,
   redactCredentialsInText,
   REDACTED_SECRET,
   TEXT_CREDENTIAL_CONTEXT,
@@ -625,8 +626,7 @@ function sanitizeStructuredTextValue(
         if (descriptor?.enumerable) state.changed = true;
         continue;
       }
-      const credential = isOwnerCodeAwareProjection() && isCredentialField(key) &&
-        typeof descriptor.value === 'string' && descriptor.value.length >= 8;
+      const credential = isOwnerCodeAwareProjection() && isCredentialField(key, descriptor.value);
       if (credential && descriptor.value !== REDACTED_SECRET) state.changed = true;
       const projected = sanitizeStructuredTextValue(
         sessionId,
@@ -844,11 +844,17 @@ export function sanitizeOwnerCodeAwareStructuredTextWithReceipt(
 }
 
 
+const CREDENTIAL_FIELD_NAMES = /^(?:apikey|secret|password|token|accesstoken|authtoken|authorization)$/;
+
 /**
- * Field names whose string value is a credential, matching the keys the text
- * patterns recognize. A draft's answer text also sits in `token`; the owner
- * streaming projection handles that field before any structured walk.
+ * Whether a structured field's value is withheld as a credential: a string of
+ * at least eight characters in a field these names list, or one the text
+ * detector withholds for its field name (`isCredentialFieldValue`). Shorter
+ * values stay, so an enum a projection keeps is never broken. A draft's
+ * answer text also sits in `token`; the owner streaming projection handles
+ * that field before any structured walk.
  */
-export function isCredentialField(key: string): boolean {
-  return /^(?:apikey|secret|password|token|accesstoken|authtoken|authorization)$/.test(key.replace(/[_-]/g, '').toLowerCase());
+export function isCredentialField(key: string, value: unknown): boolean {
+  return typeof value === 'string' && value.length >= 8 &&
+    (CREDENTIAL_FIELD_NAMES.test(key.replace(/[_-]/g, '').toLowerCase()) || isCredentialFieldValue(key, value));
 }

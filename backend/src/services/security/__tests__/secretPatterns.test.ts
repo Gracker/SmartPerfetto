@@ -12,6 +12,7 @@ import {
   credentialValues,
   endsInDanglingCredentialPrefix,
   findCredentialSpans,
+  isCredentialFieldValue,
   redactCredentialsInText,
   redactSecrets,
   redactSecretsForPublicArtifact,
@@ -1303,6 +1304,36 @@ describe('keyless random secrets in a literal (a heuristic with known misses)', 
     ['a.md', 'see Tools/results/android-comprehensive-runs/run-20260425-101445/report.md'],
   ])('keeps names joined from words and numbers: %s %j', (file, text) => {
     expect(redact(file, text)).toBe(text);
+  });
+});
+
+describe('a structured field is judged by its name as a key in text is', () => {
+  it.each([
+    ['clientSecret', 'synthetic-client-secret-value'],
+    ['db_password', 'synthetic-db-password'],
+    ['private_key', 'synthetic-private-key-body'],
+    ['X-Api-Key', 'synthetic-api-key-123'],
+    ['GITHUB_TOKEN', 'synthetic-token-value'],
+    ['csrfToken', 'hunter2long'],
+    ['db password', 'synthetic-db-password'],
+    ['pushToken', 'f8a9b7c6d5e4f3a2'],
+  ])('withholds %s', (key, value) => {
+    expect(isCredentialFieldValue(key, value)).toBe(true);
+  });
+
+  it.each([
+    ['maxTokens', 'unlimited-by-default'],
+    ['tokenCount', 'several-thousand'],
+    ['inputTokens', 'synthetic-secret-123456'],
+    ['cacheKey', 'synthetic-secret-123456'],
+    ['frameToken', 'frameLabel'],
+    ['pageToken', 'nextPageLabel'],
+    ['matchStrength', 'background'],
+    ['password', 'short'],
+    ['clientSecret', 'P0'],
+    ['secret', '1234567'],
+  ])('keeps %s', (key, value) => {
+    expect(isCredentialFieldValue(key, value)).toBe(false);
   });
 });
 

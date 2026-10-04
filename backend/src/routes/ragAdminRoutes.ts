@@ -1275,45 +1275,6 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
   });
 
-  router.get('/codebases/:id/excerpt', requireCodebaseScope('codebase:read'), (req, res) => {
-    const codebaseId = routeParam(req.params.id);
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const ref = registry.get(codebaseId, scope);
-    if (!ref) {
-      return res.status(404).json({success: false, error: `Codebase '${codebaseId}' not found`});
-    }
-    const chunkId = typeof req.query.chunkId === 'string' ? req.query.chunkId : '';
-    if (!chunkId) {
-      return res.status(400).json({success: false, error: '`chunkId` is required'});
-    }
-    const chunk = s.getChunk(chunkId, scope);
-    if (
-      !chunk ||
-      chunk.codebaseId !== codebaseId ||
-      !isCodeAwareChunk(chunk) ||
-      chunk.sourceGeneration !== activeCodebaseGeneration(ref)
-    ) {
-      return res.status(404).json({success: false, error: `Code excerpt '${chunkId}' not found`});
-    }
-    const maxLines = typeof req.query.maxLines === 'string'
-      ? Math.max(1, Math.min(80, Number(req.query.maxLines) || 20))
-      : 20;
-    const lines = chunk.snippet.split(/\r?\n/).slice(0, maxLines);
-    res.json({
-      success: true,
-      excerpt: {
-        chunkId,
-        codebaseId,
-        filePath: chunk.filePath,
-        lineRange: chunk.lineRange,
-        symbol: chunk.symbol,
-        language: chunk.language,
-        text: lines.join('\n'),
-        truncated: lines.length < chunk.snippet.split(/\r?\n/).length,
-      },
-    });
-  });
-
   router.post('/codebases/:id/reindex', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const codebaseId = routeParam(req.params.id);
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));

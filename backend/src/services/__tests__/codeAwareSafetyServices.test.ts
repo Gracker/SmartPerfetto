@@ -2017,6 +2017,27 @@ describe('owner source output isolation', () => {
     expect(draft?.content.token).toBe('The token budget is fine');
   });
 
+  it('withholds credential-named structured fields by the detector and keeps counts, enums and short values', () => {
+    const fields = {
+      clientSecret: 'synthetic-client-secret-value', db_password: 'synthetic-db-password',
+      private_key: 'synthetic-private-key-body', pushToken: 'f8a9b7c6d5e4f3a2', authorization: 'synthetic-authorization-1',
+      maxTokens: 'unlimited-by-default', tokenCount: 'several-thousand', frameToken: 'frameLabel',
+      matchStrength: 'background', password: 'short', secret: '1234567', maxOutputTokens: 4096,
+    };
+    const expected = {
+      ...fields, clientSecret: '[REDACTED_SECRET]', db_password: '[REDACTED_SECRET]',
+      private_key: '[REDACTED_SECRET]', pushToken: '[REDACTED_SECRET]', authorization: '[REDACTED_SECRET]',
+    };
+    const dispatch = {type: 'agent_task_dispatched' as const, timestamp: 1, content: {taskId: 't4', toolName: 'call_api',
+      args: fields}};
+    expect((projectOwnerCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en')?.content as {args: unknown}).args)
+      .toEqual(expected);
+    const envelope = createDataEnvelope({columns: ['name'], rows: [['frame']]}, {type: 'sql_result', source: 'fixture', title: 't'});
+    const [projected] = projectOwnerDataEnvelopes(sessionId, [{...envelope, data: {...envelope.data, ...fields}} as never]);
+    expect(projected.data).toMatchObject(expected);
+    expect(projected.data).toMatchObject({columns: ['name'], rows: [['frame']]});
+  });
+
   it('withholds a draft token the owner guard had to change', () => {
     registerCodeAwareCanary(sessionId, 'CANARY_IN_DRAFT_TOKEN');
     expect(projectOwnerCodeAwareStreamingUpdate(sessionId, {type: 'answer_token',

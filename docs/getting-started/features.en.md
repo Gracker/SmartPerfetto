@@ -233,7 +233,7 @@ Output:
 - Maps call stacks, native frames, or kernel symbols to relative file paths, line ranges, and symbols.
 - Performs bounded source lookup when a queryable trace anchor exists, or records a structured non-use reason; quantitative-only questions may be `not_needed`.
 - Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism; `corroborated|compatible|ambiguous|unverified` reports the binding strength.
-- Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Raw source text is fetched only through the controlled excerpt endpoint.
+- Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Source text appears only as quotations an authorized analysis saved with its own results; no API returns indexed source text.
 - If no codebase is configured for the session, the normal trace-only analysis path is unchanged.
 
 See [Code-Aware Analysis](code-aware-analysis.en.md) for the full workflow.

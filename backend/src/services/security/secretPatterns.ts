@@ -221,6 +221,20 @@ export function isCredentialKey(key: string): boolean {
   return phraseStrength(key) !== undefined;
 }
 
+/**
+ * Whether a structured field's string value is withheld as a credential by
+ * its field name, judged as a key in text is: any value of a strong key
+ * (`clientSecret`, `db_password`, `private_key`), a weak key's only when it
+ * looks like a credential. A value shorter than eight characters is never
+ * withheld, so an enum or flag a projection keeps (`background`, `P0`) is
+ * not broken by a credential-named field.
+ */
+export function isCredentialFieldValue(key: string, value: string): boolean {
+  if (value.length < 8) return false;
+  const strength = phraseStrength(key);
+  return strength === 'strong' || (strength === 'weak' && credentialShaped(value));
+}
+
 /** The stronger of two strengths. */
 function stronger(left: KeyStrength | undefined, right: KeyStrength | undefined): KeyStrength | undefined {
   return left === 'strong' || right === 'strong' ? 'strong' : left ?? right;

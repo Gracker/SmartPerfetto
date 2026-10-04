@@ -363,7 +363,7 @@ function projectPrivateEnvelopeValue(
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     // The owner reads the provenance a run without private context shows.
     if (!owner && PRIVATE_ENVELOPE_FORBIDDEN_KEYS.has(key.replace(/[_-]/g, '').toLowerCase())) continue;
-    const projectedEntry = owner && isCredentialField(key) && typeof entry === 'string' && entry.length >= 8
+    const projectedEntry = owner && isCredentialField(key, entry)
       ? '[REDACTED_SECRET]' : projectPrivateEnvelopeValue(sessionId, entry, depth + 1);
     if (projectedEntry !== undefined) projected[key] = projectedEntry;
   }

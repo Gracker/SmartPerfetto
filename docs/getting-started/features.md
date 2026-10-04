@@ -223,7 +223,7 @@ Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码
 - 把调用栈、native frame 或 kernel symbol 映射到相对文件路径、行号和 symbol。
 - 有可查询 trace 锚点时执行有界源码 lookup，否则保留结构化 non-use 原因；纯数量问题可为 `not_needed`。
 - Trace/Skill/SQL 证明发生，`CodeRef` 证明实现机制；结论用 `corroborated|compatible|ambiguous|unverified` 显示绑定强度。
-- Web 显示安全源码回执；HTML report、CLI、snapshot 和 API 共用同一 provenance 投影。源码正文只通过受控 excerpt endpoint 临时读取。
+- Web 显示安全源码回执；HTML report、CLI、snapshot 和 API 共用同一 provenance 投影。源码正文只以授权分析随结果保存的引用出现，没有 API 返回已索引的源码正文。
 - 未给 session 配置 codebase 时，普通 trace-only 分析路径保持不变。
 
 完整说明见 [Code-Aware Analysis](code-aware-analysis.md)。

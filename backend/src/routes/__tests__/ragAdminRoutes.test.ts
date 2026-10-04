@@ -2061,30 +2061,12 @@ describe('codebase routes', () => {
     expect(JSON.stringify(search.body)).not.toContain('simulateHeavyLaunch()');
     expect(search.body.result.results[0].chunk.snippetHash).toEqual(expect.any(String));
 
-    const chunkId = search.body.result.results[0].chunkId;
+    // No route returns an indexed chunk's raw text.
     const excerpt = await request(app)
       .get(`/api/rag/codebases/${codebaseId}/excerpt`)
-      .query({chunkId});
-    expect(excerpt.status).toBe(200);
-    expect(excerpt.body.excerpt.text).toContain('simulateHeavyLaunch()');
-    expect(excerpt.body.excerpt.filePath).toBe('launch-aosp/src/main/java/com/example/MainActivity.kt');
-
-    store.addChunk(makeChunk({
-      chunkId: 'stale-generation',
-      kind: 'app_source',
-      uri: 'codebase://stale/MainActivity.kt',
-      snippet: 'STALE_GENERATION_PRIVATE_CANARY',
-      codebaseId,
-      registryOrigin: 'codebase_registry',
-      sourceGeneration: 'codebase_0',
-      filePath: 'MainActivity.kt',
-      language: 'kotlin',
-    }), DEFAULT_SCOPE);
-    const staleExcerpt = await request(app)
-      .get(`/api/rag/codebases/${codebaseId}/excerpt`)
-      .query({chunkId: 'stale-generation'});
-    expect(staleExcerpt.status).toBe(404);
-    expect(JSON.stringify(staleExcerpt.body)).not.toContain('STALE_GENERATION_PRIVATE_CANARY');
+      .query({chunkId: search.body.result.results[0].chunkId});
+    expect(excerpt.status).toBe(404);
+    expect(JSON.stringify(excerpt.body)).not.toContain('simulateHeavyLaunch()');
   });
 
   it('uses the injected source enumerator for registration and reindex', async () => {
