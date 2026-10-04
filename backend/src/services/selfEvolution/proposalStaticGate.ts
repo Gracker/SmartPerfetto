@@ -34,7 +34,6 @@ import {
   validateStrategyDefinitionsInProcess,
 } from './inProcessValidator';
 import {stepNodesOf} from '../skillEngine/skillSteps';
-import {causeWordingReaders} from '../skillEngine/causeWordingEvidence';
 import {
   parseProposalSqlRegressionProofV1,
   parseProposalCandidateMaterializationV1,
@@ -448,16 +447,11 @@ function collectSkillValidation(
   candidateSkillIds: readonly string[] = [],
 ): void {
   const fragmentCache = fragments ?? new Map<string, string>();
-  // The registry is the same for both passes; its evidence readers are computed once.
-  const readers = causeWordingReaders(definitions);
+  // Both passes read the same registry; its evidence readers are computed once (registryCauseWordingReaders).
   const issues = [
-    ...validateSkillDefinitionsInProcess({
-      definitions, fragmentCache, predatingRuleSeverity: 'warning', causeWordingReaders: readers,
-    }).issues,
+    ...validateSkillDefinitionsInProcess({definitions, fragmentCache, predatingRuleSeverity: 'warning'}).issues,
     ...(candidateSkillIds.length > 0
-      ? validateSkillDefinitionsInProcess({
-        definitions, fragmentCache, affectedSkillIds: candidateSkillIds, causeWordingReaders: readers,
-      }).issues
+      ? validateSkillDefinitionsInProcess({definitions, fragmentCache, affectedSkillIds: candidateSkillIds}).issues
         .filter(issue => PREDATING_RULE_CODES.has(issue.code))
       : []),
   ];

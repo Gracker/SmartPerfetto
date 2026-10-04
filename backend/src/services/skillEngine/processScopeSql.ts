@@ -4,6 +4,7 @@
 
 import type { SkillDefinition, SqlProcessScopeDeclaration, ExactSqlSource } from './types';
 import { skillExecution, stepNodesOf, stepSkillReferences, type StepNode } from './skillSteps';
+import { RegistryDerivedCache } from './registryDerivedCache';
 
 export const EFFECTIVE_TARGET_FRAGMENT = 'fragments/effective_target_processes.sql';
 export const EXACT_UPID_TOKEN = '${__process_scope.upid}';
@@ -152,15 +153,75 @@ export function sqlScopeDeclarationError(
   return 'Target SQL has no supported exact UPID binding';
 }
 
+/** Whether, and how partially, an exact UPID run of a Skill is supported; `reason` says why not. */
+export interface ExactProcessScopeSupport {
+  supported: boolean;
+  reason?: string;
+  partial?: boolean;
+  limitations?: string[];
+}
+
 /** Same dependency closure is used for execution admission and capability catalogs. */
 export function getExactProcessScopeSupport(
   skill: SkillDefinition,
   registry: ReadonlyMap<string, SkillDefinition>,
   fragments: ReadonlyMap<string, string>,
   visiting = new Set<string>(),
-): { supported: boolean; reason?: string; partial?: boolean; limitations?: string[] } {
-  if (!skill.sql && !skill.steps?.length) return { supported: false, reason: `Skill has no executable SQL or steps: ${skill.name}` };
-  if (visiting.has(skill.name)) return { supported: false, reason: `Cyclic Skill dependency: ${skill.name}` };
+): ExactProcessScopeSupport {
+  return exactSupport(skill, registry, fragments, visiting, new Map()).support;
+}
+
+const catalogsByFingerprint = new RegistryDerivedCache<ReadonlyMap<string, ExactProcessScopeSupport>>();
+
+/**
+ * The exact scope support of every Skill in `registry`, by name: each Skill's
+ * closure is computed once, a Skill several others run included, instead of
+ * once per Skill that reaches it. The result is frozen and holds no reference
+ * to `registry`.
+ *
+ * A caller that holds the registry's fingerprint (buildSkillRegistryAttribution,
+ * which covers every definition and fragment) passes it, and the catalog is
+ * computed once per fingerprint: a changed registry has another one. Without
+ * it the catalog is computed afresh; hashing the registry for a key would cost
+ * more than the catalog.
+ */
+export function exactProcessScopeSupportCatalog(
+  registry: ReadonlyMap<string, SkillDefinition>,
+  fragments: ReadonlyMap<string, string>,
+  options: { registryFingerprint?: string } = {},
+): ReadonlyMap<string, ExactProcessScopeSupport> {
+  const compute = () => {
+    const memo = new Map<SkillDefinition, ExactProcessScopeSupport>();
+    return new Map([...registry].map(([name, skill]) =>
+      [name, frozenSupport(exactSupport(skill, registry, fragments, new Set(), memo).support)]));
+  };
+  return options.registryFingerprint ? catalogsByFingerprint.get(options.registryFingerprint, compute) : compute();
+}
+
+function frozenSupport(support: ExactProcessScopeSupport): ExactProcessScopeSupport {
+  return Object.freeze({ ...support, ...(support.limitations ? { limitations: Object.freeze([...support.limitations]) as string[] } : {}) });
+}
+
+/**
+ * One Skill's support. `memo` keeps each result that does not depend on the
+ * path that reached it: everything but a cycle, whose reason names the Skill
+ * where the walk came back.
+ */
+function exactSupport(
+  skill: SkillDefinition,
+  registry: ReadonlyMap<string, SkillDefinition>,
+  fragments: ReadonlyMap<string, string>,
+  visiting: ReadonlySet<string>,
+  memo: Map<SkillDefinition, ExactProcessScopeSupport>,
+): { support: ExactProcessScopeSupport; cyclic: boolean } {
+  const known = memo.get(skill);
+  if (known) return { support: known, cyclic: false };
+  const done = (support: ExactProcessScopeSupport) => {
+    memo.set(skill, support);
+    return { support, cyclic: false };
+  };
+  if (!skill.sql && !skill.steps?.length) return done({ supported: false, reason: `Skill has no executable SQL or steps: ${skill.name}` });
+  if (visiting.has(skill.name)) return { support: { supported: false, reason: `Cyclic Skill dependency: ${skill.name}` }, cyclic: true };
   const next = new Set(visiting).add(skill.name);
   const limitations = new Set<string>();
   // The Skill's own SQL, as an exact run executes it.
@@ -168,9 +229,9 @@ export function getExactProcessScopeSupport(
     if (unit.variant !== 'named' || typeof unit.source.sql !== 'string') continue;
     const where = unit.path === 'root' ? skill.name : `${skill.name}.${unit.path}`;
     const selected = sqlRunBy(unit.source, 'exact');
-    if (!selected) return { supported: false, reason: `${where}: Invalid exact_sql override; refusing the named SQL fallback` };
+    if (!selected) return done({ supported: false, reason: `${where}: Invalid exact_sql override; refusing the named SQL fallback` });
     const reason = sqlScopeDeclarationError(selected, fragments);
-    if (reason) return { supported: false, reason: `${where}: ${reason}` };
+    if (reason) return done({ supported: false, reason: `${where}: ${reason}` });
     if (selected.process_scope?.exact_unavailable) limitations.add(selected.process_scope.exact_unavailable);
     for (const limitation of selected.process_scope?.limitations || []) limitations.add(limitation);
   }
@@ -179,14 +240,17 @@ export function getExactProcessScopeSupport(
     .find(({node}) => node.type === 'pipeline' || node.type === 'comparison');
   if (unsupported) {
     const where = unsupported.name ? `${skill.name}.${unsupported.name}` : skill.name;
-    return { supported: false, reason: `${where}: exact UPID execution is not declared for ${unsupported.node.type}` };
+    return done({ supported: false, reason: `${where}: exact UPID execution is not declared for ${unsupported.node.type}` });
   }
   for (const reference of stepSkillReferences(skill, {executedOnly: true})) {
     const child = registry.get(reference.skillId);
-    if (!child) return { supported: false, reason: `${skill.name}.${reference.step.name}: Skill dependency is missing: ${reference.skillId}` };
-    const support = getExactProcessScopeSupport(child, registry, fragments, next);
-    if (!support.supported) return { supported: false, reason: support.reason };
+    if (!child) return done({ supported: false, reason: `${skill.name}.${reference.step.name}: Skill dependency is missing: ${reference.skillId}` });
+    const { support, cyclic } = exactSupport(child, registry, fragments, next, memo);
+    if (!support.supported) {
+      const failed = { supported: false, reason: support.reason };
+      return cyclic ? { support: failed, cyclic: true } : done(failed);
+    }
     support.limitations?.forEach(reason => limitations.add(reason));
   }
-  return { supported: true, ...(limitations.size ? { partial: true, limitations: [...limitations] } : {}) };
+  return done({ supported: true, ...(limitations.size ? { partial: true, limitations: [...limitations] } : {}) });
 }

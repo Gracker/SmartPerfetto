@@ -19,7 +19,7 @@ import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillE
 import {skillExecution, stepConditionExpressions, stepNodesOf, stepSkillReferences} from '../skillEngine/skillSteps';
 import {executableSqlUnits} from '../skillEngine/processScopeSql';
 import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
-import {causeWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
+import {registryCauseWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
 import type {DiagnosticStep, SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -93,7 +93,7 @@ export interface ValidateSkillDefinitionsInProcessInput {
    * and a proposal's view of Skills it does not change pass 'warning'.
    */
   predatingRuleSeverity?: InProcessValidationSeverity;
-  /** Evidence readers across `definitions`, when the caller validates the same registry more than once. */
+  /** Evidence readers across `definitions`; computed once per registry content when absent. */
   causeWordingReaders?: CauseWordingReaders;
 }
 
@@ -118,25 +118,6 @@ function issue(
   message: string,
 ): InProcessValidationIssue {
   return {severity, code, skillId, path, message};
-}
-
-const readersByRegistry = new WeakMap<ReadonlyMap<string, SkillDefinition>, CauseWordingReaders>();
-
-/**
- * Evidence readers across the registry `skill` is validated in, computed once
- * per registry; without one, only `skill` itself is known.
- */
-function registryCauseWordingReaders(
-  skill: SkillDefinition,
-  definitions: ReadonlyMap<string, SkillDefinition> | undefined,
-): CauseWordingReaders {
-  if (!definitions) return causeWordingReaders([skill]);
-  let readers = readersByRegistry.get(definitions);
-  if (!readers) {
-    readers = causeWordingReaders([...definitions.values()]);
-    readersByRegistry.set(definitions, readers);
-  }
-  return readers;
 }
 
 function validateDefinitionShape(
@@ -356,7 +337,8 @@ export function validateSkillDefinitionInProcess(
   }
   // Heat or frequency-cap wording reads as a conclusion in either language;
   // only evidence the Skill reads may support it (causeWordingEvidence.ts).
-  const readers = options.causeWordingReaders ?? registryCauseWordingReaders(skill, options.definitions);
+  const readers = options.causeWordingReaders
+    ?? registryCauseWordingReaders(options.definitions ? [...options.definitions.values()] : [skill]);
   for (const site of unsupportedCauseWording(skill, readers)) {
     const quoted = site.text.length > 80 ? `${site.text.slice(0, 80)}…` : site.text;
     issues.push(issue('error', 'cause_wording_without_evidence', skill.name,
@@ -585,7 +567,7 @@ export function validateSkillDefinitionsInProcess(
     ? [...new Set(input.affectedSkillIds)].sort()
     : [...byId.keys()].sort();
   const knownSkillIds = input.knownSkillIds ?? new Set(byId.keys());
-  const readers = input.causeWordingReaders ?? causeWordingReaders([...byId.values()]);
+  const readers = input.causeWordingReaders ?? registryCauseWordingReaders([...byId.values()]);
   for (const skillId of selectedIds) {
     const definition = byId.get(skillId);
     if (!definition) {

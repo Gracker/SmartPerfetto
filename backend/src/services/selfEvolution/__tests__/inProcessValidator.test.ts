@@ -10,6 +10,7 @@ import {
 import {loadStrategies} from '../../../agentv3/strategyLoader';
 import {ensureSkillRegistryInitialized, skillRegistry} from '../../skillEngine/skillLoader';
 import * as skillFragments from '../../skillEngine/skillFragments';
+import {exactProcessScopeSupportCatalog, getExactProcessScopeSupport} from '../../skillEngine/processScopeSql';
 
 function skill(
   name: string,
@@ -559,6 +560,18 @@ describe('in-process effective Skill validator', () => {
       .filter(definition => skillRegistry.getSkillOrigin(definition.name)?.origin !== 'external_pack');
     const result = validateSkillDefinitionsInProcess({definitions, fragmentCache: skillRegistry.getFragmentCache()});
     expect(result.issues.filter(entry => entry.severity === 'error')).toEqual([]);
+  });
+
+  // The catalog shares one memo across the registry; each Skill's answer is the one it gets alone.
+  it('gives every built-in Skill the exact scope support of its own closure', async () => {
+    await ensureSkillRegistryInitialized();
+    const definitions = new Map(skillRegistry.getAllSkills().map(definition => [definition.name, definition]));
+    const fragments = skillRegistry.getFragmentCache();
+    const catalog = exactProcessScopeSupportCatalog(definitions, fragments);
+    expect([...catalog.keys()]).toEqual([...definitions.keys()]);
+    for (const [name, definition] of definitions) {
+      expect([name, catalog.get(name)]).toEqual([name, getExactProcessScopeSupport(definition, definitions, fragments)]);
+    }
   });
 
   // A condition is JavaScript (ExpressionEvaluator.evaluateCondition): SQL AND/OR

@@ -25,6 +25,7 @@ import {
   validateSkillDisplayContract,
 } from '../../services/skillEngine/displayContractValidator';
 import { validateSkillDefinitionInProcess } from '../../services/selfEvolution/inProcessValidator';
+import { registryCauseWordingReaders, type CauseWordingReaders } from '../../services/skillEngine/causeWordingEvidence';
 import {
   UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys, unknownVendorOverrideKeys,
 } from '../../services/skillEngine/skillTopLevelKeys';
@@ -103,6 +104,7 @@ function loadSkillFragmentCache(): ReadonlyMap<string, string> {
   return skillFragmentCache;
 }
 let skillDefinitionsById: ReadonlyMap<string, SkillDefinition> | undefined;
+let diskCauseWordingReaders: CauseWordingReaders | undefined;
 
 /** Every Skill on disk by name, so a cross-Skill contract can resolve its target. */
 function loadSkillDefinitionsById(): ReadonlyMap<string, SkillDefinition> {
@@ -723,9 +725,12 @@ export function validateContracts(skill: SkillDefinition): { errors: string[]; w
 
   // 2. Shared in-process checks. Runtime reconciliation and the source CLI
   // intentionally use the same pure validator; no npm/child-process boundary.
+  const definitions = loadSkillDefinitionsById();
   for (const validationIssue of validateSkillDefinitionInProcess(skill, {
     fragmentCache: loadSkillFragmentCache(),
-    definitions: loadSkillDefinitionsById(),
+    definitions,
+    // The registry is the same for every file: its readers are keyed once, not per file.
+    causeWordingReaders: diskCauseWordingReaders ??= registryCauseWordingReaders([...definitions.values()]),
   })) {
     const formatted = `${validationIssue.path}: ${validationIssue.message}`;
     if (validationIssue.severity === 'error') {
