@@ -803,16 +803,25 @@ was identified (`vendor` is not `aosp`, `unknown` or `other`).
 
 Admin path: `/api/admin`
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/skills` | Admin Skill list |
-| `POST` | `/skills` | Create a Skill |
-| `PUT` | `/skills/:skillId` | Update a Skill |
-| `DELETE` | `/skills/:skillId` | Delete a Skill |
-| `POST` | `/skills/validate` | Validate a Skill |
-| `POST` | `/skills/reload` | Reload Skills |
-| `POST` | `/strategies/reload` | Reload strategies |
-| `GET` | `/self-improve/metrics` | Self-improvement metrics |
+| Method | Path | RBAC | Purpose |
+|---|---|---|---|
+| `GET` | `/skills` | `agent:run` | Admin Skill list (metadata only) |
+| `GET` | `/skills/:skillId` | `runtime:manage` | Skill definition and raw YAML; `filePath` is relative to the Skills root (`composite/<id>.skill.yaml`) |
+| `POST` | `/skills` | `runtime:manage` | Create a custom Skill (disabled in enterprise mode) |
+| `PUT` | `/skills/:skillId` | `runtime:manage` | Update a custom Skill (disabled in enterprise mode) |
+| `DELETE` | `/skills/:skillId` | `runtime:manage` | Delete a custom Skill (disabled in enterprise mode) |
+| `POST` | `/skills/validate` | `runtime:manage` | Validate Skill YAML without saving |
+| `POST` | `/skills/reload` | `runtime:manage` | Reload the process-wide Skill registry |
+| `GET` | `/vendors` | `agent:run` | Vendor ids and the Skills they override |
+| `GET` | `/vendors/:vendor/overrides` | `runtime:manage` | Vendor overrides with raw YAML |
+| `POST` | `/strategies/reload` | `runtime:manage` | Reload strategies |
+| `GET` | `/self-improve/metrics` | `audit:read` | Self-improvement metrics |
+
+The built-in Skill catalog is the agent's own tool catalog, so whoever may run
+the agent may list it; raw Skill content, server-side validation, reloads and
+writes manage the runtime's analysis content. A missing permission is `403`
+with `{success: false, error: 'Forbidden', details}`. Keyless local mode and
+the operator API key hold every permission.
 
 ## Self-Evolution Admin API
 

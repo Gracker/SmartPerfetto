@@ -667,16 +667,23 @@ slice，结果按 trace 身份缓存。响应 schema `trace_vendor@1`：
 
 Admin path: `/api/admin`
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/skills` | 管理端 Skill 列表 |
-| `POST` | `/skills` | 创建 Skill |
-| `PUT` | `/skills/:skillId` | 更新 Skill |
-| `DELETE` | `/skills/:skillId` | 删除 Skill |
-| `POST` | `/skills/validate` | 校验 Skill |
-| `POST` | `/skills/reload` | 重新加载 Skill |
-| `POST` | `/strategies/reload` | 重新加载策略 |
-| `GET` | `/self-improve/metrics` | 自改进指标 |
+| 方法 | 路径 | RBAC | 说明 |
+|---|---|---|---|
+| `GET` | `/skills` | `agent:run` | 管理端 Skill 列表（仅元数据） |
+| `GET` | `/skills/:skillId` | `runtime:manage` | Skill 定义与原始 YAML；`filePath` 为相对 Skills 根目录的路径（`composite/<id>.skill.yaml`） |
+| `POST` | `/skills` | `runtime:manage` | 创建自定义 Skill（企业模式下禁用） |
+| `PUT` | `/skills/:skillId` | `runtime:manage` | 更新自定义 Skill（企业模式下禁用） |
+| `DELETE` | `/skills/:skillId` | `runtime:manage` | 删除自定义 Skill（企业模式下禁用） |
+| `POST` | `/skills/validate` | `runtime:manage` | 校验 Skill YAML，不保存 |
+| `POST` | `/skills/reload` | `runtime:manage` | 重新加载进程级 Skill 注册表 |
+| `GET` | `/vendors` | `agent:run` | 厂商 ID 及其覆盖的 Skill |
+| `GET` | `/vendors/:vendor/overrides` | `runtime:manage` | 厂商覆盖及原始 YAML |
+| `POST` | `/strategies/reload` | `runtime:manage` | 重新加载策略 |
+| `GET` | `/self-improve/metrics` | `audit:read` | 自改进指标 |
+
+内置 Skill 目录就是 Agent 自己的工具目录，能运行 Agent 的调用方就能列出它；原始 Skill 内容、
+服务端校验、重新加载和写入属于管理运行时的分析内容。缺少权限返回 `403`
+`{success: false, error: 'Forbidden', details}`。无密钥本地模式和运维 API Key 拥有全部权限。
 
 ## Self-Evolution Admin API
 
