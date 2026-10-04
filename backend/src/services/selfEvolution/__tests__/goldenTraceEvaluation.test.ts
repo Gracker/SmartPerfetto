@@ -2,19 +2,11 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-
 import type {EvalGroundTruthV1} from '../../../types/selfEvolution';
 import type {
   ClaimSupportV1,
 } from '../../../types/evidenceContract';
 import type {RunManifestV1} from '../../../types/selfEvolution';
-import {
-  executionEvalCaseView,
-  loadGoldenTraceRegistry,
-} from '../goldenTraceRegistry';
 import {
   parseEvalGroundTruth,
   parseGoldenTraceObservation,
@@ -278,142 +270,6 @@ describe('golden trace deterministic scorer', () => {
     expect(result).toMatchObject({status: 'scored', passed: false});
     expect(result.status === 'scored' ? result.blockers : [])
       .toContain(expectedBlocker);
-  });
-});
-
-describe('golden trace registry compiler', () => {
-  it('allows authorized source quotations without weakening private-data or trace-proof boundaries', () => {
-    const sourceCase = loadGoldenTraceRegistry().cases.find(
-      item => item.caseId === 'synthetic-source-analysis-semantic-v1',
-    );
-    expect(sourceCase).toBeDefined();
-    const rubric = (sourceCase?.goldenPoints ?? []).join('\n');
-    expect(rubric).toContain('owner-facing quotations are allowed with relative source references');
-    expect(rubric).toContain('exact authorized read');
-    expect(rubric).toContain('credentials, private canaries, registered absolute roots');
-    expect(rubric).toContain('private-knowledge material outside the authorized inputs remain excluded');
-    expect(rubric).toContain('a CodeRef alone cannot prove that the event occurred');
-    expect(rubric).not.toContain('without exposing raw source text');
-  });
-
-  it('unifies the constructed catalog, scenarios, coverage, golden facts, and splits', () => {
-    const registry = loadGoldenTraceRegistry();
-    const authored = JSON.parse(fs.readFileSync(path.resolve(
-      __dirname, '../../../../strategies/golden-trace-eval.registry.json',
-    ), 'utf8')) as {cases: Array<{
-      caseId: string; catalogAlias: string; goldenPoints: string[];
-      split: string; expectedScene: string; query: string; analysisMode: string;
-    }>};
-    const catalog = JSON.parse(fs.readFileSync(path.resolve(
-      __dirname, '../../../../../Trace/catalog.json',
-    ), 'utf8')) as {cases: Array<{
-      id: string; kind: string; purpose?: string; trace: {sha256: string};
-      coverage: {expectations: Array<{id: string}>};
-    }>};
-    // Every constructed case is either seeded here or explicitly a fixture;
-    // an unmarked case without a seed fails, and so does a seeded fixture.
-    const constructed = catalog.cases.filter(item => item.kind === 'constructed');
-    const analysisCases = constructed.filter(item => item.purpose !== 'fixture');
-    expect(constructed.filter(item => item.purpose === 'fixture').length).toBeGreaterThan(0);
-    expect(authored.cases.map(item => item.catalogAlias).sort()).toEqual(
-      analysisCases.map(item => item.id).sort(),
-    );
-    expect(registry.cases.map(item => item.caseId).sort()).toEqual(
-      authored.cases.map(item => item.caseId).sort(),
-    );
-    for (const sourceCase of authored.cases) {
-      const compiled = registry.cases.find(item => item.caseId === sourceCase.caseId)!;
-      const sourceTrace = catalog.cases.find(item => item.id === sourceCase.catalogAlias)!;
-      expect(compiled).toMatchObject({
-        catalogAlias: sourceCase.catalogAlias,
-        goldenPoints: sourceCase.goldenPoints,
-        split: sourceCase.split,
-        expectedScene: sourceCase.expectedScene,
-        query: sourceCase.query,
-        analysisMode: sourceCase.analysisMode,
-      });
-      expect(compiled.goldenPoints).toEqual(sourceCase.goldenPoints);
-      expect(compiled.traces).toEqual([{
-        role: 'current', catalogAlias: sourceCase.catalogAlias, contentHash: sourceTrace.trace.sha256,
-      }]);
-      expect(compiled.groundTruth.requiredEvidence).toEqual(sourceTrace.coverage.expectations.map(item => ({
-        id: item.id, kind: 'coverage_expectation', locator: `${sourceCase.catalogAlias}:${item.id}`,
-      })));
-    }
-    expect(registry.cases.flatMap(item => item.groundTruth.requiredFacts)
-      .filter(fact => fact.evaluation === 'semantic')).toHaveLength(0);
-    expect(new Set(registry.cases.map(item => item.caseId)).size).toBe(authored.cases.length);
-    const expectedEvidenceCount = analysisCases
-      .reduce((count, item) => count + item.coverage.expectations.length, 0);
-    expect(new Set(registry.cases.flatMap(item =>
-      item.groundTruth.requiredEvidence.map(evidence => evidence.locator))).size)
-      .toBe(expectedEvidenceCount);
-  });
-
-  it('refuses to seed a fixture case', () => {
-    const registryPath = path.resolve(__dirname, '../../../../strategies/golden-trace-eval.registry.json');
-    const authored = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as {cases: Array<{catalogAlias: string}>};
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'golden-trace-fixture-'));
-    try {
-      const fixtureRegistryPath = path.join(directory, 'registry.json');
-      fs.writeFileSync(fixtureRegistryPath, JSON.stringify({
-        ...authored,
-        cases: [{...authored.cases[0], catalogAlias: 'device-identity-pixel-6-pro'}],
-      }));
-      expect(() => loadGoldenTraceRegistry(fixtureRegistryPath))
-        .toThrow('golden_trace_catalog_case_fixture_only:device-identity-pixel-6-pro');
-    } finally {
-      fs.rmSync(directory, {recursive: true, force: true});
-    }
-  });
-
-  it('compiles duration and identity facts but never absolute timestamps or causal edges', () => {
-    const registry = loadGoldenTraceRegistry();
-    const rendering = registry.cases.find(item =>
-      item.catalogAlias === 'rendering-jank')!;
-    expect(rendering.groundTruth.numericExpectations.some(item =>
-      item.observationKey.endsWith('.duration_ns'))).toBe(true);
-    expect(rendering.groundTruth.identityExpectations.some(item =>
-      item.observationKey.endsWith('.name')
-      && item.expected === 'Choreographer#doFrame')).toBe(true);
-    expect(rendering.groundTruth.identityExpectations.some(item =>
-      item.observationKey.endsWith('.thread_name')
-      && item.expected === 'RenderThread')).toBe(true);
-    expect(rendering.groundTruth.identityExpectations.some(item =>
-      item.observationKey.endsWith('.process_name')
-      && item.expected === 'com.smartperfetto.fixture')).toBe(true);
-    expect(rendering.groundTruth.numericExpectations.some(item =>
-      item.observationKey.endsWith('.at_ns'))).toBe(false);
-    expect(rendering.groundTruth.causalEdges).toEqual([]);
-  });
-
-  it('redacts every holdout oracle field from the execution view', () => {
-    const registry = loadGoldenTraceRegistry();
-    const holdout = registry.cases.find(item => item.split === 'holdout')!;
-    const fullText = JSON.stringify(holdout.groundTruth);
-    const execution = executionEvalCaseView(holdout);
-    const executionText = JSON.stringify(execution);
-
-    expect(execution).not.toHaveProperty('groundTruth');
-    expect(execution).not.toHaveProperty('goldenPoints');
-    expect(execution).not.toHaveProperty('split');
-    for (const fact of holdout.groundTruth.requiredFacts) {
-      expect(executionText).not.toContain(fact.statement);
-    }
-    expect(executionText).not.toContain(fullText);
-  });
-
-  it('keeps the registry bound to current catalog trace hashes', () => {
-    const registry = loadGoldenTraceRegistry();
-    const catalog = JSON.parse(fs.readFileSync(path.resolve(
-      __dirname,
-      '../../../../../Trace/catalog.json',
-    ), 'utf8')) as {cases: Array<{id: string; trace: {sha256: string}}>};
-    for (const item of registry.cases) {
-      expect(item.traces[0].contentHash).toBe(
-        catalog.cases.find(entry => entry.id === item.catalogAlias)?.trace.sha256,
-      );
-    }
   });
 });
 

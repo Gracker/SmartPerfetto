@@ -1953,9 +1953,6 @@ strategies:
   backend/strategies/selfevolve-proposal.template.md:
     disposition: product-only
     reason: SmartPerfetto self-evolution proposal generation, persistence, and gated overlay lifecycle
-  backend/strategies/golden-trace-eval.registry.json:
-    disposition: product-only
-    reason: SmartPerfetto golden trace evaluation corpus and gated overlay lifecycle
   backend/strategies/smart.strategy.md:
     workflow: trace-overview
     disposition: exported

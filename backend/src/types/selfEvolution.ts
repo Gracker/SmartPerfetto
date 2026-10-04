@@ -1015,24 +1015,6 @@ export interface RepositoryTargetBindingV1 {
   contentHash: string;
 }
 
-export interface RepositoryPatchArtifactV1 {
-  schemaVersion: 1;
-  artifactId: string;
-  proposalId: string;
-  gateAttemptId: string;
-  gateAttemptOrdinal: number;
-  targetBindingContentHash: string;
-  patch: string;
-  patchContentHash: string;
-  reversePatch: string;
-  reversePatchContentHash: string;
-  applyCheck: 'passed';
-  sourceMaintainer: true;
-  gitCapability: 'available';
-  createdAt: number;
-  contentHash: string;
-}
-
 export interface ContributionBundleArtifactV1 {
   schemaVersion: 1;
   artifactId: string;

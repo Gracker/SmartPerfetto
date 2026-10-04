@@ -40,7 +40,7 @@ The command copies evidence atomically into ignored `Trace/real/.private/<id>/`.
 
 Constructed cases keep source scenarios and overlay protobufs in Git; combined traces are generated. Copy [the scenario template](./constructed/_templates/scenario.example.json), declare Android compatibility in `case.json`, assign each target explicitly, then run `npm run trace:regression`. Adding a Skill or Strategy without a current expectation fails validation. Use separate case ids with non-overlapping API ranges when Android behavior differs.
 
-Every constructed case is an analysis scenario that `backend/strategies/golden-trace-eval.registry.json` seeds for Self-Evolution evaluation, unless its `case.json` declares `"purpose": "fixture"`. A fixture case carries data for a non-analysis test only (for example device identity metadata over a borrowed base), has no Skill or Strategy coverage, and must not be seeded; the golden registry compiler rejects a seed for one.
+Every constructed case is an analysis scenario unless its `case.json` declares `"purpose": "fixture"`. A fixture case carries data for a non-analysis test only (for example device identity metadata over a borrowed base) and has no Skill or Strategy coverage.
 
 ## Real cases
 

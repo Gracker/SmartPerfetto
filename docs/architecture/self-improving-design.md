@@ -22,7 +22,7 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | Curated/runtime Skill Notes 注入 | 已接入，默认关闭 | `SELF_IMPROVE_NOTES_INJECT_ENABLED=1`；quick path 预算默认 0 |
 | 学习 case（capture/review/ingest） | 已退役 | 管线、worker、CLI 与指标端点已删除；旧数据不再被读取、导出或写入，见下文 |
 | 人工 case 准入与读取 | 已接入 | 分析只读取策展证明有效的 case；终结召回需 `CASE_EVOLUTION_RETRIEVE_ENABLED`，背景注入另需 `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`（均默认关闭）；`recall_similar_case` 与 similarity case hint 按需读取 |
-| Legacy ReviewWorker | 组件和单测存在，未接入应用启动 | `SELF_IMPROVE_REVIEW_ENABLED` 只影响已显式构造的 worker |
+| Legacy ReviewWorker / review SDK | 已删除 | 从未接入应用启动；旧 review outbox 只保留只读计数（见存储与安全），`SELF_IMPROVE_REVIEW_ENABLED` 没有读取点 |
 | Strategy auto-patch | 已删除 | 只能生成不参与运行时的 `phase_hints`；`SELF_IMPROVE_AUTOPATCH_ENABLED` 没有读取点 |
 | Skill SQL auto-patch | 不支持 | 没有生产入口，不允许模型直接修改 Skill SQL |
 | Self-Evolution manifest / feedback / eval corpus | 已接入，默认关闭 | `SELF_EVOLUTION_ENABLED=true`；private feedback 与 public curation 物理隔离 |
@@ -275,10 +275,11 @@ marker 可以共享 failure identity，但各自保留来源、scope 和状态�
 
 ## 组件级 Review 与 Patch 边界
 
-`backend/src/agentv3/selfImprove/` 仍包含 outbox、review SDK、strategy fingerprint 和
-supersede。这些是可测试组件，不代表生产启动：
+`backend/src/agentv3/selfImprove/` 仍包含 review outbox 的只读计数、strategy
+fingerprint 和 supersede。这些是可测试组件，不代表生产启动：
 
-- Legacy `ReviewWorker` 没有在 `backend/src/index.ts` 构造；
+- Legacy `ReviewWorker` 与 review SDK 已删除，它们从未在 `backend/src/index.ts` 构造；
+  review outbox 只剩只读视图，供指标端点统计旧数据，产品不再创建或写入它；
 - `SELF_IMPROVE_NOTES_WRITE_ENABLED` 没有生产读取点；
 - 组件级 strategy patch（phase-hint renderer、patch applier、worktree runner）已删除：
   它只能生成 `phase_hints`，而 `phase_hints` 不参与分析运行时。Self-Evolution 的
@@ -297,7 +298,7 @@ supersede。这些是可测试组件，不代表生产启动：
 | 数据 | 当前位置 | 边界 |
 |---|---|---|
 | Pattern memory | `backendLogPath()` 下的 analysis pattern stores | 默认 `backend/logs`，可由 `SMARTPERFETTO_BACKEND_LOG_DIR` 重定向 |
-| Legacy review outbox | `backend/data/self_improve/self_improve.db` | 组件级 SQLite outbox |
+| Legacy review outbox | `backend/data/self_improve/self_improve.db` | 只读；写端已删除，只有指标端点读取旧数据的计数 |
 | Supersede markers | `backend/data/self_improve/supersede.db` | 组件级 strategy 状态 |
 | 学习 case outbox（已退役） | 数据根下 `self_improve/case_evolution.db` | 不再打开；清理方法见上文 |
 | Runtime Skill Notes | backend runtime logs/data path | 不进 git |

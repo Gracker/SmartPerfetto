@@ -15,7 +15,6 @@ import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {SOURCE_USE_DECISION_SCHEMA_VERSION} from '../codebase/sourceUseDecision';
 import {filterRagLookup} from '../rag/lookupResponseFilter';
-import {SessionToolResultRegistry, projectedSidecarMissing} from '../rag/sessionToolResultRegistry';
 import {
   projectRagResultForSseAndLog,
   projectToolResultForExternalSurface,
@@ -1014,7 +1013,7 @@ describe('code-aware output registry bounds', () => {
   });
 });
 
-describe('tool result projection and session registry', () => {
+describe('tool result projection', () => {
   it('projects sanitized RAG snippets to hashes for SSE/log payloads', () => {
     const projected = projectRagResultForSseAndLog('lookup_app_source', {
       query: 'MainActivity',
@@ -1298,22 +1297,6 @@ describe('tool result projection and session registry', () => {
       outcome: 'budget_exceeded',
       sourceRefs: [],
     }));
-  });
-
-  it('keeps runtime tool results namespaced by session/run/runtime/invocation', () => {
-    const registry = new SessionToolResultRegistry();
-    const target = {sessionId: 's1', runId: 'r1', runtime: 'openai' as const, invocationId: 'tool-1'};
-    const alias = {sessionId: 's1', runId: 'r1', runtime: 'claude' as const, invocationId: 'tool-1'};
-    const sidecar = projectedSidecarMissing('lookup_app_source');
-    registry.put(target, {llmPayload: {content: 'provider payload'}, sidecar});
-    registry.alias(alias, target);
-
-    expect(registry.getSidecar(alias)).toEqual(sidecar);
-    expect(registry.getLlmPayload(target)).toEqual({content: 'provider payload'});
-
-    registry.clearRun('s1', 'r1');
-    expect(registry.getSidecar(target)).toBeUndefined();
-    expect(registry.getSidecar(alias)).toBeUndefined();
   });
 });
 

@@ -15,7 +15,6 @@ import {parseBreakpadSym, resolveBreakpadAddress} from '../symbol/breakpadSymPar
 import {parseKallsyms, resolveKallsymsAddress} from '../symbol/kallsymsParser';
 import {parseR8Mapping, retraceR8Symbol} from '../symbol/r8MappingParser';
 import {SymbolResolver} from '../symbol/symbolResolver';
-import {normalizeTraceSymbolRows} from '../symbol/traceSymbolContext';
 
 let tmpDir: string;
 let store: RagStore;
@@ -185,15 +184,5 @@ describe('SymbolResolver', () => {
       buildId: 'aosp-build',
       breakpadSymText: 'MODULE Linux arm64 AOSP libhwui.so\nFUNC 1000 40 0 DrawFrameTask::run\n',
     }).candidates[0].chunkId).toBe('aosp-1');
-  });
-
-  it('normalizes trace symbol rows into build-id aware context', () => {
-    const context = normalizeTraceSymbolRows([
-      {module_name: 'libhwui.so', build_id: 'abc', relative_pc: '0x10', function_name: 'DrawFrameTask::run'},
-      {mapping_name: 'vmlinux', symbol: 'binder_wait_for_work'},
-    ]);
-    expect(context.hasBuildIds).toBe(true);
-    expect(context.modules).toEqual(['libhwui.so', 'vmlinux']);
-    expect(context.frames[0]).toMatchObject({module: 'libhwui.so', buildId: 'abc'});
   });
 });
