@@ -1821,8 +1821,8 @@ describe('OpenAI candidate-bound privacy projection', () => {
     revokeCodeAwareOutputGuards(sessionId);
     const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime); mockRun(sdkStream('Native answer'));
     try {
-      const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, analysisMode: 'fast',
-        knowledgeSourceIds: ['private-source']});
+      const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, analysisMode: 'fast',
+        knowledgeSourceIds: ['private-source']}));
       expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
       expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
         recordedTurn: sessionContextManager.get(sessionId, 'trace')?.getAllTurns().slice(-1)[0]?.result});
