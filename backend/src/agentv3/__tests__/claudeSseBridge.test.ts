@@ -543,99 +543,74 @@ describe('createSseBridge', () => {
     } finally {jest.useRealTimers();}
   });
 
-  it('projects private wiki tool results before emitting agent_response', () => {
+  /**
+   * A document-knowledge search result as `search_knowledge` returns it. The
+   * excerpt (document text) is the canary; the title may reach the owner's
+   * narration, which is a separate audience.
+   */
+  const knowledgeSearchResult = (canary: string): string => JSON.stringify({success: true, hits: [{
+    id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+    title: 'Handler', headingPath: ['Handler'], relativePath: 'private/notes.md',
+    lineRange: {start: 3, end: 9}, excerpt: canary,
+  }]});
+
+  it('projects document knowledge results before emitting agent_response', () => {
     const updates: StreamingUpdate[] = [];
     const bridge = bridgeFor((update) => updates.push(update));
     bridge.handleMessage({
       type: 'assistant',
       message: {content: [{
         type: 'tool_use',
-        id: 'wiki-call',
-        name: 'mcp__smartperfetto__lookup_blog_knowledge',
-        input: {source: 'android_internals_wiki'},
+        id: 'knowledge-call',
+        name: 'mcp__smartperfetto__search_knowledge',
+        input: {query: 'Handler'},
       }]},
     });
-    const privateResult = JSON.stringify({
-      success: true,
-      result: {
-        query: 'Handler',
-        probed: ['android_internals_wiki'],
-        retrievedAt: 1,
-        legacyPath: false,
-        hits: [{
-          chunkId: 'wiki-1',
-          score: 1,
-          metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-          snippet: 'CLAUDE_PRIVATE_WIKI_CANARY',
-        }],
-      },
-    });
+    const privateResult = knowledgeSearchResult('CLAUDE_PRIVATE_KNOWLEDGE_CANARY');
 
     bridge.handleMessage({
       type: 'user',
       tool_use_result: privateResult,
       message: {content: [{
         type: 'tool_result',
-        tool_use_id: 'wiki-call',
+        tool_use_id: 'knowledge-call',
         content: privateResult,
       }]},
     });
 
-    const serialized = JSON.stringify(updates.filter(update => update.type === 'agent_response'));
-    expect(serialized).not.toContain('CLAUDE_PRIVATE_WIKI_CANARY');
-    expect(serialized).toContain('snippetHash');
+    const responses = updates.filter(update => update.type === 'agent_response');
+    expect(JSON.stringify(responses)).not.toContain('CLAUDE_PRIVATE_KNOWLEDGE_CANARY');
+    expect(JSON.parse(String(responses[0]?.content.result))).toMatchObject({knowledge: {referenceCount: 1}});
   });
 
   it('does not republish an unassociated replay result as a new tool response', () => {
     const updates: StreamingUpdate[] = [];
     const bridge = bridgeFor((update) => updates.push(update));
-    const privateResult = JSON.stringify({result: {
-      query: 'Handler',
-      probed: ['android_internals_wiki'],
-      retrievedAt: 1,
-      legacyPath: false,
-      hits: [{
-        chunkId: 'wiki-replay',
-        score: 1,
-        metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-        snippet: 'CLAUDE_REPLAY_PRIVATE_WIKI_CANARY',
-      }],
-    }});
+    const privateResult = knowledgeSearchResult('CLAUDE_REPLAY_PRIVATE_KNOWLEDGE_CANARY');
 
     bridge.handleMessage({
       type: 'user',
       tool_use_result: privateResult,
       message: {content: [{
         type: 'tool_result',
-        tool_use_id: 'replayed-wiki-call',
+        tool_use_id: 'replayed-knowledge-call',
         content: privateResult,
       }]},
     });
 
     const serialized = JSON.stringify(updates);
-    expect(serialized).not.toContain('CLAUDE_REPLAY_PRIVATE_WIKI_CANARY');
+    expect(serialized).not.toContain('CLAUDE_REPLAY_PRIVATE_KNOWLEDGE_CANARY');
     expect(updates).toEqual([]);
   });
 
-  it('projects private wiki results before recording Claude plan evidence', () => {
+  it('projects document knowledge results before recording Claude plan evidence', () => {
     const result = claudeRuntimeTesting.projectClaudeToolResultForPlan(
-      'lookup_blog_knowledge',
-      JSON.stringify({result: {
-        query: 'Handler',
-        probed: ['android_internals_wiki'],
-        retrievedAt: 1,
-        legacyPath: false,
-        hits: [{
-          chunkId: 'wiki-1',
-          score: 1,
-          metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-          snippet: 'CLAUDE_PLAN_PRIVATE_WIKI_CANARY',
-        }],
-      }}),
+      'search_knowledge',
+      knowledgeSearchResult('CLAUDE_PLAN_PRIVATE_KNOWLEDGE_CANARY'),
     );
 
-    expect(result).not.toContain('CLAUDE_PLAN_PRIVATE_WIKI_CANARY');
-    expect(result).toContain('snippetHash');
+    expect(result).not.toContain('CLAUDE_PLAN_PRIVATE_KNOWLEDGE_CANARY');
+    expect(result).toContain('"referenceCount":1');
   });
 
   it('bounds Claude plan evidence text without mutating the source result', () => {

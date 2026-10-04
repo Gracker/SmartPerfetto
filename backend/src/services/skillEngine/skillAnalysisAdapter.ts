@@ -85,7 +85,6 @@ export interface SkillAnalysisResponse {
     data: any;
     columnDefinitions?: Array<Record<string, any>>;
   }>;
-  aiSummary?: string;
 
   /** 直接回答用户问题的自然语言 */
   directAnswer?: string;
@@ -196,7 +195,6 @@ export class SkillAnalysisAdapter {
     // 创建 executor，传入事件处理器
     this.executor = createSkillExecutor(
       traceProcessor,
-      undefined,  // AI service 稍后注入
       eventHandler
     );
 
@@ -214,14 +212,6 @@ export class SkillAnalysisAdapter {
     this.registry = registry;
     this.registryFingerprint = registryFingerprint;
     this.initialized = false;
-  }
-
-  /**
-   * 设置 AI 服务（用于 ai_decision 和 ai_summary 步骤）
-   */
-  setAIService(aiService: any): void {
-    // SkillExecutor 需要支持 setAIService 方法
-    (this.executor as any).aiService = aiService;
   }
 
   /**
@@ -554,30 +544,20 @@ export class SkillAnalysisAdapter {
       suggestions: d.suggestions,
     }));
 
-    // 生成智能摘要（优先使用 AI 摘要，否则使用规则生成）
-    let summary: string;
-    if (result.aiSummary) {
-      summary = localizeSkillNarrative(
-        result.aiSummary,
-        outputLanguage,
-        'summary',
-        {externalAuthored},
-      ) || '';
-    } else {
-      const generatedSummary = smartSummaryGenerator.generate({
-        skillId: targetSkillId,
-        skillName: localizedSkill.meta.display_name,
-        displayResults: result.displayResults,
-        diagnostics: result.diagnostics,
-        executionTimeMs: result.executionTimeMs,
-      });
-      summary = localizeSkillNarrative(
-        generatedSummary.text,
-        outputLanguage,
-        'summary',
-        {externalAuthored},
-      ) || '';
-    }
+    // 规则生成的智能摘要
+    const generatedSummary = smartSummaryGenerator.generate({
+      skillId: targetSkillId,
+      skillName: localizedSkill.meta.display_name,
+      displayResults: result.displayResults,
+      diagnostics: result.diagnostics,
+      executionTimeMs: result.executionTimeMs,
+    });
+    const summary = localizeSkillNarrative(
+      generatedSummary.text,
+      outputLanguage,
+      'summary',
+      {externalAuthored},
+    ) || '';
 
     // 生成直接回答
     const answer = answerGenerator.generateAnswer({
@@ -603,7 +583,6 @@ export class SkillAnalysisAdapter {
       executionTimeMs: result.executionTimeMs,
       vendor: isOemVendor(vendor) ? vendor : undefined,
       displayResults: result.displayResults,
-      aiSummary: result.aiSummary,
       directAnswer: localizeSkillNarrative(
         answer.answer,
         outputLanguage,

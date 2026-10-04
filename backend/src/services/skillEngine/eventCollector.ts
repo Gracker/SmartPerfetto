@@ -32,10 +32,6 @@ export interface EventSummary {
   completedSteps: number;
   /** 失败步骤数 */
   failedSteps: number;
-  /** 是否有 AI 调用 */
-  hasAICall: boolean;
-  /** AI 调用次数 */
-  aiCallCount: number;
 }
 
 // =============================================================================
@@ -69,15 +65,12 @@ export class SkillEventCollector {
       step_completed: 0,
       display_result: 0,
       diagnostic_found: 0,
-      ai_thinking: 0,
-      ai_response: 0,
       skill_completed: 0,
       skill_error: 0,
     };
 
     let completedSteps = 0;
     let failedSteps = 0;
-    let aiCallCount = 0;
 
     for (const event of this.events) {
       eventCounts[event.type]++;
@@ -88,10 +81,6 @@ export class SkillEventCollector {
         } else {
           failedSteps++;
         }
-      }
-
-      if (event.type === 'ai_thinking') {
-        aiCallCount++;
       }
     }
 
@@ -106,8 +95,6 @@ export class SkillEventCollector {
       eventCounts,
       completedSteps,
       failedSteps,
-      hasAICall: aiCallCount > 0,
-      aiCallCount,
     };
   }
 }

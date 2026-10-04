@@ -14,6 +14,24 @@ import {
 } from '../planPhaseEvents';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 
+/**
+ * The tools a runtime can call: the analysis MCP server's registry, plus the
+ * standalone public MCP server (`bin/smartperfetto-mcp.ts`), which OpenCode
+ * reaches behind its standalone gate.
+ */
+function registeredToolNames(): {analysis: Set<string>; all: Set<string>} {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const read = (...parts: string[]) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
+  const analysis = new Set([...read('..', 'claudeMcpServer.ts')
+    .matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)].map((match) => match[1]));
+  const standalone = [...read('..', '..', '..', 'bin', 'smartperfetto-mcp.ts')
+    .matchAll(/registry\.registerSdk\(\s*tool\(\s*'([a-z_]+)'/g)].map((match) => match[1]);
+  expect(analysis.size).toBeGreaterThan(30);
+  expect(standalone.length).toBeGreaterThan(3);
+  return {analysis, all: new Set([...analysis, ...standalone])};
+}
+
 /** MCP results reach the runtimes wrapped in a content-block envelope. */
 function mcpResult(body: unknown) {
   return [{type: 'text', text: JSON.stringify(body)}];
@@ -255,24 +273,24 @@ describe('formatToolResultNarration', () => {
     })).toBe('');
   });
 
-  it('keeps the retrieval set in step with the registry', () => {
+  it('keeps the retrieval set in step with the registry, both ways', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
-    const serverSource = fs.readFileSync(path.join(__dirname, '..', 'claudeMcpServer.ts'), 'utf8');
-    const registered = [...serverSource.matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)]
-      .map((match) => match[1]);
+    const {all} = registeredToolNames();
     // Every registered tool whose job is to come back with hits must report
     // finding nothing; otherwise the result that should redirect the model is
     // the one line we drop.
-    const retrievalShaped = registered.filter((tool) =>
+    const retrievalShaped = [...all].filter((tool) =>
       /^(lookup_|search_|query_|recall_)/.test(tool) && tool !== 'query_trace');
     const narrationSource = fs.readFileSync(path.join(__dirname, '..', 'toolNarration.ts'), 'utf8');
     const setBlock = narrationSource.slice(
       narrationSource.indexOf('const RETRIEVAL_TOOLS'),
       narrationSource.indexOf('function retrievalHitCount'),
     );
-    const missing = retrievalShaped.filter((tool) => !setBlock.includes(`'${tool}'`)).sort();
-    expect(missing).toEqual([]);
+    const listed = [...setBlock.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+    expect(retrievalShaped.filter((tool) => !listed.includes(tool)).sort()).toEqual([]);
+    // An entry for a tool no server registers is a retired tool still being narrated.
+    expect(listed.filter((tool) => !all.has(tool)).sort()).toEqual([]);
   });
 
   it('returns empty rather than guessing at an unknown tool', () => {
@@ -404,19 +422,10 @@ describe('tool call narration coverage', () => {
    * the mechanical line this layer exists to prevent. Registering a tool and
    * forgetting the sentence is easy; this test makes it loud.
    */
-  it('narrates every tool registered with the MCP server', () => {
+  it('narrates every registered tool, and no tool that is not registered', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
-
-    const serverSource = fs.readFileSync(
-      path.join(__dirname, '..', 'claudeMcpServer.ts'),
-      'utf8',
-    );
-    const registered = new Set(
-      [...serverSource.matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)]
-        .map((match) => match[1]),
-    );
-    expect(registered.size).toBeGreaterThan(30);
+    const {all} = registeredToolNames();
 
     const narrationSource = fs.readFileSync(
       path.join(__dirname, '..', 'toolNarration.ts'),
@@ -430,8 +439,9 @@ describe('tool call narration coverage', () => {
       [...callSection.matchAll(/case '([a-z_]+)'/g)].map((match) => match[1]),
     );
 
-    const missing = [...registered].filter((tool) => !narrated.has(tool)).sort();
-    expect(missing).toEqual([]);
+    expect([...all].filter((tool) => !narrated.has(tool)).sort()).toEqual([]);
+    // A case for a tool no server registers is dead narration left behind by a removal.
+    expect([...narrated].filter((tool) => !all.has(tool)).sort()).toEqual([]);
   });
 });
 

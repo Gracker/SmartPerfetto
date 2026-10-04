@@ -81,10 +81,7 @@ async function runCase(testCase: TraceCase): Promise<void> {
 
   try {
     await evaluator.loadTrace(getTestTracePath(testCase.file));
-    const result = await evaluator.executeSkill(
-      { trace_id: `scene_regression_${testCase.file}` },
-      { allowFailedSteps: ['scene_summary'] },
-    );
+    const result = await evaluator.executeSkill({ trace_id: `scene_regression_${testCase.file}` });
 
     if (!result.success) {
       throw new Error(`skill execution failed: ${result.error || 'unknown error'}`);

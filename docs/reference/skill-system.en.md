@@ -192,6 +192,9 @@ outputs:
 
 ## 4. Step Types
 
+Every step type is deterministic: none calls a model. The analysis runtime
+writes the narrative from the Skill's evidence.
+
 ### 4.1 atomic — Single SQL Step
 
 The most basic step type executes one SQL query.
@@ -247,7 +250,7 @@ results: its `root` step when there is one, else the first displayed step that
 returned data, else the first step that returned data, else the last step that
 returned a result (so a leading setup step that returns `[]` is never picked).
 Reading the reference step by its id — a `${step_id.data...}` expression,
-diagnostic and AI step `inputs`, an iterator or pipeline `source` — reads that
+diagnostic step `inputs`, an iterator or pipeline `source` — reads that
 same default step and its scope provenance. When the parent reads specific
 fields, name the step with `save_from` (it changes only the `save_as` binding;
 a read by step id keeps the default):
@@ -279,7 +282,7 @@ the Skill.
 
 When the default child step is itself a Skill reference, the binding holds the
 grandchild Skill's result: expressions reading `.data` select one more level by
-the same rule, diagnostic and AI `inputs` receive that result object, and an
+the same rule, diagnostic `inputs` receive that result object, and an
 iterator cannot iterate it. `save_from` selects only a top-level step of the
 direct child and cannot reach into the grandchild: when the parent needs
 specific fields, bind the child's own read step rather than that reference
@@ -406,23 +409,7 @@ or block, where a local may be declared, is not reported.
 Dedicated to matching the rendering pipeline types in a trace. See
 [Pipeline Skills](#11-pipeline-skills).
 
-### 4.8 ai_decision / ai_summary — AI Collaboration Steps
-
-`ai_decision` asks the AI runtime selected for the current session for a
-structured decision from the named inputs; `ai_summary` summarizes bounded data
-from the named steps. Both are an optional collaboration layer: when AI is
-disabled or unavailable, the engine returns an explicit skipped status instead
-of passing missing AI output off as a deterministic SQL conclusion.
-
-```yaml
-- id: summarize_findings
-  type: ai_summary
-  inputs: [frame_stats, diagnose]
-  prompt: "Summarize the selected evidence without inventing missing data."
-  save_as: ai_summary
-```
-
-### 4.9 Exact Process Scope And Investigation Evidence
+### 4.8 Exact Process Scope And Investigation Evidence
 
 An atomic step (and the root of an atomic Skill) may declare three optional
 fields, checked by the same predicates the executor admits them with.
@@ -493,7 +480,7 @@ ${step_id.data[0].field} → a step result
 
 ### Resolution Order
 
-Placeholders, `condition`, iterator `filter`, diagnostic and AI step `inputs`,
+Placeholders, `condition`, iterator `filter`, diagnostic step `inputs`,
 and input evidence scope all resolve a root name in one order; the first scope
 that binds it wins:
 
@@ -1088,7 +1075,7 @@ Shared validator findings carry an issue code (proposal gates and
 | `skill_top_level_key_unknown` | Rejects a top-level key no loader reads: a Skill may use the `SkillDefinition` fields plus the legacy spellings the loader normalizes (`display`, `description`, `tags`, `icon`, `display_name`, `displayName`); a pipeline only the `PipelineDefinition` fields; a vendor override only `extends`, `version`, `meta`, `vendor_detection` and `additional_steps`. An external Skill Pack with such a key is rejected as a whole |
 | `result_path_read_undecided` | A SQL placeholder that reads an earlier top-level step result by path (in `sql` and `exact_sql.sql`) needs a `\|default` or a step `condition` with the top-level conjunct `<result>.data?.length > 0` |
 | `cause_wording_without_evidence` | Heat or cap wording without its evidence; see [Bilingual Labels And Cause Wording](#bilingual-labels-and-cause-wording) |
-| `process_scope_invalid` | An invalid `process_scope` declaration, which makes the exact scope unavailable; see [4.9](#49-exact-process-scope-and-investigation-evidence) |
+| `process_scope_invalid` | An invalid `process_scope` declaration, which makes the exact scope unavailable; see [4.8](#48-exact-process-scope-and-investigation-evidence) |
 | `sql_not_executed` | SQL the executor never runs: the root SQL of a non-atomic Skill, steps beside an atomic root, steps of a metadata-only Skill |
 | `condition_uses_sql_boolean_words` | SQL `AND` / `OR` in the code of a step `condition`, a conditional branch `when`, or a diagnostic rule `condition` (not inside a string literal or a property name). These expressions are JavaScript, so `AND` / `OR` never compiles, evaluates to false, and the step is silently skipped (the branch never taken, the rule never fired). An iterator `filter` is the exception: its `AND` / `OR` is rewritten |
 | Other structural errors | Such as `step_id_duplicate`, `save_as_step_id_collision`, `save_from_target_missing`, `fragment_reference_missing`, `skill_reference_missing`, `display_contract`; errors everywhere |

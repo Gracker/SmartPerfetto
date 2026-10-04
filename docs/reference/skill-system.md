@@ -184,6 +184,9 @@ outputs:
 
 ## 4. Step 类型
 
+每种步骤都是确定性的：没有调用模型的步骤类型。需要叙述时由分析 runtime 基于 Skill 的
+证据撰写，Skill 结果的摘要只按规则生成。
+
 ### 4.1 atomic — 单步 SQL
 
 最基本的步骤类型，执行一条 SQL 查询。
@@ -236,7 +239,7 @@ outputs:
 
 带 `save_as` 的引用步骤只绑定被引用 Skill 的一个步骤结果：有 `root` 步骤时取它，否则取第一个有数据的
 展示步骤，再否则取第一个有数据的步骤，都没有数据时取最后一个返回了结果的步骤（开头返回 `[]` 的建表/准备步骤因此不会被选中）。按步骤 id 读取引用步骤
-——表达式里的 `${step_id.data...}`、诊断与 AI 步骤的 `inputs`、iterator/pipeline 的 `source`——读到的也是这个
+——表达式里的 `${step_id.data...}`、诊断步骤的 `inputs`、iterator/pipeline 的 `source`——读到的也是这个
 默认选中的步骤及其范围来源。父 Skill 要读具体字段时，用 `save_from` 指明步骤（它只改变 `save_as` 的绑定，
 按步骤 id 读取仍是默认选择）：
 
@@ -258,7 +261,7 @@ outputs:
 可选查询出错相同），不会使整个 Skill 失败。
 
 默认选中的子步骤本身又是 Skill 引用时，绑定的是孙 Skill 的结果对象：表达式经 `.data` 访问时按同一规则再
-选一层，诊断与 AI 的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
+选一层，诊断步骤的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
 的顶层步骤、不能穿透到孙 Skill：需要具体字段时，用它绑定子 Skill 中真正的读取步骤，而不是那个引用步骤。
 
 ### 4.3 iterator — 遍历数据行
@@ -358,21 +361,7 @@ evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}
 
 专用于匹配 trace 中的渲染管线类型。详见 [Pipeline Skills](#11-pipeline-skills)。
 
-### 4.8 ai_decision / ai_summary — AI 协作步骤
-
-`ai_decision` 让当前会话选中的 AI runtime 基于指定输入产出结构化判断；
-`ai_summary` 汇总指定步骤的有界数据。两者都属于可选协作层：AI 被禁用或不可用时，
-引擎返回明确的跳过状态，不把缺失的 AI 输出伪装成确定性 SQL 结论。
-
-```yaml
-- id: summarize_findings
-  type: ai_summary
-  inputs: [frame_stats, diagnose]
-  prompt: "Summarize the selected evidence without inventing missing data."
-  save_as: ai_summary
-```
-
-### 4.9 精确进程范围与调查证据
+### 4.8 精确进程范围与调查证据
 
 原子步骤（以及原子 Skill 的根）可以声明三项可选字段，校验与执行器准入使用同一套判定。
 
@@ -436,7 +425,7 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 
 ### 解析优先级
 
-占位符、`condition`、iterator `filter`、诊断与 AI 步骤的 `inputs` 以及证据范围都按同一顺序解析根名字，先找到的作用域生效：
+占位符、`condition`、iterator `filter`、诊断步骤的 `inputs` 以及证据范围都按同一顺序解析根名字，先找到的作用域生效：
 
 1. **当前迭代项**（仅 iterator `filter`）: `item` 和它自己的字段 → `currentItem`
 2. **保存的变量**: `${save_as_name}` → `variables[save_as_name]`；值为 `null` 也算已绑定
@@ -934,7 +923,7 @@ Skill 可以声明顶层 `tier: S | A | B`，用于表达目标复杂度和 revi
 | `skill_top_level_key_unknown` | 顶层字段必须是加载器会读的字段，否则报错：Skill 是 `SkillDefinition` 的字段加上加载器归一化的旧写法（`display`、`description`、`tags`、`icon`、`display_name`、`displayName`）；pipeline 只能用 `PipelineDefinition` 的字段；vendor override 只能用 `extends`、`version`、`meta`、`vendor_detection`、`additional_steps`。外部 Skill Pack 带未知顶层字段时整包拒绝加载 |
 | `result_path_read_undecided` | 按路径读取前面顶层步骤结果的 SQL 占位符（`sql` 与 `exact_sql.sql`）必须带 `\|默认值`，或所在步骤的 `condition` 含顶层合取项 `<结果>.data?.length > 0` |
 | `cause_wording_without_evidence` | 温控/限频措辞缺少对应证据，见 [双语标签与原因措辞](#双语标签与原因措辞) |
-| `process_scope_invalid` | `process_scope` 声明无效，精确范围不可用，见 [4.9](#49-精确进程范围与调查证据) |
+| `process_scope_invalid` | `process_scope` 声明无效，精确范围不可用，见 [4.8](#48-精确进程范围与调查证据) |
 | `sql_not_executed` | 执行器永远不会运行的 SQL：非 atomic Skill 的根 SQL、atomic 根旁边的 steps、metadata-only Skill 的 steps |
 | `condition_uses_sql_boolean_words` | 步骤 `condition`、conditional 分支 `when` 或诊断规则 `condition` 的代码里写了 SQL `AND` / `OR`（字符串字面量和属性名里的不算）。这些表达式按 JavaScript 求值，`AND` / `OR` 不能编译，结果为 false，步骤被静默跳过（分支不走、规则不触发）。iterator `filter` 例外，其中的 `AND` / `OR` 会被改写 |
 | 其他结构错误 | 如 `step_id_duplicate`、`save_as_step_id_collision`、`save_from_target_missing`、`fragment_reference_missing`、`skill_reference_missing`、`display_contract`，在任何地方都是错误 |

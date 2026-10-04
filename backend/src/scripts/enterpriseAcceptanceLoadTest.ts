@@ -43,8 +43,6 @@ export interface RuntimeSample {
   queueLength: number | null;
   workerRssBytes: number | null;
   leaseRssBytes: number | null;
-  llmCostUsd: number | null;
-  llmCalls: number | null;
 }
 
 export interface AnalysisRunRecord {
@@ -76,7 +74,12 @@ export interface EnterpriseLoadTestSummary {
   errorRate: number;
   scale: {
     visibleTraceMetadataCount: number | null;
-    estimatedDailyLlmCalls: number | null;
+    /**
+     * Completed analysis runs per day at the measured rate. Each run makes at
+     * least one model call, so this is a lower bound on daily model calls; the
+     * runtime keeps no global model-call or cost counter to read instead.
+     */
+    estimatedDailyAnalysisRuns: number | null;
   };
   onlineUsers: {
     configured: number;
@@ -101,12 +104,6 @@ export interface EnterpriseLoadTestSummary {
     maxQueueLength: number | null;
     maxWorkerRssBytes: number | null;
     maxLeaseRssBytes: number | null;
-    initialLlmCostUsd: number | null;
-    finalLlmCostUsd: number | null;
-    llmCostDeltaUsd: number | null;
-    initialLlmCalls: number | null;
-    finalLlmCalls: number | null;
-    llmCallDelta: number | null;
   };
 }
 
@@ -190,8 +187,12 @@ const DEFAULT_DURATION_MS = 5 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 const DEFAULT_MAX_ERROR_RATE = 0.01;
 export const MIN_ACCEPTANCE_VISIBLE_TRACE_METADATA = 1000;
-export const MIN_ACCEPTANCE_ESTIMATED_DAILY_LLM_CALLS = 200;
+export const MIN_ACCEPTANCE_ESTIMATED_DAILY_ANALYSIS_RUNS = 200;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Why the report has no model cost or call totals: there is nothing to sample. */
+const LLM_COUNTER_NOTE = 'Model cost and model-call totals are not measured: the runtime keeps no global '
+  + 'model-call or cost counter, so the daily projection counts completed analysis runs (each makes at least '
+  + 'one model call).';
 const TERMINAL_STATUSES = new Set<AnalysisStatus>(['completed', 'failed', 'error', 'quota_exceeded']);
 
 function printUsage(): void {
@@ -359,13 +360,9 @@ function maxNullable(values: Array<number | null | undefined>): number | null {
   return present.length > 0 ? Math.max(...present) : null;
 }
 
-function numberSamples(values: Array<number | null | undefined>): number[] {
-  return values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-}
-
-function estimateDailyLlmCalls(llmCallDelta: number | null, durationMs: number): number | null {
-  if (llmCallDelta === null || durationMs <= 0) return null;
-  return (llmCallDelta / durationMs) * DAY_MS;
+function estimateDailyAnalysisRuns(completedRuns: number, durationMs: number): number | null {
+  if (durationMs <= 0) return null;
+  return (completedRuns / durationMs) * DAY_MS;
 }
 
 function hasPreRunRuntimeBaseline(samples: HttpSample[]): boolean {
@@ -407,12 +404,6 @@ export function summarizeLoadTest(input: {
     ((snapshot.counts.pending ?? 0) + (snapshot.counts.queued ?? 0)) > 0
   ).length;
   const failedRequests = input.httpSamples.filter(sample => !sample.ok).length;
-  const llmCostSamples = numberSamples(input.runtimeSamples.map(sample => sample.llmCostUsd));
-  const initialLlmCostUsd = llmCostSamples[0] ?? null;
-  const finalLlmCostUsd = llmCostSamples.length > 0 ? llmCostSamples[llmCostSamples.length - 1] : null;
-  const llmCallSamples = numberSamples(input.runtimeSamples.map(sample => sample.llmCalls));
-  const initialLlmCalls = llmCallSamples[0] ?? null;
-  const finalLlmCalls = llmCallSamples.length > 0 ? llmCallSamples[llmCallSamples.length - 1] : null;
   const observedOnlineUsers = new Set(
     input.httpSamples
       .filter(sample => sample.ok && sample.operation === 'trace_list' && sample.userId.startsWith('online-user-'))
@@ -421,14 +412,13 @@ export function summarizeLoadTest(input: {
   const visibleTraceMetadataCount = maxNullable(input.httpSamples
     .filter(sample => sample.ok && sample.operation === 'trace_list')
     .map(sample => sample.traceCount));
-  const llmCallDelta = initialLlmCalls !== null && finalLlmCalls !== null ? finalLlmCalls - initialLlmCalls : null;
   return {
     totalRequests: input.httpSamples.length,
     failedRequests,
     errorRate: input.httpSamples.length > 0 ? failedRequests / input.httpSamples.length : 0,
     scale: {
       visibleTraceMetadataCount,
-      estimatedDailyLlmCalls: estimateDailyLlmCalls(llmCallDelta, input.options.durationMs),
+      estimatedDailyAnalysisRuns: estimateDailyAnalysisRuns(terminal.completed ?? 0, input.options.durationMs),
     },
     onlineUsers: {
       configured: input.options.onlineUsers,
@@ -453,14 +443,6 @@ export function summarizeLoadTest(input: {
       maxQueueLength: maxNullable(input.runtimeSamples.map(sample => sample.queueLength)),
       maxWorkerRssBytes: maxNullable(input.runtimeSamples.map(sample => sample.workerRssBytes)),
       maxLeaseRssBytes: maxNullable(input.runtimeSamples.map(sample => sample.leaseRssBytes)),
-      initialLlmCostUsd,
-      finalLlmCostUsd,
-      llmCostDeltaUsd: llmCostSamples.length >= 2 && initialLlmCostUsd !== null && finalLlmCostUsd !== null
-        ? finalLlmCostUsd - initialLlmCostUsd
-        : null,
-      initialLlmCalls,
-      finalLlmCalls,
-      llmCallDelta,
     },
   };
 }
@@ -509,20 +491,11 @@ export function evaluateAcceptance(
   }
   if (!summary.runtime.preRunBaselineSampled) missing.push('missing pre-run runtime baseline sample');
   if (summary.runtime.maxQueueLength === null) missing.push('missing queue length samples');
-  if (summary.runtime.finalLlmCostUsd === null || summary.runtime.llmCostDeltaUsd === null) {
-    missing.push('missing LLM cost sample');
-  } else if (summary.runtime.llmCostDeltaUsd < 0) {
-    missing.push('LLM cost sample decreased');
-  }
-  if (summary.runtime.finalLlmCalls === null) missing.push('missing LLM call sample');
-  else if (summary.runtime.llmCallDelta === null || summary.runtime.llmCallDelta <= 0) {
-    missing.push('LLM call count did not increase');
-  }
   if (
-    summary.scale.estimatedDailyLlmCalls === null
-    || summary.scale.estimatedDailyLlmCalls < MIN_ACCEPTANCE_ESTIMATED_DAILY_LLM_CALLS
+    summary.scale.estimatedDailyAnalysisRuns === null
+    || summary.scale.estimatedDailyAnalysisRuns < MIN_ACCEPTANCE_ESTIMATED_DAILY_ANALYSIS_RUNS
   ) {
-    missing.push(`estimated daily LLM calls < ${MIN_ACCEPTANCE_ESTIMATED_DAILY_LLM_CALLS}`);
+    missing.push(`estimated daily analysis runs < ${MIN_ACCEPTANCE_ESTIMATED_DAILY_ANALYSIS_RUNS}`);
   }
   if (runtimeSamples.length === 0) missing.push('runtime dashboard was not sampled');
   return {
@@ -619,8 +592,6 @@ function readRuntimeSample(body: any): RuntimeSample {
       ? body.processors.rssTotals.observedProcessorRssBytes
       : null,
     leaseRssBytes: typeof body?.leases?.totalRssBytes === 'number' ? body.leases.totalRssBytes : null,
-    llmCostUsd: typeof body?.llmCost?.totalCost === 'number' ? body.llmCost.totalCost : null,
-    llmCalls: typeof body?.llmCost?.totalCalls === 'number' ? body.llmCost.totalCalls : null,
   };
 }
 
@@ -725,19 +696,6 @@ export function buildLoadTestPreflightReport(input: {
             `queueLength=${firstRuntimeSample.queueLength ?? 'missing'}`,
             `workerRssBytes=${firstRuntimeSample.workerRssBytes ?? 'missing'}`,
             `leaseRssBytes=${firstRuntimeSample.leaseRssBytes ?? 'missing'}`,
-          ]
-        : ['no runtime sample'],
-    ),
-    preflightCheck(
-      'runtime-llm-counters',
-      !!firstRuntimeSample
-        && firstRuntimeSample.llmCostUsd !== null
-        && firstRuntimeSample.llmCalls !== null,
-      'Runtime dashboard exposes LLM cost and call counters.',
-      firstRuntimeSample
-        ? [
-            `llmCostUsd=${firstRuntimeSample.llmCostUsd ?? 'missing'}`,
-            `llmCalls=${firstRuntimeSample.llmCalls ?? 'missing'}`,
           ]
         : ['no runtime sample'],
     ),
@@ -1047,13 +1005,10 @@ export function buildMarkdownLoadTestReport(report: EnterpriseLoadTestReport): s
   lines.push(`| Pre-run runtime baseline | ${report.summary.runtime.preRunBaselineSampled ? 'yes' : 'no'} |`);
   lines.push(`| Max worker RSS | ${formatBytes(report.summary.runtime.maxWorkerRssBytes)} |`);
   lines.push(`| Max lease RSS | ${formatBytes(report.summary.runtime.maxLeaseRssBytes)} |`);
-  lines.push(`| Initial LLM cost | ${report.summary.runtime.initialLlmCostUsd ?? 'n/a'} |`);
-  lines.push(`| Final LLM cost | ${report.summary.runtime.finalLlmCostUsd ?? 'n/a'} |`);
-  lines.push(`| LLM cost delta | ${report.summary.runtime.llmCostDeltaUsd ?? 'n/a'} |`);
-  lines.push(`| Initial LLM calls | ${report.summary.runtime.initialLlmCalls ?? 'n/a'} |`);
-  lines.push(`| Final LLM calls | ${report.summary.runtime.finalLlmCalls ?? 'n/a'} |`);
-  lines.push(`| LLM call delta | ${report.summary.runtime.llmCallDelta ?? 'n/a'} |`);
-  lines.push(`| Estimated daily LLM calls | ${formatCount(report.summary.scale.estimatedDailyLlmCalls)} |`);
+  lines.push(`| Completed analysis runs | ${report.summary.analysis.terminal.completed ?? 0} |`);
+  lines.push(`| Estimated daily analysis runs | ${formatCount(report.summary.scale.estimatedDailyAnalysisRuns)} |`);
+  lines.push('');
+  lines.push(LLM_COUNTER_NOTE);
   lines.push('');
   lines.push('## Latency By Operation');
   lines.push('');
@@ -1091,16 +1046,14 @@ export function buildMarkdownLoadTestReport(report: EnterpriseLoadTestReport): s
   lines.push('');
   lines.push('## Runtime Samples');
   lines.push('');
-  lines.push('| Timestamp | Queue length | Worker RSS | Lease RSS | LLM cost | LLM calls |');
-  lines.push('| --- | ---: | ---: | ---: | ---: | ---: |');
+  lines.push('| Timestamp | Queue length | Worker RSS | Lease RSS |');
+  lines.push('| --- | ---: | ---: | ---: |');
   for (const sample of report.runtimeSamples) {
     lines.push([
       `| ${sample.timestamp}`,
       sample.queueLength ?? 'n/a',
       formatBytes(sample.workerRssBytes),
-      formatBytes(sample.leaseRssBytes),
-      sample.llmCostUsd ?? 'n/a',
-      `${formatCount(sample.llmCalls)} |`,
+      `${formatBytes(sample.leaseRssBytes)} |`,
     ].join(' | '));
   }
   lines.push('');

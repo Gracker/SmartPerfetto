@@ -200,6 +200,7 @@ smp knowledge preview ./team-docs
 smp knowledge register ./team-docs --accept-rights --name "Team docs" \
   --description "Render framework and trace tag notes" --send-to-provider
 smp knowledge reindex eks_xxx
+smp knowledge consent eks_xxx --enable
 smp knowledge list --format json
 smp knowledge search eks_xxx XRenderCompositorWorker --top-k 5
 smp knowledge remove eks_xxx --yes
@@ -210,11 +211,20 @@ smp analyze trace.pftrace --knowledge-source-id eks_xxx "Explain XRenderComposit
 .html .htm`) as searchable knowledge bases with the same registry, indexer and
 store as the Web UI. `register` requires `--accept-rights` (you confirm you may
 use these documents) and indexes nothing; run `reindex` afterwards. Provider
-consent is explicit: `--send-to-provider` grants it, `--no-send-to-provider`
-withdraws it, and leaving both out keeps the consent in effect. An analysis can
-select a knowledge base only after it has rights, consent and an active index.
-The CLI trusts the folder you name as your own, in place of
-`SMARTPERFETTO_KNOWLEDGE_ROOTS`. Output never contains the registered absolute
+consent is explicit: at registration `--send-to-provider` grants it,
+`--no-send-to-provider` withdraws it, and leaving both out keeps the consent in
+effect; afterwards `smp knowledge consent <id> --enable|--disable` changes it
+(the same registry operation as the Web UI's consent switch; `--enable` prints
+the disclosure the Web UI shows). A knowledge base has no path filters, so the
+whole folder is the unit of authorization and consent is a boolean; sending
+source code instead needs its scope disclosed and confirmed with a token
+(`smp codebase authorize-content`). An analysis can select a knowledge base
+only after it has rights, consent and an active index. The CLI trusts the
+folder you name as your own, in place of `SMARTPERFETTO_KNOWLEDGE_ROOTS`: a
+registration records the `local_cli` channel, through which a later CLI
+`reindex` trusts that folder; a folder registered first in the Web UI's
+directory picker and then again from the CLI keeps both channels, so the server
+can still reindex it. Output never contains the registered absolute
 path; document text appears only in `search`, which you run to see it. `remove`
 requires `--yes` and deletes every index generation; a deletion that stopped
 half way finishes on the next `remove`. Exit codes: `0` success, `2` invalid
@@ -352,9 +362,9 @@ codebase IDs passed with it (no error, and no source authorization or feature
 check). A run is trace-only only when no codebase is selected and no
 knowledge-source ID is passed; knowledge sources are independent of the source
 mode. `--knowledge-source-id <id>` can enable an
-authorized private external RAG source alone or together with a codebase.
-Source, private RAG, and reference-trace selections resolve an explicit `fast`
-request to `full` so the lightweight runtime cannot silently drop capabilities.
+authorized document knowledge base alone or together with a codebase.
+Selecting source, a knowledge base, or a reference trace leaves the requested
+budget mode unchanged; `fast` keeps those authorized capabilities too.
 `--source-depth auto|locate|mechanism` sizes the run's source budget (default `auto`, the same as the API's `options.sourceDepth`) and is kept in the session for later turns.
 `preview` and `register --dry-run` report the actual `ripgrep → git → node-walk`
 enumeration backend, fidelity, completeness, and truncation reason. A bounded

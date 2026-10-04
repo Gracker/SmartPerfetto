@@ -204,7 +204,7 @@ do not share internal workspace IDs or data.
 model-backed analysis is allowed. When `aiPolicy.aiEnabled=false`, trace
 upload/read, SQL, reports, Provider configuration/switching, and deterministic
 Skills remain available; model analysis, resume, scene reconstruction start,
-Provider tests, and LLM Skill steps return `403`:
+and Provider tests return `403`:
 
 ```json
 {
@@ -949,7 +949,7 @@ Base path: `/api/rag`
 | `GET` | `/stats` | RAG store stats |
 | `GET` | `/chunks/:chunkId` | Read one chunk |
 | `DELETE` | `/chunks/:chunkId` | Delete one chunk |
-| `POST` | `/search` | Search code or knowledge chunks |
+| `POST` | `/search` | Search the RAG store: public corpus chunks, or the indexed chunks of the codebases the request's `codebaseIds` names (a codebase chunk carries `snippetHash`/`snippetLength`, never its text); document knowledge bases are not searched here, use `/knowledge/:sourceId/search` |
 | `*` | `/android-internals/*` | Removed; answers 410 (`migration.fallback` is `/api/rag/knowledge`). Use `/knowledge/*` below. Sources registered through the legacy Wiki connector are still listed by `GET /knowledge` (`kind: android_internals_wiki`, retired, not selectable) and can be removed with `DELETE /knowledge/:sourceId` |
 | `GET` | `/knowledge` | List every external knowledge source in the current scope (with `kind`, `description`, `documentCount`, `hasActiveIndex`, `retired`), never its root path; a `retired: true` legacy Wiki record can only have its consent revoked or be deleted, and granting consent answers 409 `KNOWLEDGE_SOURCE_RETIRED` |
 | `POST` | `/knowledge/preview` | Preview a document collection (`rootPath`, optional `directorySelectionId`): indexable documents, section/chunk counts and skips by reason; zero documents answers 400 `KNOWLEDGE_COLLECTION_EMPTY` |

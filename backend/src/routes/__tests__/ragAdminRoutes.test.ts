@@ -30,6 +30,7 @@ import {
 } from '../../services/externalKnowledgeSourceRegistry';
 import {DocumentCollectionIngester} from '../../services/knowledge/documentCollectionIngester';
 import {DocumentCollectionStore} from '../../services/knowledge/documentCollectionStore';
+import {seedRetiredWikiChunks} from '../../../tests/helpers/retiredRagChunks';
 
 let tmpDir: string;
 let store: RagStore;
@@ -51,7 +52,7 @@ const DEFAULT_SCOPE = {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-admin-test-'));
   process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = tmpDir;
-  store = new RagStore(path.join(tmpDir, 'rag.json'));
+  store = new RagStore(storePath());
   registry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
   externalKnowledgeRegistry = new ExternalKnowledgeSourceRegistry(
     path.join(tmpDir, 'external-knowledge-sources.json'),
@@ -102,6 +103,8 @@ afterEach(() => {
   externalPickerDir = undefined;
 });
 
+const storePath = () => path.join(tmpDir, 'rag.json');
+
 function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
   return {
     chunkId: 'c-001',
@@ -116,7 +119,7 @@ function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
 /**
  * A source the retired Android Internals Wiki connector registered and
  * indexed: registration no longer types the kind, so the cast stands in for
- * that stored state. Its RagStore chunks are written as the connector did.
+ * that stored state. Its RagStore chunks are placed on disk as the connector left them.
  */
 async function seedRetiredWikiSource(rootName: string, chunkIds: readonly string[] = ['wiki-a', 'wiki-b']) {
   const root = path.join(tmpDir, rootName);
@@ -138,19 +141,9 @@ async function seedRetiredWikiSource(rootName: string, chunkIds: readonly string
     generation: 'wiki-generation-1', revision: source.revision, contentFingerprint: source.contentFingerprint,
     dirty: false, indexedArticleCount: 1, indexedChunkCount: chunkIds.length,
   }));
-  for (const chunkId of chunkIds) {
-    store.addChunk(makeChunk({
-      chunkId,
-      kind: 'android_internals_wiki',
-      uri: `android-internals-wiki://${source.sourceId}/${chunkId}`,
-      snippet: 'RETIRED_WIKI_SNIPPET Handler queue',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: source.sourceId,
-      sourceGeneration: 'wiki-generation-1',
-      filePath: 'src/article.md',
-    }), DEFAULT_SCOPE);
-  }
+  seedRetiredWikiChunks(storePath(), chunkIds.map(chunkId => ({chunkId, knowledgeSourceId: source.sourceId,
+    sourceGeneration: 'wiki-generation-1', snippet: 'RETIRED_WIKI_SNIPPET Handler queue', filePath: 'src/article.md'})),
+  DEFAULT_SCOPE);
   return {root, sourceId: source.sourceId};
 }
 
@@ -208,18 +201,9 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
   });
 
   it('keeps private wiki chunks off generic admin chunk and search endpoints', async () => {
-    store.addChunk(makeChunk({
-      chunkId: 'wiki-private',
-      kind: 'android_internals_wiki',
-      uri: 'android-internals-wiki://source-a/article',
-      title: 'PRIVATE_WIKI_TITLE',
-      snippet: 'PRIVATE_WIKI_SNIPPET Handler queue',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: 'source-a',
-      sourceGeneration: 'generation-a',
-      filePath: 'src/article.md',
-    }), DEFAULT_SCOPE);
+    seedRetiredWikiChunks(storePath(), [{chunkId: 'wiki-private', knowledgeSourceId: 'source-a',
+      sourceGeneration: 'generation-a', title: 'PRIVATE_WIKI_TITLE', snippet: 'PRIVATE_WIKI_SNIPPET Handler queue',
+      filePath: 'src/article.md'}], DEFAULT_SCOPE);
 
     const chunkResponse = await request(app).get('/api/rag/chunks/wiki-private');
     const searchResponse = await request(app)
@@ -561,11 +545,8 @@ describe('document collection routes', () => {
 
     const {sourceId: wikiId} = await seedRetiredWikiSource('deleted-wiki');
     // Another source's chunk of the same kind is not this deletion's to clear.
-    store.addChunk(makeChunk({
-      chunkId: 'other-wiki', kind: 'android_internals_wiki', uri: 'android-internals-wiki://other/x',
-      license: 'CC-BY-NC-SA-4.0', registryOrigin: 'external_knowledge_registry', knowledgeSourceId: `eks_${'9'.repeat(24)}`,
-      sourceGeneration: 'other-generation',
-    }), DEFAULT_SCOPE);
+    seedRetiredWikiChunks(storePath(), [{chunkId: 'other-wiki', knowledgeSourceId: `eks_${'9'.repeat(24)}`,
+      sourceGeneration: 'other-generation'}], DEFAULT_SCOPE);
     expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(3);
     const otherWorkspace = await request(app).delete(`/api/rag/knowledge/${wikiId}`).set('X-Workspace-Id', 'workspace-b');
     expect(otherWorkspace.status).toBe(404);
@@ -641,7 +622,7 @@ describe('document collection routes', () => {
       expectNoRoot(registered.body, root);
       expect(JSON.stringify(registered.body)).not.toContain('rootAuthorization');
       const sourceId = registered.body.source.sourceId;
-      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorization).toBe('native_picker');
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
       const replay = await local(request(app).post('/api/rag/knowledge/register'))
         .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
       expect(replay.status).toBe(400);
@@ -660,7 +641,7 @@ describe('document collection routes', () => {
       ]) {
         expect(rawAgain.body.code).toBe('KNOWLEDGE_ROOT_BLOCKED');
       }
-      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorization).toBe('native_picker');
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
 
       // Deleting the source revokes the channel with it.
       expect((await request(app).delete(`/api/rag/knowledge/${sourceId}`)).status).toBe(200);
@@ -673,7 +654,7 @@ describe('document collection routes', () => {
       const root = collection('docs-allowlisted', {'a.md': '# A\nalpha\n'});
       const registered = await request(app).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true});
       const sourceId = registered.body.source.sourceId;
-      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorization');
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorizations');
       expect((await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})).status).toBe(200);
       process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = path.join(tmpDir, 'elsewhere');
       const blocked = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});

@@ -27,9 +27,75 @@ import {
   vendorQueryServiceDouble,
   XIAOMI_METADATA,
 } from '../../services/traceVendor/__tests__/traceVendorFixture';
-import {extractFirstJsonValue} from '../../utils/llmJson';
 
 type CreateClaudeMcpServer = typeof createClaudeMcpServer;
+
+/**
+ * The first JSON object/array substring of a tool result text that may wrap it in prose.
+ * Uses a small state machine to handle nested braces/brackets and quoted strings.
+ */
+function extractFirstJsonValue(text: string): string | null {
+  const input = (text || '').trim();
+  if (!input) return null;
+
+  const startObj = input.indexOf('{');
+  const startArr = input.indexOf('[');
+
+  let start = -1;
+  if (startObj >= 0 && startArr >= 0) start = Math.min(startObj, startArr);
+  else start = startObj >= 0 ? startObj : startArr;
+
+  if (start < 0) return null;
+
+  const stack: Array<'}' | ']'> = [];
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < input.length; i++) {
+    const ch = input[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      stack.push('}');
+      continue;
+    }
+    if (ch === '[') {
+      stack.push(']');
+      continue;
+    }
+
+    if (ch === '}' || ch === ']') {
+      if (stack.length === 0) return null;
+      const expected = stack[stack.length - 1];
+      if (ch !== expected) return null;
+      stack.pop();
+      if (stack.length === 0) {
+        return input.slice(start, i + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
 
 const VENDOR_HINT_SKILL_WITH_OVERRIDES = 'startup_analysis';
 const VENDOR_HINT_SKILL_WITHOUT_OVERRIDES = 'scrolling_analysis';

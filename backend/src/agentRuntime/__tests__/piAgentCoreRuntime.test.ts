@@ -236,6 +236,15 @@ const PI_TEST_MODEL_JSON = JSON.stringify({
   apiKey: 'sk-pi-test-secret',
 });
 
+/** A document-knowledge search result as `search_knowledge` returns it; its excerpt is the canary. */
+function piKnowledgeSearchResult(canary: string): string {
+  return JSON.stringify({success: true, hits: [{
+    id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+    title: 'Handler', headingPath: ['Handler'], relativePath: 'private/notes.md',
+    lineRange: {start: 3, end: 9}, excerpt: canary,
+  }]});
+}
+
 function createSharedSpec(handler?: SharedToolSpec['handler']): SharedToolSpec {
   return {
     name: 'query_trace',
@@ -705,13 +714,13 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(plan.toolCallLog).toEqual([]);
   });
 
-  it('projects private wiki results before recording Pi plan evidence', async () => {
+  it('records a document knowledge call as Pi plan evidence without its content', async () => {
     const plan = {
       phases: [{
         id: 'p-knowledge',
         name: '知识解释',
-        goal: '查询 Android 系统知识',
-        expectedTools: ['lookup_blog_knowledge'],
+        goal: '查询内部资料',
+        expectedTools: ['search_knowledge'],
         status: 'in_progress',
         summary: '',
       }],
@@ -720,34 +729,21 @@ describe('experimental Pi agent-core runtime contract', () => {
       toolCallLog: [],
     } as any;
     const spec: SharedToolSpec = {
-      name: 'lookup_blog_knowledge',
-      description: 'Lookup private Android knowledge',
+      name: 'search_knowledge',
+      description: 'Search the selected document knowledge bases',
       exposure: 'public',
       inputSchema: {query: z.string()},
-      handler: jest.fn(async () => ({content: [{type: 'text', text: JSON.stringify({
-        result: {
-          query: 'Handler',
-          probed: ['android_internals_wiki'],
-          retrievedAt: 1,
-          legacyPath: false,
-          hits: [{
-            chunkId: 'wiki-1',
-            score: 1,
-            metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-            snippet: 'PI_PLAN_PRIVATE_WIKI_CANARY',
-          }],
-        },
-      })}]} as RuntimeToolResult)),
+      handler: jest.fn(async () => ({content: [{type: 'text', text: piKnowledgeSearchResult('PI_PLAN_PRIVATE_KNOWLEDGE_CANARY')}]} as RuntimeToolResult)),
     };
     const tool = createPiAgentCoreToolFromSharedSpec(spec, {
       allowedToolNames: new Set([spec.name]),
       analysisPlan: {current: plan},
     });
 
-    await tool.execute('wiki-call', {query: 'Handler'}, undefined);
+    await tool.execute('knowledge-call', {query: 'Handler'}, undefined);
 
-    const serialized = JSON.stringify(plan.toolCallLog);
-    expect(serialized).not.toContain('PI_PLAN_PRIVATE_WIKI_CANARY');
+    expect(plan.toolCallLog).toHaveLength(1);
+    expect(JSON.stringify(plan.toolCallLog)).not.toContain('PI_PLAN_PRIVATE_KNOWLEDGE_CANARY');
   });
 
   it('repairs recoverable Pi submit_plan argument drift before shared tool validation', () => {
@@ -923,45 +919,33 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_SOURCE|privateToolResultReceipt/);
   });
 
-  it('projects private wiki results before emitting Pi agent responses', () => {
+  it('projects document knowledge results before emitting Pi agent responses', () => {
     const update = projectPiAgentCoreEventToStreamingUpdate({
       type: 'tool_execution_end',
-      toolName: 'lookup_blog_knowledge',
-      toolCallId: 'wiki-call',
-      result: {content: [{type: 'text', text: JSON.stringify({result: {
-        query: 'Handler',
-        probed: ['android_internals_wiki'],
-        retrievedAt: 1,
-        legacyPath: false,
-        hits: [{
-          chunkId: 'wiki-1',
-          score: 1,
-          metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-          snippet: 'PI_PRIVATE_WIKI_CANARY',
-        }],
-      }})}]},
+      toolName: 'search_knowledge',
+      toolCallId: 'knowledge-call',
+      result: {content: [{type: 'text', text: piKnowledgeSearchResult('PI_PRIVATE_KNOWLEDGE_CANARY')}]},
     });
 
-    const serialized = JSON.stringify(update);
-    expect(serialized).not.toContain('PI_PRIVATE_WIKI_CANARY');
-    expect(serialized).toContain('snippetHash');
+    expect(JSON.stringify(update)).not.toContain('PI_PRIVATE_KNOWLEDGE_CANARY');
+    expect(JSON.parse(String(update?.content.result))).toMatchObject({knowledge: {referenceCount: 1}});
   });
 
-  it('never emits raw private wiki partial tool updates', () => {
+  it('never emits raw document knowledge partial tool updates', () => {
     const update = projectPiAgentCoreEventToStreamingUpdate({
       type: 'tool_execution_update',
-      toolName: 'lookup_blog_knowledge',
-      toolCallId: 'wiki-call',
-      partialResult: 'PI_PRIVATE_WIKI_PARTIAL_CANARY',
+      toolName: 'read_knowledge_section',
+      toolCallId: 'knowledge-call',
+      partialResult: 'PI_PRIVATE_KNOWLEDGE_PARTIAL_CANARY',
     });
 
-    expect(JSON.stringify(update)).not.toContain('PI_PRIVATE_WIKI_PARTIAL_CANARY');
+    expect(JSON.stringify(update)).not.toContain('PI_PRIVATE_KNOWLEDGE_PARTIAL_CANARY');
     expect(update).toEqual(expect.objectContaining({
       type: 'progress',
       content: expect.objectContaining({
         update: expect.objectContaining({
           outcome: 'rejected',
-          toolName: 'lookup_blog_knowledge',
+          toolName: 'read_knowledge_section',
         }),
       }),
     }));

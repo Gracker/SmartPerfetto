@@ -95,6 +95,7 @@ import {
   NativeDirectoryPickerError,
 } from '../services/codebase/nativeDirectoryPicker';
 import {AppSourceIngester} from '../services/rag/appSourceIngester';
+import {ragChunkAudience} from '../services/rag/ragChunkAudience';
 import {AospSourceIngester} from '../services/rag/aospSourceIngester';
 import {KernelSourceIngester} from '../services/rag/kernelSourceIngester';
 import {isSourceChunkLimitExceeded, resolveSourcePathPatterns} from '../services/rag/sourceFileSelection';
@@ -128,25 +129,17 @@ function snippetHash(snippet: string): string {
   return createHash('sha256').update(snippet).digest('hex').slice(0, 12);
 }
 
-function isCodeAwareChunk(chunk: RagChunk): boolean {
-  return chunk.kind === 'app_source' ||
-    chunk.kind === 'kernel_source' ||
-    chunk.registryOrigin === 'codebase_registry';
-}
-
-function isSensitiveKnowledgeChunk(chunk: RagChunk): boolean {
-  return isCodeAwareChunk(chunk) || chunk.kind === 'android_internals_wiki';
-}
-
+/** A public chunk as stored; anything else without its text (retired private knowledge also without its location). */
 function sanitizeChunk(chunk: RagChunk): RagChunk & {snippetHash?: string; snippetLength?: number} {
-  if (!isSensitiveKnowledgeChunk(chunk)) return chunk;
+  const audience = ragChunkAudience(chunk);
+  if (audience === 'public') return chunk;
   // Wiki chunks stored before article tags stopped being indexed still carry them.
   const {snippet, knowledgeScopeFingerprint: _knowledgeScopeFingerprint, sourceTags: _legacyTags, ...rest} =
     chunk as RagChunk & {sourceTags?: unknown};
   return {
     ...rest,
     snippet: undefined as any,
-    ...(chunk.kind === 'android_internals_wiki'
+    ...(audience === 'retired_private'
       ? {
           title: undefined,
           uri: undefined as any,
@@ -413,7 +406,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     const chunkId = routeParam(req.params.chunkId);
     const chunk = s.getChunk(chunkId, scope);
-    if (!chunk || chunk.kind === 'android_internals_wiki') {
+    if (!chunk || ragChunkAudience(chunk) === 'retired_private') {
       return res.status(404).json({
         success: false,
         error: `Chunk '${chunkId}' not found`,
@@ -426,7 +419,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     const chunkId = routeParam(req.params.chunkId);
     const chunk = s.getChunk(chunkId, scope);
-    if (!chunk || isSensitiveKnowledgeChunk(chunk)) {
+    if (!chunk || ragChunkAudience(chunk) !== 'public') {
       return res.status(404).json({
         success: false,
         error: `Chunk '${chunkId}' not found`,

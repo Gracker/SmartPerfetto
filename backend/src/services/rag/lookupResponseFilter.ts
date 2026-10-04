@@ -8,6 +8,7 @@ import type {
   RagSourceKind,
 } from '../../types/sparkContracts';
 import {activeCodebaseGeneration, type CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {ragChunkAudience} from './ragChunkAudience';
 import {sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
 import {sourceSelectionAdmits, sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
 import {estimateTextTokens, type SourceBudget} from '../codebase/sourceBudget';
@@ -40,12 +41,6 @@ export interface SanitizedRagHit {
     verifiedAt?: number;
     lastVerifiedAgainst?: string;
     contentFingerprint?: string;
-    articleId?: string;
-    sectionId?: string;
-    sectionHeading?: string;
-    chunkHash?: string;
-    knowledgePackVersion?: string;
-    knowledgePackFingerprint?: string;
     sourceDirty?: boolean;
     commitProvenance?: RagChunk['commitProvenance'];
   };
@@ -81,28 +76,16 @@ export interface FilterContext {
   admitSourceHit?: (hit: SanitizedRagHit) => boolean;
 }
 
-function isUserCodebaseChunk(chunk: RagChunk): boolean {
-  if (chunk.kind === 'app_source' || chunk.kind === 'kernel_source') return true;
-  return (chunk.kind === 'aosp' || chunk.kind === 'oem_sdk') &&
-    chunk.registryOrigin === 'codebase_registry';
-}
-
-function isLegacyChunk(chunk: RagChunk): boolean {
-  if (
-    chunk.kind === 'androidperformance.com' ||
-    chunk.kind === 'project_memory' ||
-    chunk.kind === 'world_memory' ||
-    chunk.kind === 'case_library'
-  ) return true;
+/**
+ * A public chunk whose origin its kind admits: operator-ingested AOSP/OEM docs
+ * come from the legacy ingesters, other public corpora from any origin.
+ */
+function isLegacyPublicChunk(chunk: RagChunk): boolean {
+  if (ragChunkAudience(chunk) !== 'public') return false;
   if (chunk.kind === 'aosp' || chunk.kind === 'oem_sdk') {
     return chunk.registryOrigin === undefined || chunk.registryOrigin === 'legacy_plan55';
   }
-  return false;
-}
-
-function isExternalPrivateKnowledgeChunk(chunk: RagChunk): boolean {
-  return chunk.kind === 'android_internals_wiki' &&
-    chunk.registryOrigin === 'external_knowledge_registry';
+  return true;
 }
 
 function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
@@ -126,16 +109,6 @@ function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
     ...(chunk.sourceConfidence ? {sourceConfidence: chunk.sourceConfidence} : {}),
     ...(chunk.lastVerifiedAgainst ? {lastVerifiedAgainst: chunk.lastVerifiedAgainst} : {}),
     ...(chunk.contentFingerprint ? {contentFingerprint: chunk.contentFingerprint} : {}),
-    ...(chunk.articleId ? {articleId: chunk.articleId} : {}),
-    ...(chunk.sectionId ? {sectionId: chunk.sectionId} : {}),
-    ...(chunk.sectionHeading ? {sectionHeading: chunk.sectionHeading} : {}),
-    ...(chunk.chunkHash ? {chunkHash: chunk.chunkHash} : {}),
-    ...(chunk.knowledgePackVersion
-      ? {knowledgePackVersion: chunk.knowledgePackVersion}
-      : {}),
-    ...(chunk.knowledgePackFingerprint
-      ? {knowledgePackFingerprint: chunk.knowledgePackFingerprint}
-      : {}),
     ...(chunk.sourceDirty !== undefined ? {sourceDirty: chunk.sourceDirty} : {}),
     ...(chunk.commitProvenance ? {commitProvenance: chunk.commitProvenance} : {}),
   };
@@ -163,7 +136,7 @@ export async function filterRagLookup(
     }
 
     const chunk = hit.chunk;
-    if (isLegacyChunk(chunk)) {
+    if (isLegacyPublicChunk(chunk)) {
       // Public retrieved knowledge draws on the knowledge pool like the rest.
       const tokens = estimateTokens(chunk, chunk.snippet);
       if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
@@ -198,13 +171,14 @@ export async function filterRagLookup(
     allLegacy = false;
     // A retired Wiki chunk is never served: no remaining lookup searches its
     // kind, and one that surfaces anyway is refused without its text.
-    if (isExternalPrivateKnowledgeChunk(chunk)) {
+    const audience = ragChunkAudience(chunk);
+    if (audience === 'retired_private') {
       hits.push({chunkId: hit.chunkId, score: hit.score, unsupportedReason: 'knowledge_kind_retired'});
       ctx.ledger?.record({turn: ctx.turn, ts: Date.now(), toolName: ctx.toolName, chunkIds: [],
         consentApplied: true, tokensSpent: 0, outcome: 'rejected', legacyPath: false});
       continue;
     }
-    if (!isUserCodebaseChunk(chunk)) {
+    if (audience !== 'user_codebase') {
       hits.push({
         chunkId: hit.chunkId,
         score: hit.score,

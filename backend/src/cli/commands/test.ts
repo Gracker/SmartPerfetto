@@ -148,10 +148,6 @@ export const testCommand = new Command('test')
         console.log('');
       }
 
-      // Display summary
-      console.log(colors.bold('Summary:'));
-      console.log(colors.gray(result.aiSummary || 'No summary available'));
-
       // Cleanup
       await traceProcessor.deleteTrace(traceId);
 

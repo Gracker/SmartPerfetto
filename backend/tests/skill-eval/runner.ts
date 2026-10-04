@@ -46,10 +46,6 @@ export interface EvalSkillResult {
   error?: string;
 }
 
-export interface EvalSkillOptions {
-  allowFailedSteps?: readonly string[];
-}
-
 export interface EvalStepSequenceOptions {
   /**
    * SQL contract probes may explicitly execute selected read-only SQL steps
@@ -513,7 +509,6 @@ export class SkillEvaluator {
    */
   async executeSkill(
     params: Record<string, any> = {},
-    options: EvalSkillOptions = {},
   ): Promise<EvalSkillResult> {
     if (!this.executor || !this.traceId || !this.skill) {
       throw new Error('SkillEvaluator not initialized. Call loadTrace() first.');
@@ -527,11 +522,10 @@ export class SkillEvaluator {
         params,
         { traceId: this.traceId }
       );
-      const allowedFailures = new Set(options.allowFailedSteps || []);
       // A step whose condition was not met did not run; the executor carries
       // on past it (`code: 'condition_not_met'`), so it is no failure here.
       const failedSteps = this.collectResultSteps(result)
-        .filter(step => !step.success && step.code !== 'condition_not_met' && !allowedFailures.has(step.stepId));
+        .filter(step => !step.success && step.code !== 'condition_not_met');
 
       return {
         success: failedSteps.length === 0,

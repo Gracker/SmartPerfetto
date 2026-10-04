@@ -175,6 +175,7 @@ smp knowledge preview ./team-docs
 smp knowledge register ./team-docs --accept-rights --name "团队文档" \
   --description "渲染框架与 trace tag 说明" --send-to-provider
 smp knowledge reindex eks_xxx
+smp knowledge consent eks_xxx --enable
 smp knowledge list --format json
 smp knowledge search eks_xxx XRenderCompositorWorker --top-k 5
 smp knowledge remove eks_xxx --yes
@@ -184,10 +185,15 @@ smp analyze trace.pftrace --knowledge-source-id eks_xxx "解释这个 trace 里�
 `smp knowledge` 把文档目录（`.md .markdown .mdx .txt .rst .adoc .html .htm`）
 注册为可检索的知识库，与 Web UI 使用同一个注册表、索引器和存储。`register`
 必须带 `--accept-rights`（确认你有权使用这些文档），注册本身不建索引，之后运行
-`reindex`。模型服务同意必须显式给出：`--send-to-provider` 授权，
-`--no-send-to-provider` 撤销，两者都不写则保持现有同意。只有具备权利确认、同意
-和激活索引的知识库才能被分析选用。CLI 把你给出的目录视为你自己的目录，代替
-`SMARTPERFETTO_KNOWLEDGE_ROOTS` 白名单。输出不包含注册的绝对路径；文档正文只在
+`reindex`。模型服务同意必须显式给出：注册时 `--send-to-provider` 授权、
+`--no-send-to-provider` 撤销，两者都不写则保持现有同意；注册之后用
+`smp knowledge consent <id> --enable|--disable`（与 Web UI 的同意开关是同一个注册表操作，
+`--enable` 会打印与 Web UI 相同的披露说明）。知识库没有路径过滤，授权单位就是整个目录，
+所以同意是一个布尔值；源码库的正文发送则要先显示范围再用 token 确认
+（`smp codebase authorize-content`）。只有具备权利确认、同意和激活索引的知识库才能被
+分析选用。CLI 把你给出的目录视为你自己的目录，代替 `SMARTPERFETTO_KNOWLEDGE_ROOTS`
+白名单：注册记录 `local_cli` 渠道，之后 CLI 的 `reindex` 据此信任该目录；同一目录先在
+Web UI 目录选择器注册、再用 CLI 重新注册时，两个渠道都会保留，服务器仍能重建索引。输出不包含注册的绝对路径；文档正文只在
 你主动运行的 `search` 中出现。`remove` 需要 `--yes`，会删除全部索引代次；删除中途
 失败时，再次执行 `remove` 会完成删除。退出码：`0` 成功，`2` 输入无效，`3` 未找到，
 `4` 冲突（忙或正在删除），`5` 其他失败。所有命令都支持 `--format text|json`。
@@ -312,9 +318,9 @@ smp run trace.perfetto-trace \
 `--codebase-id` 会默认使用 `metadata_only`；`--code-aware off` 会丢弃同时传入的
 codebase ID（不再报错，也不触发任何源码授权或功能开关检查）。未选中任何源码库也
 未传 knowledge source ID 时才是 trace-only；知识源选择与源码模式无关。
-`--knowledge-source-id <id>` 可单独启用已授权的私有外部 RAG，也可与 codebase
-叠加。源码、私有 RAG 或 reference trace 会把显式 `fast` 解析为 `full`，避免
-轻量 runtime 静默丢失能力。
+`--knowledge-source-id <id>` 可单独启用已授权的文档知识库，也可与 codebase
+叠加。选择源码、文档知识库或 reference trace 不改变请求的分析预算模式，`fast` 下
+这些已授权能力同样保留。
 `--source-depth auto|locate|mechanism` 决定本次 run 的源码额度（默认 `auto`，含义同 API 的 `options.sourceDepth`），会记入 session 供后续轮次沿用。
 `preview` 和 `register --dry-run` 会输出实际使用的 `ripgrep → git → node-walk`
 枚举后端、fidelity、完整性和截断原因；截断只表示有界预览，不再用非零退出码冒充

@@ -9,6 +9,7 @@ import {isKnowledgeRefusalAction, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape} fr
 
 import type {RagSourceKind} from '../../types/sparkContracts';
 import {sourceLookupOutcome, type CodeLookupOutcome} from '../codebase/codeLookupLedger';
+import {ragChunkAudience} from './ragChunkAudience';
 import type {SanitizedRagResult} from './lookupResponseFilter';
 
 export interface ProjectedPayload {
@@ -24,12 +25,6 @@ export interface ProjectedPayload {
     attribution?: string;
     sourceStatus?: string;
     sourceConfidence?: string;
-    articleId?: string;
-    sectionId?: string;
-    sectionHeading?: string;
-    chunkHash?: string;
-    knowledgePackVersion?: string;
-    knowledgePackFingerprint?: string;
     lastVerifiedAgainst?: string;
     commitHash?: string;
     sourceDirty?: boolean;
@@ -75,6 +70,8 @@ export interface ProjectedPayload {
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
   ...KNOWLEDGE_TOOL_NAMES,
+  // Standalone public MCP server only (bin/smartperfetto-mcp.ts); its public
+  // blog hits are projected below, anything else fails closed.
   'lookup_blog_knowledge',
   'lookup_app_source',
   'lookup_kernel_source',
@@ -247,7 +244,7 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
     if (hit.unsupportedReason) outcome = hit.unsupportedReason === 'budget_exceeded'
       ? 'budget_exceeded'
       : 'rejected';
-    const privateWiki = hit.metadata?.kind === 'android_internals_wiki';
+    const privateWiki = hit.metadata ? ragChunkAudience(hit.metadata) === 'retired_private' : false;
     return {
       chunkId: hit.chunkId,
       ...(hit.metadata?.codebaseId ? {codebaseId: hit.metadata.codebaseId} : {}),
@@ -262,18 +259,6 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
       ...(!privateWiki && hit.metadata?.sourceStatus ? {sourceStatus: hit.metadata.sourceStatus} : {}),
       ...(!privateWiki && hit.metadata?.sourceConfidence
         ? {sourceConfidence: hit.metadata.sourceConfidence}
-        : {}),
-      ...(hit.metadata?.articleId ? {articleId: hit.metadata.articleId} : {}),
-      ...(hit.metadata?.sectionId ? {sectionId: hit.metadata.sectionId} : {}),
-      ...(hit.metadata?.sectionHeading
-        ? {sectionHeading: hit.metadata.sectionHeading}
-        : {}),
-      ...(hit.metadata?.chunkHash ? {chunkHash: hit.metadata.chunkHash} : {}),
-      ...(hit.metadata?.knowledgePackVersion
-        ? {knowledgePackVersion: hit.metadata.knowledgePackVersion}
-        : {}),
-      ...(hit.metadata?.knowledgePackFingerprint
-        ? {knowledgePackFingerprint: hit.metadata.knowledgePackFingerprint}
         : {}),
       ...(!privateWiki && hit.metadata?.lastVerifiedAgainst
         ? {lastVerifiedAgainst: hit.metadata.lastVerifiedAgainst}
@@ -321,18 +306,6 @@ function projectRawRetrievalResult(toolName: string, candidate: Record<string, u
         ...(typeof chunk.lastVerifiedAgainst === 'string'
           ? {lastVerifiedAgainst: chunk.lastVerifiedAgainst}
           : {}),
-        ...(typeof chunk.articleId === 'string' ? {articleId: chunk.articleId} : {}),
-        ...(typeof chunk.sectionId === 'string' ? {sectionId: chunk.sectionId} : {}),
-        ...(typeof chunk.sectionHeading === 'string'
-          ? {sectionHeading: chunk.sectionHeading}
-          : {}),
-        ...(typeof chunk.chunkHash === 'string' ? {chunkHash: chunk.chunkHash} : {}),
-        ...(typeof chunk.knowledgePackVersion === 'string'
-          ? {knowledgePackVersion: chunk.knowledgePackVersion}
-          : {}),
-        ...(typeof chunk.knowledgePackFingerprint === 'string'
-          ? {knowledgePackFingerprint: chunk.knowledgePackFingerprint}
-          : {}),
         ...(typeof chunk.commitHash === 'string' ? {commitHash: chunk.commitHash} : {}),
         ...(typeof chunk.sourceDirty === 'boolean' ? {sourceDirty: chunk.sourceDirty} : {}),
         ...((chunk.commitProvenance === 'clean_git_revision' ||
@@ -372,13 +345,7 @@ export function projectSensitiveRagToolResult(
   if (!candidate || typeof candidate !== 'object') return undefined;
   const result = candidate as SanitizedRagResult;
   if (!Array.isArray(result.hits)) return undefined;
-  if (!result.hits.some(hit =>
-    hit.metadata?.kind === 'android_internals_wiki' ||
-    hit.metadata?.kind === 'android_internals_pack' ||
-    hit.metadata?.kind === 'app_source' ||
-    hit.metadata?.kind === 'kernel_source' ||
-    (hit.metadata?.kind === 'aosp' && Boolean(hit.metadata?.codebaseId)) ||
-    (hit.metadata?.kind === 'oem_sdk' && Boolean(hit.metadata?.codebaseId)))) {
+  if (!result.hits.some(hit => hit.metadata ? ragChunkAudience(hit.metadata) !== 'public' : false)) {
     return undefined;
   }
   return projectRagResultForSseAndLog(toolName, result);

@@ -61,6 +61,7 @@ import {
 } from './commands/codebase';
 import type {CodebaseOutputFormat} from './commands/codebase';
 import {
+  runKnowledgeConsentCommand,
   runKnowledgeListCommand,
   runKnowledgePreviewCommand,
   runKnowledgeRegisterCommand,
@@ -476,6 +477,19 @@ function main(): void {
     .action(async (opts: {format?: string}) => {
       const g = globals();
       await runAndExit(() => runKnowledgeListCommand({
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('consent <sourceId>')
+    .description('grant or revoke sending a knowledge base\'s retrieved text to the AI service')
+    .addOption(new Option('--enable', 'allow retrieved text to be sent to the AI service').conflicts('disable'))
+    .addOption(new Option('--disable', 'withdraw that consent').conflicts('enable'))
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, opts: {enable?: boolean; disable?: boolean; format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeConsentCommand({
+        sourceId, enable: opts.enable, disable: opts.disable,
         envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
       }));
     });

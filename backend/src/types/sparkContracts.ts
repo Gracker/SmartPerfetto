@@ -117,10 +117,11 @@ export type RagSourceKind =
   | 'app_source'
   /** Codebase-aware analysis — Linux kernel or vendor kernel source. */
   | 'kernel_source'
-  /** Operator-registered Android Internals Wiki knowledge corpus. */
-  | 'android_internals_wiki'
-  /** Signed, versioned public Android Internals Knowledge Pack. */
-  | 'android_internals_pack';
+  /**
+   * Retired: chunks the former Android Internals Wiki connector stored. They
+   * stay listable and deletable; no writer stores the kind any more.
+   */
+  | 'android_internals_wiki';
 
 /**
  * Pointer to a RAG-indexed document chunk.
@@ -502,31 +503,23 @@ export interface RagChunk {
   attribution?: string;
   /** Exact corpus content identity used alongside a possibly dirty Git revision. */
   contentFingerprint?: string;
-  /** Stable article id inside a signed public knowledge pack. */
-  articleId?: string;
-  /** Stable section id inside a signed public knowledge pack. */
-  sectionId?: string;
-  /** Section heading used for a public-pack citation. */
-  sectionHeading?: string;
-  /** Exact source chunk hash used for a public-pack citation. */
-  chunkHash?: string;
-  /** Immutable public knowledge-pack content version. */
-  knowledgePackVersion?: string;
-  /** Immutable public knowledge-pack fingerprint. */
-  knowledgePackFingerprint?: string;
   /** True when the source checkout contained changes beyond the recorded Git revision. */
   sourceDirty?: boolean;
   /** Tells consumers whether commitHash is clean, dirty-worktree context, or unavailable. */
   commitProvenance?: 'clean_git_revision' | 'dirty_git_worktree' | 'content_only';
   /** Origin that decides legacy-vs-scoped-private filtering. Missing old values are backfilled by RagStore. */
   registryOrigin?: 'codebase_registry' | 'external_knowledge_registry' |
-    'built_in_knowledge_pack' | 'legacy_plan55' | 'plan44_memory' | 'plan54_cases';
+    'legacy_plan55' | 'plan44_memory' | 'plan54_cases';
 }
 
 /**
  * Provenance for explanatory background knowledge. This is deliberately
  * separate from Trace evidence references: it cannot satisfy a SQL/Skill
  * evidence requirement or prove a current-trace claim.
+ *
+ * Historical: only the retired built-in Knowledge Pack produced these. They
+ * stay because older sessions, reports and snapshots carry them and replay
+ * them unchanged; no current run creates one.
  */
 export interface BackgroundKnowledgeReference {
   sourceKind: 'android_internals_pack';

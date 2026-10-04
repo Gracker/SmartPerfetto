@@ -611,6 +611,9 @@ export function formatToolCallNarration(
         ? localize(language, `读取 ${scene} 场景方法论：确认这类问题的标准判据`, `Read the ${scene} methodology: confirm the standard criteria for this problem class`)
         : localize(language, '读取场景方法论：确认这类问题的标准判据', 'Read the scene methodology: confirm the standard criteria for this problem class'));
     }
+    // Registered only by the standalone public MCP server
+    // (bin/smartperfetto-mcp.ts), which OpenCode reaches behind its standalone
+    // gate; the analysis server has no such tool.
     case 'lookup_blog_knowledge': {
       const query = readString(args.query);
       return shorten(query
@@ -1139,6 +1142,7 @@ export function isPolicyRefusalResult(result: unknown): boolean {
 const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'lookup_sql_schema',
   'lookup_knowledge',
+  // Standalone public MCP server only (bin/smartperfetto-mcp.ts).
   'lookup_blog_knowledge',
   'lookup_strategy_detail',
   'lookup_app_source',

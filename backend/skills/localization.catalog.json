@@ -10,7 +10,7 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1369,
+    "stepCount": 1368,
     "explicitColumnCount": 5141
   },
   "skills": {
@@ -32928,14 +32928,6 @@
           "title": {
             "zh-CN": "场景还原",
             "en": "Scene Reconstruction"
-          },
-          "columns": {},
-          "synthesizeLabels": {}
-        },
-        "scene_summary": {
-          "title": {
-            "zh-CN": "场景还原报告",
-            "en": "Scene Summary"
           },
           "columns": {},
           "synthesizeLabels": {}

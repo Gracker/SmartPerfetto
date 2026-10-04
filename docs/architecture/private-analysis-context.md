@@ -2,18 +2,20 @@
 
 [English](private-analysis-context.en.md) | [中文](private-analysis-context.md)
 
-SmartPerfetto 把 trace 证据、用户源码和外部知识视为三个独立的数据域。源码只在本次
+SmartPerfetto 把 trace 证据、用户源码和文档知识库视为三个独立的数据域。源码只在本次
 请求显式选择、scope/同意有效且已注册根目录可访问时进入 runtime；不要求 active index。
-外部知识仍要求许可、同意与 active generation。两者都不能被全局 RAG、历史 session
-或跨会话学习隐式带入分析。
+文档知识库是独立的 SQLite FTS 文档库（不是 RAG chunk），只在本次请求显式选择、
+已做权利确认、已授权发送给模型服务且有 active generation 时才可检索；license 字段
+只是所有者自填的说明，不是准入条件。两者都不能被公共 RAG 语料、历史 session 或跨会话
+学习隐式带入分析。
 
 ## 请求组合
 
-| 源码选择 | 外部 RAG 选择 | 有效行为 |
+| 源码选择 | 知识库选择 | 有效行为 |
 |---|---|---|
 | 无 | 无 | 普通 trace / Smart Profile 分析，不开放私有检索工具 |
 | 有 | 无 | 使用精确 `codebaseIds` 和按需源码工具；`metadata_only` 只给 `CodeRef`，`provider_send` 还要求注册级同意 |
-| 无 | 有 | 使用精确 `knowledgeSourceIds` 和对应 active generation；外部知识仅作背景，不冒充当前 trace 证据 |
+| 无 | 有 | 使用精确 `knowledgeSourceIds`，通过 `search_knowledge` / `read_knowledge_section` 读取各自固定的 generation；知识库仅作背景，不冒充当前 trace 证据 |
 | 有 | 有 | 两套 allowlist 同时生效，分别校验后进入同一私有投影和报告边界 |
 
 选择在合并会话或对话已有选项之后只解析一次（`effectiveAnalysisSelection`）：显式
@@ -21,13 +23,23 @@ SmartPerfetto 把 trace 证据、用户源码和外部知识视为三个独立�
 只有 ID 没有模式视为 `metadata_only`；没有 ID 时模式无意义，记为 `off`；知识源选择与
 源码模式无关。授权、注册表读取、指纹、内存分区、运行参数和会话持久化都消费同一结果。
 
-`fast` / `full` 选择预算，源码、外部 RAG 和 reference trace 的授权独立保留，不因
+`fast` / `full` 选择预算，源码、知识库和 reference trace 的授权独立保留，不因
 预算模式被自动移除，也不强制升级为完整报告。五个原生 runtime 按 typed intent 的
 范围和证据访问约束按需调用工具；`existing_only` 禁止新采集，`read_new` 不扩大授权。
 Conversation 复用这些按需能力，不自动启动额外源码分析。Smart Profile 的 preview
 只生成场景盘点；从 preview
 进入深度分析时，源码模式、`codebaseIds`、`knowledgeSourceIds`、输出语言和 preview
 身份必须原样传给实际 run，不能依赖 UI 的隐式全局状态。
+
+## 同意模型
+
+知识库和源码的同意方式不同，因为授权单位不同。文档知识库没有路径过滤，授权单位就是
+整个注册目录，所以“发送给模型服务”是一个布尔同意：注册时给出，或之后在 Web UI
+开关（显示披露文本后确认）、`PATCH /api/rag/knowledge/:id/consent` 或
+`smp knowledge consent <id> --enable|--disable` 修改，三者调用同一个注册表操作。源码库
+有路径选择和语言，授权之后选择还可能变化，所以正文发送采用服务端签发的披露 token：
+`authorizeContent` 只授权调用方看过的那份范围，范围变了就拒绝。两者共享显式的逐轮选择、
+授权指纹、每次模型请求前的授权检查，以及 owner/strict 两种投影。
 
 ## 授权与连续性
 

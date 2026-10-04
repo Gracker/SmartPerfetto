@@ -48,7 +48,6 @@ export async function runSkillCommand(args: SkillCommandArgs): Promise<number> {
       );
       const executor = createSkillExecutor(
         getTraceProcessorService(),
-        undefined,
         (event) => {
           if (format === 'ndjson') {
             process.stdout.write(`${JSON.stringify({ type: 'event', event })}\n`);

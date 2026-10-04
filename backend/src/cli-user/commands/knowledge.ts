@@ -7,7 +7,11 @@
  * knowledge bases from the terminal. It uses the same registry, ingester and
  * store as the `/api/rag/knowledge` routes; only the trust differs: the
  * local user's own folder stands in for `SMARTPERFETTO_KNOWLEDGE_ROOTS`, as
- * `smp codebase` trusts a registered source root.
+ * `smp codebase` trusts a registered source root. A registration records the
+ * `local_cli` channel, which this process trusts on later reindexes
+ * (`channelAuthorizedRoots`), and keeps any channel an earlier registration
+ * of the folder recorded, so the server still reindexes a folder its
+ * directory picker registered.
  *
  * Output never carries a registered absolute root. Document text reaches
  * stdout only through `search`, which the owner runs to see it.
@@ -16,6 +20,7 @@
 import {bootstrap, resolveInvocationPath} from '../bootstrap';
 import {writeCliInputError, writeCliOperationError} from '../io/operationErrors';
 import {withConsoleLogToStderr} from '../io/stdio';
+import {trustLocalCliRegistrations} from '../../services/codebase/codebaseCapability';
 import {resolveCodebaseScope} from '../../services/codebase/codebaseRegistry';
 import {
   getDefaultExternalKnowledgeSourceRegistry,
@@ -38,6 +43,7 @@ export interface KnowledgeCommandBaseArgs {
 
 function prepare(args: KnowledgeCommandBaseArgs) {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false});
+  trustLocalCliRegistrations();
   const scope = resolveCodebaseScope();
   const registry = getDefaultExternalKnowledgeSourceRegistry();
   const ingester = (allowlistRoot: string | undefined) => new DocumentCollectionIngester(
@@ -107,7 +113,7 @@ export async function runKnowledgeRegisterCommand(args: KnowledgeCommandBaseArgs
     const {source, preview} = await ingester(rootPath).register({
       rootPath, displayName: args.name, description: args.description, attribution: args.attribution,
       license: args.license, rightsAcknowledged: true, sendToProvider: args.sendToProvider,
-      consentedBy: scope.userId, scope,
+      localCli: true, consentedBy: scope.userId, scope,
     });
     return {json: {source: projectKnowledgeSourceForManagement(source), preview: preview.summary}, text: [
       `${source.sourceId}\t${source.displayName}`,
@@ -132,12 +138,46 @@ export async function runKnowledgeListCommand(args: KnowledgeCommandBaseArgs): P
   });
 }
 
+/**
+ * Grant or revoke one knowledge base's provider-send consent: the same
+ * registry operation as `PATCH /api/rag/knowledge/:id/consent`. A knowledge
+ * base is authorized as a whole folder (it has no path filters), so a boolean
+ * consent covers exactly what it indexes; the grant is printed with what it
+ * allows.
+ */
+export async function runKnowledgeConsentCommand(args: KnowledgeCommandBaseArgs & {
+  sourceId: string;
+  enable?: boolean;
+  disable?: boolean;
+}): Promise<number> {
+  const format = args.format ?? 'text';
+  if (args.enable === args.disable) {
+    return writeInputError(format, 'KNOWLEDGE_REQUEST_INVALID', 'Exactly one of --enable or --disable is required.');
+  }
+  const {scope, registry} = prepare(args);
+  return run(format, async () => {
+    const source = projectKnowledgeSourceForManagement(
+      registry.setProviderConsent(args.sourceId, scope, args.enable === true, scope.userId));
+    return {json: {source}, text: [
+      `${source.sourceId}\tprovider consent ${source.sendToProvider ? 'enabled' : 'disabled'}`,
+      // The same disclosure the Web UI shows before it grants this consent.
+      ...(source.sendToProvider ? [
+        'During analysis the model may search this knowledge base and send matching document passages to the',
+        'configured AI service, including an internal company service. Quotations in results may be saved in',
+        'local history and exported reports; retention by the AI service depends on its configuration and policy.',
+        'Knowledge is background, never trace evidence.',
+        `Revoke with: smp knowledge consent ${source.sourceId} --disable`,
+      ] : []),
+    ]};
+  });
+}
+
 export async function runKnowledgeReindexCommand(args: KnowledgeCommandBaseArgs & {sourceId: string}): Promise<number> {
   const format = args.format ?? 'text';
-  const {scope, registry, ingester} = prepare(args);
+  const {scope, ingester} = prepare(args);
   return run(format, async () => {
-    // The folder this user registered is the only root the reindex trusts.
-    const result = await ingester(registry.get(args.sourceId, scope)?.rootRealpath).ingest(args.sourceId, scope);
+    // The source's own recorded channel admits its root (`channelAuthorizedRoots`).
+    const result = await ingester(undefined).ingest(args.sourceId, scope);
     return {json: {result}, text: [
       `${result.sourceId}\tgeneration=${result.generation}`,
       `documents=${result.documentCount} sections=${result.sectionCount} chunks=${result.chunkCount}`,
