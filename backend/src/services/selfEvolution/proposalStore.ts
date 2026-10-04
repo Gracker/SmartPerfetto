@@ -37,7 +37,10 @@ import {
 } from './canonicalJson';
 import type {SelectedCurationCandidate} from './curationContracts';
 import {selectSingleCurationCandidate} from './curationCoordinator';
-import {parseM6DraftProposal} from './proposalContract';
+import {
+  assertProposalTargetIsLive,
+  parseM6DraftProposal,
+} from './proposalContract';
 import {
   createProposalGateResultV1,
   parseCurationProposalV1,
@@ -248,7 +251,9 @@ export class ProposalStore {
     proposal: CurationProposalV1,
     now: number = Date.now(),
   ): void {
-    this.lifecycle.complete(fence, parseM6DraftProposal(proposal), now);
+    const draft = parseM6DraftProposal(proposal);
+    assertProposalTargetIsLive(draft);
+    this.lifecycle.complete(fence, draft, now);
   }
 
   failLease(

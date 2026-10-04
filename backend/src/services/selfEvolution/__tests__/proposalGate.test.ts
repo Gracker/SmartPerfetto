@@ -368,6 +368,63 @@ describe('M7 proposal gate contracts and store transition', () => {
     }
   });
 
+  it('fails an inert phase-hint target at the schema check, before any base snapshot or replay', async () => {
+    for (const proposal of inertPhaseHintProposals()) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-inert-'));
+      const databasePath = path.join(directory, 'proposals.db');
+      const root = path.join(directory, 'root');
+      fs.mkdirSync(root, {recursive: true, mode: 0o700});
+      createM6Database(databasePath, proposal);
+      const store = new ProposalStore({databasePath});
+      let reachedMaterialization = false;
+      try {
+        const result = await new ProposalGateService({
+          store,
+          planner: testPlanner(root),
+          resolveBaseSnapshot: () => {
+            reachedMaterialization = true;
+            throw new Error('must_not_run');
+          },
+          staticValidation: staticValidation(),
+          runPairedReplay: async () => {
+            reachedMaterialization = true;
+            throw new Error('must_not_run');
+          },
+        }).gate({scope, proposalId: proposal.proposalId});
+        expect(result).toMatchObject({status: 'draft', revision: 1});
+        expect(reachedMaterialization).toBe(false);
+        const checks = store.getLatestGateAttempt(scope, proposal.proposalId)
+          ?.gateResult?.checks;
+        expect(checks?.[0]).toMatchObject({
+          gateId: 'schema',
+          verdict: 'failed',
+          reasonCodes: ['inert_injection_target'],
+        });
+        expect(checks?.slice(1).every(check => check.verdict === 'not_run'))
+          .toBe(true);
+      } finally {
+        store.close();
+        fs.rmSync(directory, {recursive: true, force: true});
+      }
+    }
+  });
+
+  it('does not accept a new draft whose target is an inert phase hint', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-inert-draft-'));
+    const store = new ProposalStore({databasePath: path.join(directory, 'proposals.db')});
+    try {
+      for (const proposal of inertPhaseHintProposals()) {
+        expect(() => store.completeDraft(
+          {scope} as never,
+          proposal,
+        )).toThrow('inert_injection_target');
+      }
+    } finally {
+      store.close();
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+  });
+
   it('keeps T5a drafts policy-inconclusive without scheduling replay', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-t5a-'));
     const databasePath = path.join(directory, 'proposals.db');
@@ -616,24 +673,8 @@ describe('M7 containment', () => {
     })).toThrow('proposal_materialization_plan_invalid');
   });
 
-  it('defines a closed materialization policy for every proposal kind', () => {
+  it('defines a closed materialization policy for every live proposal kind', () => {
     const variants: CurationProposalV1[] = [
-      draftProposal({
-        kind: 'phase_hint',
-        tier: 'T0',
-        deltas: [{
-          op: 'add',
-          targetKind: 'injection',
-          targetId: 'hint-a',
-          operationId: 'hint-a',
-          anchor: 'injections.phaseHints[scene="startup"][id="hint-a"]',
-          baseContentHash,
-          after: canonicalJsonString({
-            id: 'hint-a',
-            text: 'Inspect the bounded startup window.',
-          }),
-        }],
-      }),
       draftProposal(),
       draftProposal({
         kind: 'strategy_section',
@@ -692,22 +733,21 @@ describe('M7 containment', () => {
       }),
       draftProposal({
         kind: 'retire_injection',
-        tier: 'T0',
+        tier: 'T1',
         deltas: [{
           op: 'remove',
           targetKind: 'injection',
-          targetId: 'hint-a',
-          operationId: 'retire-hint-a',
-          anchor: 'injections.phaseHints[id="hint-a"]',
+          targetId: 'note-a',
+          operationId: 'retire-note-a',
+          anchor: 'injections.skillNotes[id="note-a"]',
           baseContentHash,
-          before: 'Retired hint',
+          before: 'Retired note',
         }],
       }),
     ];
-    expect(variants).toHaveLength(7);
+    expect(variants).toHaveLength(6);
     expect(new Set(variants.map(proposal =>
       planner.plan(proposal).proposalKind))).toEqual(new Set([
-      'phase_hint',
       'skill_note',
       'strategy_section',
       'skill_overlay_delta',
@@ -715,6 +755,16 @@ describe('M7 containment', () => {
       'new_skill_draft',
       'retire_injection',
     ]));
+  });
+
+  it('refuses to plan an inert phase-hint target but keeps the registry identity of earlier plans', () => {
+    for (const proposal of inertPhaseHintProposals()) {
+      expect(() => planner.plan(proposal)).toThrow('inert_injection_target');
+    }
+    // Plans gated before phase hints were removed bind this registry hash.
+    expect(planner.registry.policyFor('phase_hint')).toMatchObject({
+      directory: 'injections/phase-hints',
+    });
   });
 });
 
@@ -817,6 +867,19 @@ describe('M7 static gate strategy_section Skill calls', () => {
     ));
     expect(proof.verdict).toBe('failed');
     expect(proof.validatorCodes).toEqual(['strategy_skill_param_undeclared']);
+  });
+
+  it('rejects a contribution that appends phase hints as an inert target', async () => {
+    const proof = await gate({
+      ...contribution('general', 'unused'),
+      operations: [{
+        op: 'append_phase_hints',
+        operationId: 'append-general',
+        hints: [],
+      }],
+    } as never);
+    expect(proof.verdict).toBe('failed');
+    expect(proof.validatorCodes).toEqual(['inert_injection_target']);
   });
 
   it('does not charge a published contribution in another scene to the candidate', async () => {
@@ -1215,6 +1278,57 @@ function draftProposal(
     createdAt: '2026-07-29T00:00:00.000Z',
     ...overrides,
   };
+}
+
+/** Stored drafts that target phase hints, which no analysis reads. */
+function inertPhaseHintProposals(): CurationProposalV1[] {
+  return [
+    draftProposal({
+      proposalId: 'proposal-inert-phase-hint',
+      kind: 'phase_hint',
+      tier: 'T0',
+      deltas: [{
+        op: 'add',
+        targetKind: 'injection',
+        targetId: 'hint-a',
+        operationId: 'hint-a',
+        anchor: 'injections.phaseHints[scene="startup"][id="hint-a"]',
+        baseContentHash,
+        after: canonicalJsonString({id: 'hint-a', constraints: 'Inspect startup.'}),
+      }],
+    }),
+    draftProposal({
+      proposalId: 'proposal-inert-retire',
+      kind: 'retire_injection',
+      tier: 'T0',
+      deltas: [{
+        op: 'remove',
+        targetKind: 'injection',
+        targetId: 'hint-a',
+        operationId: 'retire-hint-a',
+        anchor: 'injections.phaseHints[id="hint-a"]',
+        baseContentHash,
+        before: 'Retired hint',
+      }],
+    }),
+    draftProposal({
+      proposalId: 'proposal-inert-strategy-section',
+      kind: 'strategy_section',
+      tier: 'T2',
+      deltas: [{
+        op: 'add',
+        targetKind: 'strategy_overlay',
+        targetId: 'startup',
+        operationId: 'append-hints',
+        anchor:
+          'strategies[scene="startup"].sections[operationId="append-hints"]',
+        baseContentHash,
+        after: canonicalJsonString({
+          operations: [{op: 'append_phase_hints', operationId: 'append-hints', hints: []}],
+        }),
+      }],
+    }),
+  ];
 }
 
 function testPlanner(root: string): ProposalMaterializationPlanner {

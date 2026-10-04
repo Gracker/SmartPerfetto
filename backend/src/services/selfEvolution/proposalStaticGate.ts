@@ -38,7 +38,11 @@ import {
   parseProposalSqlRegressionProofV1,
   parseProposalCandidateMaterializationV1,
 } from './proposalGateContract';
-import {parseM6DraftProposal} from './proposalContract';
+import {
+  INERT_INJECTION_TARGET,
+  parseM6DraftProposal,
+  proposalTargetsInertInjection,
+} from './proposalContract';
 import {runManagedProposalSqlRegression} from './proposalSqlRegression';
 import {buildSkillRegistryAttribution} from './skillFingerprint';
 import type {ProposalBaseSnapshotV1} from './proposalSemanticGate';
@@ -103,7 +107,9 @@ export async function validateProposalStatic(input: {
     throw new Error('static_validation_policy_fingerprint_invalid');
   }
 
-  if (proposal.kind === 'new_skill_draft') {
+  if (proposalTargetsInertInjection(proposal)) {
+    errors.add(INERT_INJECTION_TARGET);
+  } else if (proposal.kind === 'new_skill_draft') {
     const parsed = normalizeSkillDefinition(
       yaml.load(candidate.serializedContent),
       'proposal/new-skill.skill.yaml',

@@ -179,15 +179,10 @@ function dataEnvelopesFromUpdate(
 export function assertRolePlan(
   replay: ReplayExecutorInput,
   plan: EvaluationReplayRolePlan,
-  commonRegistry: EffectiveRuntimeRegistrySnapshot,
 ): void {
   const roleRefs = evaluationRoleVariantRefs({
     variant: plan.roleVariant,
     role: replay.role,
-    resolveBaselinePhaseHint: (scene, hintId) =>
-      commonRegistry.strategyRegistry.getStrategy(scene)?.phaseHints.find(
-        hint => hint.id === hintId,
-      ),
   });
   const refKey = (ref: {
     category: string;
@@ -464,7 +459,7 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
       replay,
       commonRegistry,
     });
-    assertRolePlan(replay, rolePlan, commonRegistry);
+    assertRolePlan(replay, rolePlan);
     const roleRegistry = replay.role === 'candidate'
       ? await buildRegistry({
           scope: registryScope,

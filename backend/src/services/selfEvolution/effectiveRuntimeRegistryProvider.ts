@@ -414,7 +414,7 @@ function sameScope(
 type PhaseHintDelta = Exclude<
   EvolutionStrategyDeltaV1,
   {kind: 'strategy_contribution'}
-> | EvaluationRoleVariantV1['phaseHintDeltas'][number];
+>;
 
 function applyPhaseHintDeltas(input: {
   snapshot: ReturnType<typeof buildStrategyRegistrySnapshot>;
@@ -667,26 +667,7 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
           overlayGeneration: commonOverlayGeneration,
         })
       : variantContributedStrategySnapshot;
-  const evaluationStrategyDeltas: PhaseHintDelta[] = variant
-    ? [
-        ...variant.phaseHintDeltas,
-        ...variant.retiredInjections
-          .filter(entry => entry.category === 'phaseHints')
-          .map(entry => ({
-            kind: 'retire_phase_hint' as const,
-            hintId: entry.id,
-            contentHash: entry.contentHash,
-            ...(entry.scene ? {scene: entry.scene} : {}),
-          })),
-      ]
-    : [];
-  const effectiveStrategySnapshot = evaluationStrategyDeltas.length > 0
-    ? applyPhaseHintDeltas({
-        snapshot: variantCommonStrategySnapshot,
-        deltas: evaluationStrategyDeltas,
-        overlayGeneration: commonOverlayGeneration,
-      })
-    : variantCommonStrategySnapshot;
+  const effectiveStrategySnapshot = variantCommonStrategySnapshot;
   const baseStrategies = new Map(
     baseStrategySnapshot.getAllStrategies().map(definition => [
       definition.scene,

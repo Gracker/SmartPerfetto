@@ -331,12 +331,10 @@ async function replayEvidence(
     baseline: evaluationRoleVariantRefs({
       variant: treatment.roleVariant,
       role: 'baseline',
-      resolveBaselinePhaseHint: () => undefined,
     }),
     candidate: evaluationRoleVariantRefs({
       variant: treatment.roleVariant,
       role: 'candidate',
-      resolveBaselinePhaseHint: () => undefined,
     }),
   };
   for (const item of cases) {

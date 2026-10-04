@@ -7,7 +7,6 @@ import {canonicalContentHash} from '../canonicalJson';
 import {
   createEvaluationTreatmentArtifact,
   EvaluationTreatmentArtifactStore,
-  evaluationPhaseHintInjectionContentHash,
   evaluationRoleVariantRefs,
   evaluationSkillNoteInjectionContentHash,
   parseEvaluationTreatmentArtifact,
@@ -51,44 +50,81 @@ function artifact(content = 'Candidate note') {
 }
 
 describe('evaluation treatment artifacts', () => {
-  it('changes the phase-hint injection hash when only maxToolCalls changes', () => {
-    const base = {
-      constraints: 'Use one targeted query.',
-      criticalTools: [] as string[],
-    };
-
-    expect(evaluationPhaseHintInjectionContentHash({
-      ...base,
-      maxToolCalls: {execute_sql: 1},
-    })).not.toBe(evaluationPhaseHintInjectionContentHash(base));
-    expect(evaluationPhaseHintInjectionContentHash(base)).toBe(
-      canonicalContentHash(base),
-    );
-  });
-
-  it('rejects evaluation phase-hint budgets for unsupported tools', () => {
-    expect(() => createEvaluationTreatmentArtifact({
-      artifactId: 'unsupported-tool-budget',
-      sourceCandidateContentHash: canonicalContentHash('unsupported-tool-budget'),
-      scope,
-      baseSkillRegistryFingerprint: 'a'.repeat(64),
-      baseStrategyRegistryFingerprint: 'b'.repeat(64),
-      entries: [{
+  it('refuses phase-hint entries, which no analysis reads, when created or read back', () => {
+    const inertEntries = [
+      {
         kind: 'phase_hint_delta',
         op: 'add',
         scene: 'scrolling',
-        hintId: 'unsupported-tool-budget',
+        hintId: 'legacy-hint',
         after: {
-          id: 'unsupported-tool-budget',
+          id: 'legacy-hint',
           keywords: ['architecture'],
           constraints: 'One bounded tool call.',
           criticalTools: [],
-          maxToolCalls: {invoke_skill: 1},
           critical: false,
         },
-      }],
-      createdAt: '2026-09-02T00:00:00.000Z',
-    } as never)).toThrow('evaluation_treatment_phase_hint_invalid');
+      },
+      {
+        kind: 'retire_injection',
+        category: 'phaseHints',
+        id: 'legacy-hint',
+        contentHash: 'e'.repeat(64),
+        injectionContentHash: 'e'.repeat(64),
+        scene: 'scrolling',
+      },
+      {
+        kind: 'strategy_contribution',
+        contribution: {
+          contributionId: 'legacy-contribution',
+          scope,
+          scene: 'scrolling',
+          baseStrategyFingerprint: 'f'.repeat(64),
+          createdAt: '2026-09-02T00:00:00.000Z',
+          operations: [{
+            op: 'append_phase_hints',
+            operationId: 'legacy-op',
+            hints: [],
+          }],
+        },
+      },
+    ];
+    for (const entry of inertEntries) {
+      expect(() => createEvaluationTreatmentArtifact({
+        artifactId: `inert-${entry.kind}`,
+        sourceCandidateContentHash: canonicalContentHash(entry.kind),
+        scope,
+        baseSkillRegistryFingerprint: 'a'.repeat(64),
+        baseStrategyRegistryFingerprint: 'b'.repeat(64),
+        entries: [entry],
+        createdAt: '2026-09-02T00:00:00.000Z',
+      } as never)).toThrow('evaluation_treatment_inert_injection_target');
+      expect(() => parseEvaluationTreatmentArtifact({
+        ...artifact(),
+        entries: [entry],
+      })).toThrow('evaluation_treatment_inert_injection_target');
+    }
+  });
+
+  it('keeps the materialized input hash of artifacts gated before phase hints were removed', () => {
+    const value = artifact();
+    const variant = resolveEvaluationRoleVariant({
+      artifact: value,
+      scope,
+      baseSkillRegistryFingerprint: value.baseSkillRegistryFingerprint,
+      baseStrategyRegistryFingerprint: value.baseStrategyRegistryFingerprint,
+    });
+    // A gated proposal's paired-replay proof binds this exact layout.
+    expect(variant.materializedInputHash).toBe(canonicalContentHash({
+      sourceCandidateContentHash: value.sourceCandidateContentHash,
+      treatmentArtifactContentHash: value.contentHash,
+      skillOverlays: [],
+      strategyContributions: [],
+      phaseHintDeltas: [],
+      skillNoteDeltas: variant.skillNoteDeltas,
+      retiredInjections: [],
+      artifactCreatedAtMs: Date.parse(value.createdAt),
+    }));
   });
 
   it('stores content-addressed artifacts idempotently and rejects conflicts', () => {
@@ -131,17 +167,6 @@ describe('evaluation treatment artifacts', () => {
   });
 
   it('derives baseline-before and candidate-after refs without conflating mutation hashes', () => {
-    const beforeHint = {
-      id: 'startup-hint',
-      keywords: ['startup'],
-      constraints: 'Use the baseline startup constraint.',
-      criticalTools: ['startup_analysis'],
-      critical: true,
-    };
-    const afterHint = {
-      ...beforeHint,
-      constraints: 'Use the candidate startup constraint.',
-    };
     const beforeNoteHash = 'c'.repeat(64);
     const afterNote = {
       schemaVersion: 1 as const,
@@ -158,14 +183,6 @@ describe('evaluation treatment artifacts', () => {
       baseSkillRegistryFingerprint: 'a'.repeat(64),
       baseStrategyRegistryFingerprint: 'b'.repeat(64),
       entries: [
-        {
-          kind: 'phase_hint_delta',
-          op: 'modify',
-          scene: 'startup',
-          hintId: beforeHint.id,
-          beforeContentHash: canonicalContentHash(beforeHint),
-          after: afterHint,
-        },
         {
           kind: 'skill_note',
           op: 'modify',
@@ -194,20 +211,13 @@ describe('evaluation treatment artifacts', () => {
     const baseline = evaluationRoleVariantRefs({
       variant,
       role: 'baseline',
-      resolveBaselinePhaseHint: () => beforeHint,
     });
     const candidate = evaluationRoleVariantRefs({
       variant,
       role: 'candidate',
-      resolveBaselinePhaseHint: () => beforeHint,
     });
 
     expect(baseline.materializedRefs).toEqual(expect.arrayContaining([
-      {
-        category: 'phaseHints',
-        id: beforeHint.id,
-        contentHash: evaluationPhaseHintInjectionContentHash(beforeHint),
-      },
       {
         category: 'skillNotes',
         id: afterNote.noteId,
@@ -220,11 +230,6 @@ describe('evaluation treatment artifacts', () => {
       },
     ]));
     expect(candidate.materializedRefs).toEqual(expect.arrayContaining([
-      {
-        category: 'phaseHints',
-        id: afterHint.id,
-        contentHash: evaluationPhaseHintInjectionContentHash(afterHint),
-      },
       {
         category: 'skillNotes',
         id: afterNote.noteId,

@@ -11,7 +11,6 @@ import type {
   ProposalPairedReplaySplitSummaryV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
-import type {PhaseHint} from '../../agentv3/strategyLoader';
 import {
   attestEvaluationPair,
   type EvaluationPairAttestationV1,
@@ -71,10 +70,6 @@ export async function evaluateProposalPairedReplay(input: {
   cases: readonly EvalCaseV1[];
   store: EvalReplayRunStore;
   publisher: EvaluationReplayPublisher;
-  resolveBaselinePhaseHint?(
-    scene: string,
-    hintId: string,
-  ): PhaseHint | undefined;
 }): Promise<ProposalPairedReplayProofV1> {
   const proposal = parseM6DraftProposal(input.proposal);
   const candidate = parseProposalCandidateMaterializationV1(input.candidate);
@@ -95,14 +90,10 @@ export async function evaluateProposalPairedReplay(input: {
     baseline: evaluationRoleVariantRefs({
       variant: input.treatment.roleVariant,
       role: 'baseline',
-      resolveBaselinePhaseHint: (scene, hintId) =>
-        input.resolveBaselinePhaseHint?.(scene, hintId),
     }),
     candidate: evaluationRoleVariantRefs({
       variant: input.treatment.roleVariant,
       role: 'candidate',
-      resolveBaselinePhaseHint: (scene, hintId) =>
-        input.resolveBaselinePhaseHint?.(scene, hintId),
     }),
   };
   const trustedTasks = input.store.list(proposal.scope, runSpec.runId);
@@ -460,8 +451,7 @@ function assertMaterializedTreatmentExecution(input: {
   })}`;
   const mutatesSkillRegistry = input.roleVariant.skillOverlays.length > 0;
   const mutatesStrategyRegistry =
-    input.roleVariant.strategyContributions.length > 0
-    || input.roleVariant.phaseHintDeltas.length > 0;
+    input.roleVariant.strategyContributions.length > 0;
   if (
     baselineMaterialization.treatmentGeneration
       !== `evaluation:baseline:${input.roleVariant.treatmentGeneration}`

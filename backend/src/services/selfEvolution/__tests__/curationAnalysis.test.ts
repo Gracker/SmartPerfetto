@@ -152,13 +152,9 @@ describe('retireInjectionProposer', () => {
       const negative = index < 3;
       return makeObservation(index, negative ? 'negative' : 'positive', {
         injections: {
-          phaseHints: negative
+          skillNotes: negative
             ? [{id: 'shared-id', contentHash: injectionHash}]
             : [],
-          skillNotes: [{
-            id: 'shared-id',
-            contentHash: injectionHash,
-          }],
         },
       });
     });
@@ -166,20 +162,37 @@ describe('retireInjectionProposer', () => {
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({
       kind: 'retire_injection',
-      tier: 'T0',
+      tier: 'T1',
       delta: {
         targetId: 'shared-id',
-        anchor: 'injections.phaseHints[id=\"shared-id\"]',
+        anchor: 'injections.skillNotes[id=\"shared-id\"]',
         baseContentHash: injectionHash,
         afterMode: 'none',
       },
       sourceState: {
         targetIdentity: {
-          category: 'phaseHints',
+          category: 'skillNotes',
           id: 'shared-id',
           contentHash: injectionHash,
         },
       },
+    });
+  });
+
+  it('never proposes retiring a phase hint, which no analysis reads', () => {
+    const observations = Array.from({length: 8}, (_, index) =>
+      makeObservation(index, index < 3 ? 'negative' : 'positive', {
+        injections: {
+          phaseHints: index < 3
+            ? [{id: 'hint-a', contentHash: injectionHash}]
+            : [],
+        },
+      }));
+    const result = proposeRetireInjectionHypotheses(observations);
+    expect(result.candidates).toEqual([]);
+    expect(result.diagnostics).toContainEqual({
+      code: 'retire_category_unsupported',
+      details: {category: 'phaseHints'},
     });
   });
 
@@ -188,8 +201,8 @@ describe('retireInjectionProposer', () => {
       makeObservation(index, index < 3 ? 'negative' : 'positive', {
         model: index < 3 ? 'model-a' : 'model-b',
         injections: {
-          phaseHints: index < 3
-            ? [{id: 'hint-a', contentHash: injectionHash}]
+          skillNotes: index < 3
+            ? [{id: 'note-a', contentHash: injectionHash}]
             : [],
         },
       }));
