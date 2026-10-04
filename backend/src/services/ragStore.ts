@@ -198,8 +198,6 @@ function defaultRegistryOrigin(kind: RagSourceKind): RagChunk['registryOrigin'] 
       return 'codebase_registry';
     case 'android_internals_wiki':
       return 'external_knowledge_registry';
-    case 'android_internals_pack':
-      return 'built_in_knowledge_pack';
   }
 }
 

@@ -25,12 +25,6 @@ export interface ProjectedPayload {
     attribution?: string;
     sourceStatus?: string;
     sourceConfidence?: string;
-    articleId?: string;
-    sectionId?: string;
-    sectionHeading?: string;
-    chunkHash?: string;
-    knowledgePackVersion?: string;
-    knowledgePackFingerprint?: string;
     lastVerifiedAgainst?: string;
     commitHash?: string;
     sourceDirty?: boolean;
@@ -266,18 +260,6 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
       ...(!privateWiki && hit.metadata?.sourceConfidence
         ? {sourceConfidence: hit.metadata.sourceConfidence}
         : {}),
-      ...(hit.metadata?.articleId ? {articleId: hit.metadata.articleId} : {}),
-      ...(hit.metadata?.sectionId ? {sectionId: hit.metadata.sectionId} : {}),
-      ...(hit.metadata?.sectionHeading
-        ? {sectionHeading: hit.metadata.sectionHeading}
-        : {}),
-      ...(hit.metadata?.chunkHash ? {chunkHash: hit.metadata.chunkHash} : {}),
-      ...(hit.metadata?.knowledgePackVersion
-        ? {knowledgePackVersion: hit.metadata.knowledgePackVersion}
-        : {}),
-      ...(hit.metadata?.knowledgePackFingerprint
-        ? {knowledgePackFingerprint: hit.metadata.knowledgePackFingerprint}
-        : {}),
       ...(!privateWiki && hit.metadata?.lastVerifiedAgainst
         ? {lastVerifiedAgainst: hit.metadata.lastVerifiedAgainst}
         : {}),
@@ -323,18 +305,6 @@ function projectRawRetrievalResult(toolName: string, candidate: Record<string, u
         ...(typeof chunk.sourceConfidence === 'string' ? {sourceConfidence: chunk.sourceConfidence} : {}),
         ...(typeof chunk.lastVerifiedAgainst === 'string'
           ? {lastVerifiedAgainst: chunk.lastVerifiedAgainst}
-          : {}),
-        ...(typeof chunk.articleId === 'string' ? {articleId: chunk.articleId} : {}),
-        ...(typeof chunk.sectionId === 'string' ? {sectionId: chunk.sectionId} : {}),
-        ...(typeof chunk.sectionHeading === 'string'
-          ? {sectionHeading: chunk.sectionHeading}
-          : {}),
-        ...(typeof chunk.chunkHash === 'string' ? {chunkHash: chunk.chunkHash} : {}),
-        ...(typeof chunk.knowledgePackVersion === 'string'
-          ? {knowledgePackVersion: chunk.knowledgePackVersion}
-          : {}),
-        ...(typeof chunk.knowledgePackFingerprint === 'string'
-          ? {knowledgePackFingerprint: chunk.knowledgePackFingerprint}
           : {}),
         ...(typeof chunk.commitHash === 'string' ? {commitHash: chunk.commitHash} : {}),
         ...(typeof chunk.sourceDirty === 'boolean' ? {sourceDirty: chunk.sourceDirty} : {}),

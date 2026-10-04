@@ -41,12 +41,6 @@ export interface SanitizedRagHit {
     verifiedAt?: number;
     lastVerifiedAgainst?: string;
     contentFingerprint?: string;
-    articleId?: string;
-    sectionId?: string;
-    sectionHeading?: string;
-    chunkHash?: string;
-    knowledgePackVersion?: string;
-    knowledgePackFingerprint?: string;
     sourceDirty?: boolean;
     commitProvenance?: RagChunk['commitProvenance'];
   };
@@ -115,16 +109,6 @@ function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
     ...(chunk.sourceConfidence ? {sourceConfidence: chunk.sourceConfidence} : {}),
     ...(chunk.lastVerifiedAgainst ? {lastVerifiedAgainst: chunk.lastVerifiedAgainst} : {}),
     ...(chunk.contentFingerprint ? {contentFingerprint: chunk.contentFingerprint} : {}),
-    ...(chunk.articleId ? {articleId: chunk.articleId} : {}),
-    ...(chunk.sectionId ? {sectionId: chunk.sectionId} : {}),
-    ...(chunk.sectionHeading ? {sectionHeading: chunk.sectionHeading} : {}),
-    ...(chunk.chunkHash ? {chunkHash: chunk.chunkHash} : {}),
-    ...(chunk.knowledgePackVersion
-      ? {knowledgePackVersion: chunk.knowledgePackVersion}
-      : {}),
-    ...(chunk.knowledgePackFingerprint
-      ? {knowledgePackFingerprint: chunk.knowledgePackFingerprint}
-      : {}),
     ...(chunk.sourceDirty !== undefined ? {sourceDirty: chunk.sourceDirty} : {}),
     ...(chunk.commitProvenance ? {commitProvenance: chunk.commitProvenance} : {}),
   };
