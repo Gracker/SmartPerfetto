@@ -5410,12 +5410,7 @@ function broadcastToAgentDrivenClients(
     onDataEnvelopeValidationWarning: (payload) => {
       console.warn(
         `[AgentRoutes.broadcastToAgentDrivenClients] DataEnvelope validation warning (envelope ${payload.envelopeIndex}):`,
-        {
-          sessionId: payload.sessionId,
-          errors: payload.errors.slice(0, 5),
-          totalErrors: payload.errors.length,
-          envelope: payload.envelope,
-        },
+        payload,
       );
     },
     onValidDataEnvelopes: (validEnvelopes) => {
