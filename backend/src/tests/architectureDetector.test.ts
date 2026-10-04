@@ -15,9 +15,9 @@ import {
   ArchitectureDetector,
   createArchitectureDetector,
   detectArchitectureViaSkill,
-  DetectorContext,
-} from '../agent/detectors';
-import { resolvePipelineArchitectureType } from '../agent/detectors/architectureDetector';
+  resolvePipelineArchitectureType,
+} from '../agent/detectors/architectureDetector';
+import type { DetectorContext } from '../agent/detectors/types';
 import { ensurePipelineSkillsInitialized, pipelineSkillLoader } from '../services/pipelineSkillLoader';
 import {createTraceProcessorQueryCancelledError} from '../services/traceProcessorCancellation';
 

@@ -292,6 +292,7 @@ function buildClaudeSdkToolOptions(
   };
 }
 
+/** @internal Test seam. */
 export const __testing = {
   getSdkResultErrorMessage,
   buildClaudeSdkSystemPrompt, buildQuickConversationContext, chooseClaudeConclusionText,

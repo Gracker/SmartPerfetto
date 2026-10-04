@@ -7445,6 +7445,7 @@ const sessionCleanupInterval = setInterval(() => {
 }, SESSION_CLEANUP_INTERVAL_MS);
 sessionCleanupInterval.unref?.();
 
+/** @internal Test seam. */
 export const agentRoutesPrivacyProjectionTestSeam = {
   startSessionRun,
   baseAgentEventScopeFromSession,
@@ -7464,16 +7465,19 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   analysisCompletedData,
 };
 
+/** @internal Test seam. */
 export const agentRoutesReceiptTestSeam = {
   runManifestReceiptReference,
   buildAnalysisReceiptForReference,
 };
 
+/** @internal Test seam. */
 export const agentRoutesSmartPreviewSelectionTestSeam = {
   hasSession: (sessionId: string) => Boolean(assistantAppService.getSession(sessionId)),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
 };
 
+/** @internal Test seam. */
 export const agentRoutesCancellationTestSeam = {
   setReviewStopWatchdogMs: (ms: number) => {httpReviewStopWatchdogMs = ms;},
   runAgentDrivenAnalysis,
@@ -7488,6 +7492,7 @@ export const agentRoutesCancellationTestSeam = {
   projectCancelSessionRunResult,
 };
 
+/** @internal Test seam. */
 export const agentRoutesSceneDetectionTestSeam = {
   detectScrollSessions,
 };

@@ -340,35 +340,6 @@ export interface EnsembleResult {
   totalLatencyMs: number;
 }
 
-export interface SubAgentContext {
-  sessionId: string;
-  traceId: string;
-  intent?: Intent;
-  plan?: AnalysisPlan;
-  previousResults?: StageResult[];
-  /** 当前迭代编号（用于去重与多轮分析） */
-  iteration?: number;
-  feedback?: EvaluationFeedback;
-  traceProcessor?: any;
-  traceProcessorService?: any;
-  /** 检测到的渲染架构信息 (Phase 1 新增) */
-  architecture?: import('../agent/detectors').ArchitectureInfo;
-  /** 用户原始查询 */
-  query?: string;
-  /** 用户查询 (别名) */
-  userQuery?: string;
-  /** 目标应用包名 */
-  package?: string;
-  /** 分析时间范围 (string for precision-safe ns timestamps) */
-  timeRange?: { start: number | string; end: number | string };
-  /** 分析参数（可选） */
-  analysisParams?: Record<string, any>;
-  /** AI 服务，用于 Skill 的 ai_summary 和 ai_decision 步骤 */
-  aiService?: {
-    chat: (prompt: string) => Promise<string>;
-  };
-}
-
 export interface SubAgentResult {
   agentId?: string;
   success: boolean;

@@ -1731,12 +1731,7 @@ export function getEvalCaseStore(): EvalCaseStore {
   return defaultStore;
 }
 
-export function resetEvalCaseStoreForTests(): void {
-  defaultStore?.close();
-  defaultStore = undefined;
-  defaultStoreKey = undefined;
-}
-
+/** @internal Test seam. */
 export const __testing = {
   DEFAULT_EPHEMERAL_CAPACITY,
   DEFAULT_EPHEMERAL_CORPUS_MAX_BYTES,

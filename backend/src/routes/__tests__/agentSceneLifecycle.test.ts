@@ -17,7 +17,7 @@ jest.mock('../../services/sceneReport/sceneEvidenceArchiveService', () => ({
   invalidateSceneEvidenceForTrace: (traceId: string) => mockArchive.invalidateTrace({traceId}),
 }));
 import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
-import {ClaudeRuntime} from '../../agentRuntime/engines/claude';
+import {ClaudeRuntime} from '../../agentRuntime/engines/claude/claudeRuntime';
 import type {AnalysisOptions, AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {activateSceneRuntime, resolveSceneProductScope, sceneRunOwnerKey} from '../../agent/scene/sceneRuntimeBinding';
 import {proposeSceneTimeline} from '../../agent/scene/sceneTimelineProposal';

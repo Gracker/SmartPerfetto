@@ -171,6 +171,7 @@ export function getConversationSessionStore(): ConversationSessionStore {
   }
   return singleton.store;
 }
+/** @internal Test seam. */
 export function resetConversationSessionStoreForTests(): void {
   singleton?.store.close();
   singleton = undefined;

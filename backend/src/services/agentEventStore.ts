@@ -45,6 +45,7 @@ function getAgentEventDb(): Database.Database {
   return singletonDb;
 }
 
+/** @internal Test seam. */
 export function resetAgentEventStoreForTests(): void {
   singletonDb?.close();
   singletonDb = null;

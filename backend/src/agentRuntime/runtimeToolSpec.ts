@@ -27,7 +27,6 @@ import {
 
 export type {
   RuntimeToolConcurrencyCoordinator,
-  RuntimeToolConcurrencyMode,
   RuntimeToolConcurrencyPolicy,
   RuntimeToolScheduling,
 } from './runtimeToolConcurrency';

@@ -204,6 +204,7 @@ export function invalidateWorkspaceSkillRegistry(scope: EnterpriseRepositoryScop
   cache.delete(scopeKey(scope));
 }
 
+/** @internal Test seam. */
 export function clearWorkspaceSkillRegistryCache(): void {
   cache.clear();
 }

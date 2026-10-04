@@ -83,6 +83,7 @@ function getAnalysisRunDb(): Database.Database {
   return singletonDb;
 }
 
+/** @internal Test seam. */
 export function resetAnalysisRunStoreForTests(): void {
   singletonDb?.close();
   singletonDb = null;

@@ -710,6 +710,7 @@ async function assertOpenCodeMcpReady(
   throw new Error(`OpenCode SmartPerfetto MCP bridge unavailable: ${reason}${diagnostic}`);
 }
 
+/** @internal Test seam. */
 export const __testing = {
   allocateCandidateOpenCodePort,
   assertOpenCodeMcpReady,

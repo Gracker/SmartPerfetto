@@ -58,7 +58,3 @@ export function runWithSmartTraceSqlSemaphore<T>(
   }
   return semaphore.run(fn);
 }
-
-export function clearSmartTraceSqlSemaphoresForTests(): void {
-  smartSemaphores.clear();
-}

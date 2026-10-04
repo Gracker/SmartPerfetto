@@ -355,6 +355,7 @@ function applyEvaluationSkillNoteDeltas(
   return [...notes.values()];
 }
 
+/** @internal Test seam. */
 export const __testing = {
   estimateTokens,
   renderNote,

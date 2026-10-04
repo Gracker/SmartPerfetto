@@ -782,5 +782,3 @@ export const config = {
   sceneStory: sceneStoryConfig,
   frontend: frontendConfig,
 } as const;
-
-export default config;

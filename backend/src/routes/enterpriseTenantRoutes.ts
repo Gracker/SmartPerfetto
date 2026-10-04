@@ -359,6 +359,7 @@ router.get('/purge/:jobId', (req, res) => {
   });
 });
 
+/** @internal Test seam. */
 export function resetTenantPurgeJobsForTests(): void {
   tenantPurgeJobs.clear();
 }

@@ -27,7 +27,7 @@ import {fixedReportRequirementApplicability} from './finalReportContractGate';
 import {SEMANTIC_ISSUE_CODES, type SemanticIssueCode} from './finalSemanticIssueCodes';
 export type {SemanticIssueCode} from './finalSemanticIssueCodes';
 import {expandSemanticSourceSnapshot} from './evidence/semanticSourceSnapshot';
-export {FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_OUTPUT_BYTE_LIMIT} from './finalSemanticLimits';
+export {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from './finalSemanticLimits';
 
 export const FINAL_SEMANTIC_RULE_VERSION = 'final_semantics@2';
 const SEMANTIC_LOCATION_CATALOG_ENTRY_LIMIT = 512;

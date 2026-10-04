@@ -508,6 +508,7 @@ function assertPinnedCwdMutationCapability(reasons: Set<string>): void {
   }
 }
 
+/** @internal Test seam. */
 export const proposalContainmentGateTesting = {
   async runPinnedCwdAtomicRename(input: {
     directoryPath: string;

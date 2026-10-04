@@ -1546,12 +1546,6 @@ strategies:
   backend/strategies/prompt-turn-policy.template.md:
     disposition: product-only
     reason: SmartPerfetto resolved turn policy and source authorization
-  backend/strategies/report-runtime-delivery-appendix-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto incomplete delivery projection
-  backend/strategies/report-runtime-delivery-appendix-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto incomplete delivery projection
   backend/strategies/source-anchor-normalization.yaml:
     disposition: product-only
     reason: SmartPerfetto trace-anchor normalization and ranking for its source locate tool

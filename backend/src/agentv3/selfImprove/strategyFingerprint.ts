@@ -217,4 +217,5 @@ export class RunSnapshotRegistry {
 /** Process-wide snapshot store. Tests should construct their own instance. */
 export const runSnapshots = new RunSnapshotRegistry();
 
+/** @internal Test seam. */
 export const __testing = { strategyFilePath, STRATEGIES_DIR };

@@ -564,6 +564,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** @internal Test seam. */
 export const __testing = {
   MAX_REVIEW_BYTES,
   MAX_CANDIDATES,

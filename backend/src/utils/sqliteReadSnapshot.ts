@@ -133,6 +133,7 @@ export function openSqliteReadSnapshot(
   throw new Error('sqlite_snapshot_changed_during_copy');
 }
 
+/** @internal Test seam. */
 export const __testing = {
   SNAPSHOT_PREFIX,
   familyStamp,

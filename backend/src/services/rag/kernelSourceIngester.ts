@@ -32,7 +32,6 @@ import {
   resolveMaxSourceChunks,
   resolveSourcePathPrefix,
   selectEnumeratedSourceFiles,
-  selectCodebasePreviewFiles,
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
@@ -366,8 +365,3 @@ export class KernelSourceIngester {
     return result;
   }
 }
-
-export const __TEST_ONLY__ = {
-  spdxLicense,
-  filterPreviewFiles: selectCodebasePreviewFiles,
-};

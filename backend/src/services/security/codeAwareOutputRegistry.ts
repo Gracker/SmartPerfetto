@@ -825,6 +825,7 @@ export function revokeCodeAwareOutputGuards(sessionId: string): void {
   markSessionRevoked(sessionId);
 }
 
+/** @internal Test seam. */
 export function clearAllCodeAwareOutputGuards(): void {
   for (const guard of sessionGuards.values()) guard.destroy();
   sessionGuards.clear();

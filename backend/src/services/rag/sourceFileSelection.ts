@@ -50,10 +50,6 @@ export function normalizeSourceRelativePath(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
 }
 
-export function sourceAbsolutePath(rootRealpath: string, relativePath: string): string {
-  return path.join(rootRealpath, ...normalizeSourceRelativePath(relativePath).split('/'));
-}
-
 export function assertCodebaseRootIdentity(
   registeredRootRealpath: string,
   previewRootRealpath: string,
@@ -221,6 +217,10 @@ export function codebaseSourcePathMatches(
   return true;
 }
 
+/**
+ * @internal Test seam: applies the live codebase path matcher to a path
+ * preview so its prefix and case-folding rules can be checked without an index.
+ */
 export function selectCodebasePreviewFiles(
   preview: PathPreviewResult,
   ref: CodebaseRef,

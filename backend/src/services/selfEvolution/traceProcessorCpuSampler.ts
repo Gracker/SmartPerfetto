@@ -191,6 +191,7 @@ export class TraceProcessorCpuSampler {
   }
 }
 
+/** @internal Test seam. */
 export const __testing = {
   parseProcessTime,
 };

@@ -16,7 +16,6 @@ import {
 import type {
   EngineCapabilities,
   RuntimeDiagnosticsInput,
-  RuntimeDiagnosticsPayload,
   RuntimeEngineDescriptor,
 } from './runtimeDescriptorTypes';
 import type { RuntimeSelection } from './runtimeSelection';
@@ -161,7 +160,6 @@ export {
   type AgentRuntimeKind,
   type EngineCapabilities,
   type RuntimeDiagnosticsInput,
-  type RuntimeDiagnosticsPayload,
   type RuntimeEngineDescriptor,
 };
 

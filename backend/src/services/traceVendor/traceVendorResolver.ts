@@ -533,7 +533,7 @@ export function numericVendorConfidence(resolution: TraceVendorResolution): numb
   return resolution.confidence === 'high' ? 0.9 : resolution.confidence === 'medium' ? 0.7 : 0.4;
 }
 
-/** Test isolation only; production invalidates by trace identity, service disposal or LRU. */
+/** @internal Test isolation only; production invalidates by trace identity, service disposal or LRU. */
 export function clearTraceVendorCacheForTests(): void {
   traceVendorCaches = new WeakMap();
 }

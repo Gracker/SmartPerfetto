@@ -222,15 +222,6 @@ export function canShareAnalysisResultResource(
   return hasRbacPermission(context, 'analysis_result:delete');
 }
 
-export function canDeleteAnalysisResultResource(
-  resource: ResourceOwnerFields | null | undefined,
-  context: RequestContext,
-): boolean {
-  if (!sharesWorkspaceWithContext(resource, context)) return false;
-  if (hasRbacPermission(context, 'analysis_result:delete')) return true;
-  return false;
-}
-
 export function sendForbidden(res: Response, details = 'Forbidden'): Response {
   return res.status(403).json({
     success: false,

@@ -5,7 +5,6 @@
 export {
   addAtraceCategories,
   calculateCaptureBufferSizeKb,
-  CAPTURE_PRESETS,
   extractDurationMs,
   getCapturePreset,
   isCapturePresetId,
@@ -16,9 +15,6 @@ export {
 } from '../../services/traceCaptureConfig';
 
 export type {
-  CaptureConfigRenderOptions,
-  CapturePresetDefinition,
   CapturePresetId,
   CapturePresetRequirements,
-  CaptureTarget,
 } from '../../services/traceCaptureConfig';

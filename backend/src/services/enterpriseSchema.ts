@@ -105,9 +105,6 @@ export const ENTERPRISE_MINIMAL_SCHEMA_TABLES = [
   'sso_sessions',
 ] as const;
 
-export type EnterpriseCoreSchemaTable = typeof ENTERPRISE_CORE_SCHEMA_TABLES[number];
-export type EnterpriseMinimalSchemaTable = typeof ENTERPRISE_MINIMAL_SCHEMA_TABLES[number];
-
 const MIGRATIONS: MigrationStep[] = [
   {
     version: 1,

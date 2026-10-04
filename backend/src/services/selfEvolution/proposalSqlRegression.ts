@@ -703,6 +703,7 @@ function errorCode(error: unknown): string {
   return 'sql_regression_execution_failed';
 }
 
+/** @internal Test seam. */
 export const proposalSqlRegressionTesting = {
   evaluateOracle,
 };

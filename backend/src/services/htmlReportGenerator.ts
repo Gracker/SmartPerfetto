@@ -7163,5 +7163,3 @@ export function getHTMLReportGenerator(): HTMLReportGenerator {
   }
   return instance;
 }
-
-export default HTMLReportGenerator;

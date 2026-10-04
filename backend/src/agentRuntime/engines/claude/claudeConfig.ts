@@ -543,15 +543,6 @@ export function explainClaudeRuntimeError(
 }
 
 /**
- * Check if ClaudeRuntime (agentv3) is the active orchestrator.
- * Defaults to true unless the explicit runtime is OpenAI Agents SDK.
- */
-export function isClaudeCodeEnabled(): boolean {
-  const runtime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
-  return !runtime || runtime === 'claude-agent-sdk';
-}
-
-/**
  * Create a lightweight config for quick (factual) queries.
  * Reduces maxTurns, effort, and disables verification/sub-agents
  * to optimize for fast response on simple questions.
@@ -594,7 +585,7 @@ interface AutoBinaryResolution {
 
 let autoBinaryCache: AutoBinaryResolution | null = null;
 
-/** Test-only: reset the auto-detection memo. */
+/** @internal Test-only: reset the auto-detection memo. */
 export function resetSdkBinaryOptionCache(): void {
   autoBinaryCache = null;
 }

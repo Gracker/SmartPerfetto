@@ -47,20 +47,6 @@ export function rethrowIfTraceProcessorQueryCancelled(error: unknown): void {
   }
 }
 
-export function waitForAbortSignal(signal?: AbortSignal): Promise<never> | undefined {
-  if (!signal) return undefined;
-  if (signal.aborted) {
-    return Promise.reject(createTraceProcessorQueryCancelledError(signal.reason));
-  }
-  return new Promise((_, reject) => {
-    signal.addEventListener(
-      'abort',
-      () => reject(createTraceProcessorQueryCancelledError(signal.reason)),
-      { once: true },
-    );
-  });
-}
-
 export function raceWithTraceProcessorCancellation<T>(
   promise: Promise<T>,
   signal?: AbortSignal,

@@ -294,6 +294,7 @@ export function withRunManifestLifecycle<T>(
     : runWithManifest();
 }
 
+/** @internal Test seam. */
 export function clearRunManifestLifecyclesForTests(): void {
   for (const lifecycle of active.values()) {
     lifecycle.dispose();
@@ -301,6 +302,7 @@ export function clearRunManifestLifecyclesForTests(): void {
   active.clear();
 }
 
+/** @internal Test seam. */
 export const __testing = {
   active,
   identityKey,

@@ -214,6 +214,7 @@ export function getLegacyApiUsageSnapshot(limit = 20): {
   };
 }
 
+/** @internal Test seam. */
 export function resetLegacyApiUsageTelemetryForTests(): void {
   totalLegacyRequests = 0;
   pathStats.clear();

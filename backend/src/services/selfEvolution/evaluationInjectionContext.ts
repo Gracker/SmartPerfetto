@@ -12,7 +12,6 @@ import type {
 } from '../../types/selfEvolution';
 import {
   canonicalContentHash,
-  canonicalJsonString,
   immutableCanonicalSnapshot,
 } from './canonicalJson';
 
@@ -271,32 +270,6 @@ export function commitEvaluationExposureSince(
   }
 }
 
-export function commitEvaluationProviderRequest(input: {
-  payload: unknown;
-  cursor?: number;
-}): void {
-  const state = requireState();
-  const payload = typeof input.payload === 'string'
-    ? input.payload
-    : canonicalJsonString(input.payload);
-  for (const entry of state.entries) {
-    if (
-      entry.sequence < (input.cursor ?? 0)
-      || entry.state === 'discarded'
-    ) {
-      continue;
-    }
-    if (
-      !payload.includes(entry.ref.contentHash)
-      && !payload.includes(entry.ref.id)
-    ) {
-      continue;
-    }
-    entry.state = 'committed';
-    entry.guarantee = 'provider_request_observed';
-  }
-}
-
 export function discardPendingEvaluationExposures(cursor = 0): void {
   const state = context.getStore();
   if (!state || state.sealed) return;
@@ -424,6 +397,7 @@ EvaluationRoleInjectionContractV1 | undefined {
   return context.getStore()?.contract;
 }
 
+/** @internal Test seam. */
 export const __testing = {
   logicalKey,
   refKey,

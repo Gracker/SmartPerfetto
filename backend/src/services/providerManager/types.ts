@@ -130,10 +130,6 @@ export interface ProviderTemplate {
   defaultConnection?: Partial<ProviderConnection>;
 }
 
-export type OfficialProviderTemplate = ProviderTemplate & {
-  type: Exclude<ProviderType, 'custom'>;
-};
-
 export interface TestResult {
   success: boolean;
   latencyMs: number;

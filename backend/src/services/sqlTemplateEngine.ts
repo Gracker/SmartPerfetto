@@ -313,5 +313,3 @@ export class SQLTemplateEngine {
     return fixed !== sql ? fixed : null;
   }
 }
-
-export default SQLTemplateEngine;

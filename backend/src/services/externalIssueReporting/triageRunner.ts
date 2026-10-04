@@ -453,6 +453,7 @@ function isCredentialError(error: unknown): boolean {
     error.message === 'provider_credentials_unavailable';
 }
 
+/** @internal Test seam. */
 export const __testing = {
   DEFAULT_TIMEOUT_MS,
   MAX_OUTPUT_TOKENS,

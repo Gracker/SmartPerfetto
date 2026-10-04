@@ -48,5 +48,3 @@ export class SQLValidator {
     return result;
   }
 }
-
-export default SQLValidator;

@@ -882,6 +882,7 @@ function traceProcessorVersion(): string {
     || 'unknown';
 }
 
+/** @internal Test seam. */
 export const __testing = {
   selectPairedReplayCases,
   selectCompatibleEvidenceManifest,

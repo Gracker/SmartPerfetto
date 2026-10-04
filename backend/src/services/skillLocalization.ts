@@ -468,7 +468,3 @@ export function assertBuiltInSkillLocalizationCoverage(
 export function skillLocalizationInventory(): SkillLocalizationCatalog['inventory'] {
   return {...loadCatalog().inventory};
 }
-
-export function resetSkillLocalizationCatalogForTests(): void {
-  cachedCatalog = undefined;
-}

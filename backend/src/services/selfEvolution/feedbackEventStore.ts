@@ -1390,6 +1390,7 @@ export function isCanonicalPublicFeedbackCurationSource(
     sameScope(storeIdentity.scope, canonical.scope);
 }
 
+/** @internal Test seam. */
 export const feedbackEventStoreTesting = {
   checksumForEvent,
   commandFingerprint,

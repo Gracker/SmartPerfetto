@@ -116,12 +116,6 @@ export interface SkillInput {
   description?: string;
 }
 
-export interface SkillOutput {
-  name: string;
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'timestamp' | 'duration' | 'array' | 'object';
-  description?: string;
-}
-
 // =============================================================================
 // Input Validation Types
 // =============================================================================
@@ -697,32 +691,6 @@ export interface SkillEvent {
   data?: any;
 }
 
-export interface DisplayResultEvent extends SkillEvent {
-  type: 'display_result';
-  data: DisplayResult;
-}
-
-export interface DiagnosticEvent extends SkillEvent {
-  type: 'diagnostic_found';
-  data: DiagnosticResult;
-}
-
-export interface AIThinkingEvent extends SkillEvent {
-  type: 'ai_thinking';
-  data: {
-    prompt: string;
-    context?: string;
-  };
-}
-
-export interface AIResponseEvent extends SkillEvent {
-  type: 'ai_response';
-  data: {
-    response: string;
-    tokens?: number;
-  };
-}
-
 // =============================================================================
 // Module Metadata Types
 // =============================================================================
@@ -742,32 +710,4 @@ export interface ModuleMetadata {
   component: string;
   /** Sub-components this module covers */
   subsystems?: string[];
-}
-
-// =============================================================================
-// Loaded Skill
-// =============================================================================
-
-/**
- * Loaded Skill - unified format for both atomic and composite skills
- */
-export interface LoadedSkill {
-  id: string;
-  definition: SkillDefinition;
-  filePath: string;
-}
-
-/**
- * Simplified Skill Result - for compatibility with adapters
- */
-export interface SimplifiedSkillResult {
-  skillId: string;
-  skillName: string;
-  success: boolean;
-  sections: Record<string, any>;
-  diagnostics: DiagnosticResult[];
-  summary: string;
-  executionTimeMs: number;
-  displayResults?: DisplayResult[];
-  aiSummary?: string;
 }
