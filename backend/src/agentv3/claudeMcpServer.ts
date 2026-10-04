@@ -176,11 +176,7 @@ import {CaseLibrary} from '../services/caseLibrary';
 import { createCaseRetriever } from '../services/caseEvolution/caseRecommendationRetriever';
 import { recallCasesByTags } from '../services/caseEvolution/caseTagRecall';
 import { CURATED_CASE_STATUSES } from '../types/caseKnowledge';
-import {
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
-} from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
 

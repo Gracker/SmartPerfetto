@@ -22,6 +22,7 @@ import { getFirstHeaderValue, getHeaderValue, parseHeaderList } from './requestH
 import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from './requestId';
 import type { BrowserOriginRequirement } from '../security/requestOriginPolicy';
+import { DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID } from '../utils/localDevIdentity';
 
 type RequestContextAuthType = 'sso' | 'api_key' | 'dev';
 
@@ -47,9 +48,6 @@ interface AuthenticatedRequest extends Request {
 
 const SSO_SESSION_TOKEN_PREFIX = 'sp_sso_';
 const SSO_SESSION_COOKIE_NAME = 'sp_sso_session';
-export const DEFAULT_TENANT_ID = 'default-dev-tenant';
-export const DEFAULT_WORKSPACE_ID = 'default-workspace';
-export const DEFAULT_DEV_USER_ID = 'dev-user-123';
 const USAGE_WINDOW_MS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_WINDOW_MS || '', 10) || 24 * 60 * 60 * 1000;
 const MAX_REQUESTS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_MAX_REQUESTS || '', 10);
 const MAX_TRACE_REQUESTS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS || '', 10);

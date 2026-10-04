@@ -14,10 +14,8 @@ import {selectRuntimeForProvider} from '../../agentRuntime/runtimeSelection';
 import {hasClaudeCredentials, sdkEnvForProviderEnv} from '../../agentv3/claudeConfig';
 import {
   authenticate,
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
 } from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../utils/localDevIdentity';
 import {AI_CAPABILITY_ENV_KEY} from '../../services/aiCapabilityPolicy';
 import {
   analyzeFlamegraph,

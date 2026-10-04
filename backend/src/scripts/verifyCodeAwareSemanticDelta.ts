@@ -15,11 +15,7 @@ import {parseConclusionContractDeclaration, type ConclusionContract} from '../ag
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {createClaudeMcpServer} from '../agentv3/claudeMcpServer';
 import {ArtifactStore} from '../agentv3/artifactStore';
-import {
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
-} from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import {createRagAdminRoutes} from '../routes/ragAdminRoutes';
 import {CodebaseManagementService} from '../services/codebase/codebaseManagementService';
 import {CodebaseRegistry} from '../services/codebase/codebaseRegistry';

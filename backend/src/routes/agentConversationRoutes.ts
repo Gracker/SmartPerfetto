@@ -18,10 +18,9 @@ import {
 import {OrchestratorConversationRuntimeAdapter} from '../assistant/runtime/orchestratorConversationRuntimeAdapter';
 import {agentSessionConfig} from '../config';
 import {
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
 } from '../middleware/auth';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import {getDefaultAndroidInternalsPackResolver} from '../services/androidInternalsPack/androidInternalsPackResolver';
 import {authorizeAnalysisContext} from '../services/analysisContextAuthorization';
 import {

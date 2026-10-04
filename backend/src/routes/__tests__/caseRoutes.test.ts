@@ -11,7 +11,7 @@ import express from 'express';
 import request from 'supertest';
 
 import {createCaseRoutes} from '../caseRoutes';
-import {DEFAULT_DEV_USER_ID} from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID} from '../../utils/localDevIdentity';
 import {CaseLibrary} from '../../services/caseLibrary';
 import {CaseGraph} from '../../services/caseGraph';
 import {

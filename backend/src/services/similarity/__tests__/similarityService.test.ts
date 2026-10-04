@@ -8,7 +8,7 @@ import * as path from 'path';
 
 import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 
-import { DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID } from '../../../middleware/auth';
+import { DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID } from '../../../utils/localDevIdentity';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   type AnalysisResultSnapshot,

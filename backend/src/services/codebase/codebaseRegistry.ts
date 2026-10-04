@@ -51,11 +51,9 @@ import {
   invalidCodebaseMetadata,
   invalidCodebaseSelection,
 } from './codebaseRequestError';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../utils/localDevIdentity';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
-const DEFAULT_TENANT_ID = 'default-dev-tenant';
-const DEFAULT_WORKSPACE_ID = 'default-workspace';
-const DEFAULT_USER_ID = 'dev-user-123';
 const REGISTRY_KNOWLEDGE_KIND = 'codebase_registry_ref';
 const REGISTRY_ROW_SCOPE = 'codebase-registry-ref';
 const INGEST_LEASE_TTL_MS = 10 * 60 * 1000;
@@ -392,7 +390,7 @@ export function resolveCodebaseScope(scope: CodebaseScope = {}): Required<Codeba
   return {
     tenantId: scope.tenantId || DEFAULT_TENANT_ID,
     workspaceId: scope.workspaceId || DEFAULT_WORKSPACE_ID,
-    userId: scope.userId || DEFAULT_USER_ID,
+    userId: scope.userId || DEFAULT_DEV_USER_ID,
   };
 }
 

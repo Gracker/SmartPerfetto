@@ -3,12 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { Response } from 'express';
-import {
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
-  type RequestContext,
-} from '../middleware/auth';
+import type { RequestContext } from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import { unrestrictedPrivateContextSql } from './security/analysisPrivateContext';
 

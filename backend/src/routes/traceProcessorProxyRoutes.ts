@@ -10,12 +10,12 @@ import { isKeylessLocalMode, serverConfig } from '../config';
 import {
   authenticate,
   buildRequestContext,
-  DEFAULT_DEV_USER_ID,
   requireRequestContext,
   resolveCredentialIdentity,
   type ContextIdentity,
   type RequestContext,
 } from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID} from '../utils/localDevIdentity';
 import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from '../middleware/requestId';
 import {

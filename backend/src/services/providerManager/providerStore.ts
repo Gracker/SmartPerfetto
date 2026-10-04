@@ -29,6 +29,7 @@ import {
   type ProviderMutationOwner,
   type ProviderMutationScope,
 } from './providerMutationGeneration';
+import {LOCAL_DEV_OWNER} from '../../utils/localDevIdentity';
 
 type ProviderCredentialScope = 'personal' | 'workspace' | 'org';
 
@@ -62,11 +63,7 @@ interface ResolvedProviderScope {
   userId: string | null;
 }
 
-const DEFAULT_PROVIDER_SCOPE = {
-  tenantId: 'default-dev-tenant',
-  workspaceId: 'default-workspace',
-  userId: 'dev-user-123',
-};
+const DEFAULT_PROVIDER_SCOPE = LOCAL_DEV_OWNER;
 
 const SAFE_PROVIDER_SCOPE_RE = /^[a-zA-Z0-9._:-]+$/;
 const SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConnection> = [

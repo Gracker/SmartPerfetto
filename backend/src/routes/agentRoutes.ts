@@ -54,11 +54,10 @@ import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
   authenticate,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
   type RequestContext,
 } from '../middleware/auth';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import { createRequestId, requestIdOf } from '../middleware/requestId';
 import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import {
