@@ -1298,6 +1298,7 @@ function recordCapabilityManifestAttribution(
   }
 }
 
+/** @internal Test seam. */
 export function clearTraceCompletenessProbeCache(): void {
   traceCompletenessProbeCache.clear();
 }

@@ -314,12 +314,14 @@ export function getRunManifestStore(): RunManifestStore {
   return defaultStore;
 }
 
+/** @internal Test seam. */
 export function resetRunManifestStoreForTests(): void {
   defaultStore?.close();
   defaultStore = undefined;
   defaultStoreKey = undefined;
 }
 
+/** @internal Test seam. */
 export const __testing = {
   DEFAULT_EPHEMERAL_CAPACITY,
   manifestKey,

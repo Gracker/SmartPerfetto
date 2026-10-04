@@ -526,6 +526,7 @@ async function commitAfterProviderClose<T>(
   return commit();
 }
 
+/** @internal Test seam. */
 export const __testing = {
   RuntimeAnalysisAbortScope,
   createOpenAiReasoningFilterState,

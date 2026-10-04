@@ -73,6 +73,7 @@ export function configureRuntimeEnvironment(
   }
 }
 
+/** @internal Test seam. */
 export const __testing = {
   RUNTIME_IDENTITY_ENV_KEYS,
   SERVICE_PORT_ENV_KEYS,

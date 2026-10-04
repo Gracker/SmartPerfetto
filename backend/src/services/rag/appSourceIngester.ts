@@ -20,7 +20,6 @@ import {PathSecurityGate, readAcceptedTextFileSync} from '../codebase/pathSecuri
 import {SourceEnumerator} from '../codebase/sourceEnumerator';
 import {
   chunkSourceBySymbols,
-  detectSourceSymbol,
   estimateTokenCount,
   languageForPath,
   stableChunkId,
@@ -362,10 +361,3 @@ export class AppSourceIngester {
     return result;
   }
 }
-
-export const __TEST_ONLY__ = {
-  chunkSource,
-  detectSymbol: detectSourceSymbol,
-  makeChunkId,
-  languageFor: languageForPath,
-};

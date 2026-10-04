@@ -11,7 +11,7 @@ import {
   resolveAuthConfig,
   resolveFeatureConfig,
 } from '../config';
-import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
+import { openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import { ENTERPRISE_MINIMAL_SCHEMA_TABLES } from './enterpriseSchema';
 import { getUploadRoot } from './traceUploadPaths';
 
@@ -109,7 +109,6 @@ interface FilesystemSource {
 const DATA_DIR_ENV = 'SMARTPERFETTO_DATA_DIR';
 const LOGS_DIR_ENV = 'SMARTPERFETTO_LOGS_DIR';
 const PROVIDER_DATA_DIR_ENV = 'PROVIDER_DATA_DIR_OVERRIDE';
-const UPLOAD_DIR_ENV = 'UPLOAD_DIR';
 
 function parseEnterpriseMigrationPhase(
   value: string | undefined,
@@ -644,15 +643,3 @@ export function describeEnterpriseMigrationRollback(
   }
   return 'P-C rollback: restore the pre-retirement filesystem snapshot and SQLite DB snapshot; reverse conversion is not promised.';
 }
-
-export const ENTERPRISE_MIGRATION_ENV_KEYS = [
-  ENTERPRISE_FEATURE_FLAG_ENV,
-  ENTERPRISE_MIGRATION_PHASE_ENV,
-  ENTERPRISE_MIGRATION_SNAPSHOT_DIR_ENV,
-  ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV,
-  ENTERPRISE_DB_PATH_ENV,
-  DATA_DIR_ENV,
-  LOGS_DIR_ENV,
-  PROVIDER_DATA_DIR_ENV,
-  UPLOAD_DIR_ENV,
-] as const;

@@ -29,7 +29,7 @@ import path from 'path';
 import request from 'supertest';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
-import { ClaudeRuntime } from '../../agentRuntime/engines/claude';
+import { ClaudeRuntime } from '../../agentRuntime/engines/claude/claudeRuntime';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { resetAgentEventStoreForTests } from '../../services/agentEventStore';
 import { resetAnalysisRunStoreForTests } from '../../services/analysisRunStore';

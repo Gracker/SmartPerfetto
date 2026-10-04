@@ -128,12 +128,3 @@ export function ensureSessionLayout(sp: SessionPaths): void {
   fs.mkdirSync(sp.dir, { recursive: true });
   fs.mkdirSync(sp.turnsDir, { recursive: true });
 }
-
-/** Return session directory name → sessionId mapping by scanning sessions/. */
-export function scanSessionIds(paths: CliPaths): string[] {
-  if (!fs.existsSync(paths.sessionsRoot)) return [];
-  return fs
-    .readdirSync(paths.sessionsRoot, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name);
-}

@@ -727,6 +727,7 @@ export function getTraceProcessorLeaseStore(): TraceProcessorLeaseStore {
   return singleton;
 }
 
+/** @internal Test seam. */
 export function setTraceProcessorLeaseStoreForTests(store: TraceProcessorLeaseStore | null): void {
   singleton = store;
   singletonDbPath = store ? resolveEnterpriseDbPath() : null;

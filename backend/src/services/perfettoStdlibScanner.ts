@@ -60,10 +60,6 @@ export function getPerfettoStdlibPath(): string {
   );
 }
 
-// Backward-compatible export for diagnostics. Runtime code should call
-// getPerfettoStdlibPath() so env overrides and packaged assets are honored.
-export const STDLIB_PATH = getPerfettoStdlibPath();
-
 export const STDLIB_PRELUDE_DIR = 'prelude';
 
 // Directories to exclude from scanning
@@ -332,15 +328,6 @@ export function getPerfettoStdlibSymbolIndex(): PerfettoStdlibSymbolIndex {
 
   cachedSymbolIndex = scanPerfettoStdlibSymbolIndex();
   return cachedSymbolIndex;
-}
-
-/**
- * Clears the cached module list, forcing a rescan on next access.
- * Useful for testing or when the stdlib files may have changed.
- */
-export function clearModuleCache(): void {
-  cachedModules = null;
-  cachedSymbolIndex = null;
 }
 
 /**

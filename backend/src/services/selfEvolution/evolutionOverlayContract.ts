@@ -25,7 +25,6 @@ import type {
   EvolutionValidationBoundInputsV1,
   ContributionBundleArtifactV1,
   ProposalChannelArtifactRevisionV1,
-  RepositoryPatchArtifactV1,
   UpgradeReconciliationReportV1,
 } from '../../types/selfEvolution';
 import {
@@ -693,65 +692,6 @@ export function parseEvolutionDegradationAlertV1(
     alert,
     'evolution_degradation_alert_hash_mismatch',
   ) as unknown as EvolutionDegradationAlertV1;
-}
-
-export function createRepositoryPatchArtifactV1(
-  input: Omit<RepositoryPatchArtifactV1, 'schemaVersion' | 'contentHash'>,
-): RepositoryPatchArtifactV1 {
-  const withoutHash = {schemaVersion: 1 as const, ...input};
-  return parseRepositoryPatchArtifactV1({
-    ...withoutHash,
-    contentHash: canonicalContentHash(withoutHash),
-  });
-}
-
-export function parseRepositoryPatchArtifactV1(
-  value: unknown,
-): RepositoryPatchArtifactV1 {
-  const artifact = record(value, 'repository_patch_artifact_invalid');
-  exactKeys(artifact, [
-    'schemaVersion',
-    'artifactId',
-    'proposalId',
-    'gateAttemptId',
-    'gateAttemptOrdinal',
-    'targetBindingContentHash',
-    'patch',
-    'patchContentHash',
-    'reversePatch',
-    'reversePatchContentHash',
-    'applyCheck',
-    'sourceMaintainer',
-    'gitCapability',
-    'createdAt',
-    'contentHash',
-  ]);
-  if (
-    artifact.schemaVersion !== 1
-    || !nonEmpty(artifact.artifactId)
-    || !nonEmpty(artifact.proposalId)
-    || !nonEmpty(artifact.gateAttemptId)
-    || !positiveInteger(artifact.gateAttemptOrdinal)
-    || !hash(artifact.targetBindingContentHash)
-    || typeof artifact.patch !== 'string'
-    || !artifact.patch
-    || artifact.patchContentHash !== canonicalContentHash(artifact.patch)
-    || typeof artifact.reversePatch !== 'string'
-    || !artifact.reversePatch
-    || artifact.reversePatchContentHash
-      !== canonicalContentHash(artifact.reversePatch)
-    || artifact.applyCheck !== 'passed'
-    || artifact.sourceMaintainer !== true
-    || artifact.gitCapability !== 'available'
-    || !nonNegativeInteger(artifact.createdAt)
-    || !hash(artifact.contentHash)
-  ) {
-    fail('repository_patch_artifact_invalid');
-  }
-  return verifyHashedRecord(
-    artifact,
-    'repository_patch_artifact_hash_mismatch',
-  ) as unknown as RepositoryPatchArtifactV1;
 }
 
 export function createContributionBundleArtifactV1(

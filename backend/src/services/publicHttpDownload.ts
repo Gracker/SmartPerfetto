@@ -37,6 +37,7 @@ export interface PublicHttpDownloadResponse {
 type TestFetcher = (url: URL, timeoutMs: number) => Promise<PublicHttpDownloadResponse>;
 let testFetcher: TestFetcher | undefined;
 
+/** @internal Test seam. */
 export function setPublicHttpDownloadForTests(fetcher?: TestFetcher): void {
   testFetcher = fetcher;
 }

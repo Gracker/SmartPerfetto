@@ -280,7 +280,6 @@ describe('runtimeCommon', () => {
       "export * from './runtimeEntities';",
       "export * from './runtimeHypothesis';",
       "export * from './runtimeSkillNotes';",
-      "export * from './runtimeFinalReportRecovery';",
     ]);
     expect(source).not.toMatch(/^\s*import\b/m);
     expect(source).not.toMatch(/^\s*(export\s+)?(function|const|class|interface|type)\s+/m);

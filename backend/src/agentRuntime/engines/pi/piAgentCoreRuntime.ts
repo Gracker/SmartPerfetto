@@ -165,6 +165,7 @@ export {
   type PiAgentCoreProviderRuntime,
 } from './piAgentCoreProvider';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
+import {parseFlagValue} from '../../../utils/envFlag';
 export type {PiAgentCoreModelConfig} from './piAgentCoreConfig';
 
 export type ExperimentalPiAgentCoreRuntimeKind = typeof EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND;
@@ -347,11 +348,6 @@ function createPiEvidenceReadView(
   });
 }
 
-function truthyEnv(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
-}
-
 function positiveIntegerEnv(env: EnvLike, keys: readonly string[], fallback: number): number {
   for (const key of keys) {
     const raw = env[key]?.trim();
@@ -520,7 +516,7 @@ export function getPiAgentCoreRuntimeDiagnostics(
   runtime: PiAgentCoreRuntimeKind = PI_AGENT_CORE_RUNTIME_KIND,
 ) {
   const modelJson = env[PI_AGENT_CORE_MODEL_JSON_ENV]?.trim();
-  const fakeStream = truthyEnv(env[PI_AGENT_CORE_FAKE_STREAM_ENV]);
+  const fakeStream = parseFlagValue(env[PI_AGENT_CORE_FAKE_STREAM_ENV]) === true;
   const modulePath = env[PI_AGENT_CORE_MODULE_PATH_ENV]?.trim();
   return {
     configured: Boolean(modelJson || fakeStream),
@@ -1195,7 +1191,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     void executionAbort.promise.catch(() => undefined);
     try {
       executionLease.throwIfAborted();
-      const fakeStream = truthyEnv(this.env[PI_AGENT_CORE_FAKE_STREAM_ENV]);
+      const fakeStream = parseFlagValue(this.env[PI_AGENT_CORE_FAKE_STREAM_ENV]) === true;
       analysis = fakeStream
         ? this.analyzeFakeStream(
           query,

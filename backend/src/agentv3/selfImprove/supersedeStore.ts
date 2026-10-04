@@ -495,4 +495,5 @@ export function injectionWeightForSupersede(marker: SupersedeMarker | null): num
   }
 }
 
+/** @internal Test seam. */
 export const __testing = { DEFAULT_OBSERVATION_DAYS, DEFAULT_OBSERVATION_COUNT_TARGET };

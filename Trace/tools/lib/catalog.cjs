@@ -319,8 +319,7 @@ function validatePathsAndHashes(entry, issues) {
 }
 
 // A fixture case only carries data for a non-analysis test. Coverage would
-// make it an analysis case that the golden evaluation registry skips, so the
-// two roles stay disjoint.
+// make it an analysis case, so the two roles stay disjoint.
 function validatePurpose(entry, issues) {
   if (entry.purpose !== 'fixture') return;
   if (entry.kind !== 'constructed') {

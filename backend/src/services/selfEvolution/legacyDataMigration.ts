@@ -442,6 +442,7 @@ export function migrateLegacySelfImproveData(
   }
 }
 
+/** @internal Test seam. */
 export const __testing = {
   MIGRATION_LOCK,
   MIGRATION_MARKER,

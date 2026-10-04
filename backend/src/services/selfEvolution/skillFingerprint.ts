@@ -114,6 +114,7 @@ export function buildSkillRegistryAttribution(
   };
 }
 
+/** @internal Test seam. */
 export const __testing = {
   collectFragmentKeys,
 };

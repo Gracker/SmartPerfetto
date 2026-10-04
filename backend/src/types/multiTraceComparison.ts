@@ -107,8 +107,6 @@ export function standardMetricDescribesApp(definition: Pick<NormalizedMetricDefi
   return definition.group !== 'environment';
 }
 
-export const STANDARD_COMPARISON_METRIC_KEYS = STANDARD_COMPARISON_METRICS.map(metric => metric.key);
-
 export interface TraceComparisonMetadata {
   appPackage?: string;
   processName?: string;

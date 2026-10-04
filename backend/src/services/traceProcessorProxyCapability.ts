@@ -158,10 +158,12 @@ export function stripTraceProcessorCapabilityProtocols(
     .filter(value => !value.startsWith(CAPABILITY_PROTOCOL_PREFIX));
 }
 
+/** @internal Test seam. */
 export function resetTraceProcessorProxyCapabilitiesForTests(): void {
   resetServerSecretForTests();
 }
 
+/** @internal Test seam. */
 export const __testing = {
   CAPABILITY_PROTOCOL_PREFIX,
   DEFAULT_CAPABILITY_TTL_MS,

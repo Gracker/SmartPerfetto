@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {AiSummary, AiSummaryFallbackReason} from '../types/criticalPathContract';
+import type {AiSummary} from '../types/criticalPathContract';
 
 export interface FlamegraphAnalyzeOptions {
   startTs?: number | string;
@@ -117,4 +117,3 @@ export interface FlamegraphAvailability {
 
 /** The flamegraph's model narrative: the same shape as every auxiliary AI summary. */
 export type FlamegraphAiSummary = AiSummary;
-export type FlamegraphAiFallbackReason = AiSummaryFallbackReason;

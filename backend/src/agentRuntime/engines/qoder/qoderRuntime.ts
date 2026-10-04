@@ -68,7 +68,7 @@ import {readRuntimeToolResultFacts} from '../../runtimeToolResult';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {summarizeExternalToolResult} from '../../runtimeLimits';
 import type { RuntimeSelection } from '../../runtimeSelection';
-import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
+import type { RuntimeFactoryInput } from '../../runtimeRegistry';
 import {
   createRuntimePerformanceRun,
   runtimeOutcomeFromError,
@@ -118,22 +118,17 @@ import { isTraceProcessorQueryCancelledError } from '../../../services/traceProc
 import { QODER_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
 import {
   QODER_PERSONAL_ACCESS_TOKEN_ENV,
-  QODER_CLI_PATH_ENV,
   QODER_BYOK_API_KEY_ENV,
-  QODER_BYOK_BASE_URL_ENV,
   QODER_BYOK_PROVIDER_ENV,
-  QODER_BYOK_STYLE_ENV,
   QODER_MODEL_ENV,
-  QODER_SDK_MODULE_PATH_ENV,
-  QODER_SYSTEM_PROMPT_ENV,
   resolveQoderRuntimeConfig,
   getQoderEngineCapabilities,
   getQoderRuntimeDiagnostics,
   type QoderRuntimeConfig,
   type EnvLike,
-  truthyEnv,
   numericEnv,
 } from './qoderConfig';
+import {parseFlagValue} from '../../../utils/envFlag';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
@@ -142,18 +137,12 @@ export type QoderRuntimeKind = typeof QODER_AGENT_RUNTIME_KIND;
 export {
   QODER_AGENT_RUNTIME_KIND,
   QODER_PERSONAL_ACCESS_TOKEN_ENV,
-  QODER_CLI_PATH_ENV,
   QODER_BYOK_API_KEY_ENV,
-  QODER_BYOK_BASE_URL_ENV,
   QODER_BYOK_PROVIDER_ENV,
-  QODER_BYOK_STYLE_ENV,
   QODER_MODEL_ENV,
-  QODER_SDK_MODULE_PATH_ENV,
-  QODER_SYSTEM_PROMPT_ENV,
   getQoderEngineCapabilities,
   getQoderRuntimeDiagnostics,
   resolveQoderRuntimeConfig,
-  type QoderRuntimeConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -1087,7 +1076,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         mcpServers,
         env: buildQoderSdkEnv(this.env),
         stderr: (data: string) => {
-          if (truthyEnv(this.env.QODER_DEBUG)) {
+          if (parseFlagValue(this.env.QODER_DEBUG) === true) {
             console.error('[Qoder SDK stderr]', data);
           }
         },
@@ -1638,18 +1627,4 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   private emitUpdate(update: StreamingUpdate): void {
     this.emit('update', update);
   }
-}
-
-// ---------------------------------------------------------------------------
-// Engine definition factory
-// ---------------------------------------------------------------------------
-
-export function createQoderRuntimeDefinition(
-  kind: QoderRuntimeKind = QODER_AGENT_RUNTIME_KIND,
-): RuntimeEngineDefinition {
-  return {
-    kind,
-    capabilities: getQoderEngineCapabilities(kind),
-    createOrchestrator: input => new QoderRuntime(input),
-  };
 }

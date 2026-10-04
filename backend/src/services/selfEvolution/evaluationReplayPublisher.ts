@@ -480,6 +480,7 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
   }
 }
 
+/** @internal Test seam. */
 export const __testing = {
   createPublishedRecord,
   parsePublishedRecord,

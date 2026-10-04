@@ -20,6 +20,7 @@ export function getDefaultCodebaseRegistry(): CodebaseRegistry {
   return cachedRegistry.registry;
 }
 
+/** @internal Test seam. */
 export function resetDefaultCodebaseRegistryForTests(): void {
   cachedRegistry = null;
 }

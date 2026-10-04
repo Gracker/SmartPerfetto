@@ -926,15 +926,6 @@ function validateStep(
   }
 }
 
-export function validateSkillStepRuntime(
-  value: unknown,
-  path: string,
-): readonly SkillStepRuntimeIssue[] {
-  const issues: SkillStepRuntimeIssue[] = [];
-  validateStep(value, path, issues);
-  return issues;
-}
-
 export function validateSkillStepListRuntime(
   value: unknown,
   path: string,

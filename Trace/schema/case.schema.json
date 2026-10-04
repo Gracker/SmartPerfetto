@@ -27,7 +27,7 @@
     "scene": {"type": "string", "minLength": 1},
     "purpose": {
       "enum": ["analysis", "fixture"],
-      "description": "Absent or analysis: an analysis scenario that the golden trace evaluation registry must seed. fixture: a constructed case that only carries data for a non-analysis test (no Skill/Strategy coverage) and must not be seeded."
+      "description": "Absent or analysis: an analysis scenario that carries Skill/Strategy coverage. fixture: a constructed case that only carries data for a non-analysis test (no Skill/Strategy coverage)."
     },
     "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "known_issues": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},

@@ -36,7 +36,7 @@ import {clearRunManifestLifecyclesForTests} from '../../services/selfEvolution/r
 import {resetRunManifestStoreForTests} from '../../services/selfEvolution/runManifestStore';
 import {TraceProcessorService, setTraceProcessorServiceForTests} from '../../services/traceProcessorService';
 import {resetProviderService} from '../../services/providerManager';
-import {ClaudeRuntime} from '../../agentRuntime/engines/claude';
+import {ClaudeRuntime} from '../../agentRuntime/engines/claude/claudeRuntime';
 import type {AnalysisOptions, AnalysisResult} from '../../agent/core/orchestratorTypes';
 import * as defaultCodebaseServices from '../../services/codebase/defaultCodebaseServices';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';

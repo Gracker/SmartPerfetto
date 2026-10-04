@@ -20,15 +20,6 @@ export function markLegacyApi(successor: string, message: string) {
   };
 }
 
-export function markLegacyAgentApi(req: Request, res: Response, next: NextFunction): void {
-  recordLegacyApiUsage(req);
-  res.setHeader('Deprecation', 'true');
-  res.setHeader('Sunset', LEGACY_AGENT_API_SUNSET);
-  res.setHeader('Link', `<${AGENT_API_V1_BASE}>; rel="successor-version"`);
-  res.setHeader('Warning', '299 - "Legacy agent API is deprecated. Migrate to /api/agent/v1"');
-  next();
-}
-
 function mapLegacyPathToSuccessor(req: Request): string {
   const fullPath = String(req.originalUrl || req.url || '').split('?')[0] || LEGACY_AGENT_API_BASE;
 

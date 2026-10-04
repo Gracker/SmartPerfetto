@@ -300,6 +300,7 @@ export async function quantifyCriticalPath(
   };
 }
 
+/** @internal Test seam. */
 export const __INTERNAL__ = {
   buildCounterfactual,
   buildHypotheses,

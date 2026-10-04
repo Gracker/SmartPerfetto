@@ -136,6 +136,7 @@ export function loadPerfettoSqlDocsAsset(): PerfettoSqlDocsAsset | null {
   }
 }
 
+/** @internal Test seam. */
 export function clearPerfettoSqlDocsCache(): void {
   cachedAsset = undefined;
   cachedModuleMap = null;

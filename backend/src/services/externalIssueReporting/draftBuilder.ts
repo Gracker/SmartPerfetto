@@ -175,6 +175,7 @@ function fingerprint(input: {
     .digest('hex');
 }
 
+/** @internal Test seam. */
 export const __testing = {
   DEFAULT_GITHUB_ISSUES_URL,
   MAX_GITHUB_DRAFT_BODY_CHARS,

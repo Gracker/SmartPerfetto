@@ -4,8 +4,6 @@
 
 import {
   expectedCallMatchesRecord,
-  expectedToolNames,
-  formatExpectedCall,
   getPlanToolCapability,
   isEvidenceCapableToolName,
   phaseMatchesCall,
@@ -303,20 +301,4 @@ export function findCompletedPhaseEvidenceGaps(plan: AnalysisPlanV3): PlanEviden
     }
   }
   return gaps;
-}
-
-export function formatPlanEvidenceGap(gap: PlanEvidenceGap, outputLanguage: string = 'zh-CN'): string {
-  const expected = expectedToolNames(gap.phase).join(', ');
-  if (gap.missingGenericToolEvidence) {
-    const missing = (gap.missingExpectedTools ?? []).join(', ');
-    if (outputLanguage === 'en') {
-      return `Phase "${gap.phase.name}" (${gap.phase.id}) is missing successful calls for every listed tool: ${missing}`;
-    }
-    return `阶段 "${gap.phase.name}" (${gap.phase.id}) 缺少以下各工具的成功调用: ${missing}`;
-  }
-  const missing = gap.missingExpectedCalls.map(formatExpectedCall).join(', ');
-  if (outputLanguage === 'en') {
-    return `Phase "${gap.phase.name}" (${gap.phase.id}) is missing required structured calls: ${missing}; expected: ${expected}`;
-  }
-  return `阶段 "${gap.phase.name}" (${gap.phase.id}) 缺少结构化预期调用: ${missing}; 阶段预期: ${expected}`;
 }

@@ -12,28 +12,15 @@ export type {
   ProviderScope,
   ProviderCreateInput,
   ProviderUpdateInput,
-  ProviderTemplate,
-  OfficialProviderTemplate,
-  ModelOption,
-  TestResult,
-  ProviderType,
 } from './types';
 export { ProviderService } from './providerService';
-export { ProviderStore, ProviderStoreUnreadableError } from './providerStore';
+export { ProviderStoreUnreadableError } from './providerStore';
 export { officialTemplates } from './templates';
 export {
   getProviderModelCatalogService,
   mergeModelOptions,
-  ProviderModelCatalogService,
 } from './providerModelCatalog';
-export {
-  DUAL_SURFACE_PROVIDER_TYPES,
-  isAgentRuntimeKind,
-  isDualSurfaceProviderType,
-  resolveProviderAgentRuntime,
-  sharedKeyShouldUseClaudeAuthToken,
-  supportsAgentRuntimeType,
-} from './providerRuntimeMatrix';
+export { isAgentRuntimeKind } from './providerRuntimeMatrix';
 
 let instance: ProviderService | null = null;
 
@@ -53,7 +40,7 @@ export function getProviderService(): ProviderService {
   return instance;
 }
 
-/** Reset the singleton — for tests only. */
+/** @internal Reset the singleton — for tests only. */
 export function resetProviderService(): void {
   instance = null;
   resetProviderModelCatalogService();

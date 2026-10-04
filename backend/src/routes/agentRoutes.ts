@@ -71,7 +71,7 @@ import {
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import { sessionContextManager, EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
-import { registerCoreTools, StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
+import { StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
 import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
@@ -2244,8 +2244,6 @@ interface TrackEvent {
   details?: Record<string, any>;
 }
 
-// Initialize Agent tools once
-let toolsRegistered = false;
 const SCENE_STRATEGY_IDS = ['scene_reconstruction', 'scene_reconstruction_quick'];
 const MAX_SESSION_DATA_ENVELOPES = 1200;
 const MAX_SESSION_AGENT_DIALOGUE = 800;
@@ -2286,14 +2284,6 @@ function trimSessionArray<T>(items: T[], maxEntries: number): void {
 function pushWithSessionCap<T>(items: T[], value: T, maxEntries: number): void {
   items.push(value);
   trimSessionArray(items, maxEntries);
-}
-
-function ensureToolsRegistered() {
-  if (!toolsRegistered) {
-    registerCoreTools();
-    toolsRegistered = true;
-    console.log('[AgentRoutes] Core tools registered');
-  }
 }
 
 function isDedicatedSceneReplayRequest(query: string): boolean {
@@ -2341,7 +2331,7 @@ function analysisRunDispatchDependencies(): AnalysisRunDispatchDependencies<Anal
     createHttpRunManifestLifecycle, sealCompletedHttpRunManifest, finalizeHttpRunManifestLifecycle,
     persistSessionRunState, assignSessionOwner,
     requestedSessionIsVisible, resolveVisibleSessionReferenceTraceIdForTrace, buildRecoveredResultFromContext,
-    ensureToolsRegistered, isDedicatedSceneReplayRequest, runSmartAnalysis,
+    isDedicatedSceneReplayRequest, runSmartAnalysis,
     smartSelectionReportId, analyzeOptionsErrorMessage, smartPreviewSelectionErrorMessage,
     resolveSmartPreviewReportForSelection, runAgentDrivenAnalysis, broadcastToAgentDrivenClients,
     assistantAppService, httpAnalysisRunLeaseControllers, admittedLocalAnalysisRuns,
@@ -7455,6 +7445,7 @@ const sessionCleanupInterval = setInterval(() => {
 }, SESSION_CLEANUP_INTERVAL_MS);
 sessionCleanupInterval.unref?.();
 
+/** @internal Test seam. */
 export const agentRoutesPrivacyProjectionTestSeam = {
   startSessionRun,
   baseAgentEventScopeFromSession,
@@ -7474,16 +7465,19 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   analysisCompletedData,
 };
 
+/** @internal Test seam. */
 export const agentRoutesReceiptTestSeam = {
   runManifestReceiptReference,
   buildAnalysisReceiptForReference,
 };
 
+/** @internal Test seam. */
 export const agentRoutesSmartPreviewSelectionTestSeam = {
   hasSession: (sessionId: string) => Boolean(assistantAppService.getSession(sessionId)),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
 };
 
+/** @internal Test seam. */
 export const agentRoutesCancellationTestSeam = {
   setReviewStopWatchdogMs: (ms: number) => {httpReviewStopWatchdogMs = ms;},
   runAgentDrivenAnalysis,
@@ -7498,6 +7492,7 @@ export const agentRoutesCancellationTestSeam = {
   projectCancelSessionRunResult,
 };
 
+/** @internal Test seam. */
 export const agentRoutesSceneDetectionTestSeam = {
   detectScrollSessions,
 };

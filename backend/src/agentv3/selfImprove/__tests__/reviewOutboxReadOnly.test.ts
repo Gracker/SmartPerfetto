@@ -6,13 +6,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import Database from 'better-sqlite3';
+import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
 
-import {
-  openReviewOutbox,
-  openReviewOutboxReadOnly,
-  ReviewOutboxHandle,
-} from '../reviewOutbox';
+import {openReviewOutboxReadOnly} from '../reviewOutbox';
 import {__testing as sqliteSnapshotTesting} from '../../../utils/sqliteReadSnapshot';
 
 describe('openReviewOutboxReadOnly', () => {
@@ -41,6 +38,40 @@ describe('openReviewOutboxReadOnly', () => {
     );
   }
 
+  /**
+   * Seed a store with the schema the removed review-agent writer created, so
+   * the read side is exercised against the data older installs still hold.
+   */
+  function openLegacyOutbox(): Database.Database {
+    fs.mkdirSync(path.dirname(dbPath), {recursive: true});
+    const db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS review_jobs (
+        id TEXT PRIMARY KEY,
+        state TEXT NOT NULL CHECK(state IN ('pending','leased','done','failed')),
+        dedupe_key TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        lease_owner TEXT,
+        lease_until INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        last_error TEXT
+      );
+    `);
+    return db;
+  }
+
+  function enqueue(db: Database.Database, id: string): void {
+    const now = Date.now();
+    db.prepare(`
+      INSERT INTO review_jobs (id, state, dedupe_key, created_at, updated_at, payload_json)
+      VALUES (?, 'pending', ?, ?, ?, '{}')
+    `).run(id, id, now, now);
+  }
+
   function snapshotDirectories(): string[] {
     return fs.readdirSync(os.tmpdir())
       .filter((name) => name.startsWith(sqliteSnapshotTesting.SNAPSHOT_PREFIX))
@@ -53,8 +84,8 @@ describe('openReviewOutboxReadOnly', () => {
   });
 
   it('reads an existing outbox without changing its SQLite family', () => {
-    const writable = openReviewOutbox({dbPath});
-    writable.enqueue({dedupeKey: 'job-1', payload: {kind: 'test'}});
+    const writable = openLegacyOutbox();
+    enqueue(writable, 'job-1');
     writable.close();
     const before = sqliteFamily();
     const snapshotsBefore = snapshotDirectories();
@@ -74,8 +105,8 @@ describe('openReviewOutboxReadOnly', () => {
   });
 
   it('reads committed active-WAL rows without touching source sidecars', () => {
-    const writable = openReviewOutbox({dbPath});
-    writable.enqueue({dedupeKey: 'wal-job', payload: {kind: 'wal-only'}});
+    const writable = openLegacyOutbox();
+    enqueue(writable, 'wal-job');
     const before = sqliteFamily();
     expect([...before.keys()]).toContain(`${path.basename(dbPath)}-wal`);
 
@@ -87,15 +118,12 @@ describe('openReviewOutboxReadOnly', () => {
     writable.close();
   });
 
-  it('retains query-only runtime defense behind the closed read interface', () => {
-    const writable = openReviewOutbox({dbPath});
-    writable.close();
+  it('reads through a query-only connection', () => {
+    openLegacyOutbox().close();
     const readonly = openReviewOutboxReadOnly({dbPath});
-    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      const result = (readonly as unknown as ReviewOutboxHandle)
-        .enqueue({dedupeKey: 'no-write', payload: {}});
-      expect(result).toMatchObject({enqueued: false, reason: 'error'});
+      const connection = (readonly as unknown as {db: Database.Database}).db;
+      expect(() => enqueue(connection, 'no-write')).toThrow(/readonly|query_only/i);
       expect(readonly?.countByState()).toEqual({
         pending: 0,
         leased: 0,
@@ -103,7 +131,6 @@ describe('openReviewOutboxReadOnly', () => {
         failed: 0,
       });
     } finally {
-      consoleError.mockRestore();
       readonly?.close();
     }
   });

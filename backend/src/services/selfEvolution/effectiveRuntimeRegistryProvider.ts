@@ -846,6 +846,7 @@ export function resolveEffectiveSkillRegistryForRuntime(
   return fallback;
 }
 
+/** @internal Test seam. */
 export function clearEffectiveRuntimeRegistrySnapshotsForTests(): void {
   effectiveRuntimeRegistryManager.clearForTests();
   reportedStrategyValidationWarnings.clear();

@@ -409,6 +409,7 @@ function ensureSupersedeWriteHandle(): SupersedeStoreHandle | null {
 }
 
 /**
+ * @internal
  * Test-only: disable the live supersede store. Both handles snap to
  * their disabled state so neither path will attempt an adapter open. This is the
  * primitive existing fs-mocked tests use to keep production sqlite
@@ -423,6 +424,7 @@ export function setSupersedeStoreForTesting(handle: null): void {
 }
 
 /**
+ * @internal
  * Test-only: re-enable snapshot reads and clear the writable handle so
  * the next access triggers the appropriate adapter factory.
  */

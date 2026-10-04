@@ -18,10 +18,7 @@
  * stdlib tree via PERFETTO_STDLIB_PATH for maintainer debugging.
  */
 
-import {
-  clearModuleCache,
-  getPerfettoStdlibSymbolIndex,
-} from '../services/perfettoStdlibScanner';
+import { getPerfettoStdlibSymbolIndex } from '../services/perfettoStdlibScanner';
 import { analyzeSqlStdlibDependencies } from '../services/sqlStdlibDependencyAnalyzer';
 
 export interface InjectionResult {
@@ -88,11 +85,7 @@ export function injectStdlibIncludes(sql: string): InjectionResult {
 // Test-only exports. Kept under `_` prefix to discourage production use.
 // ---------------------------------------------------------------------------
 
-export function _resetCacheForTesting(): void {
-  cachedIndex = null;
-  clearModuleCache();
-}
-
+/** @internal Test seam. */
 export function _getSymbolIndexForTesting(): {
   tableToModule: ReadonlyMap<string, string>;
   builtins: ReadonlySet<string>;

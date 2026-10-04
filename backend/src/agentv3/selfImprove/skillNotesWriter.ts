@@ -312,6 +312,7 @@ export function readSkillNotesFile(filePath: string): SkillNotesFile {
   return { schemaVersion: 1, skillId: path.basename(filePath, '.notes.json'), notes: [], lastUpdated: 0, totalBytes: 0 };
 }
 
+/** @internal Test seam. */
 export const __testing = {
   MAX_NOTE_BYTES,
   MAX_FILE_BYTES,

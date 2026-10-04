@@ -207,6 +207,7 @@ export function probeSelfEvolutionPersistence(
   };
 }
 
+/** @internal Test seam. */
 export const __testing = {
   NON_DURABLE_FILESYSTEMS,
   decodeMountInfoPath,

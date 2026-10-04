@@ -822,6 +822,7 @@ export function assertComparableEvaluationProofs(
   }
 }
 
+/** @internal Test seam. */
 export const __testing = {
   environmentFingerprint,
   hasInjections,

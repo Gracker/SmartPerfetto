@@ -31,19 +31,6 @@ const RENDERING_ARCHITECTURE_TYPE_SET: ReadonlySet<string> = new Set(RENDERING_A
 // Types
 // =============================================================================
 
-export interface PipelineThreadRole {
-  thread: string;
-  role: string;
-  description: string;
-  trace_tags?: string;
-}
-
-export interface PipelineKeySlice {
-  name: string;
-  thread: string;
-  description: string;
-}
-
 export interface SmartFilterConfig {
   enabled: boolean;
   description?: string;
@@ -665,25 +652,9 @@ export function getPipelineSkillLoader(): PipelineSkillLoaderClass {
 }
 
 /**
- * Convenience function to get auto-pin instructions
- */
-export async function getAutoPinInstructions(pipelineId: string): Promise<PinInstruction[]> {
-  await ensurePipelineSkillsInitialized();
-  return pipelineSkillLoader.getAutoPinInstructions(pipelineId);
-}
-
-/**
  * Convenience function to get teaching content
  */
 export async function getTeachingContent(pipelineId: string): Promise<TeachingReference | null> {
   await ensurePipelineSkillsInitialized();
   return pipelineSkillLoader.getTeachingContent(pipelineId);
-}
-
-/**
- * Convenience function to get smart filter configs
- */
-export async function getSmartFilterConfigs(pipelineId: string): Promise<Map<string, SmartFilterConfig>> {
-  await ensurePipelineSkillsInitialized();
-  return pipelineSkillLoader.getSmartFilterConfigs(pipelineId);
 }

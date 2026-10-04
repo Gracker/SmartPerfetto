@@ -39,7 +39,7 @@ import {
   setTraceProcessorServiceForTests,
   type TraceProcessor,
 } from '../../services/traceProcessorService';
-import { ClaudeRuntime } from '../../agentRuntime/engines/claude';
+import { ClaudeRuntime } from '../../agentRuntime/engines/claude/claudeRuntime';
 import type { AnalysisOptions, AnalysisResult } from '../../agent/core/orchestratorTypes';
 import type { TracePairContext } from '../../agentv3/types';
 import * as defaultCodebaseServices from '../../services/codebase/defaultCodebaseServices';

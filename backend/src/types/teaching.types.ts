@@ -352,36 +352,6 @@ export interface RawSmartFilter {
   fallback_sql?: string;
 }
 
-/**
- * Raw teaching content from YAML
- */
-export interface RawTeachingContent {
-  title: string;
-  summary: string;
-  mermaid?: string;
-  thread_roles: RawThreadRole[];
-  key_slices: RawKeySlice[];
-}
-
-/**
- * Raw thread role from YAML
- */
-export interface RawThreadRole {
-  thread: string;
-  role: string;
-  description?: string;
-  trace_tags?: string;
-}
-
-/**
- * Raw key slice from YAML
- */
-export interface RawKeySlice {
-  name: string;
-  thread: string;
-  description?: string;
-}
-
 // =============================================================================
 // SQL Result Types
 // =============================================================================
@@ -454,31 +424,6 @@ export function transformPinInstruction(
   }
 
   return base;
-}
-
-/**
- * Transform raw teaching content (snake_case) to API response (camelCase)
- *
- * @param raw - Raw teaching content from YAML
- * @param docPath - Documentation file path
- * @returns Transformed teaching content for frontend
- */
-export function transformTeachingContent(
-  raw: RawTeachingContent,
-  docPath: string
-): TeachingContentResponse {
-  return {
-    title: raw.title,
-    summary: raw.summary,
-    mermaidBlocks: raw.mermaid ? [raw.mermaid] : [],
-    threadRoles: raw.thread_roles.map((role) => ({
-      thread: role.thread,
-      responsibility: role.role + (role.description ? `: ${role.description}` : ''),
-      traceTag: role.trace_tags,
-    })),
-    keySlices: raw.key_slices.map((slice) => slice.name),
-    docPath,
-  };
 }
 
 // =============================================================================
@@ -704,36 +649,4 @@ export function parseFeatures(features: unknown): DetectedFeature[] {
   }
 
   return [];
-}
-
-// =============================================================================
-// Type Guards
-// =============================================================================
-
-/**
- * Type guard to check if value is a valid PinInstructionResponse
- */
-export function isPinInstructionResponse(value: unknown): value is PinInstructionResponse {
-  if (typeof value !== 'object' || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return (
-    typeof obj.pattern === 'string' &&
-    typeof obj.matchBy === 'string' &&
-    typeof obj.priority === 'number' &&
-    typeof obj.reason === 'string'
-  );
-}
-
-/**
- * Type guard to check if value is a valid ActiveProcess
- */
-export function isActiveProcess(value: unknown): value is ActiveProcess {
-  if (typeof value !== 'object' || value === null) return false;
-  const obj = value as Record<string, unknown>;
-  return (
-    typeof obj.upid === 'number' &&
-    typeof obj.processName === 'string' &&
-    typeof obj.frameCount === 'number' &&
-    typeof obj.renderThreadTid === 'number'
-  );
 }

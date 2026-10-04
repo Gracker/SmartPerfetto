@@ -20,48 +20,12 @@ import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
 
-export interface ToolParameter {
-  name: string;
-  type: 'string' | 'number' | 'boolean' | 'timestamp' | 'array' | 'object';
-  required: boolean;
-  description: string;
-  default?: any;
-}
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  category: 'sql' | 'analysis' | 'data' | 'visualization' | 'knowledge';
-  parameters: ToolParameter[];
-  returns: {
-    type: string;
-    description: string;
-  };
-}
-
 export interface ToolResult<T = any> {
   success: boolean;
   data?: T;
   error?: string;
   executionTimeMs: number;
   metadata?: Record<string, any>;
-}
-
-export interface Tool<TParams = any, TResult = any> {
-  definition: ToolDefinition;
-  execute(params: TParams, context: ToolContext): Promise<ToolResult<TResult>>;
-  validate?(params: TParams): { valid: boolean; errors: string[] };
-}
-
-export interface ToolContext {
-  traceId: string;
-  traceProcessor?: any;
-  traceProcessorService?: any;
-  package?: string;
-  /** AI 服务，用于 ai_summary 和 ai_decision 步骤 */
-  aiService?: {
-    chat: (prompt: string) => Promise<string>;
-  };
 }
 
 // =============================================================================
@@ -241,18 +205,6 @@ export interface OrchestratorTrace {
   totalLLMCalls: number;
 }
 
-// =============================================================================
-// Registry Types
-// =============================================================================
-
-export interface ToolRegistry {
-  register(tool: Tool): void;
-  get(name: string): Tool | undefined;
-  list(): ToolDefinition[];
-  listByCategory(category: string): ToolDefinition[];
-  getToolDescriptionsForLLM(): string;
-}
-
 export interface StreamingUpdate {
   /**
    * Event type for streaming updates
@@ -386,35 +338,6 @@ export interface EnsembleResult {
   agreementScore: number;
   totalCost: number;
   totalLatencyMs: number;
-}
-
-export interface SubAgentContext {
-  sessionId: string;
-  traceId: string;
-  intent?: Intent;
-  plan?: AnalysisPlan;
-  previousResults?: StageResult[];
-  /** 当前迭代编号（用于去重与多轮分析） */
-  iteration?: number;
-  feedback?: EvaluationFeedback;
-  traceProcessor?: any;
-  traceProcessorService?: any;
-  /** 检测到的渲染架构信息 (Phase 1 新增) */
-  architecture?: import('../agent/detectors').ArchitectureInfo;
-  /** 用户原始查询 */
-  query?: string;
-  /** 用户查询 (别名) */
-  userQuery?: string;
-  /** 目标应用包名 */
-  package?: string;
-  /** 分析时间范围 (string for precision-safe ns timestamps) */
-  timeRange?: { start: number | string; end: number | string };
-  /** 分析参数（可选） */
-  analysisParams?: Record<string, any>;
-  /** AI 服务，用于 Skill 的 ai_summary 和 ai_decision 步骤 */
-  aiService?: {
-    chat: (prompt: string) => Promise<string>;
-  };
 }
 
 export interface SubAgentResult {

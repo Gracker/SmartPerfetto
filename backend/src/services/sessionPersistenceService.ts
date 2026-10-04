@@ -877,5 +877,3 @@ export class SessionPersistenceService {
     }
   }
 }
-
-export default SessionPersistenceService;

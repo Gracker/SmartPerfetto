@@ -1679,6 +1679,7 @@ export function getTraceProcessorService(): TraceProcessorService {
   return _singletonInstance;
 }
 
+/** @internal Test seam. */
 export function setTraceProcessorServiceForTests(service: TraceProcessorService | null): void {
   _singletonInstance = service;
 }

@@ -201,6 +201,7 @@ export function bootstrap(options: BootstrapOptions = {}): BootstrapResult {
 }
 
 /**
+ * @internal
  * Forget the prepared environment and restore the env roots it derived, so
  * the next `bootstrap()` prepares afresh. Tests only: cwd and values loaded
  * from env files are left to the test to restore.

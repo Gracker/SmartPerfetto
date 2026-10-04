@@ -598,6 +598,7 @@ function sameScope(
     && left.workspaceId === right.workspaceId;
 }
 
+/** @internal Test seam. */
 export const proposalPairedReplayGateTesting = {
   summarizeScorePairs,
 };
