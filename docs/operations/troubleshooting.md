@@ -281,5 +281,5 @@ npm run validate:strategies
 
 - frontmatter 不是合法 YAML。
 - scene 名称与运行时枚举不一致。
-- `phase_hints` 结构错误。
+- 声明了已移除的 `phase_hints` 或 `plan_template` 字段（运行时只忽略并告警，校验会失败）。
 - Prompt 模板变量漏填。

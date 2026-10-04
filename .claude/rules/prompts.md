@@ -103,13 +103,18 @@ entering the native prompt path. Missing or evicted data remains unavailable.
   catalog, so put the words a user actually types first. `compound_patterns`
   is not a frontmatter field; scene routing is semantic and no runtime path
   evaluates regular expressions against the query.
-- `phase_hints` and `plan_template` are historical. They are parsed, pinned and
-  fingerprinted, but no runtime path injects them into an analysis; their
-  `critical_tools` admit and suggest nothing. Do not add an obligation there
-  expecting it to take effect. An obligation that must bind to what a run
-  actually measured belongs in `investigation_contract`, whose `evidence`
-  condition and `evidence_metrics` resolve against the producer ledger and so
-  still apply when the final semantic review is unavailable.
+- `phase_hints` and `plan_template` (with `critical_tools`,
+  `mandatory_aspects` and its expected calls) are removed: no runtime path
+  ever injected them into an analysis. `validate:strategies` rejects a
+  strategy file that declares one, and loading ignores a stray declaration
+  with a `strategy_frontmatter_removed_field` warning
+  (`REMOVED_STRATEGY_FRONTMATTER_KEYS`). Self-Evolution refuses new phase-hint
+  targets (`inert_injection_target`) and quarantines overlays persisted with
+  them. An obligation that must bind to what a run actually measured belongs
+  in `investigation_contract`, whose `evidence` condition and
+  `evidence_metrics` resolve against the producer ledger and so still apply
+  when the final semantic review is unavailable. A plan the model submits
+  (`submit_plan` / `revise_plan` expected calls) is a separate, live contract.
 - Never write a variable in braces inside a template comment. Rendering
   substitutes inside comments too, and split points that search for a
   placeholder find the documented one first — that once injected the whole
@@ -124,9 +129,9 @@ entering the native prompt path. Missing or evicted data remains unavailable.
   `droppedLabels` wider has traded trace-completeness or schema context for
   its own text.
 
-`strategyLoader.ts` owns loading, frontmatter parsing, template rendering, cache
-behavior, and phase hint access. Update it and its tests when adding template
-syntax or frontmatter fields.
+`strategyLoader.ts` owns loading, frontmatter parsing, template rendering and
+cache behavior. Update it and its tests when adding template syntax or
+frontmatter fields.
 
 ## Language Output
 

@@ -125,7 +125,8 @@ npm run check:orphaned-modules
 `phaseHintMatcher.ts` sat in that state with 17 passing tests after the commit
 that replaced prescribed plans removed its only call site. The strategy field it
 served kept accepting authored `critical_tools`, and Self-Evolution kept
-proposing patches to it, with no effect on any analysis.
+proposing patches to it, with no effect on any analysis, until the field and
+its Self-Evolution targets were removed as well.
 
 The check matches a module by its own source path, never by basename: the test
 path was itself registered in `package.json`, so a basename match would have

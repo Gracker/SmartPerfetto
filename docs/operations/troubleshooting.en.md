@@ -266,4 +266,4 @@ cd backend
 npm run validate:strategies
 ```
 
-Common causes include invalid YAML frontmatter, scene names that do not match runtime enums, malformed `phase_hints`, and missing prompt template variables.
+Common causes include invalid YAML frontmatter, scene names that do not match runtime enums, a removed `phase_hints` or `plan_template` field (loading ignores it with a warning; validation fails), and missing prompt template variables.
