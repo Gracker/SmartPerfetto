@@ -113,6 +113,19 @@ Click actions should be explicit, for example:
   public run. Compute derived or rounded numbers in SQL and cite the column; a
   rule `confidence` is a literal level or number, never a template; never put
   `AND`/`OR` inside a quoted string of a condition or filter.
+- A step `condition`, a conditional branch `when` and a diagnostic rule
+  `condition` are JavaScript as written (`evaluateCondition`): write `&&` /
+  `||`. SQL `AND`/`OR` there never compiles, evaluates to false, and the step
+  is silently skipped (the branch never taken, the rule never fired). Only an
+  iterator `filter` has `AND`/`OR` rewritten. The shared validator rejects the
+  words in code as `condition_uses_sql_boolean_words`
+  (`skillSteps.stepConditionExpressions`, `expressionUtils.sqlBooleanWords`;
+  a word in a string literal or a property name is not code), with the
+  `PREDATING_RULE_CODES` severities, since overlays published before
+  validator version 10 may predate it. The Perfetto-Skills exporter's
+  `normalize_condition` still rewrites `AND`/`OR` in conditions, so the
+  public runtime runs a step SmartPerfetto skips; that difference is a
+  tracked handoff, not a license to write them.
 - A Skill SQL path read of an earlier step's result needs a `|default` or a
   step `condition` with the top-level conjunct `<result>.data?.length > 0`.
   SmartPerfetto binds a missing value as '' or NULL and runs; the public

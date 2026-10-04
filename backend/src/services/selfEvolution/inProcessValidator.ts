@@ -14,9 +14,9 @@ import {
   validateNormalizedStdlibReads,
   validateSkillConditions,
 } from '../skillEngine/skillValidator';
-import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
+import {parseEvidenceField, rootReads, sqlBooleanWords, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
 import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
-import {skillExecution, stepNodesOf, stepSkillReferences} from '../skillEngine/skillSteps';
+import {skillExecution, stepConditionExpressions, stepNodesOf, stepSkillReferences} from '../skillEngine/skillSteps';
 import {executableSqlUnits} from '../skillEngine/processScopeSql';
 import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
 import {causeWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
@@ -35,7 +35,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {validateScopedSqlDeclarations, validateSkillStepListRuntime, type SkillStepRuntimeIssue} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '9';
+export const IN_PROCESS_VALIDATOR_VERSION = '10';
 
 /**
  * Rules that already-published overlays and packs may predate. Each is an
@@ -52,12 +52,16 @@ export const IN_PROCESS_VALIDATOR_VERSION = '9';
  * - sql_not_executed: SQL the executor never runs (skillSteps.skillExecution),
  *   which no SQL check reads; it does nothing at runtime, and it was accepted
  *   before validator version 9.
+ * - condition_uses_sql_boolean_words: a condition written with SQL AND/OR,
+ *   which never compiles, so its step is silently skipped (or its branch or
+ *   rule never fires); it was accepted before validator version 10.
  */
 export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
   'result_path_read_undecided',
   'cause_wording_without_evidence',
   'process_scope_invalid',
   'sql_not_executed',
+  'condition_uses_sql_boolean_words',
 ]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
@@ -333,6 +337,16 @@ export function validateSkillDefinitionInProcess(
     ));
   }
   issues.push(...validateDiagnosticReads(skill));
+  // Only an iterator filter has AND/OR rewritten; every other condition runs as written.
+  const skipped = {condition: 'its step is silently skipped', when: 'its branch is never taken', rule: 'the rule never fires'};
+  for (const {text, kind, at} of stepConditionExpressions(skill)) {
+    const words = typeof text === 'string' ? sqlBooleanWords(text) : [];
+    if (words.length > 0) {
+      issues.push(issue('error', 'condition_uses_sql_boolean_words', skill.name, at,
+        `Writes SQL ${words.map(word => `'${word}'`).join(', ')}; a condition is JavaScript, so it never compiles, `
+        + `evaluates to false and ${skipped[kind]}: write && / ||.`));
+    }
+  }
   // A saved-result path read without a default runs on '' / NULL here but is
   // skipped by the public runtime when the result has no row (resultPathReads.ts).
   for (const read of undecidedResultPathReads(skill)) {

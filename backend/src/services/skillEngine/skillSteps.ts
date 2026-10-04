@@ -114,3 +114,29 @@ export function stepSkillReferences(node: any, options: StepWalkOptions = {}): S
       .map(([skillId, at]) => ({skillId, step, at}))];
   });
 }
+
+/** A JavaScript condition the executor evaluates for a step (ExpressionEvaluator.evaluateCondition). */
+export interface StepConditionExpression {
+  /** As written; a caller checks it is a string. */
+  text: unknown;
+  kind: 'condition' | 'when' | 'rule';
+  step: StepNode;
+  /** Where it is written: `steps[1].condition`, `steps[2].conditions[0].when`, `steps[3].rules[0].condition`. */
+  at: string;
+}
+
+/**
+ * Every condition the executor evaluates for the steps under `node`
+ * (stepNodesOf with the same options): a step's own `condition`, a conditional
+ * branch's `when` and a diagnostic rule's `condition`. Each runs as JavaScript
+ * as written; only an iterator `filter` has AND/OR rewritten first.
+ */
+export function stepConditionExpressions(node: any, options: StepWalkOptions = {}): StepConditionExpression[] {
+  return stepNodesOf(node, options).flatMap((step): StepConditionExpression[] => [
+    ...(step.node.condition !== undefined ? [{text: step.node.condition, kind: 'condition' as const, step, at: `${step.at}.condition`}] : []),
+    ...(Array.isArray(step.node.conditions) ? step.node.conditions : []).map((branch: any, index: number) =>
+      ({text: branch?.when, kind: 'when' as const, step, at: `${step.at}.conditions[${index}].when`})),
+    ...(Array.isArray(step.node.rules) ? step.node.rules : []).map((rule: any, index: number) =>
+      ({text: rule?.condition, kind: 'rule' as const, step, at: `${step.at}.rules[${index}].condition`})),
+  ]);
+}
