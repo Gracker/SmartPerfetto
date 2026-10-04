@@ -25,6 +25,7 @@ import {
   androidInternalsPackVersionDirectory,
 } from './packPaths';
 import {AndroidInternalsPackStore} from './androidInternalsPackStore';
+import {WeightedLruMap} from '../weightedLruMap';
 import type {
   AndroidInternalsPackChannelState,
   AndroidInternalsPackHandle,
@@ -171,39 +172,107 @@ function assertManifestIdentity(
   if (manifest.revocation.revoked) throw new Error('aiw_pack_manifest_revoked');
 }
 
-export function verifyAndroidInternalsPackDirectory(
-  directory: string,
+// Verification hashes every Pack file and runs SQLite quick_check, which costs
+// hundreds of milliseconds on the shipped database, and every analyze request
+// resolves the Pack. A verified directory is remembered with the identity each
+// file had before verification read it, so any later change, during or after
+// verification, forces full verification again: a write moves ctime even when
+// mtime is restored, and a replacement or rename moves the inode or ctime. This
+// relies on the filesystem keeping ctime; one that does not (some network or
+// FUSE mounts) leaves such a change unseen until the process restarts.
+const MAX_VERIFIED_PACK_DIRECTORIES = 8;
+
+interface VerifiedPackDirectory {
+  manifest: AndroidInternalsPackManifest;
+  files: ReadonlyArray<readonly [filePath: string, identity: string]>;
+}
+
+const verifiedPackDirectories = new WeightedLruMap<string, VerifiedPackDirectory>(
+  MAX_VERIFIED_PACK_DIRECTORIES,
+  MAX_VERIFIED_PACK_DIRECTORIES,
+  () => 1,
+);
+
+function packFileIdentity(filePath: string): string | undefined {
+  try {
+    const stat = fs.statSync(filePath, {bigint: true});
+    if (!stat.isFile()) return undefined;
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function packHandle(
   origin: AndroidInternalsPackHandle['origin'],
-  expected?: Partial<AndroidInternalsPackIdentity>,
+  directory: string,
+  manifest: AndroidInternalsPackManifest,
 ): AndroidInternalsPackHandle {
-  const manifestPath = path.join(directory, 'manifest.json');
-  const databasePath = path.join(directory, 'content.sqlite');
-  const auditPath = path.join(directory, 'audit-summary.json');
-  const manifest = readAndroidInternalsPackManifest(manifestPath);
-  assertManifestIdentity(manifest, expected);
-  if (
-    fs.statSync(databasePath).size !== manifest.database.uncompressedBytes ||
-    sha256File(databasePath) !== manifest.database.uncompressedSha256 ||
-    sha256File(auditPath) !== manifest.audit.sha256
-  ) {
-    throw new Error('aiw_pack_installed_hash_mismatch');
-  }
-  for (const [name, expectedHash] of Object.entries(manifest.licenses.files)) {
-    if (sha256File(path.join(directory, 'licenses', name)) !== expectedHash) {
-      throw new Error(`aiw_pack_license_hash_mismatch_${name}`);
-    }
-  }
-  const handle: AndroidInternalsPackHandle = {
+  return {
     origin,
     directory,
-    databasePath,
+    databasePath: path.join(directory, 'content.sqlite'),
     manifest,
     contentVersion: manifest.contentVersion,
     contentFingerprint: manifest.contentFingerprint,
     sourceRevision: manifest.sourceRevision,
   };
+}
+
+function unchangedVerifiedManifest(directory: string): AndroidInternalsPackManifest | undefined {
+  const entry = verifiedPackDirectories.get(directory);
+  if (!entry) return undefined;
+  if (!entry.files.every(([filePath, identity]) => packFileIdentity(filePath) === identity)) {
+    verifiedPackDirectories.delete(directory);
+    return undefined;
+  }
+  return structuredClone(entry.manifest);
+}
+
+export function verifyAndroidInternalsPackDirectory(
+  directory: string,
+  origin: AndroidInternalsPackHandle['origin'],
+  expected?: Partial<AndroidInternalsPackIdentity>,
+): AndroidInternalsPackHandle {
+  const cacheKey = path.resolve(directory);
+  const verified = unchangedVerifiedManifest(cacheKey);
+  if (verified) {
+    assertManifestIdentity(verified, expected);
+    return packHandle(origin, directory, verified);
+  }
+  const manifestPath = path.join(directory, 'manifest.json');
+  const manifestIdentity = packFileIdentity(manifestPath);
+  const manifest = readAndroidInternalsPackManifest(manifestPath);
+  assertManifestIdentity(manifest, expected);
+  const handle = packHandle(origin, directory, manifest);
+  const auditPath = path.join(directory, 'audit-summary.json');
+  const licenses = Object.entries(manifest.licenses.files).map(([name, expectedHash]) =>
+    ({name, expectedHash, filePath: path.join(directory, 'licenses', name)}));
+  const files = [
+    [manifestPath, manifestIdentity],
+    ...[handle.databasePath, auditPath, ...licenses.map(license => license.filePath)]
+      .map(filePath => [filePath, packFileIdentity(filePath)] as const),
+  ] as const;
+  // Identities are taken before any file is read, so a missing or non-regular
+  // file refuses here instead of after hashing the database.
+  if (!files.every((file): file is readonly [string, string] => file[1] !== undefined)) {
+    throw new Error('aiw_pack_installed_file_missing');
+  }
+  if (
+    fs.statSync(handle.databasePath).size !== manifest.database.uncompressedBytes ||
+    sha256File(handle.databasePath) !== manifest.database.uncompressedSha256 ||
+    sha256File(auditPath) !== manifest.audit.sha256
+  ) {
+    throw new Error('aiw_pack_installed_hash_mismatch');
+  }
+  for (const {name, expectedHash, filePath} of licenses) {
+    if (sha256File(filePath) !== expectedHash) {
+      throw new Error(`aiw_pack_license_hash_mismatch_${name}`);
+    }
+  }
   const validationStore = new AndroidInternalsPackStore(handle);
   validationStore.close();
+  verifiedPackDirectories.set(cacheKey, {manifest: structuredClone(manifest), files});
   return handle;
 }
 
@@ -403,4 +472,5 @@ export function getDefaultAndroidInternalsPackStore(
 export function __resetAndroidInternalsPackStoresForTests(): void {
   for (const store of defaultStores.values()) store.close();
   defaultStores.clear();
+  verifiedPackDirectories.clear();
 }

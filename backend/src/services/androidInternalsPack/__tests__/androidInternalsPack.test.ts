@@ -9,9 +9,12 @@ import path from 'path';
 import {knowledgeQueryTokens} from '../../knowledge/knowledgeTokens';
 import {
   __resetAndroidInternalsPackStoresForTests,
+  getDefaultAndroidInternalsPackResolver,
   getDefaultAndroidInternalsPackStore,
   isAndroidInternalsPackRevoked,
+  verifyAndroidInternalsPackDirectory,
 } from '../androidInternalsPackResolver';
+import * as packManifest from '../manifest';
 import {parseAndroidInternalsPackManifest} from '../manifest';
 import {
   androidInternalsPackActivePointerPath,
@@ -53,6 +56,7 @@ describe('AndroidInternalsPack', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     __resetAndroidInternalsPackStoresForTests();
     if (originalDataRoot === undefined) delete process.env.SMARTPERFETTO_BACKEND_DATA_DIR;
     else process.env.SMARTPERFETTO_BACKEND_DATA_DIR = originalDataRoot;
@@ -260,6 +264,78 @@ describe('AndroidInternalsPack', () => {
     expect(store?.search('Binder', {topK: 1}).results).toHaveLength(1);
   });
 
+  it('resolves an unchanged verified Pack without hashing its files again', async () => {
+    await updateAndroidInternalsPack({updaterFactory: () => bundledFixture().client});
+    __resetAndroidInternalsPackStoresForTests();
+    const resolver = getDefaultAndroidInternalsPackResolver();
+    const first = resolver.resolve();
+    const directory = androidInternalsPackVersionDirectory(bundledPackVersion);
+    expect(first).toEqual(expect.objectContaining({origin: 'runtime', directory}));
+
+    const sha256File = jest.spyOn(packManifest, 'sha256File');
+    expect(resolver.resolve()).toEqual(first);
+    // The remembered verification proves content only; the caller's pin is
+    // still checked against it.
+    expect(() => verifyAndroidInternalsPackDirectory(directory, 'runtime', {
+      contentFingerprint: '0'.repeat(64),
+    })).toThrow('aiw_pack_identity_mismatch');
+    expect(hashedUnder(sha256File, directory)).toEqual([]);
+  });
+
+  it('verifies a replaced or rewritten Pack file again and refuses a corrupt one', async () => {
+    await updateAndroidInternalsPack({updaterFactory: () => bundledFixture().client});
+    __resetAndroidInternalsPackStoresForTests();
+    const resolver = getDefaultAndroidInternalsPackResolver();
+    const directory = androidInternalsPackVersionDirectory(bundledPackVersion);
+    const databasePath = path.join(directory, 'content.sqlite');
+    const auditPath = path.join(directory, 'audit-summary.json');
+    // A whole-second mtime lets the rewrite below restore it exactly.
+    const pinnedMtimeSeconds = 1_700_000_000;
+    fs.chmodSync(databasePath, 0o644);
+    fs.utimesSync(databasePath, pinnedMtimeSeconds, pinnedMtimeSeconds);
+    expect(resolver.resolve()?.directory).toBe(directory);
+
+    // Same bytes under a new inode, for a hashed file and for the manifest that
+    // lists them: verified again, and still accepted.
+    const sha256File = jest.spyOn(packManifest, 'sha256File');
+    for (const replaced of [auditPath, path.join(directory, 'manifest.json')]) {
+      const replacement = `${replaced}.replacement`;
+      fs.copyFileSync(replaced, replacement);
+      fs.renameSync(replacement, replaced);
+      sha256File.mockClear();
+      expect(resolver.resolve()?.directory).toBe(directory);
+      expect(hashedUnder(sha256File, directory))
+        .toEqual(expect.arrayContaining([databasePath, auditPath]));
+    }
+
+    // One byte flipped in place with size and mtime restored.
+    const sizeBefore = fs.statSync(databasePath).size;
+    const descriptor = fs.openSync(databasePath, 'r+');
+    try {
+      const offset = Math.floor(sizeBefore / 2);
+      const byte = Buffer.alloc(1);
+      fs.readSync(descriptor, byte, 0, 1, offset);
+      byte[0] ^= 0xff;
+      fs.writeSync(descriptor, byte, 0, 1, offset);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.utimesSync(databasePath, pinnedMtimeSeconds, pinnedMtimeSeconds);
+    expect(fs.statSync(databasePath).size).toBe(sizeBefore);
+    expect(fs.statSync(databasePath).mtimeMs).toBe(pinnedMtimeSeconds * 1000);
+
+    expect(() => verifyAndroidInternalsPackDirectory(directory, 'runtime'))
+      .toThrow('aiw_pack_installed_hash_mismatch');
+    // A refusal is not remembered: the next call verifies and refuses again.
+    sha256File.mockClear();
+    expect(() => verifyAndroidInternalsPackDirectory(directory, 'runtime'))
+      .toThrow('aiw_pack_installed_hash_mismatch');
+    expect(hashedUnder(sha256File, directory)).toContain(databasePath);
+    const fallback = resolver.resolve();
+    expect(fallback?.origin).toBe('bundled');
+    expect(fallback?.directory).not.toBe(directory);
+  });
+
   it('installs the signed minimum-safe immutable target when stable is revoked', async () => {
     const fixture = bundledFixture();
     fixture.channel.contentVersion = newerPackVersion;
@@ -331,6 +407,15 @@ describe('AndroidInternalsPack', () => {
       fs.existsSync(path.join(dataRoot, 'knowledge-packs/android-internals/active.json')),
     ).toBe(false);
   });
+
+  function hashedUnder(
+    sha256File: jest.SpiedFunction<typeof packManifest.sha256File>,
+    directory: string,
+  ): string[] {
+    return sha256File.mock.calls
+      .map(([filePath]) => filePath)
+      .filter(filePath => filePath.startsWith(`${directory}${path.sep}`));
+  }
 
   function bundledFixture(): {
     channel: AndroidInternalsPackChannel;
