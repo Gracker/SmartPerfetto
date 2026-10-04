@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {SqlToken} from '../services/skillEngine/sqlTemplate';
-import {isNameToken, structuralSqlTokens, tokenMatchers, unqualifiedName} from '../services/skillEngine/sqlStructure';
+import {cteDefinitionAt, isNameToken, structuralSqlTokens, tokenMatchers, unqualifiedName} from '../services/skillEngine/sqlStructure';
 
 /**
  * A SmartPerfetto artifact named where trace_processor expects a table or a
@@ -55,10 +55,15 @@ function relationNameAt(tokens: readonly SqlToken[], index: number): string | un
   return name;
 }
 
-/** The first artifact named as a table (after FROM, JOIN or a FROM-list comma) or table function. */
+/**
+ * The first artifact named as a table (after FROM, JOIN or a FROM-list comma)
+ * or table function. A name the statement defines as a CTE is its own table.
+ */
 export function findArtifactSqlReference(sql: string): ArtifactSqlReference | undefined {
   const tokens = structuralSqlTokens(sql, {cache: false});
   const {word, punct} = tokenMatchers(tokens);
+  const cteNames = new Set(tokens.flatMap((token, index) =>
+    isNameToken(token) && cteDefinitionAt(tokens, index) ? [unqualifiedName(token)] : []));
   const fromListDepths = new Set<number>();
   let depth = 0;
   for (let index = 0; index < tokens.length; index++) {
@@ -85,7 +90,7 @@ export function findArtifactSqlReference(sql: string): ArtifactSqlReference | un
     // A table function is judged by its argument when the loop reaches it.
     if (relation === undefined || punct(relation + 1, '(')) continue;
     const name = relationNameAt(tokens, relation);
-    if (name && isArtifactPseudoTableName(name)) return {reference: name, artifactId: artifactIdOf(name)};
+    if (name && !cteNames.has(name) && isArtifactPseudoTableName(name)) return {reference: name, artifactId: artifactIdOf(name)};
   }
   return undefined;
 }

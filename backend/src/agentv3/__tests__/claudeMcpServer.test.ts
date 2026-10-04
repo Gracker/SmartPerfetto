@@ -1627,7 +1627,7 @@ describe('createClaudeMcpServer', () => {
         expect(description).toContain('aliases/formats grant no unit/investigation authority');
         expect(description).not.toMatch(/COUNT\(\*\)|AVG\(value\)|ts BETWEEN|SUM\(dur\)/);
       }
-      expect(descriptionByName.get('execute_sql')).toContain('No __intrinsic_*/Skill-step tables');
+      expect(descriptionByName.get('execute_sql')).toContain('Skill steps and art-* ids are not tables');
       expect(descriptionByName.get('execute_sql')).toContain('fetch_artifact, not VALUES');
       expect(descriptionByName.get('execute_sql')).toContain('Current trace');
       expect(descriptionByName.get('execute_sql_on')).toContain('trace=current/reference');
@@ -3311,6 +3311,8 @@ describe('createClaudeMcpServer', () => {
       'SELECT * FROM slice s JOIN "__intrinsic_trace_diagnostics" d ON d.id = s.id',
       'SELECT * FROM report_artifacts',
       'SELECT * FROM art_method',
+      'WITH artifacts AS (SELECT 1 AS id) SELECT * FROM artifacts',
+      'WITH art_5(id) AS MATERIALIZED (SELECT 1) SELECT * FROM slice JOIN art_5 USING (id)',
     ])('passes real trace_processor __intrinsic_* tables to the processor: %s', async sql => {
       const {tools, mockTpService} = createTestServer({lightweight: true});
 
