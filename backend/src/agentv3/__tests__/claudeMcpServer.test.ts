@@ -30,6 +30,7 @@ import type {SkillDefinition} from '../../services/skillEngine/types';
 import type { AnalysisPlanV3, AnalysisNote, Hypothesis, TracePairContext, UncertaintyFlag } from '../types';
 import type { OutputLanguage } from '../outputLanguage';
 import {withEffectiveRuntimeRegistrySnapshot, type ReadonlyStrategyRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
+import {getExactProcessScopeSupport} from '../../services/skillEngine/processScopeSql';
 import {
   clearCodeAwareOutputGuards,
   sanitizeCodeAwareText,
@@ -1262,6 +1263,53 @@ describe('createClaudeMcpServer', () => {
         .not.toHaveBeenCalled();
       expect(getWorkspaceSkillRegistry)
         .toHaveBeenCalledTimes(workspaceLookupCount);
+    });
+
+    it('reports exact scope support from the pinned registry catalog, as each Skill computes it alone', async () => {
+      const meta = (name: string) => ({display_name: name, description: name});
+      // Plain SQL, no SQL at all, a missing reference and a cycle, whose reason depends on where the walk starts.
+      const definitions: SkillDefinition[] = [
+        {name: 'plain_sql', type: 'atomic', version: '1', meta: meta('plain'), sql: 'SELECT 1'},
+        {name: 'empty_skill', type: 'composite', version: '1', meta: meta('empty'), steps: []},
+        {name: 'missing_ref', type: 'composite', version: '1', meta: meta('missing'), steps: [{id: 'ref', skill: 'absent_skill'}]},
+        {name: 'cycle_a', type: 'composite', version: '1', meta: meta('a'), steps: [{id: 'b', skill: 'cycle_b'}]},
+        {name: 'cycle_b', type: 'composite', version: '1', meta: meta('b'), steps: [{id: 'a', skill: 'cycle_a'}]},
+      ] as SkillDefinition[];
+      const pinnedRegistry = {
+        registryFingerprint: `pinned-catalog-${Date.now()}`,
+        overlayGeneration: 'overlay:pinned',
+        getAllSkills: jest.fn(() => definitions),
+        getFragmentCache: jest.fn(() => new Map<string, string>()),
+      };
+      const adapter = {
+        adaptSkillResult: jest.fn((r: unknown) => r),
+        setSkillRegistry: jest.fn(),
+        listSkills: jest.fn(async () => [...definitions.map(definition => ({id: definition.name,
+          displayName: definition.name, description: definition.name, type: definition.type, keywords: []})),
+        {id: 'unregistered', displayName: 'x', description: 'x', type: 'atomic', keywords: []}]),
+      } as unknown as ReturnType<typeof createSkillAnalysisAdapter>;
+      (createSkillAnalysisAdapter as jest.MockedFunction<typeof createSkillAnalysisAdapter>).mockReturnValueOnce(adapter);
+      const server = withEffectiveRuntimeRegistrySnapshot({
+        scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+        baseSkillRegistryFingerprint: 'base-skills',
+        baseStrategyRegistryFingerprint: 'base-strategies',
+        overlayGeneration: 'overlay:pinned',
+        skillRegistry: pinnedRegistry,
+        strategyRegistry: {} as never,
+      } as never, () => createTestServer());
+
+      const listed = await callTool(server.tools, 'list_skills', {});
+      const byName = new Map(definitions.map(definition => [definition.name, definition]));
+      const fragments = new Map<string, string>();
+      for (const definition of definitions) {
+        expect([definition.name, listed.find((skill: any) => skill.id === definition.name)?.exactProcessScope])
+          .toEqual([definition.name, getExactProcessScopeSupport(definition, byName, fragments)]);
+      }
+      expect(listed.find((skill: any) => skill.id === 'unregistered')?.exactProcessScope)
+        .toEqual({supported: false, reason: 'Skill definition is unavailable'});
+      // The two cycle members name the Skill where each walk came back.
+      expect(listed.find((skill: any) => skill.id === 'cycle_a')?.exactProcessScope.reason)
+        .not.toEqual(listed.find((skill: any) => skill.id === 'cycle_b')?.exactProcessScope.reason);
     });
 
     it('keeps fetch_artifact available in lightweight mode for skill artifacts', () => {

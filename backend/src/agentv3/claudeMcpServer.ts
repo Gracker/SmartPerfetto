@@ -118,7 +118,7 @@ import {getConsumableProcessIdentitySelectors, getEffectiveIdentityConfig, sqlUs
 import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
 import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
-import {getExactProcessScopeSupport} from '../services/skillEngine/processScopeSql';
+import {exactProcessScopeSupportCatalog} from '../services/skillEngine/processScopeSql';
 import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
   projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
   type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
@@ -1497,6 +1497,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     runtimeRegistrySnapshot?.skillRegistry ?? skillRegistry;
   let pinnedSkillRegistryFingerprint =
     runtimeRegistrySnapshot?.skillRegistry.registryFingerprint ?? 'built_in';
+  // The pinned registry's content fingerprint (buildSkillRegistryAttribution),
+  // when the run has one: a key for caches derived from the registry. The
+  // 'built_in' label above names no content and keys nothing.
+  let pinnedSkillRegistryContentFingerprint: string | undefined =
+    runtimeRegistrySnapshot?.skillRegistry.registryFingerprint;
   const skillAdapter = createSkillAnalysisAdapter(
     traceProcessorService,
     undefined,
@@ -2090,6 +2095,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const handle = await directWorkspaceRegistryPromise;
         pinnedSkillRegistry = handle.registry;
         pinnedSkillRegistryFingerprint = handle.registryFingerprint;
+        pinnedSkillRegistryContentFingerprint = handle.registryFingerprint;
       }
       // Production runs receive an executor that was initialized from the
       // same frozen snapshot before MCP construction. Never replace that
@@ -3473,11 +3479,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const capabilityRegistry = await bindSkillRuntimeRegistry();
         const definitions = new Map(capabilityRegistry.getAllSkills().map(skill => [skill.name, skill]));
         const fragments = capabilityRegistry.getFragmentCache?.() || new Map<string, string>();
-        const scopeCapability = (id: string) => {
-          const definition = definitions.get(id);
-          return definition ? getExactProcessScopeSupport(definition, definitions, fragments)
-            : { supported: false, reason: 'Skill definition is unavailable' };
-        };
+        // Every Skill's closure at once, cached per pinned registry content.
+        const scopeCatalog = exactProcessScopeSupportCatalog(definitions, fragments,
+          {registryFingerprint: pinnedSkillRegistryContentFingerprint});
+        const scopeCapability = (id: string) =>
+          scopeCatalog.get(id) ?? { supported: false, reason: 'Skill definition is unavailable' };
         const allSkills = await skillAdapter.listSkills(outputLanguage);
         const filtered = category
           ? allSkills.filter(s =>
