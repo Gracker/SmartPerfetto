@@ -2,7 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {trustLocalCliRegistrations, type CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
+import type {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
+import {trustLocalCliRegistrations} from '../../services/codebase/codebaseCapability';
 import {getDefaultCodebaseRegistry} from '../../services/codebase/defaultCodebaseServices';
 
 /**

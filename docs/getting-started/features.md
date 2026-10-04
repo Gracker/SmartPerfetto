@@ -215,7 +215,7 @@ Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码
 入口：
 
 - AI Assistant 设置面板中的 `Codebases` 页：preview/register、selection 与 provider consent、当前范围/新语言授权、pending accept/reject、reindex、audit 和 delete。
-- CLI：`smp codebase list/preview/register/selection/consent/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`。
+- CLI：`smp codebase list/preview/register/selection/consent/authorize-content/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`。
 - 分析时显式传入 `--code-aware metadata_only` 和 `--codebase-id <id>`，或在 UI 中选择已注册代码库。
 
 效果：

@@ -33,6 +33,7 @@ const PRODUCERS = [
   'services/ragStore.ts',
   'services/codebase/aospManifest.ts',
   'services/codebase/boundedMetadataFile.ts',
+  'services/codebase/codebaseCapability.ts',
   'services/codebase/codebaseRegistry.ts',
   'services/codebase/codebaseRequestError.ts',
   'services/codebase/pathSecurityGate.ts',

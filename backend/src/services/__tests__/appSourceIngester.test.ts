@@ -518,12 +518,12 @@ describe('AppSourceIngester', () => {
     });
     releaseEnumeration();
 
+    // The first build is fenced by the generation the edit advanced; a codebase
+    // that was never indexed is not told to reindex.
     await expect(ingest).rejects.toThrow('codebase_index_generation_changed');
     expect(narrowed.selectionPolicyRevision).toBe(2);
-    expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({
-      activeIndexState: 'none',
-      reindexRequired: 'selection_scope_changed',
-    }));
+    expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({activeIndexState: 'none'}));
+    expect(registry.get(ref.codebaseId)?.reindexRequired).toBeUndefined();
     expect(store.listChunks({scope: ref})).toHaveLength(0);
   });
 

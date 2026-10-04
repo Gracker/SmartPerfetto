@@ -48,12 +48,14 @@ npm run cli:dev -- run --format json \
 | 不传任何 ID | 普通 trace-only；`fast` 可以保持轻量路径 |
 | 只传 `--codebase-id` | 默认授权 `metadata_only`，保留请求的 Fast/Auto/Full 模式 |
 | `--code-aware metadata_only` + codebase ID | 模型可按需定位源码，只接收 `CodeRef` 元数据 |
-| `--code-aware provider_send` + codebase ID | 可在授权交集内按需搜索、读取有界且脱敏的片段 |
-| `--code-aware off` + codebase ID | 输入无效，直接拒绝，不静默忽略源码配置 |
+| `--code-aware provider_send` + codebase ID | 可在当前授权范围内按需搜索、读取有界且脱敏的片段；授权与当前选择范围不一致时拒绝启动（`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`），重新授权即可 |
+| `--code-aware off` + codebase ID | 视为未选择源码：丢弃这些 ID，不授权任何源码访问 |
 | 只传 `--knowledge-source-id` | 使用已授权的私有外部 RAG，保留请求的分析预算模式 |
 | codebase ID + knowledge source ID | 使用本次选择授权的源码与知识源，并遵守各自访问边界 |
 
-源码 codebase 只要求已注册根目录仍可访问；缺少 active generation 或索引分片不会阻止分析。外部知识源仍是 RAG 数据源，因此仍要求已授权且索引完成。注册路径被移动、卸载或删除时，Web/CLI 会返回 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，恢复原路径或重新注册即可。
+源码 codebase 只要求已注册根目录仍可访问；缺少 active generation 或索引分片不会阻止分析。外部知识源仍是 RAG 数据源，因此仍要求已授权且索引完成。注册路径被移动、卸载、删除或移出 allowlist 时，Web/CLI 会返回 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，并给出每个库的固定原因（如 `root_missing`、`outside_allowlist`），恢复原路径或重新注册即可。
+
+修改源码库的选择范围时，可证明的收窄会让发送授权随之收窄；其他变化会撤销发送授权，需要重新授权：`smp codebase authorize-content` 先显示将授权的具体范围与 token，再用 `--confirm <token>` 授权（API 为 consent 接口的 `authorizeContent: true` 加 `contentDisclosureToken`）。实际的授权或范围变化会让正在进行的对话重新开始；重复提交相同授权、修改未选中的库或在别处重建索引都不会打断它。
 
 分析预算和证据权限相互独立：选择源码、对比 Trace 或私有 RAG 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
 

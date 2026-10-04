@@ -38,19 +38,23 @@ export function codebaseNotFound(codebaseId: string): CodebaseRequestError {
 /**
  * A codebase state the caller has to wait for or act on: a deletion or reindex
  * in progress, a lost index lease, a pending generation that is missing, stale
- * or expired, provider-send consent not granted, or a root whose real path
- * changed. The message is the reason token, which stored ingest diagnostics
- * and route reason answers already carry; classify by `reason`, never by text.
+ * or expired, provider-send consent not granted, a root whose real path
+ * changed, a selection edited since the caller read its revision, or a
+ * consent disclosure that no longer matches what a grant would cover. The
+ * message is the reason token, which stored ingest diagnostics and route
+ * reason answers already carry; classify by `reason`, never by text.
  */
 export type CodebaseStateReason =
   | 'codebase_deleting'
   | 'codebase_reindex_in_progress'
   | 'codebase_reindex_lease_lost'
   | 'codebase_root_realpath_drift'
+  | 'consent_disclosure_stale'
   | 'pending_generation_expired'
   | 'pending_generation_not_found'
   | 'pending_generation_stale'
-  | 'provider_send_consent_required';
+  | 'provider_send_consent_required'
+  | 'selection_policy_stale';
 
 export class CodebaseStateError extends Error {
   constructor(readonly reason: CodebaseStateReason) {

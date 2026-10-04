@@ -8575,20 +8575,23 @@ describe('createClaudeMcpServer', () => {
           path.join(root, 'src', 'StartupHooks.kt'),
           'SOURCE_USE_CANARY\nSOURCE_USE_CANARY\n',
         );
-        fs.writeFileSync(path.join(root, 'private', 'Hidden.kt'), 'SOURCE_USE_CANARY\nHIDDEN_ONLY_CANARY\n');
-        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
-        // The provider grant covers src only; private is registered but withheld.
-        const registered = codebaseRegistry.register({
+        fs.writeFileSync(path.join(root, 'private', 'Hidden.dart'), 'SOURCE_USE_CANARY\nHIDDEN_ONLY_CANARY\n');
+        const registryPath = path.join(tmpDir, 'codebases.json');
+        // The provider grant does not cover Dart: Hidden.dart is registered but withheld.
+        const registered = new CodebaseRegistry(registryPath).register({
           kind: 'app_source',
           displayName: 'App',
           rootPath: root,
           rootAuthorization: 'native_picker',
-          pathFilters: ['src'],
+          pathFilters: ['src', 'private'],
           sendToProvider: true,
           ...scope,
         });
-        const ref = codebaseRegistry.updateSelectionPolicy(registered.codebaseId, scope,
-          {pathFilters: ['src', 'private']});
+        const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+        envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+        fs.writeFileSync(registryPath, JSON.stringify(envelope));
+        const codebaseRegistry = new CodebaseRegistry(registryPath);
+        const ref = registered;
         const incomplete = createTestServer({
           codeAwareMode: 'provider_send',
           codebaseIds: [ref.codebaseId],
@@ -11524,28 +11527,28 @@ describe('source and knowledge governance refusals', () => {
         expect(sourceUse.getSourceUseDecision()?.coverageComplete).toBeUndefined();
       }));
 
-    it('refuses a provider search whose path prefix is outside the provider-send grant', async () =>
-      withRegisteredSource(async ({codebaseRegistry, root}) => {
-        fs.mkdirSync(path.join(root, 'src', 'granted'));
-        fs.mkdirSync(path.join(root, 'src', 'private'));
-        fs.writeFileSync(path.join(root, 'src', 'private', 'Hidden.kt'), 'class HiddenNeedle\n');
-        // The grant keeps the scope consented at registration; widening the filters later does not widen it.
-        const narrowed = codebaseRegistry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
-          rootAuthorization: 'native_picker', pathFilters: ['src/granted'], sendToProvider: true, ...scope});
-        codebaseRegistry.updateSelectionPolicy(narrowed.codebaseId, scope, {pathFilters: ['src']});
-        const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [narrowed.codebaseId],
-          codebaseRegistry, knowledgeScope: scope});
+    it('refuses every provider call for a codebase whose path grant no longer matches its selection', async () =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId}) => {
+        // A record from before grants followed selection edits: consented for src/granted, selecting src.
+        const registryPath = (codebaseRegistry as unknown as {registryPath: string}).registryPath;
+        const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+        envelope.codebases[0].consent.grant.includePrefixes = ['src/granted'];
+        fs.writeFileSync(registryPath, JSON.stringify(envelope));
+        const legacy = new CodebaseRegistry(registryPath);
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [codebaseId],
+          codebaseRegistry: legacy, knowledgeScope: scope});
 
-        expectRefusal(await callRaw(tools, 'search_codebase', {query: 'HiddenNeedle', path_prefix: 'src/private'}), {
-          unsupportedReason: 'source_path_prefix_outside_provider_grant',
-          action_required: 'continue_without_this_path_prefix',
-        });
-        // Without a prefix the match outside the grant is withheld, and the search does not claim completeness.
-        const whole = JSON.parse((await callRaw(tools, 'search_codebase', {query: 'HiddenNeedle'})).content[0].text);
-        expect(whole).toMatchObject({success: true, matches: [], coverageComplete: false,
-          searchIncompleteReason: 'provider_grant_scope'});
-        expect(JSON.stringify(whole)).not.toContain('Hidden.kt');
-        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'search_incomplete'});
+        for (const [tool, params] of [
+          ['search_codebase', {query: 'StartupHooks'}],
+          ['search_codebase', {query: 'StartupHooks', path_prefix: 'src'}],
+          ['read_codebase_file', {file_path: 'src/StartupHooks.kt'}],
+        ] as const) {
+          const raw = await callRaw(tools, tool, params);
+          expectRefusal(raw, {unsupportedReason: 'provider_grant_scope_stale',
+            action_required: 'continue_without_this_codebase'});
+          expect(JSON.stringify(raw)).not.toContain('src/granted');
+        }
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted', queriedCodebaseIds: []});
       }));
 
     it('refuses a provider read outside the provider-send grant', async () => {

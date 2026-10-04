@@ -242,7 +242,9 @@ import {
   type ToolRequestScope,
 } from './mcpToolRegistry';
 import { backendLogPath } from '../runtimePaths';
-import {CodebaseRegistry} from '../services/codebase/codebaseRegistry';
+import {CodebaseRegistry, summarizeCodebase} from '../services/codebase/codebaseRegistry';
+import {evaluateCodebaseRoot} from '../services/codebase/codebaseCapability';
+import {effectiveAnalysisSelection} from '../services/effectiveAnalysisSelection';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {
   describeSelectedCodebases,
@@ -1531,12 +1533,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   runManifestAttributionSink?.recordSkillRegistry(
     buildSkillRegistryAttribution(pinnedSkillRegistry),
   );
-  const codeAwareMode = normalizeCodeAwareMode(options.codeAwareMode);
+  // The effective selection, then the backend's feature switch on its own.
+  const analysisSelection = effectiveAnalysisSelection(options);
+  const codeAwareMode = normalizeCodeAwareMode(analysisSelection.codeAwareMode);
   const sourceUsePolicy = options.sourceUsePolicy;
-  const codebaseIds = codeAwareMode === 'off'
-    ? []
-    : Array.from(new Set(options.codebaseIds ?? [])).filter(Boolean);
-  const knowledgeSourceIds = Array.from(new Set(options.knowledgeSourceIds ?? [])).filter(Boolean);
+  const codebaseIds = codeAwareMode === 'off' ? [] : analysisSelection.codebaseIds ?? [];
+  const knowledgeSourceIds = analysisSelection.knowledgeSourceIds ?? [];
   const retrievedContextToolBoundary = requireToolDescription('retrieved-context-tool-safety').replace(/\s+/g, ' ');
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
@@ -5260,14 +5262,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     async () => {
       assertPrivateAnalysisContextCurrent();
       const allowed = new Set(codebaseIds);
-      const codebases = codebaseRegistry.list(knowledgeScope)
+      const codebases = codebaseRegistry.listRefs(knowledgeScope)
         .filter(ref => allowed.has(ref.codebaseId))
-        .map(ref => {
+        .map(registered => {
+          const ref = summarizeCodebase(registered);
           return {
             codebaseId: ref.codebaseId,
             kind: ref.kind,
             displayName: ref.displayName,
-            rootAvailable: ref.rootAvailable,
+            rootAvailable: evaluateCodebaseRoot(registered).available,
             indexGeneration: ref.indexGeneration,
             activeGeneration: ref.activeGeneration,
             contentFingerprint: ref.contentFingerprint,

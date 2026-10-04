@@ -747,7 +747,7 @@ describe('OpenCode native turn intent and delivery', () => {
     const context = finalizationContext.takeFinalizationContext(result);
     try {
       expect(context?.deliveryContext).toMatchObject({completion: {runId: 'failed-run', status: 'failed'}});
-      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
       expect(context?.hasSemanticTransport).toBe(false);
       expect(await context?.dispatchText({prompt: 'unused', systemPrompt: '', signal: new AbortController().signal,
         deadlineMs: Date.now() + 5000, outputByteLimit: 8192})).toEqual({status: 'unavailable', reason: 'invalid_configuration'});

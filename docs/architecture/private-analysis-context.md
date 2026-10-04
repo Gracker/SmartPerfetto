@@ -16,6 +16,11 @@ SmartPerfetto 把 trace 证据、用户源码和外部知识视为三个独立�
 | 无 | 有 | 使用精确 `knowledgeSourceIds` 和对应 active generation；外部知识仅作背景，不冒充当前 trace 证据 |
 | 有 | 有 | 两套 allowlist 同时生效，分别校验后进入同一私有投影和报告边界 |
 
+选择在合并会话或对话已有选项之后只解析一次（`effectiveAnalysisSelection`）：显式
+`codeAwareMode: off` 丢弃 `codebaseIds`（隐藏的 ID 不授权任何访问，也不再返回 400）；
+只有 ID 没有模式视为 `metadata_only`；没有 ID 时模式无意义，记为 `off`；知识源选择与
+源码模式无关。授权、注册表读取、指纹、内存分区、运行参数和会话持久化都消费同一结果。
+
 `fast` / `full` 选择预算，源码、外部 RAG 和 reference trace 的授权独立保留，不因
 预算模式被自动移除，也不强制升级为完整报告。五个原生 runtime 按 typed intent 的
 范围和证据访问约束按需调用工具；`existing_only` 禁止新采集，`read_new` 不扩大授权。
@@ -27,9 +32,11 @@ Conversation 复用这些按需能力，不自动启动额外源码分析。Smar
 ## 授权与连续性
 
 每个 run 在创建 session 前解析当前 scope 中的注册项，并生成非 secret 授权指纹。指纹
-覆盖 tenant/workspace/user、源码模式、排序后的 allowlist、active/index generation、
-内容指纹与 revision provenance，以及许可/同意状态。工具调用和 run 边界重新计算指纹；
-发生删除、重建、撤销同意或 scope 变化时，旧 session fail closed，并要求新会话。
+覆盖 tenant/workspace/user、有效源码模式、排序后的 allowlist、选择范围与授权
+revision、生命周期，以及许可/同意状态；不含索引 generation（索引工具各自检查本 run
+固定的 generation）。工具调用和 run 边界重新计算指纹；发生删除所选源、实际同意或范围
+变化、或 scope 变化时，旧 session fail closed，并要求新会话。重复提交相同同意、等价范围
+或修改未选中的源不改变指纹。
 
 私有分析只允许当前进程内的受限多轮连续性，不恢复持久化 provider conversation。
 原始 query、工具参数和完整检索载荷不额外进入日志或 provider transcript。

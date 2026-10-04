@@ -46,6 +46,7 @@ import {
 import { isCapturePresetId, listCapturePresets } from './services/captureConfig';
 import {
   runCodebaseAuditCommand,
+  runCodebaseAuthorizeContentCommand,
   runCodebaseAuthorizeExtensionsCommand,
   runCodebaseAuthorizeSelectionCommand,
   runCodebaseConsentCommand,
@@ -633,10 +634,15 @@ function main(): void {
     .description('replace the registered source selection policy')
     .option('--path-filter <prefix>', 'replacement relative path prefix; repeatable', collectRepeatedOption)
     .option('--exclude-glob <glob>', 'replacement relative exclusion glob; repeatable', collectRepeatedOption)
+    .option('--preview', 'print what the replacement would admit (JSON) without saving it')
+    .option('--expected-revision <n>', 'refuse the save unless the selection is still at this previewed revision',
+      parsePositiveInteger)
     .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
     .action(async (codebaseId: string, opts: {
       pathFilter?: string[];
       excludeGlob?: string[];
+      preview?: boolean;
+      expectedRevision?: number;
       format: CodebaseOutputFormat;
     }) => {
       const g = globals();
@@ -644,6 +650,8 @@ function main(): void {
         codebaseId,
         pathFilters: opts.pathFilter,
         excludeGlobs: opts.excludeGlob,
+        preview: opts.preview,
+        expectedRevision: opts.expectedRevision,
         format: opts.format,
         envFile: g.envFile,
         sessionDir: g.sessionDir,
@@ -666,6 +674,22 @@ function main(): void {
         codebaseId,
         enable: opts.enable,
         disable: opts.disable,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('authorize-content <codebaseId>')
+    .description('show what sending source text would cover; with --confirm, grant exactly that')
+    .option('--confirm <token>', 'the content disclosure token the disclosure printed')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {confirm?: string; format: CodebaseOutputFormat}) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseAuthorizeContentCommand({
+        codebaseId,
+        confirm: opts.confirm,
         format: opts.format,
         envFile: g.envFile,
         sessionDir: g.sessionDir,

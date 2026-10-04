@@ -223,6 +223,7 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
+import {runAnalysisSelection} from '../services/effectiveAnalysisSelection';
 import {buildSmartDeepDiveAnalysisContext} from '../services/effectiveAnalysisMode';
 import {
   cleanupIdleAgentConversationSessions,
@@ -3692,11 +3693,7 @@ async function runSmartAnalysis(
   session.lastActivityAt = Date.now();
   persistSessionRunState(session, 'running', undefined, runId);
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runId);
-  const authorizationSelection: AnalysisContextSelection = {
-    codeAwareMode: session.sourceAuthorization?.codeAwareMode ?? options.codeAwareMode,
-    codebaseIds: [...(session.sourceAuthorization?.codebaseIds ?? options.codebaseIds ?? [])],
-    knowledgeSourceIds: [...(options.knowledgeSourceIds ?? [])],
-  };
+  const authorizationSelection: AnalysisContextSelection = runAnalysisSelection(options, session.sourceAuthorization);
   const knowledgeScope = {...options.knowledgeScope};
   const authorizationFingerprint = session.analysisContextFingerprint ??
     buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
@@ -4017,12 +4014,6 @@ export function analyzeOptionsErrorMessage(
         outputLanguage,
         '源码感知模式必须是 off、metadata_only 或 provider_send',
         'Code-aware mode must be off, metadata_only, or provider_send',
-      );
-    case 'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE':
-      return localize(
-        outputLanguage,
-        '选择源码库时，源码感知模式必须是 metadata_only 或 provider_send',
-        'Selecting codebases requires code-aware mode metadata_only or provider_send',
       );
     case 'ANALYSIS_SOURCE_ALLOWLIST_TOO_LARGE': {
       const field = error.details?.field === 'codebaseIds'
@@ -4759,11 +4750,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   if (!runIdForAnalysis) {
     throw new Error(`Missing run id for session ${sessionId}`);
   }
-  const authorizationSelection: AnalysisContextSelection = {
-    codeAwareMode: session.sourceAuthorization?.codeAwareMode ?? options.codeAwareMode,
-    codebaseIds: [...(session.sourceAuthorization?.codebaseIds ?? options.codebaseIds ?? [])],
-    knowledgeSourceIds: [...(options.knowledgeSourceIds ?? [])],
-  };
+  const authorizationSelection: AnalysisContextSelection = runAnalysisSelection(options, session.sourceAuthorization);
   const knowledgeScope: KnowledgeScope = {...(options.knowledgeScope ?? {
     tenantId: session.tenantId, workspaceId: session.workspaceId, userId: session.userId,
   })};

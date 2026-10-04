@@ -1141,7 +1141,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
       context = takeFinalizationContext(result);
       expect(context?.deliveryContext).toMatchObject({entry: 'runtime_draft', completion: result.completion});
-      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
     } finally {context?.dispose(); insights.mockRestore(); savePattern.mockRestore(); sessionContextManager.remove(sessionId);}
   });
 

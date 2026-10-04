@@ -24,8 +24,16 @@ import {
   type ScopedIngestLeaseConfig,
   withScopedIngestLease,
 } from '../scopedIngestLease';
-import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
-import {buildSourceSelectionIR, CODEBASE_KINDS, sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {codebaseProviderGrantScopeCurrent} from './codebaseCapability';
+import {contentDisclosureToken, effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
+import {
+  buildSourceSelectionIR,
+  CODEBASE_KINDS,
+  sourceExtensionsForKind,
+  sourceSelectionForRef,
+  sourceSelectionWithinGrant,
+  type SourceSelectionIR,
+} from './sourceSelectionPolicy';
 import {
   CodebaseStateError,
   codebaseNotFound,
@@ -36,7 +44,8 @@ import {
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
 /**
  * How a registered root was authorized. `native_picker` and `local_cli` roots were
- * chosen by the local user through that channel; see `channelAuthorizedRoots`.
+ * chosen by the local user through that channel; see `channelAuthorizedRoots`
+ * (`codebaseCapability.ts`).
  */
 export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker' | 'local_cli';
 const DEFAULT_TENANT_ID = 'default-dev-tenant';
@@ -187,7 +196,6 @@ export interface CodebaseRefSummary {
   lifecycleState: 'active' | 'deleting';
   kind: CodebaseRef['kind'];
   displayName: string;
-  rootAvailable: boolean;
   rootAuthorization: CodebaseRootAuthorization;
   commitHash?: string;
   vendor?: string;
@@ -295,6 +303,86 @@ function consentHash(input: Pick<CodebaseRef, 'kind' | 'rootRealpath' | 'commitH
     .slice(0, 16);
 }
 
+/** A new consent hash chained to the previous one, so every consent change is distinct. */
+function nextConsentHash(existing: CodebaseRef, change: string, actor: string, at: number): string {
+  return createHash('sha256')
+    .update(`${existing.consent.consentHash}\0${change}\0${actor}\0${at}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/**
+ * The consent after a selection change: unchanged without provider-send
+ * consent; the new selection when it lies provably inside the grant (same
+ * grantor and languages, next revision); otherwise revoked, keeping the old
+ * grant for the record.
+ */
+function consentForSelection(
+  existing: CodebaseRef,
+  selection: SourceSelectionIR,
+  now: number,
+): CodebaseRef['consent'] {
+  if (!existing.consent.sendToProvider) return existing.consent;
+  const grant = effectiveConsentGrant(existing);
+  if (sourceSelectionWithinGrant(selection, grant)) {
+    return {
+      ...existing.consent,
+      grant: {
+        ...grant,
+        revision: grant.revision + 1,
+        grantedAt: now,
+        includePrefixes: [...selection.includePrefixes],
+        excludeGlobs: [...selection.excludeGlobs],
+      },
+    };
+  }
+  return {
+    sendToProvider: false,
+    consentedAt: now,
+    consentedBy: existing.consent.consentedBy,
+    consentHash: nextConsentHash(existing, 'selection_widened', existing.consent.consentedBy, now),
+    grant: {...grant, revision: grant.revision + 1, grantedAt: now},
+  };
+}
+
+/** Whether the grant already covers every language in `extensions`. */
+function grantCoversLanguages(existing: CodebaseRef, extensions: readonly string[]): boolean {
+  const granted = new Set(effectiveConsentGrant(existing).extensions);
+  return extensions.every(extension => granted.has(extension));
+}
+
+/**
+ * The record after a consent action renews its grant: the next revision,
+ * granted now by `actor`, with `grantPatch` applied. A pending candidate built
+ * under the old grant is dropped, and an active index is told to rebuild when
+ * the grant adds languages.
+ */
+function withRenewedGrant(
+  existing: CodebaseRef,
+  actor: string,
+  now: number,
+  grantPatch: Partial<Pick<CodebaseConsentGrant, 'extensions' | 'includePrefixes' | 'excludeGlobs'>>,
+  consentPatch: Partial<Pick<CodebaseRef['consent'], 'sendToProvider' | 'consentHash'>> = {},
+): CodebaseRef {
+  const grant = effectiveConsentGrant(existing);
+  const languagesAdded = grantPatch.extensions?.some(extension => !grant.extensions.includes(extension)) ?? false;
+  return {
+    ...existing,
+    consent: {
+      ...existing.consent,
+      ...consentPatch,
+      consentedAt: now,
+      consentedBy: actor,
+      grant: {...grant, ...grantPatch, revision: grant.revision + 1, grantedAt: now, grantedBy: actor},
+    },
+    pendingGeneration: undefined,
+    reindexRequired: languagesAdded && activeCodebaseGeneration(existing)
+      ? 'provider_language_scope_expanded'
+      : existing.reindexRequired,
+    updatedAt: now,
+  };
+}
+
 export function resolveCodebaseScope(scope: CodebaseScope = {}): Required<CodebaseScope> {
   return {
     tenantId: scope.tenantId || DEFAULT_TENANT_ID,
@@ -322,31 +410,23 @@ function listsEqual(left?: readonly string[], right?: readonly string[]): boolea
     normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
-export function codebaseProviderGrantScopeCurrent(ref: CodebaseRef): boolean {
-  const grant = effectiveConsentGrant(ref);
-  const selection = buildSourceSelectionIR({
-    kind: ref.kind,
-    includePrefixes: ref.pathFilters,
-    excludeGlobs: ref.excludeGlobs,
-  });
-  return listsEqual(grant.includePrefixes, selection.includePrefixes) &&
-    listsEqual(grant.excludeGlobs, selection.excludeGlobs);
-}
-
 function ingestLeaseKey(codebaseId: string, scope: CodebaseScope): string {
   const resolved = resolveCodebaseScope(scope);
   return [codebaseId, resolved.tenantId, resolved.workspaceId, resolved.userId].join('\0');
 }
 
-function toSummary(ref: CodebaseRef): CodebaseRefSummary {
-  const normalized = normalizeCodebaseRef(ref);
-  ref = normalized;
+/**
+ * A registration's stored state without its roots. It does no filesystem
+ * work: root availability is the caller's `evaluateCodebaseRoot`, under the
+ * caller's own allowlist.
+ */
+export function summarizeCodebase(ref: CodebaseRef): CodebaseRefSummary {
+  ref = normalizeCodebaseRef(ref);
   return {
     codebaseId: ref.codebaseId,
     lifecycleState: ref.lifecycleState ?? 'active',
     kind: ref.kind,
     displayName: ref.displayName,
-    rootAvailable: codebaseRootAvailable(ref),
     rootAuthorization: ref.rootAuthorization ?? 'configured_allowlist',
     ...(ref.commitHash ? {commitHash: ref.commitHash} : {}),
     ...(ref.vendor ? {vendor: ref.vendor} : {}),
@@ -433,52 +513,6 @@ export function codebaseHasActiveIndex(
   return (ref.lifecycleState ?? 'active') === 'active' &&
     ref.activeIndexState === 'active' &&
     Boolean(ref.activeGeneration && ref.contentFingerprint && (ref.chunkCount ?? 0) > 0);
-}
-
-/** Registration channels this process trusts in place of the configured allowlist. */
-let trustedRootChannels: ReadonlySet<CodebaseRootAuthorization> = new Set(['native_picker']);
-/** Channel assumed for records written before registration recorded one; unset on the server. */
-let unrecordedRootChannel: CodebaseRootAuthorization | undefined;
-
-/**
- * The CLI trusts roots its local user registered, including records written
- * before registration recorded the channel. The server never calls this, so a
- * `local_cli` record it reads still needs the configured allowlist.
- */
-export function trustLocalCliRegistrations(): void {
-  trustedRootChannels = new Set(['native_picker', 'local_cli']);
-  unrecordedRootChannel = 'local_cli';
-}
-
-/** @internal Test seam: restores the server's default channel trust between cases. */
-export function resetRegistrationChannelTrustForTests(): void {
-  trustedRootChannels = new Set(['native_picker']);
-  unrecordedRootChannel = undefined;
-}
-
-/** Gate options for a root authorized by its registration channel rather than the allowlist. */
-export function channelAuthorizedRoots(
-  ref: Pick<CodebaseRef, 'rootAuthorization' | 'rootRealpath'>,
-): {additionalAllowlistRoots: string[]} | undefined {
-  const channel = ref.rootAuthorization ?? unrecordedRootChannel;
-  return channel && trustedRootChannels.has(channel)
-    ? {additionalAllowlistRoots: [ref.rootRealpath]}
-    : undefined;
-}
-
-export function codebaseRootAvailable(
-  ref: Pick<CodebaseRef, 'lifecycleState' | 'rootRealpath'>,
-): boolean {
-  if ((ref.lifecycleState ?? 'active') !== 'active') return false;
-  try {
-    const current = fs.realpathSync(ref.rootRealpath);
-    const normalize = (value: string): string => process.platform === 'win32'
-      ? path.resolve(value).toLocaleLowerCase('en-US')
-      : path.resolve(value);
-    return normalize(current) === normalize(ref.rootRealpath);
-  } catch {
-    return false;
-  }
 }
 
 export class CodebaseRegistry {
@@ -618,6 +652,11 @@ export class CodebaseRegistry {
   }
 
   list(scope: CodebaseScope = {}): CodebaseRefSummary[] {
+    return this.listRefs(scope).map(summarizeCodebase);
+  }
+
+  /** Every registration in this scope, ordered by id. */
+  listRefs(scope: CodebaseScope = {}): CodebaseRef[] {
     const refsById = new Map<string, CodebaseRef>();
     if (!enterpriseKnowledgeStoreEnabled()) {
       const dualWriteRefsById = enterpriseKnowledgeDbWritesEnabled()
@@ -651,8 +690,7 @@ export class CodebaseRegistry {
     }
     return Array.from(refsById.values())
       .filter(ref => sameScope(ref, scope))
-      .sort((left, right) => left.codebaseId.localeCompare(right.codebaseId))
-      .map(toSummary);
+      .sort((left, right) => left.codebaseId.localeCompare(right.codebaseId));
   }
 
   updateIngestStatus(
@@ -678,6 +716,9 @@ export class CodebaseRegistry {
       if (existing.lifecycleState === 'deleting') {
         throw new CodebaseStateError('codebase_deleting');
       }
+      // Repeating the current answer changes no authorization, so it keeps
+      // the consent hash and grant revision a running analysis is pinned to.
+      if (existing.consent.sendToProvider === sendToProvider) return existing;
       const consentedAt = Date.now();
       const previousGrant = effectiveConsentGrant(existing);
       return {
@@ -686,10 +727,7 @@ export class CodebaseRegistry {
           sendToProvider,
           consentedAt,
           consentedBy: actor,
-          consentHash: createHash('sha256')
-            .update(`${existing.consent.consentHash}\0${sendToProvider}\0${actor}\0${consentedAt}`)
-            .digest('hex')
-            .slice(0, 16),
+          consentHash: nextConsentHash(existing, String(sendToProvider), actor, consentedAt),
           grant: {
             ...previousGrant,
             revision: previousGrant.revision + 1,
@@ -705,13 +743,65 @@ export class CodebaseRegistry {
     return updated;
   }
 
+  /**
+   * The one consent action: allow sending source bodies for exactly the
+   * current path selection and every language this kind admits. The caller
+   * passes the `contentDisclosureToken` of what it disclosed; a selection
+   * edit or a newly available language since then refuses the grant
+   * (`consent_disclosure_stale`) and changes nothing. A grant that already
+   * says that is left untouched, so a repeated submission neither changes the
+   * fingerprint nor resets a conversation.
+   */
+  authorizeContent(
+    codebaseId: string,
+    scope: CodebaseScope,
+    actor: string,
+    disclosureToken: string,
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
+      if (disclosureToken !== contentDisclosureToken(existing)) {
+        throw new CodebaseStateError('consent_disclosure_stale');
+      }
+      const extensions = [...sourceExtensionsForKind(existing.kind)];
+      if (
+        existing.consent.sendToProvider &&
+        grantCoversLanguages(existing, extensions) &&
+        codebaseProviderGrantScopeCurrent(existing)
+      ) return existing;
+      const selection = sourceSelectionForRef(existing);
+      const now = Date.now();
+      return withRenewedGrant(existing, actor, now, {
+        extensions,
+        includePrefixes: [...selection.includePrefixes],
+        excludeGlobs: [...selection.excludeGlobs],
+      }, {sendToProvider: true, consentHash: nextConsentHash(existing, 'content', actor, now)});
+    });
+    if (!updated) throw codebaseNotFound(codebaseId);
+    return updated;
+  }
+
+  /**
+   * Replaces the path selection. Any real change advances `indexGeneration`,
+   * which fences every index build started under the old selection (including
+   * a first build, before any generation is active); only a codebase that had
+   * an index (active, or invalidated by an earlier edit) is told to reindex. The provider grant never outlives the
+   * selection it was given for: a selection provably inside the grant becomes
+   * the grant, anything else (or anything not provable) revokes provider-send
+   * consent until the owner grants it again.
+   */
   updateSelectionPolicy(
     codebaseId: string,
     scope: CodebaseScope,
     patch: {pathFilters?: string[]; excludeGlobs?: string[]},
+    options: {expectedSelectionPolicyRevision?: number} = {},
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
+      if (
+        options.expectedSelectionPolicyRevision !== undefined &&
+        options.expectedSelectionPolicyRevision !== (existing.selectionPolicyRevision ?? 1)
+      ) throw new CodebaseStateError('selection_policy_stale');
       const requestedPathFilters = patch.pathFilters === undefined
         ? existing.pathFilters
         : patch.pathFilters;
@@ -736,10 +826,12 @@ export class CodebaseRegistry {
         listsEqual(existing.pathFilters, pathFilters) &&
         listsEqual(existing.excludeGlobs, excludeGlobs)
       ) return existing;
+      const now = Date.now();
       return {
         ...existing,
         pathFilters,
         excludeGlobs,
+        consent: consentForSelection(existing, selection, now),
         selectionPolicyRevision: (existing.selectionPolicyRevision ?? 1) + 1,
         indexGeneration: existing.indexGeneration + 1,
         activeIndexState: 'none',
@@ -748,14 +840,18 @@ export class CodebaseRegistry {
         contentFingerprint: undefined,
         chunkCount: 0,
         pendingGeneration: undefined,
-        reindexRequired: 'selection_scope_changed',
-        updatedAt: Date.now(),
+        // An index an earlier edit already invalidated still needs its rebuild.
+        reindexRequired: activeCodebaseGeneration(existing) || existing.reindexRequired
+          ? 'selection_scope_changed'
+          : undefined,
+        updatedAt: now,
       };
     });
     if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
+  /** Adds the languages this version admits to an existing grant; nothing else. */
   authorizeAvailableExtensions(
     codebaseId: string,
     scope: CodebaseScope,
@@ -764,35 +860,15 @@ export class CodebaseRegistry {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
       if (!existing.consent.sendToProvider) throw new CodebaseStateError('provider_send_consent_required');
-      const now = Date.now();
-      const grant = effectiveConsentGrant(existing);
       const extensions = [...sourceExtensionsForKind(existing.kind)];
-      const scopeExpanded = extensions.some(extension => !grant.extensions.includes(extension));
-      return {
-        ...existing,
-        consent: {
-          ...existing.consent,
-          consentedAt: now,
-          consentedBy: actor,
-          grant: {
-            ...grant,
-            revision: grant.revision + 1,
-            grantedAt: now,
-            grantedBy: actor,
-            extensions,
-          },
-        },
-        pendingGeneration: undefined,
-        reindexRequired: scopeExpanded && activeCodebaseGeneration(existing)
-          ? 'provider_language_scope_expanded'
-          : existing.reindexRequired,
-        updatedAt: now,
-      };
+      if (grantCoversLanguages(existing, extensions)) return existing;
+      return withRenewedGrant(existing, actor, Date.now(), {extensions});
     });
     if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
+  /** Renews an existing grant for the current path selection; languages are unchanged. */
   authorizeCurrentSelection(
     codebaseId: string,
     scope: CodebaseScope,
@@ -801,35 +877,12 @@ export class CodebaseRegistry {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
       if (!existing.consent.sendToProvider) throw new CodebaseStateError('provider_send_consent_required');
-      const now = Date.now();
-      const grant = effectiveConsentGrant(existing);
-      const selection = buildSourceSelectionIR({
-        kind: existing.kind,
-        includePrefixes: existing.pathFilters,
-        excludeGlobs: existing.excludeGlobs,
+      if (codebaseProviderGrantScopeCurrent(existing)) return existing;
+      const selection = sourceSelectionForRef(existing);
+      return withRenewedGrant(existing, actor, Date.now(), {
+        includePrefixes: [...selection.includePrefixes],
+        excludeGlobs: [...selection.excludeGlobs],
       });
-      if (
-        listsEqual(grant.includePrefixes, selection.includePrefixes) &&
-        listsEqual(grant.excludeGlobs, selection.excludeGlobs)
-      ) return existing;
-      return {
-        ...existing,
-        consent: {
-          ...existing.consent,
-          consentedAt: now,
-          consentedBy: actor,
-          grant: {
-            ...grant,
-            revision: grant.revision + 1,
-            grantedAt: now,
-            grantedBy: actor,
-            includePrefixes: [...selection.includePrefixes],
-            excludeGlobs: [...selection.excludeGlobs],
-          },
-        },
-        pendingGeneration: undefined,
-        updatedAt: now,
-      };
     });
     if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
@@ -1091,10 +1144,7 @@ export class CodebaseRegistry {
           sendToProvider: false,
           consentedAt: now,
           consentedBy: actor,
-          consentHash: createHash('sha256')
-            .update(`${existing.consent.consentHash}\0delete\0${actor}\0${now}`)
-            .digest('hex')
-            .slice(0, 16),
+          consentHash: nextConsentHash(existing, 'delete', actor, now),
         },
         updatedAt: now,
       };

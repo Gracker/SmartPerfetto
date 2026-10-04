@@ -225,7 +225,7 @@ Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK sour
 Entry points:
 
 - `Codebases` tab in AI Assistant settings: preview/register, selection and provider consent, current-scope/new-language authorization, pending accept/reject, reindex, audit, and delete.
-- CLI: `smp codebase list/preview/register/selection/consent/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`.
+- CLI: `smp codebase list/preview/register/selection/consent/authorize-content/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`.
 - During analysis, explicitly pass `--code-aware metadata_only` and `--codebase-id <id>`, or choose a registered codebase in the UI.
 
 Output:

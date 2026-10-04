@@ -365,3 +365,47 @@ export function sourceSelectionRipgrepArguments(
     ...globs.flatMap(glob => [globOption, glob]),
   ];
 }
+
+/**
+ * The first noise directory a relative path passes through that none of
+ * `includePrefixes` selects explicitly, the same rule `sourceSelectionAdmits`
+ * applies to files; undefined when there is none.
+ */
+function unselectedNoiseDirectory(
+  relativePath: string,
+  includePrefixes: readonly string[],
+  platform: NodeJS.Platform,
+): string | undefined {
+  const comparable = (value: string): string => platform === 'win32'
+    ? value.toLocaleLowerCase('en-US')
+    : value;
+  const noise = new Set(NOISE_EXCLUDE_DIRS.map(comparable));
+  const prefixes = includePrefixes.map(comparable);
+  const segments = comparable(relativePath).split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    if (!noise.has(segments[index]!)) continue;
+    const noisePath = segments.slice(0, index + 1).join('/');
+    if (!prefixes.some(prefix => pathHasPrefix(noisePath, prefix))) return noisePath;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a new path selection provably admits nothing a grant did not: every
+ * new include prefix lies under a granted one (or the grant is the whole
+ * root), it reaches into no noise directory the grant left out, and every
+ * granted exclusion is still an exclusion. Prefixes compare exactly (no case
+ * or Unicode folding) and noise names case-insensitively, so any doubt answers
+ * no. Extensions are not part of a path selection; a grant keeps its own.
+ */
+export function sourceSelectionWithinGrant(
+  selection: Pick<SourceSelectionIR, 'includePrefixes' | 'excludeGlobs'>,
+  grant: {includePrefixes: readonly string[]; excludeGlobs: readonly string[]},
+): boolean {
+  if (grant.excludeGlobs.some(glob => !selection.excludeGlobs.includes(glob))) return false;
+  if (grant.includePrefixes.length > 0 && selection.includePrefixes.length === 0) return false;
+  return selection.includePrefixes.every(prefix =>
+    (grant.includePrefixes.length === 0 ||
+      grant.includePrefixes.some(granted => pathHasPrefix(granted, prefix))) &&
+    unselectedNoiseDirectory(prefix, grant.includePrefixes, 'win32') === undefined);
+}

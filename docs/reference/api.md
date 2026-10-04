@@ -764,18 +764,19 @@ Base path: `/api/rag`
 | `POST` | `/knowledge/:sourceId/reindex` | 分批建本地 SQLite FTS 索引并原子激活新 generation；只需权利确认，不需要 provider-send 同意 |
 | `POST` | `/knowledge/:sourceId/search` | 管理端试搜索 `{query, topK?}`：返回标题、相对路径、标题路径、行号与摘录 |
 | `DELETE` | `/knowledge/:sourceId` | 先写 tombstone 立即撤销访问，再删除索引文件（Wiki 为 chunk）与注册项；失败可重试 |
-| `GET` | `/codebases` | 列出已注册 codebase |
+| `GET` | `/codebases` | 列出已注册 codebase；`rootAvailable` 不可用时附固定原因 `unavailableReason` |
 | `GET` | `/codebases/directory-picker` | 返回当前后端是否支持本机系统文件夹选择 |
 | `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权 |
 | `POST` | `/codebases/preview` | 用与索引相同的 selection policy 预览源码文件与枚举覆盖率 |
 | `POST` | `/codebases/register` | 注册本机代码库 |
-| `GET` | `/codebases/:id` | codebase 详情 |
+| `GET` | `/codebases/:id` | codebase 详情（含 `rootAvailable` / `unavailableReason`） |
 | `GET` | `/codebases/:id/symbols` | 符号解析 |
 | `GET` | `/codebases/:id/excerpt` | 读取已索引片段 |
 | `POST` | `/codebases/:id/reindex` | 重新索引；request body 仍可用有界 `pathPrefix` 兼容输入，CLI `reindex` 无此选项 |
 | `GET` | `/codebases/:id/audit` | 索引审计 |
-| `PATCH` | `/codebases/:id/consent` | 三选一：设置 `sendToProvider`、用 `authorizeAvailableExtensions: true` 授权新语言，或用 `authorizeCurrentSelection: true` 授权当前路径范围 |
-| `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；立即撤销旧 active generation 并要求重建 |
+| `PATCH` | `/codebases/:id/consent` | 四选一：`authorizeContent: true` 加 `contentDisclosureToken` 一次授权所披露的当前范围与全部语言（推荐）；设置 `sendToProvider`；用 `authorizeAvailableExtensions: true` 只授权新语言；用 `authorizeCurrentSelection: true` 只授权当前路径范围 |
+| `POST` | `/codebases/:id/selection/preview` | 不保存，按与保存相同的枚举预览新 include prefix / exclude glob 命中的文件（`complete` / `partial` / `unavailable`），只返回相对路径 |
+| `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；保存时重新枚举，完整枚举为零命中返回 400 `CODEBASE_SELECTION_EMPTY_MATCH`；可带 `expectedSelectionPolicyRevision` 做 CAS（不一致返回 409 `CODEBASE_SELECTION_STALE`） |
 | `POST` | `/codebases/:id/pending/accept` | 回传 `candidateGenerationId`、`selectionPolicyRevision` 和 `grantRevision`，以 CAS 显式接受被截断的候选 generation |
 | `POST` | `/codebases/:id/pending/reject` | 回传 `candidateGenerationId`，以 CAS 拒绝候选 generation 并清理 staged chunks |
 | `DELETE` | `/codebases/:id` | 退役注册项并删除当前 scope 内的全部 staged/active/superseded generation |
@@ -787,14 +788,43 @@ preview、register 和 reindex 共用同一份源码选择策略；响应会报�
 成功的 AOSP/OEM preview 在可选 manifest 元数据不可用时保留枚举结果，并返回
 `manifestUnavailableReason`；`codebase_root_realpath_drift` 仍然阻塞。注册项摘要通过
 `providerGrantScopeCurrent` 表明当前 path filter/exclude glob 是否与冻结授权一致。
-任何 selection 变化会把 `reindexRequired` 设为 `selection_scope_changed`；旧注册表中的
+任何 selection 变化都会推进 `indexGeneration`，使在旧范围下开始的索引任务（包括首次
+索引）无法激活；只有原先存在 active generation 时才把 `reindexRequired` 设为
+`selection_scope_changed`，从未建过索引的库不再显示它。旧注册表中的
 `selection_scope_narrowed` 仍兼容读取。
-新版本增加的语言扩展默认显示为 `availableNotConsentedExtensions`，只有显式调用
-consent 接口并传 `authorizeAvailableExtensions: true` 才加入授权；该操作要求注册项已
-开启 provider-send，绝不会替用户开启正文发送权限。若已有活动索引，响应会把
-`reindexRequired` 设为 `provider_language_scope_expanded`。路径选择变更同样不会自动授权；
-`authorizeCurrentSelection: true` 只把当前 include prefixes/exclude globs 写入 consent grant，
-保留原语言授权。
+
+provider-send 授权只覆盖它被授予时的范围，且必须与当前 selection 完全一致，不存在
+"部分授权"。修改 selection 时：若能证明新范围包含在原授权内（每个新 include prefix 位于
+某个已授权 prefix 之下或原授权为整库，不进入原授权未包含的噪声目录，且原有排除仍被排除），
+授权随之收窄为新范围（`grantRevision` 递增）；否则（含无法证明）自动撤销 provider-send
+同意，需要重新授权。语言不属于路径选择，授权保留原语言集合。
+
+`authorizeContent: true` 是唯一的统一授权动作：开启 provider-send，并把授权设为当前
+include prefixes/exclude globs 与该类型全部语言。请求必须同时携带调用方披露时取得的
+`contentDisclosureToken`（列表与详情都返回，由 selection revision 与范围、语言摘要组成），
+缺少时返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`；披露之后若范围被修改或新版本增加了
+语言，返回 409 `CODEBASE_CONSENT_DISCLOSURE_STALE`，授权状态不变。与当前完全相同的重复提交
+不改变 consent hash 或 `grantRevision`，因此不会打断会话；`sendToProvider` 重复提交当前值、
+已覆盖全部语言时再次 `authorizeAvailableExtensions` 同样是幂等的。两个窄动作保持原有边界和前置条件，不会被扩大成统一动作：
+`authorizeAvailableExtensions: true` 只加入新版本增加的语言（`availableNotConsentedExtensions`），
+`authorizeCurrentSelection: true` 只把当前路径范围写入授权并保留原语言；两者都要求已开启
+provider-send，绝不会替用户开启正文发送。若已有活动索引，新增语言会把
+`reindexRequired` 设为 `provider_language_scope_expanded`。
+
+`selection/preview` 与保存使用同一套枚举：`complete` 的计数是精确值（完整零命中即证明
+选择为空）；`partial` 是提前停止的遍历给出的下界；`unavailable` 附 `unavailableReason`
+（根目录原因码或 `enumeration_failed`）。只有 `complete` 的零命中会拒绝保存。
+
+`rootAvailable` 与 `unavailableReason` 来自统一的根目录判定，按固定顺序取第一个原因：
+`deleting`、`root_missing`、`root_identity_changed`、`root_not_directory`、
+`outside_allowlist`、`unreadable`。分析启动、运行期能力与每次按需读取使用同一判定。
+发起分析（`/analyze`、`/sessions/:id/runs`、对话）时，若所选源码库未通过判定，返回 409 并附
+`codebases: [{codebaseId, reason}]`，每个失败的库一个固定原因、根目录原因优先于模式原因：
+任一根目录失败为 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，否则为
+`ANALYSIS_CONTEXT_CODEBASE_NOT_CONSENTED`（`consent_required`）或
+`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`（`consent_scope_stale`，`provider_send` 授权与当前
+选择不一致）。不存在的库仍为 404，缺少 `codebase:read` 仍为 403。授权过期时按需源码调用以
+`provider_grant_scope_stale` 拒绝。
 
 `register` 仍接受 `commitHash` 作为旧调用方的注册兼容元数据，但它不是
 索引来源的权威证明。每次 reindex 从真实 checkout 读取 Git `HEAD`、未提交/

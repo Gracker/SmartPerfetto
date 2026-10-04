@@ -81,22 +81,16 @@ import type { AnalysisOptions, AnalysisResult } from '../../agent/core/orchestra
 import {createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, withAnalysisHistoryReader, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import type { QueryResult } from '../../services/traceProcessorService';
 import {
-  codeAwareFeatureEnabled,
   MAX_CODEBASE_IDS_PER_ANALYSIS,
   MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS,
-  normalizeCodeAwareMode,
   type CodeAwareMode,
 } from '../../services/codebase/codeAwareFeature';
 import {
   CodebaseRegistry,
-  codebaseRootAvailable,
   resolveCodebaseScope,
 } from '../../services/codebase/codebaseRegistry';
 import {cliCodebaseRegistry} from './cliCodebaseRegistry';
-import {
-  externalKnowledgeSourceHasActiveIndex,
-  getDefaultExternalKnowledgeSourceRegistry,
-} from '../../services/externalKnowledgeSourceRegistry';
+import {authorizeAnalysisContext} from '../../services/analysisContextAuthorization';
 import type {KnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {
@@ -104,6 +98,7 @@ import {
   assertCurrentAnalysisContextAuthorization,
   buildAnalysisContextAuthorizationFingerprint,
 } from '../../services/resolvedAnalysisContext';
+import {effectiveAnalysisSelection} from '../../services/effectiveAnalysisSelection';
 import {projectOwnerCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {
   clearCodeAwareOutputGuards,
@@ -267,101 +262,49 @@ export interface RunTurnOutput {
   toolResultAudit?: RuntimeToolResultAuditReceiptV1;
 }
 
-export function resolveEffectiveCliCodeAwareMode(input: Pick<
-  RunTurnInput,
-  'codeAwareMode' | 'codebaseIds'
->): CodeAwareMode {
+/**
+ * The turn's effective selection (`effectiveAnalysisSelection`), checked by
+ * the shared start gate (`authorizeAnalysisContext`) before anything runs: an
+ * explicit off drops the codebase ids, so only ids that would actually be used
+ * reach the feature switch and the registry. The CLI user has read access to
+ * what they registered; a refusal is thrown with its code and per-codebase
+ * reasons.
+ */
+function authorizeCliAnalysisContext(input: RunTurnInput, scope: KnowledgeScope): RunTurnInput {
   const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-  if (input.codebaseIds?.length) {
-    if (!codeAwareFeatureEnabled()) {
-      throw new Error(localize(
-        outputLanguage,
-        'FEATURE_DISABLED：注册源码分析已禁用',
-        'FEATURE_DISABLED: registered source analysis is disabled',
-      ));
-    }
-    const mode = normalizeCodeAwareMode(input.codeAwareMode);
-    if (mode === 'off') {
-      throw new Error(localize(
-        outputLanguage,
-        'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE：codebaseIds 需要 metadata_only 或 provider_send 模式',
-        'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE: codebaseIds require metadata_only or provider_send',
-      ));
-    }
-    return mode;
-  }
-  return input.codeAwareMode ?? 'off';
-}
-
-function validateCliAnalysisContext(input: RunTurnInput, scope: KnowledgeScope): void {
-  const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-  const codebaseIds = Array.from(new Set(input.codebaseIds ?? []));
-  const knowledgeSourceIds = Array.from(new Set(input.knowledgeSourceIds ?? []));
-  if (codebaseIds.length > MAX_CODEBASE_IDS_PER_ANALYSIS) {
-    throw new Error(localize(
-      outputLanguage,
-      `codebaseIds 超过上限 ${MAX_CODEBASE_IDS_PER_ANALYSIS}`,
-      `codebaseIds exceeds the maximum of ${MAX_CODEBASE_IDS_PER_ANALYSIS}`,
-    ));
-  }
-  if (knowledgeSourceIds.length > MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS) {
-    throw new Error(localize(
-      outputLanguage,
-      `knowledgeSourceIds 超过上限 ${MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS}`,
-      `knowledgeSourceIds exceeds the maximum of ${MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS}`,
-    ));
-  }
-
-  const codebaseRegistry = cliCodebaseRegistry();
-  for (const codebaseId of codebaseIds) {
-    const ref = codebaseRegistry.get(codebaseId, scope);
-    if (!ref) {
-      throw new Error(localize(
-        outputLanguage,
-        `当前分析范围内未找到源码库“${codebaseId}”`,
-        `Codebase '${codebaseId}' not found in the current analysis scope`,
-      ));
-    }
-    if (!codebaseRootAvailable(ref)) {
-      throw new Error(
-        localize(
-          outputLanguage,
-          `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE：源码库“${codebaseId}”的已注册根目录当前不可用`,
-          `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE: Codebase '${codebaseId}' has a registered root that is unavailable`,
-        ),
-      );
-    }
-    if (input.codeAwareMode === 'provider_send' && !ref.consent.sendToProvider) {
-      throw new Error(localize(
-        outputLanguage,
-        `源码库“${codebaseId}”尚未授权给模型服务使用`,
-        `Codebase '${codebaseId}' is not consented for provider source access`,
-      ));
+  const selection = effectiveAnalysisSelection(input);
+  for (const [field, ids, maxItems] of [
+    ['codebaseIds', selection.codebaseIds, MAX_CODEBASE_IDS_PER_ANALYSIS],
+    ['knowledgeSourceIds', selection.knowledgeSourceIds, MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS],
+  ] as const) {
+    if ((ids?.length ?? 0) > maxItems) {
+      throw new Error(localize(outputLanguage, `${field} 超过上限 ${maxItems}`, `${field} exceeds the maximum of ${maxItems}`));
     }
   }
-
-  const knowledgeRegistry = getDefaultExternalKnowledgeSourceRegistry();
-  for (const sourceId of knowledgeSourceIds) {
-    const source = knowledgeRegistry.get(sourceId, scope);
-    if (!source) {
-      throw new Error(localize(
-        outputLanguage,
-        `当前分析范围内未找到知识源“${sourceId}”`,
-        `Knowledge source '${sourceId}' not found in the current analysis scope`,
-      ));
-    }
-    if (
-      !source.rightsAcknowledged ||
-      !source.sendToProvider ||
-      !externalKnowledgeSourceHasActiveIndex(source)
-    ) {
-      throw new Error(localize(
-        outputLanguage,
-        `知识源“${sourceId}”未激活，或尚未授权给模型服务使用`,
-        `Knowledge source '${sourceId}' is inactive or not consented for provider use`,
-      ));
-    }
+  const decision = authorizeAnalysisContext({
+    selection,
+    scope,
+    outputLanguage,
+    canReadRegisteredContext: true,
+    codebaseRegistry: cliCodebaseRegistry(),
+  });
+  if (!decision.allowed) {
+    const {code, error, details, codebases} = decision.payload as {
+      code?: string; error?: string; details?: string; codebases?: Array<{codebaseId: string; reason: string}>;
+    };
+    const reasons = codebases?.map(failure => `${failure.codebaseId}=${failure.reason}`).join(', ');
+    throw new Error([
+      code ? `${code}${outputLanguage === 'zh-CN' ? '：' : ': '}` : '',
+      details ?? error ?? '',
+      reasons ? ` (${reasons})` : '',
+    ].join(''));
   }
+  return {
+    ...input,
+    codeAwareMode: selection.codeAwareMode,
+    codebaseIds: selection.codebaseIds,
+    knowledgeSourceIds: selection.knowledgeSourceIds,
+  };
 }
 
 export function envelopesFromStreamingUpdate(update: StreamingUpdate): DataEnvelope[] {
@@ -549,12 +492,8 @@ export class CliAnalyzeService {
 
     const knowledgeScope = resolveCodebaseScope();
     const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-    const effectiveCodeAwareMode = resolveEffectiveCliCodeAwareMode(input);
-    const effectiveInput: RunTurnInput = {
-      ...input,
-      codeAwareMode: effectiveCodeAwareMode,
-    };
-    validateCliAnalysisContext(effectiveInput, knowledgeScope);
+    const effectiveInput = authorizeCliAnalysisContext(input, knowledgeScope);
+    const effectiveCodeAwareMode = effectiveInput.codeAwareMode ?? 'off';
 
     if (isCliE2eFakeMode()) {
       const output = await runCliE2eFakeTurn(effectiveInput, traceId);
@@ -568,13 +507,13 @@ export class CliAnalyzeService {
       query: input.query,
       analysisMode: input.analysisMode,
       codeAwareMode: effectiveCodeAwareMode,
-      codebaseIds: input.codebaseIds,
+      codebaseIds: effectiveInput.codebaseIds,
     });
     const primaryOptions: AnalysisOptions = projectPrimaryAnalysisOptions({
       analysisMode: input.analysisMode,
       codeAwareMode: effectiveCodeAwareMode,
-      codebaseIds: input.codebaseIds,
-      knowledgeSourceIds: input.knowledgeSourceIds,
+      codebaseIds: effectiveInput.codebaseIds,
+      knowledgeSourceIds: effectiveInput.knowledgeSourceIds,
       analysisContextFingerprint,
     }, sourceActivation);
     const primaryPrivateContext = resolveAnalysisPrivateContext(primaryOptions);
@@ -624,10 +563,10 @@ export class CliAnalyzeService {
     if (resetQuery) session.agentQuery = resetQuery;
     session.sourceActivation = sourceActivation;
     session.sourceAuthorization =
-      effectiveCodeAwareMode !== 'off' && input.codebaseIds?.length
+      effectiveCodeAwareMode !== 'off' && effectiveInput.codebaseIds?.length
         ? {
             codeAwareMode: effectiveCodeAwareMode,
-            codebaseIds: [...input.codebaseIds],
+            codebaseIds: [...effectiveInput.codebaseIds],
             analysisContextFingerprint,
           }
         : undefined;
@@ -659,7 +598,7 @@ export class CliAnalyzeService {
     });
     const requestedAnalysisMode = resolveEffectiveAnalysisMode(input.analysisMode, {
       referenceTraceId: effectiveReferenceTraceId,
-      knowledgeSourceIds: input.knowledgeSourceIds,
+      knowledgeSourceIds: effectiveInput.knowledgeSourceIds,
     });
     if (!session.runtimeKind) {
       throw new Error(`run_manifest_runtime_missing:${sessionId}`);

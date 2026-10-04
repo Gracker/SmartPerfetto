@@ -7,12 +7,8 @@ import {createHash} from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import {
-  channelAuthorizedRoots,
-  type CodebaseRef,
-  type CodebaseRegistry,
-  type CodebaseScope,
-} from './codebaseRegistry';
+import type {CodebaseRef, CodebaseRegistry, CodebaseScope} from './codebaseRegistry';
+import {channelAuthorizedRoots} from './codebaseCapability';
 import {PathSecurityGate} from './pathSecurityGate';
 import {hardenedGitEnvironment, hardenedGitPrefixArguments} from './subprocessHardening';
 import {

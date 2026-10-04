@@ -22,6 +22,7 @@ import {
   type ConversationSourceEnrichmentState,
 } from './conversationSourceEnrichmentCoordinator';
 import {buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+import {runAnalysisSelection} from '../../services/effectiveAnalysisSelection';
 import {
   privateContextRestrictsAudience,
   resolveAnalysisPrivateContext,
@@ -563,9 +564,7 @@ export class ConversationSessionService {
       events: [],
       privateContext,
     };
-    const authorizationSelection = {codeAwareMode: session.codeAwareMode,
-      codebaseIds: session.codebaseIds ? [...session.codebaseIds] : undefined,
-      knowledgeSourceIds: session.knowledgeSourceIds ? [...session.knowledgeSourceIds] : undefined};
+    const authorizationSelection = runAnalysisSelection(session);
     const authorizationScope = resolveKnowledgeScope(session);
     const authorizationFingerprint = input.analysisContextFingerprint ?? input.runtimeOptions?.analysisContextFingerprint ??
       session.analysisContextFingerprint ?? buildAnalysisContextAuthorizationFingerprint(authorizationSelection, authorizationScope);

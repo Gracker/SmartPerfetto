@@ -8,11 +8,11 @@ import * as path from 'path';
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
+import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {
-  CodebaseRegistry,
   resetRegistrationChannelTrustForTests,
   trustLocalCliRegistrations,
-} from '../codebase/codebaseRegistry';
+} from '../codebase/codebaseCapability';
 import {
   OnDemandSourceAccessService,
   codebaseOnDemandAvailability,
@@ -71,6 +71,33 @@ function service(ripgrepPath = 'rg', allowlistRoots = [tmpDir]) {
     gate: new PathSecurityGate({allowlistRoots}),
     ripgrepPath,
   });
+}
+
+/** Rewrites the registered grant as a record from an older version could hold it, and reloads the registry. */
+function withLegacyGrant(
+  registryPath: string,
+  edit: (grant: {extensions: string[]; includePrefixes: string[]; excludeGlobs: string[]}) => void,
+): CodebaseRegistry {
+  const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  edit(envelope.codebases[envelope.codebases.length - 1].consent.grant);
+  fs.writeFileSync(registryPath, JSON.stringify(envelope));
+  return new CodebaseRegistry(registryPath);
+}
+
+/** A consented selection of `app` whose grant does not cover Dart. */
+function narrowLanguageGrant() {
+  const ref = registry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
+    pathFilters: ['app'], sendToProvider: true, ...scope});
+  registry = withLegacyGrant(path.join(tmpDir, 'registry.json'), grant => { grant.extensions = ['.java', '.kt']; });
+  return registry.get(ref.codebaseId, scope)!;
+}
+
+/** A consented selection of `app` whose grant still names only `app/src`. */
+function staleLegacyPathGrant() {
+  const ref = registry.register({kind: 'app_source', displayName: 'Stale grant', rootPath: root,
+    pathFilters: ['app'], sendToProvider: true, ...scope});
+  registry = withLegacyGrant(path.join(tmpDir, 'registry.json'), grant => { grant.includePrefixes = ['app/src']; });
+  return registry.get(ref.codebaseId, scope)!;
 }
 
 describe('OnDemandSourceAccessService', () => {
@@ -425,26 +452,27 @@ describe('OnDemandSourceAccessService', () => {
       matches: [expect.objectContaining({filePath: 'app/src/MainActivity.kt'})]}));
   });
 
-  describe('a provider-send grant narrower than the registered filters', () => {
+  describe('a provider-send grant narrower than the registered selection', () => {
     const narrowGrant = () => {
       fs.mkdirSync(path.join(root, 'app', 'private'), {recursive: true});
-      fs.writeFileSync(path.join(root, 'app', 'private', 'Hidden.kt'), 'class GrantNeedle\n');
-      const ref = registry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
-        pathFilters: ['app/src'], sendToProvider: true, ...scope});
-      return registry.updateSelectionPolicy(ref.codebaseId, scope, {pathFilters: ['app']});
+      fs.writeFileSync(path.join(root, 'app', 'private', 'Hidden.dart'), 'class GrantNeedle {}\n');
+      return narrowLanguageGrant();
     };
 
-    it('refuses a path prefix outside the grant', async () => {
-      const ref = narrowGrant();
+    it('refuses every provider_send call while the path grant no longer matches the selection', async () => {
+      const ref = staleLegacyPathGrant();
 
-      await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'GrantNeedle',
-        mode: 'provider_send', pathPrefix: 'app/private'})).resolves.toEqual({success: false,
+      await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'MainActivity',
+        mode: 'provider_send'})).resolves.toEqual({success: false,
         codebaseId: ref.codebaseId, matches: [], truncated: false,
-        unsupportedReason: 'source_path_prefix_outside_provider_grant'});
+        unsupportedReason: 'provider_grant_scope_stale'});
+      await expect(service().read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/MainActivity.kt',
+        mode: 'provider_send'})).resolves.toEqual({success: false, codebaseId: ref.codebaseId, truncated: false,
+        unsupportedReason: 'provider_grant_scope_stale'});
       // metadata_only sends no body, so the grant does not narrow it.
-      await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'GrantNeedle',
-        mode: 'metadata_only', pathPrefix: 'app/private'})).resolves.toEqual(expect.objectContaining({
-        success: true, matches: [expect.objectContaining({filePath: 'app/private/Hidden.kt'})]}));
+      await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'MainActivity',
+        mode: 'metadata_only'})).resolves.toEqual(expect.objectContaining({
+        success: true, matches: [expect.objectContaining({filePath: 'app/src/MainActivity.kt'})]}));
     });
 
     it('flags a match withheld by the grant in the Node fallback too, so a fixture cannot upgrade it', async () => {
@@ -477,12 +505,12 @@ describe('OnDemandSourceAccessService', () => {
 
     it('matches a withheld file per line, like a granted one', async () => {
       const ref = narrowGrant();
-      fs.writeFileSync(path.join(root, 'app', 'private', 'Split.kt'), 'val first = 1\nval second = 2\n');
+      fs.writeFileSync(path.join(root, 'app', 'private', 'Split.dart'), 'var first = 1;\nvar second = 2;\n');
 
       // Called below search(), which already rejects line breaks: the withheld branch must not match across lines.
       const node = nodeService() as any;
-      const prepared = await node.prepareScopedLookup(ref, 'provider_send', undefined);
-      const result = await node.searchCandidatesWithNode(ref, prepared, '1\nval second', true,
+      const prepared = await node.prepareScopedLookup({ref, root: ref.rootRealpath}, 'provider_send', undefined);
+      const result = await node.searchCandidatesWithNode(ref, prepared, '1;\nvar second', true,
         () => true, () => 0);
 
       expect(result.grantWithheld).toBe(false);
@@ -492,7 +520,7 @@ describe('OnDemandSourceAccessService', () => {
     it('yields the event loop after each withheld file it reads', async () => {
       const ref = narrowGrant();
       for (const name of ['A', 'B', 'C']) {
-        fs.writeFileSync(path.join(root, 'app', 'private', `${name}.kt`), `class ${name}\n`);
+        fs.writeFileSync(path.join(root, 'app', 'private', `${name}.dart`), `class ${name} {}\n`);
       }
       const yields = jest.spyOn(global, 'setImmediate');
       try {
@@ -507,12 +535,12 @@ describe('OnDemandSourceAccessService', () => {
       fs.mkdirSync(path.join(root, 'flat', 'granted'), {recursive: true});
       fs.mkdirSync(path.join(root, 'flat', 'private'), {recursive: true});
       fs.writeFileSync(path.join(root, 'flat', 'granted', 'Granted.kt'), 'class Granted\n');
-      fs.writeFileSync(path.join(root, 'flat', 'private', 'Hidden.kt'), 'class FixtureGrantNeedle\n');
-      const fixtureRegistry = new CodebaseRegistry(path.join(tmpDir, 'fixture-registry.json'));
-      const registered = fixtureRegistry.register({kind: 'app_source', displayName: 'Fixture', rootPath: root,
-        rootAuthorization: 'native_picker', pathFilters: ['flat/granted'], sendToProvider: true, ...scope});
-      const ref = fixtureRegistry.updateSelectionPolicy(registered.codebaseId, scope,
-        {pathFilters: ['flat/granted', 'flat/private']});
+      fs.writeFileSync(path.join(root, 'flat', 'private', 'Hidden.dart'), 'class FixtureGrantNeedle {}\n');
+      const fixtureRegistryPath = path.join(tmpDir, 'fixture-registry.json');
+      const registered = new CodebaseRegistry(fixtureRegistryPath).register({kind: 'app_source', displayName: 'Fixture',
+        rootPath: root, rootAuthorization: 'native_picker', pathFilters: ['flat'], sendToProvider: true, ...scope});
+      const fixtureRegistry = withLegacyGrant(fixtureRegistryPath, grant => { grant.extensions = ['.java', '.kt']; });
+      const ref = fixtureRegistry.get(registered.codebaseId, scope)!;
       const fixture = new DeterministicFixtureSourceAccessService(fixtureRegistry);
 
       const withheld = await fixture.search({codebaseId: ref.codebaseId, scope, query: 'FixtureGrantNeedle',
@@ -1027,7 +1055,7 @@ describe('OnDemandSourceAccessService', () => {
       searchTimeoutMs: 1_000,
     });
     const node = access as any;
-    const prepared = await node.prepareScopedLookup(ref, 'provider_send', undefined);
+    const prepared = await node.prepareScopedLookup({ref, root: ref.rootRealpath}, 'provider_send', undefined);
     const now = jest.spyOn(Date, 'now')
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
@@ -1122,14 +1150,23 @@ describe('OnDemandSourceAccessService', () => {
 
   it('reports missing and drifted roots as unavailable instead of requiring reindex', () => {
     const ref = register();
-    expect(codebaseOnDemandAvailability(ref)).toEqual({available: true});
+    const gate = new PathSecurityGate({allowlistRoots: [tmpDir]});
+    expect(codebaseOnDemandAvailability(ref, {gate})).toEqual({available: true, rootRealpath: ref.rootRealpath});
+    expect(codebaseOnDemandAvailability(ref, {gate: new PathSecurityGate({allowlistRoots: []})}))
+      .toEqual({available: false, reason: 'root_outside_allowlist'});
 
     const original = `${root}-original`;
     fs.renameSync(root, original);
-
-    expect(codebaseOnDemandAvailability(ref)).toEqual({
+    expect(codebaseOnDemandAvailability(ref, {gate})).toEqual({
       available: false,
       reason: 'codebase_root_unavailable',
+    });
+
+    fs.mkdirSync(path.join(tmpDir, 'other'));
+    fs.symlinkSync(path.join(tmpDir, 'other'), root);
+    expect(codebaseOnDemandAvailability(ref, {gate})).toEqual({
+      available: false,
+      reason: 'codebase_root_realpath_drift',
     });
   });
 });
@@ -1296,18 +1333,17 @@ describe('file-level read failures', () => {
     });
 
     it.each(backends)('withholds files outside the provider grant from find (%s)', async (_backend, rgPath) => {
-      fs.mkdirSync(path.join(root, 'app', 'private'), {recursive: true});
-      fs.writeFileSync(path.join(root, 'app', 'private', 'Hidden.kt'), 'class Hidden\n');
-      const registered = registry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
-        pathFilters: ['app/src'], sendToProvider: true, ...scope});
-      const ref = registry.updateSelectionPolicy(registered.codebaseId, scope, {pathFilters: ['app']});
+      fs.mkdirSync(path.join(root, 'app', 'src', 'ui'), {recursive: true});
+      fs.writeFileSync(path.join(root, 'app', 'src', 'ui', 'Hidden.dart'), 'class Hidden {}\n');
+      fs.writeFileSync(path.join(root, 'app', 'src', 'ui', 'Hidden.kt'), 'class Hidden\n');
+      const ref = narrowLanguageGrant();
 
       const sent = await service(rgPath).find({codebaseId: ref.codebaseId, scope, pattern: 'Hidden', mode: 'provider_send'});
       const located = await service(rgPath).find({codebaseId: ref.codebaseId, scope, pattern: 'Hidden', mode: 'metadata_only'});
 
-      expect(sent).toEqual(expect.objectContaining({files: [], coverageComplete: false,
+      expect(sent).toEqual(expect.objectContaining({files: [{filePath: 'app/src/ui/Hidden.kt'}], coverageComplete: false,
         searchIncompleteReason: 'provider_grant_scope'}));
-      expect(located.files).toEqual([{filePath: 'app/private/Hidden.kt'}]);
+      expect(located.files).toEqual(expect.arrayContaining([{filePath: 'app/src/ui/Hidden.dart'}]));
     });
   });
 });

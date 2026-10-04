@@ -9,7 +9,11 @@ import type {KnowledgeAuthorizationPromptData} from '../knowledge/knowledgePromp
 import {findCredentialSpans} from '../security/secretPatterns';
 import type {CodeAwareMode} from './codeAwareFeature';
 import {codebaseHasActiveIndex, type CodebaseRef, type CodebaseScope} from './codebaseRegistry';
-import {codebaseOnDemandAvailability, onDemandConsentFailure} from './onDemandSourceAccess';
+import {
+  evaluateCodebaseModeAuthorization,
+  evaluateCodebaseRoot,
+  type CodebaseRootEvaluationOptions,
+} from './codebaseCapability';
 
 /**
  * What a run can do with one selected codebase. `search` and `read_body` are
@@ -60,10 +64,14 @@ export interface SelectedCodebaseView {
 
 const NO_CAPABILITIES: SelectedCodebaseCapabilities = {search: false, read_body: false, index: false, graph: false};
 
-function describeSelectedCodebase(ref: CodebaseRef, codeAwareMode: CodeAwareMode): SelectedCodebaseView {
-  // The same root and consent checks the on-demand gate applies to every call.
-  const rootAvailable = codebaseOnDemandAvailability(ref).available;
-  const search = rootAvailable && !onDemandConsentFailure(ref, codeAwareMode);
+function describeSelectedCodebase(
+  ref: CodebaseRef,
+  codeAwareMode: CodeAwareMode,
+  rootOptions: CodebaseRootEvaluationOptions,
+): SelectedCodebaseView {
+  // The same root and mode checks the on-demand gate applies to every call.
+  const rootAvailable = evaluateCodebaseRoot(ref, rootOptions).available;
+  const search = rootAvailable && evaluateCodebaseModeAuthorization(ref, codeAwareMode).authorized;
   const displayName = safeCodebaseDisplayName(ref.displayName);
   return {
     id: ref.codebaseId,
@@ -85,12 +93,13 @@ export function describeSelectedCodebases(
   codebaseIds: readonly string[],
   scope: CodebaseScope | undefined,
   codeAwareMode: CodeAwareMode,
+  rootOptions: CodebaseRootEvaluationOptions = {},
 ): SelectedCodebaseView[] {
   if (codeAwareMode === 'off') return [];
   return codebaseIds.map(codebaseId => {
     const ref = registry.get(codebaseId, scope);
     return ref
-      ? describeSelectedCodebase(ref, codeAwareMode)
+      ? describeSelectedCodebase(ref, codeAwareMode, rootOptions)
       : {id: codebaseId, capabilities: {...NO_CAPABILITIES}};
   });
 }

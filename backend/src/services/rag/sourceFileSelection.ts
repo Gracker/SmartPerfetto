@@ -7,7 +7,8 @@ import {createHash} from 'crypto';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
 
-import {channelAuthorizedRoots, type CodebaseRef, type IndexCoverage} from '../codebase/codebaseRegistry';
+import type {CodebaseRef, IndexCoverage} from '../codebase/codebaseRegistry';
+import {channelAuthorizedRoots} from '../codebase/codebaseCapability';
 import {
   sourceSelectionAdmits,
   sourceSelectionForRef,
@@ -20,6 +21,7 @@ import {
 } from '../codebase/subprocessHardening';
 import {
   DEFAULT_SOURCE_MAX_TOTAL_BYTES,
+  sameCanonicalPath,
   type PathSecurityGate,
   type PathPreviewFile,
   type PathPreviewResult,
@@ -57,11 +59,7 @@ export function assertCodebaseRootIdentity(
   previewRootRealpath: string,
   platform: NodeJS.Platform = process.platform,
 ): void {
-  const normalize = (value: string): string => {
-    const resolved = path.resolve(value);
-    return platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved;
-  };
-  if (normalize(registeredRootRealpath) !== normalize(previewRootRealpath)) {
+  if (!sameCanonicalPath(registeredRootRealpath, previewRootRealpath, platform)) {
     throw new CodebaseStateError('codebase_root_realpath_drift');
   }
 }
@@ -69,7 +67,7 @@ export function assertCodebaseRootIdentity(
 export async function enumerateRegisteredCodebaseRoot(
   gate: PathSecurityGate,
   ref: CodebaseRef,
-  enumerator = new SourceEnumerator(),
+  enumerator: Pick<SourceEnumerator, 'enumerate'> = new SourceEnumerator(),
 ): Promise<EnumerationResult> {
   const result = await enumerator.enumerate({
     rootRealpath: ref.rootRealpath,

@@ -244,11 +244,22 @@ describe('product-owned live evidence continuity', () => {
   });
 
   it.each(['tenantId', 'workspaceId', 'userId', 'referenceTraceId', 'codebaseIds', 'knowledgeSourceIds',
-    'codeAwareMode', 'analysisContextFingerprint', 'runId'] as const)('rejects a copied binding with changed %s', key => {
+    'analysisContextFingerprint', 'runId'] as const)('rejects a copied binding with changed %s', key => {
     const run = bind(contextFor(), 'first');
     const changed = {...run.binding.options, [key]: key.endsWith('Ids') ? ['other'] : 'other'};
     expect(() => resolveRuntimeEvidenceStore(changed as AnalysisOptions,
       {sessionId: run.sessionId, traceId: 'trace'}, () => new ArtifactStore())).toThrow();
+  });
+
+  it('reads a source mode without selected codebases as the same authorization (effectiveAnalysisSelection)', () => {
+    const run = bind(contextFor(), 'first');
+    for (const codeAwareMode of ['off', 'metadata_only', 'provider_send'] as const) {
+      expect(resolveRuntimeEvidenceStore({...run.binding.options, codeAwareMode},
+        {sessionId: run.sessionId, traceId: 'trace'}, () => new ArtifactStore())).toBe(run.store);
+    }
+    // Codebase ids hidden by an explicit off authorize nothing either.
+    expect(resolveRuntimeEvidenceStore({...run.binding.options, codeAwareMode: 'off', codebaseIds: ['hidden']},
+      {sessionId: run.sessionId, traceId: 'trace'}, () => new ArtifactStore())).toBe(run.store);
   });
 
   it('rejects mismatched physical sessions, current trace and broadened finalization scopes', () => {

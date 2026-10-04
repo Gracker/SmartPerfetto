@@ -1408,14 +1408,15 @@ describe('codebase routes', () => {
       kind: 'app_source',
       displayName: 'Expanded selection',
       rootPath: tmpDir,
-      pathFilters: ['app'],
+      pathFilters: ['app', 'lib'],
       sendToProvider: true,
       ...DEFAULT_SCOPE,
     });
-    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {
-      pathFilters: ['app', 'lib'],
-      excludeGlobs: [],
-    });
+    // A grant narrower than its selection, as a record from an older version holds it.
+    const registryPath = path.join(tmpDir, 'codebases.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.includePrefixes = ['app'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
 
     const response = await request(app)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
@@ -1423,6 +1424,9 @@ describe('codebase routes', () => {
     const ambiguous = await request(app)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeCurrentSelection: true, authorizeAvailableExtensions: true});
+    const ambiguousContent = await request(app)
+      .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, sendToProvider: true});
 
     expect(response.status).toBe(200);
     expect(response.body.codebase).toMatchObject({providerGrantScopeCurrent: true});
@@ -1432,6 +1436,88 @@ describe('codebase routes', () => {
     });
     expect(ambiguous.status).toBe(400);
     expect(ambiguous.body.error).toContain('mutually exclusive');
+    expect(ambiguousContent.status).toBe(400);
+    expect(ambiguousContent.body.error).toContain('mutually exclusive');
+  });
+
+  it('grants the current selection and every language in one idempotent consent action', async () => {
+    const ref = registry.register({
+      kind: 'app_source', displayName: 'Content consent', rootPath: tmpDir, pathFilters: ['app', 'lib'],
+      sendToProvider: false, ...DEFAULT_SCOPE,
+    });
+    const registryPath = path.join(tmpDir, 'codebases.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.includePrefixes = ['app'];
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+
+    // The narrow actions keep their precondition: no consent, no grant.
+    const narrow = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeCurrentSelection: true});
+    expect(narrow.status).toBe(409);
+    expect(narrow.body.error).toBe('provider_send_consent_required');
+
+    // The combined grant needs the token of the scope the caller disclosed.
+    const untokened = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true});
+    expect(untokened.status).toBe(400);
+    expect(untokened.body.code).toBe('CODEBASE_CONSENT_DISCLOSURE_REQUIRED');
+    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const listed = await request(app).get('/api/rag/codebases');
+    const token = detail.body.codebase.contentDisclosureToken;
+    expect(token).toMatch(/^cd1:/);
+    expect(listed.body.codebases.find((item: {codebaseId: string}) => item.codebaseId === ref.codebaseId)
+      .contentDisclosureToken).toBe(token);
+
+    const granted = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: token});
+    expect(granted.status).toBe(200);
+    expect(granted.body.codebase).toMatchObject({eligibleForSendToProvider: true, providerGrantScopeCurrent: true,
+      availableNotConsentedExtensions: []});
+    const repeated = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: token});
+    expect(repeated.body.codebase.consent).toEqual(granted.body.codebase.consent);
+    expect(JSON.stringify(granted.body)).not.toContain(tmpDir);
+
+    // A selection edited after the disclosure refuses the old token and grants nothing.
+    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['app', 'lib', 'tools']});
+    const afterEdit = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+    const stale = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: token});
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({code: 'CODEBASE_CONSENT_DISCLOSURE_STALE', error: 'consent_disclosure_stale'});
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)).toEqual(afterEdit);
+  });
+
+  it('previews a selection edit with relative paths and refuses saving a proven empty or stale selection', async () => {
+    const root = path.join(tmpDir, 'selection-preview-repo');
+    fs.mkdirSync(path.join(root, 'feature'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'feature', 'A.kt'), 'class A\n');
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    const ref = registry.register({kind: 'app_source', displayName: 'Preview', rootPath: root, ...DEFAULT_SCOPE});
+
+    const preview = await request(app).post(`/api/rag/codebases/${ref.codebaseId}/selection/preview`)
+      .send({pathFilters: ['feature']});
+    expect(preview.status).toBe(200);
+    expect(preview.body.selectionPreview).toMatchObject({status: 'complete', selectionPolicyRevision: 1,
+      preview: {acceptedFileCount: 1, acceptedFiles: [{relativePath: 'feature/A.kt'}]}});
+    expect(JSON.stringify(preview.body)).not.toContain(root);
+
+    const empty = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+      .send({excludeGlobs: ['**/*.kt']});
+    expect(empty.status).toBe(400);
+    expect(empty.body.code).toBe('CODEBASE_SELECTION_EMPTY_MATCH');
+
+    const saved = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+      .send({pathFilters: ['feature'], expectedSelectionPolicyRevision: 1});
+    expect(saved.status).toBe(200);
+    const stale = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+      .send({pathFilters: [], expectedSelectionPolicyRevision: 1});
+    expect(stale.status).toBe(409);
+    expect(stale.body.code).toBe('CODEBASE_SELECTION_STALE');
+
+    const missing = await request(app).post('/api/rag/codebases/cb_missing/selection/preview').send({});
+    expect(missing.status).toBe(404);
   });
 
   it('rejects ambiguous provider consent and unsafe path filters', async () => {

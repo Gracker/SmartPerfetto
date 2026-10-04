@@ -349,3 +349,40 @@ describe('conversation route failures', () => {
     });
   });
 });
+
+describe('conversation source selection is read after merging the previous turn', () => {
+  it('reads an explicit off over inherited codebase ids as no codebases, which is a changed authorization', async () => {
+    const previous = {codeAwareMode: 'metadata_only' as const, codebaseIds: ['cb_previous']};
+    storeSnapshot({...previous,
+      analysisContextFingerprint: authorization.buildAnalysisContextAuthorizationFingerprint(previous, owner)});
+    const response = await request(app()).post('/api/agent/v1/conversation')
+      .send({query: 'no source now', sessionId: descriptor.sessionId, options: {codeAwareMode: 'off'}});
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED');
+  });
+
+  it('continues the same authorization when off arrives with codebase ids, which authorize nothing', async () => {
+    let analyzedOptions: Record<string, unknown> | undefined;
+    factory.mockImplementation(() => {
+      const emitter = new EventEmitter() as unknown as IOrchestrator;
+      emitter.reset = jest.fn();
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId, _traceId, options) => {
+        analyzedOptions = options as Record<string, unknown>;
+        return {sessionId: sessionId!, success: true, findings: [], hypotheses: [], conclusion: 'Answer.',
+          confidence: 1, rounds: 1, totalDurationMs: 1};
+      });
+      return emitter;
+    });
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose();
+      return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
+    });
+    storeSnapshot();
+    const response = await request(app()).post('/api/agent/v1/conversation').send({query: 'still no source',
+      sessionId: descriptor.sessionId, options: {codeAwareMode: 'off', codebaseIds: ['cb_hidden']}});
+    expect(response.status).toBe(202);
+    for (let attempt = 0; !analyzedOptions && attempt < 50; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(analyzedOptions).toMatchObject({codeAwareMode: 'off'});
+    expect(analyzedOptions?.codebaseIds).toBeUndefined();
+  });
+});

@@ -14,6 +14,7 @@ import {
 } from './externalKnowledgeSourceRegistry';
 import type {KnowledgeScope} from './scopedKnowledgeStore';
 import {analysisHasPrivateContext} from './security/analysisPrivateContext';
+import {effectiveAnalysisSelection, type EffectiveAnalysisSelection} from './effectiveAnalysisSelection';
 import {PublicRequestError} from '../utils/publicRequestError';
 
 export interface AnalysisContextSelection {
@@ -34,16 +35,17 @@ export class AnalysisContextAuthorizationChangedError extends PublicRequestError
 export function analysisContextMemoryPartitionKey(
   selection: AnalysisContextSelection,
 ): string {
-  if (!analysisHasPrivateContext(selection)) return 'trace-public';
+  const effective = effectiveAnalysisSelection(selection);
+  if (!analysisHasPrivateContext(effective)) return 'trace-public';
   return `private-${createHash('sha256').update(JSON.stringify({
-    codeAwareMode: selection.codeAwareMode ?? 'off',
-    codebaseIds: selectedIds(selection.codebaseIds),
-    knowledgeSourceIds: selectedIds(selection.knowledgeSourceIds),
+    codeAwareMode: effective.codeAwareMode,
+    codebaseIds: selectedIds(effective.codebaseIds),
+    knowledgeSourceIds: selectedIds(effective.knowledgeSourceIds),
   })).digest('hex').slice(0, 24)}`;
 }
 
 function selectedIds(values: readonly string[] | undefined): string[] {
-  return Array.from(new Set((values ?? []).filter(Boolean))).sort();
+  return [...(values ?? [])].sort();
 }
 
 /**
@@ -57,17 +59,20 @@ const ANALYSIS_CONTEXT_FINGERPRINT_FORMAT = 'acf2';
 /**
  * Non-secret authorization partition for provider/runtime continuation: who
  * may use which selected codebases and knowledge sources, with what consent,
- * selection scope, lifecycle and license. It holds no index generation, so a
- * rebuild elsewhere neither revokes a session nor hides its history; every
- * index entry point checks the generation its run pinned instead
- * (`indexGenerationPins.ts`).
+ * selection scope, lifecycle and license, read through the effective
+ * selection (`effectiveAnalysisSelection`), so an `off` run's hidden ids and
+ * an unset mode cannot split one authorization into two. It holds no index
+ * generation, so a rebuild elsewhere neither revokes a session nor hides its
+ * history; every index entry point checks the generation its run pinned
+ * instead (`indexGenerationPins.ts`).
  */
 export function buildAnalysisContextAuthorizationFingerprint(
   selection: AnalysisContextSelection,
   scope: KnowledgeScope,
   registries: AnalysisContextRegistries = {},
 ): string {
-  return analysisContextFingerprintOf(selection, scope, readAnalysisContextRegistrations(selection, scope, registries));
+  const effective = effectiveAnalysisSelection(selection);
+  return fingerprintOfEffective(effective, scope, readRegistrationsOf(effective, scope, registries));
 }
 
 export interface AnalysisContextRegistries {
@@ -91,11 +96,19 @@ export function readAnalysisContextRegistrations(
   scope: KnowledgeScope,
   registries: AnalysisContextRegistries = {},
 ): AnalysisContextRegistrations {
+  return readRegistrationsOf(effectiveAnalysisSelection(selection), scope, registries);
+}
+
+function readRegistrationsOf(
+  effective: EffectiveAnalysisSelection,
+  scope: KnowledgeScope,
+  registries: AnalysisContextRegistries,
+): AnalysisContextRegistrations {
   const codebaseRegistry = registries.codebaseRegistry ?? getDefaultCodebaseRegistry();
   const knowledgeRegistry = registries.knowledgeRegistry ?? getDefaultExternalKnowledgeSourceRegistry();
   return {
-    codebases: new Map(selectedIds(selection.codebaseIds).map(id => [id, codebaseRegistry.get(id, scope)])),
-    knowledgeSources: new Map(selectedIds(selection.knowledgeSourceIds).map(id => [id, knowledgeRegistry.get(id, scope)])),
+    codebases: new Map(selectedIds(effective.codebaseIds).map(id => [id, codebaseRegistry.get(id, scope)])),
+    knowledgeSources: new Map(selectedIds(effective.knowledgeSourceIds).map(id => [id, knowledgeRegistry.get(id, scope)])),
   };
 }
 
@@ -105,13 +118,21 @@ export function analysisContextFingerprintOf(
   scope: KnowledgeScope,
   registrations: AnalysisContextRegistrations,
 ): string {
+  return fingerprintOfEffective(effectiveAnalysisSelection(selection), scope, registrations);
+}
+
+function fingerprintOfEffective(
+  effective: EffectiveAnalysisSelection,
+  scope: KnowledgeScope,
+  registrations: AnalysisContextRegistrations,
+): string {
   const payload = {
     scope: {
       tenantId: scope.tenantId ?? '',
       workspaceId: scope.workspaceId ?? '',
       userId: scope.userId ?? '',
     },
-    codeAwareMode: selection.codeAwareMode ?? 'off',
+    codeAwareMode: effective.codeAwareMode,
     codebases: [...registrations.codebases].map(([codebaseId, ref]) => ref
       ? {
           codebaseId,

@@ -12,6 +12,7 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {
   runCodebaseAuditCommand,
   runCodebaseAuthorizeExtensionsCommand,
+  runCodebaseAuthorizeContentCommand,
   runCodebaseAuthorizeSelectionCommand,
   runCodebaseConsentCommand,
   runCodebaseDeleteCommand,
@@ -338,6 +339,9 @@ describe('smp codebase command handlers', () => {
       sendToProvider: true,
       ...DEFAULT_SCOPE,
     });
+    registry.activateIndexGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
+      lastIngestStatus: 'ok', activeGeneration: 'active-a', contentFingerprint: 'content-a', chunkCount: 1,
+    });
 
     const code = await runCodebaseSelectionCommand({
       codebaseId: ref.codebaseId,
@@ -358,6 +362,8 @@ describe('smp codebase command handlers', () => {
         selectionPolicyRevision: 2,
         activeIndexState: 'none',
         reindexRequired: 'selection_scope_changed',
+        // The old exclusion was dropped, so the grant cannot follow: consent is revoked.
+        eligibleForSendToProvider: false,
       },
       reindexWarning: true,
     });
@@ -412,6 +418,99 @@ describe('smp codebase command handlers', () => {
       managementService,
     })).toBe(0);
     expect(logSpy.mock.calls.join('\n')).toMatch(/selection.*authorized/i);
+
+    // Widening revokes consent; the one consent action grants the current scope again.
+    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: []});
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
+    // Without a token it only discloses: relative scope, languages, what sending means, the token.
+    logSpy.mockClear();
+    expect(await runCodebaseAuthorizeContentCommand({
+      codebaseId: ref.codebaseId,
+      format: 'json',
+      sessionDir,
+      managementService,
+    })).toBe(0);
+    const disclosed = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''));
+    expect(disclosed).toMatchObject({
+      success: true,
+      action: 'disclosure',
+      granted: false,
+      disclosure: {includePrefixes: [], excludeGlobs: [], languages: expect.arrayContaining(['.kt', '.java'])},
+    });
+    expect(disclosed.disclosure.notice).toMatch(/retention by the AI service depends on its configuration and policy/);
+    expect(JSON.stringify(disclosed)).not.toContain(root);
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
+
+    logSpy.mockClear();
+    expect(await runCodebaseAuthorizeContentCommand({
+      codebaseId: ref.codebaseId,
+      confirm: disclosed.disclosure.contentDisclosureToken,
+      format: 'json',
+      sessionDir,
+      managementService,
+    })).toBe(0);
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''))).toMatchObject({
+      success: true,
+      action: 'authorized_content',
+      codebase: {eligibleForSendToProvider: true, providerGrantScopeCurrent: true},
+    });
+
+    // A token from before a selection edit grants nothing.
+    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['drivers']});
+    const afterEdit = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+    logSpy.mockClear();
+    expect(await runCodebaseAuthorizeContentCommand({
+      codebaseId: ref.codebaseId,
+      confirm: disclosed.disclosure.contentDisclosureToken,
+      format: 'json',
+      sessionDir,
+      managementService,
+    })).toBe(4);
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''))).toMatchObject({
+      success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_STALE',
+    });
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)).toEqual(afterEdit);
+  });
+
+  it('refuses a save whose preview revision a concurrent edit replaced', async () => {
+    const ref = registry.register({
+      kind: 'app_source', displayName: 'Revision App', rootPath: root, rootRealpath: root, ...DEFAULT_SCOPE,
+    });
+    expect(await runCodebaseSelectionCommand({
+      codebaseId: ref.codebaseId, excludeGlobs: ['**/old/**'], preview: true, sessionDir, managementService,
+    })).toBe(0);
+    const previewedRevision = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? '')).selectionPreview.selectionPolicyRevision;
+    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['drivers']});
+    const concurrent = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+
+    logSpy.mockClear();
+    expect(await runCodebaseSelectionCommand({
+      codebaseId: ref.codebaseId, excludeGlobs: ['**/old/**'], expectedRevision: previewedRevision,
+      format: 'json', sessionDir, managementService,
+    })).toBe(4);
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''))).toMatchObject({
+      success: false, code: 'CODEBASE_SELECTION_STALE',
+    });
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)).toEqual(concurrent);
+  });
+
+  it('previews a selection replacement without saving it', async () => {
+    const ref = registry.register({
+      kind: 'app_source', displayName: 'Preview App', rootPath: root, rootRealpath: root, ...DEFAULT_SCOPE,
+    });
+
+    expect(await runCodebaseSelectionCommand({
+      codebaseId: ref.codebaseId,
+      pathFilters: ['drivers'],
+      preview: true,
+      sessionDir,
+      managementService,
+    })).toBe(0);
+    const payload = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''));
+    expect(payload).toMatchObject({success: true, selectionPreview: {selectionPolicyRevision: 1}});
+    expect(['complete', 'partial']).toContain(payload.selectionPreview.status);
+    expect(JSON.stringify(payload)).not.toContain(root);
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.selectionPolicyRevision).toBe(1);
   });
 
   it('accepts and rejects the exact pending candidate with stable CAS errors', async () => {
@@ -595,6 +694,18 @@ describe('smp codebase command handlers', () => {
     },
     {
       args: ['codebase', 'authorize-extensions', 'cb-test', '--help'],
+      expectedStatus: 0,
+      stdout: /Usage:/,
+      stderr: /^$/,
+    },
+    {
+      args: ['codebase', 'selection', 'cb-test', '--expected-revision', 'zero'],
+      expectedStatus: 2,
+      stdout: /^$/,
+      stderr: /.+/,
+    },
+    {
+      args: ['codebase', 'authorize-content', 'cb-test', '--help'],
       expectedStatus: 0,
       stdout: /Usage:/,
       stderr: /^$/,

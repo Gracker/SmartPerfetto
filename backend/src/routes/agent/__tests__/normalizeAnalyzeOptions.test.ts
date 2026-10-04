@@ -339,10 +339,24 @@ describe('normalizeAnalyzeOptions', () => {
       {endpoint: '/analyze', hasReferenceTraceId: false},
     )).toThrow('knowledgeSourceIds exceeds the maximum of 32');
 
+    // Ids are validated as sent even when an explicit off will drop them.
     expect(() => normalizeAnalyzeOptions(
-      {codeAwareMode: 'off', codebaseIds: ['app-source']},
+      {codeAwareMode: 'off', codebaseIds: [42]},
       {endpoint: '/analyze', hasReferenceTraceId: false},
-    )).toThrow('codebaseIds require codeAwareMode');
+    )).toThrow('codebaseIds must be an array of non-empty strings');
+  });
+
+  it('reads an explicit off as no codebases and keeps knowledge independent of the mode', () => {
+    const endpoint = {endpoint: '/analyze' as const, hasReferenceTraceId: false};
+    expect(normalizeAnalyzeOptions({codeAwareMode: 'off', codebaseIds: ['app-source']}, endpoint))
+      .toEqual({analysisMode: 'auto', codeAwareMode: 'off'});
+    expect(normalizeAnalyzeOptions(
+      {codeAwareMode: 'off', codebaseIds: ['app-source'], knowledgeSourceIds: ['wiki']}, endpoint,
+    )).toEqual({analysisMode: 'auto', codeAwareMode: 'off', knowledgeSourceIds: ['wiki']});
+    // A mode with no codebase means nothing.
+    expect(normalizeAnalyzeOptions({codeAwareMode: 'provider_send', codebaseIds: []}, endpoint))
+      .toEqual({analysisMode: 'auto', codeAwareMode: 'off'});
+    expect(normalizeAnalyzeOptions({}, endpoint)).toEqual({analysisMode: 'auto'});
   });
 
   it('preserves auto mode with source context and comparison', () => {

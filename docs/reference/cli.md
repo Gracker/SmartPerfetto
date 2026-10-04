@@ -286,12 +286,16 @@ smp codebase register /path/to/app --kind app_source --name MyApp --path-filter 
 smp codebase list
 smp codebase list --format json
 
-# 同时提供两类选项时，替换 pathFilters 和 excludeGlobs
+# 先预览新范围命中的文件（不保存），再替换 pathFilters 和 excludeGlobs
+smp codebase selection cb_xxx --path-filter app/src/main/ --preview
 smp codebase selection cb_xxx \
   --path-filter app/src/main/ \
-  --exclude-glob '**/generated/**'
+  --exclude-glob '**/generated/**' \
+  --expected-revision 1
 
-# provider-send 同意与当前范围/新语言授权
+# 先显示将授权的具体范围与 token（不授权），再用该 token 一次授权当前范围与全部语言（推荐）
+smp codebase authorize-content cb_xxx
+smp codebase authorize-content cb_xxx --confirm cd1:1:xxxxxxxxxxxxxxxx
 smp codebase consent cb_xxx --enable
 smp codebase authorize-selection cb_xxx
 smp codebase authorize-extensions cb_xxx
@@ -317,8 +321,9 @@ smp run trace.perfetto-trace \
 `metadata_only` 只把 `CodeRef` 元数据暴露给模型；源码正文不会进入 session、
 报告或导出。`provider_send` 只有在注册 codebase 时使用 `--send-to-provider`
 并且本次分析也选择 `--code-aware provider_send` 时才允许发送片段。只传
-`--codebase-id` 会默认使用 `metadata_only`；`--code-aware off` 与 codebase ID
-组合会被拒绝。未传任何 codebase/knowledge source ID 时才是 trace-only。
+`--codebase-id` 会默认使用 `metadata_only`；`--code-aware off` 会丢弃同时传入的
+codebase ID（不再报错，也不触发任何源码授权或功能开关检查）。未选中任何源码库也
+未传 knowledge source ID 时才是 trace-only；知识源选择与源码模式无关。
 `--knowledge-source-id <id>` 可单独启用已授权的私有外部 RAG，也可与 codebase
 叠加。源码、私有 RAG 或 reference trace 会把显式 `fast` 解析为 `full`，避免
 轻量 runtime 静默丢失能力。
@@ -329,9 +334,17 @@ smp run trace.perfetto-trace \
 
 `selection` 只替换显式提供的字段：`--path-filter` 替换 `pathFilters`，
 `--exclude-glob` 替换 `excludeGlobs`；未提供的字段保留现有列表。两类选项都提供时才
-会同时替换两个列表。有效变更会递增 selection revision、使旧 active index 失效，并可能使
-provider grant 与当前范围不一致。`authorize-selection` 只授权当前路径范围；
-`authorize-extensions` 只授权当前可用新语言，两者都不会替用户开启 provider-send。`pending`
+会同时替换两个列表。`--preview` 只按与保存相同的枚举输出新范围命中的相对路径（JSON），
+不保存；保存时重新枚举，完整枚举为零命中会被拒绝（`CODEBASE_SELECTION_EMPTY_MATCH`）。
+有效变更会递增 selection revision 与索引代次；只有原先存在 active index 时才提示重建。
+provider grant 不会超出当前范围：可证明的收窄会让授权随之收窄，其他变化（含无法证明的）
+会撤销 provider-send 同意。`--expected-revision` 传入 preview 输出的
+`selectionPolicyRevision`，期间若被其他流程修改则拒绝保存（`CODEBASE_SELECTION_STALE`）。
+`authorize-content` 不带 `--confirm` 时只打印将授权的相对 include/exclude、语言、发送说明与
+token，不做授权；带上该 token 才授权，披露之后范围或语言变化会以
+`CODEBASE_CONSENT_DISCLOSURE_STALE` 拒绝，重复执行是幂等的；`authorize-selection` 只授权当前路径范围；`authorize-extensions` 只授权当前
+可用新语言，后两者都不会替用户开启 provider-send。分析启动时若某个源码库的授权与当前范围
+不一致，会以 `ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE` 拒绝 `provider_send`。`pending`
 必须传回 `list` / `audit` 中当前的精确 candidate ID。`delete` 必须显式传 `--yes`。
 
 CLI `reindex` 只接受 codebase ID，没有 `pathPrefix` 选项。路径范围用 `selection --path-filter` 管理。注册时的 `--commit` 仍为旧调用方保留，但只是 caller-supplied 兼容元数据；每次索引都会自动读取真实 Git `HEAD`、工作区 dirty 状态和内容指纹，并在 `audit` 中作为索引来源权威值。

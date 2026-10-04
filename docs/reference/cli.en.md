@@ -323,12 +323,16 @@ smp codebase register /path/to/app --kind app_source --name MyApp --path-filter 
 smp codebase list
 smp codebase list --format json
 
-# Supplying both option families replaces both pathFilters and excludeGlobs
+# Preview what a new scope admits (nothing is saved), then replace pathFilters and excludeGlobs
+smp codebase selection cb_xxx --path-filter app/src/main/ --preview
 smp codebase selection cb_xxx \
   --path-filter app/src/main/ \
-  --exclude-glob '**/generated/**'
+  --exclude-glob '**/generated/**' \
+  --expected-revision 1
 
-# Provider-send consent and current-scope/new-language authorization
+# Show exactly what would be granted and its token (grants nothing), then grant that scope and every language (recommended)
+smp codebase authorize-content cb_xxx
+smp codebase authorize-content cb_xxx --confirm cd1:1:xxxxxxxxxxxxxxxx
 smp codebase consent cb_xxx --enable
 smp codebase authorize-selection cb_xxx
 smp codebase authorize-extensions cb_xxx
@@ -355,9 +359,11 @@ smp run trace.perfetto-trace \
 not persisted into sessions, reports, or exports. `provider_send` can send
 snippets only when the codebase was registered with `--send-to-provider` and the
 current analysis also uses `--code-aware provider_send`. Supplying only
-`--codebase-id` defaults to `metadata_only`; combining a codebase ID with
-`--code-aware off` is rejected. A run is trace-only only when no codebase or
-knowledge-source ID is selected. `--knowledge-source-id <id>` can enable an
+`--codebase-id` defaults to `metadata_only`; `--code-aware off` drops any
+codebase IDs passed with it (no error, and no source authorization or feature
+check). A run is trace-only only when no codebase is selected and no
+knowledge-source ID is passed; knowledge sources are independent of the source
+mode. `--knowledge-source-id <id>` can enable an
 authorized private external RAG source alone or together with a codebase.
 Source, private RAG, and reference-trace selections resolve an explicit `fast`
 request to `full` so the lightweight runtime cannot silently drop capabilities.
@@ -371,11 +377,25 @@ that order when it is unavailable.
 `selection` replaces only fields supplied explicitly: `--path-filter` replaces
 `pathFilters`, while `--exclude-glob` replaces `excludeGlobs`. An omitted field
 preserves its existing list; only a command containing both option families
-replaces both lists. An effective change advances the selection revision,
-invalidates the old active index, and may make the provider grant stale.
-`authorize-selection` grants only the current path scope;
-`authorize-extensions` grants only currently available new languages, and
-neither turns provider-send on. `pending` must echo the exact current candidate
+replaces both lists. `--preview` prints, as JSON, the relative paths the new
+scope would admit, enumerated exactly as a save enumerates it, and saves
+nothing; a save enumerates again and refuses a complete enumeration with no
+match (`CODEBASE_SELECTION_EMPTY_MATCH`). An effective change advances the
+selection revision and the index generation; only a codebase that had an active
+index is told to reindex. The provider grant never exceeds the current scope: a
+provable narrowing narrows the grant with it, and any other change (including
+one that cannot be proven narrower) revokes provider-send consent.
+`--expected-revision` takes the `selectionPolicyRevision` a preview printed and
+refuses the save if another change replaced it (`CODEBASE_SELECTION_STALE`).
+`authorize-content` without `--confirm` only prints the relative include and
+exclude scope, the languages, what sending means and the token, and grants
+nothing; with that token it grants exactly that scope and every language, a
+scope or language change since the disclosure is refused with
+`CODEBASE_CONSENT_DISCLOSURE_STALE`, and repeating it is idempotent; `authorize-selection` grants only the current path scope and
+`authorize-extensions` only currently available new languages, and neither of
+those two turns provider-send on. A `provider_send` analysis is refused with
+`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE` while a selected codebase's grant does
+not match its scope. `pending` must echo the exact current candidate
 ID from `list` / `audit`. `delete` requires explicit `--yes`.
 
 CLI `reindex` accepts only a codebase ID and has no `pathPrefix` option. Manage

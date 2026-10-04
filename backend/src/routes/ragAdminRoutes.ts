@@ -17,6 +17,12 @@
  *   POST   /search             body `{query, kinds?, topK?}` —
  *                              run a search like the agent would
  *
+ * Codebase management lives under `/codebases`: register, list, consent
+ * (`authorizeContent` is the one current-scope grant), selection edits with a
+ * `selection/preview` that enumerates exactly what a save would admit, index
+ * maintenance and deletion. Responses carry relative paths and fixed reason
+ * codes, never a registered root.
+ *
  * The Android Internals endpoints only register and index an operator-
  * allowlisted local checkout. Remote blog, AOSP, and OEM fetchers remain
  * operator-script-only because their authenticated source credentials do
@@ -75,7 +81,7 @@ import {
   CodebaseManagementError,
   CodebaseManagementService,
   projectCodebaseEnumeration,
-  projectRegisteredCodebase,
+  type RegisteredCodebase,
 } from '../services/codebase/codebaseManagementService';
 import {
   isLocalDirectoryPickerRequest,
@@ -213,7 +219,10 @@ function sendDirectoryPickerError(
  * adds a token it has not classified here or as internal.
  */
 export const CALLER_FACING_RAG_REASONS: ReadonlySet<string> = new Set([
-  // Root and knowledge-root gate
+  // Root and knowledge-root gate, and the root check behind `unavailableReason`
+  'root_identity_changed',
+  'root_missing',
+  'root_not_directory',
   'root_not_found',
   'root_outside_allowlist',
   'knowledge_root_blocked',
@@ -1127,7 +1136,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         : register();
       res.json({
         success: true,
-        codebase: projectRegisteredCodebase(ref),
+        codebase: codebaseManagementService.project(ref),
         preview: projectCodebaseEnumeration(enumeration),
       });
     } catch (error) {
@@ -1255,7 +1264,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const capacityExceeded = isSourceChunkLimitExceeded(error);
       const code = capacityExceeded ? 'CODEBASE_INDEX_CAPACITY_EXCEEDED' : 'CODEBASE_INDEX_FAILED';
       const requestId = logRouteFailure(res, '[RagAdmin] Codebase index error', 400, code, error);
-      const onDemandAvailable = await codebaseManagementService.onDemandAvailable(codebaseId, scope);
+      const onDemandAvailable = codebaseManagementService.rootCapability(codebaseId, scope).available;
       const message = capacityExceeded
         ? 'Optional source index reached its capacity; this index attempt was rolled back.'
         : 'Optional source index could not be built.';
@@ -1309,52 +1318,95 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
   });
 
+  /**
+   * Exactly one consent action per request. `authorizeContent` is the one
+   * combined grant (current selection and languages) and must carry the
+   * `contentDisclosureToken` the caller disclosed; the two narrower actions
+   * keep their own boundaries and are never widened into it.
+   */
+  const CONSENT_ACTIONS: ReadonlyArray<{
+    field: string;
+    applies: (body: Record<string, unknown>) => boolean;
+    run: (codebaseId: string, body: Record<string, unknown>, actor: string, scope: KnowledgeScope) =>
+      Promise<RegisteredCodebase>;
+  }> = [
+    {
+      field: 'authorizeContent',
+      applies: body => body.authorizeContent === true,
+      run: (codebaseId, body, actor, scope) => codebaseManagementService.authorizeContent(
+        codebaseId, actor, String(body.contentDisclosureToken), scope),
+    },
+    {
+      field: 'authorizeAvailableExtensions',
+      applies: body => body.authorizeAvailableExtensions === true,
+      run: (codebaseId, _body, actor, scope) =>
+        codebaseManagementService.authorizeAvailableExtensions(codebaseId, actor, scope),
+    },
+    {
+      field: 'authorizeCurrentSelection',
+      applies: body => body.authorizeCurrentSelection === true,
+      run: (codebaseId, _body, actor, scope) =>
+        codebaseManagementService.authorizeCurrentSelection(codebaseId, actor, scope),
+    },
+    {
+      field: 'sendToProvider',
+      applies: body => typeof body.sendToProvider === 'boolean',
+      run: (codebaseId, body, actor, scope) =>
+        codebaseManagementService.setConsent(codebaseId, body.sendToProvider as boolean, actor, scope),
+    },
+  ];
+
   router.patch('/codebases/:id/consent', requireCodebaseScope('codebase:manage'), async (req, res) => {
-    const authorizeAvailableExtensions = req.body?.authorizeAvailableExtensions === true;
-    const authorizeCurrentSelection = req.body?.authorizeCurrentSelection === true;
-    const updatesProviderConsent = typeof req.body?.sendToProvider === 'boolean';
-    const actionCount = Number(authorizeAvailableExtensions) +
-      Number(authorizeCurrentSelection) +
-      Number(updatesProviderConsent);
-    if (actionCount > 1) {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const actions = CONSENT_ACTIONS.filter(action => action.applies(body));
+    if (actions.length > 1) {
       return res.status(400).json({
         success: false,
-        error: '`authorizeAvailableExtensions`, `authorizeCurrentSelection`, and `sendToProvider` are mutually exclusive',
+        error: `${CONSENT_ACTIONS.map(action => `\`${action.field}\``).join(', ')} are mutually exclusive`,
       });
     }
-    if (actionCount !== 1) {
+    if (actions.length !== 1) {
       return res.status(400).json({
         success: false,
         error: 'exactly one consent action is required',
       });
     }
+    if (actions[0]!.field === 'authorizeContent' &&
+      (typeof body.contentDisclosureToken !== 'string' || !body.contentDisclosureToken)) {
+      return res.status(400).json({
+        success: false,
+        code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED',
+        error: '`authorizeContent` requires the `contentDisclosureToken` of the disclosed scope',
+      });
+    }
     const context = requireRequestContext(req);
     const scope = knowledgeScopeFromRequestContext(context);
     try {
-      const codebase = authorizeAvailableExtensions
-        ? await codebaseManagementService.authorizeAvailableExtensions(
-            routeParam(req.params.id),
-            context.userId,
-            scope,
-          )
-        : authorizeCurrentSelection
-          ? await codebaseManagementService.authorizeCurrentSelection(
-              routeParam(req.params.id),
-              context.userId,
-              scope,
-            )
-        : await codebaseManagementService.setConsent(
-            routeParam(req.params.id),
-            req.body.sendToProvider,
-            context.userId,
-            scope,
-          );
+      const codebase = await actions[0]!.run(routeParam(req.params.id), body, context.userId, scope);
       return res.json({success: true, codebase});
     } catch (error) {
       return sendRouteError(res, error, {
         code: 'CODEBASE_CONSENT_FAILED',
         error: 'Codebase consent update failed',
         logLabel: '[RagAdmin] Codebase consent error',
+      }, [CodebaseManagementError]);
+    }
+  });
+
+  router.post('/codebases/:id/selection/preview', requireCodebaseScope('codebase:manage'), async (req, res) => {
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    try {
+      const preview = await codebaseManagementService.previewSelection(
+        routeParam(req.params.id),
+        req.body ?? {},
+        scope,
+      );
+      return res.json({success: true, selectionPreview: preview});
+    } catch (error) {
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_SELECTION_PREVIEW_FAILED',
+        error: 'Codebase selection preview failed',
+        logLabel: '[RagAdmin] Codebase selection preview error',
       }, [CodebaseManagementError]);
     }
   });

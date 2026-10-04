@@ -157,7 +157,11 @@ async function safeRealpathAsync(target: string): Promise<string | null> {
 
 export function isWithinAllowlist(target: string, allowlist: string[]): boolean {
   const realTarget = safeRealpath(target);
-  if (!realTarget) return false;
+  return realTarget !== null && canonicalWithinAllowlist(realTarget, allowlist);
+}
+
+/** `isWithinAllowlist` for a target that is already a canonical real path. */
+function canonicalWithinAllowlist(realTarget: string, allowlist: readonly string[]): boolean {
   for (const root of allowlist) {
     const realRoot = safeRealpath(root);
     if (!realRoot) continue;
@@ -329,6 +333,18 @@ function readRevalidatedTextFileSync(
   }
 }
 
+/** Whether two real paths name the same location: case-insensitively only on win32. */
+export function sameCanonicalPath(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const identity = (value: string): string => platform === 'win32'
+    ? path.resolve(value).toLocaleLowerCase('en-US')
+    : path.resolve(value);
+  return identity(left) === identity(right);
+}
+
 export class PathSecurityGate {
   // null means "read from env at call time" (supports dotenv loaded after module init)
   private readonly allowlistRootsOverride: string[] | null;
@@ -389,18 +405,21 @@ export class PathSecurityGate {
     rootPath: string,
     options: PathPreviewOptions = {},
   ): Promise<string> {
-    const configuredRoots = this.allowlistRootsOverride ??
-      configuredAllowlistRoots(this.allowlistEnvironmentVariable);
-    const allowlistRoots = [
-      ...configuredRoots,
-      ...(options.additionalAllowlistRoots ?? []),
-    ];
     const rootRealpath = await safeRealpathAsync(rootPath);
     if (!rootRealpath) throw new Error('root_not_found');
-    if (allowlistRoots.length === 0 || !isWithinAllowlist(rootRealpath, allowlistRoots)) {
+    if (!this.rootWithinAllowlist(rootRealpath, options)) {
       throw new Error('root_outside_allowlist');
     }
     return rootRealpath;
+  }
+
+  /** The allowlist half of `validateRoot`, for an already canonical root. */
+  rootWithinAllowlist(rootRealpath: string, options: PathPreviewOptions = {}): boolean {
+    const allowlistRoots = [
+      ...(this.allowlistRootsOverride ?? configuredAllowlistRoots(this.allowlistEnvironmentVariable)),
+      ...(options.additionalAllowlistRoots ?? []),
+    ];
+    return allowlistRoots.length > 0 && canonicalWithinAllowlist(rootRealpath, allowlistRoots);
   }
 
   validateRelativeSourcePath(

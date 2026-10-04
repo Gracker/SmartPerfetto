@@ -4,30 +4,33 @@
 
 import {
   activeCodebaseGeneration,
-  codebaseProviderGrantScopeCurrent,
   codebaseRegistrationRequirements,
-  codebaseRootAvailable,
   PENDING_GENERATION_TTL_MS,
-  channelAuthorizedRoots,
   type CodebaseKind,
+  summarizeCodebase,
   type CodebaseRef,
   type CodebaseRefSummary,
   type CodebaseScope,
   type IndexCoverage,
 } from './codebaseRegistry';
-import {constants as fsConstants} from 'fs';
-import {access, stat} from 'fs/promises';
 import {CodebaseRegistry} from './codebaseRegistry';
+import {
+  channelAuthorizedRoots,
+  codebaseProviderGrantScopeCurrent,
+  evaluateCodebaseRoot,
+  type CodebaseRootCapability,
+  type CodebaseRootUnavailableReason,
+} from './codebaseCapability';
 import {PathSecurityGate} from './pathSecurityGate';
 import {SourceEnumerator, type EnumerationResult} from './sourceEnumerator';
-import {buildSourceSelectionIR} from './sourceSelectionPolicy';
-import {availableNotConsentedExtensions} from './sourceDisclosure';
+import {buildSourceSelectionIR, sourceSelectionForRef} from './sourceSelectionPolicy';
+import {availableNotConsentedExtensions, contentDisclosureToken} from './sourceDisclosure';
 import {
   readAospManifestProjects,
   type AospManifestProject,
 } from './aospManifest';
 import {RagStore} from '../ragStore';
-import {assertCodebaseRootIdentity, resolveSourcePathPatterns} from '../rag/sourceFileSelection';
+import {resolveSourcePathPatterns} from '../rag/sourceFileSelection';
 import {PublicRequestError} from '../../utils/publicRequestError';
 import {
   CodebaseRequestError,
@@ -40,6 +43,7 @@ import {
 export type CodebaseManagementErrorCode =
   | 'CODEBASE_AUDIT_FAILED'
   | 'CODEBASE_BUSY'
+  | 'CODEBASE_CONSENT_DISCLOSURE_STALE'
   | 'CODEBASE_CONSENT_REQUIRED'
   | 'CODEBASE_DELETE_FAILED'
   | 'CODEBASE_DELETE_INCOMPLETE'
@@ -48,6 +52,8 @@ export type CodebaseManagementErrorCode =
   | 'CODEBASE_PREVIEW_FAILED'
   | 'CODEBASE_ROOT_DRIFT'
   | 'CODEBASE_SELECTION_EMPTY'
+  | 'CODEBASE_SELECTION_EMPTY_MATCH'
+  | 'CODEBASE_SELECTION_STALE'
   | 'CODEBASE_SELECTION_UNCHANGED'
   | 'PENDING_GENERATION_EXPIRED'
   | 'PENDING_GENERATION_NOT_FOUND'
@@ -79,6 +85,22 @@ export interface PreviewCodebaseInput {
 export interface SourceSelectionInput {
   pathFilters?: unknown;
   excludeGlobs?: unknown;
+  /** The revision the caller previewed; a save against a newer one is refused. */
+  expectedSelectionPolicyRevision?: unknown;
+}
+
+/**
+ * What a proposed selection of a registered codebase would admit, enumerated
+ * exactly as indexing and on-demand access enumerate it. `complete` counts are
+ * exact (a complete zero is a proven empty selection); `partial` counts are a
+ * lower bound from a traversal that stopped early; `unavailable` enumerated
+ * nothing. Paths are relative; the root is never returned.
+ */
+export interface CodebaseSelectionPreview {
+  status: 'complete' | 'partial' | 'unavailable';
+  selectionPolicyRevision: number;
+  unavailableReason?: CodebaseRootUnavailableReason | 'enumeration_failed';
+  preview?: CodebasePreview;
 }
 
 export interface PendingAcceptanceExpectation {
@@ -115,6 +137,8 @@ export type RegisteredCodebase = Omit<
 > & {
   grantRevision: number;
   rootAvailable: boolean;
+  /** Why the root cannot be read; absent when it can. */
+  unavailableReason?: CodebaseRootUnavailableReason;
   eligibleForSendToProvider: boolean;
   consent: {
     sendToProvider: boolean;
@@ -125,11 +149,16 @@ export type RegisteredCodebase = Omit<
   };
   availableNotConsentedExtensions: string[];
   providerGrantScopeCurrent: boolean;
+  /** What `authorizeContent` would grant now; pass it back to grant exactly that. */
+  contentDisclosureToken: string;
   lastIngestError?: string;
 };
 
 export type CodebaseListItem = Omit<CodebaseRefSummary, 'rootAuthorization' | 'lastIngestError'> & {
   lastIngestError?: string;
+  rootAvailable: boolean;
+  unavailableReason?: CodebaseRootUnavailableReason;
+  contentDisclosureToken: string;
 };
 
 export interface CodebaseAudit {
@@ -182,10 +211,12 @@ const CODEBASE_STATE_ERRORS: Readonly<Record<CodebaseStateReason, {
   codebase_reindex_in_progress: {code: 'CODEBASE_BUSY', status: 409},
   codebase_reindex_lease_lost: {code: 'CODEBASE_BUSY', status: 409},
   codebase_root_realpath_drift: {code: 'CODEBASE_ROOT_DRIFT', status: 400},
+  consent_disclosure_stale: {code: 'CODEBASE_CONSENT_DISCLOSURE_STALE', status: 409},
   pending_generation_expired: {code: 'PENDING_GENERATION_EXPIRED', status: 409},
   pending_generation_not_found: {code: 'PENDING_GENERATION_NOT_FOUND', status: 409},
   pending_generation_stale: {code: 'PENDING_GENERATION_STALE', status: 409},
   provider_send_consent_required: {code: 'CODEBASE_CONSENT_REQUIRED', status: 409},
+  selection_policy_stale: {code: 'CODEBASE_SELECTION_STALE', status: 409},
 };
 
 const SAFE_OPERATIONAL_DIAGNOSTICS = new Set([
@@ -232,7 +263,14 @@ function safeOperationalDiagnostic(value: string | undefined): string | undefine
   return 'codebase_operation_failed';
 }
 
-export function projectRegisteredCodebase(ref: CodebaseRef): RegisteredCodebase {
+function rootFields(root: CodebaseRootCapability): {rootAvailable: boolean; unavailableReason?: CodebaseRootUnavailableReason} {
+  return root.available ? {rootAvailable: true} : {rootAvailable: false, unavailableReason: root.reason};
+}
+
+function projectRegisteredCodebase(
+  ref: CodebaseRef,
+  root: CodebaseRootCapability,
+): RegisteredCodebase {
   const {
     rootPath: _rootPath,
     rootRealpath: _rootRealpath,
@@ -246,7 +284,7 @@ export function projectRegisteredCodebase(ref: CodebaseRef): RegisteredCodebase 
     ...rest,
     ...(safeError ? {lastIngestError: safeError} : {}),
     grantRevision: consent.grant?.revision ?? 1,
-    rootAvailable: codebaseRootAvailable(ref),
+    ...rootFields(root),
     eligibleForSendToProvider: consent.sendToProvider,
     consent: {
       sendToProvider: consent.sendToProvider,
@@ -257,19 +295,22 @@ export function projectRegisteredCodebase(ref: CodebaseRef): RegisteredCodebase 
     },
     availableNotConsentedExtensions: availableNotConsentedExtensions(ref),
     providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref),
+    contentDisclosureToken: contentDisclosureToken(ref),
   };
 }
 
-function projectListItem(summary: CodebaseRefSummary): CodebaseListItem {
+function projectListItem(ref: CodebaseRef, root: CodebaseRootCapability): CodebaseListItem {
   const {
     rootAuthorization: _rootAuthorization,
     lastIngestError,
     ...safeSummary
-  } = summary;
+  } = summarizeCodebase(ref);
   const safeError = safeOperationalDiagnostic(lastIngestError);
   return {
     ...safeSummary,
     ...(safeError ? {lastIngestError: safeError} : {}),
+    ...rootFields(root),
+    contentDisclosureToken: contentDisclosureToken(ref),
   };
 }
 
@@ -301,6 +342,50 @@ export function projectCodebaseEnumeration(result: EnumerationResult): CodebaseP
       .sort((left, right) => right.fileCount - left.fileCount || left.prefix.localeCompare(right.prefix))
       .slice(0, 12),
   };
+}
+
+function sameList(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+/**
+ * The canonical selection an edit asks for; absent fields keep their current
+ * value and an empty list clears one.
+ */
+function proposedSelection(
+  existing: CodebaseRef,
+  input: SourceSelectionInput,
+): {pathFilters: string[]; excludeGlobs: string[]} {
+  const canonical = buildSourceSelectionIR({
+    kind: existing.kind,
+    includePrefixes: Object.prototype.hasOwnProperty.call(input, 'pathFilters')
+      ? resolveSourcePathPatterns(input.pathFilters, 'pathFilters')
+      : existing.pathFilters,
+    excludeGlobs: Object.prototype.hasOwnProperty.call(input, 'excludeGlobs')
+      ? resolveSourcePathPatterns(input.excludeGlobs, 'excludeGlobs')
+      : existing.excludeGlobs,
+  });
+  if (codebaseRegistrationRequirements(existing.kind).pathFilters && canonical.includePrefixes.length === 0) {
+    throw new CodebaseManagementError(
+      'CODEBASE_SELECTION_INVALID',
+      400,
+      '`pathFilters` is required for kernel_source codebases',
+    );
+  }
+  return {pathFilters: canonical.includePrefixes, excludeGlobs: canonical.excludeGlobs};
+}
+
+/** An optional integer revision from a request body. */
+function optionalRevision(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new CodebaseManagementError(
+      'CODEBASE_SELECTION_INVALID',
+      400,
+      '`expectedSelectionPolicyRevision` must be a positive integer',
+    );
+  }
+  return value;
 }
 
 function blockedPreview(reason: 'root_not_found' | 'root_outside_allowlist'): CodebasePreview {
@@ -386,43 +471,58 @@ export class CodebaseManagementService {
 
   async list(scope: CodebaseScope): Promise<CodebaseListItem[]> {
     const now = this.now();
-    for (const summary of this.registry.list(scope)) {
-      if (summary.maintenanceWarning === 'inactive_chunk_cleanup_failed') {
-        await this.cleanupInactiveCodebaseChunks(summary.codebaseId, scope);
+    for (const ref of this.registry.listRefs(scope)) {
+      if (ref.maintenanceWarning === 'inactive_chunk_cleanup_failed') {
+        await this.cleanupInactiveCodebaseChunks(ref.codebaseId, scope);
       }
-      const pending = summary.pendingGeneration;
+      const pending = ref.pendingGeneration;
       if (!pending || now - pending.createdAt < PENDING_GENERATION_TTL_MS) continue;
       this.registry.expirePendingGeneration(
-        summary.codebaseId,
+        ref.codebaseId,
         scope,
         pending.candidateGenerationId,
         now,
       );
-      await this.cleanupInactiveCodebaseChunks(summary.codebaseId, scope);
+      await this.cleanupInactiveCodebaseChunks(ref.codebaseId, scope);
     }
-    return Promise.all(this.registry.list(scope).map(async summary => ({
-      ...projectListItem(summary),
-      rootAvailable: await this.onDemandAvailable(summary.codebaseId, scope),
-    })));
+    return this.registry.listRefs(scope).map(ref => projectListItem(ref, this.evaluateRoot(ref)));
   }
 
-  /** A live root capability check, independent of optional index state or provider consent. */
-  async onDemandAvailable(id: string, scope: CodebaseScope): Promise<boolean> {
-    try {
-      const ref = this.requireCodebase(id, scope);
-      if (!codebaseRootAvailable(ref)) return false;
-      const root = await this.gate.validateRoot(ref.rootRealpath, channelAuthorizedRoots(ref));
-      assertCodebaseRootIdentity(ref.rootRealpath, root);
-      if (!(await stat(root)).isDirectory()) return false;
-      await access(root, fsConstants.R_OK | fsConstants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
+  /**
+   * The live root check under this service's allowlist, independent of
+   * optional index state and provider consent (`evaluateCodebaseRoot`). A
+   * codebase this scope cannot see reads as a missing root.
+   */
+  rootCapability(id: string, scope: CodebaseScope): CodebaseRootCapability {
+    const ref = this.registry.get(id, scope);
+    return ref ? this.evaluateRoot(ref) : {available: false, reason: 'root_missing'};
   }
 
   get(id: string, scope: CodebaseScope): RegisteredCodebase {
-    return projectRegisteredCodebase(this.requireCodebase(id, scope));
+    return this.project(this.requireCodebase(id, scope));
+  }
+
+  /** A registration as management responses show it, with its root checked under this service's allowlist. */
+  project(ref: CodebaseRef): RegisteredCodebase {
+    return projectRegisteredCodebase(ref, this.evaluateRoot(ref));
+  }
+
+  /**
+   * Enumerates a proposed selection of a registered codebase without saving
+   * it. Fields absent from the input keep their current value, as in
+   * `updateSelection`.
+   */
+  async previewSelection(
+    id: string,
+    input: SourceSelectionInput,
+    scope: CodebaseScope,
+  ): Promise<CodebaseSelectionPreview> {
+    try {
+      const existing = this.requireCodebase(id, scope);
+      return await this.enumerateSelection(existing, proposedSelection(existing, input));
+    } catch (error) {
+      throw this.toError(error, 'selection');
+    }
   }
 
   async updateSelection(
@@ -431,60 +531,84 @@ export class CodebaseManagementService {
     scope: CodebaseScope,
   ): Promise<RegisteredCodebase> {
     try {
-      const hasPathFilters = Object.prototype.hasOwnProperty.call(input, 'pathFilters');
-      const hasExcludeGlobs = Object.prototype.hasOwnProperty.call(input, 'excludeGlobs');
-      if (!hasPathFilters && !hasExcludeGlobs) {
+      if (
+        !Object.prototype.hasOwnProperty.call(input, 'pathFilters') &&
+        !Object.prototype.hasOwnProperty.call(input, 'excludeGlobs')
+      ) {
         throw new CodebaseManagementError(
           'CODEBASE_SELECTION_EMPTY',
           400,
           'selection_patch_empty',
         );
       }
+      const expectedSelectionPolicyRevision = optionalRevision(input.expectedSelectionPolicyRevision);
       const existing = this.requireCodebase(id, scope);
-      const pathFilters = hasPathFilters
-        ? resolveSourcePathPatterns(input.pathFilters, 'pathFilters')
-        : existing.pathFilters;
-      const excludeGlobs = hasExcludeGlobs
-        ? resolveSourcePathPatterns(input.excludeGlobs, 'excludeGlobs')
-        : existing.excludeGlobs;
-      const canonicalSelection = buildSourceSelectionIR({
-        kind: existing.kind,
-        includePrefixes: pathFilters,
-        excludeGlobs,
-      });
-      const canonicalPathFilters = canonicalSelection.includePrefixes.length > 0
-        ? canonicalSelection.includePrefixes
-        : undefined;
-      const canonicalExcludeGlobs = canonicalSelection.excludeGlobs.length > 0
-        ? canonicalSelection.excludeGlobs
-        : undefined;
-      if (
-        codebaseRegistrationRequirements(existing.kind).pathFilters &&
-        !canonicalPathFilters?.length
-      ) {
-        throw new CodebaseManagementError(
-          'CODEBASE_SELECTION_INVALID',
-          400,
-          '`pathFilters` is required for kernel_source codebases',
-        );
+      const currentRevision = existing.selectionPolicyRevision ?? 1;
+      if (expectedSelectionPolicyRevision !== undefined && expectedSelectionPolicyRevision !== currentRevision) {
+        throw new CodebaseStateError('selection_policy_stale');
       }
-      const codebase = this.registry.updateSelectionPolicy(id, scope, {
-        ...(hasPathFilters ? {pathFilters: canonicalPathFilters} : {}),
-        ...(hasExcludeGlobs ? {excludeGlobs: canonicalExcludeGlobs} : {}),
-      });
-      if (codebase.selectionPolicyRevision === existing.selectionPolicyRevision) {
+      const selection = proposedSelection(existing, input);
+      const current = sourceSelectionForRef(existing);
+      if (
+        sameList(selection.pathFilters, current.includePrefixes) &&
+        sameList(selection.excludeGlobs, current.excludeGlobs)
+      ) {
         throw new CodebaseManagementError(
           'CODEBASE_SELECTION_UNCHANGED',
           400,
           'selection_policy_unchanged',
         );
       }
-      return projectRegisteredCodebase(
-        await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
-      );
+      // Re-enumerated at save, never trusted from an earlier preview: only a
+      // complete enumeration proves the selection admits nothing.
+      const enumerated = await this.enumerateSelection(existing, selection);
+      if (enumerated.status === 'complete' && enumerated.preview?.acceptedFileCount === 0) {
+        throw new CodebaseManagementError(
+          'CODEBASE_SELECTION_EMPTY_MATCH',
+          400,
+          'effective_source_selection_empty',
+        );
+      }
+      // The revision this save previewed and enumerated, checked in the write.
+      const codebase = this.registry.updateSelectionPolicy(id, scope, selection, {
+        expectedSelectionPolicyRevision: currentRevision,
+      });
+      return this.project(await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase);
     } catch (error) {
       throw this.toError(error, 'selection');
     }
+  }
+
+  private async enumerateSelection(
+    existing: CodebaseRef,
+    selection: {pathFilters: string[]; excludeGlobs: string[]},
+  ): Promise<CodebaseSelectionPreview> {
+    const selectionPolicyRevision = existing.selectionPolicyRevision ?? 1;
+    const root = this.evaluateRoot(existing);
+    if (!root.available) return {status: 'unavailable', selectionPolicyRevision, unavailableReason: root.reason};
+    let result: EnumerationResult;
+    try {
+      // The enumerator revalidates the root it walks; it walks the one checked above.
+      result = await this.sourceEnumerator.enumerate({
+        rootRealpath: root.rootRealpath,
+        policy: buildSourceSelectionIR({
+          kind: existing.kind,
+          includePrefixes: selection.pathFilters,
+          excludeGlobs: selection.excludeGlobs,
+          maxFileBytes: this.gate.getSourceReadLimits().maxFileBytes,
+        }),
+        gate: this.gate,
+        expectedRootRealpath: root.rootRealpath,
+        ...channelAuthorizedRoots(existing),
+      });
+    } catch {
+      return {status: 'unavailable', selectionPolicyRevision, unavailableReason: 'enumeration_failed'};
+    }
+    return {
+      status: result.enumerationComplete ? 'complete' : 'partial',
+      selectionPolicyRevision,
+      preview: projectCodebaseEnumeration(result),
+    };
   }
 
   async setConsent(
@@ -504,6 +628,16 @@ export class CodebaseManagementService {
   ): Promise<RegisteredCodebase> {
     return this.runManagedMutation(id, scope, () =>
       this.registry.authorizeAvailableExtensions(id, scope, actor));
+  }
+
+  async authorizeContent(
+    id: string,
+    actor: string,
+    disclosureToken: string,
+    scope: CodebaseScope,
+  ): Promise<RegisteredCodebase> {
+    return this.runManagedMutation(id, scope, () =>
+      this.registry.authorizeContent(id, scope, actor, disclosureToken));
   }
 
   async authorizeCurrentSelection(
@@ -535,9 +669,7 @@ export class CodebaseManagementService {
         candidateId,
         this.now(),
       );
-      return projectRegisteredCodebase(
-        await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
-      );
+      return this.project(await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase);
     } catch (error) {
       if (isCodebaseStateError(error, 'pending_generation_expired')) {
         try {
@@ -634,13 +766,16 @@ export class CodebaseManagementService {
   ): Promise<RegisteredCodebase> {
     try {
       const codebase = operation();
-      return projectRegisteredCodebase(
-        await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
-      );
+      return this.project(await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase);
     } catch (error) {
       throw this.toError(error, 'mutation');
     }
   }
+
+  private evaluateRoot(ref: CodebaseRef): CodebaseRootCapability {
+    return evaluateCodebaseRoot(ref, {gate: this.gate});
+  }
+
 
   private requireCodebase(id: string, scope: CodebaseScope): CodebaseRef {
     const ref = this.registry.get(id, scope);

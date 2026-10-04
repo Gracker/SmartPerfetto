@@ -22,6 +22,9 @@
 const SOURCE_ACCESS_REFUSAL_ACTIONS: ReadonlyMap<string, string> = new Map([
   ['source_reference_limit_exceeded', 'continue_with_existing_source_evidence'],
   ['no_send_to_provider_consent', 'continue_without_this_codebase'],
+  // The provider-send grant no longer matches the codebase's selection, so it
+  // authorizes none of it until the owner renews it.
+  ['provider_grant_scope_stale', 'continue_without_this_codebase'],
   // The requested file is not admitted by the codebase's source policy.
   ['source_path_outside_registered_filters', 'locate_path_with_search_codebase'],
   ['source_path_excluded', 'locate_path_with_search_codebase'],

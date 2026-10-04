@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {effectiveAnalysisSelection} from '../effectiveAnalysisSelection';
 import type {AnalysisContextSelection} from '../resolvedAnalysisContext';
 
 /**
@@ -30,16 +31,18 @@ export const NO_PRIVATE_CONTEXT: Readonly<AnalysisPrivateContextV1> = Object.fre
 });
 
 /**
- * Decided from the run's authorized selection, never from its output. Only an
- * explicit 'off' excludes a selected codebase: an unset mode normalizes to
- * metadata_only, which still gives the run source tools.
+ * Decided from the run's authorized selection, never from its output, read
+ * through `effectiveAnalysisSelection`: only an explicit 'off' excludes a
+ * selected codebase, since an unset mode means metadata_only, which still
+ * gives the run source tools.
  */
 export function resolveAnalysisPrivateContext(
   selection: AnalysisContextSelection,
 ): AnalysisPrivateContextV1 {
+  const effective = effectiveAnalysisSelection(selection);
   return {
-    codebase: selection.codeAwareMode !== 'off' && Boolean(selection.codebaseIds?.length),
-    knowledge: Boolean(selection.knowledgeSourceIds?.length),
+    codebase: Boolean(effective.codebaseIds),
+    knowledge: Boolean(effective.knowledgeSourceIds),
   };
 }
 

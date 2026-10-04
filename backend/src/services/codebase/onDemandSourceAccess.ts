@@ -9,13 +9,13 @@ import * as path from 'path';
 import {StringDecoder} from 'string_decoder';
 
 import type {CodeAwareMode} from './codeAwareFeature';
+import type {CodebaseRef, CodebaseRegistry, CodebaseScope} from './codebaseRegistry';
 import {
-  channelAuthorizedRoots,
-  codebaseRootAvailable,
-  type CodebaseRef,
-  type CodebaseRegistry,
-  type CodebaseScope,
-} from './codebaseRegistry';
+  evaluateCodebaseModeAuthorization,
+  evaluateCodebaseRoot,
+  type CodebaseRootEvaluationOptions,
+  type CodebaseRootUnavailableReason,
+} from './codebaseCapability';
 import {
   PathSecurityGate,
   readAcceptedTextFileSync,
@@ -229,23 +229,41 @@ export interface OnDemandSourceAccessServiceOptions {
 type RegisteredCodebase = CodebaseRef & {lifecycleState?: 'active' | 'deleting'};
 type SearchWaiter = {grant: () => void; timeout?: NodeJS.Timeout};
 
+/** The closed code a source tool throws for each unreadable-root reason. */
+const ROOT_UNAVAILABLE_TOOL_CODES = {
+  deleting: 'codebase_deleting',
+  outside_allowlist: 'root_outside_allowlist',
+  root_identity_changed: 'codebase_root_realpath_drift',
+  root_missing: 'codebase_root_unavailable',
+  root_not_directory: 'codebase_root_unavailable',
+  unreadable: 'codebase_root_unavailable',
+} as const satisfies Record<CodebaseRootUnavailableReason, string>;
+
+/**
+ * The root layer as a source tool reports it (`evaluateCodebaseRoot`), as a
+ * path-free closed code.
+ */
 export function codebaseOnDemandAvailability(
-  ref: Pick<CodebaseRef, 'lifecycleState' | 'rootRealpath'>,
-): {available: true} | {available: false; reason: 'codebase_deleting' | 'codebase_root_unavailable'} {
-  if (ref.lifecycleState === 'deleting') {
-    return {available: false, reason: 'codebase_deleting'};
-  }
-  return codebaseRootAvailable(ref)
-    ? {available: true}
-    : {available: false, reason: 'codebase_root_unavailable'};
+  ref: Pick<CodebaseRef, 'lifecycleState' | 'rootRealpath' | 'rootAuthorization'>,
+  options: CodebaseRootEvaluationOptions = {},
+): {available: true; rootRealpath: string} |
+  {available: false; reason: typeof ROOT_UNAVAILABLE_TOOL_CODES[CodebaseRootUnavailableReason]} {
+  const root = evaluateCodebaseRoot(ref, options);
+  return root.available ? root : {available: false, reason: ROOT_UNAVAILABLE_TOOL_CODES[root.reason]};
 }
 
-/** provider_send reaches a codebase's source only with that codebase's own consent. */
-export function onDemandConsentFailure(
-  ref: Pick<CodebaseRef, 'consent'>,
+/**
+ * The mode layer as a source tool reports it (`evaluateCodebaseModeAuthorization`):
+ * provider_send without this codebase's consent, or with a grant that no
+ * longer matches its selection, reaches none of its source.
+ */
+export function onDemandModeRefusal(
+  ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'consent'>,
   mode: CodeAwareMode,
-): 'no_send_to_provider_consent' | undefined {
-  return mode === 'provider_send' && !ref.consent.sendToProvider ? 'no_send_to_provider_consent' : undefined;
+): 'no_send_to_provider_consent' | 'provider_grant_scope_stale' | undefined {
+  const authorization = evaluateCodebaseModeAuthorization(ref, mode);
+  if (authorization.authorized) return undefined;
+  return authorization.reason === 'consent_required' ? 'no_send_to_provider_consent' : 'provider_grant_scope_stale';
 }
 
 /** One id per returned range: a window and a hit that start on the same line differ. */
@@ -542,21 +560,13 @@ export class OnDemandSourceAccessService {
     waiter.grant();
   }
 
-  private resolveRef(codebaseId: string, scope: CodebaseScope): RegisteredCodebase {
+  /** The codebase and its canonical root, checked once (`evaluateCodebaseRoot`). */
+  private resolveRef(codebaseId: string, scope: CodebaseScope): {ref: RegisteredCodebase; root: string} {
     const ref = this.registry.get(codebaseId, scope);
     if (!ref) throw new Error('codebase_not_found');
-    const availability = codebaseOnDemandAvailability(ref);
+    const availability = codebaseOnDemandAvailability(ref, {gate: this.gate, platform: this.platform});
     if (!availability.available) throw new Error(availability.reason);
-    return ref;
-  }
-
-  private async validateRoot(ref: RegisteredCodebase): Promise<string> {
-    const root = await this.gate.validateRoot(
-      ref.rootRealpath,
-      channelAuthorizedRoots(ref),
-    );
-    assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
-    return root;
+    return {ref, root: availability.rootRealpath};
   }
 
   /**
@@ -634,13 +644,12 @@ export class OnDemandSourceAccessService {
    * the call covers, and the provider grant. A refusal searched nothing.
    */
   private async prepareScopedLookup(
-    ref: RegisteredCodebase,
+    {ref, root}: {ref: RegisteredCodebase; root: string},
     mode: CodeAwareMode,
     pathPrefix: string | undefined,
   ): Promise<{refusal: string} | ScopedLookup> {
-    const consentFailure = onDemandConsentFailure(ref, mode);
+    const consentFailure = onDemandModeRefusal(ref, mode);
     if (consentFailure) return {refusal: consentFailure};
-    const root = await this.validateRoot(ref);
     const policy = sourceSelectionForRef(ref, this.searchMaxFileBytes);
     const prefixes = this.sourceSearchPrefixes(ref, pathPrefix, policy);
     // An empty complete result under such a prefix would read as source absence.
@@ -688,8 +697,9 @@ export class OnDemandSourceAccessService {
     }
     const fileGlob = input.fileGlob === undefined ? undefined : compileSourcePathGlob(input.fileGlob, this.platform);
     const caseSensitive = input.caseSensitive ?? smartCaseSensitive(input.query);
-    const ref = this.resolveRef(input.codebaseId, input.scope);
-    const prepared = await this.prepareScopedLookup(ref, input.mode, input.pathPrefix);
+    const resolved = this.resolveRef(input.codebaseId, input.scope);
+    const {ref} = resolved;
+    const prepared = await this.prepareScopedLookup(resolved, input.mode, input.pathPrefix);
     if ('refusal' in prepared) {
       return {success: false, codebaseId: input.codebaseId, matches: [], truncated: false,
         unsupportedReason: prepared.refusal};
@@ -885,8 +895,9 @@ export class OnDemandSourceAccessService {
       const matches = lineMatcher(input.pattern, caseSensitive);
       matchesPath = relativePath => matches(wholePath ? relativePath : path.posix.basename(relativePath));
     }
-    const ref = this.resolveRef(input.codebaseId, input.scope);
-    const prepared = await this.prepareScopedLookup(ref, input.mode, input.pathPrefix);
+    const resolved = this.resolveRef(input.codebaseId, input.scope);
+    const {ref} = resolved;
+    const prepared = await this.prepareScopedLookup(resolved, input.mode, input.pathPrefix);
     if ('refusal' in prepared) {
       return {success: false, codebaseId: input.codebaseId, files: [], truncated: false,
         unsupportedReason: prepared.refusal};
@@ -984,11 +995,10 @@ export class OnDemandSourceAccessService {
       truncated: false,
       unsupportedReason,
     });
-    const ref = this.resolveRef(input.codebaseId, input.scope);
+    const {ref, root} = this.resolveRef(input.codebaseId, input.scope);
     if (input.mode === 'off') return failed('code_aware_disabled_for_session');
-    const consentFailure = onDemandConsentFailure(ref, input.mode);
+    const consentFailure = onDemandModeRefusal(ref, input.mode);
     if (consentFailure) return failed(consentFailure);
-    const root = await this.validateRoot(ref);
     const admission = this.gate.admitRelativeSourcePath(
       input.filePath,
       {enforceConfiguredExcludes: false},
@@ -1028,7 +1038,7 @@ export class OnDemandSourceAccessService {
     } catch (error) {
       const code = error instanceof Error ? error.message : '';
       if (code === 'source_file_not_found') {
-        const candidates = await this.missingFileCandidates(ref, input.mode, filePath);
+        const candidates = await this.missingFileCandidates({ref, root}, input.mode, filePath);
         return failed(code, candidates.length > 0 ? {candidates} : {});
       }
       return failed(isClosedCode(code) ? code : 'source_read_failed');
@@ -1076,13 +1086,14 @@ export class OnDemandSourceAccessService {
    * slot is free, within a short deadline, and never outside the provider grant.
    */
   private async missingFileCandidates(
-    ref: RegisteredCodebase,
+    resolved: {ref: RegisteredCodebase; root: string},
     mode: CodeAwareMode,
     filePath: string,
   ): Promise<string[]> {
+    const {ref} = resolved;
     if (!this.tryAcquireSearchSlot()) return [];
     try {
-      const prepared = await this.prepareScopedLookup(ref, mode, undefined);
+      const prepared = await this.prepareScopedLookup(resolved, mode, undefined);
       if ('refusal' in prepared) return [];
       const name = path.posix.basename(filePath);
       const wanted = name.toLowerCase();

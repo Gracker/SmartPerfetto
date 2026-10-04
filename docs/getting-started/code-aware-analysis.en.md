@@ -48,12 +48,14 @@ Registered codebases and knowledge sources are never exposed to a session automa
 | No IDs | Normal trace-only path; `fast` can remain lightweight |
 | `--codebase-id` only | Authorizes `metadata_only` by default and preserves the requested Fast/Auto/Full mode |
 | `--code-aware metadata_only` + codebase ID | The model may locate source on demand, receiving only `CodeRef` metadata |
-| `--code-aware provider_send` + codebase ID | Bounded search and redacted text reads are available within the authorized scope intersection |
-| `--code-aware off` + codebase ID | Invalid input; the source selection is rejected instead of silently ignored |
+| `--code-aware provider_send` + codebase ID | Bounded search and redacted text reads are available within the authorized scope; a grant that no longer matches the selection refuses the start (`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`) until it is granted again |
+| `--code-aware off` + codebase ID | Treated as no source selection: the IDs are dropped and authorize no source access |
 | `--knowledge-source-id` only | Uses the authorized private external RAG source and preserves the requested budget mode |
 | Codebase ID + knowledge source ID | Uses the selected authorized source and knowledge contexts, each within its access boundary |
 
-A source codebase needs only a live registered root. Missing active generations or indexed chunks do not block analysis. External knowledge remains RAG-backed and still requires consent plus a completed index. If the registered source path is moved, unmounted, or deleted, Web/CLI returns `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`; restore that path or register it again.
+A source codebase needs only a live registered root. Missing active generations or indexed chunks do not block analysis. External knowledge remains RAG-backed and still requires consent plus a completed index. If the registered source path is moved, unmounted, deleted, or leaves the allowlist, Web/CLI returns `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE` with a fixed reason per codebase (such as `root_missing` or `outside_allowlist`); restore that path or register it again.
+
+When you edit a codebase's selection, a provable narrowing narrows the send grant with it; any other change revokes the grant until you grant it again: `smp codebase authorize-content` shows the exact scope and a token, and `--confirm <token>` grants it (`authorizeContent: true` with `contentDisclosureToken` on the consent API). An actual consent or scope change restarts an ongoing conversation; repeating the same consent, editing an unselected codebase, or reindexing elsewhere does not interrupt it.
 
 Analysis budget and evidence permission are independent: selecting source, reference traces, or private RAG does not automatically promote the requested `fast|auto` mode to `full`. `provider_send` requires two independent authorizations: `--send-to-provider` at codebase registration and `--code-aware provider_send` for the current run.
 

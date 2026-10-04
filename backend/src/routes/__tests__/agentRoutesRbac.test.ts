@@ -968,6 +968,8 @@ describe('agent route RBAC', () => {
     const root = path.join(tmpDir, 'app');
     await fs.mkdir(root);
     const rootRealpath = await fs.realpath(root);
+    const previousRoots = process.env.SMARTPERFETTO_CODEBASE_ROOTS;
+    process.env.SMARTPERFETTO_CODEBASE_ROOTS = tmpDir;
     try {
       delete process.env.SMARTPERFETTO_API_KEY;
       delete process.env.SMARTPERFETTO_CODE_AWARE;
@@ -1005,8 +1007,33 @@ describe('agent route RBAC', () => {
       }));
       expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
     } finally {
+      if (previousRoots === undefined) delete process.env.SMARTPERFETTO_CODEBASE_ROOTS;
+      else process.env.SMARTPERFETTO_CODEBASE_ROOTS = previousRoots;
       await fs.rm(tmpDir, {recursive: true, force: true});
     }
+  });
+
+  it('reads codebase ids under an explicit off as no codebases: no 400, no registry read, no permission', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    delete process.env.SMARTPERFETTO_CODE_AWARE;
+    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    const get = jest.fn();
+    jest.spyOn(defaultCodebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue({get} as any);
+    const traceService = {getOrLoadTrace: jest.fn()};
+    setTraceProcessorServiceForTests(traceService as any);
+
+    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read')
+      .send({
+        traceId: 'trace-a',
+        query: 'analyze without source',
+        options: {analysisMode: 'fast', codeAwareMode: 'off', codebaseIds: ['codebase-hidden']},
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual(expect.objectContaining({success: false, code: 'TRACE_NOT_UPLOADED'}));
+    expect(get).not.toHaveBeenCalled();
   });
 
   it('rejects a selected codebase when its registered root is unavailable', async () => {
@@ -1285,9 +1312,9 @@ describe('agent route RBAC', () => {
   it.each([
     [
       'source mode',
-      {codeAwareMode: 'off', codebaseIds: ['source-a']},
-      'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE',
-      '选择源码库时，源码感知模式必须是 metadata_only 或 provider_send',
+      {codeAwareMode: 'send_everything', codebaseIds: ['source-a']},
+      'UNSUPPORTED_CODE_AWARE_MODE',
+      '源码感知模式必须是 off、metadata_only 或 provider_send',
     ],
     [
       'RAG allowlist',

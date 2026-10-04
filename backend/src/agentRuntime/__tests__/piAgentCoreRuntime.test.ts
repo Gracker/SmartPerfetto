@@ -3921,7 +3921,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(context).toBeDefined();
       expect(context.deadlineMs).toBeGreaterThanOrEqual(beforeRun + 1000);
       expect(context.deadlineMs).toBeLessThan(Date.now() + 1000);
-      expect(context.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
     } finally { context.dispose(); }
   });
 
@@ -3940,7 +3940,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(context).toBeDefined();
     try {
       expect(context.runId).toBe('pi-cancelled-run');
-      expect(context.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
       expect(context.hasSemanticTransport).toBe(false);
       expect(context.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
         context: {kind: 'track_event', eventId: 7, ts: 42},

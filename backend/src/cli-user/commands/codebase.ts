@@ -22,7 +22,7 @@ import {
 } from '../../services/codebase/codebaseManagementService';
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
-import {buildSourceSelectionIR} from '../../services/codebase/sourceSelectionPolicy';
+import {buildSourceSelectionIR, sourceExtensionsForKind} from '../../services/codebase/sourceSelectionPolicy';
 import {AppSourceIngester} from '../../services/rag/appSourceIngester';
 import {AospSourceIngester} from '../../services/rag/aospSourceIngester';
 import {KernelSourceIngester} from '../../services/rag/kernelSourceIngester';
@@ -218,6 +218,10 @@ export async function runCodebaseSelectionCommand(args: CodebaseCommandBaseArgs 
   codebaseId: string;
   pathFilters?: string[];
   excludeGlobs?: string[];
+  /** Enumerate what the replacement would admit and print it without saving. */
+  preview?: boolean;
+  /** The `selectionPolicyRevision` a preview printed; a save against a newer one is refused. */
+  expectedRevision?: number;
 }): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const format = args.format ?? 'table';
@@ -225,7 +229,18 @@ export async function runCodebaseSelectionCommand(args: CodebaseCommandBaseArgs 
   const input = {
     ...(args.pathFilters !== undefined ? {pathFilters: args.pathFilters} : {}),
     ...(args.excludeGlobs !== undefined ? {excludeGlobs: args.excludeGlobs} : {}),
+    ...(args.expectedRevision !== undefined ? {expectedSelectionPolicyRevision: args.expectedRevision} : {}),
   };
+  if (args.preview) {
+    try {
+      const selectionPreview = await withConsoleLogToStderr(true,
+        async () => service.previewSelection(args.codebaseId, input, scope));
+      console.log(JSON.stringify({success: true, selectionPreview}, null, 2));
+      return selectionPreview.status === 'unavailable' ? 2 : 0;
+    } catch (error) {
+      return writeManagementError('json', error);
+    }
+  }
   try {
     const codebase = await withConsoleLogToStderr(
       format === 'json',
@@ -285,24 +300,33 @@ export async function runCodebaseConsentCommand(args: CodebaseCommandBaseArgs & 
   }
 }
 
-export async function runCodebaseAuthorizeExtensionsCommand(args: CodebaseCommandBaseArgs & {
-  codebaseId: string;
-}): Promise<number> {
+/**
+ * What a provider-send grant means, as the Web source activation discloses it
+ * (`source_analysis_disclosure.ts`).
+ */
+const SOURCE_SEND_DISCLOSURE =
+  'Relevant source snippets are sent to the configured AI service, including an internal company service. ' +
+  'Analysis results and quoted source may be saved in local history and exported reports; retention by the ' +
+  'AI service depends on its configuration and policy. Source searches, reads, and additional model analysis ' +
+  'make the workflow longer and increase analysis time.';
+
+/** Runs one consent action and reports the resulting codebase. */
+async function runConsentAction(
+  args: CodebaseCommandBaseArgs & {codebaseId: string},
+  action: string,
+  apply: (service: CodebaseManagementService, scope: Required<CodebaseScope>) => Promise<RegisteredCodebase>,
+  describe: (codebase: RegisteredCodebase) => string,
+): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const format = args.format ?? 'table';
   const {service, scope} = managementContext(args);
   try {
-    const codebase = await withConsoleLogToStderr(
-      format === 'json',
-      async () => service.authorizeAvailableExtensions(args.codebaseId, scope.userId, scope),
-    );
+    const codebase = await withConsoleLogToStderr(format === 'json', async () => apply(service, scope));
     if (format === 'json') {
-      console.log(JSON.stringify({success: true, action: 'authorized_extensions', codebase}, null, 2));
+      console.log(JSON.stringify({success: true, action, codebase}, null, 2));
     } else {
-      console.log(`Available source extensions authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
-      if (codebase.reindexRequired) {
-        console.log(`Reindex required: ${codebase.reindexRequired}.`);
-      }
+      console.log(describe(codebase));
+      if (codebase.reindexRequired) console.log(`Reindex required: ${codebase.reindexRequired}.`);
     }
     return 0;
   } catch (error) {
@@ -310,26 +334,68 @@ export async function runCodebaseAuthorizeExtensionsCommand(args: CodebaseComman
   }
 }
 
-export async function runCodebaseAuthorizeSelectionCommand(args: CodebaseCommandBaseArgs & {
+/**
+ * Without `confirm`, prints exactly what the combined grant would cover (the
+ * relative include prefixes, exclusions and languages, what sending means)
+ * and the token that grants exactly that, and grants nothing. With the token,
+ * grants it; a selection edit or a newly available language since the
+ * disclosure refuses the grant.
+ */
+export async function runCodebaseAuthorizeContentCommand(args: CodebaseCommandBaseArgs & {
   codebaseId: string;
+  confirm?: string;
 }): Promise<number> {
+  if (args.confirm) {
+    const token = args.confirm;
+    return runConsentAction(args, 'authorized_content',
+      (service, scope) => service.authorizeContent(args.codebaseId, scope.userId, token, scope),
+      codebase => `Source text may be sent for the disclosed selection and languages of ${codebase.codebaseId} ` +
+        `(grant revision ${codebase.grantRevision}); it is sent only in provider_send sessions.`);
+  }
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const format = args.format ?? 'table';
   const {service, scope} = managementContext(args);
   try {
-    const codebase = await withConsoleLogToStderr(
-      format === 'json',
-      async () => service.authorizeCurrentSelection(args.codebaseId, scope.userId, scope),
-    );
+    const codebase = await withConsoleLogToStderr(format === 'json', async () => service.get(args.codebaseId, scope));
+    const disclosure = {
+      codebaseId: codebase.codebaseId,
+      includePrefixes: codebase.pathFilters ?? [],
+      excludeGlobs: codebase.excludeGlobs ?? [],
+      languages: [...sourceExtensionsForKind(codebase.kind)].sort(),
+      notice: SOURCE_SEND_DISCLOSURE,
+      contentDisclosureToken: codebase.contentDisclosureToken,
+    };
     if (format === 'json') {
-      console.log(JSON.stringify({success: true, action: 'authorized_selection', codebase}, null, 2));
+      console.log(JSON.stringify({success: true, action: 'disclosure', granted: false, disclosure}, null, 2));
     } else {
-      console.log(`Current source selection authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
+      console.log(`Granting provider-send for ${codebase.codebaseId} would cover:`);
+      console.log(`  include: ${disclosure.includePrefixes.length ? disclosure.includePrefixes.join(', ') : '(whole registered root)'}`);
+      console.log(`  exclude: ${disclosure.excludeGlobs.length ? disclosure.excludeGlobs.join(', ') : '(none)'}`);
+      console.log(`  languages: ${disclosure.languages.join(' ')}`);
+      console.log(disclosure.notice);
+      console.log('Nothing was granted. To grant exactly this scope, run:');
+      console.log(`  smp codebase authorize-content ${codebase.codebaseId} --confirm ${disclosure.contentDisclosureToken}`);
     }
     return 0;
   } catch (error) {
     return writeManagementError(format, error);
   }
+}
+
+export async function runCodebaseAuthorizeExtensionsCommand(args: CodebaseCommandBaseArgs & {
+  codebaseId: string;
+}): Promise<number> {
+  return runConsentAction(args, 'authorized_extensions',
+    (service, scope) => service.authorizeAvailableExtensions(args.codebaseId, scope.userId, scope),
+    codebase => `Available source extensions authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
+}
+
+export async function runCodebaseAuthorizeSelectionCommand(args: CodebaseCommandBaseArgs & {
+  codebaseId: string;
+}): Promise<number> {
+  return runConsentAction(args, 'authorized_selection',
+    (service, scope) => service.authorizeCurrentSelection(args.codebaseId, scope.userId, scope),
+    codebase => `Current source selection authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
 }
 
 export async function runCodebasePendingCommand(args: CodebaseCommandBaseArgs & {

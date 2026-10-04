@@ -18,6 +18,14 @@ sessions, and cross-session learning must not add either domain implicitly.
 | None | Present | Exact `knowledgeSourceIds` and active generations; external prose is background, never current-trace evidence |
 | Present | Present | Both allowlists apply and validate independently, then share the private projection and report boundary |
 
+The selection is resolved once, after session or conversation options are
+merged (`effectiveAnalysisSelection`): an explicit `codeAwareMode: off` drops
+`codebaseIds` (hidden ids authorize nothing and no longer return 400); ids
+without a mode mean `metadata_only`; without ids the mode means nothing and is
+`off`; knowledge sources are independent of the source mode. Authorization,
+registry reads, the fingerprint, the memory partition, run options and session
+persistence all consume that one result.
+
 `fast` / `full` selects a budget independently from authorization for source,
 external RAG, or a reference trace. It neither silently removes those capabilities
 nor requires a full report. The five native runtimes use tools on demand under
@@ -33,10 +41,13 @@ the real run unchanged instead of relying on implicit UI-global state.
 
 Before session creation, each run resolves registrations in the current scope
 and builds a non-secret authorization fingerprint. It covers
-tenant/workspace/user, source mode, sorted allowlists, active/index generations,
-content fingerprints and revision provenance, and license/consent state. Tool
-and run boundaries recompute it. Deletion, reindex, consent revocation, or scope
-change therefore fails the old session closed and requires a fresh session.
+tenant/workspace/user, the effective source mode, sorted allowlists, selection
+scope and grant revisions, lifecycle, and license/consent state; it holds no
+index generation (each index tool checks the generation its run pinned). Tool
+and run boundaries recompute it. Deleting a selected source, an actual consent
+or scope change, or a scope change therefore fails the old session closed and
+requires a fresh session. Repeating the same consent, an equivalent selection,
+or a change to an unselected source leaves it unchanged.
 
 Private analysis permits only bounded in-process multi-turn continuity; it does
 not restore a persisted provider conversation. Raw queries, tool arguments, and

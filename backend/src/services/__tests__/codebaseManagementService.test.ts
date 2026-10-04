@@ -72,26 +72,42 @@ function registerApp(displayName = 'App') {
 describe('live on-demand source availability', () => {
   it('keeps an unindexed registered root available and refreshes a removed root', async () => {
     const ref = registerApp();
-    expect(await service.onDemandAvailable(ref.codebaseId, DEFAULT_SCOPE)).toBe(true);
+    expect(service.rootCapability(ref.codebaseId, DEFAULT_SCOPE)).toEqual({available: true, rootRealpath: ref.rootRealpath});
     expect((await service.list(DEFAULT_SCOPE))[0]).toMatchObject({rootAvailable: true, activeIndexState: 'none'});
+    expect((await service.list(DEFAULT_SCOPE))[0]).not.toHaveProperty('unavailableReason');
     fs.renameSync(ref.rootRealpath, `${ref.rootRealpath}-moved`);
-    expect(await service.onDemandAvailable(ref.codebaseId, DEFAULT_SCOPE)).toBe(false);
-    expect((await service.list(DEFAULT_SCOPE))[0].rootAvailable).toBe(false);
+    expect(service.rootCapability(ref.codebaseId, DEFAULT_SCOPE)).toEqual({available: false, reason: 'root_missing'});
+    expect((await service.list(DEFAULT_SCOPE))[0]).toMatchObject({rootAvailable: false, unavailableReason: 'root_missing'});
+    expect(service.get(ref.codebaseId, DEFAULT_SCOPE)).toMatchObject({rootAvailable: false, unavailableReason: 'root_missing'});
   });
 
   it('does not treat an existing root outside the current allowlist as readable', async () => {
     const ref = registerApp();
     const restricted = new CodebaseManagementService({registry, store, gate: new PathSecurityGate({allowlistRoots: []})});
-    expect(await restricted.onDemandAvailable(ref.codebaseId, DEFAULT_SCOPE)).toBe(false);
-    expect((await restricted.list(DEFAULT_SCOPE))[0].rootAvailable).toBe(false);
-    expect(await service.onDemandAvailable(ref.codebaseId, OTHER_SCOPE)).toBe(false);
+    expect(restricted.rootCapability(ref.codebaseId, DEFAULT_SCOPE))
+      .toEqual({available: false, reason: 'outside_allowlist'});
+    expect((await restricted.list(DEFAULT_SCOPE))[0]).toMatchObject({rootAvailable: false, unavailableReason: 'outside_allowlist'});
+    expect(restricted.get(ref.codebaseId, DEFAULT_SCOPE)).toMatchObject({rootAvailable: false, unavailableReason: 'outside_allowlist'});
+    expect(service.rootCapability(ref.codebaseId, OTHER_SCOPE).available).toBe(false);
   });
 
   it('does not turn a root replaced by a regular file into an available source', async () => {
     const ref = registerApp();
     fs.renameSync(ref.rootRealpath, `${ref.rootRealpath}-moved`);
     fs.writeFileSync(ref.rootRealpath, 'not a directory');
-    expect(await service.onDemandAvailable(ref.codebaseId, DEFAULT_SCOPE)).toBe(false);
+    expect(service.rootCapability(ref.codebaseId, DEFAULT_SCOPE))
+      .toEqual({available: false, reason: 'root_not_directory'});
+  });
+
+  it('reports a root replaced by a link elsewhere as an identity change, never the new path', async () => {
+    const ref = registerApp();
+    const elsewhere = path.join(tmpDir, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    fs.renameSync(ref.rootRealpath, `${ref.rootRealpath}-moved`);
+    fs.symlinkSync(elsewhere, ref.rootRealpath);
+    expect(service.rootCapability(ref.codebaseId, DEFAULT_SCOPE))
+      .toEqual({available: false, reason: 'root_identity_changed'});
+    expect(JSON.stringify(await service.list(DEFAULT_SCOPE))).not.toContain(tmpDir);
   });
 });
 
@@ -272,6 +288,8 @@ describe('CodebaseManagementService', () => {
 
   it('shares selection, consent, and authorization state without private roots', async () => {
     const ref = registerApp('Managed App');
+    fs.mkdirSync(path.join(ref.rootRealpath, 'src'));
+    fs.writeFileSync(path.join(ref.rootRealpath, 'src', 'Feature.kt'), 'class Feature\n');
 
     const selected = await service.updateSelection(ref.codebaseId, {
       pathFilters: ['src'],
@@ -280,10 +298,14 @@ describe('CodebaseManagementService', () => {
     expect(selected).toMatchObject({
       selectionPolicyRevision: 2,
       activeIndexState: 'none',
-      reindexRequired: 'selection_scope_changed',
       pathFilters: ['src'],
       excludeGlobs: ['**/generated/**'],
+      // Narrowed inside the whole-root grant: the grant follows the selection.
+      eligibleForSendToProvider: true,
+      providerGrantScopeCurrent: true,
     });
+    // Never indexed, so nothing asks for a reindex.
+    expect(selected).not.toHaveProperty('reindexRequired');
     expect(JSON.stringify(selected)).not.toContain(tmpDir);
     expect(JSON.stringify(selected)).not.toContain('rootAuthorization');
 
@@ -308,6 +330,116 @@ describe('CodebaseManagementService', () => {
       DEFAULT_SCOPE,
     );
     expect(current.providerGrantScopeCurrent).toBe(true);
+
+    // Widening beyond the grant revokes consent; one action grants it again.
+    const widened = await service.updateSelection(ref.codebaseId, {pathFilters: []}, DEFAULT_SCOPE);
+    expect(widened).toMatchObject({eligibleForSendToProvider: false});
+    // The token is part of every management view, list and detail alike.
+    const listed = (await service.list(DEFAULT_SCOPE)).find(item => item.codebaseId === ref.codebaseId)!;
+    expect(listed.contentDisclosureToken).toBe(widened.contentDisclosureToken);
+    const content = await service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId,
+      widened.contentDisclosureToken, DEFAULT_SCOPE);
+    expect(content).toMatchObject({eligibleForSendToProvider: true, providerGrantScopeCurrent: true,
+      availableNotConsentedExtensions: []});
+    const repeated = await service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId,
+      content.contentDisclosureToken, DEFAULT_SCOPE);
+    expect(repeated.consent).toEqual(content.consent);
+    // A disclosure from before a selection edit grants nothing.
+    const edited = await service.updateSelection(ref.codebaseId, {excludeGlobs: ['**/fixtures/**']}, DEFAULT_SCOPE);
+    await expect(service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId, content.contentDisclosureToken,
+      DEFAULT_SCOPE)).rejects.toMatchObject({code: 'CODEBASE_CONSENT_DISCLOSURE_STALE', status: 409});
+    expect(service.get(ref.codebaseId, DEFAULT_SCOPE).consent).toEqual(edited.consent);
+  });
+
+  it('previews a selection edit exactly as a save would enumerate it, without the root', async () => {
+    const ref = registerApp('Preview App');
+    fs.mkdirSync(path.join(ref.rootRealpath, 'feature'));
+    fs.writeFileSync(path.join(ref.rootRealpath, 'feature', 'A.kt'), 'class A\n');
+    fs.writeFileSync(path.join(ref.rootRealpath, 'feature', 'notes.txt'), 'not source\n');
+
+    const preview = await service.previewSelection(ref.codebaseId, {pathFilters: ['feature']}, DEFAULT_SCOPE);
+    expect(preview).toMatchObject({status: 'complete', selectionPolicyRevision: 1,
+      preview: {acceptedFileCount: 1, acceptedFiles: [{relativePath: 'feature/A.kt'}]}});
+    expect(JSON.stringify(preview)).not.toContain(tmpDir);
+    // Absent fields keep the registered value: the whole root here.
+    expect(await service.previewSelection(ref.codebaseId, {}, DEFAULT_SCOPE))
+      .toMatchObject({status: 'complete', preview: {acceptedFileCount: 2}});
+
+    const empty = await service.previewSelection(ref.codebaseId, {excludeGlobs: ['**/*.kt']}, DEFAULT_SCOPE);
+    expect(empty).toMatchObject({status: 'complete', preview: {acceptedFileCount: 0}});
+    await expect(service.updateSelection(ref.codebaseId, {excludeGlobs: ['**/*.kt']}, DEFAULT_SCOPE))
+      .rejects.toMatchObject({code: 'CODEBASE_SELECTION_EMPTY_MATCH', status: 400});
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.selectionPolicyRevision).toBe(1);
+
+    const restricted = new CodebaseManagementService({registry, store, gate: new PathSecurityGate({allowlistRoots: []})});
+    expect(await restricted.previewSelection(ref.codebaseId, {pathFilters: ['feature']}, DEFAULT_SCOPE))
+      .toEqual({status: 'unavailable', selectionPolicyRevision: 1, unavailableReason: 'outside_allowlist'});
+  });
+
+  it('reports a traversal that stopped early as a partial lower bound and lets it save', async () => {
+    const ref = registerApp('Partial App');
+    const partial = new CodebaseManagementService({
+      registry, store, gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      sourceEnumerator: {enumerate: async () => ({
+        backend: 'node-walk', fidelity: 'degraded', files: [], enumerationComplete: false, deterministic: false,
+        incompleteReason: 'time_budget', skipped: [], skippedCount: 0,
+      })},
+    });
+    expect(await partial.previewSelection(ref.codebaseId, {pathFilters: ['big']}, DEFAULT_SCOPE))
+      .toMatchObject({status: 'partial', preview: {acceptedFileCount: 0, truncationReason: 'time_budget'}});
+    await expect(partial.updateSelection(ref.codebaseId, {pathFilters: ['big']}, DEFAULT_SCOPE))
+      .resolves.toMatchObject({pathFilters: ['big'], selectionPolicyRevision: 2});
+  });
+
+  it('refuses a save whose revision a concurrent edit replaced while it was enumerating', async () => {
+    const ref = registerApp('Race App');
+    let enumerationStarted!: () => void;
+    const started = new Promise<void>(resolve => {enumerationStarted = resolve;});
+    let finishEnumeration!: () => void;
+    const finished = new Promise<void>(resolve => {finishEnumeration = resolve;});
+    const racing = new CodebaseManagementService({
+      registry, store, gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      sourceEnumerator: {enumerate: async () => {
+        enumerationStarted();
+        await finished;
+        return {backend: 'node-walk', fidelity: 'exact', files: [{relativePath: 'Main.kt', sizeBytes: 11}],
+          enumerationComplete: true, deterministic: true, skipped: [], skippedCount: 0};
+      }},
+    });
+
+    // The precheck passes (revision 1); the edit lands while the save enumerates.
+    const save = racing.updateSelection(ref.codebaseId, {excludeGlobs: ['**/generated/**'],
+      expectedSelectionPolicyRevision: 1}, DEFAULT_SCOPE);
+    await started;
+    const concurrent = registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['src']});
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, concurrent.indexGeneration, {
+      candidateGenerationId: 'candidate-concurrent',
+      coverage: {...coverage(concurrent.selectionPolicyRevision)},
+      contentFingerprint: 'concurrent-fingerprint',
+      chunkCount: 1,
+      createdAt: Date.now(),
+    });
+    const concurrentState = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+    finishEnumeration();
+
+    await expect(save).rejects.toMatchObject({code: 'CODEBASE_SELECTION_STALE', status: 409});
+    const after = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+    expect(after).toEqual(concurrentState);
+    expect(after).toMatchObject({pathFilters: ['src'], selectionPolicyRevision: 2,
+      pendingGeneration: {candidateGenerationId: 'candidate-concurrent'}});
+    expect(after.excludeGlobs).toBeUndefined();
+  });
+
+  it('refuses a save against a selection revision edited since the caller read it', async () => {
+    const ref = registerApp('Revision App');
+    await service.updateSelection(ref.codebaseId, {excludeGlobs: ['**/generated/**']}, DEFAULT_SCOPE);
+
+    await expect(service.updateSelection(ref.codebaseId, {excludeGlobs: [], expectedSelectionPolicyRevision: 1},
+      DEFAULT_SCOPE)).rejects.toMatchObject({code: 'CODEBASE_SELECTION_STALE', status: 409});
+    await expect(service.updateSelection(ref.codebaseId, {excludeGlobs: [], expectedSelectionPolicyRevision: 'two'},
+      DEFAULT_SCOPE)).rejects.toMatchObject({code: 'CODEBASE_SELECTION_INVALID', status: 400});
+    await expect(service.updateSelection(ref.codebaseId, {excludeGlobs: [], expectedSelectionPolicyRevision: 2},
+      DEFAULT_SCOPE)).resolves.toMatchObject({selectionPolicyRevision: 3});
   });
 
   it('keeps unsafe preview and selection validation transport-neutral and stable', async () => {

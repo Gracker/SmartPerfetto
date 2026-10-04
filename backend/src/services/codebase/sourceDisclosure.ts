@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {createHash} from 'crypto';
 import * as path from 'path';
 
 import type {CodebaseConsentGrant, CodebaseRef} from './codebaseRegistry';
@@ -92,4 +93,34 @@ export function availableNotConsentedExtensions(
   return sourceExtensionsForKind(ref.kind)
     .filter(extension => !granted.has(extension))
     .sort();
+}
+
+/** Whether a grant names exactly a canonical path selection: the one grant-equality test. */
+export function grantMatchesSelection(
+  grant: Pick<CodebaseConsentGrant, 'includePrefixes' | 'excludeGlobs'>,
+  selection: Pick<SourceSelectionIR, 'includePrefixes' | 'excludeGlobs'>,
+): boolean {
+  const same = (left: readonly string[], right: readonly string[]): boolean =>
+    left.length === right.length && left.every((value, index) => value === right[index]);
+  return same(grant.includePrefixes, selection.includePrefixes) &&
+    same(grant.excludeGlobs, selection.excludeGlobs);
+}
+
+/**
+ * What the combined consent action discloses: the selection revision and a
+ * digest of the include prefixes, exclusions and languages a grant would
+ * cover. A caller grants with the token of the disclosure it showed; a
+ * selection edit or a language a newer version adds changes it.
+ */
+export function contentDisclosureToken(
+  ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'selectionPolicyRevision'>,
+): string {
+  const selection = sourceSelectionForRef(ref);
+  const digest = createHash('sha256').update(JSON.stringify({
+    kind: ref.kind,
+    includePrefixes: selection.includePrefixes,
+    excludeGlobs: selection.excludeGlobs,
+    extensions: [...sourceExtensionsForKind(ref.kind)].sort(),
+  })).digest('hex').slice(0, 16);
+  return `cd1:${ref.selectionPolicyRevision ?? 1}:${digest}`;
 }

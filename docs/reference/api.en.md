@@ -906,18 +906,19 @@ Base path: `/api/rag`
 | `POST` | `/knowledge/:sourceId/reindex` | Build the local SQLite FTS index in batches and atomically activate the new generation; needs the rights acknowledgement, not provider-send consent |
 | `POST` | `/knowledge/:sourceId/search` | Owner test search `{query, topK?}`: titles, relative paths, heading paths, line ranges and snippets |
 | `DELETE` | `/knowledge/:sourceId` | Write a tombstone that revokes access at once, then delete the index files (chunks for a Wiki) and the registration; a failure can be retried |
-| `GET` | `/codebases` | List registered codebases |
+| `GET` | `/codebases` | List registered codebases; an unavailable `rootAvailable` carries a fixed `unavailableReason` |
 | `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
 | `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization |
 | `POST` | `/codebases/preview` | Preview source files and enumeration coverage with the same selection policy used by indexing |
 | `POST` | `/codebases/register` | Register a local codebase |
-| `GET` | `/codebases/:id` | Codebase detail |
+| `GET` | `/codebases/:id` | Codebase detail (including `rootAvailable` / `unavailableReason`) |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
 | `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
 | `POST` | `/codebases/:id/reindex` | Reindex; the request body retains a bounded `pathPrefix` compatibility input, while CLI `reindex` has no such option |
 | `GET` | `/codebases/:id/audit` | Index audit |
-| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: set `sendToProvider`, authorize new languages with `authorizeAvailableExtensions: true`, or authorize the current path scope with `authorizeCurrentSelection: true` |
-| `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs, immediately revoke the old active generation, and require reindexing |
+| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: `authorizeContent: true` with `contentDisclosureToken` grants the disclosed current scope and every language at once (recommended); set `sendToProvider`; authorize only new languages with `authorizeAvailableExtensions: true`; or authorize only the current path scope with `authorizeCurrentSelection: true` |
+| `POST` | `/codebases/:id/selection/preview` | Without saving, enumerate the files new include prefixes / exclude globs would admit, exactly as a save enumerates them (`complete` / `partial` / `unavailable`); relative paths only |
+| `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs; the save enumerates again and a complete enumeration with no match is `400 CODEBASE_SELECTION_EMPTY_MATCH`; an optional `expectedSelectionPolicyRevision` is a CAS (`409 CODEBASE_SELECTION_STALE`) |
 | `POST` | `/codebases/:id/pending/accept` | Echo `candidateGenerationId`, `selectionPolicyRevision`, and `grantRevision` to explicitly accept a truncated candidate generation with CAS |
 | `POST` | `/codebases/:id/pending/reject` | Echo `candidateGenerationId` to reject a candidate generation with CAS and remove its staged chunks |
 | `DELETE` | `/codebases/:id` | Retire the registration and remove every staged, active, and superseded generation in the current scope |
@@ -932,16 +933,62 @@ consent grant admit its relative path. A successful AOSP/OEM preview preserves
 enumeration when optional manifest metadata is unavailable and reports
 `manifestUnavailableReason`; `codebase_root_realpath_drift` still blocks. Codebase
 summaries expose `providerGrantScopeCurrent` to show whether the current path
-filters/exclude globs match the frozen grant. Any selection change sets
-`reindexRequired=selection_scope_changed`; the legacy
-`selection_scope_narrowed` value remains readable. Extensions added by a later version are
-reported as `availableNotConsentedExtensions` until the consent endpoint is
-called explicitly with `authorizeAvailableExtensions: true`. That operation
-requires existing provider-send consent and never turns source-text sending on
-for the user. With an active index it sets `reindexRequired` to
-`provider_language_scope_expanded`. Selection changes also never expand consent
-automatically; `authorizeCurrentSelection: true` copies only the current include
-prefixes and exclude globs into the grant and preserves language consent.
+filters/exclude globs match the frozen grant.
+
+Any selection change advances `indexGeneration`, so an index build started
+under the old scope (a first build included) cannot activate; only a codebase
+that had an active generation gets `reindexRequired=selection_scope_changed`,
+and one never indexed no longer shows it. The legacy `selection_scope_narrowed`
+value remains readable.
+
+A provider-send grant covers exactly the scope it was given for and must match
+the current selection; there is no partial grant. On a selection change, a new
+scope provably inside the grant (every new include prefix under a granted one or
+a whole-root grant, no noise directory the grant left out, every granted
+exclusion still excluded) narrows the grant with it (`grantRevision`
+increments); anything else, including a change that cannot be proven narrower,
+revokes provider-send consent until it is granted again. Languages are not part
+of a path selection, so the grant keeps its languages.
+
+`authorizeContent: true` is the one combined consent action: it turns
+provider-send on and sets the grant to the current include prefixes/exclude
+globs and every language of the kind. The request must carry the
+`contentDisclosureToken` the caller disclosed (list and detail both return it;
+it binds the selection revision and a digest of the scope and languages):
+without it the answer is `400 CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, and after a
+selection edit or a language a newer version adds it is
+`409 CODEBASE_CONSENT_DISCLOSURE_STALE` with the grant unchanged. Repeating it
+while the grant already says exactly that changes neither the consent hash nor
+`grantRevision`, so it never interrupts a session; repeating the current
+`sendToProvider` value, or `authorizeAvailableExtensions` on a grant that already
+covers every language, is idempotent too. The two narrow actions keep their own boundaries and
+preconditions and are never widened into the combined one: extensions added by
+a later version are reported as `availableNotConsentedExtensions` until
+`authorizeAvailableExtensions: true` adds only them, and
+`authorizeCurrentSelection: true` copies only the current path scope and keeps
+the grant's languages. Both require existing provider-send consent and never
+turn source-text sending on. With an active index a language expansion sets
+`reindexRequired` to `provider_language_scope_expanded`.
+
+`selection/preview` shares the save's enumeration: a `complete` count is exact
+(a complete zero proves the selection empty); a `partial` count is a lower bound
+from a traversal that stopped early; `unavailable` carries `unavailableReason`
+(a root reason or `enumeration_failed`). Only a complete zero refuses a save.
+
+`rootAvailable` and `unavailableReason` come from one root check that answers
+the first failing reason in a fixed order: `deleting`, `root_missing`,
+`root_identity_changed`, `root_not_directory`, `outside_allowlist`,
+`unreadable`. The analysis start gate, a run's capabilities and every on-demand
+read use the same check. Starting an analysis (`/analyze`, `/sessions/:id/runs`,
+conversations) with a selected codebase that fails it answers 409 with
+`codebases: [{codebaseId, reason}]`, one fixed reason per failing codebase, root
+reasons before mode reasons: `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE` when any
+root fails, otherwise `ANALYSIS_CONTEXT_CODEBASE_NOT_CONSENTED`
+(`consent_required`) or `ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`
+(`consent_scope_stale`, a `provider_send` grant that no longer matches the
+selection). Missing codebases stay 404 and missing `codebase:read` stays 403. An
+on-demand source call against a stale grant is refused with
+`provider_grant_scope_stale`.
 
 `register` still accepts `commitHash` as registration compatibility metadata
 for legacy callers, but it is not authoritative index provenance. Every
