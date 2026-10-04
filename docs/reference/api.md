@@ -767,14 +767,8 @@ Base path: `/api/rag`
 | `GET` | `/chunks/:chunkId` | 读取 chunk |
 | `DELETE` | `/chunks/:chunkId` | 删除 chunk |
 | `POST` | `/search` | 搜索代码/知识 chunk |
-| `POST` | `/android-internals/preview` | 预览允许路径内的 Wiki 文章清单，不返回正文 |
-| `GET` | `/android-internals/sources` | 列出当前 scope 的外部 Wiki 注册项 |
-| `POST` | `/android-internals/sources` | 以独立权利确认和 provider 同意注册 Wiki |
-| `POST` | `/android-internals/sources/:id/reindex` | 分阶段重建并原子激活索引 generation |
-| `GET` | `/android-internals/sources/:id/audit` | 返回每篇文章的 metadata-only Skill disposition |
-| `PATCH` | `/android-internals/sources/:id/consent` | 显式授予或撤销 provider-send 同意（旧路径；任何类型的知识源都适用，与 `/knowledge/:sourceId/consent` 同一实现） |
-| `DELETE` | `/android-internals/sources/:id/index` | 停用 generation 并清除该 source 的全部 chunk |
-| `GET` | `/knowledge` | 列出当前 scope 的全部外部知识源（含 `kind`、`description`、`documentCount`、`hasActiveIndex`），不返回根路径 |
+| `*` | `/android-internals/*` | 已移除，返回 410（`migration.fallback` 为 `/api/rag/knowledge`）；改用下面的 `/knowledge/*`。旧版 Wiki 连接器注册的知识源仍由 `GET /knowledge` 列出（`kind: android_internals_wiki`，已停用、不可选），可用 `DELETE /knowledge/:sourceId` 删除 |
+| `GET` | `/knowledge` | 列出当前 scope 的全部外部知识源（含 `kind`、`description`、`documentCount`、`hasActiveIndex`、`retired`），不返回根路径；`retired: true` 的旧版 Wiki 记录只能撤销同意或删除，授予同意返回 409 `KNOWLEDGE_SOURCE_RETIRED` |
 | `POST` | `/knowledge/preview` | 预览文档集合（`rootPath`，可选 `directorySelectionId`）：可入库篇数、section/chunk 数与按原因分类的跳过数；0 篇返回 400 `KNOWLEDGE_COLLECTION_EMPTY` |
 | `POST` | `/knowledge/register` | 注册文档集合（`rootPath`、`rightsAcknowledged: true`，可选 `directorySelectionId`、`displayName`、`description` ≤280 字、`attribution`、`license`、`sendToProvider`）；省略 `sendToProvider` 保留既有同意 |
 | `PATCH` | `/knowledge/:sourceId/consent` | `{sendToProvider: boolean}` 显式授予或撤销该知识源的 provider-send 同意，返回 `/knowledge` 列表同款投影 |
@@ -894,11 +888,8 @@ reindex 与删除，但 `GET /codebases`、`GET /codebases/:id` 和
 这些知识库路由与 codebase 的 preview/register/reindex 只返回固定错误码与 `requestId`，
 服务端日志只记录 errno、syscall 与源码栈帧，不记录路径。
 
-Android Internals 接口的路径 allowlist、CC 权利确认、可撤销同意、请求级
-`options.knowledgeSourceIds` 和 Docker mount 流程见
-[Android Internals 外部知识库](../getting-started/android-internals-knowledge.md)。这类私有
-chunk 对普通 `/chunks/:id` 和 `/search` 完全不可见；仅专用 source/audit 管理接口返回
-当前 scope 内的无正文审计元数据。
+Android Internals Wiki 以文档知识库接入，见
+[把 Android Internals Wiki 作为知识库使用](../getting-started/android-internals-knowledge.md)。
 
 源码/RAG 的请求组合、授权指纹和私有输出边界见
 [私有分析上下文架构](../architecture/private-analysis-context.md)。

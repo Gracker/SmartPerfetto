@@ -42,7 +42,7 @@ export function createRunMcpServer(input: RunMcpServerInput) {
       setFragmentRegistry: () => undefined, setRunManifestAttributionSink: () => undefined,
     },
     analysisNotes: [], hypotheses: [], uncertaintyFlags: [], watchdogWarning: {current: null},
-    analysisPlan: {current: null}, artifactStore: new ArtifactStore(), androidInternalsPackStore: null,
+    analysisPlan: {current: null}, artifactStore: new ArtifactStore(),
     codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds,
     knowledgeSourceIds: input.knowledgeSourceIds,

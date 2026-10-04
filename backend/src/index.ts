@@ -87,9 +87,6 @@ import { resetPortPool } from './services/portPool';
 import { failInterruptedAnalysisRunsOnStartup } from './services/analysisRunStore';
 import { caseEvolutionStartupWarnings } from './services/caseEvolution/caseEvolutionConfig';
 import { startPatternMemoryAutoConfirmSweep } from './agentv3/analysisPatternMemory';
-import {
-  startAndroidInternalsPackUpdateWorker,
-} from './services/androidInternalsPack/knowledgePackUpdateWorker';
 import {startApplicationUpdateWorker} from './services/applicationUpdate/applicationUpdateWorker';
 import {installRuntimeShutdownControl} from './services/runtimeShutdownControl';
 import {createActiveHttpResponseTracker} from './services/activeHttpResponseTracker';
@@ -373,8 +370,6 @@ for (const warning of caseEvolutionStartupWarnings()) {
 
 let patternMemorySweepHandle:
   ReturnType<typeof startPatternMemoryAutoConfirmSweep> | undefined;
-let androidInternalsPackUpdateWorkerHandle:
-  ReturnType<typeof startAndroidInternalsPackUpdateWorker> | undefined;
 let applicationUpdateWorkerHandle:
   ReturnType<typeof startApplicationUpdateWorker> | undefined;
 let traceProcessorLeaseSupervisorHandle:
@@ -399,9 +394,6 @@ function gracefulShutdown(signal: string) {
 
   console.log('🧠 Stopping pattern memory sweep...');
   patternMemorySweepHandle?.stop();
-
-  console.log('📚 Stopping Android Internals Knowledge Pack updater...');
-  androidInternalsPackUpdateWorkerHandle?.stop();
 
   console.log('⬆️ Stopping application update checker...');
   applicationUpdateWorkerHandle?.stop();
@@ -482,8 +474,6 @@ async function startBackend(): Promise<void> {
   }
 
   patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
-  androidInternalsPackUpdateWorkerHandle =
-    startAndroidInternalsPackUpdateWorker();
   applicationUpdateWorkerHandle = startApplicationUpdateWorker();
   traceProcessorLeaseSupervisorHandle =
     startTraceProcessorLeaseSupervisor();

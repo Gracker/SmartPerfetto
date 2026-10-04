@@ -147,8 +147,11 @@ export function authorizeAnalysisContext(
 
   if (knowledgeSourceIds.length > 0) {
     const registry = input.knowledgeRegistry ?? getDefaultExternalKnowledgeSourceRegistry();
-    const sources = knowledgeSourceIds.map(sourceId => registry.get(sourceId, input.scope));
-    if (sources.some(source => !source)) {
+    // The registry's own access rule decides; an active index is what a run additionally needs.
+    const decisions = knowledgeSourceIds.map(sourceId =>
+      registry.evaluateAccess(sourceId, input.scope, knowledgeSourceIds));
+    const refused = (reason: string) => decisions.some(decision => !decision.allowed && decision.reason === reason);
+    if (refused('source_not_found_or_out_of_scope')) {
       return denied(404, {
         code: 'ANALYSIS_CONTEXT_SOURCE_NOT_FOUND',
         error: localize(
@@ -158,10 +161,17 @@ export function authorizeAnalysisContext(
         ),
       });
     }
-    if (sources.some(source =>
-      !source?.rightsAcknowledged ||
-      !source.sendToProvider ||
-      !externalKnowledgeSourceHasActiveIndex(source))) {
+    if (refused('knowledge_kind_retired')) {
+      return denied(409, {
+        code: 'ANALYSIS_CONTEXT_SOURCE_RETIRED',
+        error: localize(
+          input.outputLanguage,
+          '所选知识源来自已停用的旧版 Wiki 连接器；请删除它，并把 Wiki 的 src/ 目录重新注册为文档知识库',
+          "A selected knowledge source comes from the retired legacy Wiki connector; delete it and register the Wiki's src/ folder as a document knowledge base",
+        ),
+      });
+    }
+    if (decisions.some(decision => !decision.allowed || !externalKnowledgeSourceHasActiveIndex(decision.source))) {
       return denied(409, {
         code: 'ANALYSIS_CONTEXT_SOURCE_UNAVAILABLE',
         error: localize(

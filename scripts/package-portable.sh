@@ -1249,9 +1249,6 @@ fi
 echo "Checking frontend prebuild..."
 node "$PROJECT_ROOT/scripts/check-frontend-prebuild.cjs"
 
-echo "Verifying bundled Android Internals Knowledge Pack..."
-(cd "$PROJECT_ROOT/backend" && npm run knowledge-pack:fetch)
-
 echo "Building backend runtime from a clean output directory..."
 (cd "$PROJECT_ROOT/backend" && npm run build)
 echo "Checking backend runtime..."

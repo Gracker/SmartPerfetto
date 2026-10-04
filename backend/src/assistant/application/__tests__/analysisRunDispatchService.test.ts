@@ -14,7 +14,6 @@ import * as processor from '../../../services/traceProcessorService';
 import * as lease from '../../../services/analysisRunTraceProcessorLease';
 import * as manifests from '../../../services/selfEvolution/runManifestLifecycle';
 import {SessionPersistenceService} from '../../../services/sessionPersistenceService';
-import {getDefaultAndroidInternalsPackResolver} from '../../../services/androidInternalsPack/androidInternalsPackResolver';
 import {assertAiFeatureEnabled} from '../../../services/aiCapabilityPolicy';
 import type {SessionLogger} from '../../../services/sessionLogger';
 import {resolveAnalysisPrivateContext} from '../../../services/security/analysisPrivateContext';
@@ -98,7 +97,6 @@ beforeEach(() => {
     getOrLoadTrace: jest.fn(async () => ({id: 'trace'})),
   } as unknown as processor.TraceProcessorService);
   jest.spyOn(SessionPersistenceService, 'getInstance').mockReturnValue({} as SessionPersistenceService);
-  jest.spyOn(getDefaultAndroidInternalsPackResolver(), 'resolve').mockReturnValue(undefined);
   jest.spyOn(manifests, 'withRunManifestLifecycle').mockImplementation((_lifecycle, execute) => execute());
   jest.spyOn(console, 'error').mockImplementation(() => {});
 });

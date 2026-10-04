@@ -9,7 +9,7 @@ import * as path from 'path';
 import {afterEach, describe, expect, it} from '@jest/globals';
 
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
-import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
+import {ExternalKnowledgeSourceRegistry, type RegisterExternalKnowledgeSourceInput} from '../externalKnowledgeSourceRegistry';
 import {IndexGenerationPins} from '../indexGenerationPins';
 import {RagStore} from '../ragStore';
 import {readAnalysisContextRegistrations} from '../resolvedAnalysisContext';
@@ -44,8 +44,9 @@ async function fixture() {
   }
   const common = {rootRealpath: root, revision: 'r', contentFingerprint: 'f', dirty: false,
     rightsAcknowledged: true, sendToProvider: true, consentedBy: scope.userId, scope};
+  // A record of the retired Wiki connector: only stored state carries the kind, hence the cast.
   const wikiId = knowledgeRegistry.register({...common, kind: 'android_internals_wiki', displayName: 'Wiki',
-    license: 'internal'}).sourceId;
+    license: 'internal'} as unknown as RegisterExternalKnowledgeSourceInput).sourceId;
   const collectionId = knowledgeRegistry.register({...common, kind: 'document_collection', displayName: 'Docs'}).sourceId;
   const activateKnowledge = (sourceId: string, generation: string) => knowledgeRegistry.withIngestLease(sourceId, scope,
     lease => lease.activateGeneration({generation, revision: 'r', contentFingerprint: generation, dirty: false,
@@ -60,8 +61,6 @@ async function fixture() {
   const registrations = () => readAnalysisContextRegistrations(selection, scope, {codebaseRegistry, knowledgeRegistry});
   const pins = IndexGenerationPins.capture(registrations(), {
     countCodebaseGenerationChunks: (codebaseId, generation) => store.countCodebaseGenerationChunks(codebaseId, generation, scope),
-    countKnowledgeSourceGenerationChunks: (sourceId, generation) =>
-      store.countKnowledgeSourceGenerationChunks(sourceId, generation, scope),
     documentCollectionServes: (_sourceId, generation) => files.has(generation),
   });
   return {pins, registrations, store, indexedId: indexed.codebaseId, unindexedId: unindexed.codebaseId, wikiId,
@@ -100,21 +99,6 @@ describe('IndexGenerationPins', () => {
     store.removeCodebaseChunkIds(indexedId, ['code-10'], scope);
     expect(pins.refusal('codebase', [indexedId], registrations())?.payload).toEqual({success: false,
       action_required: 'use_search_codebase', codebaseId: indexedId, unsupportedReason: 'codebase_index_generation_changed'});
-  });
-
-  it('refuses a Wiki on any change, since its rebuild deletes the older generation', async () => {
-    const {pins, registrations, wikiId, activateKnowledge} = await fixture();
-    expect(pins.refusal('wiki', [wikiId], registrations())).toBeUndefined();
-    await activateKnowledge(wikiId, 'wiki_gen_2');
-    expect(pins.refusal('wiki', [wikiId], registrations())).toEqual({isError: false, payload: {success: false,
-      action_required: 'continue_without_private_knowledge', unsupportedReason: 'knowledge_index_generation_changed'}});
-  });
-
-  it('refuses a Wiki whose stored chunks were lost while the registry still names its generation', async () => {
-    const {pins, registrations, store, wikiId} = await fixture();
-    store.removeKnowledgeSourceChunks(wikiId, scope);
-    expect(pins.refusal('wiki', [wikiId], registrations())?.payload)
-      .toMatchObject({unsupportedReason: 'knowledge_index_generation_changed'});
   });
 
   it('serves a document collection while its pinned generation serves, whatever is active', async () => {

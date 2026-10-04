@@ -33,9 +33,6 @@ function printTextReport(report: DoctorReport): void {
   console.log(`home       ${report.cliHome}`);
   console.log(`runtime    ${report.runtime.kind} (${report.runtime.source})`);
   console.log(`ai         ${report.aiPolicy.aiEnabled ? 'enabled' : 'disabled'} (${report.aiPolicy.source})`);
-  console.log(`aiw pack   ${report.knowledgePack.availability}${report.knowledgePack.active
-    ? ` (${report.knowledgePack.active.contentVersion}, ${report.knowledgePack.active.origin})`
-    : ''}`);
   if (report.aiPolicy.disabledReason) {
     console.log(`           ${report.aiPolicy.disabledReason}`);
   }

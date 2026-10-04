@@ -32,7 +32,7 @@ function fixture(sceneCoverageRegistry?: SceneCoverageRegistrySnapshot) {
   let open = true;
   const server = (sceneRunContext?: SceneRunContext) => createClaudeMcpServer({
     ...scope, traceProcessorService, skillExecutor, artifactStore, sceneRunContext,
-    canInvokeTool: () => open, androidInternalsPackStore: null,
+    canInvokeTool: () => open,
   });
   const activate = () => activateSceneRuntime(options, {...scope, deadlineMs: Date.now() + 60000,
     artifactStore, traceProcessorService, sceneCoverageRegistry, signal: controller.signal, canInvokeTool: () => open});

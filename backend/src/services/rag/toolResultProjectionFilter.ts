@@ -7,10 +7,7 @@ import {decodeRuntimeToolResult, readRuntimeToolResultFacts, runtimeToolReceiptM
 import {isSourceAccessRefusalAction} from '../codebase/sourceAccessRefusal';
 import {isKnowledgeRefusalAction, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape} from '../knowledge/knowledgeTools';
 
-import type {
-  BackgroundKnowledgeReference,
-  RagSourceKind,
-} from '../../types/sparkContracts';
+import type {RagSourceKind} from '../../types/sparkContracts';
 import {sourceLookupOutcome, type CodeLookupOutcome} from '../codebase/codeLookupLedger';
 import type {SanitizedRagResult} from './lookupResponseFilter';
 
@@ -54,7 +51,6 @@ export interface ProjectedPayload {
   }>;
   outcome: CodeLookupOutcome;
   legacyPath: boolean;
-  backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
   /** A closed source-access refusal action; narration reads it to say "refused", not "failed". */
   action_required?: string;
   /** Present only as `false`: the search did not cover every admitted file. */
@@ -294,9 +290,6 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
     chunkRefs,
     outcome,
     legacyPath: result.legacyPath,
-    ...(result.backgroundKnowledgeReferences
-      ? {backgroundKnowledgeReferences: result.backgroundKnowledgeReferences.map(item => ({...item}))}
-      : {}),
   };
 }
 

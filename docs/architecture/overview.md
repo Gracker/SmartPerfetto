@@ -72,7 +72,7 @@ backend 与 frontend。
 | Self-Evolution | `backend/src/services/selfEvolution/`、`backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest、反馈投影、eval/replay、提案门控、overlay、对账、RBAC 控制面 |
 | Agent 外部反馈 | `backend/src/services/externalIssueReporting/`、`agentExternalIssueRoutes.ts`、AI Assistant plugin | 源 run 信号、固定 provider triage、严格校验、去标识 GitHub 草稿；不自动提交 |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | 本地路径注册、无索引按需搜索/读取、可选源码索引、符号解析、隐私投影与 patch 三态校验 |
-| External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | 外部 Wiki 全库审计、版本/指纹、分代索引、许可/同意/scope 和私有内容投影 |
+| Document knowledge bases | `backend/src/services/knowledge/`, `externalKnowledgeSourceRegistry.ts` | 文档目录注册/预览、FTS5/BM25 分代索引、`search_knowledge`/`read_knowledge_section`、`kb:` 引用与 `knowledge_use@1`、许可/同意/scope、退役 kind 与私有内容投影 |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | trace 加载、RPC 管理、SQL 查询 |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML 报告生成 |
 | Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalSemanticAssessment.ts`, `evidence/`, `verifier/`, `analysisResultSnapshotPipeline.ts` | 原命题、原始采集、有限证明与最多一次语义审核，统一 finalization 后投影/持久化 |
@@ -175,12 +175,10 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> execute_sql -> trace_processor_shell
       -> invoke_skill -> SkillExecutor -> SQL / DataEnvelope
       -> lookup_knowledge / lookup_sql_schema / fetch_artifact
-      -> lookup_blog_knowledge(source=android_internals_pack)
-         -> 会话固定签名 Pack 版本 -> FTS5/BM25 -> 脱敏、预算控制的背景引用
-      -> lookup_blog_knowledge(source=android_internals_wiki)
-         -> request source allowlist + live registry consent/scope check
-         -> active RAG generation -> bounded attributed background context
-      （两种 Android Internals 来源都不是当前 trace 证据）
+      -> search_knowledge / read_knowledge_section（仅当本轮选了文档知识库）
+         -> 逐轮选择 + live registry consent/scope check -> 固定索引代次
+         -> FTS5/BM25 -> kref- 引用、kb: 出处、独立 token 池
+      （知识库是背景，不是当前 trace 证据；Android Internals Wiki 也以文档知识库接入）
       -> selected codebase + live authorization + on-demand source access
          -> 每库能力（search / read_body / index / graph）+ 本轮深度与额度 -> source_authorization
          -> search_codebase / read_codebase_file / find_codebase_files（live root，不要求索引）

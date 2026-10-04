@@ -15,14 +15,6 @@ import type {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {credentialContextForPath, redactSecrets} from '../security/secretPatterns';
 import {registerCodeAwareLookupForEcho} from '../security/codeAwareOutputRegistry';
 import type {ExternalKnowledgeScope} from '../externalKnowledgeSourceRegistry';
-import type {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
-import {
-  backgroundKnowledgeReferenceFromChunk,
-} from '../androidInternalsPack/backgroundKnowledgeReferences';
-import type {BackgroundKnowledgeReference} from '../../types/sparkContracts';
-import {
-  registerSessionBackgroundKnowledgeReferences,
-} from '../androidInternalsPack/sessionBackgroundKnowledgeRegistry';
 
 export interface SanitizedRagHit {
   chunkId: string;
@@ -69,25 +61,21 @@ export interface SanitizedRagResult {
   retrievedAt: number;
   unsupportedReason?: string;
   legacyPath: boolean;
-  backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
 }
 
 export interface FilterContext {
-  toolName: 'lookup_app_source' | 'lookup_kernel_source' | 'lookup_aosp_source' |
-    'lookup_oem_sdk' | 'lookup_blog_knowledge';
+  toolName: 'lookup_app_source' | 'lookup_kernel_source' | 'lookup_aosp_source' | 'lookup_oem_sdk';
   turn: number;
   codebaseRegistry?: CodebaseRegistry;
   /** Audit trail and patch authority; records every delivery and refusal. */
   ledger?: CodeLookupLedger;
   /**
-   * The run's delivered-token pools: knowledge-base text (the Knowledge Pack
-   * and private knowledge) and user codebase source are budgeted apart.
+   * The run's delivered-token pools: knowledge text and user codebase source
+   * are budgeted apart.
    */
   budget?: Pick<SourceBudget, 'sourceTokens' | 'knowledgeTokens'>;
   allowProviderSend?: boolean;
   sessionId?: string;
-  externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
-  knowledgeSourceIds?: string[];
   knowledgeScope?: ExternalKnowledgeScope;
   /** Runs after source authorization/redaction, before body delivery or patch-ledger grants. */
   admitSourceHit?: (hit: SanitizedRagHit) => boolean;
@@ -115,11 +103,6 @@ function isLegacyChunk(chunk: RagChunk): boolean {
 function isExternalPrivateKnowledgeChunk(chunk: RagChunk): boolean {
   return chunk.kind === 'android_internals_wiki' &&
     chunk.registryOrigin === 'external_knowledge_registry';
-}
-
-function isBuiltInKnowledgePackChunk(chunk: RagChunk): boolean {
-  return chunk.kind === 'android_internals_pack' &&
-    chunk.registryOrigin === 'built_in_knowledge_pack';
 }
 
 function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
@@ -158,25 +141,6 @@ function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
   };
 }
 
-function privateKnowledgeMetadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
-  const sourceStatus = chunk.sourceStatus?.toLowerCase();
-  const sourceConfidence = chunk.sourceConfidence?.toLowerCase();
-  const verifiedAt = Number.isFinite(chunk.verifiedAt) && Number(chunk.verifiedAt) >= 0
-    ? Number(chunk.verifiedAt)
-    : undefined;
-  return {
-    kind: chunk.kind,
-    ...(chunk.knowledgeSourceId ? {knowledgeSourceId: chunk.knowledgeSourceId} : {}),
-    ...(chunk.sourceGeneration ? {sourceGeneration: chunk.sourceGeneration} : {}),
-    ...((sourceStatus === 'finalized' || sourceStatus === 'verified') ? {sourceStatus} : {}),
-    ...((sourceConfidence === 'low' || sourceConfidence === 'medium' || sourceConfidence === 'high')
-      ? {sourceConfidence}
-      : {}),
-    ...(verifiedAt !== undefined ? {verifiedAt} : {}),
-    ...(chunk.contentFingerprint ? {contentFingerprint: chunk.contentFingerprint} : {}),
-  };
-}
-
 function estimateTokens(chunk: RagChunk, snippet: string): number {
   return chunk.tokenCount ?? Math.max(1, estimateTextTokens(snippet));
 }
@@ -186,7 +150,6 @@ export async function filterRagLookup(
   ctx: FilterContext,
 ): Promise<SanitizedRagResult> {
   const hits: SanitizedRagHit[] = [];
-  const backgroundKnowledgeReferences: BackgroundKnowledgeReference[] = [];
   let allLegacy = true;
 
   for (const hit of raw.results) {
@@ -233,139 +196,12 @@ export async function filterRagLookup(
     }
 
     allLegacy = false;
-    if (isBuiltInKnowledgePackChunk(chunk)) {
-      const redacted = redactSecrets(chunk.snippet);
-      const tokens = estimateTokens(chunk, redacted.text);
-      if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: metadata(chunk),
-          unsupportedReason: 'budget_exceeded',
-          redactedCount: redacted.redactedCount,
-        });
-        ctx.ledger?.record({
-          turn: ctx.turn,
-          ts: Date.now(),
-          toolName: ctx.toolName,
-          chunkIds: [],
-          consentApplied: false,
-          tokensSpent: 0,
-          outcome: 'budget_exceeded',
-          legacyPath: false,
-        });
-        continue;
-      }
-      const reference = backgroundKnowledgeReferenceFromChunk(chunk);
-      if (!reference) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: metadata(chunk),
-          unsupportedReason: 'invalid_background_knowledge_reference',
-          redactedCount: redacted.redactedCount,
-        });
-        continue;
-      }
-      backgroundKnowledgeReferences.push(reference);
-      hits.push({
-        chunkId: hit.chunkId,
-        score: hit.score,
-        metadata: metadata(chunk),
-        snippet: redacted.text,
-        redactedCount: redacted.redactedCount,
-      });
-      ctx.budget?.knowledgeTokens.spend(tokens);
-      ctx.ledger?.record({
-        turn: ctx.turn,
-        ts: Date.now(),
-        toolName: ctx.toolName,
-        chunkIds: [chunk.chunkId],
-        consentApplied: false,
-        tokensSpent: tokens,
-        outcome: 'success',
-        legacyPath: false,
-      });
-      continue;
-    }
+    // A retired Wiki chunk is never served: no remaining lookup searches its
+    // kind, and one that surfaces anyway is refused without its text.
     if (isExternalPrivateKnowledgeChunk(chunk)) {
-      const access = chunk.knowledgeSourceId && ctx.externalKnowledgeRegistry
-        ? ctx.externalKnowledgeRegistry.evaluateAccess(
-            chunk.knowledgeSourceId,
-            ctx.knowledgeScope ?? {},
-            ctx.knowledgeSourceIds ?? [],
-          )
-        : {allowed: false as const, reason: 'source_not_found_or_out_of_scope' as const};
-      const inactiveGeneration = access.allowed &&
-        access.source.activeGeneration !== chunk.sourceGeneration;
-      const blockedReason = !access.allowed
-        ? access.reason
-        : inactiveGeneration
-          ? 'inactive_source_generation'
-          : undefined;
-      if (blockedReason) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: privateKnowledgeMetadata(chunk),
-          unsupportedReason: blockedReason,
-        });
-        ctx.ledger?.record({
-          turn: ctx.turn,
-          ts: Date.now(),
-          toolName: ctx.toolName,
-          chunkIds: [],
-          consentApplied: true,
-          tokensSpent: 0,
-          outcome: blockedReason === 'provider_send_not_consented'
-            ? 'consent_blocked'
-            : 'rejected',
-          legacyPath: false,
-        });
-        continue;
-      }
-      const redacted = redactSecrets(chunk.snippet);
-      const tokens = estimateTokens(chunk, redacted.text);
-      if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: privateKnowledgeMetadata(chunk),
-          unsupportedReason: 'budget_exceeded',
-          redactedCount: redacted.redactedCount,
-        });
-        ctx.ledger?.record({
-          turn: ctx.turn,
-          ts: Date.now(),
-          toolName: ctx.toolName,
-          chunkIds: [],
-          consentApplied: true,
-          tokensSpent: 0,
-          outcome: 'budget_exceeded',
-          legacyPath: false,
-        });
-        continue;
-      }
-      hits.push({
-        chunkId: hit.chunkId,
-        score: hit.score,
-        metadata: privateKnowledgeMetadata(chunk),
-        snippet: redacted.text,
-        redactedCount: redacted.redactedCount,
-      });
-      ctx.budget?.knowledgeTokens.spend(tokens);
-      ctx.ledger?.record({
-        turn: ctx.turn,
-        ts: Date.now(),
-        toolName: ctx.toolName,
-        knowledgeSourceId: chunk.knowledgeSourceId,
-        sourceGeneration: chunk.sourceGeneration,
-        chunkIds: [chunk.chunkId],
-        consentApplied: true,
-        tokensSpent: tokens,
-        outcome: 'success',
-        legacyPath: false,
-      });
+      hits.push({chunkId: hit.chunkId, score: hit.score, unsupportedReason: 'knowledge_kind_retired'});
+      ctx.ledger?.record({turn: ctx.turn, ts: Date.now(), toolName: ctx.toolName, chunkIds: [],
+        consentApplied: true, tokensSpent: 0, outcome: 'rejected', legacyPath: false});
       continue;
     }
     if (!isUserCodebaseChunk(chunk)) {
@@ -565,12 +401,7 @@ export async function filterRagLookup(
     retrievedAt: raw.retrievedAt,
     ...(raw.unsupportedReason ? {unsupportedReason: raw.unsupportedReason} : {}),
     legacyPath: allLegacy,
-    ...(backgroundKnowledgeReferences.length > 0 ? {backgroundKnowledgeReferences} : {}),
   };
-  registerSessionBackgroundKnowledgeReferences(
-    ctx.sessionId,
-    backgroundKnowledgeReferences,
-  );
   registerCodeAwareLookupForEcho(ctx.sessionId, sanitized);
   return sanitized;
 }

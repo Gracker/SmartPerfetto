@@ -54,8 +54,7 @@ Claude Agent SDK 需要在 Provider Manager 或 env 中显式配置 API key/toke
 
 打开 [http://localhost:10000](http://localhost:10000)，加载 `.pftrace` 或 `.perfetto-trace` 文件，然后打开 AI Assistant 面板。
 
-Docker image 已包含固定 trace processor、提交版 UI 和签名 Android Internals
-Knowledge Pack；不需要宿主机下载这些运行时资产。
+Docker image 已包含固定 trace processor 和提交版 UI；不需要宿主机下载这些运行时资产。
 
 ## 5. 本地开发运行
 
@@ -72,8 +71,6 @@ Knowledge Pack；不需要宿主机下载这些运行时资产。
 | Backend health | `http://localhost:3000/health` |
 
 后端会自动启动，前端使用仓库内的预构建 UI。只有修改 AI Assistant 前端插件时，才需要 `git submodule update --init --recursive` 后运行 `./scripts/start-dev.sh`。
-仓库也已包含离线 Knowledge Pack snapshot；后台只会按配置异步检查签名更新，不会让
-运行中的 session 静默切换知识版本。
 
 ## 6. Docker 或源码用户：第一次分析
 

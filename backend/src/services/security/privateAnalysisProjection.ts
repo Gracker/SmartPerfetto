@@ -888,9 +888,6 @@ export function projectPrivateSessionStateSnapshot(
     ...(snapshot.analysisContextFingerprint
       ? {analysisContextFingerprint: snapshot.analysisContextFingerprint}
       : {}),
-    ...(snapshot.androidInternalsPackPin
-      ? {androidInternalsPackPin: {...snapshot.androidInternalsPackPin}}
-      : {}),
     ...(snapshot.backgroundKnowledgeReferences
       ? {
           backgroundKnowledgeReferences: snapshot.backgroundKnowledgeReferences.map(

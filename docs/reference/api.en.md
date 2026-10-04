@@ -919,14 +919,8 @@ Base path: `/api/rag`
 | `GET` | `/chunks/:chunkId` | Read one chunk |
 | `DELETE` | `/chunks/:chunkId` | Delete one chunk |
 | `POST` | `/search` | Search code or knowledge chunks |
-| `POST` | `/android-internals/preview` | Preview the allowed Wiki article inventory without prose |
-| `GET` | `/android-internals/sources` | List external Wiki registrations in the current scope |
-| `POST` | `/android-internals/sources` | Register a Wiki with separate rights and provider consent |
-| `POST` | `/android-internals/sources/:id/reindex` | Stage and atomically activate an index generation |
-| `GET` | `/android-internals/sources/:id/audit` | Return one metadata-only Skill disposition per article |
-| `PATCH` | `/android-internals/sources/:id/consent` | Explicitly grant or revoke provider-send consent (legacy path; applies to a knowledge source of any kind, the same implementation as `/knowledge/:sourceId/consent`) |
-| `DELETE` | `/android-internals/sources/:id/index` | Deactivate and clear every chunk for the source |
-| `GET` | `/knowledge` | List every external knowledge source in the current scope (with `kind`, `description`, `documentCount`, `hasActiveIndex`), never its root path |
+| `*` | `/android-internals/*` | Removed; answers 410 (`migration.fallback` is `/api/rag/knowledge`). Use `/knowledge/*` below. Sources registered through the legacy Wiki connector are still listed by `GET /knowledge` (`kind: android_internals_wiki`, retired, not selectable) and can be removed with `DELETE /knowledge/:sourceId` |
+| `GET` | `/knowledge` | List every external knowledge source in the current scope (with `kind`, `description`, `documentCount`, `hasActiveIndex`, `retired`), never its root path; a `retired: true` legacy Wiki record can only have its consent revoked or be deleted, and granting consent answers 409 `KNOWLEDGE_SOURCE_RETIRED` |
 | `POST` | `/knowledge/preview` | Preview a document collection (`rootPath`, optional `directorySelectionId`): indexable documents, section/chunk counts and skips by reason; zero documents answers 400 `KNOWLEDGE_COLLECTION_EMPTY` |
 | `POST` | `/knowledge/register` | Register a document collection (`rootPath`, `rightsAcknowledged: true`, optional `directorySelectionId`, `displayName`, `description` of at most 280 characters, `attribution`, `license`, `sendToProvider`); an omitted `sendToProvider` keeps the recorded consent |
 | `PATCH` | `/knowledge/:sourceId/consent` | `{sendToProvider: boolean}` explicitly grants or revokes the source's provider-send consent; answers with the `/knowledge` list projection |
@@ -1091,12 +1085,8 @@ removed meanwhile), these knowledge routes and the codebase
 preview/register/reindex routes answer a fixed code with the `requestId`, and
 the server log keeps the errno, syscall and source stack frames, never a path.
 
-See [Android Internals External Knowledge](../getting-started/android-internals-knowledge.en.md)
-for path allowlisting, the CC rights acknowledgement, revocable consent,
-request-scoped `options.knowledgeSourceIds`, and Docker mounts. Private Wiki
-chunks are completely absent from ordinary `/chunks/:id` and `/search` reads;
-only the dedicated source/audit management endpoints return prose-free metadata
-inside the current scope.
+The Android Internals Wiki joins as a document knowledge base; see
+[Using The Android Internals Wiki As A Knowledge Base](../getting-started/android-internals-knowledge.en.md).
 
 See [Private Analysis Context Architecture](../architecture/private-analysis-context.en.md)
 for the source/RAG request matrix, authorization fingerprint, and private-output

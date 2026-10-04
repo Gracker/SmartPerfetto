@@ -155,23 +155,20 @@ Authorization: Bearer <token>
 
 Local development does not require a bearer token when the variable is unset.
 
-## Knowledge Pack Status Or Update Fails
+## A Knowledge Base Cannot Be Selected Or Is Retired
 
-Use JSON status to distinguish bundled, active, and signed-channel state:
-
-```bash
-smp knowledge-pack status --format json
-smp knowledge-pack update --check --format json
-```
-
-- If the metadata channel is temporarily unreachable, a verified,
-  non-revoked bundled/active Pack remains an offline fallback.
-- Do not bypass signature, version, hash, license, or revocation failures by
-  editing the active pointer. Fix mirror URLs, network access, or system time,
-  then retry.
-- `SMARTPERFETTO_AIW_PACK_PIN` can pin only an installed, non-revoked version.
-- The Pack is background knowledge. A Pack citation without current-trace
-  evidence does not prove trace analysis succeeded.
+- Only a document knowledge base with a rights acknowledgement, provider
+  consent, and an active index can be selected. Check its state with
+  `smp knowledge list --format json`; if it has no index, run
+  `smp knowledge reindex <id>`.
+- An analysis refused with `ANALYSIS_CONTEXT_SOURCE_RETIRED` selected a source
+  registered through the legacy Wiki connector. Delete that entry ("Manage…" in
+  the UI or `smp knowledge remove <id> --yes`) and register the Wiki's `src/`
+  as a document knowledge base; see
+  [Using The Android Internals Wiki As A Knowledge Base](../getting-started/android-internals-knowledge.en.md).
+- The built-in Knowledge Pack is removed. Previously downloaded Pack versions
+  stay under `knowledge-packs/android-internals/` in the backend data directory,
+  are no longer used, and can be deleted by hand.
 
 ## SSE Disconnects
 

@@ -24,6 +24,8 @@ import {
 import {createDocumentCollectionGate} from '../../services/knowledge/documentCollectionCorpus';
 import {DocumentCollectionIngester} from '../../services/knowledge/documentCollectionIngester';
 import {getDefaultDocumentCollectionStore} from '../../services/knowledge/documentCollectionStore';
+import {removeKnowledgeSource} from '../../services/knowledge/knowledgeSourceRemoval';
+import {getDefaultRagStore} from '../../services/ragStore';
 import {PublicRequestError, thrownReasonCode} from '../../utils/publicRequestError';
 
 export type KnowledgeOutputFormat = 'text' | 'json';
@@ -121,7 +123,7 @@ export async function runKnowledgeListCommand(args: KnowledgeCommandBaseArgs): P
     const sources = registry.list(scope).map(projectKnowledgeSourceForManagement);
     return {json: {sources}, text: sources.length === 0 ? ['(no knowledge sources registered)'] : sources.map(source => [
       source.sourceId,
-      source.kind,
+      source.retired ? `${source.kind} (retired: delete it, re-register the folder)` : source.kind,
       source.displayName,
       `documents=${source.documentCount}`,
       `index=${source.hasActiveIndex ? 'active' : 'none'}`,
@@ -153,9 +155,11 @@ export async function runKnowledgeRemoveCommand(args: KnowledgeCommandBaseArgs &
     return writeInputError(format, 'KNOWLEDGE_REMOVE_CONFIRMATION_REQUIRED',
       '--yes is required to delete a knowledge source and every index it has.');
   }
-  const {scope, ingester} = prepare(args);
+  const {scope, registry, ingester} = prepare(args);
   return run(format, async () => {
-    await ingester(undefined).remove(args.sourceId, scope, scope.userId);
+    // Any kind, so a record of the retired Wiki connector can be deleted too.
+    await removeKnowledgeSource({registry, collections: ingester(undefined), ragStore: getDefaultRagStore()},
+      args.sourceId, scope, scope.userId);
     return {json: {sourceId: args.sourceId, deleted: true}, text: [`${args.sourceId}\tdeleted`]};
   });
 }

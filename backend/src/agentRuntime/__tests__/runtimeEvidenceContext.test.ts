@@ -36,7 +36,7 @@ it('exposes bound historical text in existing_only mode without reacquiring or g
       conclusionContract: {uncertainties: ['缺少 GPU'], nextSteps: ['检查 fence']}}});
   const mcp = createClaudeMcpServer({traceId: 'trace', sessionId: 'session', userQuery: 'Continue',
     traceProcessorService: {query} as unknown as TraceProcessorService, skillExecutor: new SkillExecutor({query}),
-    allowNewEvidence: false, lightweight: true, conversationTraceAttached: true, androidInternalsPackStore: null,
+    allowNewEvidence: false, lightweight: true, conversationTraceAttached: true,
     analysisHistoryReader: createAnalysisHistoryReader({getTurns: () => [entry], assertActive: () => {if (!active) throw new Error('revoked');}})});
   const tool = mcp.toolDefinitions.find(candidate => candidate.name === 'read_session_history')!;
   expect(tool).toBeDefined();
@@ -320,7 +320,7 @@ describe('product-owned live evidence continuity', () => {
       traceId: 'trace', sessionId: run.sessionId, userQuery: 'Read the metric', artifactStore: run.store,
       traceProcessorService: {query} as unknown as TraceProcessorService, skillExecutor: new SkillExecutor({query}),
       analysisNotes: [], hypotheses: [], uncertaintyFlags: [], watchdogWarning: {current: null},
-      allowNewEvidence, lightweight: true, conversationTraceAttached: true, androidInternalsPackStore: null,
+      allowNewEvidence, lightweight: true, conversationTraceAttached: true,
     });
     const invoke = async (mcp: ReturnType<typeof makeMcp>, name: string, args: Record<string, unknown>) => {
       const tool = mcp.toolDefinitions.find(candidate => candidate.name === name);

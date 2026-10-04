@@ -2564,7 +2564,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       knowledgeSourceIds: options.knowledgeSourceIds,
       sourceDepthDecision: runtimeSourceDepth(turnPolicy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
-      androidInternalsPackPin: options.androidInternalsPackPin,
     });
 
     // Phase 9: (removed — skillCatalog was populated but never used in prompt;

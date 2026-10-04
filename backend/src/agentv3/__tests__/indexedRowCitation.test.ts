@@ -43,7 +43,7 @@ function fixture() {
   const mcp = createClaudeMcpServer({
     sessionId: 'session-indexed-rows', traceId: TRACE_ID,
     traceProcessorService, skillExecutor: new SkillExecutor(traceProcessorService), artifactStore,
-    emitUpdate: () => {}, androidInternalsPackStore: null,
+    emitUpdate: () => {},
   });
   const call = async (name: string, args: Record<string, unknown>) => {
     const definition = mcp.toolDefinitions.find(tool => tool.name === name)!;

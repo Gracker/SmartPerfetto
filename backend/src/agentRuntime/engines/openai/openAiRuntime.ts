@@ -1410,7 +1410,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds, knowledgeSourceIds: options.knowledgeSourceIds,
       analysisContextFingerprint: options.analysisContextFingerprint,
       sourceDepthDecision: runtimeSourceDepth(policy, options),
-      androidInternalsPackPin: options.androidInternalsPackPin,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);
     const promptContext: ClaudeAnalysisContext = {

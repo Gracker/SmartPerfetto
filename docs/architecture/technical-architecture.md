@@ -228,13 +228,14 @@ trace occurrence 和 `provider_send` body/indexed 证据。`metadata_only` 只�
 canonical projector 负责 SSE、report、CLI、snapshot 和 API 的安全 provenance；Web 再缩减为
 当前 run 回执。
 
-### Android Internals
+### 文档知识库
 
-内置签名 Knowledge Pack 与私有 checkout 是两个来源：
-
-- 内置 Pack 随各发布形态分发，TUF channel 可更新；分析只把 provenance 当作背景知识，
-  不能伪装成当前 trace 证据；
-- 私有 checkout 需要路径 allowlist、权利确认、provider 同意和 request-level source id。
+知识只有一种来源：用户注册并逐轮选择的文档知识库（`document_collection`），包括
+Android Internals Wiki 的 `src/`。它需要路径 allowlist（或本机目录选择）、权利确认、
+provider 同意和激活索引；`search_knowledge` / `read_knowledge_section` 的结果是背景
+（`evidenceEffect: background`），用 `kref-` 引用和 `kb:` 出处，不能伪装成当前 trace 证据。
+旧版 Wiki 连接器的记录是退役 kind：可列出、可删除，启动门禁以
+`ANALYSIS_CONTEXT_SOURCE_RETIRED` 拒绝选用。
 
 统一 analysis context 会固定 codebase/knowledge generation、tenant/workspace/user、
 provider consent 和 session continuity。恢复、报告和 snapshot 不能绕过这些边界。
@@ -303,7 +304,7 @@ persisted analysis_completed + RunManifest + optional snapshot
 
 发布面彼此独立：
 
-- npm CLI 包含 CLI dist、Skills、Strategies、SQL、trace processor 和 Knowledge Pack；
+- npm CLI 包含 CLI dist、Skills、Strategies、SQL 和 trace processor；
 - portable 还包含 Node.js 24、原生依赖、backend、`frontend/` 和 launcher；
 - Docker 从 `main` 构建 Linux image，消费提交的 `frontend/` 和 runtime assets；
 - 源码 checkout 的普通路径也消费 `frontend/`，只有 UI 开发才构建 submodule。

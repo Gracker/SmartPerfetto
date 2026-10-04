@@ -722,12 +722,13 @@ xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
 chmod +x /absolute/path/to/trace_processor_shell
 ```
 
-## 可选 Android Internals 外部知识
+## 可选文档知识库
 
-外部 Wiki 路径默认拒绝。配置 `SMARTPERFETTO_KNOWLEDGE_ROOTS` 只建立路径
-allowlist；仍需通过 API 独立确认使用权、provider-send 同意、建立索引，并在每次
-分析的 `knowledgeSourceIds` 中显式选择。完整流程见
-[Android Internals 外部知识库](android-internals-knowledge.md)。
+知识库目录默认拒绝。本机 Web UI 可用目录选择器授权单个目录；服务器部署用
+`SMARTPERFETTO_KNOWLEDGE_ROOTS` 建立路径 allowlist（多个目录用平台路径分隔符）。仍需
+独立确认使用权、provider-send 同意、建立索引，并在每次分析的 `knowledgeSourceIds`
+中显式选择。Android Internals Wiki 也按此接入，见
+[把 Android Internals Wiki 作为知识库使用](android-internals-knowledge.md)。
 
 ## 请求限流
 

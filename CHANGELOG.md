@@ -26,6 +26,30 @@ Detailed commit-level history is available via `git log`.
   authenticated and ownership-checked.
 
 ### Removed
+- **Breaking:** the Android Internals Wiki is now an ordinary document
+  knowledge base, not a built-in Pack or a connector of its own. Register its
+  public `src/` folder as a document knowledge base (`smp knowledge register`,
+  or "Manage…" in the composer context control) and select it per turn.
+  - The signed built-in Knowledge Pack is gone from npm, Docker, source and
+    portable releases, together with the `smp knowledge-pack` command, the
+    `SMARTPERFETTO_AIW_PACK_*` variables, the background update check, the
+    `androidInternalsKnowledgePack` field of `/health`, and the doctor Pack
+    line, `knowledgePack` field and `android_internals_pack` check of
+    `smp doctor --format json`. In measured DeepSeek runs the model never
+    called it unprompted, and the only unprompted call found in local history
+    retrieved an unrelated article. Background references already stored in sessions, reports and
+    snapshots are kept and still rendered.
+  - The analysis agent's `lookup_blog_knowledge` tool is gone; selected
+    knowledge bases are searched with `search_knowledge` /
+    `read_knowledge_section`. The standalone MCP server keeps its separate
+    blog lookup of the same name.
+  - `/api/rag/android-internals/*` answers 410. Sources registered through the
+    legacy Wiki connector stay listed (retired, not selectable) and can be
+    deleted (`GET /knowledge` marks them `retired: true`; `smp knowledge
+    remove` deletes them too); a consent grant is refused with 409
+    `KNOWLEDGE_SOURCE_RETIRED`, and an analysis that selects one is refused
+    with 409 `ANALYSIS_CONTEXT_SOURCE_RETIRED`. The Wiki article-to-Skill audit
+    (`knowledge:android-internals:audit`) and its capability map are removed.
 - `/api/perfetto-sql/*` now answers 410 in every deployment mode. It had no
   product caller; its fallback analyses interpolated the request package name
   into SQL unescaped, matching it as a prefix and as a substring of its last

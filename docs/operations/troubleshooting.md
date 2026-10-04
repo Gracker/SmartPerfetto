@@ -152,22 +152,15 @@ Authorization: Bearer <token>
 
 本地开发没有设置该变量时，默认不要求 bearer token。
 
-## Knowledge Pack 状态或更新失败
+## 知识库无法选用或已停用
 
-先用 JSON 状态区分 bundled、active 和 signed channel：
-
-```bash
-smp knowledge-pack status --format json
-smp knowledge-pack update --check --format json
-```
-
-- 离线或 metadata channel 暂时不可达时，未撤回且校验通过的 bundled/active Pack
-  仍可作为 fallback。
-- 签名、版本、哈希、license 或撤回检查失败时，不能用手工覆盖 active pointer 的方式
-  绕过；修复镜像 URL/网络/时钟后重试。
-- `SMARTPERFETTO_AIW_PACK_PIN` 只能固定已经安装且未撤回的版本。
-- Pack 只能作为 background knowledge；报告缺少当前 trace 证据时，不要把 Pack 引用
-  当成分析功能已通过。
+- 只有具备权利确认、模型服务同意和激活索引的文档知识库才能被选用；先用
+  `smp knowledge list --format json` 看状态，缺索引就 `smp knowledge reindex <id>`。
+- 分析被 `ANALYSIS_CONTEXT_SOURCE_RETIRED` 拒绝：所选的是旧版 Wiki 连接器注册的知识源。
+  删除该条目（UI“管理…”或 `smp knowledge remove <id> --yes`），再把 Wiki 的 `src/`
+  重新注册为文档知识库，见 [把 Android Internals Wiki 作为知识库使用](../getting-started/android-internals-knowledge.md)。
+- 内置 Knowledge Pack 已移除。以前下载的 Pack 版本仍在后端数据目录的
+  `knowledge-packs/android-internals/` 下，不再使用，可以手动删除。
 
 ## SSE 断开
 

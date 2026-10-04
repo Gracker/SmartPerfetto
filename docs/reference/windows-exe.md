@@ -15,8 +15,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 SmartPerfetto 的 Windows 包不是单文件二进制。`SmartPerfetto.exe` 是启动器，
 同目录还包含 Windows Node.js 24 runtime、Windows 原生 `node_modules`、
-预构建 Perfetto UI、后端运行时代码、固定版本的 `trace_processor_shell.exe` 和
-签名 Android Internals Knowledge Pack。
+预构建 Perfetto UI、后端运行时代码和固定版本的 `trace_processor_shell.exe`。
 用户只需要解压并双击 `SmartPerfetto.exe`，不需要安装 Docker 或 Node.js。
 
 ## 维护者打包流程
@@ -59,8 +58,8 @@ dist/windows-exe/smartperfetto-v<version>-windows-x64.zip
    `trace_processor_shell.exe`，不在文档中复制版本号。
 8. 用 Go 交叉编译 `SmartPerfetto.exe` 启动器。
 9. 写入 `PACKAGE-MANIFEST.json`，记录版本、zip 顶层目录、git commit、
-   dirty 状态、Node runtime、trace processor pin 和 Knowledge Pack。
-10. 生成 zip 包并校验文件名、顶层目录、包内版本、Knowledge Pack 哈希和 manifest。
+   dirty 状态、Node runtime 和 trace processor pin。
+10. 生成 zip 包并校验文件名、顶层目录、包内版本和 manifest。
 
 ## 发布流程
 
@@ -139,7 +138,6 @@ C:\SmartPerfettoSmoke\smartperfetto-v<version>-windows-x64\SmartPerfetto.exe
 - 启动器输出的 `http://127.0.0.1:<port>` 能打开 Perfetto UI。
 - 启动器输出的后端 `http://127.0.0.1:<port>/health` 返回 `status: "OK"`。
 - 上传一条小 trace 后，后端日志里能看到 `trace_processor_shell.exe` 启动。
-- 包内 CLI 的 `smp knowledge-pack status --format json` 能解析 bundled/active Pack。
 
 launcher 优先使用后端端口 `3000`、前端端口 `10000`，默认端口被占用时会自动选择其他可用端口。
 以 launcher 打印的 URL 为准。只有需要固定端口时才设置 `SMARTPERFETTO_BACKEND_PORT`

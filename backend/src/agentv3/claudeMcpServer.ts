@@ -302,13 +302,6 @@ import {
 } from '../services/rag/lookupResponseFilter';
 import type {RagRetrievalResult} from '../types/sparkContracts';
 import {
-  getDefaultAndroidInternalsPackStore,
-  isAndroidInternalsPackRevoked,
-} from '../services/androidInternalsPack/androidInternalsPackResolver';
-import type {
-  AndroidInternalsPackStoreLike,
-} from '../services/androidInternalsPack/types';
-import {
   externalKnowledgeSourceHasActiveIndex,
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
@@ -381,8 +374,8 @@ export function requireToolDescription(templateName: string, loaded?: string): s
 
 /**
  * Process-wide RagStore singleton, lazily initialized on first MCP tool
- * call. Backs the `lookup_blog_knowledge` tool (Plan 55) and will back
- * the project-memory recall tool (Plan 44) when that lands.
+ * call. Backs the codebase and AOSP/OEM lookups and the project-memory
+ * recall tool (Plan 44).
  *
  * Storage path lives next to the existing analysis_*.json files so
  * operators can find every long-lived agent state in one directory.
@@ -610,12 +603,6 @@ const PATCH_REFUSAL_ACTIONS: ReadonlyMap<string, string> = new Map([
   ['source_path_outside_provider_grant', 'continue_without_patch'],
   ['budget_exceeded', 'continue_without_patch'],
   ['patch_target_not_selected', 'continue_without_patch'],
-]);
-// `source_not_found_or_out_of_scope` also covers a source deleted mid-run, so it stays a failure.
-const KNOWLEDGE_ACCESS_REFUSAL_REASONS: ReadonlySet<string> = new Set([
-  'source_not_whitelisted',
-  'right_to_use_not_acknowledged',
-  'provider_send_not_consented',
 ]);
 
 function coerceOptionalInteger(
@@ -1464,10 +1451,6 @@ export interface ClaudeMcpServerOptions {
   caseLibrary?: CaseLibrary;
   /** Test hook / alternate case RAG store. */
   ragStore?: RagStore;
-  /** Test hook / session-pinned built-in Android Internals Knowledge Pack. */
-  androidInternalsPackStore?: AndroidInternalsPackStoreLike | null;
-  /** Immutable public Knowledge Pack identity pinned by the session snapshot. */
-  androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   analysisResultSnapshotRepository?: TraceSimilaritySnapshotRepository;
   /** Explicit per-run attribution boundary for detached/shared tool callbacks. */
   runManifestAttributionSink?: RunManifestAttributionSink;
@@ -1571,135 +1554,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       ...(success ? {} : {isError: true}),
     };
   };
-  const filterAndRecordKnowledgeDocuments = (
-    value: SanitizedRagResult,
-  ): SanitizedRagResult => {
-    const exactKeys = (
-      record: Record<string, unknown>,
-      allowed: readonly string[],
-    ) => Object.keys(record).every(key => allowed.includes(key));
-    if (
-      !value
-      || typeof value !== 'object'
-      || Array.isArray(value)
-      || !exactKeys(value as unknown as Record<string, unknown>, [
-        'query',
-        'hits',
-        'probed',
-        'retrievedAt',
-        'unsupportedReason',
-        'legacyPath',
-        'backgroundKnowledgeReferences',
-      ])
-      || typeof value.query !== 'string'
-      || !Array.isArray(value.hits)
-      || !Array.isArray(value.probed)
-      || !value.probed.every(entry => typeof entry === 'string')
-      || !Number.isFinite(value.retrievedAt)
-      || typeof value.legacyPath !== 'boolean'
-      || (
-        value.unsupportedReason !== undefined
-        && typeof value.unsupportedReason !== 'string'
-      )
-      || (
-        value.backgroundKnowledgeReferences !== undefined
-        && (
-          !Array.isArray(value.backgroundKnowledgeReferences)
-          || value.backgroundKnowledgeReferences.some(reference =>
-            !reference
-            || typeof reference !== 'object'
-            || Array.isArray(reference)
-            || Object.values(reference).some(field =>
-              typeof field !== 'string' && field !== undefined)
-          )
-        )
-      )
-    ) {
-      throw new Error('evaluation_knowledge_payload_invalid');
-    }
-    const hits = value.hits.flatMap(hit => {
-      if (
-        !hit
-        || typeof hit !== 'object'
-        || Array.isArray(hit)
-        || !exactKeys(hit as unknown as Record<string, unknown>, [
-          'chunkId',
-          'score',
-          'metadata',
-          'snippet',
-          'unsupportedReason',
-          'redactedCount',
-        ])
-        || typeof hit.chunkId !== 'string'
-        || !hit.chunkId.trim()
-        || !Number.isFinite(hit.score)
-        || (
-          hit.snippet !== undefined
-          && typeof hit.snippet !== 'string'
-        )
-        || (
-          hit.unsupportedReason !== undefined
-          && typeof hit.unsupportedReason !== 'string'
-        )
-        || (
-          hit.redactedCount !== undefined
-          && !Number.isSafeInteger(hit.redactedCount)
-        )
-        || (
-          hit.metadata !== undefined
-          && (
-            !hit.metadata
-            || typeof hit.metadata !== 'object'
-            || Array.isArray(hit.metadata)
-            || Object.values(hit.metadata).some(field =>
-              field !== undefined
-              && typeof field !== 'string'
-              && typeof field !== 'number'
-              && typeof field !== 'boolean'
-              && (
-                !field
-                || typeof field !== 'object'
-                || Array.isArray(field)
-                || !exactKeys(field as Record<string, unknown>, ['start', 'end'])
-                || Object.values(field).some(boundary =>
-                  !Number.isSafeInteger(boundary))
-              )
-            )
-          )
-        )
-      ) {
-        throw new Error('evaluation_knowledge_payload_invalid');
-      }
-      const normalizedHit = {
-        chunkId: hit.chunkId,
-        score: hit.score,
-        ...(hit.metadata === undefined ? {} : {metadata: hit.metadata}),
-        ...(hit.snippet === undefined ? {} : {snippet: hit.snippet}),
-        ...(hit.unsupportedReason === undefined
-          ? {}
-          : {unsupportedReason: hit.unsupportedReason}),
-        ...(hit.redactedCount === undefined
-          ? {}
-          : {redactedCount: hit.redactedCount}),
-      };
-      if (normalizedHit.snippet === undefined) return [normalizedHit];
-      const contentHash = canonicalContentHash(normalizedHit);
-      const decision = registerEvaluationInjection({
-        category: 'knowledgeDocs',
-        id: hit.chunkId,
-        contentHash,
-        placement: 'mcp:knowledge_lookup',
-      });
-      if (!decision.allowed) return [];
-      runManifestAttributionSink?.recordInjection(
-        'knowledgeDocs',
-        hit.chunkId,
-        contentHash,
-      );
-      return [normalizedHit];
-    });
-    return {...value, hits};
-  };
   const externalKnowledgeRegistry = options.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
   const codebaseRegistry = options.codebaseRegistry ?? getDefaultCodebaseRegistry();
@@ -1708,9 +1562,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const codeGraphNavigator = options.codeGraphNavigator ??
     new GitNexusCodeGraphNavigator({registry: codebaseRegistry});
   const ragStore = options.ragStore ?? getRagStore();
-  const androidInternalsPackStore = options.androidInternalsPackStore === undefined
-    ? getDefaultAndroidInternalsPackStore(options.androidInternalsPackPin)
-    : options.androidInternalsPackStore ?? undefined;
   const analysisContextSelection = {codeAwareMode, codebaseIds, knowledgeSourceIds};
   const privateAnalysisContext = analysisHasPrivateContext(analysisContextSelection);
   // One read of the selected registrations: authorization and the index
@@ -1728,8 +1579,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const anySelectedCodebaseHas = (capability: keyof SelectedCodebaseCapabilities): boolean =>
     selectedCodebases.some(view => view.capabilities[capability]);
   // The selected knowledge sources as this run resolved them, once: the
-  // generation pins, the document collections the knowledge tools serve, the
-  // Wiki lookup's ids and the prompt's knowledge authorization all read this.
+  // generation pins, the document collections the knowledge tools serve and
+  // the prompt's knowledge authorization all read this.
   const selectedKnowledgeSources = new Map(knowledgeSourceIds.flatMap(sourceId => {
     const source = externalKnowledgeRegistry.get(sourceId, knowledgeScope ?? {});
     return source ? [[sourceId, source] as const] : [];
@@ -1744,8 +1595,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const indexGenerationPins = IndexGenerationPins.capture(registrationsAtStart, {
     countCodebaseGenerationChunks: (codebaseId, generation) =>
       ragStore.countCodebaseGenerationChunks(codebaseId, generation, knowledgeScope),
-    countKnowledgeSourceGenerationChunks: (sourceId, generation) =>
-      ragStore.countKnowledgeSourceGenerationChunks(sourceId, generation, knowledgeScope),
     documentCollectionServes: (sourceId, generation) =>
       Boolean(knowledgeScope) && documentCollectionStore.servesGeneration(knowledgeScope!, sourceId, generation),
   });
@@ -1758,15 +1607,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const knowledgeReferences = new KnowledgeReferenceLedger();
   // What this run delivered from its selected knowledge bases, for knowledge_use@1.
   const knowledgeUse = new KnowledgeUseRecorder(knowledgeReferences);
-  // The Wiki lookup serves every selected source but document collections,
-  // which have their own tools; its hint and its default id say so.
-  const wikiKnowledgeSourceIds = knowledgeSourceIds.filter(sourceId =>
-    selectedKnowledgeSources.get(sourceId)?.kind !== 'document_collection');
-  // Scoped to the Wiki: selected document collections are reached through
-  // search_knowledge, so the Wiki tool must not say no private knowledge exists.
-  const knowledgeSourceCapabilityHint = wikiKnowledgeSourceIds.length > 0
-    ? ` Request-authorized Android Internals Wiki source ids: ${wikiKnowledgeSourceIds.join(', ')}.`
-    : ' No private Android Internals Wiki source is authorized for this request.';
   // The run's fence when the runtime supplied one: a revoke seen inside a
   // tool ends the run exactly as one seen at a model dispatch.
   const runAuthorization = options.runAuthorization?.enforced ? options.runAuthorization : undefined;
@@ -4676,115 +4516,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         _meta: runtimeToolReceiptMetadata({success: true}),
         content: [{ type: 'text' as const, text: content }],
       };
-    },
-    { annotations: { readOnlyHint: true } },
-  );
-
-  // lookup_blog_knowledge (Plan 55): retrieve the signed built-in Android
-  // Internals Pack or, only with an explicit request-scoped source capability,
-  // private Android Internals Wiki chunks. Read-only. The public blog index it
-  // once defaulted to had no production writer and is no longer reachable.
-  const lookupBlogKnowledge = tool(
-    'lookup_blog_knowledge',
-    `Retrieve the signed built-in Android Internals Pack or an authorized private Android Internals Wiki; knowledge hits are not trace evidence.${knowledgeSourceCapabilityHint} ` +
-    'On unsupportedReason, report unavailable without invention. ' +
-    retrievedContextToolBoundary,
-    {
-      query: z.string().describe('Search query — natural language is fine; tokens are lowercased and matched against snippet + title.'),
-      top_k: z.number().int().min(1).max(20).optional().describe('Maximum hits returned (1-20, default 5).'),
-      source: z.enum([
-        'android_internals_pack',
-        'android_internals_wiki',
-      ]).describe('Knowledge source: android_internals_pack for bundled, signed Android system background; android_internals_wiki for an authorized private Wiki.'),
-      knowledge_source_id: z.string().optional()
-        .describe(`Request-whitelisted source id for Android Internals Wiki.${knowledgeSourceCapabilityHint}`),
-    },
-    async ({ query, top_k, source, knowledge_source_id }) => {
-      if (source === 'android_internals_pack') {
-        if (!androidInternalsPackStore) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                unsupportedReason: 'android_internals_pack_unavailable',
-              }),
-            }],
-          };
-        }
-        if (isAndroidInternalsPackRevoked(androidInternalsPackStore.handle)) {
-          throw new Error('analysis_context_changed_restart_required');
-        }
-        const raw = androidInternalsPackStore.search(query, {topK: top_k ?? 5});
-        const filtered = await filterRagLookup(raw, {
-          toolName: 'lookup_blog_knowledge',
-          turn: 0,
-          ledger: codeLookupLedger, budget: sourceBudget,
-          sessionId: options.sessionId,
-        });
-        await codeLookupLedger?.flush();
-        if (isAndroidInternalsPackRevoked(androidInternalsPackStore.handle)) {
-          throw new Error('analysis_context_changed_restart_required');
-        }
-        const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-        return ragToolResult(evaluated, 'nested');
-      }
-      assertPrivateAnalysisContextCurrent();
-      const sourceId = normalizeOptionalToolString(knowledge_source_id) ??
-        (wikiKnowledgeSourceIds.length === 1 ? wikiKnowledgeSourceIds[0] : undefined);
-      if (!sourceId || !wikiKnowledgeSourceIds.includes(sourceId) || !knowledgeScope) {
-        return policyRefusal(
-          wikiKnowledgeSourceIds.length > 0 && knowledgeScope
-            ? 'use_authorized_knowledge_source_id'
-            : 'continue_without_private_knowledge',
-          {
-            unsupportedReason: 'private_knowledge_source_not_whitelisted',
-            authorizedKnowledgeSourceIds: wikiKnowledgeSourceIds,
-          },
-        );
-      }
-      const access = externalKnowledgeRegistry.evaluateAccess(
-        sourceId,
-        knowledgeScope,
-        knowledgeSourceIds,
-      );
-      if (!access.allowed) {
-        return KNOWLEDGE_ACCESS_REFUSAL_REASONS.has(access.reason)
-          ? policyRefusal('continue_without_private_knowledge', {unsupportedReason: access.reason})
-          : createRuntimeToolResult({success: false, unsupportedReason: access.reason});
-      }
-      if (!access.source.activeGeneration) {
-        return createRuntimeToolResult({success: false, unsupportedReason: 'private_knowledge_index_not_active'});
-      }
-      // A Wiki rebuild deletes the generation this run pinned: refuse rather
-      // than search a generation that may already be empty.
-      indexCheckpoint('wiki', [sourceId]);
-      const pinnedGeneration = indexGenerationPins.knowledgeGeneration(sourceId)!;
-      const raw = ragStore.search(query, {
-        topK: top_k ?? 5,
-        kinds: ['android_internals_wiki'],
-        knowledgeSourceIds: [sourceId],
-        activeSourceGenerations: {[sourceId]: pinnedGeneration},
-        scope: knowledgeScope,
-      });
-      indexCheckpoint('wiki', [sourceId]);
-      const filtered = await filterRagLookup(raw, {
-        toolName: 'lookup_blog_knowledge',
-        turn: 0,
-        ledger: codeLookupLedger, budget: sourceBudget,
-        sessionId: options.sessionId,
-        externalKnowledgeRegistry,
-        knowledgeSourceIds,
-        knowledgeScope,
-      });
-      await codeLookupLedger?.flush();
-      indexCheckpoint('wiki', [sourceId]);
-      const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-      // Usage counts what is returned: the evaluation filter has run, and a
-      // hit without its text delivered nothing.
-      knowledgeUse.recordWikiDelivery(sourceId, pinnedGeneration, evaluated.hits.flatMap(hit =>
-        hit.snippet !== undefined && hit.metadata?.knowledgeSourceId === sourceId ? [hit.chunkId] : []));
-      return ragToolResult(evaluated, 'nested');
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -8374,7 +8105,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     concurrency: {mode: 'commutative_read'},
   });
   registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
-  registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public', {evidenceEffect: 'acquire'});
   // Background, not acquisition: an existing_only turn may consult them.
   if (documentCollectionIds.length > 0) {
     registry.registerSdk(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});

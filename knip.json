@@ -35,7 +35,6 @@
         "src/cli-user/bin.ts!",
         "src/cli/index.ts!",
         "src/index.ts!",
-        "src/scripts/auditAndroidInternalsWiki.ts!",
         "src/scripts/auditTraceProcessorRssMatrix.ts!",
         "src/scripts/benchmarkAgentRuntimeLatency.ts!",
         "src/scripts/benchmarkTraceProcessorRss.ts!",

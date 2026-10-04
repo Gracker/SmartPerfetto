@@ -45,7 +45,7 @@ import {
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {
   getSessionBackgroundKnowledgeReferences,
-} from './androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+} from './knowledge/sessionBackgroundKnowledgeRegistry';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {AnalysisHistoryStore} from './analysisHistoryStore';
 import {safeCodebaseDisplayName} from './codebase/selectedCodebaseCapabilities';
@@ -310,9 +310,6 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
             agentRuntimeProviderSnapshotHash: session.providerSnapshotHash,
             continuityBreaks: session.continuityBreaks,
             analysisContextFingerprint: session.analysisContextFingerprint,
-            androidInternalsPackPin: (session as {
-              androidInternalsPackPin?: import('./androidInternalsPack/types').AndroidInternalsPackIdentity;
-            }).androidInternalsPackPin,
             backgroundKnowledgeReferences:
               getSessionBackgroundKnowledgeReferences(sessionId),
             lineage: session.lineage,

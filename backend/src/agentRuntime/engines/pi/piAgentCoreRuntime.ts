@@ -2121,7 +2121,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       knowledgeSourceIds: options.knowledgeSourceIds,
       sourceDepthDecision: runtimeSourceDepth(policy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
-      androidInternalsPackPin: options.androidInternalsPackPin,
       referenceTraceId: options.referenceTraceId,
       ...(comparisonContext ? { comparisonContext } : {}),
     });

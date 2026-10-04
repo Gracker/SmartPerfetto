@@ -12,7 +12,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 SmartPerfetto portable packages are not single-file binaries. The launcher starts
 the bundled Node.js 24 runtime, backend, pre-built Perfetto UI, and pinned
-`trace_processor_shell`, plus the signed Android Internals Knowledge Pack.
+`trace_processor_shell`.
 
 Current release assets:
 
@@ -257,8 +257,7 @@ configured ports fail fast when unavailable.
 ## Verification
 
 The scripts verify package structure, version, manifest, Node runtime, target
-native dependencies, the `trace_processor_shell` pin, and Knowledge Pack
-lock/manifest/database/license versions and hashes. Cross-compilation,
+native dependencies, and the `trace_processor_shell` pin. Cross-compilation,
 structure checks, and static signature verification do not prove target-OS
 startup. Public release uses a build-once rule: extract and smoke the same final
 archive bytes that will be uploaded, and do not rebuild after smoke. macOS must
@@ -307,10 +306,8 @@ notary receipt on macOS. Omit it only for draft-package smoke.
 3. Check the printed backend health URL, usually [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health).
 4. Upload a small trace and confirm the platform `trace_processor_shell` starts
    in backend logs.
-5. Run `smp knowledge-pack status --format json` through the bundled CLI/backend
-   and confirm the bundled/active Pack is readable and not revoked.
-6. Run the bundled Node.js, Claude, and OpenCode version commands when present.
-7. Stop the launcher normally and confirm child processes exit and both ports
+5. Run the bundled Node.js, Claude, and OpenCode version commands when present.
+6. Stop the launcher normally and confirm child processes exit and both ports
    are released.
 
 Keep the GitHub release as a draft if the final Windows, macOS, or Linux archive

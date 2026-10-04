@@ -47,7 +47,8 @@ import * as externalKnowledgeServices from '../../services/externalKnowledgeSour
 import {getProviderService, resetProviderService} from '../../services/providerManager';
 import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
 import {AnalysisHistoryStore} from '../../services/analysisHistoryStore';
-import {clearSessionBackgroundKnowledgeReferences, getSessionBackgroundKnowledgeReferences} from '../../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+import {getSessionBackgroundKnowledgeReferences} from '../../services/knowledge/sessionBackgroundKnowledgeRegistry';
+import {refreshPersistedAgentSnapshot} from '../../services/persistAgentSession';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
@@ -1082,8 +1083,11 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     jest.spyOn(externalKnowledgeServices, 'getDefaultExternalKnowledgeSourceRegistry')
       .mockReturnValue({
+        // The real access rule over the mocked record.
+        evaluateAccess: externalKnowledgeServices.ExternalKnowledgeSourceRegistry.prototype.evaluateAccess,
         get: jest.fn(() => ({
           sourceId: 'wiki-empty',
+          kind: 'document_collection',
           indexGeneration: 2,
           activeGeneration: 'knowledge_2_empty',
           contentFingerprint: 'b'.repeat(64),
@@ -2890,10 +2894,21 @@ describe('agent route RBAC', () => {
       });
       // Later snapshots read the knowledge references from the registry, so a resume refills it.
       expect(getSessionBackgroundKnowledgeReferences(sessionId)).toEqual([backgroundReference]);
+      // The retired Knowledge Pack produces none any more; the next persist writes the recorded ones
+      // back unchanged, so the session keeps that provenance. The stored copy is cleared first so
+      // only that write can bring them back.
+      const {backgroundKnowledgeReferences: _restored, ...withoutReferences} =
+        persistence.loadSessionStateSnapshot(sessionId)!;
+      expect(persistence.saveSessionStateSnapshot(sessionId, withoutReferences, {owner, sessionContext: context}))
+        .toBe(true);
+      expect(persistence.loadSessionStateSnapshot(sessionId)?.backgroundKnowledgeReferences).toBeUndefined();
+      refreshPersistedAgentSnapshot({session: agentRoutesCancellationTestSeam.getSession(sessionId)!, sessionId,
+        traceId, query: 'follow-up', result: {conclusion: '', totalDurationMs: 0}, privateContext: NO_PRIVATE_CONTEXT});
+      expect(persistence.loadSessionStateSnapshot(sessionId)?.backgroundKnowledgeReferences)
+        .toEqual([backgroundReference]);
     } finally {
       agentRoutesCancellationTestSeam.deleteSession(sessionId);
       sessionContextManager.remove(sessionId);
-      clearSessionBackgroundKnowledgeReferences(sessionId);
       await fs.rm(tmpDir, {recursive: true, force: true});
     }
   });
@@ -2936,7 +2951,6 @@ describe('agent route RBAC', () => {
       expect(getSessionBackgroundKnowledgeReferences(sessionId)).toEqual([]);
     } finally {
       sessionContextManager.remove(sessionId);
-      clearSessionBackgroundKnowledgeReferences(sessionId);
       await fs.rm(tmpDir, {recursive: true, force: true});
     }
   });

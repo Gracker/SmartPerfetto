@@ -52,7 +52,6 @@ import {RagStore} from '../../services/ragStore';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../../services/codebase/patchProposer';
 import {runtimeSourceDepth} from '../../services/codebase/sourceDepthPolicy';
-import {getDefaultAndroidInternalsPackResolver} from '../../services/androidInternalsPack/androidInternalsPackResolver';
 import * as skillFingerprint from '../../services/selfEvolution/skillFingerprint';
 import {createRunMcpServer} from '../../../tests/helpers/runMcpServerFixture';
 import {
@@ -249,10 +248,9 @@ beforeEach(async () => {
   process.env.SMARTPERFETTO_CODEBASE_ROOTS = roots;
   process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(tmpDir, 'logs');
   SessionPersistenceService.resetForTests();
-  // Admission work these tests do not exercise: the pack resolver reads the pack from disk on every
-  // run, and the Skill fingerprint hashes the same pinned registry each time (the registry snapshot
-  // itself is cached and stays real, since the run's MCP server reads it).
-  jest.spyOn(getDefaultAndroidInternalsPackResolver(), 'resolve').mockReturnValue(undefined);
+  // Admission work these tests do not exercise: the Skill fingerprint hashes the same pinned
+  // registry each time (the registry snapshot itself is cached and stays real, since the run's MCP
+  // server reads it).
   jest.spyOn(skillFingerprint, 'buildSkillRegistryAttribution').mockImplementation(registryToFingerprint => {
     const cached = skillRegistryAttributions.get(registryToFingerprint);
     if (cached) return cached;

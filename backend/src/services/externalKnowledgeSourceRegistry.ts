@@ -48,9 +48,10 @@ export interface ExternalKnowledgeScope {
 }
 
 /**
- * `android_internals_wiki` is the legacy connector for one Wiki layout;
  * `document_collection` is any folder of documents, indexed into its own
- * SQLite generation files (`services/knowledge/`).
+ * SQLite generation files (`services/knowledge/`). `android_internals_wiki`
+ * is the retired connector for one Wiki layout: its stored records are still
+ * read, listed and deletable, but none is registered or served to a run.
  */
 export type ExternalKnowledgeKind = 'android_internals_wiki' | 'document_collection';
 
@@ -64,6 +65,8 @@ const TEXT_LIMITS: Readonly<Record<DescriptiveField | 'displayName', number>> = 
 };
 
 interface ExternalKnowledgeKindPolicy {
+  /** No run may use the kind: its records stay listed and deletable, and the folder is re-registered as a document collection. */
+  retired: boolean;
   /** Owner-written fields a registration carries: omitted keeps the recorded value, empty clears it. */
   descriptiveFields: readonly DescriptiveField[];
   /** Activation records the replaced generation, whose files a pinned reader may still hold. */
@@ -72,12 +75,18 @@ interface ExternalKnowledgeKindPolicy {
 
 /** Every kind's policy; the Record type makes a new kind a compile error until it is described here. */
 const KIND_POLICIES: Readonly<Record<ExternalKnowledgeKind, ExternalKnowledgeKindPolicy>> = {
-  android_internals_wiki: {descriptiveFields: ['license'], retainsPreviousGeneration: false},
+  android_internals_wiki: {retired: true, descriptiveFields: ['license'], retainsPreviousGeneration: false},
   document_collection: {
+    retired: false,
     descriptiveFields: ['description', 'attribution', 'license'],
     retainsPreviousGeneration: true,
   },
 };
+
+/** A stored kind no run may use: `retired` in its policy, or a kind this build does not know. */
+export function externalKnowledgeKindRetired(kind: ExternalKnowledgeKind): boolean {
+  return KIND_POLICIES[kind]?.retired ?? true;
+}
 
 /**
  * How a registered root was authorized when it is not by
@@ -115,9 +124,9 @@ interface ExternalKnowledgeDescriptiveText {
   license?: string;
 }
 
+/** Only a document collection is registered; a retired kind is never written anew. */
 export type RegisterExternalKnowledgeSourceInput =
-  | (RegisterExternalKnowledgeSourceBase & {kind: 'android_internals_wiki'; license: string})
-  | (RegisterExternalKnowledgeSourceBase & ExternalKnowledgeDescriptiveText & {kind: 'document_collection'});
+  RegisterExternalKnowledgeSourceBase & ExternalKnowledgeDescriptiveText & {kind: 'document_collection'};
 
 export type ExternalKnowledgeSource =
   Omit<RegisterExternalKnowledgeSourceBase, 'sendToProvider'> & ExternalKnowledgeDescriptiveText & {
@@ -174,7 +183,7 @@ export function externalKnowledgeSourceHasActiveIndex(
 export type ExternalKnowledgeAccessDecision =
   | {allowed: true; source: ExternalKnowledgeSource}
   | {allowed: false; reason: 'source_not_found_or_out_of_scope' |
-      'source_not_whitelisted' | 'right_to_use_not_acknowledged' |
+      'source_not_whitelisted' | 'knowledge_kind_retired' | 'right_to_use_not_acknowledged' |
       'provider_send_not_consented'};
 
 export interface ActivateExternalKnowledgeGenerationInput {
@@ -234,6 +243,7 @@ export function projectKnowledgeSourceForManagement(source: ExternalKnowledgeSou
     ...sanitizeExternalKnowledgeSource(source),
     documentCount: source.indexedArticleCount ?? 0,
     hasActiveIndex: externalKnowledgeSourceHasActiveIndex(source),
+    retired: externalKnowledgeKindRetired(source.kind),
   };
 }
 
@@ -489,6 +499,11 @@ export class ExternalKnowledgeSourceRegistry {
     return this.mutateSource(sourceId, scope, source => {
       if (!source) throw knowledgeSourceNotFound(sourceId);
       if (isDeleting(source)) throw knowledgeSourceDeleting(sourceId);
+      // A retired source may still be revoked, never granted a consent it cannot use.
+      if (sendToProvider && externalKnowledgeKindRetired(source.kind)) {
+        throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RETIRED',
+          `External knowledge source '${sourceId}' is retired; register its folder as a document collection`, 409);
+      }
       return {
         ...source,
         sendToProvider,
@@ -507,6 +522,9 @@ export class ExternalKnowledgeSourceRegistry {
     if (!source) return {allowed: false, reason: 'source_not_found_or_out_of_scope'};
     if (!whitelistedSourceIds.includes(sourceId)) {
       return {allowed: false, reason: 'source_not_whitelisted'};
+    }
+    if (externalKnowledgeKindRetired(source.kind)) {
+      return {allowed: false, reason: 'knowledge_kind_retired'};
     }
     if (!source.rightsAcknowledged) {
       return {allowed: false, reason: 'right_to_use_not_acknowledged'};
@@ -567,16 +585,9 @@ export class ExternalKnowledgeSourceRegistry {
     scope: ExternalKnowledgeScope,
     actor: string,
     removeIndex: (tombstone: ExternalKnowledgeSource, fence: KnowledgeCleanupFence) => Promise<void> | void,
-    options: {kind?: ExternalKnowledgeKind} = {},
   ): Promise<ExternalKnowledgeSource> {
-    // A source of another kind is refused before its tombstone, which would revoke it.
     const requireRemovable = () => {
-      const current = this.getIncludingDeleting(sourceId, scope);
-      if (!current) throw knowledgeSourceNotFound(sourceId);
-      if (options.kind && current.kind !== options.kind) {
-        throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_KIND_MISMATCH',
-          `External knowledge source '${sourceId}' is not a ${options.kind}`);
-      }
+      if (!this.getIncludingDeleting(sourceId, scope)) throw knowledgeSourceNotFound(sourceId);
     };
     // Checked before the lease too, so an unknown id never creates a lease record.
     requireRemovable();

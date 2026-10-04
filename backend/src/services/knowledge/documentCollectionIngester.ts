@@ -125,13 +125,6 @@ export class DocumentCollectionIngester {
     return {source, preview};
   }
 
-  /** Delete a document collection and every index file it has, through the registry's fenced removal. */
-  async remove(sourceId: string, scope: ExternalKnowledgeScope, actor: string): Promise<void> {
-    // A deletion that stopped half way left a tombstone; running it again finishes it.
-    await this.registry.remove(sourceId, scope, actor, (_tombstone, fence) => this.removeIndex(scope, sourceId, fence),
-      {kind: 'document_collection'});
-  }
-
   /**
    * What a folder would index; a blocked or empty folder is refused.
    * `additionalAllowlistRoots` carries a validated directory-picker selection

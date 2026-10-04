@@ -21,7 +21,6 @@ import {
   requireRequestContext,
 } from '../middleware/auth';
 import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
-import {getDefaultAndroidInternalsPackResolver} from '../services/androidInternalsPack/androidInternalsPackResolver';
 import {authorizeAnalysisContext} from '../services/analysisContextAuthorization';
 import {
   heartbeatAnalysisRun,
@@ -363,14 +362,6 @@ async function startConversation(req: express.Request, res: express.Response): P
       selectionContext: options.selectionContext,
       analysisContextFingerprint,
     };
-    const availablePack = getDefaultAndroidInternalsPackResolver().resolve();
-    if (availablePack) {
-      runtimeOptions.androidInternalsPackPin = {
-        contentVersion: availablePack.contentVersion,
-        contentFingerprint: availablePack.contentFingerprint,
-        sourceRevision: availablePack.sourceRevision,
-      };
-    }
     const quotaDecision = evaluateAnalysisRunQuota(requestContext, {
       replacingRunId: existing?.activeRun?.runId,
     });

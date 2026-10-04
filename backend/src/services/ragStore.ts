@@ -221,7 +221,7 @@ function defaultRegistryOrigin(kind: RagSourceKind): RagChunk['registryOrigin'] 
 function normalizeChunkForStorage(chunk: RagChunk): RagChunk {
   if (chunk.kind === 'android_internals_pack') {
     throw new Error(
-      'Built-in Android Internals Pack chunks must use AndroidInternalsPackStore',
+      'Built-in Android Internals Pack chunks are retired and are never stored',
     );
   }
   const registryOrigin = chunk.registryOrigin ?? defaultRegistryOrigin(chunk.kind);
@@ -752,24 +752,6 @@ export class RagStore {
       true,
     );
     return Math.max(enterpriseRemoved, legacyRemoved);
-  }
-
-  countKnowledgeSourceGenerationChunks(
-    sourceId: string,
-    sourceGeneration: string,
-    scope?: KnowledgeScope,
-  ): number {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      return countScopedRagRecords(scope, {
-        knowledgeSourceId: sourceId,
-        sourceGeneration,
-        scopeFingerprint: privateKnowledgeScopeFingerprint(scope),
-      });
-    }
-    return this.countLocalChunks(scope, chunk =>
-      chunk.knowledgeSourceId === sourceId &&
-      chunk.registryOrigin === 'external_knowledge_registry' &&
-      chunk.sourceGeneration === sourceGeneration);
   }
 
   private removeKnowledgeSourceChunksMatching(

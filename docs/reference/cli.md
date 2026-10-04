@@ -168,24 +168,6 @@ Runtime 判断按实际选择的 provider/runtime 执行：
 第一轮 CLI 不提供 `provider add/edit`，涉及密钥写入的交互配置仍由 env 文件
 或后续安全交互设计处理。
 
-## Android Internals Knowledge Pack
-
-```bash
-smp knowledge-pack status
-smp knowledge-pack status --format json
-smp knowledge-pack update --check
-smp knowledge-pack update
-```
-
-`status` 展示当前 active、包内 bundled snapshot 和签名 channel 状态。
-`update --check` 只刷新并校验 TUF metadata，不安装内容；`update` 会在签名、
-版本、哈希和撤回检查通过后原子安装 stable Pack。离线时仍可使用随 npm、Docker、
-源码和 portable 产物一起分发的 bundled snapshot。分析引用只把出处、版本和
-snippet hash 投影到日志/SSE，正文片段不会作为 trace 证据。
-
-完整的许可证、更新和私有知识源边界见
-[Android Internals 知识包与私有知识库](../getting-started/android-internals-knowledge.md)。
-
 ## 文档知识库
 
 ```bash
@@ -214,6 +196,9 @@ smp analyze trace.pftrace --knowledge-source-id eks_xxx "解释这个 trace 里�
 哪些知识库在哪个索引代次交付了多少条引用，以及答案中每个 `kb:路径#L起-L止`
 引用的状态（`delivered`、`located`、`unmatched`、`ambiguous`）。知识库只是背景，
 不是 trace 证据。
+
+要把公开的 Android Internals Wiki 作为知识库使用，见
+[把 Android Internals Wiki 作为知识库使用](../getting-started/android-internals-knowledge.md)。
 
 ## Trace 查询与 Skill
 

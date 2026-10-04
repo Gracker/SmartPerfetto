@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en-us">
+<head>
+  <meta charset="utf-8">
+  <title>Perfetto UI</title>
+  <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" name="viewport" />
+  <link rel="shortcut icon" id="favicon" type="image/png" href="data:image/png;base64,iVBORw0KGgo=">
+</head>
+<body data-perfetto_version='{"filled_by_build_js":"."}'>
+  <!--
+    Don't add any content here. The whole <body> is replaced by
+    frontend/index.ts when bootstrapping. This is only used for very early
+    error reporting.
+  -->
+  <style>
+  #app_load_failure {opacity:0;transition:opacity 1s ease;position:absolute;overflow:auto;background:#080082;top:0;left:0;width:100%;height:100%;bottom:0;right:0;margin:0;opacity:0;user-select:text}
+  #app_load_failure > pre {color:#fff;position:absolute;margin:auto;white-space:pre-wrap;top:10vh;max-width:90vw;width:880px;left:0;right:0;font-size:16px;line-height:30px;font-weight:700}
+  #app_load_failure > pre span {background:#fff;color:#080082;padding:2px}
+  #app_load_failure_dbg { overflow-wrap: break-word; font-size: 12px; line-height: 1; font-weight: initial;}
+  #app_load_failure a {color:#fff}
+  #app_load { position: absolute; top: 0; left: 0; right:0; bottom: 0; background-color: #2c3e50;}
+  #app_load_spinner { margin: 30vh auto; width: 150px; height: 150px; border: 3px solid rgba(255,255,255,.3); border-radius: 50%; border-top-color: #fff; animation: app_load_spin 1s ease-in-out infinite; }
+  @keyframes app_load_spin { to { transform: rotate(360deg); } }
+  </style>
+  <div id="app_load"><div id="app_load_spinner"></div></div>
+  <div id="app_load_failure">
+<pre>
+<span>Perfetto UI - An unrecoverable problem occurred</span>
+
+If you are seeing this message, something went wrong while loading the UI.
+In most cases this is due to very slow or flaky network and it goes away by
+disabling and re-enabling WiFi or trying reloading.
+
+If the problem persists try these remediation steps:
+
+* Force-reload the page with Ctrl+Shift+R (Mac: Meta+Shift+R) or
+  Shift + click on the refresh button.
+
+* <a href="javascript:clearAllCaches();">Clear all the site storage and caches</a> and reload the page.
+
+* Clear the site data and caches from devtools, following <a target="_blank" href="https://developers.google.com/web/tools/chrome-devtools/storage/cache#deletecache">these instructions</a>.
+
+If none of this works, file a bug attaching logs and screenshots from devtools.
+  Googlers:      <a href="http://go/perfetto-ui-bug" target="_blank">go/perfetto-ui-bug</a>
+  Non-googlers:  <a href="https://github.com/google/perfetto/issues/new" target="_blank">github.com/google/perfetto/issues/new</a>
+
+<div id=app_load_failure_err></div>
+Technical Information:
+<div id=app_load_failure_dbg></div>
+</pre>
+  </div>
+  <script type="text/javascript">
+    'use strict';
+    (function () {
+      const TIMEOUT_MS = 120000;
+      let errTimerId = undefined;
+
+      function errHandler(err) {
+        // Note: we deliberately don't clearTimeout(), which means that this
+        // handler is called also in the happy case when the UI loads. In that
+        // case, though, the onCssLoaded() in frontend/index.ts will empty the
+        // <body>, so |div| below will be null and this function becomes a
+        // no-op.
+        const div = document.getElementById('app_load_failure');
+        if (!div) return;
+        div.style.opacity ='1';
+        const errDom = document.getElementById('app_load_failure_err');
+        if (!errDom) return;
+        console.error(err);
+        errDom.innerText += `${err}\n`;
+        const storageJson = JSON.stringify(window.localStorage);
+        const dbg = document.getElementById('app_load_failure_dbg');
+        if (!dbg) return;
+        dbg.innerText = `LocalStorage: ${storageJson}\n`;
+        if (errTimerId !== undefined) clearTimeout(errTimerId);
+      }
+
+      // For the 'Click here to clear all caches'.
+      window.clearAllCaches = async () => {
+        if (window.localStorage) window.localStorage.clear();
+        if (window.sessionStorage) window.sessionStorage.clear();
+        const promises = [];
+        if (window.caches) {
+          try {
+            const keys = await window.caches.keys();
+            keys.forEach(k => promises.push(window.caches.delete(k)));
+          } catch (_) {
+            // TODO(288483453)
+          }
+        }
+        if (navigator.serviceWorker) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          regs.forEach(reg => promises.push(reg.unregister()));
+        }
+        try {
+          await Promise.all(promises);
+        } catch (_) {
+          // TODO(288483453)
+        }
+        window.location.reload();
+      }
+
+      // If the frontend doesn't come up, make the error page above visible.
+      errTimerId = setTimeout(() => errHandler('Timed out'), TIMEOUT_MS);
+      window.onerror = errHandler;
+      window.onunhandledrejection = errHandler;
+
+      let runtimeConfig = {};
+      try {
+        runtimeConfig = window.__SMARTPERFETTO_CONFIG__ || {};
+      } catch (_) {
+        // Keep the local, non-OIDC startup path usable if runtime config is unavailable.
+      }
+
+      function resolveBackendUrl() {
+        const configured = typeof runtimeConfig.backendUrl === 'string'
+          ? runtimeConfig.backendUrl.trim().replace(/\/+$/, '')
+          : '';
+        if (configured) {
+          try {
+            const parsed = new URL(configured);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+              return configured;
+            }
+          } catch (_) {
+            // Fall through to the existing port-based runtime resolution.
+          }
+        }
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const port = String(runtimeConfig.backendPort || '3000').trim();
+        if (!/^\d+$/.test(port)) return '';
+        return `${protocol}//${window.location.hostname}:${port}`;
+      }
+
+      function currentReturnTo() {
+        return `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
+      }
+
+      function buildOidcLoginUrl(backendUrl) {
+        try {
+          const loginUrl = new URL(`${backendUrl}/api/auth/oidc/login`);
+          loginUrl.searchParams.set('returnTo', currentReturnTo());
+          return loginUrl.toString();
+        } catch (_) {
+          return '';
+        }
+      }
+
+      function setOidcRuntimeMode(enabled) {
+        runtimeConfig.oidcEnabled = enabled;
+        try {
+          window.__SMARTPERFETTO_CONFIG__ = runtimeConfig;
+        } catch (_) {
+          // The backend remains authoritative even if the runtime object is frozen.
+        }
+      }
+
+      function renderGate(title, message, action) {
+        document.title = title;
+        document.body.innerHTML = '';
+        const main = document.createElement('main');
+        main.style.cssText = [
+          'box-sizing:border-box',
+          'min-height:100vh',
+          'display:flex',
+          'align-items:center',
+          'justify-content:center',
+          'padding:24px',
+          'background:#f4f6f8',
+          'font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+          'color:#253142',
+        ].join(';');
+
+        const content = document.createElement('section');
+        content.style.cssText = [
+          'box-sizing:border-box',
+          'width:min(100%,440px)',
+          'padding:32px',
+          'background:#fff',
+          'border:1px solid #d9e0e7',
+          'border-radius:8px',
+          'box-shadow:0 8px 24px rgba(30,48,70,.08)',
+        ].join(';');
+        const heading = document.createElement('h1');
+        heading.textContent = title;
+        heading.style.cssText = 'margin:0 0 12px;font-size:24px;line-height:1.25;';
+        const detail = document.createElement('p');
+        detail.textContent = message;
+        detail.style.cssText = 'margin:0;color:#536273;line-height:1.6;';
+        content.append(heading, detail);
+        if (action) {
+          const button = document.createElement('a');
+          button.href = action.href;
+          button.textContent = action.label;
+          button.style.cssText = [
+            'display:inline-block',
+            'margin-top:24px',
+            'padding:10px 16px',
+            'border-radius:6px',
+            'background:#2f67c8',
+            'color:#fff',
+            'text-decoration:none',
+            'font-weight:600',
+          ].join(';');
+          content.append(button);
+        }
+        main.append(content);
+        document.body.append(main);
+      }
+
+      async function disableOidcServiceWorkerCache() {
+        const hasServiceWorker = 'serviceWorker' in navigator;
+        const hasCacheStorage = 'caches' in window;
+        if (!hasServiceWorker && !hasCacheStorage) return true;
+        if (hasServiceWorker && !hasCacheStorage) return false;
+        try {
+          if (hasCacheStorage) {
+            // This is the same marker used by Perfetto's ServiceWorkerController.
+            await caches.open('BYPASS_SERVICE_WORKER');
+            await caches.delete('ui-perfetto-dev');
+          }
+          if (hasServiceWorker) {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(registrations.map((registration) => registration.unregister()));
+          }
+          return true;
+        } catch (error) {
+          console.error(
+            '[SmartPerfetto] Could not disable the Service Worker cache for OIDC:',
+            error,
+          );
+          return false;
+        }
+      }
+
+      function loadPerfettoBundle() {
+        const versionStr = document.body.dataset['perfetto_version'] || '{}';
+        const versionMap = JSON.parse(versionStr);
+        const channel = localStorage.getItem('perfettoUiChannel') || 'stable';
+
+        // The '.' below is a fallback for the case of opening a pinned version
+        // (e.g., ui.perfetto.dev/v1.2.3./). In that case, the index.html has no
+        // valid version map; we want to load the frontend from the same
+        // sub-directory directory, hence ./frontend_bundle.js.
+        const version = versionMap[channel] || versionMap['stable'] || '.';
+
+        // Preload only after the OIDC session is ready. This keeps the complete
+        // Perfetto UI out of the unauthenticated page.
+        const fontAttrs = {crossOrigin: '', as: 'font', type: 'font/woff2'};
+        const assetsPreload = {
+          '/frontend.css': {as: 'style'},
+          '/assets/MaterialSymbolsOutlined.woff2': fontAttrs,
+          '/assets/Roboto.woff2': fontAttrs,
+        };
+        for (const [preloadPath, preloadAttrs] of Object.entries(assetsPreload)) {
+          const preloadLink = document.createElement('link');
+          preloadLink.rel = 'preload';
+          preloadLink.href = version + preloadPath;
+          Object.assign(preloadLink, preloadAttrs);
+          document.head.append(preloadLink);
+        }
+
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = version + '/frontend_bundle.js';
+        script.onerror = () => errHandler(`Failed to load ${script.src}`);
+        document.head.append(script);
+      }
+
+      async function checkOidcSession(backendUrl) {
+        const controller = typeof AbortController === 'function'
+          ? new AbortController()
+          : undefined;
+        const timeout = controller ? window.setTimeout(() => controller.abort(), 8000) : undefined;
+        try {
+          const response = await fetch(`${backendUrl}/api/auth/session`, {
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {Accept: 'application/json'},
+            ...(controller ? {signal: controller.signal} : {}),
+          });
+          if (!response.ok) return {kind: 'backend-error'};
+          let session;
+          try {
+            session = await response.json();
+          } catch (_) {
+            return {kind: 'backend-error'};
+          }
+          const authMode = typeof session?.authMode === 'string'
+            ? session.authMode
+            : runtimeConfig.oidcEnabled === true ? 'oidc' : 'local';
+          if (authMode !== 'oidc') return {kind: 'local'};
+          if (session && session.authenticated === true && session.status === 'ready') {
+            if (!session.user?.id || !session.tenant?.id || !session.workspace?.id) {
+              return {kind: 'backend-error'};
+            }
+            return {kind: 'ready', session};
+          }
+          if (session && session.authenticated === true) {
+            return {kind: 'not-ready'};
+          }
+          return {kind: 'login'};
+        } catch (_) {
+          return {kind: 'backend-error'};
+        } finally {
+          if (timeout !== undefined) window.clearTimeout(timeout);
+        }
+      }
+
+      async function bootstrap() {
+        const authProbeRequired = runtimeConfig.authProbeRequired === true
+          || runtimeConfig.oidcEnabled === true;
+        if (!authProbeRequired) {
+          loadPerfettoBundle();
+          return;
+        }
+
+        const backendUrl = resolveBackendUrl();
+        if (!backendUrl) {
+          if (runtimeConfig.oidcEnabled === true) {
+            renderGate(
+              '无法连接 SmartPerfetto',
+              '认证服务地址未配置，页面已停止加载。',
+            );
+          } else {
+            loadPerfettoBundle();
+          }
+          return;
+        }
+        const result = await checkOidcSession(backendUrl);
+        if (result.kind === 'local') {
+          if (runtimeConfig.oidcEnabled === true) {
+            renderGate(
+              '认证配置不一致',
+              '前端已启用 OIDC，但后端仍处于普通模式。请统一前后端配置后刷新。',
+            );
+          } else {
+            loadPerfettoBundle();
+          }
+          return;
+        }
+        if (result.kind === 'backend-error') {
+          if (runtimeConfig.oidcEnabled === true) {
+            renderGate(
+              '无法连接认证服务',
+              '认证后端没有正常响应，页面已停止加载。请确认服务运行后刷新。',
+            );
+          } else {
+            loadPerfettoBundle();
+          }
+          return;
+        }
+        setOidcRuntimeMode(true);
+        if (!await disableOidcServiceWorkerCache()) {
+          renderGate(
+            '无法安全启动',
+            '浏览器缓存服务未能关闭，页面已停止加载。请刷新后重试。',
+          );
+          return;
+        }
+        if (result.kind === 'ready') {
+          try {
+            window.__SMARTPERFETTO_AUTH_SESSION__ = result.session;
+          } catch (_) {
+            // The bundle still starts; the backend remains the authority.
+          }
+          loadPerfettoBundle();
+          return;
+        }
+        if (result.kind === 'login') {
+          const loginUrl = buildOidcLoginUrl(backendUrl);
+          renderGate(
+            '需要登录 SmartPerfetto',
+            '请先完成企业单点登录，登录成功后才能打开 Perfetto 分析页面。',
+            loginUrl ? {href: loginUrl, label: '使用 OIDC 登录'} : undefined,
+          );
+          return;
+        }
+        if (result.kind === 'not-ready') {
+          renderGate(
+            '账号初始化失败',
+            '后端没有为当前 OIDC 账号建立个人工作区，页面已停止加载。请检查后端日志后重试。',
+          );
+          return;
+        }
+      }
+
+      void bootstrap();
+    })();
+  </script>
+</body>
+</html>

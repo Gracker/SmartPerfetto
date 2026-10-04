@@ -26,7 +26,7 @@ import {
   snapshotProvesNoPrivateContext,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
-import {registerSessionBackgroundKnowledgeReferences} from '../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+import {registerSessionBackgroundKnowledgeReferences} from '../services/knowledge/sessionBackgroundKnowledgeRegistry';
 import {projectStoredAnalysisResultForOwner} from '../services/security/privateAnalysisProjection';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
@@ -316,7 +316,6 @@ export function registerAgentResumeRoutes(
         codeAwareMode: snapshot?.codeAwareMode,
         codebaseIds: snapshot?.codebaseIds,
         knowledgeSourceIds: snapshot?.knowledgeSourceIds,
-        androidInternalsPackPin: snapshot?.androidInternalsPackPin,
         continuityBreaks: continuityBreaks.length > 0 ? continuityBreaks : undefined,
         lineage: snapshot?.lineage ?? persistedSession.metadata?.lineage,
         referenceTraceId: snapshot?.referenceTraceId,
