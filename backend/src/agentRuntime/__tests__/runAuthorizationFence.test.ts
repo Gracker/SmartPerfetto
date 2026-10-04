@@ -9,15 +9,22 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {getDefaultCodebaseRegistry, resetDefaultCodebaseRegistryForTests} from '../../services/codebase/defaultCodebaseServices';
 import {StoreUnreadableError} from '../../utils/storedData';
+import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {RuntimeExecutionGuard} from '../runtimeExecutionGuard';
 import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked} from '../runAuthorizationFence';
 
-const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['cb-private']};
+const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['cb-private'],
+  analysisContextFingerprint: 'fingerprint-at-admission'};
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
 let runs = 0;
 function run(options: Record<string, unknown> = PRIVATE, stopNative = jest.fn<() => void | Promise<unknown>>()) {
   const lease = new RuntimeExecutionGuard().begin({runtime: 'claude-agent-sdk', sessionId: `s-${++runs}`});
   return {lease, stopNative, ...createRuntimeRunAuthorization({options: options as any, executionLease: lease, stopNative})};
+}
+/** Options as admission hands them to a run: the selection plus the fingerprint read at admission. */
+function admitted(selection: {codeAwareMode: 'provider_send'; codebaseIds: string[]}) {
+  return {...selection, analysisContextFingerprint:
+    contextAuthorization.buildAnalysisContextAuthorizationFingerprint(selection, resolveKnowledgeScope({}))};
 }
 const revokeAll = () => jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization')
   .mockImplementation(() => { throw new contextAuthorization.AnalysisContextAuthorizationChangedError(); });
@@ -32,6 +39,20 @@ describe('run authorization fence', () => {
     expect(() => fence.assertCurrent()).not.toThrow();
     expect(read).not.toHaveBeenCalled();
     expect(lease.signal.aborted).toBe(false);
+  });
+
+  it('checks against the fingerprint the run was admitted under and never rebuilds a missing one', () => {
+    const read = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => undefined);
+    const build = jest.spyOn(contextAuthorization, 'buildAnalysisContextAuthorizationFingerprint');
+    run().fence.assertCurrent();
+    expect(read).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'fingerprint-at-admission');
+
+    const {analysisContextFingerprint: _admitted, ...unadmitted} = PRIVATE;
+    expect(() => run(unadmitted)).toThrow('analysis_context_fingerprint_required');
+    expect(() => run({...PRIVATE, analysisContextFingerprint: ' '})).toThrow('analysis_context_fingerprint_required');
+    // A run without private context has nothing to pin.
+    expect(() => run({})).not.toThrow();
+    expect(build).not.toHaveBeenCalled();
   });
 
   it('ends only its own run once on a revoke, and every later check throws without reading again', () => {
@@ -127,7 +148,7 @@ describe('run authorization fence', () => {
       const root = fs.mkdtempSync(path.join(directory, 'root-'));
       const registry = getDefaultCodebaseRegistry();
       const ref = registry.register({kind: 'app_source', displayName: 'App', rootPath: root, sendToProvider: true});
-      const {fence, lease} = run({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId]});
+      const {fence, lease} = run(admitted({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId]}));
       fence.assertCurrentInTurn();
       // An HTTP request handled in this same turn withdraws consent.
       registry.setProviderConsent(ref.codebaseId, {}, false, 'owner');
@@ -142,7 +163,7 @@ describe('run authorization fence', () => {
       const registryFile = path.join(directory, 'codebase_registry.json');
       const readable = fs.readFileSync(registryFile, 'utf8');
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-      const {fence, lease, stopNative} = run({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId]});
+      const {fence, lease, stopNative} = run(admitted({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId]}));
       expect(() => fence.assertCurrent()).not.toThrow();
 
       await nextTurn();

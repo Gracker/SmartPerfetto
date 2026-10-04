@@ -63,6 +63,7 @@ import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRunti
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
 jest.mock('../engines/claude/claudeVerifier', () => {
@@ -1170,9 +1171,9 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
     try {
-      await runtime.analyze('Analyze the scrolling session', 'session-pi-private-experience', 'trace-pi', {
+      await runtime.analyze('Analyze the scrolling session', 'session-pi-private-experience', 'trace-pi', admitted({
         analysisMode: 'full', codeAwareMode: 'metadata_only', codebaseIds: ['cb-pi-private-experience'],
-      });
+      }));
       expect(patterns).toHaveBeenCalledTimes(1);
       expect(negative).toHaveBeenCalledTimes(1);
       expect(buildPrompt).toHaveBeenCalledWith(expect.objectContaining({
@@ -1195,13 +1196,13 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
 
-    const result = await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', {
+    const result = await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', admitted({
       analysisMode: 'fast',
       assistantSurface: 'conversation',
       conversationTraceAttached: true,
       codeAwareMode: 'provider_send',
       codebaseIds: ['cb-pi-quick'],
-    });
+    }));
 
     const agent = FakePiAgent.instances[FakePiAgent.instances.length - 1]!;
     expect(agent.state.systemPrompt).toContain('cb-pi-quick');
@@ -1248,22 +1249,22 @@ describe('experimental Pi agent-core runtime contract', () => {
     }];
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
-      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-pi', {
+      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-pi', admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
       const context = takeFinalizationContext(terminal)!;
       try {
         expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
-      const next = await runtime.analyze('public second run', sessionId, 'trace-pi', {
+      const next = await runtime.analyze('public second run', sessionId, 'trace-pi', admitted({
         analysisMode: 'fast',
         codeAwareMode: 'off',
-      });
+      }));
 
       expect(terminal.success).toBe(true);
       expect(terminal.sourceUseDecision).toEqual(decision);
@@ -1313,11 +1314,11 @@ describe('experimental Pi agent-core runtime contract', () => {
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
 
-      const result = await runtime.analyze('source timeout run', sessionId, 'trace-pi', {
+      const result = await runtime.analyze('source timeout run', sessionId, 'trace-pi', admitted({
         analysisMode: 'full',
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
 
       expect(result).toMatchObject({
         success: false,
@@ -3023,11 +3024,11 @@ describe('experimental Pi agent-core runtime contract', () => {
       role: 'assistant',
       content: [{type: 'text', text: 'PRIVATE_SOURCE_CANARY'}],
     }];
-    await runtime.analyze('private', 'session-private-boundary', 'trace-pi', {
+    await runtime.analyze('private', 'session-private-boundary', 'trace-pi', admitted({
       analysisMode: 'full',
       codeAwareMode: 'metadata_only',
       codebaseIds: ['private-codebase'],
-    });
+    }));
     expect((FakePiAgent.instances[1].options?.initialState as any).messages).toEqual([]);
 
     const privateSnapshot = runtime.takeSnapshot(
@@ -3272,9 +3273,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     passVerification();
     piClassifierDecision = {...piClassifierDecision, evidenceAccess: 'existing_only'};
     const trace = createFakeTraceProcessorService();
-    const result = await typedRuntime({trace}).analyze('继续解释上一轮证据', 'typed-pi-existing', 'trace-pi', {
+    const result = await typedRuntime({trace}).analyze('继续解释上一轮证据', 'typed-pi-existing', 'trace-pi', admitted({
       analysisMode: 'full', referenceTraceId: 'trace-ref', codeAwareMode: 'provider_send', codebaseIds: ['selected-source'],
-    });
+    }));
     expect(result.turnIntent?.evidenceAccess).toBe('existing_only');
     expect(trace.query).not.toHaveBeenCalled();
     const names = FakePiAgent.instances[0].state.tools.map((tool: any) => tool.name);
@@ -3510,8 +3511,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
     const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization');
     try {
-      const result = await runtime.analyze('query', `pi-protocol-${kind}`, 'trace-pi', {runId: `pi-protocol-${kind}`,
-        codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']});
+      const result = await runtime.analyze('query', `pi-protocol-${kind}`, 'trace-pi', admitted({runId: `pi-protocol-${kind}`,
+        codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}));
       expect(FakePiAgent.instances[0].promptCount).toBe(2);
       expect(authorizationChecksAtDispatch[0]).toBeGreaterThan(0);
       expect(authorizationChecksAtDispatch[1]).toBeGreaterThan(authorizationChecksAtDispatch[0]);
@@ -3615,7 +3616,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       return realAuthorization(...args);
     });
     try {
-      await expect(typedRuntime().analyze('query', 'pi-protocol-revoked', 'trace-pi', PRIVATE_SELECTION))
+      await expect(typedRuntime().analyze('query', 'pi-protocol-revoked', 'trace-pi', admitted(PRIVATE_SELECTION)))
         .rejects.toThrow('analysis_context_changed_restart_required');
       expect(sent).toBe(1);
       expect(FakePiAgent.instances[0].aborted).toBe(true);
@@ -3647,7 +3648,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       };
       const authorization = revokeWhen(() => revoked);
       try {
-        await expect(typedRuntime().analyze('query', 'pi-revoked-continuation', 'trace-pi', PRIVATE_SELECTION))
+        await expect(typedRuntime().analyze('query', 'pi-revoked-continuation', 'trace-pi', admitted(PRIVATE_SELECTION)))
           .rejects.toThrow('analysis_context_changed_restart_required');
         expect(continuation).toBeInstanceOf(contextAuthorization.AnalysisContextAuthorizationChangedError);
         expect(mainDispatches()).toHaveLength(1);
@@ -3665,7 +3666,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       };
       const authorization = revokeWhen(() => revoked);
       try {
-        await expect(typedRuntime().analyze('query', 'pi-revoked-before-dispatch', 'trace-pi', PRIVATE_SELECTION))
+        await expect(typedRuntime().analyze('query', 'pi-revoked-before-dispatch', 'trace-pi', admitted(PRIVATE_SELECTION)))
           .rejects.toThrow('analysis_context_changed_restart_required');
         expect(mainDispatches()).toHaveLength(0);
       } finally { authorization.mockRestore(); }
@@ -3687,7 +3688,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       return realAuthorization(...args);
     });
     try {
-      await expect(typedRuntime().analyze('query', 'pi-declaration-authorization-change', 'trace-pi', PRIVATE_SELECTION))
+      await expect(typedRuntime().analyze('query', 'pi-declaration-authorization-change', 'trace-pi', admitted(PRIVATE_SELECTION)))
         .rejects.toThrow('analysis_context_changed_restart_required');
       expect(FakePiAgent.instances[0].promptCount).toBe(2);
     } finally { authorization.mockRestore(); }

@@ -51,6 +51,8 @@ import {
 } from './src/agentRuntime/engines/pi/piAgentCoreRuntime.ts';
 import {renderConclusionContractSidecar} from './src/agent/core/conclusionContract.ts';
 import {inspectCandidateProtocol} from './src/services/canonicalAnalysisResult.ts';
+import {buildAnalysisContextAuthorizationFingerprint} from './src/services/resolvedAnalysisContext.ts';
+import {resolveKnowledgeScope} from './src/services/scopedKnowledgeStore.ts';
 
 const {Agent} = await loadPiAgentCoreModule();
 
@@ -301,14 +303,17 @@ for (const request of resumedRuntimeProvider.requests) {
 resumedRuntimeProvider.runtimeFaux.setResponses([
   runtimeIntentResponse(), fauxAssistantMessage(declaredRuntimeAnswer(runtimeQuestion('private-runtime'))),
 ]);
+const privateSelection = {codeAwareMode: 'metadata_only', codebaseIds: ['private-codebase']};
 const privateRuntimeResult = await resumedRuntime.analyze(
   'Analyze with private source context.',
   'session-real-runtime',
   'trace-pi-real',
   {
     analysisMode: 'fast',
-    codeAwareMode: 'metadata_only',
-    codebaseIds: ['private-codebase'],
+    ...privateSelection,
+    // As admission hands it over: a run with private context needs the fingerprint it was admitted under.
+    analysisContextFingerprint: buildAnalysisContextAuthorizationFingerprint(
+      privateSelection, resolveKnowledgeScope({})),
   },
 );
 assertCompletedRuntime(privateRuntimeResult, runtimeQuestion('private-runtime'));

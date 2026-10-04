@@ -171,6 +171,20 @@ function fingerprintOfEffective(
   return `${ANALYSIS_CONTEXT_FINGERPRINT_FORMAT}:${createHash('sha256').update(JSON.stringify(payload)).digest('hex')}`;
 }
 
+/**
+ * The fingerprint a run was admitted under, which every later check compares
+ * against. It has to come from admission (`prepareSession`, the conversation
+ * and CLI entry points all compute it): rebuilding it at run time would pin
+ * whatever the registries hold by then, so a revoke between admission and the
+ * run would pass every check.
+ */
+export function requireAdmittedAnalysisContextFingerprint(fingerprint: string | undefined): string {
+  if (typeof fingerprint !== 'string' || !fingerprint.trim()) {
+    throw new Error('analysis_context_fingerprint_required');
+  }
+  return fingerprint;
+}
+
 /** Final run-boundary authorization fence for consent/selection/deletion TOCTOU; index generations are checked per tool. */
 export function assertCurrentAnalysisContextAuthorization(
   selection: AnalysisContextSelection,

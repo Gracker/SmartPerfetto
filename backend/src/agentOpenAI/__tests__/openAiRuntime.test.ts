@@ -52,6 +52,8 @@ import {admitLearnedEntry, withDurableLearningPermission} from '../../services/s
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../../services/enterpriseMigration';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
+import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 
 const runtimes: OpenAIRuntime[] = [];
 const privacySessions: string[] = [];
@@ -215,9 +217,9 @@ describe('OpenAI typed intent integration', () => {
     const architecture = jest.spyOn(runtime, 'detectArchitecture');
     const completeness = jest.spyOn(runtime, 'detectCompleteness');
     const run = mockRun();
-    const result = await runtime.analyze('compare selected facts', 'fast-pair', 'current', {
+    const result = await runtime.analyze('compare selected facts', 'fast-pair', 'current', admitted({
       analysisMode: 'fast', providerId: null, referenceTraceId: 'reference', knowledgeSourceIds: ['kb-a'],
-    });
+    }));
     expect(result.quickRun.requestedMode).toBe('fast');
     expect(focus).toHaveBeenCalled(); expect(architecture).toHaveBeenCalled();
     expect(completeness).toHaveBeenCalled();
@@ -773,8 +775,8 @@ describe('OpenAI cancellation and bounded recovery', () => {
       if (run.mock.calls.length >= 2) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
       return currentAuthorization(...args);
     });
-    await expect(runtime.analyze('query', 'cap-summary-revoked', 'trace', {analysisMode: 'fast', providerId: null,
-      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})).rejects.toThrow('analysis_context_changed_restart_required');
+    await expect(runtime.analyze('query', 'cap-summary-revoked', 'trace', admitted({analysisMode: 'fast', providerId: null,
+      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}))).rejects.toThrow('analysis_context_changed_restart_required');
     expect(run).toHaveBeenCalledTimes(2);
   });
   it('starts a fresh physical response and injects typed partial history instead of opaque SDK state', async () => {
@@ -1062,9 +1064,9 @@ describe('OpenAI bounded output-limit recovery', () => {
       .mockResolvedValueOnce(wire('complete-answer', {role: 'assistant', content: 'The complete answer uses the source already read.'}, 'stop'));
     const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization');
     const updates: any[] = []; runtime.on('update', (update: unknown) => updates.push(update));
-    const result = await runtime.analyze('query', 'source-output-recovery', 'trace', {
+    const result = await runtime.analyze('query', 'source-output-recovery', 'trace', admitted({
       providerId: null, analysisMode: 'full', codeAwareMode: 'provider_send', codebaseIds: ['codebase-a'], runId: 'recovery-run',
-    });
+    }));
     expect(fetchMock).toHaveBeenCalledTimes(maxTurns);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(authorization).toHaveBeenCalledWith(expect.objectContaining({codebaseIds: ['codebase-a'], runId: 'recovery-run'}),
@@ -1151,8 +1153,8 @@ describe('OpenAI bounded output-limit recovery', () => {
       if (revoked) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
       return real(...args);
     });
-    await expect(runtime.analyze('query', 'revoked-recovery', 'trace', {providerId: null, analysisMode: 'full',
-      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})).rejects.toThrow('analysis_context_changed_restart_required');
+    await expect(runtime.analyze('query', 'revoked-recovery', 'trace', admitted({providerId: null, analysisMode: 'full',
+      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}))).rejects.toThrow('analysis_context_changed_restart_required');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -1171,8 +1173,8 @@ describe('OpenAI bounded output-limit recovery', () => {
       if (revoked) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
       return real(...args);
     });
-    await expect(runtime.analyze('query', 'revoked-classifier-retry', 'trace', {providerId: null,
-      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})).rejects.toThrow('analysis_context_changed_restart_required');
+    await expect(runtime.analyze('query', 'revoked-classifier-retry', 'trace', admitted({providerId: null,
+      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}))).rejects.toThrow('analysis_context_changed_restart_required');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   }, 15_000);
 
@@ -1205,7 +1207,7 @@ describe('OpenAI bounded output-limit recovery', () => {
           id: 'source-call-1', type: 'function', function: {name: 'read_codebase_file', arguments: '{}'}}]}, 'tool_calls'))
         .mockResolvedValueOnce(chatCompletionResponse('answer', {role: 'assistant', content: 'Must never be requested.'}, 'stop'));
       revokeWhen(() => revoked);
-      await expect(runtime.analyze('query', 'revoked-after-read', 'trace', options))
+      await expect(runtime.analyze('query', 'revoked-after-read', 'trace', admitted(options as AnalysisOptions)))
         .rejects.toThrow('analysis_context_changed_restart_required');
       expect(execute).toHaveBeenCalledTimes(1);
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -1222,7 +1224,7 @@ describe('OpenAI bounded output-limit recovery', () => {
         return (realRun as any).apply(this, args);
       });
       revokeWhen(() => revoked);
-      await expect(runtime.analyze('query', 'revoked-before-dispatch', 'trace', options))
+      await expect(runtime.analyze('query', 'revoked-before-dispatch', 'trace', admitted(options as AnalysisOptions)))
         .rejects.toThrow('analysis_context_changed_restart_required');
       expect(fetchMock).not.toHaveBeenCalled();
     });
@@ -1732,9 +1734,9 @@ describe('OpenAI source finalization parity', () => {
     const fixture = createRuntimeSourceFinalizationFixture({createMcpServer: mcpModule.createClaudeMcpServer, sessionId: 'pending-source'});
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime, fixture.sourceUse); mockRun();
     try {
-      const result = await runtime.analyze('source context', fixture.sessionId, 'trace', {
+      const result = await runtime.analyze('source context', fixture.sessionId, 'trace', admitted({
         analysisMode: 'fast', providerId: null, codeAwareMode: 'provider_send', codebaseIds: [fixture.codebaseId],
-      });
+      }));
       expect(result).toMatchObject({success: true, sourceUseDecision: {status: 'pending'}, sourceReferences: [],
         completion: {status: 'completed'}});
       expect(result.partial).toBeUndefined();
@@ -1750,9 +1752,9 @@ describe('OpenAI source finalization parity', () => {
       const {decision: sourceDecision} = await fixture.executeProviderSourceLookup();
       const prepare = prepareStub(runtime, fixture.sourceUse);
       const run = mockRun(sdkStream(SOURCE_FINALIZATION_RAW_SOURCE));
-      const result = await runtime.analyze('source context', fixture.sessionId, 'trace', {
+      const result = await runtime.analyze('source context', fixture.sessionId, 'trace', admitted({
         analysisMode: 'fast', providerId: null, codeAwareMode: 'provider_send', codebaseIds: [fixture.codebaseId],
-      });
+      }));
       expect(result.sourceUseDecision).toEqual(sourceDecision); expect(result.sourceReferences).toEqual(sourceDecision.references);
       expect(JSON.stringify(result)).toContain(SOURCE_FINALIZATION_CANARY);
       expect(result.completion.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
@@ -1761,7 +1763,7 @@ describe('OpenAI source finalization parity', () => {
       expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
       expect(JSON.stringify(result)).not.toContain('conclusion_protocol_projection');
       prepare.mockRestore(); prepareStub(runtime); run.mockResolvedValue(sdkStream('public second answer'));
-      const next = await runtime.analyze('another request', fixture.sessionId, 'trace', {analysisMode: 'fast', providerId: null, codeAwareMode: 'off'});
+      const next = await runtime.analyze('another request', fixture.sessionId, 'trace', admitted({analysisMode: 'fast', providerId: null, codeAwareMode: 'off'}));
       expect(next.sourceUseDecision).toBeUndefined(); expect(next.sourceReferences).toBeUndefined();
       expect(next.completion.candidateRef).not.toBe(result.completion.candidateRef);
     } finally {fixture.cleanup();}
@@ -1776,7 +1778,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream(nativeBody));
     const projected = jest.spyOn(sourceProjection, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
     const verified = jest.spyOn(verifier, 'verifyConclusion');
-    const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, outputLanguage, knowledgeSourceIds: ['private-source']});
+    const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, outputLanguage, knowledgeSourceIds: ['private-source']}));
     const outcome = projected.mock.results[0].value as ReturnType<typeof sourceProjection.finalizeOwnerSourceAwareAnalysisResultWithProjection>;
     expect(outcome.conclusionProjection.disposition).toBe('redacted');
     expect(result).toMatchObject({outputOrigin: 'sdk_final', completion: {status: 'completed'}});
@@ -1799,7 +1801,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream(nativeBody));
     const projected = jest.spyOn(sourceProjection, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
     const verified = jest.spyOn(verifier, 'verifyConclusion');
-    const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, outputLanguage, knowledgeSourceIds: ['private-source']});
+    const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, outputLanguage, knowledgeSourceIds: ['private-source']}));
     const outcome = projected.mock.results[0].value as ReturnType<typeof sourceProjection.finalizeOwnerSourceAwareAnalysisResultWithProjection>;
     expect(outcome.conclusionProjection.disposition).toBe('replaced');
     expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}, quickRun: {stopReason: 'partial'}});
@@ -1825,7 +1827,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream('Before PRIVATE_CANARY after', {status}));
     const verified = jest.spyOn(verifier, 'verifyConclusion');
-    const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, knowledgeSourceIds: ['private-source']});
+    const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, knowledgeSourceIds: ['private-source']}));
     expect(result.completion.status).toBe(status);
     const context = verified.mock.calls[0][2]?.deliveryContext;
     expect(context?.entry === 'runtime_draft' && context.completion).toEqual(result.completion);
@@ -1839,7 +1841,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
       throw new Error('PRIVATE_CANARY provider failure');
     }});
     const projected = jest.spyOn(sourceProjection, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, knowledgeSourceIds: ['private-source']});
+    const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, knowledgeSourceIds: ['private-source']}));
     expect((projected.mock.results[0].value as ReturnType<typeof sourceProjection.finalizeOwnerSourceAwareAnalysisResultWithProjection>).conclusionProjection.disposition).toBe('redacted');
     expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'assistant_stream', completion: {status: 'failed', reason: 'provider_error'}});
     expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
@@ -1863,7 +1865,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     const sessionId = 'projection-setup-failed'; privacySessions.push(sessionId); registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const {runtime, updates} = createRuntimeWithUpdates();
     prepareStub(runtime).mockRejectedValue(new Error('PRIVATE_CANARY setup failed'));
-    const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, knowledgeSourceIds: ['private-source']});
+    const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, knowledgeSourceIds: ['private-source']}));
     expect(result).toMatchObject({success: false, partial: true, conclusion: '', outputOrigin: 'runtime_fallback',
       completion: {status: 'failed', reason: 'provider_error'}});
     expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
@@ -1893,7 +1895,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
       entered.resolve(); await release.promise;
     }});
     const projected = jest.spyOn(sourceProjection, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const pending = runtime.analyze('query', sessionId, 'trace', {providerId: null, knowledgeSourceIds: ['private-source']});
+    const pending = runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, knowledgeSourceIds: ['private-source']}));
     const rejected = expect(pending).rejects.toThrow(); await entered.promise; runtime.abortSession(sessionId); release.resolve(); await rejected;
     expect(projected).not.toHaveBeenCalled();
     expect(updates.filter(update => update.type === 'conclusion')).toHaveLength(0);
@@ -2085,7 +2087,7 @@ describe('OpenAI finalization handoff', () => {
   it('attaches the privacy-returned context rather than the replaced native one', async () => {
     const sessionId = 'finalization-replaced'; privacySessions.push(sessionId); revokeCodeAwareOutputGuards(sessionId);
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun();
-    const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, knowledgeSourceIds: ['private-source']});
+    const result = await runtime.analyze('query', sessionId, 'trace', admitted({providerId: null, knowledgeSourceIds: ['private-source']}));
     const context = takeContext(result);
     expect(context.deliveryContext).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown',
       conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});

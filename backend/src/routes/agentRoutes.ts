@@ -210,7 +210,7 @@ import {withDurableLearningPermission} from '../services/security/durableLearnin
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
+  requireAdmittedAnalysisContextFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
 import {runAnalysisSelection} from '../services/effectiveAnalysisSelection';
@@ -3465,6 +3465,8 @@ async function runSmartAnalysis(
 ): Promise<void> {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
+  // Before the run starts: without its admitted fingerprint nothing may run.
+  const authorizationFingerprint = requireAdmittedAnalysisContextFingerprint(session.analysisContextFingerprint);
 
   const startedAt = Date.now();
   const runId = options.runContext.runId;
@@ -3482,8 +3484,6 @@ async function runSmartAnalysis(
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runId);
   const authorizationSelection: AnalysisContextSelection = runAnalysisSelection(options, session.sourceAuthorization);
   const knowledgeScope = {...options.knowledgeScope};
-  const authorizationFingerprint = session.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
   const finalizationRun = createHttpFinalizationRun(session, runId, authorizationSelection,
     knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const cancelToken = smartCancelBridge.create(sessionId, runId);
@@ -4474,6 +4474,8 @@ export function resolveSessionArchitectureType(
 async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId: string, options: any = {}) {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
+  // Before the run starts: without its admitted fingerprint nothing may run.
+  const authorizationFingerprint = requireAdmittedAnalysisContextFingerprint(session.analysisContextFingerprint);
 
   const inputRun = options.runContext as AnalyzeSessionRunContext | undefined;
   const requestedRunId = inputRun?.runId ?? session.activeRun?.runId;
@@ -4541,8 +4543,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   const knowledgeScope: KnowledgeScope = {...(options.knowledgeScope ?? {
     tenantId: session.tenantId, workspaceId: session.workspaceId, userId: session.userId,
   })};
-  const authorizationFingerprint = session.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
   const finalizationRun = createHttpFinalizationRun(session, runIdForAnalysis,
     authorizationSelection, knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const startedAt = session.activeRun!.startedAt;

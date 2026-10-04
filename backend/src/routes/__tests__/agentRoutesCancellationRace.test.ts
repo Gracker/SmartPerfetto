@@ -1375,7 +1375,7 @@ describe('HTTP shared finalization ownership', () => {
       _options?: import('../../agent/core/orchestratorTypes').AnalysisOptions) => native);
     const orchestrator = Object.assign(emitter, {analyze, abortSession: jest.fn(), cleanupSession: jest.fn()});
     const session = {sessionId: id, traceId: 'trace-a', query: 'fact', createdAt: Date.now(), lastActivityAt: Date.now(),
-      status: 'running', activeRun: run, lastRun: run, runRegistry: {[runId]: run}, runSequence: 1,
+      analysisContextFingerprint: 'fixed-auth', status: 'running', activeRun: run, lastRun: run, runRegistry: {[runId]: run}, runSequence: 1,
       sseClients: [], sseEventSeq: 0, sseEventBuffer: [], dataEnvelopes: [], hypotheses: [],
       conclusionHistory: [], conversationSteps: [], agentDialogue: [], agentResponses: [], orchestrator,
       logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), close: jest.fn(),
@@ -1679,6 +1679,22 @@ describe('HTTP shared finalization ownership', () => {
       expect(persistence.persistAgentTurn).not.toHaveBeenCalled();
       expect(f.session.result).toBeUndefined();
       expect(taken).toBeUndefined();
+    } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+  });
+
+  it('refuses to start a run whose session lost its admitted fingerprint, and never rebuilds one', async () => {
+    const id = 'http-unadmitted';
+    const f = fixture(id);
+    f.session.analysisContextFingerprint = undefined;
+    const build = contextAuthorization.buildAnalysisContextAuthorizationFingerprint as jest.Mock;
+    build.mockClear();
+    try {
+      await expect(agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', {
+        runContext: f.session.activeRun, generateTracks: false,
+      })).rejects.toThrow('analysis_context_fingerprint_required');
+      expect(f.analyze).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      expect(persistence.persistAgentTurn).not.toHaveBeenCalled();
     } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
   });
 
