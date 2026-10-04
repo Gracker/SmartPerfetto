@@ -12,12 +12,39 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import fs from 'fs';
 import path from 'path';
 import * as yaml from 'yaml';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace, type EvalStepResult } from './runner';
 
 // The constructed binder-io-blocking case carries an input-dispatch ANR of
 // com.smartperfetto.fixture, with thread states and slices around it; the
 // trace corpus materializes it, so every suite here runs in the gate.
 const TRACE_FILE = 'binder-io-blocking';
+
+/** The params analyze_anr_events passes anr_detail for one ANR event row. */
+function anrDetailParams(event: Record<string, any>): Record<string, any> {
+  return {
+    anr_ts: event.anr_ts,
+    timeout_ns: event.timeout_ns,
+    process_name: event.process_name,
+    pid: event.pid,
+    upid: event.upid,
+    anr_type: event.anr_type,
+    error_id: event.error_id || '',
+    intent: event.intent || '',
+    component: event.component || '',
+    anr_dur_ms: event.anr_dur_ms,
+    perfetto_start: event.perfetto_start,
+    perfetto_end: event.perfetto_end,
+  };
+}
+
+/** A step ran on one target process: the exact UPID its Skill was issued. */
+function expectExactUpidScope(step: EvalStepResult, upid: number): void {
+  expect(step.success).toBe(true);
+  expect(step.scopeProvenance?.entries).toEqual([expect.objectContaining({
+    role: 'target',
+    scope: expect.objectContaining({mode: 'exact_upid', upid}),
+  })]);
+}
 
 describe('anr_detail evidence boundary contract', () => {
   it('should not use package-scoped legacy artifacts as final diagnosis inputs', () => {
@@ -803,20 +830,7 @@ describeWithTrace('anr_analysis ANR trace smoke', TRACE_FILE, () => {
       await detailEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
       const [availability, directBlocker] = await detailEvaluator.executeStepSequence(
         ['thread_evidence_availability', 'direct_blocker_classification'],
-        {
-          anr_ts: firstEvent.anr_ts,
-          timeout_ns: firstEvent.timeout_ns,
-          process_name: firstEvent.process_name,
-          pid: firstEvent.pid,
-          upid: firstEvent.upid,
-          anr_type: firstEvent.anr_type,
-          error_id: firstEvent.error_id || '',
-          intent: firstEvent.intent || '',
-          component: firstEvent.component || '',
-          anr_dur_ms: firstEvent.anr_dur_ms,
-          perfetto_start: firstEvent.perfetto_start,
-          perfetto_end: firstEvent.perfetto_end,
-        },
+        anrDetailParams(firstEvent),
       );
 
       expect(availability.success).toBe(true);
@@ -838,36 +852,57 @@ describeWithTrace('anr_analysis ANR trace smoke', TRACE_FILE, () => {
     }
   }, 240000);
 
-  it('should execute anr_detail upid-safe helper skills through the real evaluator step path', async () => {
+  it('should scope anr_detail main-thread helpers to the ANR event process, and refuse another', async () => {
     const events = await evaluator.executeStep('get_anr_events', { enable_detail_analysis: false });
     expect(events.success).toBe(true);
     expect(events.data.length).toBeGreaterThan(0);
 
     const firstEvent = events.data[0];
     const detailEvaluator = createSkillEvaluator('anr_detail');
+    const eventParams = anrDetailParams(firstEvent);
+
+    // Independent oracle: the ANR process's own main thread, by its upid, in the
+    // timeout window (state rows grouped like main_thread_states_in_range).
+    const window = `${firstEvent.anr_ts} - ${firstEvent.timeout_ns}`;
+    const end = (alias: string) => `IIF(${alias}.dur < 0, ${firstEvent.anr_ts}, ${alias}.ts + ${alias}.dur)`;
+    const clippedEnd = (alias: string) => `MIN(${end(alias)}, ${firstEvent.anr_ts})`;
+    const mainThread = `SELECT t.utid FROM thread t JOIN process p USING (upid) WHERE p.upid = ${firstEvent.upid} AND t.tid = p.pid`;
+    const stateOracle = await evaluator.executeSQL(`
+      SELECT ts.state, ROUND(SUM(${clippedEnd('ts')} - MAX(ts.ts, ${window})) / 1e6, 2) AS total_dur_ms
+      FROM thread_state ts
+      WHERE ts.utid IN (${mainThread}) AND ts.ts < ${firstEvent.anr_ts}
+        AND ${end('ts')} > ${window}
+      GROUP BY ts.state, ts.io_wait, NULLIF(ts.blocked_function, '')
+      ORDER BY total_dur_ms DESC LIMIT 1
+    `);
+    const sliceOracle = await evaluator.executeSQL(`
+      SELECT s.name, ROUND(SUM(${clippedEnd('s')} - MAX(s.ts, ${window})) / 1e6, 2) AS total_ms
+      FROM slice s JOIN thread_track tt ON s.track_id = tt.id
+      WHERE tt.utid IN (${mainThread}) AND s.ts < ${firstEvent.anr_ts}
+        AND ${end('s')} > ${window}
+      GROUP BY s.name ORDER BY total_ms DESC LIMIT 1
+    `);
+    expect(stateOracle.error).toBeUndefined();
+    expect(sliceOracle.error).toBeUndefined();
+    const [topState, topStateMs] = stateOracle.rows[0];
+    const [topSlice, topSliceMs] = sliceOracle.rows[0];
 
     try {
       await detailEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
       const [blocking, mainSlices] = await detailEvaluator.executeStepSequence(
-        ['blocking_reasons', 'main_thread_slices'],
-        {
-          anr_ts: firstEvent.anr_ts,
-          timeout_ns: firstEvent.timeout_ns,
-          process_name: firstEvent.process_name,
-          pid: firstEvent.pid,
-          upid: firstEvent.upid,
-          anr_type: firstEvent.anr_type,
-          error_id: firstEvent.error_id || '',
-          intent: firstEvent.intent || '',
-          component: firstEvent.component || '',
-          anr_dur_ms: firstEvent.anr_dur_ms,
-          perfetto_start: firstEvent.perfetto_start,
-          perfetto_end: firstEvent.perfetto_end,
-        },
-      );
+        ['blocking_reasons', 'main_thread_slices'], eventParams);
 
-      expect(blocking.success).toBe(true);
-      expect(mainSlices.success).toBe(true);
+      // The helpers receive only the package; the exact process comes from the
+      // scope anr_detail issued for the event upid, which each child inherits.
+      for (const step of [blocking, mainSlices]) expectExactUpidScope(step, firstEvent.upid);
+      expect(blocking.data[0]).toMatchObject({state: topState, total_dur_ms: Number(topStateMs)});
+      expect(mainSlices.data).toContainEqual(expect.objectContaining({slice_name: topSlice, total_ms: Number(topSliceMs)}));
+
+      // A package that names another process cannot redirect the event's
+      // evidence: the gate refuses rather than scoping by the name.
+      await expect(detailEvaluator.executeStepSequence(['blocking_reasons'], {
+        ...eventParams, process_name: 'system_server',
+      })).rejects.toThrow('Explicit process name/PID conflicts with the selected UPID');
     } finally {
       await detailEvaluator.cleanup();
     }
@@ -885,20 +920,7 @@ describeWithTrace('anr_analysis ANR trace smoke', TRACE_FILE, () => {
       await detailEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
       const [availability, sliceBlocker] = await detailEvaluator.executeStepSequence(
         ['thread_evidence_availability', 'direct_blocker_slice_classification'],
-        {
-          anr_ts: firstEvent.anr_ts,
-          timeout_ns: firstEvent.timeout_ns,
-          process_name: firstEvent.process_name,
-          pid: firstEvent.pid,
-          upid: firstEvent.upid,
-          anr_type: firstEvent.anr_type,
-          error_id: firstEvent.error_id || '',
-          intent: firstEvent.intent || '',
-          component: firstEvent.component || '',
-          anr_dur_ms: firstEvent.anr_dur_ms,
-          perfetto_start: firstEvent.perfetto_start,
-          perfetto_end: firstEvent.perfetto_end,
-        },
+        anrDetailParams(firstEvent),
       );
 
       expect(availability.success).toBe(true);
@@ -909,6 +931,56 @@ describeWithTrace('anr_analysis ANR trace smoke', TRACE_FILE, () => {
       await detailEvaluator.cleanup();
     }
   }, 240000);
+});
+
+// The package of an app ANR also names its `:subprocess` processes. The
+// constructed framework-pipelines case runs com.smartperfetto.fixture beside
+// com.smartperfetto.fixture:worker, whose main thread alone draws
+// WorkerLoadMarker, so a helper that scoped by package would read it.
+describeWithTrace('anr_detail main-thread helpers in a multi-process app', 'framework-pipelines', () => {
+  const APP = 'com.smartperfetto.fixture';
+  const WORKER = `${APP}:worker`;
+  const MARKER = 'WorkerLoadMarker';
+  let detailEvaluator: SkillEvaluator;
+  let upidOf: Record<string, number>;
+  let window: {anr_ts: string; timeout_ns: string};
+
+  beforeAll(async () => {
+    detailEvaluator = createSkillEvaluator('anr_detail');
+    await detailEvaluator.loadTrace(getTestTracePath('framework-pipelines'));
+    const processes = await detailEvaluator.executeSQL(
+      `SELECT name, upid FROM process WHERE name IN ('${APP}', '${WORKER}')`);
+    expect(processes.error).toBeUndefined();
+    upidOf = Object.fromEntries(processes.rows.map(([name, upid]) => [name, Number(upid)]));
+    expect(Object.keys(upidOf).sort()).toEqual([APP, WORKER]);
+    // A one-second window ending just after the worker marker covers the app's
+    // main-thread slices too.
+    const marker = await detailEvaluator.executeSQL(`SELECT ts + dur FROM slice WHERE name = '${MARKER}'`);
+    expect(marker.rows).toHaveLength(1);
+    window = {anr_ts: String(BigInt(marker.rows[0][0]) + 1000000n), timeout_ns: '1000000000'};
+  }, 60000);
+
+  afterAll(async () => {
+    await detailEvaluator.cleanup();
+  });
+
+  async function mainThreadSliceNames(processName: string): Promise<string[]> {
+    const [slices] = await detailEvaluator.executeStepSequence(['main_thread_slices'], {
+      ...window, process_name: processName, upid: upidOf[processName], anr_type: 'INPUT_DISPATCHING_TIMEOUT',
+    });
+    expectExactUpidScope(slices, upidOf[processName]);
+    return slices.data.map(row => row.slice_name);
+  }
+
+  it('reads only the ANR process main thread, never a same-package subprocess', async () => {
+    const appSlices = await mainThreadSliceNames(APP);
+    expect(appSlices.length).toBeGreaterThan(0);
+    expect(appSlices).not.toContain(MARKER);
+  }, 120000);
+
+  it('reads the subprocess main thread when the ANR is the subprocess', async () => {
+    expect(await mainThreadSliceNames(WORKER)).toEqual([MARKER]);
+  }, 120000);
 });
 
 // ===========================================================================
