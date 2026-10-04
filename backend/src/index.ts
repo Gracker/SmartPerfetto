@@ -14,7 +14,6 @@ import type { Duplex } from 'stream';
 import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
-import sqlRoutes from './routes/sql';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
 import exportRoutes from './routes/exportRoutes';
 import skillRoutes from './routes/skillRoutes';
@@ -55,7 +54,12 @@ import {
   markLegacyApi,
   rejectLegacyAgentApi,
 } from './middleware/legacyAgentApi';
-import { rejectRemovedPerfettoSqlApi, rejectRemovedSessionsApi, rejectRemovedTemplateAnalysisApi } from './middleware/removedApi';
+import {
+  rejectRemovedPerfettoSqlApi,
+  rejectRemovedSessionsApi,
+  rejectRemovedSqlApi,
+  rejectRemovedTemplateAnalysisApi,
+} from './middleware/removedApi';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
@@ -194,7 +198,7 @@ app.get('/api/debug', requireRuntimeDiagnosticsPermission, (_req, res) => {
 app.use('/api/application-update', applicationUpdateRoutes);
 
 // API routes
-app.use('/api/sql', sqlRoutes);
+app.use('/api/sql', rejectRemovedSqlApi);
 app.use('/api/auth', enterpriseAuthRoutes);
 app.use('/api/auth', enterpriseApiKeyRoutes);
 app.use('/api/tenant', enterpriseTenantRoutes);

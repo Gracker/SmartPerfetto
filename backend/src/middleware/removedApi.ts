@@ -64,6 +64,17 @@ export const rejectRemovedPerfettoSqlApi = rejectRemovedApi({
   fallback: AGENT_API_FALLBACK,
 });
 
+/**
+ * `/api/sql`: `/tables` returned a fixed five-table excerpt instead of the
+ * loaded trace's schema, and `/generate` matched a regex template or returned
+ * a canned query without reading any trace. Neither has a route that takes the
+ * same body, so every path falls back to the agent, which reads the real schema.
+ */
+export const rejectRemovedSqlApi = rejectRemovedApi({
+  error: 'SQL generation API has been removed',
+  fallback: AGENT_API_FALLBACK,
+});
+
 /** `/api/template-analysis`: no route takes the same bodies, so every path falls back to the agent. */
 export const rejectRemovedTemplateAnalysisApi = rejectRemovedApi({
   error: 'Template analysis API has been removed',

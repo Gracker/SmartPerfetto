@@ -2,17 +2,6 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-export interface GenerateSqlRequest {
-  query: string;
-  context?: string;
-}
-
-export interface GenerateSqlResponse {
-  sql: string;
-  explanation: string;
-  examples?: string[];
-}
-
 export interface ErrorResponse {
   error: string;
   details?: string;

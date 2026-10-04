@@ -15,6 +15,7 @@ import {
   PERFETTO_SQL_SKILL_IDS,
   rejectRemovedPerfettoSqlApi,
   rejectRemovedSessionsApi,
+  rejectRemovedSqlApi,
   rejectRemovedTemplateAnalysisApi,
 } from '../removedApi';
 
@@ -129,5 +130,30 @@ describe('removed /api/template-analysis', () => {
       error: 'Template analysis API has been removed',
       migration: { successor: null, fallback: FALLBACK },
     });
+  });
+});
+
+describe('removed /api/sql', () => {
+  beforeEach(() => {
+    resetLegacyApiUsageTelemetryForTests();
+  });
+
+  test.each([
+    ['get', '/api/sql/tables'],
+    ['post', '/api/sql/generate'],
+    ['get', '/api/sql'],
+  ] as const)('%s %s answers 410 with the agent fallback', async (method, url) => {
+    const app = appFor('/api/sql', rejectRemovedSqlApi);
+    const res = await request(app)[method](url).send({ query: 'slowest frames' }).expect(410);
+
+    expect(res.headers.deprecation).toBe('true');
+    expect(res.headers.link).toBeUndefined();
+    expect(res.body).toEqual({
+      success: false,
+      error: 'SQL generation API has been removed',
+      message: `This endpoint has no direct successor; use ${FALLBACK}`,
+      migration: { successor: null, fallback: FALLBACK },
+    });
+    expect(getLegacyApiUsageSnapshot().topPaths[0].key).toBe(`${method.toUpperCase()} ${url}`);
   });
 });

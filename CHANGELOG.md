@@ -51,6 +51,12 @@ Detailed commit-level history is available via `git log`.
   packages by substring. No Skill route takes the same request bodies, so the
   response points to the workspace agent API. The template analyzers and the
   VSync period helpers only they used are gone.
+- `/api/sql/*` (`/tables`, `/generate`) now answers 410 in every deployment
+  mode. Nothing called it. `/tables` returned a fixed excerpt of five tables
+  instead of the loaded trace's schema, and `/generate` matched a regex
+  template or returned a canned query without reading a trace. No route takes
+  the same request bodies, so the response points to the workspace agent API.
+  The SQL template engine and the generator service only it used are gone.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 
