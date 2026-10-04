@@ -19,10 +19,10 @@ Why is the main thread blocked in my selected range?
 
 Entry points:
 
-- Open `http://localhost:10000`.
+- Open the address your entry point prints (`./start.sh` and Docker default to `http://127.0.0.1:10000`).
 - Load a trace.
 - Open the SmartPerfetto AI Assistant panel.
-- Choose `fast`, `full`, or `auto`.
+- Choose an analysis mode: `Chat` (default), `Fast`, `Full`, or `Auto`.
 - Ask a question.
 
 Output:
@@ -32,7 +32,7 @@ Output:
 - Each round places its analysis process and steps above its final conclusion, keeping each round together.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
 - Server verification details are collapsed by default; expand them for the full evidence and source references. Verification warnings remain visible.
-- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once finished it is shown in full, marked as being verified, and the verdict follows. A first stop at that point ends only the verification and keeps the answer. The Pi, OpenCode and Qoder runtimes, and sessions with private knowledge or source code selected, show no draft: the answer appears once it is finished.
+- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once finished it is shown in full, marked as being verified, and the verdict follows. A first stop at that point ends only the verification and keeps the answer. The Pi, OpenCode and Qoder runtimes show no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
 
 ### Browser Trace Tools And Local WASM
 
@@ -50,9 +50,28 @@ that run directly in the browser:
 These capabilities belong to the local browser timeline and Perfetto plugins.
 Raw multi-trace open/merge is separate from SmartPerfetto dual-trace AI
 comparison, and new WASM capabilities do not automatically extend backend AI,
-Skills, CLI, or HTML reports. Those surfaces continue to use the packaged,
-pinned native `trace_processor_shell` until an independent upgrade passes the
-five-platform verification gates.
+Skills, CLI, or HTML reports. Those surfaces use the packaged, pinned native
+`trace_processor_shell`, built from the same upstream Perfetto revision as the
+frontend (`scripts/trace-processor-pin.env`); a new browser view reaches AI
+analysis only once a backend Skill, strategy, or tool uses it.
+
+### Critical Path Wait Chain And Flamegraph
+
+- **Critical-path analysis**: after you select a `thread_state` task on the
+  timeline, a `Critical-path analysis` button appears next to the AI Assistant
+  preset questions. It opens a drawer with the wakeup chain, anomaly
+  assessment, related modules, next steps, and copyable verification SQL;
+  "Continue in the conversation" hands the result to the chat.
+- **Flamegraph**: the `火焰图` (flamegraph) tab in the AI Assistant view reads
+  the current trace, checks for CPU call-stack samples, and shows self/total
+  hotspots, hot paths, and categories.
+
+Both AI summaries use the current Provider and require the `agent:run`
+permission. When AI is disabled, permission or credentials are missing, or the
+Provider is not the Claude runtime, they return a rule-based fallback summary;
+the analysis itself still returns. Results are not written to reports,
+snapshots, or the conversation. See
+[Critical Path And Flamegraph](critical-path-and-flamegraph.en.md).
 
 ### Smart Analysis Mode
 
@@ -217,18 +236,19 @@ See [Using The Android Internals Wiki As A Knowledge Base](android-internals-kno
 
 ## 9. Code-Aware Local Source Analysis
 
-Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK source trees with SmartPerfetto. Registration only creates a selectable source and never attaches it to a session automatically. By default, the model sees only `CodeRef` metadata, not raw source text. A live root supports bounded on-demand search/read without an index.
+Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK source trees with SmartPerfetto. Registration only creates a selectable source and never attaches it to a session automatically; each turn chooses `Locate only` (the model sees only `CodeRef` metadata) or `Send text` (the model may read redacted snippets inside the authorized scope on demand) in the composer's "Analysis context for this turn" popover. A live root supports bounded on-demand search/read without an index.
 
 Entry points:
 
-- `Codebases` tab in AI Assistant settings: preview/register, selection and provider consent, current-scope/new-language authorization, pending accept/reject, reindex, audit, and delete.
+- `Codebases` tab in AI Assistant settings: preview and add (`Add without using` or `Add and use for analysis`), edit scope, `Allow source text` (review the server-reported include scope, exclude globs, and languages, then `Allow`) and revoke, accept/reject a limited index candidate, build the optional index, audit, and delete.
+- The composer's "Analysis context for this turn" popover: choose the source mode, codebases, source depth, and knowledge bases per turn.
 - CLI: `smp codebase list/preview/register/selection/consent/authorize-content/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`.
-- During analysis, explicitly pass `--code-aware metadata_only` and `--codebase-id <id>`, or choose a registered codebase in the UI.
+- In the CLI, pass `--codebase-id <id>` explicitly (defaults to `metadata_only`: the model sees only `CodeRef`s); `--code-aware provider_send` additionally needs source text granted first: `smp codebase authorize-content <id>` prints the disclosure and its token, and `--confirm <token>` grants it. Web "Add and use for analysis" grants source text once you confirm the disclosed scope.
 
 Output:
 
 - Maps call stacks, native frames, or kernel symbols to relative file paths, line ranges, and symbols.
-- Performs bounded source lookup when a queryable trace anchor exists, or records a structured non-use reason; quantitative-only questions may be `not_needed`.
+- Selecting source only hands the authorized source tools to the model, which decides whether to search for the question; the source receipt records status from the calls the run actually made, and `not_needed` for a turn that may acquire no evidence.
 - Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism; `corroborated|compatible|ambiguous|unverified` reports the binding strength.
 - Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Source text appears only as quotations an authorized analysis saved with its own results; no API returns indexed source text.
 - If no codebase is configured for the session, the normal trace-only analysis path is unchanged.

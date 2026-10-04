@@ -20,6 +20,7 @@
 - [Self-Evolution 使用与验收](getting-started/self-evolution.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.md)
 - [多 Trace 分析结果对比](getting-started/multi-trace-result-comparison.md)
+- [Critical path 与火焰图](getting-started/critical-path-and-flamegraph.md)
 - [把 Android Internals Wiki 作为知识库使用](getting-started/android-internals-knowledge.md)
 - [故障排查](operations/troubleshooting.md)
 
@@ -40,6 +41,7 @@
 - [技术架构](architecture/technical-architecture.md)：组件边界和修改位置。
 - [Agent Runtime](architecture/agent-runtime.md)：runtime/provider/session 语义。
 - [双 Trace 工作区](architecture/dual-trace-workspace.md)：双窗与 comparison 状态机。
+- [场景还原](architecture/scene-reconstruction.md)：场景时间线的采集、核验、展示与历史读取边界。
 - [私有分析上下文](architecture/private-analysis-context.md)：授权、连续性与删除边界。
 - [Self-Improving](architecture/self-improving-design.md)：当前已接入能力与明确未接入能力。
 - Self-Evolution 的用户入口、权限、持久化和测试步骤以

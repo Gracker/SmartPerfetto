@@ -179,24 +179,42 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 这个 slice 前后有没有 Binder 或调度问题？
 ```
 
-多轮追问会复用 session。切换 conversation/fast/full/auto 模式会开启新的后端 agent session，避免轻量上下文和完整上下文混用。
+多轮追问会复用 session。切换对话、快速、完整、智能模式会开启新的后端 agent session，避免轻量上下文和完整上下文混用。
 
 `/anr` 和 `/jank` 使用与普通分析相同的后端证据、claim verification 和报告链路；AI 被策略禁用时，这两个命令也会被阻止。
 
-## 源码与 Android Internals 背景
+## 源码与文档知识库
 
-- 要把 trace 结论映射到本机源码，先在 UI `Codebases` 或 CLI
-  `smp codebase preview/register` 注册，再在本次分析显式选择 codebase。注册的 live root 无索引也能有界搜索/读取；`reindex` 只是可选加速。
-- 要让分析参考 Android Internals Wiki 或团队文档，把目录注册为文档知识库（UI 上下文控件
-  “管理…”或 CLI `smp knowledge register`），建立索引后在本次分析显式选择。
+- 要把 trace 结论映射到本机源码，先在 **设置 → 源码库** 或 CLI
+  `smp codebase preview/register` 注册。注册的 live root 无索引也能有界搜索/读取；
+  构建索引只是可选加速。
+- 要让分析参考 Android Internals Wiki 或团队文档，把目录注册为文档知识库
+  （**设置 → 源码库 → 文档知识库**，或 CLI `smp knowledge register`），建立索引后再选用。
 
-源码和知识背景都不能替代当前 trace 的 SQL/Skill 证据。Code-Aware 默认只给模型
-`CodeRef`；完整边界见 [Code-Aware](code-aware-analysis.md) 和
+注册只让来源变得可选，不会自动用于分析。输入框旁的 **本轮分析上下文** 弹层按轮
+决定本轮使用什么：
+
+- **源码**：`关闭`、`仅定位`（只把文件、符号、行号发给 AI 服务）或 `发送正文`
+  （相关源码片段会发给 AI 服务，只能勾选已允许发送正文的源码库），再勾选源码库。
+- **源码深度**：`智能`（按问题判断要不要读实现）、`快速定位` 或 `完整分析`
+  （读实现解释机制，耗时更长）。
+- **知识库**：勾选已建索引且允许发送正文的知识库。
+- **数据去向**：按当前选择说明哪些内容会发给哪个 AI 服务。
+- **全部关闭** 一次关掉源码和知识库；**管理…** 打开设置中的源码库页。
+
+分析运行期间上下文不能修改。源码和知识背景都不能替代当前 trace 的 SQL/Skill 证据；
+完整边界见 [Code-Aware](code-aware-analysis.md) 和
 [Android Internals 知识](android-internals-knowledge.md)。
 
-选中源码后，full 分析会先用 Trace/Skill/SQL 确认发生事实。如果存在可查询的符号、slice、Binder 描述符或 build-id 锚点，它必须进行有界源码 lookup；否则留下 `not_needed`、`disallowed`、`no_queryable_anchor` 等结构化原因。分析结果中的源码回执会区分已选、已查询和实际使用的 codebase，并标明 coverage 与 `corroborated|compatible|ambiguous|unverified` 机制状态。Trace 证明“发生了什么”，`CodeRef` 解释“实现上为什么可能发生”；只有 `CodeRef` 时不能把 trace 现象升级为已验证根因。
+选中源码只把已授权的源码工具交给模型：是否检索、检索多少由模型按问题和预算决定，
+完成分析不要求一定检索。源码回执按本轮实际发生的调用记录状态（`pending`、`attempted`、
+`located`、`corroborated`、`not_found_complete`、`search_incomplete`，不能取得新证据的回合为
+`not_needed`），并区分已选、已查询和实际使用的 codebase、检索覆盖范围，以及
+`corroborated|compatible|ambiguous|unverified` 机制状态。Trace 证明“发生了什么”，`CodeRef`
+解释“实现上为什么可能发生”；只有 `CodeRef` 时不能把 trace 现象升级为已验证根因。
 
-Web chat 只保留安全的折叠回执，不包含文件路径、源码片段、检索 query 或自由文本原因。HTML report、CLI artifact 和 snapshot/API 可保留安全的相对 `CodeRef` 与绑定，但同样不保留绝对 root 或源码正文。
+Web chat 只显示折叠的源码回执，不含 `CodeRef`。授权分析引用的源码片段会随结果保存在本机
+历史、HTML report、CLI artifact 和 snapshot 中；这些产物不保存注册时的绝对 root 或凭据。
 
 ## CLI Batch 与 Android Capture
 
