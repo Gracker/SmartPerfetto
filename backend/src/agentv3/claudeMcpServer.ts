@@ -162,6 +162,7 @@ import { buildSqlQueryReview } from '../services/queryReview/queryReviewBuilder'
 import { buildSkillQueryReview } from '../services/queryReview/skillQueryReviewBuilder';
 import { compactQueryReviewForToolResponse, type QueryReviewV1 } from '../types/queryReviewContract';
 import { RagStore, getDefaultRagStore } from '../services/ragStore';
+import {ragChunkAudience} from '../services/rag/ragChunkAudience';
 import {
   BaselineStore,
   deriveBaselineId,
@@ -4705,11 +4706,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }));
       // After the read, whatever came back: a rebuild during the search must not read as none.
       indexCheckpoint('codebase', effectiveCodebaseIds);
-      if (result.results.some(hit => hit.chunk?.registryOrigin === 'codebase_registry')) {
+      // Any hit that is not public goes through the registry's filter; a
+      // codebase hit outside the selection is dropped before it.
+      if (result.results.some(hit => hit.chunk && ragChunkAudience(hit.chunk) !== 'public')) {
         const scopedResult = {
           ...result,
           results: result.results.filter(hit =>
-            hit.chunk?.registryOrigin !== 'codebase_registry' ||
+            !hit.chunk || ragChunkAudience(hit.chunk) !== 'user_codebase' ||
             (hit.chunk.codebaseId && effectiveCodebaseIds.includes(hit.chunk.codebaseId))),
         };
         const delivered = await filterIndexedSourceLookup('lookup_aosp_source', scopedResult, effectiveCodebaseIds);
@@ -4766,11 +4769,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }));
       // After the read, whatever came back: a rebuild during the search must not read as none.
       indexCheckpoint('codebase', effectiveCodebaseIds);
-      if (result.results.some(hit => hit.chunk?.registryOrigin === 'codebase_registry')) {
+      // Any hit that is not public goes through the registry's filter; a
+      // codebase hit outside the selection is dropped before it.
+      if (result.results.some(hit => hit.chunk && ragChunkAudience(hit.chunk) !== 'public')) {
         const scopedResult = {
           ...result,
           results: result.results.filter(hit =>
-            hit.chunk?.registryOrigin !== 'codebase_registry' ||
+            !hit.chunk || ragChunkAudience(hit.chunk) !== 'user_codebase' ||
             (hit.chunk.codebaseId && effectiveCodebaseIds.includes(hit.chunk.codebaseId))),
         };
         const delivered = await filterIndexedSourceLookup('lookup_oem_sdk', scopedResult, effectiveCodebaseIds);

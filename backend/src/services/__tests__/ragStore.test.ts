@@ -24,6 +24,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
 } from '../rag/sourceFileSelection';
 import type {RagChunk} from '../../types/sparkContracts';
+import {RAG_ROW_SCOPE_PREFIX, ragChunkAudience, ragPublicAudienceSql} from '../rag/ragChunkAudience';
 import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
@@ -953,5 +954,52 @@ describe('RagStore — stats', () => {
     expect(stats.oem_sdk.chunkCount).toBe(0);
     expect(stats.app_source.chunkCount).toBe(0);
     expect(stats.kernel_source.chunkCount).toBe(0);
+  });
+});
+
+describe('ragChunkAudience', () => {
+  const kinds = ['androidperformance.com', 'aosp', 'oem_sdk', 'project_memory', 'world_memory', 'case_library',
+    'app_source', 'kernel_source', 'android_internals_wiki', 'android_internals_pack', 'unknown_future_kind'];
+  const origins = [undefined, 'legacy_plan55', 'plan44_memory', 'plan54_cases', 'codebase_registry',
+    'external_knowledge_registry', 'built_in_knowledge_pack'];
+  const codebaseIds = [undefined, '', 'cb-1'];
+  const matrix = kinds.flatMap(kind => origins.flatMap(registryOrigin =>
+    codebaseIds.map(codebaseId => ({kind, registryOrigin, codebaseId}))));
+
+  it('classifies the stored kinds as each reader used to', () => {
+    expect(ragChunkAudience({kind: 'androidperformance.com', registryOrigin: 'legacy_plan55'})).toBe('public');
+    expect(ragChunkAudience({kind: 'aosp', registryOrigin: 'legacy_plan55'})).toBe('public');
+    expect(ragChunkAudience({kind: 'aosp', registryOrigin: 'codebase_registry', codebaseId: 'cb-1'})).toBe('user_codebase');
+    // Sanitized hit metadata carries no origin; its codebase id marks it.
+    expect(ragChunkAudience({kind: 'oem_sdk', codebaseId: 'cb-1'})).toBe('user_codebase');
+    expect(ragChunkAudience({kind: 'app_source', codebaseId: 'cb-1'})).toBe('user_codebase');
+    expect(ragChunkAudience({kind: 'kernel_source'})).toBe('user_codebase');
+    expect(ragChunkAudience({kind: 'android_internals_wiki', registryOrigin: 'external_knowledge_registry'}))
+      .toBe('retired_private');
+    // Anything this build does not recognize fails closed.
+    expect(ragChunkAudience({kind: 'android_internals_pack'})).toBe('retired_private');
+    expect(ragChunkAudience({kind: 'unknown_future_kind'})).toBe('retired_private');
+    expect(ragChunkAudience({kind: 'aosp', registryOrigin: 'external_knowledge_registry'})).toBe('retired_private');
+    expect(ragChunkAudience({})).toBe('retired_private');
+  });
+
+  it('agrees with its SQL form on every kind, origin and codebase-id combination', () => {
+    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE rows (id INTEGER PRIMARY KEY, scope TEXT, origin TEXT, codebase_id TEXT)');
+      const insert = db.prepare('INSERT INTO rows (id, scope, origin, codebase_id) VALUES (?, ?, ?, ?)');
+      matrix.forEach((row, index) => insert.run(index, `${RAG_ROW_SCOPE_PREFIX}${row.kind}`,
+        row.registryOrigin ?? null, row.codebaseId ?? null));
+      const publicIds = new Set((db.prepare(`SELECT id FROM rows WHERE ${ragPublicAudienceSql({
+        scope: 'scope', registryOrigin: 'origin', codebaseId: 'codebase_id',
+      })}`).all() as Array<{id: number}>).map(row => row.id));
+      const disagreements = matrix.filter((row, index) =>
+        (ragChunkAudience(row) === 'public') !== publicIds.has(index));
+      expect(disagreements).toEqual([]);
+      expect(publicIds.size).toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
   });
 });

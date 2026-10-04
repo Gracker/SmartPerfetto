@@ -9,6 +9,7 @@ import {isKnowledgeRefusalAction, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape} fr
 
 import type {RagSourceKind} from '../../types/sparkContracts';
 import {sourceLookupOutcome, type CodeLookupOutcome} from '../codebase/codeLookupLedger';
+import {ragChunkAudience} from './ragChunkAudience';
 import type {SanitizedRagResult} from './lookupResponseFilter';
 
 export interface ProjectedPayload {
@@ -249,7 +250,7 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
     if (hit.unsupportedReason) outcome = hit.unsupportedReason === 'budget_exceeded'
       ? 'budget_exceeded'
       : 'rejected';
-    const privateWiki = hit.metadata?.kind === 'android_internals_wiki';
+    const privateWiki = hit.metadata ? ragChunkAudience(hit.metadata) === 'retired_private' : false;
     return {
       chunkId: hit.chunkId,
       ...(hit.metadata?.codebaseId ? {codebaseId: hit.metadata.codebaseId} : {}),
@@ -374,13 +375,7 @@ export function projectSensitiveRagToolResult(
   if (!candidate || typeof candidate !== 'object') return undefined;
   const result = candidate as SanitizedRagResult;
   if (!Array.isArray(result.hits)) return undefined;
-  if (!result.hits.some(hit =>
-    hit.metadata?.kind === 'android_internals_wiki' ||
-    hit.metadata?.kind === 'android_internals_pack' ||
-    hit.metadata?.kind === 'app_source' ||
-    hit.metadata?.kind === 'kernel_source' ||
-    (hit.metadata?.kind === 'aosp' && Boolean(hit.metadata?.codebaseId)) ||
-    (hit.metadata?.kind === 'oem_sdk' && Boolean(hit.metadata?.codebaseId)))) {
+  if (!result.hits.some(hit => hit.metadata ? ragChunkAudience(hit.metadata) !== 'public' : false)) {
     return undefined;
   }
   return projectRagResultForSseAndLog(toolName, result);

@@ -28,6 +28,7 @@ import * as path from 'path';
 
 import {backendLogPath} from '../runtimePaths';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {RAG_ROW_SCOPE_PREFIX, ragChunkAudience} from './rag/ragChunkAudience';
 import {tokenizeRagText} from './rag/searchTokens';
 import {assertNotRetiredCaseWrite, isRetiredRagChunk} from './retiredCaseData';
 import {logStoredReadFailure, parseStoredJson, storedDataReason} from '../utils/storedData';
@@ -91,7 +92,6 @@ interface StorageEnvelope {
 }
 
 const KNOWLEDGE_KIND = 'rag_chunk';
-const RAG_ROW_SCOPE_PREFIX = 'rag:';
 export const DEFAULT_LOCAL_RAG_SEARCH_MAX_CHUNKS = 20_000;
 export const DEFAULT_LOCAL_RAG_SEARCH_MAX_BYTES = 64 * 1024 * 1024;
 /**
@@ -151,15 +151,6 @@ export type RagStoreStats = Record<
   {chunkCount: number; lastIndexedAt?: number}
 >;
 
-/** Registered private material: a user's codebase chunks or private knowledge. */
-export function isPrivateKnowledgeChunk(chunk: {kind?: unknown; registryOrigin?: unknown}): boolean {
-  return chunk.kind === 'android_internals_wiki' || chunk.registryOrigin === 'codebase_registry';
-}
-
-function isExternalPrivateKnowledgeChunk(chunk: RagChunk): boolean {
-  return chunk.kind === 'android_internals_wiki';
-}
-
 /** Visible to this scope and not retired case data. */
 function readableChunk(chunk: RagChunk, scope?: KnowledgeScope): boolean {
   return privateKnowledgeVisibleInScope(chunk, scope) && !isRetiredRagChunk(chunk);
@@ -173,10 +164,10 @@ export function privateKnowledgeScopeFingerprint(scope?: KnowledgeScope): string
 }
 
 function privateKnowledgeVisibleInScope(
-  chunk: Pick<RagChunk, 'kind' | 'registryOrigin' | 'knowledgeScopeFingerprint'>,
+  chunk: Pick<RagChunk, 'kind' | 'registryOrigin' | 'codebaseId' | 'knowledgeScopeFingerprint'>,
   scope?: KnowledgeScope,
 ): boolean {
-  if (!isPrivateKnowledgeChunk(chunk)) return true;
+  if (ragChunkAudience(chunk) === 'public') return true;
   const fingerprint = privateKnowledgeScopeFingerprint(scope);
   if (
     chunk.registryOrigin === 'codebase_registry' &&
@@ -248,7 +239,7 @@ function backfillChunk(chunk: RagChunk): RagChunk {
       knowledgeScopeFingerprint: privateKnowledgeScopeFingerprint(LOCAL_DEV_OWNER),
     };
   }
-  if (isExternalPrivateKnowledgeChunk(chunk) && !chunk.knowledgeScopeFingerprint) {
+  if (ragChunkAudience(chunk) === 'retired_private' && !chunk.knowledgeScopeFingerprint) {
     return {
       ...chunk,
       unsupportedReason: chunk.unsupportedReason ?? 'pre_scope_private_knowledge_chunk',
@@ -495,13 +486,14 @@ export class RagStore {
           `License required for source kind '${chunk.kind}' but missing on chunk '${chunk.chunkId}'`,
         );
       }
-      if (isPrivateKnowledgeChunk(normalized)) {
+      const audience = ragChunkAudience(normalized);
+      if (audience !== 'public') {
         const scopeFingerprint = privateKnowledgeScopeFingerprint(scope);
         if (!scopeFingerprint) {
           throw new Error(`Private knowledge chunk '${chunk.chunkId}' requires tenant/workspace/user scope`);
         }
         if (
-          isExternalPrivateKnowledgeChunk(normalized) && (
+          audience === 'retired_private' && (
             normalized.registryOrigin !== 'external_knowledge_registry' ||
             !normalized.knowledgeSourceId ||
             !normalized.sourceGeneration
@@ -828,6 +820,7 @@ export class RagStore {
       const visible = privateKnowledgeVisibleInScope({
         kind: owner.scope.slice(RAG_ROW_SCOPE_PREFIX.length) as RagSourceKind,
         registryOrigin: owner.registryOrigin as RagChunk['registryOrigin'],
+        codebaseId: owner.codebaseId,
         knowledgeScopeFingerprint: owner.scopeFingerprint,
       }, scope);
       return visible ? {
@@ -990,7 +983,7 @@ export class RagStore {
 
     for (const chunk of chunks) {
       if (!privateKnowledgeVisibleInScope(chunk, opts.scope)) continue;
-      if (isExternalPrivateKnowledgeChunk(chunk) && !knowledgeSourceFilter) continue;
+      if (ragChunkAudience(chunk) === 'retired_private' && !knowledgeSourceFilter) continue;
       if (chunk.registryOrigin === 'codebase_registry') {
         const activeGeneration = chunk.codebaseId
           ? opts.activeCodebaseGenerations?.[chunk.codebaseId]

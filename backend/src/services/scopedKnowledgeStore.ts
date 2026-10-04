@@ -14,6 +14,7 @@ import {
   enterpriseDbWritesEnabled,
   legacyFilesystemWritesEnabled,
 } from './enterpriseMigration';
+import {ragPublicAudienceSql} from './rag/ragChunkAudience';
 import {buildRagSearchTokenText} from './rag/searchTokens';
 import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 
@@ -630,10 +631,7 @@ export function getScopedRagStats(
       AND scope LIKE 'rag:%'
       AND NOT ${RETIRED_RAG_CHUNK_SQL}
       AND (
-        (
-          scope <> 'rag:android_internals_wiki'
-          AND COALESCE(rag_registry_origin, '') <> 'codebase_registry'
-        )
+        ${ragPublicAudienceSql({scope: 'scope', registryOrigin: 'rag_registry_origin', codebaseId: 'rag_codebase_id'})}
         OR (
           @scopeFingerprint IS NOT NULL
           AND rag_scope_fingerprint = @scopeFingerprint
@@ -785,10 +783,11 @@ export function searchScopedRagKnowledgeRecords<T>(
         false,
       );
     } else if (opts.selection === 'public') {
-      eligibleClauses.push(`COALESCE(memory_entries.rag_registry_origin, '') NOT IN (
-        'codebase_registry', 'external_knowledge_registry'
-      )`);
-      eligibleClauses.push(`memory_entries.scope <> 'rag:android_internals_wiki'`);
+      eligibleClauses.push(ragPublicAudienceSql({
+        scope: 'memory_entries.scope',
+        registryOrigin: 'memory_entries.rag_registry_origin',
+        codebaseId: 'memory_entries.rag_codebase_id',
+      }));
     } else {
       eligibleClauses.push('0');
     }

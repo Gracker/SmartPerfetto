@@ -8,7 +8,7 @@ import path from 'path';
 import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
-import { isPrivateKnowledgeChunk } from './ragStore';
+import {ragChunkAudience} from './rag/ragChunkAudience';
 import {PATTERN_BUCKET_KNOWLEDGE_KIND, projectPatternBucketForExport} from '../agentv3/analysisPatternMemory';
 import {isRetiredRagChunk} from './retiredCaseData';
 import {
@@ -427,8 +427,8 @@ function turnExport(
 
 /**
  * The content a memory row may carry out, or undefined to withhold it. RAG
- * chunks are registered material: a private kind (a user's codebase or
- * private knowledge) never leaves, a public kind does. A pattern bucket
+ * chunks are registered material: only the `public` audience leaves; a
+ * user's codebase or retired private knowledge never does. A pattern bucket
  * carries only its admitted entries (projectPatternBucketForExport). Every
  * other record carries content only when it was written by a run known to
  * be public.
@@ -440,10 +440,10 @@ function exportableMemoryContent(
 ): unknown {
   // Unparseable content reads as null, which no rule vouches for.
   if (envelope === null) return undefined;
-  const {kind, record} = envelope as {kind?: unknown; record?: {kind?: unknown; registryOrigin?: unknown}};
+  const {kind, record} = envelope as {kind?: unknown; record?: {kind?: unknown; registryOrigin?: unknown; codebaseId?: unknown}};
   if (kind === PATTERN_BUCKET_KNOWLEDGE_KIND) return projectPatternBucketForExport(envelope as {record?: unknown});
   if (kind === 'rag_chunk') {
-    return !record || typeof record.kind !== 'string' || isPrivateKnowledgeChunk(record) || isRetiredRagChunk(record)
+    return !record || typeof record.kind !== 'string' || ragChunkAudience(record) !== 'public' || isRetiredRagChunk(record)
       ? undefined : envelope;
   }
   return row.source_run_id && publicRunIds.has(row.source_run_id) ? envelope : undefined;
