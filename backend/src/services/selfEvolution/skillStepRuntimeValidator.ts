@@ -793,64 +793,16 @@ function validateStep(
         ...common,
         'inputs',
         'rules',
-        'ai_assist',
-        'fallback',
         'condition',
       ])
         && validateStringArrayField(value, 'inputs', path, issues, true)
         && validateDiagnosticRules(value.rules, `${path}.rules`, issues)
-        && validateOptionalBoolean(value, 'ai_assist', path, issues)
         && validateOptionalString(value, 'condition', path, issues)
-        && (
-          value.fallback === undefined
-          || (
-            isRecord(value.fallback)
-            && hasOnlyKeys(value.fallback, ['type', 'prompt'])
-            && value.fallback.type === 'ai_decision'
-            && isNonEmptyString(value.fallback.prompt)
-          )
-          || pushIssue(
-            issues,
-            `${path}.fallback`,
-            'diagnostic_fallback_invalid',
-            'Diagnostic fallback must be a closed ai_decision fallback.',
-          )
-        )
         || pushIssue(
           issues,
           path,
           'diagnostic_step_invalid',
           'Diagnostic step has unknown fields or invalid values.',
-        );
-    case 'ai_decision':
-      return hasOnlyKeys(value, [...common, 'prompt', 'inputs', 'output_schema'])
-        && validateRequiredString(value, 'prompt', path, issues)
-        && validateStringArrayField(value, 'inputs', path, issues)
-        && (
-          value.output_schema === undefined
-          || isRecord(value.output_schema)
-          || pushIssue(
-            issues,
-            `${path}.output_schema`,
-            'ai_output_schema_invalid',
-            'AI output_schema must be an object.',
-          )
-        )
-        || pushIssue(
-          issues,
-          path,
-          'ai_decision_step_invalid',
-          'AI decision step has unknown fields or invalid values.',
-        );
-    case 'ai_summary':
-      return hasOnlyKeys(value, [...common, 'prompt', 'inputs'])
-        && validateRequiredString(value, 'prompt', path, issues)
-        && validateStringArrayField(value, 'inputs', path, issues)
-        || pushIssue(
-          issues,
-          path,
-          'ai_summary_step_invalid',
-          'AI summary step has unknown fields or invalid values.',
         );
     case 'conditional': {
       if (

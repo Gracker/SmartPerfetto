@@ -503,10 +503,9 @@ fail closed and are reported through authenticated `/api/runtime-health` as `aiP
 
 Still available while disabled: trace upload/read, SQL queries, capture config
 proposals, Android capture without `--analyze`, report reads, Provider profile
-list/edit/activate/runtime switching, and deterministic Skills that do not call
-an LLM. Blocked: agent analyze/resume, cold scene reconstruction start,
-Provider connection tests, `smp provider test`, `smp capture android --analyze`,
-and LLM Skill steps. Blocked responses include `code: "AI_DISABLED"` and
+list/edit/activate/runtime switching, and Skills (no Skill step calls a model).
+Blocked: agent analyze/resume, cold scene reconstruction start, Provider
+connection tests, `smp provider test`, and `smp capture android --analyze`. Blocked responses include `code: "AI_DISABLED"` and
 `retryable: false`. Degraded rather than blocked: the Critical path wait-chain
 analysis still returns, and its AI summary (feature `critical_path_ai_summary`)
 falls back to the deterministic rule summary, reported through

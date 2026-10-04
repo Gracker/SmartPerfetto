@@ -7,7 +7,7 @@ import type { SkillType } from './types';
 /** What the executor runs of each Skill type besides an atomic Skill's root SQL; a new type must say. */
 const RUNS: Record<SkillType, 'steps' | 'none'> = {
   atomic: 'steps', composite: 'steps', deep: 'steps', iterator: 'steps', diagnostic: 'steps',
-  ai_decision: 'steps', ai_summary: 'steps', pipeline: 'steps',
+  pipeline: 'steps',
   conditional: 'none', pipeline_definition: 'none', comparison: 'none',
 };
 

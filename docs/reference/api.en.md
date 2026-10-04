@@ -199,7 +199,7 @@ do not share internal workspace IDs or data.
 model-backed analysis is allowed. When `aiPolicy.aiEnabled=false`, trace
 upload/read, SQL, reports, Provider configuration/switching, and deterministic
 Skills remain available; model analysis, resume, scene reconstruction start,
-Provider tests, and LLM Skill steps return `403`:
+and Provider tests return `403`:
 
 ```json
 {

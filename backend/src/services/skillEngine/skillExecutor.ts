@@ -8,7 +8,6 @@
  * 核心执行引擎，支持：
  * - Skill 组合（composite）
  * - Skill 迭代（iterator）
- * - AI 协作（ai_decision, ai_summary）
  * - 诊断推理（diagnostic）
  * - 展示控制（display）
  */
@@ -21,8 +20,6 @@ import {
   IteratorStep,
   ParallelStep,
   DiagnosticStep,
-  AIDecisionStep,
-  AISummaryStep,
   ConditionalStep,
   PipelineStep,
   SkillExecutionContext,
@@ -53,8 +50,6 @@ import {attachEvidenceTable, captureEvidenceTable, capturedEvidenceTable, eviden
   type CapturedFieldSemantics} from '../evidence/evidenceCapture';
 import { scopeMetadata, mergeScopeProvenance, identityForScopeEvidence, scopeProvenanceForFields, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../../types/identityContract';
 import logger from '../../utils/logger';
-import { parseLlmJson } from '../../utils/llmJson';
-import { redactObjectForLLM, redactTextForLLM } from '../../utils/llmPrivacy';
 import { getPipelineDocService } from '../pipelineDocService';
 import {
   ensurePipelineSkillsInitialized,
@@ -96,12 +91,6 @@ import {
   rethrowIfTraceProcessorQueryCancelled,
   throwIfTraceProcessorQueryCancelled,
 } from '../traceProcessorCancellation';
-import {
-  AiDisabledError,
-  assertAiFeatureEnabled,
-  getAiCapabilityPolicy,
-  isAiFeatureEnabled,
-} from '../aiCapabilityPolicy';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {
   currentRunManifestAttributionSink,
@@ -1060,7 +1049,6 @@ function runtimeSynthesizeConfig(config: SynthesizeConfig | undefined): Synthesi
 
 export class SkillExecutor {
   private traceProcessor: any;
-  private aiService: any;  // AI 服务（用于 ai_decision, ai_summary）
   private skillRegistry: Map<string, SkillDefinition>;
   private eventEmitter?: (event: SkillEvent) => void;
   private fragmentRegistry: Map<string, string> = new Map();
@@ -1070,12 +1058,10 @@ export class SkillExecutor {
 
   constructor(
     traceProcessor: any,
-    aiService?: any,
     eventEmitter?: (event: SkillEvent) => void,
     runManifestAttributionSink?: RunManifestAttributionSink,
   ) {
     this.traceProcessor = traceProcessor;
-    this.aiService = aiService;
     this.eventEmitter = eventEmitter;
     this.skillRegistry = new Map();
     this.runManifestAttributionSink = runManifestAttributionSink;
@@ -1193,30 +1179,6 @@ export class SkillExecutor {
       startTs: target.startTs ?? null,
       endTs: target.endTs ?? null,
     });
-  }
-
-  private buildAiDisabledStepResult(
-    stepId: string,
-    stepType: StepResult['stepType'],
-    startTime: number,
-  ): StepResult | null {
-    const policy = getAiCapabilityPolicy();
-    if (isAiFeatureEnabled('llm_skill_step', policy)) {
-      return null;
-    }
-    const error = new AiDisabledError('llm_skill_step', policy);
-    return {
-      stepId,
-      stepType,
-      success: false,
-      error: error.message,
-      code: error.code,
-      data: {
-        code: error.code,
-        feature: error.feature,
-      },
-      executionTimeMs: Date.now() - startTime,
-    };
   }
 
   private toNumber(value: any): number | undefined {
@@ -1723,9 +1685,6 @@ export class SkillExecutor {
     if ((result.displayResults?.length ?? 0) > 0) return false;
     if ((result.diagnostics?.length ?? 0) > 0) return false;
     if ((result.synthesizeData?.length ?? 0) > 0) return false;
-    if (typeof result.aiSummary === 'string' && result.aiSummary.trim()) {
-      return false;
-    }
     const rawResults = Object.values(result.rawResults ?? {});
     return rawResults.every(entry => {
       if (!entry || typeof entry !== 'object') return true;
@@ -1843,7 +1802,6 @@ export class SkillExecutor {
       const displayResults: DisplayResult[] = [];
       const diagnostics: DiagnosticResult[] = [];
       const synthesizeData: SynthesizeData[] = [];
-      let aiSummary: string | undefined;
       let stepExecutionError: string | undefined;
 
 
@@ -1900,7 +1858,6 @@ export class SkillExecutor {
               };
             }
             const stepExec = await this.executeStepBasedSkill(skill, skillId, context, displayResults, diagnostics, synthesizeData);
-            aiSummary = stepExec.aiSummary;
             stepExecutionError = stepExec.error;
           }
           break;
@@ -1968,7 +1925,6 @@ export class SkillExecutor {
         success: true,
         displayResults,
         diagnostics,
-        aiSummary,
         synthesizeData: synthesizeData.length > 0 ? synthesizeData : undefined,
         rawResults: context.results,
         scopeProvenance: mergeScopeProvenance(Object.values(context.results).map(resultScopeProvenance)),
@@ -2103,11 +2059,9 @@ export class SkillExecutor {
     displayResults: DisplayResult[],
     diagnostics: DiagnosticResult[],
     synthesizeData: SynthesizeData[]
-  ): Promise<{ aiSummary?: string; error?: string }> {
-    let aiSummary: string | undefined;
-
+  ): Promise<{ error?: string }> {
     if (!skill.steps) {
-      return { aiSummary };
+      return {};
     }
 
     for (const step of skill.steps) {
@@ -2162,11 +2116,6 @@ export class SkillExecutor {
         if ((step as any).type === 'diagnostic' && stepResult.data?.diagnostics) {
           diagnostics.push(...stepResult.data.diagnostics);
         }
-
-        // 收集 AI 总结
-        if ((step as any).type === 'ai_summary' && stepResult.data?.summary) {
-          aiSummary = stepResult.data.summary;
-        }
       } else {
         if (stepResult.code === 'exact_scope_unavailable') {
           displayResults.push(this.createDisplayResult(step.id, ('name' in step ? step.name : undefined) || step.id,
@@ -2177,7 +2126,6 @@ export class SkillExecutor {
         if (isQueryOrSkillResult(stepResult)) {
           if (!isOptionalStep(step)) {
             return {
-              aiSummary,
               error: stepResult.error || `Required step failed: ${step.id}`,
             };
           }
@@ -2189,7 +2137,7 @@ export class SkillExecutor {
     // This avoids N+1 iterator queries by reusing a single batch SQL result.
     this.applyExpandableBindSources(skill.steps!, context, displayResults);
 
-    return { aiSummary };
+    return {};
   }
 
   /**
@@ -2968,14 +2916,6 @@ export class SkillExecutor {
           result = await this.executeDiagnosticStep(step, context);
           break;
 
-        case 'ai_decision':
-          result = await this.executeAIDecisionStep(step, context);
-          break;
-
-        case 'ai_summary':
-          result = await this.executeAISummaryStep(step, context);
-          break;
-
         case 'conditional':
           result = await this.executeConditionalStep(step, context, parentSkillId);
           break;
@@ -3002,21 +2942,16 @@ export class SkillExecutor {
     } catch (error: any) {
       rethrowIfTraceProcessorQueryCancelled(error);
       const failedStep = step as SkillStep;
-      const aiDisabledError = error instanceof AiDisabledError ? error : null;
       result = {
         stepId: failedStep.id,
         stepType: failedStep.type || 'skill',
         success: false,
         error: error.message,
-        code: aiDisabledError?.code,
-        data: aiDisabledError
-          ? { code: aiDisabledError.code, feature: aiDisabledError.feature }
-          : undefined,
         executionTimeMs: Date.now() - startTime,
       };
     }
 
-    if (!result.scopeProvenance && ['diagnostic', 'ai_decision', 'ai_summary'].includes(step.type || '')) {
+    if (!result.scopeProvenance && step.type === 'diagnostic') {
       const inputNames = 'inputs' in step && Array.isArray(step.inputs) ? step.inputs : [];
       const provenance = mergeScopeProvenance(inputNames.map(name => this.inputScopeProvenance(name, context)));
       Object.assign(result, scopeMetadata(provenance));
@@ -3447,24 +3382,6 @@ export class SkillExecutor {
       }
     }
 
-    // 如果没有匹配的规则且配置了 AI 辅助，调用 AI
-    if (diagnostics.length === 0 && step.ai_assist && step.fallback && this.aiService) {
-      const disabledResult = this.buildAiDisabledStepResult(step.id, 'diagnostic', startTime);
-      if (disabledResult) {
-        return disabledResult;
-      }
-      const aiResult = await this.callAI(step.fallback.prompt, context);
-      if (aiResult) {
-        diagnostics.push({
-          id: `${step.id}_ai`,
-          diagnosis: aiResult,
-          confidence: 0.6,
-          severity: 'info',
-          source: 'ai',
-        });
-      }
-    }
-
     return {
       stepId: step.id,
       stepType: 'diagnostic',
@@ -3540,26 +3457,6 @@ export class SkillExecutor {
   }
 
   /**
-   * 从对象中提取关键字段（排除大型嵌套对象）
-   */
-  private extractKeyFields(obj: any): Record<string, any> {
-    if (!obj || typeof obj !== 'object') return obj;
-    const result: Record<string, any> = {};
-    for (const [key, value] of Object.entries(obj)) {
-      // 跳过大型数组和深层嵌套对象
-      if (Array.isArray(value)) {
-        result[key] = `[Array(${value.length})]`;
-      } else if (value && typeof value === 'object') {
-        // 只保留一层深度
-        result[key] = '[Object]';
-      } else {
-        result[key] = value;
-      }
-    }
-    return result;
-  }
-
-  /**
    * 从输入数据中找到时间戳字段用于 Perfetto 跳转
    */
   private findTimestampField(inputs: Record<string, any>, sources: string[]): string | undefined {
@@ -3580,118 +3477,6 @@ export class SkillExecutor {
     return undefined;
   }
 
-
-  /**
-   * 执行 AI 决策步骤
-   */
-  private async executeAIDecisionStep(
-    step: AIDecisionStep,
-    context: SkillExecutionContext
-  ): Promise<StepResult> {
-    const startTime = Date.now();
-
-    const disabledResult = this.buildAiDisabledStepResult(step.id, 'ai_decision', startTime);
-    if (disabledResult) {
-      return disabledResult;
-    }
-
-    if (!this.aiService) {
-      return {
-        stepId: step.id,
-        stepType: 'ai_decision',
-        success: false,
-        error: 'AI service not available',
-        executionTimeMs: Date.now() - startTime,
-      };
-    }
-
-    const basePrompt = ExpressionEvaluator.evaluate(step.prompt, context);
-    const inputsPayloadRaw = this.buildAIInputsPayload(step.inputs, context);
-    const inputsPayload = inputsPayloadRaw ? (redactObjectForLLM(inputsPayloadRaw).value as any) : null;
-    const promptRaw = this.buildStructuredAIPrompt(basePrompt, inputsPayload, 'decision');
-    const prompt = redactTextForLLM(promptRaw).text;
-
-    this.emit({
-      type: 'ai_thinking',
-      skillId: '',
-      stepId: step.id,
-      data: { prompt },
-    });
-
-    const response = await this.callAI(prompt, context, 'evaluation');
-    const normalizedDecision = this.extractStructuredAIField(response, 'decision');
-
-    this.emit({
-      type: 'ai_response',
-      skillId: '',
-      stepId: step.id,
-      data: { response: normalizedDecision, rawResponse: response },
-    });
-
-    return {
-      stepId: step.id,
-      stepType: 'ai_decision',
-      success: true,
-      data: { decision: normalizedDecision },
-      executionTimeMs: Date.now() - startTime,
-    };
-  }
-
-  /**
-   * 执行 AI 总结步骤
-   */
-  private async executeAISummaryStep(
-    step: AISummaryStep,
-    context: SkillExecutionContext
-  ): Promise<StepResult> {
-    const startTime = Date.now();
-
-    const disabledResult = this.buildAiDisabledStepResult(step.id, 'ai_summary', startTime);
-    if (disabledResult) {
-      return disabledResult;
-    }
-
-    if (!this.aiService) {
-      return {
-        stepId: step.id,
-        stepType: 'ai_summary',
-        success: false,
-        error: 'AI service not available',
-        executionTimeMs: Date.now() - startTime,
-      };
-    }
-
-    const basePrompt = ExpressionEvaluator.evaluate(step.prompt, context);
-    const inputsPayloadRaw = this.buildAIInputsPayload(step.inputs, context);
-    const inputsPayload = inputsPayloadRaw ? (redactObjectForLLM(inputsPayloadRaw).value as any) : null;
-    const promptRaw = this.buildStructuredAIPrompt(basePrompt, inputsPayload, 'summary');
-    const prompt = redactTextForLLM(promptRaw).text;
-
-    this.emit({
-      type: 'ai_thinking',
-      skillId: '',
-      stepId: step.id,
-      data: { prompt },
-    });
-
-    const response = await this.callAI(prompt, context, 'synthesis');
-    const normalizedSummary = this.extractStructuredAIField(response, 'summary');
-
-    this.emit({
-      type: 'ai_response',
-      skillId: '',
-      stepId: step.id,
-      data: { response: normalizedSummary, rawResponse: response },
-    });
-
-    return {
-      stepId: step.id,
-      stepType: 'ai_summary',
-      success: true,
-      data: { summary: normalizedSummary },
-      executionTimeMs: Date.now() - startTime,
-    };
-  }
 
   /**
    * 执行条件步骤
@@ -3921,140 +3706,6 @@ export class SkillExecutor {
   }
 
   /**
-   * 调用 AI 服务
-   */
-  private async callAI(prompt: string, _context: SkillExecutionContext, taskType: string = 'general'): Promise<string> {
-    if (!this.aiService) {
-      return '';
-    }
-
-    assertAiFeatureEnabled('llm_skill_step');
-    const safePrompt = redactTextForLLM(prompt).text;
-    try {
-      if (typeof this.aiService.chat === 'function') {
-        return await this.aiService.chat(safePrompt);
-      }
-      if (typeof this.aiService.callWithFallback === 'function') {
-        const result = await this.aiService.callWithFallback(safePrompt, taskType, { temperature: 0 });
-        return result?.response || result?.content || '';
-      }
-      throw new Error('AI service does not implement chat');
-    } catch (error: any) {
-      if (error instanceof AiDisabledError) {
-        throw error;
-      }
-      console.error('[SkillExecutor] AI call failed:', error.message);
-      return '';
-    }
-  }
-
-  /**
-   * Build a compact, deterministic payload for ai_summary/ai_decision steps.
-   *
-   * Note: step.inputs uses save_as names (preferred) or step ids.
-   * We intentionally sample rows to avoid prompt bloat.
-   */
-  private buildAIInputsPayload(
-    inputs: string[] | undefined,
-    context: SkillExecutionContext
-  ): Record<string, any> | null {
-    if (!inputs || inputs.length === 0) return null;
-
-    const payload: Record<string, any> = {};
-    const maxSampleRows = 5;
-    const maxColumns = 64;
-
-    for (const inputName of inputs) {
-      const value = ExpressionEvaluator.resolveRootValue(inputName, context);
-
-      if (value === undefined) {
-        payload[inputName] = { missing: true };
-        continue;
-      }
-
-      if (Array.isArray(value)) {
-        const count = value.length;
-        const firstRow = count > 0 ? value[0] : undefined;
-        const columns =
-          firstRow && typeof firstRow === 'object' && !Array.isArray(firstRow)
-            ? Object.keys(firstRow as Record<string, any>).slice(0, maxColumns)
-            : undefined;
-
-        const sample = value.slice(0, Math.min(count, maxSampleRows)).map((row) => {
-          if (row && typeof row === 'object') return this.extractKeyFields(row);
-          return row;
-        });
-
-        payload[inputName] = {
-          type: 'array',
-          count,
-          columns,
-          sample,
-          truncated: count > maxSampleRows,
-        };
-        continue;
-      }
-
-      if (value && typeof value === 'object') {
-        payload[inputName] = {
-          type: 'object',
-          value: this.extractKeyFields(value),
-        };
-        continue;
-      }
-
-      payload[inputName] = {
-        type: typeof value,
-        value,
-      };
-    }
-
-    return payload;
-  }
-
-  private buildStructuredAIPrompt(
-    basePrompt: string,
-    inputsPayload: Record<string, any> | null,
-    mode: 'decision' | 'summary'
-  ): string {
-    const schema = mode === 'decision'
-      ? '{"decision":"string","reasoning":"string","confidence":"high|medium|low","missing_data":["string"]}'
-      : '{"summary":"string","key_points":["string"],"confidence":"high|medium|low","missing_data":["string"],"next_steps":["string"]}';
-    const inputBlock = inputsPayload
-      ? `\n\n[INPUT_DATA_JSON]\n${JSON.stringify(inputsPayload, null, 2)}\n[/INPUT_DATA_JSON]`
-      : '';
-    const groundingRule = mode === 'decision'
-      ? '严格要求：只根据 INPUT_DATA_JSON 中提供的数据做判断；缺数据就明确说明缺口。'
-      : '严格要求：只基于 INPUT_DATA_JSON 中的实际数据分析；不要编造数值。若字段不存在/为空，请明确说明无法判断，并给出下一步建议。';
-
-    return `${basePrompt}${inputBlock}\n\n${groundingRule}\n输出要求：只返回一个 JSON 对象，不要输出 markdown、代码块或额外解释。\nJSON Schema: ${schema}`;
-  }
-
-  private extractStructuredAIField(
-    response: string,
-    field: 'decision' | 'summary'
-  ): string {
-    const fallback = String(response || '').trim();
-    if (!fallback) return '';
-
-    try {
-      const parsed = parseLlmJson<Record<string, any>>(fallback);
-      if (parsed && typeof parsed === 'object') {
-        if (typeof parsed[field] === 'string' && parsed[field].trim()) {
-          return parsed[field].trim();
-        }
-        if (field === 'decision' && typeof parsed.reasoning === 'string' && parsed.reasoning.trim()) {
-          return parsed.reasoning.trim();
-        }
-      }
-    } catch {
-      // Fall back to raw response if structured parse fails.
-    }
-
-    return fallback;
-  }
-
-  /**
    * 判断步骤是否需要展示
    */
   private shouldDisplay(step: SkillStep): boolean {
@@ -4226,7 +3877,7 @@ export class SkillExecutor {
    *
    * Motivation:
    * - Skills already carry `synthesize:` configs (role/fields/insights)
-   * - Agents need compact, citeable KPIs + insights without relying on ai_summary
+   * - Agents need compact, citeable KPIs + insights without a model-written summary
    *
    * Current scope (v2):
    * - Processes config.role in {'overview', 'conclusion', 'list', 'clusters'}
@@ -5118,8 +4769,7 @@ export class SkillExecutor {
 
 export function createSkillExecutor(
   traceProcessor: any,
-  aiService?: any,
   eventEmitter?: (event: SkillEvent) => void
 ): SkillExecutor {
-  return new SkillExecutor(traceProcessor, aiService, eventEmitter);
+  return new SkillExecutor(traceProcessor, eventEmitter);
 }

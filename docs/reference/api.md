@@ -142,7 +142,7 @@ tenant/workspace header 不能覆盖 Session 绑定；内置个人工作区模�
 `/api/runtime-health` 会返回顶层 `aiPolicy`，并在 `aiEngine` 中同步 `aiEnabled` 与
 `disabledReason`，用于前端和 CLI 判断当前是否允许模型分析。`aiPolicy.aiEnabled=false`
 时，trace 上传/读取、SQL、报告、Provider 配置/切换和确定性 Skill 仍可用；模型分析、
-resume、场景还原启动、Provider test 和 LLM Skill step 会返回 `403`：
+resume、场景还原启动和 Provider test 会返回 `403`：
 
 ```json
 {

@@ -3,9 +3,6 @@
  *
  * 测试 startup_analysis skill 在已知 trace 文件上的行为
  * 验证关键步骤输出结构是否稳定（避免回归）
- *
- * 注意：skill-eval 使用 SkillExecutor（无 AI service），因此 ai_summary 步骤可能失败；
- * 本文件只验证 SQL/规则步骤的稳定性，不依赖 AI 总结。
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';

@@ -15263,7 +15263,7 @@
     },
     "scene_reconstruction": {
       "source_file": "backend/skills/composite/scene_reconstruction.skill.yaml",
-      "source_sha256": "2dc3194fd8730e6ce16c5d4db97860cc8cdfccee8b6b2f23dfd11ddb3d752ab4",
+      "source_sha256": "59b4122937e29b04987a3c415c69cc1ce8120d970dcdd14b005ed5a34adbc22e",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -15300,8 +15300,7 @@
         "app_state_tracking",
         "operation_chain",
         "clean_timeline",
-        "merged_timeline",
-        "scene_summary"
+        "merged_timeline"
       ],
       "unexecuted_sql": false,
       "units": [

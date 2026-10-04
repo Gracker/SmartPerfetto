@@ -3504,7 +3504,6 @@ async function runSmartAnalysis(
     const skillExecutor = new SkillExecutor(
       options.traceProcessorService,
       undefined,
-      undefined,
       options.runManifestAttributionSink,
     );
     skillExecutor.registerSkills(smartRegistry.getAllSkills());

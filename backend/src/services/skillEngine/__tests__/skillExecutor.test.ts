@@ -21,7 +21,6 @@ import {
   SkillStep,
   SkillExecutionResult,
   DisplayConfig,
-  SkillEvent,
 } from '../types';
 import {
   SkillExecutor,
@@ -499,18 +498,13 @@ describe('Deterministic synthesize summary (洞见摘要)', () => {
 describe('SkillExecutor 类', () => {
   let executor: SkillExecutor;
   let mockTraceProcessor: any;
-  let mockAiService: any;
   let emittedEvents: any[];
 
   beforeEach(() => {
     mockTraceProcessor = createMockTraceProcessorService();
-    mockAiService = {
-      chat: jest.fn<(...args: any[]) => any>().mockResolvedValue('AI response' as string),
-    };
     emittedEvents = [];
     executor = createSkillExecutor(
       mockTraceProcessor,
-      mockAiService,
       (event) => emittedEvents.push(event)
     );
   });
@@ -520,13 +514,8 @@ describe('SkillExecutor 类', () => {
       expect(executor).toBeInstanceOf(SkillExecutor);
     });
 
-    it('应该接受可选的 aiService', () => {
-      const execWithoutAI = createSkillExecutor(mockTraceProcessor);
-      expect(execWithoutAI).toBeInstanceOf(SkillExecutor);
-    });
-
     it('应该接受可选的 eventEmitter', () => {
-      const execWithoutEmitter = createSkillExecutor(mockTraceProcessor, mockAiService);
+      const execWithoutEmitter = createSkillExecutor(mockTraceProcessor);
       expect(execWithoutEmitter).toBeInstanceOf(SkillExecutor);
     });
   });
@@ -1507,66 +1496,6 @@ describe('Diagnostic Step 执行', () => {
     expect(result.success).toBe(true);
     expect(result.diagnostics.length).toBe(0);
   });
-
-  it('AI disabled 时不会调用 diagnostic fallback AI 服务', async () => {
-    process.env.SMARTPERFETTO_AI_ENABLED = 'false';
-    const mockAiService = {
-      chat: jest.fn<() => Promise<string>>().mockResolvedValue('AI fallback diagnosis'),
-    };
-    const emitted: SkillEvent[] = [];
-    const localExecutor = createSkillExecutor(
-      mockTraceProcessor,
-      mockAiService,
-      event => emitted.push(event),
-    );
-    mockTraceProcessor.query.mockResolvedValue({
-      columns: ['jank_rate'],
-      rows: [[1]],
-    });
-    const fallbackSkill: SkillDefinition = {
-      name: 'diagnostic_fallback_disabled',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('Diagnostic Fallback Disabled'),
-      steps: [
-        {
-          id: 'data',
-          type: 'atomic',
-          sql: 'SELECT jank_rate FROM stats',
-          save_as: 'stats',
-        },
-        {
-          id: 'diagnose',
-          type: 'diagnostic',
-          inputs: ['stats'],
-          rules: [
-            {
-              condition: 'stats.data[0]?.jank_rate > 50',
-              confidence: 0.9,
-              diagnosis: 'Very high jank',
-              suggestions: [],
-            },
-          ],
-          ai_assist: true,
-          fallback: {
-            type: 'ai_decision',
-            prompt: 'Diagnose fallback',
-          },
-        },
-      ],
-    };
-    localExecutor.registerSkill(fallbackSkill);
-
-    const result = await localExecutor.execute('diagnostic_fallback_disabled', 'trace-1');
-    const completedEvent = emitted.find(e => e.type === 'step_completed' && e.stepId === 'diagnose');
-
-    expect(result.success).toBe(true);
-    expect(mockAiService.chat).not.toHaveBeenCalled();
-    expect(completedEvent?.data).toMatchObject({
-      success: false,
-      code: 'AI_DISABLED',
-    });
-  });
 });
 
 // =============================================================================
@@ -2038,261 +1967,6 @@ describe('Parallel Step 执行', () => {
     // 整体成功状态取决于是否所有步骤都成功
     expect(result.rawResults?.success_step?.success).toBe(true);
     expect(result.rawResults?.fail_step?.success).toBe(false);
-  });
-});
-
-// =============================================================================
-// Test Suite: AI Decision Step 执行
-// =============================================================================
-
-describe('AI Decision Step 执行', () => {
-  let executor: SkillExecutor;
-  let mockTraceProcessor: any;
-  let mockAiService: any;
-  let emittedEvents: any[];
-
-  beforeEach(() => {
-    mockTraceProcessor = createMockTraceProcessorService();
-    mockAiService = {
-      chat: jest.fn<(...args: any[]) => any>().mockResolvedValue('选择方案 A'),
-    };
-    emittedEvents = [];
-    executor = createSkillExecutor(
-      mockTraceProcessor,
-      mockAiService,
-      (event) => emittedEvents.push(event)
-    );
-  });
-
-  it('应该调用 AI 服务进行决策', async () => {
-    const aiDecisionSkill: SkillDefinition = {
-      name: 'ai_decision_test',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('AI Decision Test'),
-      steps: [
-        {
-          id: 'decide',
-          type: 'ai_decision',
-          prompt: '根据数据选择最佳方案',
-        },
-      ],
-    };
-    executor.registerSkill(aiDecisionSkill);
-
-    const result = await executor.execute('ai_decision_test', 'trace-1');
-    expect(result.success).toBe(true);
-    expect(mockAiService.chat).toHaveBeenCalledTimes(1);
-    const aiPrompt = String((mockAiService.chat as jest.Mock).mock.calls[0][0] || '');
-    expect(aiPrompt).toContain('根据数据选择最佳方案');
-    expect(aiPrompt).toContain('只返回一个 JSON 对象');
-    expect(aiPrompt).toContain('JSON Schema');
-  });
-
-  it('应该发射 ai_thinking 和 ai_response 事件', async () => {
-    const aiEventSkill: SkillDefinition = {
-      name: 'ai_event_test',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('AI Event Test'),
-      steps: [
-        {
-          id: 'decide',
-          type: 'ai_decision',
-          prompt: 'Test prompt',
-        },
-      ],
-    };
-    executor.registerSkill(aiEventSkill);
-
-    await executor.execute('ai_event_test', 'trace-1');
-
-    const thinkingEvent = emittedEvents.find(e => e.type === 'ai_thinking');
-    const responseEvent = emittedEvents.find(e => e.type === 'ai_response');
-    expect(thinkingEvent).toBeDefined();
-    expect(responseEvent).toBeDefined();
-    expect(responseEvent?.data.response).toBe('选择方案 A');
-  });
-
-  it('应该在无 AI 服务时返回错误', async () => {
-    const noAiExecutor = createSkillExecutor(mockTraceProcessor);
-    const skill: SkillDefinition = {
-      name: 'no_ai_test',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('No AI Test'),
-      steps: [
-        {
-          id: 'decide',
-          type: 'ai_decision',
-          prompt: 'Test',
-        },
-      ],
-    };
-    noAiExecutor.registerSkill(skill);
-
-    const result = await noAiExecutor.execute('no_ai_test', 'trace-1');
-    // Failed steps are not saved to rawResults (only successful steps are)
-    // Verify that the AI decision step didn't execute successfully
-    expect(result.rawResults?.decide).toBeUndefined();
-    // The overall skill still succeeds because failed steps are silently skipped
-    // This allows partial execution of composite skills
-  });
-
-  it('AI disabled 时不会调用 ai_decision 服务，并发出 AI_DISABLED step code', async () => {
-    process.env.SMARTPERFETTO_AI_ENABLED = 'false';
-    const skill: SkillDefinition = {
-      name: 'ai_decision_disabled_test',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('AI Decision Disabled Test'),
-      steps: [
-        {
-          id: 'decide',
-          type: 'ai_decision',
-          prompt: 'Test',
-        },
-      ],
-    };
-    executor.registerSkill(skill);
-
-    const result = await executor.execute('ai_decision_disabled_test', 'trace-1');
-    const completedEvent = emittedEvents.find(e => e.type === 'step_completed' && e.stepId === 'decide');
-
-    expect(result.success).toBe(true);
-    expect(mockAiService.chat).not.toHaveBeenCalled();
-    expect(completedEvent?.data).toMatchObject({
-      success: false,
-      code: 'AI_DISABLED',
-    });
-  });
-});
-
-// =============================================================================
-// Test Suite: AI Summary Step 执行
-// =============================================================================
-
-describe('AI Summary Step 执行', () => {
-  let executor: SkillExecutor;
-  let mockTraceProcessor: any;
-  let mockAiService: any;
-
-  beforeEach(() => {
-    mockTraceProcessor = createMockTraceProcessorService();
-    mockAiService = {
-      chat: jest.fn<(...args: any[]) => any>().mockResolvedValue('总结：性能良好，无明显问题'),
-    };
-    executor = createSkillExecutor(mockTraceProcessor, mockAiService);
-  });
-
-  it('应该生成 AI 摘要', async () => {
-    mockTraceProcessor.query.mockResolvedValue({
-      columns: ['metric', 'value'],
-      rows: [['fps', 60], ['jank', 0]],
-    });
-
-    const aiSummarySkill: SkillDefinition = {
-      name: 'ai_summary_test',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('AI Summary Test'),
-      steps: [
-        {
-          id: 'get_data',
-          type: 'atomic',
-          sql: 'SELECT metric, value FROM stats',
-          save_as: 'stats',
-        },
-        {
-          id: 'summarize',
-          type: 'ai_summary',
-          prompt: '根据以下数据生成性能分析摘要：${stats}',
-        },
-      ],
-    };
-    executor.registerSkill(aiSummarySkill);
-
-    const result = await executor.execute('ai_summary_test', 'trace-1');
-    expect(result.success).toBe(true);
-    expect(result.aiSummary).toBe('总结：性能良好，无明显问题');
-  });
-
-  it('应该在 prompt 中替换变量', async () => {
-    mockTraceProcessor.query.mockResolvedValue({
-      columns: ['value'],
-      rows: [[100]],
-    });
-
-    const varSkill: SkillDefinition = {
-      name: 'var_summary',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('Var Summary'),
-      steps: [
-        {
-          id: 'data',
-          type: 'atomic',
-          sql: 'SELECT 100 as value',
-          save_as: 'data',
-        },
-        {
-          id: 'summarize',
-          type: 'ai_summary',
-          prompt: '数据值为 ${data.data[0].value}',
-        },
-      ],
-    };
-    executor.registerSkill(varSkill);
-
-    await executor.execute('var_summary', 'trace-1');
-    // 验证 AI 服务被调用时 prompt 中的变量已被替换
-    expect(mockAiService.chat).toHaveBeenCalled();
-  });
-
-  it('AI disabled 时不会调用 ai_summary 服务', async () => {
-    process.env.SMARTPERFETTO_AI_ENABLED = 'false';
-    const emitted: SkillEvent[] = [];
-    const localExecutor = createSkillExecutor(
-      mockTraceProcessor,
-      mockAiService,
-      event => emitted.push(event),
-    );
-    mockTraceProcessor.query.mockResolvedValue({
-      columns: ['metric', 'value'],
-      rows: [['fps', 60]],
-    });
-    const skill: SkillDefinition = {
-      name: 'ai_summary_disabled_test',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('AI Summary Disabled Test'),
-      steps: [
-        {
-          id: 'get_data',
-          type: 'atomic',
-          sql: 'SELECT metric, value FROM stats',
-          save_as: 'stats',
-        },
-        {
-          id: 'summarize',
-          type: 'ai_summary',
-          prompt: '总结 ${stats}',
-        },
-      ],
-    };
-    localExecutor.registerSkill(skill);
-
-    const result = await localExecutor.execute('ai_summary_disabled_test', 'trace-1');
-    const completedEvent = emitted.find(e => e.type === 'step_completed' && e.stepId === 'summarize');
-
-    expect(result.success).toBe(true);
-    expect(result.aiSummary).toBeUndefined();
-    expect(mockAiService.chat).not.toHaveBeenCalled();
-    expect(result.rawResults?.get_data?.success).toBe(true);
-    expect(completedEvent?.data).toMatchObject({
-      success: false,
-      code: 'AI_DISABLED',
-    });
   });
 });
 
@@ -3006,7 +2680,6 @@ describe('Skill Reference save_from 绑定', () => {
 describe('Skill Reference 按步骤 id 读取', () => {
   let executor: SkillExecutor;
   let mockTraceProcessor: any;
-  let chat: jest.Mock<(...args: any[]) => any>;
 
   // `setup` returns [] first and carries a global_context scope; the displayed
   // `rows` step holds the data a default save_as binds.
@@ -3041,7 +2714,6 @@ describe('Skill Reference 按步骤 id 读取', () => {
         ...(aliased ? [{id: 'aliased', save_as: 'alias', ...aliased} as any] : []),
         {id: 'sql_probe', type: 'atomic', sql: "SELECT /*sqlprobe*/ '${ref.data[0].source|none}'", optional: true},
         {id: 'each', type: 'iterator', source: 'ref', item_skill: 'echo_source', optional: true} as any,
-        {id: 'sum', type: 'ai_summary', inputs: ['ref'], prompt: 'summarize'} as any,
         {id: 'probe', type: 'diagnostic', inputs: aliased ? ['ref', 'alias'] : ['ref'], rules: [
           {condition: 'ref.data == null', diagnosis: 'UNBOUND', confidence: 'high'},
           {condition: "ref.data?.[0]?.source === 'picked-row'", diagnosis: 'COND picked-row', confidence: 'high'},
@@ -3057,13 +2729,11 @@ describe('Skill Reference 按步骤 id 读取', () => {
   async function read(skill: SkillDefinition, path: Path, inherited: Record<string, unknown> = {}) {
     executor.registerSkill(skill);
     mockTraceProcessor.query.mockClear();
-    chat.mockClear();
     const steps: Record<string, any> = path === 'execute'
       ? (await executor.execute(skill.name, 'trace-1', {}, inherited)).rawResults ?? {}
       : Object.fromEntries(((await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1', inherited}))
         .stepResults ?? []).map(step => [step.stepId, step]));
     const diagnostics: any[] = steps.probe?.data?.diagnostics ?? [];
-    const prompt = String(chat.mock.calls[0]?.[0] ?? '');
     return {
       diagnoses: diagnostics.map(d => d.diagnosis),
       evidence: diagnostics.find(d => d.diagnosis.startsWith('id='))?.evidence,
@@ -3072,7 +2742,6 @@ describe('Skill Reference 按步骤 id 读取', () => {
         .filter((sql: string) => sql.includes('/*sqlprobe*/'))
         .map((sql: string) => sql.match(/'([^']*)'/)?.[1]),
       iterated: steps.each?.data?.map?.((entry: any) => entry.item.source),
-      ai: prompt.includes('picked-row') ? 'picked-row' : prompt.includes('"missing": true') ? 'missing' : prompt,
       provenance: JSON.stringify(steps.probe?.scopeProvenance ?? null),
       inputs: steps.probe?.data?.inputs ?? {},
     };
@@ -3085,8 +2754,7 @@ describe('Skill Reference 按步骤 id 读取', () => {
       if (sql.includes('/*boom*/')) return {columns: [], rows: [], error: 'boom'};
       return {columns: [], rows: []};
     });
-    chat = jest.fn<(...args: any[]) => any>().mockResolvedValue('{"summary":"ok"}');
-    executor = createSkillExecutor(mockTraceProcessor, {chat} as any);
+    executor = createSkillExecutor(mockTraceProcessor);
     for (const skill of [child, failingChild, wrapperChild]) executor.registerSkill(skill);
     executor.registerSkill({name: 'echo_source', type: 'atomic', version: '1.0',
       meta: createMeta('Echo Source'), sql: 'SELECT /*echo*/ 1'});
@@ -3102,7 +2770,6 @@ describe('Skill Reference 按步骤 id 读取', () => {
       evidence: {'ref.data[0].source': 'picked-row', 'alias.data[0].source': 'picked-row'},
       sql: ['picked-row'],
       iterated: ['picked-row'],
-      ai: 'picked-row',
     });
     // Provenance is the selected step's, not the merged scope of the whole child.
     expect(reading.provenance).not.toContain('global_context');
@@ -3126,7 +2793,7 @@ describe('Skill Reference 按步骤 id 读取', () => {
   // neither partial child rows nor the inherited value is read.
   it.each(paths)('exposes no child data, and does not fall back, once the reference failed (%s)', async path => {
     const reading = await read(readers({skill: 'failing_after_rows_child', optional: true}), path, inherited);
-    expect(reading).toMatchObject({diagnoses: ['UNBOUND', 'id=none'], sql: ['none'], iterated: undefined, ai: 'missing'});
+    expect(reading).toMatchObject({diagnoses: ['UNBOUND', 'id=none'], sql: ['none'], iterated: undefined});
     expect(reading.evidence).toBeUndefined();
     expect(reading.provenance).toBe('null');
     expect(JSON.stringify(reading)).not.toMatch(/picked-row|inherited-row/);
@@ -3134,7 +2801,7 @@ describe('Skill Reference 按步骤 id 读取', () => {
 
   it('treats a required condition skip as unbound and an optional one as an empty result', async () => {
     const required = await read(readers({skill: 'setup_then_rows_child', condition: 'false'}), 'execute', inherited);
-    expect(required).toMatchObject({diagnoses: ['UNBOUND', 'id=none'], sql: ['none'], ai: 'missing'});
+    expect(required).toMatchObject({diagnoses: ['UNBOUND', 'id=none'], sql: ['none']});
     for (const path of paths) {
       const optional = await read(readers({skill: 'setup_then_rows_child', condition: 'false', optional: true}),
         path, inherited);
@@ -3552,25 +3219,7 @@ describe('表达式名字解析顺序', () => {
     });
   });
 
-  it('reports an AI input as missing when a local step of that name observed nothing', async () => {
-    const chat = jest.fn<(...args: any[]) => any>().mockResolvedValue('{"summary":"ok"}');
-    const aiExecutor = createSkillExecutor(mockTraceProcessor, {chat} as any);
-    aiExecutor.registerSkill({
-      name: 'ai_probe',
-      type: 'composite',
-      version: '1.0',
-      meta: createMeta('AI Probe'),
-      steps: [
-        // Not optional: the skipped result is kept with no data.
-        {id: 'gone', type: 'atomic', sql: 'SELECT /*gone*/ 1', condition: 'false'},
-        {id: 'sum', type: 'ai_summary', inputs: ['gone'], prompt: 'summarize'} as any,
-      ],
-    });
-    await aiExecutor.execute('ai_probe', 'trace-1', {gone: 'param-value'}, {gone: 'inherited-value'});
-    const prompt = String(chat.mock.calls[0]?.[0]);
-    expect(prompt).toContain('"missing": true');
-    expect(prompt).not.toMatch(/param-value|inherited-value/);
-  });
+
 });
 
 // An expression reads its root names from the Skill scopes; a name no scope
@@ -4538,7 +4187,6 @@ describe('错误处理', () => {
     const emittedEvents: any[] = [];
     const executorWithEvents = createSkillExecutor(
       mockTraceProcessor,
-      undefined,
       (event) => emittedEvents.push(event)
     );
 
@@ -4607,7 +4255,6 @@ describe('事件发射', () => {
     emittedEvents = [];
     executor = createSkillExecutor(
       mockTraceProcessor,
-      undefined,
       (event) => emittedEvents.push(event)
     );
   });

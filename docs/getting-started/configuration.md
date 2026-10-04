@@ -458,7 +458,7 @@ SMARTPERFETTO_AI_ENABLED=false
 
 未设置该变量时默认启用 AI。显式值接受 `1/0`、`true/false`、`yes/no`、`on/off`、`enabled/disabled`；无效值会 fail closed，也就是按禁用处理，并在 `/api/runtime-health` 的 `aiPolicy.env.valid=false`（需鉴权）和 `smp doctor` 中暴露原因。
 
-禁用后仍可用：trace 上传/读取、SQL 查询、capture config proposal、Android capture（不带 `--analyze`）、报告读取、Provider profile 列表/编辑/激活/runtime 切换，以及不调用 LLM 的确定性 Skill。会被阻断：agent analyze/resume、场景还原冷启动、Provider connection test、`smp provider test`、`smp capture android --analyze`、LLM Skill step。阻断响应统一包含 `code: "AI_DISABLED"` 和 `retryable: false`。只降级、不阻断：Critical path 等待链分析照常返回，其 AI 总结（feature `critical_path_ai_summary`）改为规则兜底总结，并通过 `aiSummary.fallbackReason: "ai_disabled"` 和 `aiSummary.warnings` 说明原因。
+禁用后仍可用：trace 上传/读取、SQL 查询、capture config proposal、Android capture（不带 `--analyze`）、报告读取、Provider profile 列表/编辑/激活/runtime 切换，以及确定性 Skill（Skill 步骤都不调用模型）。会被阻断：agent analyze/resume、场景还原冷启动、Provider connection test、`smp provider test`、`smp capture android --analyze`。阻断响应统一包含 `code: "AI_DISABLED"` 和 `retryable: false`。只降级、不阻断：Critical path 等待链分析照常返回，其 AI 总结（feature `critical_path_ai_summary`）改为规则兜底总结，并通过 `aiSummary.fallbackReason: "ai_disabled"` 和 `aiSummary.warnings` 说明原因。
 
 三个辅助 AI 总结只降级、不阻断，也都走同一个隔离的单轮模型调用（无工具、无 MCP、不读用户设置、不落会话），跟随调用者的 Provider Manager 配置：
 

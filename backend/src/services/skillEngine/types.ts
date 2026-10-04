@@ -8,7 +8,6 @@
  * 支持：
  * - Skill 可组合（composite）
  * - Skill 可迭代（iterator）
- * - AI 协作（ai_decision, ai_summary）
  * - 诊断推理（diagnostic）
  * - 展示控制（display）
  */
@@ -36,8 +35,6 @@ export type SkillType =
   | 'deep'
   | 'iterator'
   | 'diagnostic'
-  | 'ai_decision'
-  | 'ai_summary'
   | 'conditional'
   | 'pipeline'
   | 'pipeline_definition'
@@ -182,11 +179,6 @@ export interface DiagnosticRule {
   evidence_fields?: string[]; // 证据字段
 }
 
-export interface DiagnosticFallback {
-  type: 'ai_decision';
-  prompt: string;
-}
-
 // =============================================================================
 // Step 类型
 // =============================================================================
@@ -280,37 +272,6 @@ export interface DiagnosticStep {
   name?: string;
   inputs: string[];           // 输入数据源
   rules: DiagnosticRule[];    // 诊断规则
-  ai_assist?: boolean;        // 是否让 AI 参与
-  fallback?: DiagnosticFallback;  // 规则无法确定时的回退
-  display?: DisplayConfig | boolean;
-  save_as?: string;
-  synthesize?: boolean | SynthesizeConfig;
-}
-
-/**
- * AI 决策步骤 - 让 AI 做出判断
- */
-export interface AIDecisionStep {
-  id: string;
-  type: 'ai_decision';
-  name?: string;
-  prompt: string;             // 提示词模板
-  inputs?: string[];          // 输入数据源
-  output_schema?: Record<string, any>;  // 期望的输出结构
-  display?: DisplayConfig | boolean;
-  save_as?: string;
-  synthesize?: boolean | SynthesizeConfig;
-}
-
-/**
- * AI 总结步骤 - 让 AI 生成总结
- */
-export interface AISummaryStep {
-  id: string;
-  type: 'ai_summary';
-  name?: string;
-  prompt: string;
-  inputs?: string[];
   display?: DisplayConfig | boolean;
   save_as?: string;
   synthesize?: boolean | SynthesizeConfig;
@@ -364,8 +325,6 @@ export type SkillStep =
   | IteratorStep
   | ParallelStep
   | DiagnosticStep
-  | AIDecisionStep
-  | AISummaryStep
   | ConditionalStep
   | PipelineStep;
 
@@ -566,9 +525,6 @@ export interface SkillExecutionResult {
   // 诊断结论
   diagnostics: DiagnosticResult[];
 
-  // AI 生成的总结
-  aiSummary?: string;
-
   /**
    * Data marked via YAML step-level `synthesize:` for downstream summarization.
    * Optional and best-effort; callers should treat it as advisory.
@@ -665,7 +621,7 @@ export interface DiagnosticResult extends EvidenceScopeMetadata {
   severity: 'info' | 'warning' | 'critical';
   evidence?: Record<string, any>;
   suggestions?: string[];
-  source: 'rule' | 'ai';
+  source: 'rule';
 }
 
 // =============================================================================
@@ -678,8 +634,6 @@ export type SkillEventType =
   | 'step_completed'
   | 'display_result'
   | 'diagnostic_found'
-  | 'ai_thinking'
-  | 'ai_response'
   | 'skill_completed'
   | 'skill_error';
 

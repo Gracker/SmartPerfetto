@@ -66,10 +66,6 @@ function applyTextRedactionRules(text: string): { text: string; stats: LlmRedact
   };
 }
 
-export function redactTextForLLM(text: string): { text: string; stats: LlmRedactionStats } {
-  return applyTextRedactionRules(text || '');
-}
-
 function isSensitiveKey(key: string): boolean {
   const k = (key || '').toLowerCase();
   if (!k) return false;
