@@ -197,6 +197,9 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 客户端不得解析或自行构造 cursor。`/api/traces/stats` 的 `traces.metadataCount`
 表示 workspace 中可见的持久化 trace 总数，而 `traces.count` 表示当前进程中的活跃 trace。
 
+响应里的 trace 记录（上传、上传失败、列表、详情、viewer）不含服务器文件路径（`path`、
+`filePath`）；客户端按 `id` 访问 trace。
+
 ## Workspace-scoped API
 
 新集成优先使用 workspace-scoped 路径。未启用企业/多 workspace 时，旧的全局路径仍可用于本地和兼容场景。

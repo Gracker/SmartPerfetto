@@ -55,6 +55,7 @@ import {
   InvalidTraceMetadataCursorError,
   listTraceMetadataForContext,
   listTraceMetadataPageForContext,
+  projectTraceForHttp,
   readTraceMetadata,
   readTraceMetadataForContext,
   type TraceMetadata,
@@ -766,7 +767,7 @@ function sendTraceProcessorUnavailable(res: Response, traceInfo: FinalizedTraceU
   res.json({
     success: false,
     error: traceProcessorUnavailableMessage(traceInfo),
-    trace: traceInfo,
+    trace: traceInfo && projectTraceForHttp(traceInfo),
   });
 }
 
@@ -1086,7 +1087,7 @@ router.get('/', async (req, res) => {
     const page = await listTraceMetadataPageForContext(context, traceListOptions(req));
     res.json({
       ...page,
-      traces: page.traces.map(normalizeTraceCatalogFilename),
+      traces: page.traces.map(trace => projectTraceForHttp(normalizeTraceCatalogFilename(trace))),
     });
   } catch (error: unknown) {
     if (error instanceof InvalidTraceMetadataCursorError || error instanceof TraceListLimitError) {
@@ -1427,7 +1428,7 @@ router.post(
       return res.json({
         success: true,
         trace: {
-          ...metadata,
+          ...projectTraceForHttp(metadata),
           processorStatus: traceInfo.status,
           hasProcessor: true,
           port: traceInfo.port,
@@ -1586,7 +1587,7 @@ router.get('/:id', async (req, res) => {
     res.json({
       success: true,
       trace: {
-        ...metadata,
+        ...projectTraceForHttp(metadata),
         processorStatus: traceInfo?.status || 'unknown',
         hasProcessor: !!traceInfo?.processor,
         port: traceInfo?.port ?? metadata.port,

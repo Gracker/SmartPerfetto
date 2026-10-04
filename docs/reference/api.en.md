@@ -251,6 +251,10 @@ Clients must not parse or synthesize cursors. In `/api/traces/stats`,
 `traces.metadataCount` is the total visible persisted trace count for the
 workspace, while `traces.count` is the number active in the current process.
 
+Trace records in responses (upload, failed upload, list, detail, viewer) carry
+no server filesystem path (`path`, `filePath`); a client addresses a trace by
+its `id`.
+
 ## Workspace-scoped APIs
 
 New integrations should prefer workspace-scoped paths. When enterprise or

@@ -565,6 +565,9 @@ describe('enterprise trace metadata routes', () => {
         protocol: expect.any(String),
       }),
     }));
+    // The processor gets the stored file; the client gets no server path.
+    expect(response.body.trace).not.toHaveProperty('path');
+    expect(response.text).not.toContain(dataDir);
     expect(fakeTraceProcessorService.registerStoredTrace).toHaveBeenCalledWith(
       expect.objectContaining({id: traceId, filePath: tracePath}),
     );
@@ -1019,12 +1022,21 @@ describe('enterprise trace metadata routes', () => {
       }),
     ]);
 
+    // Upload, catalog and detail name the trace by id; none carries its server path.
+    expect(uploadRes.text).not.toContain(dataDir);
     const listRes = await ssoHeaders(request(app).get('/api/traces'));
     expect(listRes.status).toBe(200);
-    expect(listRes.body.traces.map((trace: any) => trace.id)).toEqual([traceId]);
+    expect(listRes.body.traces).toEqual([expect.objectContaining({
+      id: traceId, filename: 'fixture.trace', size: 'trace-content'.length, status: 'ready',
+    })]);
+    expect(listRes.body.traces[0]).not.toHaveProperty('path');
+    expect(listRes.text).not.toContain(dataDir);
 
     const ownTraceRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}`));
     expect(ownTraceRes.status).toBe(200);
+    expect(ownTraceRes.body.trace).toEqual(expect.objectContaining({id: traceId, filename: 'fixture.trace'}));
+    expect(ownTraceRes.body.trace).not.toHaveProperty('path');
+    expect(ownTraceRes.text).not.toContain(dataDir);
 
     const downloadRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}/file`));
     expect(downloadRes.status).toBe(200);
@@ -1221,6 +1233,7 @@ describe('enterprise trace metadata routes', () => {
       id: String(traceId),
       filename: 'tp-failure.trace',
       size: 'tp-failure'.length,
+      filePath: path.join(dataDir, 'tenant-a', 'workspace-a', 'traces', `${String(traceId)}.trace`),
       uploadTime: new Date(),
       status: 'error',
       error: tpError,
@@ -1239,6 +1252,10 @@ describe('enterprise trace metadata routes', () => {
       error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
     expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
+    // The failed upload still names the stored trace, by id and not by its server path.
+    expect(uploadRes.body.trace).toEqual(expect.objectContaining({filename: 'tp-failure.trace', status: 'error'}));
+    expect(uploadRes.body.trace).not.toHaveProperty('filePath');
+    expect(uploadRes.text).not.toContain(dataDir);
     const traceId = uploadRes.body.trace.id as string;
     expect(readTraceAsset(traceId)).toEqual(expect.objectContaining({
       id: traceId,

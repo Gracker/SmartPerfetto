@@ -37,6 +37,23 @@ export interface TraceMetadata extends ResourceOwnerFields {
   expiresAt?: number;
 }
 
+/** The fields of a trace record that name a server filesystem location. */
+type TraceServerPathField = 'path' | 'filePath';
+
+/** A trace record as an HTTP response carries it. */
+export type HttpTraceProjection<T> = Omit<T, TraceServerPathField>;
+
+/**
+ * A trace record (stored metadata, a trace processor's trace info, or a
+ * response built from either) without its server paths. Every HTTP response
+ * that carries trace metadata goes through this: the stored file location is
+ * the server's business, and a client addresses a trace by its id.
+ */
+export function projectTraceForHttp<T extends object>(trace: T): HttpTraceProjection<T> {
+  const {path: _path, filePath: _filePath, ...projected} = trace as T & {path?: unknown; filePath?: unknown};
+  return projected as HttpTraceProjection<T>;
+}
+
 export interface TraceMetadataPage {
   traces: TraceMetadata[];
   nextCursor?: string;
