@@ -32,10 +32,25 @@ import {sourceSelectionForRef, type SourceSelectionIR} from './sourceSelectionPo
  */
 export type RootAuthorizationChannel = 'configured_allowlist' | 'native_picker' | 'local_cli';
 
-/** A registration's root and the channel that authorized it. */
+/**
+ * A registration's root and the channels that authorized it. A codebase
+ * records the one channel of its registration; a document collection, whose
+ * id is its root, keeps every channel any of its registrations used
+ * (`rootAuthorizations`, older records `rootAuthorization`).
+ */
 interface ChannelledRoot {
   rootAuthorization?: RootAuthorizationChannel;
+  rootAuthorizations?: readonly RootAuthorizationChannel[];
   rootRealpath: string;
+}
+
+type RecordedChannels = Pick<ChannelledRoot, 'rootAuthorization' | 'rootAuthorizations'>;
+
+/** Every channel a record names, sorted and without repeats. */
+export function recordedRootChannels(record: RecordedChannels): RootAuthorizationChannel[] {
+  const channels = new Set<RootAuthorizationChannel>(record.rootAuthorizations ?? []);
+  if (record.rootAuthorization) channels.add(record.rootAuthorization);
+  return [...channels].sort();
 }
 
 /** Registration channels this process trusts in place of the configured allowlist. */
@@ -69,25 +84,28 @@ export function resetRegistrationChannelTrustForTests(): void {
 export function channelAuthorizedRoots(
   ref: ChannelledRoot,
 ): {additionalAllowlistRoots: string[]} | undefined {
-  const channel = ref.rootAuthorization ?? unrecordedRootChannel;
-  return channel && trustedRootChannels.has(channel)
+  const recorded = recordedRootChannels(ref);
+  const channels = recorded.length > 0 ? recorded : unrecordedRootChannel ? [unrecordedRootChannel] : [];
+  return channels.some(channel => trustedRootChannels.has(channel))
     ? {additionalAllowlistRoots: [ref.rootRealpath]}
     : undefined;
 }
 
 /**
- * The dual-write rule for a root channel: a channel only one store side
- * records is not trusted, so the merged record drops it.
+ * The dual-write rule for root channels: a channel only one store side
+ * records is not trusted, so the merged record keeps only the shared ones.
  */
-export function withoutUnsharedRootChannel<T extends Pick<ChannelledRoot, 'rootAuthorization'>>(
+export function withoutUnsharedRootChannel<T extends RecordedChannels>(
   record: T,
-  counterpart: Pick<ChannelledRoot, 'rootAuthorization'>,
+  counterpart: RecordedChannels,
 ): T {
-  if (record.rootAuthorization === undefined || record.rootAuthorization === counterpart.rootAuthorization) {
-    return record;
-  }
-  const {rootAuthorization: _unshared, ...rest} = record;
-  return rest as T;
+  const own = recordedRootChannels(record);
+  const theirs = new Set(recordedRootChannels(counterpart));
+  const shared = own.filter(channel => theirs.has(channel));
+  if (shared.length === own.length) return record;
+  // A single recorded channel is either shared (returned above) or dropped.
+  const {rootAuthorization: _single, rootAuthorizations: _all, ...rest} = record;
+  return (shared.length > 0 ? {...rest, rootAuthorizations: shared} : rest) as T;
 }
 
 /**

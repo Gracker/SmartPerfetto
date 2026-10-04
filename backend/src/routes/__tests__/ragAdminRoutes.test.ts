@@ -622,7 +622,7 @@ describe('document collection routes', () => {
       expectNoRoot(registered.body, root);
       expect(JSON.stringify(registered.body)).not.toContain('rootAuthorization');
       const sourceId = registered.body.source.sourceId;
-      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorization).toBe('native_picker');
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
       const replay = await local(request(app).post('/api/rag/knowledge/register'))
         .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
       expect(replay.status).toBe(400);
@@ -641,7 +641,7 @@ describe('document collection routes', () => {
       ]) {
         expect(rawAgain.body.code).toBe('KNOWLEDGE_ROOT_BLOCKED');
       }
-      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorization).toBe('native_picker');
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
 
       // Deleting the source revokes the channel with it.
       expect((await request(app).delete(`/api/rag/knowledge/${sourceId}`)).status).toBe(200);
@@ -654,7 +654,7 @@ describe('document collection routes', () => {
       const root = collection('docs-allowlisted', {'a.md': '# A\nalpha\n'});
       const registered = await request(app).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true});
       const sourceId = registered.body.source.sourceId;
-      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorization');
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorizations');
       expect((await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})).status).toBe(200);
       process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = path.join(tmpDir, 'elsewhere');
       const blocked = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});

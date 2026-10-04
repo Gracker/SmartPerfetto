@@ -2,20 +2,24 @@
 
 [English](private-analysis-context.en.md) | [中文](private-analysis-context.md)
 
-SmartPerfetto treats trace evidence, user source code, and external knowledge as
-three separate data domains. Source enters a runtime only when the request
-selects it explicitly, scope/consent validates, and its registered root remains
-available; it does not require an active index. External knowledge still
-requires license, consent, and an active generation. Global RAG, persisted
-sessions, and cross-session learning must not add either domain implicitly.
+SmartPerfetto treats trace evidence, user source code, and document knowledge
+bases as three separate data domains. Source enters a runtime only when the
+request selects it explicitly, scope/consent validates, and its registered root
+remains available; it does not require an active index. A document knowledge
+base is its own SQLite FTS document store (not RAG chunks): it is searchable
+only when the request selects it, its rights are acknowledged, provider-send
+consent is granted and it has an active generation; its license field is the
+owner's own statement, not an admission condition. Public RAG corpora,
+persisted sessions, and cross-session learning must not add either domain
+implicitly.
 
 ## Request Matrix
 
-| Source selection | External RAG selection | Effective behavior |
+| Source selection | Knowledge selection | Effective behavior |
 |---|---|---|
 | None | None | Normal trace / Smart Profile analysis with no private retrieval tools |
 | Present | None | Exact `codebaseIds` and on-demand source tools; `metadata_only` exposes `CodeRef` only, while `provider_send` also requires registration-level consent |
-| None | Present | Exact `knowledgeSourceIds` and active generations; external prose is background, never current-trace evidence |
+| None | Present | Exact `knowledgeSourceIds`, read through `search_knowledge` / `read_knowledge_section` at each base's pinned generation; knowledge is background, never current-trace evidence |
 | Present | Present | Both allowlists apply and validate independently, then share the private projection and report boundary |
 
 The selection is resolved once, after session or conversation options are
@@ -27,7 +31,7 @@ registry reads, the fingerprint, the memory partition, run options and session
 persistence all consume that one result.
 
 `fast` / `full` selects a budget independently from authorization for source,
-external RAG, or a reference trace. It neither silently removes those capabilities
+knowledge bases, or a reference trace. It neither silently removes those capabilities
 nor requires a full report. The five native runtimes use tools on demand under
 typed scope and evidence-access constraints: `existing_only` prohibits new
 acquisition, and `read_new` cannot widen authorization. Conversation shares these
@@ -36,6 +40,21 @@ pass. Smart Profile
 preview only inventories scenes. A deep dive must pass the source mode,
 `codebaseIds`, `knowledgeSourceIds`, output language, and preview identity into
 the real run unchanged instead of relying on implicit UI-global state.
+
+## Consent Model
+
+Knowledge and source consent differ because their units of authorization
+differ. A document knowledge base has no path filters: the whole registered
+folder is what a grant covers, so provider-send consent is a boolean, given at
+registration or changed afterwards by the Web UI switch (which shows the
+disclosure text before granting), `PATCH /api/rag/knowledge/:id/consent`, or
+`smp knowledge consent <id> --enable|--disable`, all one registry operation. A
+codebase has a path selection and languages that can change under a grant, so
+sending its text takes a server-issued disclosure token: `authorizeContent`
+grants exactly the scope the caller was shown and refuses once it changed. Both
+share the explicit per-run selection, the authorization fingerprint, the
+authorization check before every model request, and the owner and strict
+projections.
 
 ## Authorization And Continuity
 

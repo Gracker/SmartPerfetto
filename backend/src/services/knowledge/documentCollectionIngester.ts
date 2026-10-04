@@ -84,12 +84,15 @@ export class DocumentCollectionIngester {
    * `pickedRootRealpath` is the folder a directory-picker selection resolved
    * to, which the caller has validated and consumes: it admits that one root
    * in place of the configured allowlist and records the `native_picker`
-   * channel, so the source's own reindexes trust it too. Without it the
-   * configured allowlist alone decides.
+   * channel, so the source's own reindexes trust it too. `localCli` says the
+   * caller's own gate admitted a folder the local CLI user named, and records
+   * the `local_cli` channel. Without either the configured allowlist alone
+   * decides. A re-registration keeps every channel recorded before.
    */
   async register(input: {
     rootPath: string;
     pickedRootRealpath?: string;
+    localCli?: boolean;
     displayName?: string;
     description?: string;
     attribution?: string;
@@ -110,7 +113,8 @@ export class DocumentCollectionIngester {
       kind: 'document_collection',
       displayName: input.displayName?.trim() || path.basename(preview.rootRealpath),
       rootRealpath: preview.rootRealpath,
-      ...(picked ? {rootAuthorization: 'native_picker' as const} : {}),
+      ...(picked ? {rootAuthorization: 'native_picker' as const}
+        : input.localCli ? {rootAuthorization: 'local_cli' as const} : {}),
       revision: `content-${preview.summary.contentFingerprint.slice(0, 40)}`,
       contentFingerprint: preview.summary.contentFingerprint,
       dirty: false,

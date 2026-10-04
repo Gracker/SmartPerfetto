@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {backendLogPath} from '../runtimePaths';
-import {type RootAuthorizationChannel, withoutUnsharedRootChannel} from './codebase/codebaseCapability';
+import {recordedRootChannels, type RootAuthorizationChannel, withoutUnsharedRootChannel} from './codebase/codebaseCapability';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {
   enterpriseKnowledgeDbWritesEnabled,
@@ -91,17 +91,18 @@ export function externalKnowledgeKindRetired(kind: ExternalKnowledgeKind): boole
 /**
  * How a registered root was authorized when it is not by
  * `SMARTPERFETTO_KNOWLEDGE_ROOTS`: `native_picker` is a folder the owner chose
- * in the local directory picker. Each registration records its own channel,
- * and only that source's own root is trusted through it
- * (`channelAuthorizedRoots`); deleting the source revokes it.
+ * in the local directory picker, `local_cli` one the local user named to
+ * `smp knowledge register`. A source's id is its root, so re-registering a
+ * folder updates the same record: its channels accumulate
+ * (`rootAuthorizations`), and only that source's own root is trusted through
+ * them (`channelAuthorizedRoots`; the server trusts `native_picker`, the CLI
+ * both). Deleting the source revokes them.
  */
-export type KnowledgeRootAuthorization = Extract<RootAuthorizationChannel, 'native_picker'>;
+export type KnowledgeRootAuthorization = Extract<RootAuthorizationChannel, 'native_picker' | 'local_cli'>;
 
 interface RegisterExternalKnowledgeSourceBase {
   displayName: string;
   rootRealpath: string;
-  /** Absent: the configured allowlist authorized the root. */
-  rootAuthorization?: KnowledgeRootAuthorization;
   revision: string;
   contentFingerprint: string;
   dirty: boolean;
@@ -126,11 +127,19 @@ interface ExternalKnowledgeDescriptiveText {
 
 /** Only a document collection is registered; a retired kind is never written anew. */
 export type RegisterExternalKnowledgeSourceInput =
-  RegisterExternalKnowledgeSourceBase & ExternalKnowledgeDescriptiveText & {kind: 'document_collection'};
+  RegisterExternalKnowledgeSourceBase & ExternalKnowledgeDescriptiveText & {
+    kind: 'document_collection';
+    /** This registration's channel; absent: the configured allowlist authorized the root. */
+    rootAuthorization?: KnowledgeRootAuthorization;
+  };
 
 export type ExternalKnowledgeSource =
   Omit<RegisterExternalKnowledgeSourceBase, 'sendToProvider'> & ExternalKnowledgeDescriptiveText & {
     kind: ExternalKnowledgeKind;
+    /** Every channel a registration of this root used; absent: only the configured allowlist. */
+    rootAuthorizations?: KnowledgeRootAuthorization[];
+    /** The one channel a record written before channels accumulated names; read, never written. */
+    rootAuthorization?: KnowledgeRootAuthorization;
     sendToProvider: boolean;
     sourceId: string;
     rightsAcknowledgedAt: number;
@@ -148,6 +157,17 @@ export type ExternalKnowledgeSource =
      */
     lifecycleState?: 'active' | 'deleting';
   };
+
+/** A record's channels (either stored form) plus `added`, sorted and without repeats. */
+function knowledgeRootChannels(
+  source: ExternalKnowledgeSource | undefined,
+  added: KnowledgeRootAuthorization | undefined,
+): KnowledgeRootAuthorization[] {
+  const channels = new Set(source ? recordedRootChannels(source) : []);
+  if (added) channels.add(added);
+  return [...channels].sort().filter((channel): channel is KnowledgeRootAuthorization =>
+    channel === 'native_picker' || channel === 'local_cli');
+}
 
 function isDeleting(source: Pick<ExternalKnowledgeSource, 'lifecycleState'>): boolean {
   return source.lifecycleState === 'deleting';
@@ -233,7 +253,13 @@ const SOURCE_ID_PATTERN = new RegExp(`^${SOURCE_ID_PREFIX}[0-9a-f]{${SOURCE_ID_H
 
 /** A source as its owner's management surfaces show it: no root path, no scope, no root channel. */
 export function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
-  const {rootRealpath: _rootRealpath, scope: _scope, rootAuthorization: _rootAuthorization, ...safeSource} = source;
+  const {
+    rootRealpath: _rootRealpath,
+    scope: _scope,
+    rootAuthorization: _rootAuthorization,
+    rootAuthorizations: _rootAuthorizations,
+    ...safeSource
+  } = source;
   return safeSource;
 }
 
@@ -385,12 +411,16 @@ export class ExternalKnowledgeSourceRegistry {
         const kept = descriptive[field] ?? previous?.[field];
         if (kept) descriptiveFields[field] = kept;
       }
+      // Every channel the root was registered through stays trusted: a
+      // re-registration through another channel (or the allowlist) adds to
+      // them and takes none away. `previous` already holds only channels
+      // every store side records.
+      const rootAuthorizations = knowledgeRootChannels(previous, input.rootAuthorization);
       return {
         kind: input.kind,
         displayName,
         rootRealpath: path.resolve(input.rootRealpath),
-        // The channel of this registration, never one an earlier registration recorded.
-        ...(input.rootAuthorization ? {rootAuthorization: input.rootAuthorization} : {}),
+        ...(rootAuthorizations.length > 0 ? {rootAuthorizations} : {}),
         ...activeIdentity,
         ...descriptiveFields,
         rightsAcknowledged: true,
