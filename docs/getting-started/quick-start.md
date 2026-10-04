@@ -10,7 +10,11 @@
   [Latest Release](https://github.com/Gracker/SmartPerfetto/releases/latest)，下载并校验
   SHA256，全部解压，运行 `SmartPerfetto.exe`，在 UI 中保存、测试并激活 Provider，
   再加载 trace。完整步骤见 [Windows 配置与运行指南](windows.md)。
+- **macOS 或 Linux 桌面用户**：下载对应的 `macos-arm64` 或 `linux-x64` 免安装包，包内带 Node.js、
+  后端、预构建 UI 和 trace processor；平台要求见 [平台兼容与验证边界](../reference/platform-compatibility.md)。
 - **容器部署**：使用 Docker Desktop/Engine；Windows 上使用 WSL2 backend。
+- **终端或自动化**：用 Node.js 24 安装独立 CLI：`npm install -g @gracker/smartperfetto`，再运行
+  `smp doctor` 检查环境；CLI 不带 Web UI，见 [CLI 参考](../reference/cli.md)。
 - **开发者**：需要改后端、Skill 或源码时再克隆仓库；只有修改 Perfetto UI 插件时才
   初始化 `perfetto/` submodule。
 
@@ -36,7 +40,7 @@ Claude Agent SDK 需要在 Provider Manager 或 env 中显式配置 API key/toke
 
 步骤 2：编辑 `backend/.env`。Anthropic 直连时解注释 `ANTHROPIC_API_KEY`；第三方 Claude Code / Anthropic-compatible provider 解注释一个 provider block，只替换 API key/token；OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK 相关字段；Pi Agent Core / OpenCode 使用 custom 配置段。Qoder 是 opt-in：先审阅条款并安装 `@qoder-ai/qoder-agent-sdk`，再使用 Qoder 配置段。
 
-`backend/.env.example` 已经内置 DeepSeek、GLM、Qwen、Kimi、Doubao、MiniMax 等常见 Claude Code 兼容 Base URL 和推荐主/轻模型。Docker 使用仓库根目录 `.env`，包括 Docker Hub 镜像和本地 source Docker build：
+`backend/.env.example` 已经内置 DeepSeek、GLM、Qwen、Kimi、Doubao、MiniMax、MiMo、TokenHub 等常见 Claude-compatible 与 OpenAI-compatible provider 的 Base URL 和推荐主/轻模型。Docker 使用仓库根目录 `.env`，包括 Docker Hub 镜像和本地 source Docker build：
 
 步骤 1：运行 `cp .env.example .env`。
 
@@ -89,7 +93,7 @@ Docker image 已包含固定 trace processor 和提交版 UI；不需要宿主�
 - `帮我看看这个 ANR`
 - `这个 trace 的应用包名和主要进程是什么？`
 
-分析完成后，如果结果旁出现反馈机会提示，可以点击 **让 Agent 判断反馈内容**。Agent 会
+分析完成后，如果结果旁出现反馈机会提示，可以点击 **让 Agent 帮我判断是否应反馈**（对该结果点过 👎 之后显示为 **让 Agent 分析我该反馈或贡献什么**）。Agent 会
 结合该次运行的持久化证据说明是否值得反馈、归属哪个模块、可以贡献什么；用户回答必要
 问题并完成敏感信息复核后，SmartPerfetto 只打开未提交的 GitHub 草稿。详见
 [Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)。

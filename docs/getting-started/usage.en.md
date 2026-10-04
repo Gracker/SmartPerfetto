@@ -18,7 +18,7 @@ SmartPerfetto works best with Android 12+ traces, especially traces that include
 
 ## UI Analysis Flow
 
-1. Open the URL supplied by the runtime; Windows portable uses the actual `Open:` URL printed by the launcher, while Docker defaults to `http://localhost:10000`.
+1. Open the URL supplied by the runtime; Windows portable uses the actual `Open:` URL printed by the launcher, while Docker defaults to `http://127.0.0.1:10000`.
 2. Load a `.pftrace` or `.perfetto-trace` file.
 3. Open the SmartPerfetto AI Assistant panel.
 4. Choose an analysis mode: Chat, Fast, Full, or Auto.

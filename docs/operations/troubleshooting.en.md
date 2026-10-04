@@ -75,7 +75,7 @@ TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.s
 
 A mirror must keep the `<PERFETTO_ARTIFACT_VERSION>/<platform>/trace_processor_shell` layout, where `PERFETTO_ARTIFACT_VERSION` is a release tag or a full upstream commit SHA. Mirrored downloads are still checked against the SHA256 pinned in `scripts/trace-processor-pin.env`.
 
-## Docker AI Credentials
+## Docker Startup Or AI Credentials
 
 For Docker runs, check:
 
@@ -86,6 +86,15 @@ For Docker runs, check:
 
 Docker Hub and normal source-image builds consume committed `frontend/` and do
 not require the `perfetto/` submodule. Only UI plugin development needs it.
+
+Local troubleshooting is often easier with:
+
+```bash
+./start.sh
+```
+
+Return to Docker once the normal source path works; use
+`./scripts/start-dev.sh` only when changing the Perfetto UI plugin.
 
 ## macOS Blocks trace_processor_shell
 
@@ -128,12 +137,23 @@ does not use broad process-name cleanup for watchers or
 
 ## LLM Calls Are Slow or Failing
 
+Slow, proxied, and local models usually need longer timeouts. The shared
+`AGENT_*` caps also apply to Provider Manager profiles; runtime-specific values
+override only the direct env provider:
+
 ```bash
+AGENT_FULL_REQUEST_TIMEOUT_MS=1800000
+AGENT_STREAM_IDLE_TIMEOUT_MS=600000
 CLAUDE_FULL_PER_TURN_MS=120000
 CLAUDE_QUICK_PER_TURN_MS=80000
-CLAUDE_VERIFIER_TIMEOUT_MS=120000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=60000
+OPENAI_FULL_PER_TURN_MS=120000
+OPENAI_QUICK_PER_TURN_MS=80000
+OPENAI_CLASSIFIER_TIMEOUT_MS=60000
 ```
+
+See the [Configuration Guide](../getting-started/configuration.en.md#budgets-and-timeouts)
+for each variable's meaning and default.
 
 If fast mode fails on a heavy question, use full mode:
 
@@ -144,6 +164,58 @@ If fast mode fails on a heavy question, use full mode:
   }
 }
 ```
+
+## The Answer Remains After A Stop, Or "Stopping" Persists
+
+- When the answer is shown and being verified, the first **Stop** ends only
+  the verification: the answer is saved as usual and its verification reads as
+  stopped by the user (unverified). The button then reads **Force stop**.
+- A second press, **Force stop**, waits up to
+  `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15 s) for the turn to be
+  saved. If it still is not, the answer you read is saved as a turn whose
+  verification did not finish (`terminationReason: review_not_finished`, shown
+  as unfinished); a turn that used source or knowledge, or whose authorization
+  was revoked, keeps no body.
+- A stop before any answer appears is a full cancel that keeps only the cancel
+  marker.
+- A new question sent right after a stop may get 409
+  `CANCELLATION_IN_PROGRESS` or `RUN_ALREADY_ACTIVE`: the previous run is still
+  settling. The UI waits a bounded time before sending; API callers retry
+  shortly.
+- For CLI Ctrl-C rules see [Basic Usage](../getting-started/usage.en.md#ui-analysis-flow).
+
+## Source Analysis Is Refused Or Ends Midway
+
+Starting an analysis answers 409 with `codebases[]` naming a fixed reason code
+for each codebase (never a path):
+
+| `code` | Meaning and fix |
+|---|---|
+| `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE` | The registered root was moved, unmounted, deleted, made unreadable, or removed from the allowlist (`root_missing`, `outside_allowlist`, …); restore the path or register again |
+| `ANALYSIS_CONTEXT_CODEBASE_NOT_CONSENTED` | `Send text` was chosen for a codebase without a source-text grant; use **Allow source text** under **Settings → Codebases**, or switch the turn to `Locate only` |
+| `ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE` | The source-text grant no longer matches the current scope (the scope changed); allow source text again and confirm |
+| `FEATURE_DISABLED` | The backend sets `SMARTPERFETTO_CODE_AWARE=off` and accepts no source selection |
+
+An authorization change during a run (revoking source text, changing a
+selected codebase's scope, or deleting it) ends the run with
+`analysis_context_changed_restart_required`; start the analysis again, and in
+conversation mode start a new conversation.
+
+## Model Analysis Is Disabled
+
+`code: "AI_DISABLED"` (`retryable: false`) means the deployment sets
+`SMARTPERFETTO_AI_ENABLED=false` or an unparseable value (treated as disabled).
+Authenticated `/api/runtime-health` (`aiPolicy`) and `smp doctor` show why.
+Trace reads, SQL, reports, and deterministic Skills still work; see the
+[Configuration Guide](../getting-started/configuration.en.md#temporarily-disable-model-backed-analysis).
+
+## Critical Path Or Flamegraph Answers 410
+
+In enterprise mode (`SMARTPERFETTO_ENTERPRISE=true` or OIDC enabled), the
+non-workspace `/api/critical-path/*` and `/api/flamegraph/*` answer 410
+`ENTERPRISE_WORKSPACE_ROUTE_REQUIRED`. The critical-path drawer uses the
+workspace route and is unaffected; the flamegraph page is unavailable in that
+mode. See [Critical Path And Flamegraph](../getting-started/critical-path-and-flamegraph.en.md).
 
 ## 401 or Authentication Failure
 

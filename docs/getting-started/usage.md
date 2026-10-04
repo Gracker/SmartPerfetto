@@ -18,7 +18,7 @@ SmartPerfetto 最适合 Android 12+ trace，尤其是包含 FrameTimeline 数据
 
 ## UI 分析流程
 
-1. 打开运行入口给出的地址；Windows 免安装包使用启动器打印的实际 `Open:` URL，Docker 默认是 `http://localhost:10000`。
+1. 打开运行入口给出的地址；Windows 免安装包使用启动器打印的实际 `Open:` URL，Docker 默认是 `http://127.0.0.1:10000`。
 2. 加载 `.pftrace` 或 `.perfetto-trace`。
 3. 打开 SmartPerfetto AI Assistant 面板。
 4. 选择分析模式：对话、快速、完整或智能。
