@@ -303,6 +303,27 @@ describe('agent route private projections', () => {
     else expect(data.knowledgeUse).toBeUndefined();
   });
 
+  it('replays a private source decision with its derived read/located counts', () => {
+    const decision = {schemaVersion: 'source_use_decision@1', codeAwareMode: 'provider_send',
+      selectedCodebaseIds: ['cb-private'], status: 'corroborated', attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['cb-private'], usedCodebaseIds: ['cb-private'], references: [
+        {referenceId: 'r-body', codebaseId: 'cb-private', filePath: 'src/A.kt', lineRange: {start: 1, end: 40},
+          sourceGeneration: 'live-1', lookupKind: 'body'},
+        {referenceId: 'r-hit', codebaseId: 'cb-private', filePath: 'src/A.kt', lineRange: {start: 5, end: 6},
+          sourceGeneration: 'live-1', lookupKind: 'search_hit'},
+        {referenceId: 'r-other', codebaseId: 'cb-private', filePath: 'src/B.kt', lineRange: {start: 5, end: 6},
+          sourceGeneration: 'live-1', lookupKind: 'search_hit'},
+      ]};
+    const replayed = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
+      {sessionId: 'session-source-replay', query: 'q', traceId: 'trace-source-replay',
+        codeAwareMode: 'provider_send', codebaseIds: ['cb-private'], dataEnvelopes: []} as any,
+      {eventType: 'analysis_completed', createdAt: 1, eventData: JSON.stringify({type: 'analysis_completed', data: {
+        privateProjectionVersion: 1, success: true, conclusion: 'done', sourceUseDecision: decision}, timestamp: 1})} as any,
+      true,
+    );
+    expect(JSON.parse(replayed.eventData).data.sourceUseDecision.referenceCounts).toEqual({located: 3, read: 2});
+  });
+
   it('passes the durable actual source decision into completed snapshot persistence', () => {
     const snapshotInput = completedSnapshotInputFromRoute();
     const sourceUseDecision = snapshotInput?.properties.find(

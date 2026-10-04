@@ -18,6 +18,7 @@ import { loadSession, turnReportPath } from '../io/sessionStore';
 import { openPath } from '../io/openFile';
 import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {loadCliAnalysisEvidence, renderCliAnalysisEvidence} from '../services/analysisResultPresentation';
+import {sourceUseDecisionForClient} from '../../services/codebase/sourceUseDecision';
 import {cliSceneReportMetadata, loadCliSceneReport, renderCliSceneReport} from '../services/sceneReportReference';
 import {sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
@@ -188,6 +189,19 @@ function buildMarkdownExport(sp: ReturnType<typeof loadSession>['sp'], config: N
   return lines.join('\n');
 }
 
+/** The turn's bound source decision, as the CLI exports it: with its derived counts. */
+function storedSourceUseDecision(
+  sp: ReturnType<typeof loadSession>['sp'],
+  sessionId: string,
+  turn: number,
+  turnMarkdown: string,
+): unknown {
+  const loaded = loadCliAnalysisEvidence({sp, sessionId, turn, turnMarkdown});
+  return loaded.status === 'available'
+    ? sourceUseDecisionForClient(loaded.bundle.evidence.sourceUseDecision)
+    : null;
+}
+
 function formatStoredEvidence(
   sp: ReturnType<typeof loadSession>['sp'],
   sessionId: string,
@@ -247,6 +261,7 @@ function buildTurnJsonExport(
     config,
     turn,
     turnMarkdown: readIfExists(mdPath),
+    sourceUseDecision: storedSourceUseDecision(sp, config.sessionId, turn, readIfExists(mdPath)),
     claimSupport: readJsonIfExists(`${turnPrefix}.claim-support.json`, []),
     claimVerificationResult: readJsonIfExists(`${turnPrefix}.claim-verification.json`, null),
     identityResolutions: readJsonIfExists(`${turnPrefix}.identity-resolutions.json`, []),

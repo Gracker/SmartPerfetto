@@ -57,7 +57,7 @@ npm run cli:dev -- run --format json \
 
 修改源码库的选择范围时，可证明的收窄会让发送授权随之收窄；其他变化会撤销发送授权，需要重新授权：`smp codebase authorize-content` 先显示将授权的具体范围与 token，再用 `--confirm <token>` 授权（API 为 consent 接口的 `authorizeContent: true` 加 `contentDisclosureToken`）。实际的授权或范围变化会让正在进行的对话重新开始；重复提交相同授权、修改未选中的库或在别处重建索引都不会打断它。
 
-分析预算和证据权限相互独立：选择源码、对比 Trace 或私有 RAG 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
+分析预算和证据权限相互独立：选择源码、对比 Trace 或私有 RAG 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册后用 `smp codebase authorize-content` 查看并确认披露范围（Web 端为“添加并使用”在注册后按返回的披露授权），且本次分析显式选择 `--code-aware provider_send`。注册本身不能授权正文发送。
 
 ## 什么时候使用源码
 

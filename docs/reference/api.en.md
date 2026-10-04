@@ -908,13 +908,13 @@ Base path: `/api/rag`
 | `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
 | `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization; optional `purpose: "codebase" \| "knowledge"` only sets the dialog title, codebases and knowledge bases share one kind of selection |
 | `POST` | `/codebases/preview` | Preview source files and enumeration coverage with the same selection policy used by indexing |
-| `POST` | `/codebases/register` | Register a local codebase |
+| `POST` | `/codebases/register` | Register a local codebase; it grants no provider-send consent: `sendToProvider: true` answers 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, registering nothing and leaving a directory selection unused; grant afterwards with the returned `contentDisclosure` through `PATCH /codebases/:id/consent` (`authorizeContent`) |
 | `GET` | `/codebases/:id` | Codebase detail (including `rootAvailable` / `unavailableReason`, `contentDisclosure`) |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
 | `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
 | `POST` | `/codebases/:id/reindex` | Reindex; the request body retains a bounded `pathPrefix` compatibility input, while CLI `reindex` has no such option |
 | `GET` | `/codebases/:id/audit` | Index audit |
-| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: `authorizeContent: true` with `contentDisclosureToken` grants the disclosed current scope and every language at once (recommended); set `sendToProvider`; authorize only new languages with `authorizeAvailableExtensions: true`; or authorize only the current path scope with `authorizeCurrentSelection: true` |
+| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: `authorizeContent: true` with `contentDisclosureToken` grants the disclosed current scope and every language at once (recommended); revoke with `sendToProvider: false` (`true` answers 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED` and changes nothing: it would revive the previous grant's old scope and languages without a disclosure); authorize only new languages with `authorizeAvailableExtensions: true`; or authorize only the current path scope with `authorizeCurrentSelection: true` |
 | `POST` | `/codebases/:id/selection/preview` | Without saving, enumerate the files new include prefixes / exclude globs would admit, exactly as a save enumerates them (`complete` / `partial` / `unavailable`); relative paths only |
 | `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs; the save enumerates again and a complete enumeration with no match is `400 CODEBASE_SELECTION_EMPTY_MATCH`; an optional `expectedSelectionPolicyRevision` is a CAS (`409 CODEBASE_SELECTION_STALE`) |
 | `POST` | `/codebases/:id/pending/accept` | Echo `candidateGenerationId`, `selectionPolicyRevision`, and `grantRevision` to explicitly accept a truncated candidate generation with CAS |
@@ -963,8 +963,8 @@ with the grant unchanged. Show the lists of one response
 and submit that response's `token`; after a 409 stale, read again, show again
 and let the user confirm again rather than retrying with a fresh token. Repeating it
 while the grant already says exactly that changes neither the consent hash nor
-`grantRevision`, so it never interrupts a session; repeating the current
-`sendToProvider` value, or `authorizeAvailableExtensions` on a grant that already
+`grantRevision`, so it never interrupts a session; repeating
+`sendToProvider: false` on revoked consent, or `authorizeAvailableExtensions` on a grant that already
 covers every language, is idempotent too. The two narrow actions keep their own boundaries and
 preconditions and are never widened into the combined one: extensions added by
 a later version are reported as `availableNotConsentedExtensions` until

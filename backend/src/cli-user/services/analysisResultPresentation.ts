@@ -9,6 +9,7 @@ import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {localize, type OutputLanguage} from '../../agentv3/outputLanguage';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity} from '../../types/analysisDelivery';
 import type {SafeSourceProvenanceProjection} from '../../services/codebase/sourceClaimVerifier';
+import {sourceUseDecisionForClient} from '../../services/codebase/sourceUseDecision';
 import {
   parseClosedAnalysisEvidencePresentation,
   projectAnalysisEvidenceForDisplay,
@@ -145,7 +146,9 @@ export function renderCliAnalysisEvidence(
   appendJsonSection(lines, localize(language, '身份解析', 'Identity resolutions'), evidence.identityResolutions);
   appendJsonSection(lines, localize(language, '调查覆盖', 'Investigation assessment'), evidence.investigationAssessment);
   appendJsonSection(lines, localize(language, '交付状态', 'Delivery assurance'), evidence.deliveryAssurance);
-  appendJsonSection(lines, localize(language, '源码使用决策', 'Source use decision'), evidence.sourceUseDecision);
+  // Rendered output only: the persisted evidence and its fingerprint stay without the derived counts.
+  appendJsonSection(lines, localize(language, '源码使用决策', 'Source use decision'),
+    sourceUseDecisionForClient(evidence.sourceUseDecision));
   appendJsonSection(lines, localize(language, '源码引用', 'Source references'), evidence.sourceReferences);
   appendJsonSection(lines, localize(language, '声明与源码绑定', 'Claim-to-source bindings'), evidence.sourceClaimBindings);
   // Present only for results the current verifier judged.

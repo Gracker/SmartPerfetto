@@ -766,13 +766,13 @@ Base path: `/api/rag`
 | `GET` | `/codebases/directory-picker` | 返回当前后端是否支持本机系统文件夹选择 |
 | `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权；可选 `purpose: "codebase" \| "knowledge"` 只决定对话框标题，源码库与知识库共用同一种选择 |
 | `POST` | `/codebases/preview` | 用与索引相同的 selection policy 预览源码文件与枚举覆盖率 |
-| `POST` | `/codebases/register` | 注册本机代码库 |
+| `POST` | `/codebases/register` | 注册本机代码库；不授予 provider-send：`sendToProvider: true` 返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`，不写入注册项、不消费目录选择；注册后用返回的 `contentDisclosure` 调 `PATCH /codebases/:id/consent`（`authorizeContent`） |
 | `GET` | `/codebases/:id` | codebase 详情（含 `rootAvailable` / `unavailableReason`、`contentDisclosure`） |
 | `GET` | `/codebases/:id/symbols` | 符号解析 |
 | `GET` | `/codebases/:id/excerpt` | 读取已索引片段 |
 | `POST` | `/codebases/:id/reindex` | 重新索引；request body 仍可用有界 `pathPrefix` 兼容输入，CLI `reindex` 无此选项 |
 | `GET` | `/codebases/:id/audit` | 索引审计 |
-| `PATCH` | `/codebases/:id/consent` | 四选一：`authorizeContent: true` 加 `contentDisclosureToken` 一次授权所披露的当前范围与全部语言（推荐）；设置 `sendToProvider`；用 `authorizeAvailableExtensions: true` 只授权新语言；用 `authorizeCurrentSelection: true` 只授权当前路径范围 |
+| `PATCH` | `/codebases/:id/consent` | 四选一：`authorizeContent: true` 加 `contentDisclosureToken` 一次授权所披露的当前范围与全部语言（推荐）；`sendToProvider: false` 撤销（`true` 返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`，不改变任何状态：它会不经披露地恢复上一次授权的旧范围与旧语言）；用 `authorizeAvailableExtensions: true` 只授权新语言；用 `authorizeCurrentSelection: true` 只授权当前路径范围 |
 | `POST` | `/codebases/:id/selection/preview` | 不保存，按与保存相同的枚举预览新 include prefix / exclude glob 命中的文件（`complete` / `partial` / `unavailable`），只返回相对路径 |
 | `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；保存时重新枚举，完整枚举为零命中返回 400 `CODEBASE_SELECTION_EMPTY_MATCH`；可带 `expectedSelectionPolicyRevision` 做 CAS（不一致返回 409 `CODEBASE_SELECTION_STALE`） |
 | `POST` | `/codebases/:id/pending/accept` | 回传 `candidateGenerationId`、`selectionPolicyRevision` 和 `grantRevision`，以 CAS 显式接受被截断的候选 generation |
@@ -807,7 +807,7 @@ include prefixes/exclude globs 与该类型全部语言。列表与详情返回
 语言，返回 409 `CODEBASE_CONSENT_DISCLOSURE_STALE`，授权状态不变。调用方应展示同一次响应里的
 这三个列表并提交同一个 `token`；收到 409 stale 后重新读取、
 重新展示、由用户重新确认，不要自动换用新 token 重试。与当前完全相同的重复提交
-不改变 consent hash 或 `grantRevision`，因此不会打断会话；`sendToProvider` 重复提交当前值、
+不改变 consent hash 或 `grantRevision`，因此不会打断会话；已撤销时再次 `sendToProvider: false`、
 已覆盖全部语言时再次 `authorizeAvailableExtensions` 同样是幂等的。两个窄动作保持原有边界和前置条件，不会被扩大成统一动作：
 `authorizeAvailableExtensions: true` 只加入新版本增加的语言（`availableNotConsentedExtensions`），
 `authorizeCurrentSelection: true` 只把当前路径范围写入授权并保留原语言；两者都要求已开启

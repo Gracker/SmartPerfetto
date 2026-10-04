@@ -296,7 +296,8 @@ smp codebase selection cb_xxx \
 # 先显示将授权的具体范围与 token（不授权），再用该 token 一次授权当前范围与全部语言（推荐）
 smp codebase authorize-content cb_xxx
 smp codebase authorize-content cb_xxx --confirm cd1:1:xxxxxxxxxxxxxxxx
-smp codebase consent cb_xxx --enable
+# 撤销正文发送；--enable 会以 CODEBASE_CONSENT_DISCLOSURE_REQUIRED 拒绝，请用 authorize-content
+smp codebase consent cb_xxx --disable
 smp codebase authorize-selection cb_xxx
 smp codebase authorize-extensions cb_xxx
 
@@ -319,8 +320,10 @@ smp run trace.perfetto-trace \
 ```
 
 `metadata_only` 只把 `CodeRef` 元数据暴露给模型；源码正文不会进入 session、
-报告或导出。`provider_send` 只有在注册 codebase 时使用 `--send-to-provider`
-并且本次分析也选择 `--code-aware provider_send` 时才允许发送片段。只传
+报告或导出。`provider_send` 只有在该 codebase 已通过 `smp codebase authorize-content`
+（先显示范围与 token，再 `--confirm <token>`）授权正文发送，并且本次分析也选择
+`--code-aware provider_send` 时才允许发送片段。注册不能授权：`smp codebase register`
+带 `--send-to-provider` 会以 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED` 拒绝且不写入注册项。只传
 `--codebase-id` 会默认使用 `metadata_only`；`--code-aware off` 会丢弃同时传入的
 codebase ID（不再报错，也不触发任何源码授权或功能开关检查）。未选中任何源码库也
 未传 knowledge source ID 时才是 trace-only；知识源选择与源码模式无关。

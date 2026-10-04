@@ -333,7 +333,8 @@ smp codebase selection cb_xxx \
 # Show exactly what would be granted and its token (grants nothing), then grant that scope and every language (recommended)
 smp codebase authorize-content cb_xxx
 smp codebase authorize-content cb_xxx --confirm cd1:1:xxxxxxxxxxxxxxxx
-smp codebase consent cb_xxx --enable
+# Revoke body sending; --enable is refused with CODEBASE_CONSENT_DISCLOSURE_REQUIRED, use authorize-content
+smp codebase consent cb_xxx --disable
 smp codebase authorize-selection cb_xxx
 smp codebase authorize-extensions cb_xxx
 
@@ -357,8 +358,12 @@ smp run trace.perfetto-trace \
 
 `metadata_only` exposes only `CodeRef` metadata to the model; raw source text is
 not persisted into sessions, reports, or exports. `provider_send` can send
-snippets only when the codebase was registered with `--send-to-provider` and the
-current analysis also uses `--code-aware provider_send`. Supplying only
+snippets only when body sending was granted for the codebase with
+`smp codebase authorize-content` (it shows the scope and a token, then
+`--confirm <token>` grants it) and the current analysis also uses
+`--code-aware provider_send`. Registration cannot grant it: `smp codebase
+register --send-to-provider` is refused with `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`
+and registers nothing. Supplying only
 `--codebase-id` defaults to `metadata_only`; `--code-aware off` drops any
 codebase IDs passed with it (no error, and no source authorization or feature
 check). A run is trace-only only when no codebase is selected and no

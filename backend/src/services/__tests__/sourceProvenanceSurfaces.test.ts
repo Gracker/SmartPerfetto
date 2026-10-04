@@ -29,22 +29,44 @@ import {
   requireWorkspaceRouteContext,
 } from '../../middleware/workspaceRouteContext';
 import analysisResultRoutes from '../../routes/analysisResultRoutes';
-import {
+import agentRoutes, {
+  agentRoutesCancellationTestSeam,
   agentRoutesPrivacyProjectionTestSeam,
 } from '../../routes/agentRoutes';
 import reportRoutes, {persistReport, reportStore} from '../../routes/reportRoutes';
 import {backendLogPath} from '../../runtimePaths';
 import {buildAgentDrivenReportData} from '../agentReportData';
 import {persistCompletedAnalysisResultSnapshot} from '../analysisResultSnapshotPipeline';
-import {sanitizeSourceReference, sanitizeSourceUseDecision, type SourceUseDecisionV1} from '../codebase/sourceUseDecision';
+import {
+  sanitizeSourceReference,
+  sanitizeSourceUseDecision,
+  sourceReferenceCounts,
+  type SourceUseDecisionV1,
+} from '../codebase/sourceUseDecision';
 import {createDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {captureEvidenceTable} from '../evidence/evidenceCapture';
+import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {finalizeAnalysisResult} from '../finalizeAnalysisResult';
 import {copyAnalysisDeliveryFields} from '../security/analysisDeliveryProjection';
 import {HTMLReportGenerator} from '../htmlReportGenerator';
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
+const routeOwner = {tenantId: DEFAULT_TENANT_ID, workspaceId: 'workspace-source-surfaces', userId: DEFAULT_DEV_USER_ID};
+const routeEnvKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', ENTERPRISE_FEATURE_FLAG_ENV] as const;
+
+function agentRouteGet(url: string) {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/agent/v1', agentRoutes);
+  return request(app).get(`/api/agent/v1${url}`)
+    .set('X-SmartPerfetto-SSO-User-Id', routeOwner.userId)
+    .set('X-SmartPerfetto-SSO-Email', 'source-surfaces@example.test')
+    .set('X-SmartPerfetto-SSO-Tenant-Id', routeOwner.tenantId)
+    .set('X-SmartPerfetto-SSO-Workspace-Id', routeOwner.workspaceId)
+    .set('X-SmartPerfetto-SSO-Roles', 'analyst')
+    .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,agent:run,report:read');
+}
 
 function rendererStub(): Renderer {
   return {
@@ -127,7 +149,18 @@ describe('source provenance output surface matrix', () => {
   const cliSurfaceEnv = path.join(cliSurfaceRoot, 'empty.env');
   fs.writeFileSync(cliSurfaceEnv, '', 'utf8');
 
-  afterAll(() => fs.rmSync(cliSurfaceRoot, {recursive: true, force: true}));
+  const originalRouteEnv = new Map(routeEnvKeys.map(key => [key, process.env[key]]));
+  beforeAll(() => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+  });
+  afterAll(() => {
+    fs.rmSync(cliSurfaceRoot, {recursive: true, force: true});
+    for (const [key, value] of originalRouteEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
 
   it.each(['src/main/Foo.kt', 'src/功能目录/My Feature/Foo.kt'])(
     'keeps current-run source %s across SSE, report, CLI, snapshot, and API readback', async filePath => {
@@ -143,6 +176,14 @@ describe('source provenance output surface matrix', () => {
       symbol: 'Foo.run',
       lookupKind: 'body',
     })!;
+    // A location only: it lies outside the read body, so it is located but not read.
+    const searchHit = sanitizeSourceReference({
+      referenceId: 'lookup-surface-hit',
+      codebaseId: 'safe-app',
+      filePath: 'src/main/Other.kt',
+      lineRange: {start: 3, end: 4},
+      lookupKind: 'search_hit',
+    })!;
     const sourceUseDecision = {
       schemaVersion: 'source_use_decision@1' as const,
       codeAwareMode: 'provider_send' as const,
@@ -157,7 +198,7 @@ describe('source provenance output surface matrix', () => {
         rootPath: '/Users/chris/private-source',
         snippet: 'SECRET_SNIPPET_CANARY',
         query: 'SECRET_QUERY_CANARY',
-      } as any],
+      } as any, searchHit],
     };
     // The answer cites the bound location; the quoted form keeps a spaced path whole.
     const body = `The trace reports 120 ms blocked in \`${filePath}:L10-L12\`.`;
@@ -424,6 +465,69 @@ describe('source provenance output surface matrix', () => {
       expect(snapshotResponse.body.snapshot.claimVerificationResult).toEqual(wireResult.claimVerificationResult);
       expect(snapshotResponse.body.snapshot.summary.completion).toEqual(wireResult.completion);
 
+      // Every client read of the decision carries the same derived counts; no stored copy holds them.
+      const expectedCounts = sourceReferenceCounts(sanitizeSourceUseDecision(sourceUseDecision)!.references);
+      expect(expectedCounts).toEqual({located: 2, read: 1});
+      const routeSession = {sessionId: result.sessionId, traceId: 'trace-source-surfaces', query: 'analyze Foo.run',
+        status: 'completed', createdAt: 1, lastActivityAt: 1, ...routeOwner, outputLanguage: 'en',
+        codeAwareMode: 'provider_send', codebaseIds: ['safe-app'], result, hypotheses: [], dataEnvelopes: [envelope],
+        scenes: [], sseClients: [], sseEventBuffer: [], sseEventSeq: 0, completedAnalysisFinalArtifacts: {},
+        runSequence: 1, logger: {info: () => {}, warn: () => {}, error: () => {}, getLogFilePath: () => '/logs/s.jsonl'},
+      } as any;
+      agentRoutesCancellationTestSeam.setSession(result.sessionId, routeSession);
+      const liveEvent = agentRoutesPrivacyProjectionTestSeam.ensureCompletedAnalysisSseEvents(routeSession)
+        .find(event => event.eventType === 'analysis_completed');
+      const liveData = JSON.parse(liveEvent!.eventData).data;
+      const statusResponse = await agentRouteGet(`/${result.sessionId}/status`);
+      expect(statusResponse.status).toBe(200);
+      const reportRouteResponse = await agentRouteGet(`/${result.sessionId}/report`);
+      expect(reportRouteResponse.status).toBe(200);
+      const turnDetail = agentRoutesPrivacyProjectionTestSeam.buildTurnDetail({id: 'turn-1', turnIndex: 1,
+        timestamp: 1, query: 'analyze Foo.run', completed: true, findings: [], intent: {primaryGoal: 'analyze Foo.run'},
+        result: {...wireResult, message: wireResult.conclusion}} as any, result.sessionId, 'en');
+      const cliJsonExport = path.join(tempRoot, 'cli-export.json');
+      const exportLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        expect(await runReportExportCommand({sessionId: result.sessionId, format: 'json', turn: 1, out: cliJsonExport,
+          envFile: cliSurfaceEnv, sessionDir: cliHome})).toBe(0);
+      } finally {
+        exportLog.mockRestore();
+      }
+      const cliJson = JSON.parse(fs.readFileSync(cliJsonExport, 'utf8'));
+      const clientDecisions = {
+        'sse-live': liveData.sourceUseDecision,
+        'sse-live-contract': liveData.conclusionContract.sourceUseDecision,
+        'sse-replay': sseResult.sourceUseDecision,
+        'sse-replay-contract': sseContract.sourceUseDecision,
+        status: statusResponse.body.result.sourceUseDecision,
+        'status-contract': statusResponse.body.result.conclusionContract.sourceUseDecision,
+        'turn-detail': turnDetail.result?.sourceUseDecision,
+        'turn-detail-contract': (turnDetail.result as any)?.conclusionContract.sourceUseDecision,
+        report: reportRouteResponse.body.report.sourceUseDecision,
+        'report-contract': reportRouteResponse.body.report.conclusionContract.sourceUseDecision,
+        'snapshot-api-contract': apiContract.sourceUseDecision,
+        'cli-json': cliJson.sourceUseDecision,
+      };
+      for (const [name, decision] of Object.entries(clientDecisions)) {
+        expect({name, counts: decision?.referenceCounts}).toEqual({name, counts: expectedCounts});
+      }
+      const renderedCounts = JSON.stringify({referenceCounts: expectedCounts}, null, 2).split('\n').slice(1, -1)
+        .map(line => `    ${line}`).join('\n');
+      for (const rendered of [cliShow, cliMarkdown]) expect(rendered).toContain(renderedCounts);
+      const storedDecisions = {
+        result: result.sourceUseDecision,
+        'result-contract': contract.sourceUseDecision,
+        'cli-file': cliDecision,
+        'cli-evidence': cliEvidence.evidence.sourceUseDecision,
+        snapshot: snapshotContract.sourceUseDecision,
+      };
+      for (const [name, decision] of Object.entries(storedDecisions)) {
+        expect({name, stored: decision !== undefined, counts: (decision as any)?.referenceCounts})
+          .toEqual({name, stored: true, counts: undefined});
+      }
+      expect(JSON.stringify(sanitizeSourceUseDecision(statusResponse.body.result.sourceUseDecision)))
+        .toBe(JSON.stringify(sanitizeSourceUseDecision(result.sourceUseDecision)));
+
       const expectedDecision = normalizedDecision(wireResult.sourceUseDecision);
       const expectedBindings = normalizedBindings(wireResult.conclusionContract?.sourceClaimBindings);
       expect(expectedBindings).toEqual([{claimId: 'claim-1',
@@ -473,6 +577,7 @@ describe('source provenance output surface matrix', () => {
       expect(durableArtifacts).not.toContain('/Users/chris/private-source');
       expect(durableArtifacts).not.toContain('SECRET_');
     } finally {
+      agentRoutesCancellationTestSeam.deleteSession('session-source-surfaces');
       if (originalDbPath === undefined) {
         delete process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
       } else {

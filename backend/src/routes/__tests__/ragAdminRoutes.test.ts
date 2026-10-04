@@ -1390,6 +1390,37 @@ describe('codebase routes', () => {
     });
   });
 
+  it('refuses provider-send consent at registration without registering or using the selection', async () => {
+    externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-consent-refused-'));
+    fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
+    pickerSelectedRoot = externalPickerDir;
+    const selection = await request(app).post('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000').send({});
+    const body = {kind: 'app_source', rootPath: externalPickerDir, directorySelectionId: selection.body.directorySelectionId};
+
+    const refused = await request(app).post('/api/rag/codebases/register')
+      .set('Origin', 'http://127.0.0.1:10000').send({...body, sendToProvider: true});
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual(expect.objectContaining({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'}));
+    expect(refused.body.error).toContain('authorizeContent');
+    expect(JSON.stringify(refused.body)).not.toContain(externalPickerDir);
+    expect(registry.list(DEFAULT_SCOPE)).toEqual([]);
+    // The selection is still there: the registration it was meant for goes ahead, without consent.
+    expect(() => directoryPicker.validateSelection(selection.body.directorySelectionId, externalPickerDir!, DEFAULT_SCOPE))
+      .not.toThrow();
+    const registered = await request(app).post('/api/rag/codebases/register')
+      .set('Origin', 'http://127.0.0.1:10000').send({...body, sendToProvider: false});
+    expect(registered.status).toBe(200);
+    const codebaseId = registered.body.codebase.codebaseId;
+    expect(registry.get(codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
+
+    // Consent comes from the disclosure the registration returned.
+    const granted = await request(app).patch(`/api/rag/codebases/${codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: registered.body.codebase.contentDisclosure.token});
+    expect(granted.status).toBe(200);
+    expect(registry.get(codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(true);
+  });
+
   it('rejects remote directory-picker requests and cross-workspace selection reuse', async () => {
     const missingOriginPick = await request(app)
       .post('/api/rag/codebases/directory-picker')
@@ -1875,6 +1906,12 @@ describe('codebase routes', () => {
     expect(narrow.body.error).toBe('provider_send_consent_required');
 
     // The combined grant needs the token of the scope the caller disclosed.
+    const enabled = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({sendToProvider: true});
+    expect(enabled.status).toBe(400);
+    expect(enabled.body).toEqual(expect.objectContaining({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'}));
+    expect(enabled.body.error).toContain('authorizeContent');
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
     const untokened = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true});
     expect(untokened.status).toBe(400);
@@ -1896,6 +1933,11 @@ describe('codebase routes', () => {
       .send({authorizeContent: true, contentDisclosureToken: token});
     expect(repeated.body.codebase.consent).toEqual(granted.body.codebase.consent);
     expect(JSON.stringify(granted.body)).not.toContain(tmpDir);
+    // Revoking with an explicit false is unchanged.
+    const revoked = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({sendToProvider: false});
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.codebase.eligibleForSendToProvider).toBe(false);
 
     // A selection edited after the disclosure refuses the old token and grants nothing.
     registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['app', 'lib', 'tools']});
@@ -1983,7 +2025,6 @@ describe('codebase routes', () => {
         kind: 'app_source',
         displayName: 'HighPerformanceMini',
         rootPath: root,
-        sendToProvider: true,
       });
     expect(registered.status).toBe(200);
     const codebaseId = registered.body.codebase.codebaseId;

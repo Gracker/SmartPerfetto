@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
+import {withClientSourceUseCounts} from '../services/codebase/sourceUseDecision';
 import { requireRequestContext } from '../middleware/auth';
 import { backendLogPath } from '../runtimePaths';
 import { openEnterpriseDb } from '../services/enterpriseDb';
@@ -110,7 +111,7 @@ router.get('/', (req, res) => {
     );
     res.json({
       success: true,
-      results,
+      results: results.map(withClientSourceUseCounts),
       count: results.length,
     });
   } catch (error) {
@@ -228,7 +229,7 @@ router.get('/:snapshotId', (req, res) => {
 
     res.json({
       success: true,
-      snapshot,
+      snapshot: withClientSourceUseCounts(snapshot),
     });
   } catch (error) {
     console.error('[AnalysisResultRoutes] Failed to read analysis result:', error);
@@ -302,7 +303,7 @@ router.patch('/:snapshotId', (req, res) => {
 
     res.json({
       success: true,
-      snapshot: updated.snapshot,
+      snapshot: withClientSourceUseCounts(updated.snapshot),
     });
   } catch (error) {
     console.error('[AnalysisResultRoutes] Failed to update analysis result:', error);

@@ -6442,32 +6442,6 @@ kbd.pf-keycap.pf-spacing-large {
   font-size: 12px;
 }
 
-.ai-conversation-source-enrichment {
-  margin-top: 10px;
-  padding-left: 10px;
-  border-left: 2px solid var(--chat-border);
-  color: var(--chat-text-secondary);
-  font-size: 12px;
-}
-.ai-conversation-source-enrichment summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.ai-conversation-source-enrichment-content {
-  margin-top: 8px;
-  color: var(--chat-text);
-  font-size: 13px;
-}
-
-.ai-conversation-source-enrichment.is-running {
-  border-left-color: var(--chat-accent, #0b57d0);
-}
-
-.ai-conversation-source-enrichment.is-muted {
-  opacity: 0.8;
-}
-
 .ai-conversation-page-empty {
   max-width: 520px;
   margin: 18vh auto 0;
@@ -12844,6 +12818,132 @@ tr.detail-row .expanded-empty.compact .empty-sections {
   font-size: 11px;
   line-height: 1.4;
   white-space: pre;
+}
+
+.ai-input-controls {
+  container-type: inline-size;
+  container-name: ai-input-controls;
+}
+
+.ai-context-control {
+  position: static;
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 30px;
+}
+
+.ai-context-control-trigger {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.ai-context-control-trigger.active {
+  color: var(--chat-primary);
+}
+.ai-context-control-trigger .pf-icon {
+  flex-shrink: 0;
+}
+
+.ai-context-control-summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@container ai-input-controls (max-width: 380px) {
+  .ai-context-control-summary,
+  .ai-context-control-arrow {
+    display: none;
+  }
+}
+.ai-context-control-popover {
+  left: auto;
+  right: 0;
+  width: min(360px, 100%);
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  color: var(--chat-text);
+  font-size: 12px;
+}
+
+.ai-context-control-section {
+  padding: 8px 0;
+  border-top: 1px solid var(--chat-border);
+}
+.ai-context-control-section:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.ai-context-control-heading {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.ai-context-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.ai-context-control-option,
+.ai-context-control-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  cursor: pointer;
+}
+.ai-context-control-option.disabled,
+.ai-context-control-item.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ai-context-control-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-context-control-status,
+.ai-context-control-note {
+  color: var(--chat-text-secondary);
+  font-size: 11px;
+}
+
+.ai-context-control-error {
+  color: var(--chat-error);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.ai-context-control-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--chat-border);
+}
+
+.ai-context-control-button {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--chat-border);
+  border-radius: 6px;
+  background: var(--chat-bg-secondary);
+  color: var(--chat-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ai-context-control-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }/* latin */
 @font-face {
   font-family: "Roboto";

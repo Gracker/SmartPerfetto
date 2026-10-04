@@ -247,7 +247,7 @@ describe('CodebaseManagementService', () => {
       jest.spyOn(registry, 'setProviderConsent').mockImplementation(() => {
         throw new CodebaseStateError(reason);
       });
-      await expect(service.setConsent(ref.codebaseId, true, 'user', DEFAULT_SCOPE))
+      await expect(service.setConsent(ref.codebaseId, false, 'user', DEFAULT_SCOPE))
         .rejects.toMatchObject({code, status, message: reason});
     });
 
@@ -256,7 +256,7 @@ describe('CodebaseManagementService', () => {
     jest.spyOn(registry, 'setProviderConsent').mockImplementation(() => {
       throw new Error('codebase_deleting');
     });
-    await expect(service.setConsent(ref.codebaseId, true, 'user', DEFAULT_SCOPE))
+    await expect(service.setConsent(ref.codebaseId, false, 'user', DEFAULT_SCOPE))
       .rejects.toMatchObject({code: 'CODEBASE_OPERATION_FAILED', status: 500});
   });
 
@@ -317,7 +317,18 @@ describe('CodebaseManagementService', () => {
       DEFAULT_SCOPE,
     );
     expect(disabled.eligibleForSendToProvider).toBe(false);
-    await service.setConsent(ref.codebaseId, true, DEFAULT_SCOPE.userId, DEFAULT_SCOPE);
+    // Turning it on without a disclosure is refused before the registry is touched.
+    const setProviderConsent = jest.spyOn(registry, 'setProviderConsent');
+    await expect(service.setConsent(ref.codebaseId, true, DEFAULT_SCOPE.userId, DEFAULT_SCOPE))
+      .rejects.toMatchObject({code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED', status: 400});
+    expect(setProviderConsent).not.toHaveBeenCalled();
+    setProviderConsent.mockRestore();
+    expect(service.get(ref.codebaseId, DEFAULT_SCOPE).eligibleForSendToProvider).toBe(false);
+    // The narrow actions keep their consent precondition; consent comes from the disclosure.
+    await expect(service.authorizeAvailableExtensions(ref.codebaseId, DEFAULT_SCOPE.userId, DEFAULT_SCOPE))
+      .rejects.toMatchObject({code: 'CODEBASE_CONSENT_REQUIRED'});
+    await service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId,
+      service.get(ref.codebaseId, DEFAULT_SCOPE).contentDisclosure.token, DEFAULT_SCOPE);
 
     const extensions = await service.authorizeAvailableExtensions(
       ref.codebaseId,

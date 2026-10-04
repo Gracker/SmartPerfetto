@@ -78,8 +78,20 @@ export interface SourceUseDecisionV1 {
   coverageComplete?: boolean;
   incompleteReasons?: string[];
   references: SourceReferenceV1[];
+  /**
+   * Client surfaces only (`sourceUseDecisionForClient`): how many references
+   * the run returned and how many it read as a body, by `referenceHasReadBody`,
+   * the rule source verdicts use. Derived, so `sanitizeSourceUseDecision`
+   * drops it and decision fingerprints never include it.
+   */
+  referenceCounts?: SourceReferenceCountsV1;
   /** How deep this run's source access went, and how that was decided. */
   depth?: SourceDepthDecisionV1;
+}
+
+export interface SourceReferenceCountsV1 {
+  located: number;
+  read: number;
 }
 
 /** Actual MCP access scope, captured privately for this analysis run. */
@@ -512,6 +524,48 @@ export function sanitizeSourceUseDecision(
     references,
     ...(depth ? {depth} : {}),
   };
+}
+
+/** Returned references, and those whose whole range the run read as a body. */
+export function sourceReferenceCounts(references: readonly SourceReferenceV1[]): SourceReferenceCountsV1 {
+  return {
+    located: references.length,
+    read: references.filter(reference => referenceHasReadBody(reference, references)).length,
+  };
+}
+
+/**
+ * A decision as a client receives it: the same decision plus its derived
+ * reference counts, so the Web receipt shows read/located counts without
+ * re-deriving them (or holding the paths and ranges they come from). Applied
+ * only where a payload leaves for a client: stored results, snapshots and
+ * fingerprints never carry the counts.
+ */
+export function sourceUseDecisionForClient<T>(decision: T): T {
+  if (!isRecord(decision) || !Array.isArray(decision.references) || decision.references.length === 0) {
+    return decision;
+  }
+  return {...decision, referenceCounts: sourceReferenceCounts(sanitizeSourceReferences(decision.references))} as T;
+}
+
+/**
+ * Every copy of the source decision a client payload carries — top level, the
+ * conclusion contract's, a snapshot summary's — given its counts, so SSE,
+ * status, replay, turn history, snapshots, reports and the CLI agree.
+ */
+export function withClientSourceUseCounts<T>(payload: T): T {
+  if (!isRecord(payload)) return payload;
+  const next: Record<string, unknown> = {...payload};
+  if (payload.sourceUseDecision !== undefined) {
+    next.sourceUseDecision = sourceUseDecisionForClient(payload.sourceUseDecision);
+  }
+  for (const key of ['conclusionContract', 'summary']) {
+    const nested = payload[key];
+    if (isRecord(nested) && nested.sourceUseDecision !== undefined) {
+      next[key] = {...nested, sourceUseDecision: sourceUseDecisionForClient(nested.sourceUseDecision)};
+    }
+  }
+  return next as T;
 }
 
 function sanitizeSourceDepthDecision(value: unknown): SourceDepthDecisionV1 | undefined {

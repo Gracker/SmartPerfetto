@@ -590,7 +590,7 @@ function main(): void {
     .description('register a local app/AOSP/kernel source codebase')
     .option('--kind <kind>', 'codebase kind: app_source, aosp, kernel_source, oem_sdk', 'app_source')
     .option('--name <name>', 'display name')
-    .option('--send-to-provider', 'allow snippets to be sent when the session also uses provider_send mode', false)
+    .option('--send-to-provider', 'refused: grant consent afterwards with `smp codebase authorize-content`', false)
     .option('--path-filter <prefix>', 'relative path prefix to ingest; repeatable', collectRepeatedOption, [])
     .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectRepeatedOption, [])
     .option('--vendor <vendor>', 'vendor id for kernel/OEM codebases')
@@ -660,8 +660,8 @@ function main(): void {
 
   codebaseCmd
     .command('consent <codebaseId>')
-    .description('enable or disable provider-send consent')
-    .addOption(new Option('--enable', 'enable provider-send consent').conflicts('disable'))
+    .description('disable provider-send consent (grant it with authorize-content)')
+    .addOption(new Option('--enable', 'refused: grant with `smp codebase authorize-content`').conflicts('disable'))
     .addOption(new Option('--disable', 'disable provider-send consent').conflicts('enable'))
     .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
     .action(async (codebaseId: string, opts: {

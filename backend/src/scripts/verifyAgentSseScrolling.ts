@@ -1826,11 +1826,11 @@ async function postJsonOrThrow(
   baseUrl: string,
   route: string,
   body?: Record<string, unknown>,
-  method: 'GET' | 'POST' = 'POST',
+  method: 'GET' | 'POST' | 'PATCH' = 'POST',
 ): Promise<Record<string, unknown>> {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
-    ...(method === 'POST'
+    ...(method !== 'GET'
       ? {
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(body ?? {}),
@@ -1870,11 +1870,17 @@ export async function setupAnalysisContext(
       kind: 'app_source',
       displayName: 'DeepSeek E2E App Source',
       rootPath: options.setupCodebaseRoot,
-      sendToProvider: true,
     });
     const codebase = asRecord(registration.codebase);
     const codebaseId = typeof codebase?.codebaseId === 'string' ? codebase.codebaseId : '';
     if (!codebaseId) throw new Error('Context setup did not return a codebaseId');
+    // Registration grants no consent: grant exactly the disclosed scope.
+    const disclosureToken = asRecord(codebase?.contentDisclosure)?.token;
+    if (typeof disclosureToken !== 'string' || !disclosureToken) {
+      throw new Error('Context setup registration did not return a content disclosure');
+    }
+    await request(baseUrl, `/api/rag/codebases/${encodeURIComponent(codebaseId)}/consent`,
+      {authorizeContent: true, contentDisclosureToken: disclosureToken}, 'PATCH');
     let reindexRequests = 0;
     if (setupMode === 'register-and-index') {
       await request(

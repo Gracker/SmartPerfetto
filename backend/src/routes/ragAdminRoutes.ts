@@ -1073,6 +1073,17 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         error: '`sendToProvider` must be an explicit boolean when provided',
       });
     }
+    // Registration grants no provider-send consent: the owner grants it after
+    // seeing the disclosure (`authorizeContent` with `contentDisclosure.token`).
+    // Refused before anything is checked, registered or a selection is used.
+    if (sendToProvider === true) {
+      return res.status(400).json({
+        success: false,
+        code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED',
+        error: 'Registration cannot grant provider-send consent. Register without `sendToProvider`, then ' +
+          'PATCH /codebases/:id/consent with `authorizeContent: true` and the returned `contentDisclosure.token`.',
+      });
+    }
     if (!isCodebaseKind(kind)) {
       return res.status(400).json({success: false, error: '`kind` is invalid'});
     }
@@ -1170,7 +1181,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
             ...(normalizedPathFilters ? {pathFilters: normalizedPathFilters} : {}),
             ...(normalizedExcludeGlobs ? {excludeGlobs: normalizedExcludeGlobs} : {}),
             ...(normalizedLicenseTag ? {licenseTag: normalizedLicenseTag} : {}),
-            sendToProvider: sendToProvider ?? false,
+            sendToProvider: false,
             consentedBy: context.userId,
             tenantId: context.tenantId,
             workspaceId: context.workspaceId,

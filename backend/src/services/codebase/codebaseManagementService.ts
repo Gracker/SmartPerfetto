@@ -43,6 +43,7 @@ import {
 export type CodebaseManagementErrorCode =
   | 'CODEBASE_AUDIT_FAILED'
   | 'CODEBASE_BUSY'
+  | 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'
   | 'CODEBASE_CONSENT_DISCLOSURE_STALE'
   | 'CODEBASE_CONSENT_REQUIRED'
   | 'CODEBASE_DELETE_FAILED'
@@ -614,12 +615,24 @@ export class CodebaseManagementService {
     };
   }
 
+  /**
+   * Revokes provider-send consent. Turning it on is refused: it would revive
+   * the previous grant (its scope and languages, whatever the selection is
+   * now) without showing the owner what it covers. `authorizeContent` with
+   * the disclosure's token is the one way to grant source text.
+   */
   async setConsent(
     id: string,
     enabled: boolean,
     actor: string,
     scope: CodebaseScope,
   ): Promise<RegisteredCodebase> {
+    if (enabled) {
+      throw new CodebaseManagementError('CODEBASE_CONSENT_DISCLOSURE_REQUIRED', 400,
+        'Provider-send consent is granted only for a disclosed scope: use `authorizeContent: true` with the ' +
+        '`contentDisclosure.token` of the codebase (CLI: `smp codebase authorize-content <codebaseId>`, then ' +
+        '`--confirm <token>`). `sendToProvider: false` still revokes consent.');
+    }
     return this.runManagedMutation(id, scope, () =>
       this.registry.setProviderConsent(id, scope, enabled, actor));
   }

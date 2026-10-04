@@ -144,6 +144,16 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
   licenseTag?: string;
   dryRun?: boolean;
 }): Promise<number> {
+  // Registration grants no provider-send consent; `authorize-content` shows
+  // the exact scope and grants it with the printed token.
+  if (args.sendToProvider) {
+    console.error([
+      'CODEBASE_CONSENT_DISCLOSURE_REQUIRED: registration cannot grant provider-send consent.',
+      'Register without --send-to-provider, then run `smp codebase authorize-content <codebaseId>` to see the scope',
+      'and grant it with `--confirm <token>`.',
+    ].join(' '));
+    return 1;
+  }
   const rootPath = resolveInvocationPath(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const kind = args.kind ?? 'app_source';
@@ -201,7 +211,7 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
     displayName: args.name ?? path.basename(rootPath),
     rootPath,
     rootRealpath,
-    sendToProvider: Boolean(args.sendToProvider),
+    sendToProvider: false,
     rootAuthorization: 'local_cli',
     pathFilters: args.pathFilters,
     excludeGlobs: args.excludeGlobs,
@@ -282,17 +292,16 @@ export async function runCodebaseConsentCommand(args: CodebaseCommandBaseArgs & 
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const {service, scope} = managementContext(args);
   try {
-    const enabled = Boolean(args.enable);
+    // --enable is refused by the service (CODEBASE_CONSENT_DISCLOSURE_REQUIRED):
+    // `authorize-content` shows the scope and grants it with its token.
     const codebase = await withConsoleLogToStderr(
       format === 'json',
-      async () => service.setConsent(args.codebaseId, enabled, scope.userId, scope),
+      async () => service.setConsent(args.codebaseId, Boolean(args.enable), scope.userId, scope),
     );
     if (format === 'json') {
-      console.log(JSON.stringify({success: true, action: enabled ? 'enabled' : 'disabled', codebase}, null, 2));
+      console.log(JSON.stringify({success: true, action: 'disabled', codebase}, null, 2));
     } else {
-      console.log(enabled
-        ? `Provider-send consent enabled for ${codebase.codebaseId}; source text is sent only in provider_send sessions.`
-        : `Provider-send consent disabled for ${codebase.codebaseId}; future provider source text is blocked.`);
+      console.log(`Provider-send consent disabled for ${codebase.codebaseId}; future provider source text is blocked.`);
     }
     return 0;
   } catch (error) {

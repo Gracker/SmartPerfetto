@@ -57,7 +57,7 @@ A source codebase needs only a live registered root. Missing active generations 
 
 When you edit a codebase's selection, a provable narrowing narrows the send grant with it; any other change revokes the grant until you grant it again: `smp codebase authorize-content` shows the exact scope and a token, and `--confirm <token>` grants it (`authorizeContent: true` with `contentDisclosureToken` on the consent API). An actual consent or scope change restarts an ongoing conversation; repeating the same consent, editing an unselected codebase, or reindexing elsewhere does not interrupt it.
 
-Analysis budget and evidence permission are independent: selecting source, reference traces, or private RAG does not automatically promote the requested `fast|auto` mode to `full`. `provider_send` requires two independent authorizations: `--send-to-provider` at codebase registration and `--code-aware provider_send` for the current run.
+Analysis budget and evidence permission are independent: selecting source, reference traces, or private RAG does not automatically promote the requested `fast|auto` mode to `full`. `provider_send` requires two independent authorizations: granting the disclosed scope after registration with `smp codebase authorize-content` (on the Web, **Add and use** grants the disclosure the registration returned) and `--code-aware provider_send` for the current run. Registration itself cannot grant body sending.
 
 ## When Source Is Used
 

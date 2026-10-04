@@ -142,6 +142,15 @@ describe('smp codebase command handlers', () => {
     expect(fs.existsSync(path.join(sessionDir, 'codebase_registry.json'))).toBe(false);
   });
 
+  it('refuses provider-send consent at registration and points to authorize-content', async () => {
+    const code = await runCodebaseRegisterCommand({rootPath: root, kind: 'app_source', sendToProvider: true, sessionDir});
+    expect(code).toBe(1);
+    const message = errorSpy.mock.calls.join('\n');
+    expect(message).toContain('CODEBASE_CONSENT_DISCLOSURE_REQUIRED');
+    expect(message).toContain('smp codebase authorize-content');
+    expect(fs.existsSync(path.join(sessionDir, 'codebase_registry.json'))).toBe(false);
+  });
+
   it('registers, reindexes, and resolves kernel symbols', async () => {
     await runCodebaseRegisterCommand({
       rootPath: root,
@@ -149,7 +158,6 @@ describe('smp codebase command handlers', () => {
       name: 'mtk-kernel',
       vendor: 'mtk',
       pathFilters: ['drivers/android'],
-      sendToProvider: true,
       sessionDir,
     });
     const firstLine = String(logSpy.mock.calls[logSpy.mock.calls.length - 1]?.[0] ?? '');
@@ -392,15 +400,24 @@ describe('smp codebase command handlers', () => {
       code: 'CODEBASE_CONSENT_ACTION_INVALID',
     });
 
+    // Turning consent on without the disclosure is refused and changes nothing.
     logSpy.mockClear();
     expect(await runCodebaseConsentCommand({
       codebaseId: ref.codebaseId,
       enable: true,
-      format: 'table',
+      format: 'json',
       sessionDir,
       managementService,
+    })).not.toBe(0);
+    const refused = JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''));
+    expect(refused).toMatchObject({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'});
+    expect(JSON.stringify(refused)).toContain('authorize-content');
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
+    // Revoking still works; the narrow actions below need consent granted some other way.
+    expect(await runCodebaseConsentCommand({
+      codebaseId: ref.codebaseId, disable: true, format: 'table', sessionDir, managementService,
     })).toBe(0);
-    expect(logSpy.mock.calls.join('\n')).toMatch(/provider.*enabled|enabled.*provider/i);
+    registry.setProviderConsent(ref.codebaseId, DEFAULT_SCOPE, true, DEFAULT_SCOPE.userId);
 
     expect(await runCodebaseAuthorizeExtensionsCommand({
       codebaseId: ref.codebaseId,

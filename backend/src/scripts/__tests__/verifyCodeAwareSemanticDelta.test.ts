@@ -96,10 +96,14 @@ describe('register-only Agent SSE setup', () => {
     const request = jest.fn(async (
       _baseUrl: string,
       route: string,
-      _body?: Record<string, unknown>,
-      method?: 'GET' | 'POST',
+      body?: Record<string, unknown>,
+      method?: 'GET' | 'POST' | 'PATCH',
     ) => {
       routes.push(`${method ?? 'POST'} ${route}`);
+      if (route.endsWith('/register')) expect(body).not.toHaveProperty('sendToProvider');
+      if (route.endsWith('/consent')) {
+        expect(body).toEqual({authorizeContent: true, contentDisclosureToken: 'cd1:1:disclosed'});
+      }
       if (route.endsWith('/audit')) {
         return {
           success: true,
@@ -110,13 +114,14 @@ describe('register-only Agent SSE setup', () => {
           },
         };
       }
-      return {success: true, codebase: {codebaseId: 'cb-register-only'}};
+      return {success: true, codebase: {codebaseId: 'cb-register-only', contentDisclosure: {token: 'cd1:1:disclosed'}}};
     });
 
     const result = await setupAnalysisContext('http://127.0.0.1:1', options, request);
 
     expect(routes).toEqual([
       'POST /api/rag/codebases/register',
+      'PATCH /api/rag/codebases/cb-register-only/consent',
       'GET /api/rag/codebases/cb-register-only/audit',
     ]);
     expect(routes.some(route => route.includes('/reindex'))).toBe(false);
@@ -137,7 +142,7 @@ describe('register-only Agent SSE setup', () => {
       _baseUrl: string,
       route: string,
       _body?: Record<string, unknown>,
-      _method?: 'GET' | 'POST',
+      _method?: 'GET' | 'POST' | 'PATCH',
     ) => {
       if (route.endsWith('/reindex')) {
         return {success: true, result: {chunksAdded: 7, generation: 'claimed-active'}};
@@ -152,7 +157,7 @@ describe('register-only Agent SSE setup', () => {
           },
         };
       }
-      return {success: true, codebase: {codebaseId: 'cb-indexed'}};
+      return {success: true, codebase: {codebaseId: 'cb-indexed', contentDisclosure: {token: 'cd1:1:disclosed'}}};
     });
 
     await expect(setupAnalysisContext('http://127.0.0.1:1', options, request))

@@ -7,6 +7,7 @@ import { SessionPersistenceService } from '../services/sessionPersistenceService
 import { requireRequestContext } from '../middleware/auth';
 import { isOwnedByContext, sendResourceNotFound } from '../services/resourceOwnership';
 import {copyAnalysisDeliveryFields} from '../services/security/analysisDeliveryProjection';
+import {withClientSourceUseCounts} from '../services/codebase/sourceUseDecision';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
   projectOwnerReportError,
@@ -155,7 +156,8 @@ export function registerAgentReportRoutes(
 
     return res.json({
       success: true,
-      report,
+      // A client read: decision copies carry their derived counts; the stored result does not.
+      report: withClientSourceUseCounts(report),
     });
   });
 }

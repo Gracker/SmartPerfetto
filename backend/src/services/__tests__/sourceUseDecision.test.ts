@@ -11,6 +11,8 @@ import {
   sanitizeSourceReference,
   sanitizeSourceReferences,
   sanitizeSourceUseDecision,
+  sourceReferenceCounts,
+  sourceUseDecisionForClient,
   type SourceReferenceV1,
 } from '../codebase/sourceUseDecision';
 import {projectStoredConclusionSourceMetadata} from '../security/analysisDeliveryProjection';
@@ -209,6 +211,34 @@ describe('source use decision contract', () => {
     expect(referenceHasReadBody(wide, [ref('body', 10, 20, 'live-1'), ref('body', 21, 30, 'live-1')])).toBe(true);
     expect(referenceHasReadBody(wide, [ref('body', 10, 20, 'live-1'), ref('body', 22, 30, 'live-1')])).toBe(false);
     expect(referenceHasReadBody(wide, [ref('body', 10, 20, 'live-1'), ref('body', 21, 30, 'live-2')])).toBe(false);
+  });
+
+  it('gives clients read/located counts by the verdicts\' rule, and never fingerprints them', () => {
+    const ref = (lookupKind: SourceReferenceV1['lookupKind'], start: number, end: number, sourceGeneration?: string) =>
+      sanitizeSourceReference({referenceId: `${lookupKind}-${start}-${end}-${sourceGeneration}`, codebaseId: 'app',
+        filePath: 'src/界面 模块/A.kt', lineRange: {start, end}, lookupKind,
+        ...(sourceGeneration ? {sourceGeneration} : {})})!;
+    // Two adjacent windows read lines 10-30; a hit inside them is read, one of another version or unknown is not.
+    const references = [ref('body', 10, 20, 'live-1'), ref('body', 21, 30, 'live-1'), ref('search_hit', 15, 25, 'live-1'),
+      ref('search_hit', 15, 25, 'live-2'), ref('search_hit', 31, 32, 'live-1'), ref('search_hit', 12, 13)];
+    expect(sourceReferenceCounts(references)).toEqual({located: 6, read: 3});
+    // Bounds at the backend's own limits stay countable (no second, narrower parser).
+    const far = [ref('body', 2_000_000_000, 2_000_000_009, 'g'.repeat(256)),
+      ref('search_hit', 2_000_000_001, 2_000_000_002, 'g'.repeat(256))];
+    expect(sourceReferenceCounts(far)).toEqual({located: 2, read: 2});
+
+    const decision = sanitizeSourceUseDecision({schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+      codeAwareMode: 'provider_send', selectedCodebaseIds: ['app'], status: 'corroborated', attemptedTools: [],
+      queriedCodebaseIds: ['app'], usedCodebaseIds: ['app'], references})!;
+    const forClient = sourceUseDecisionForClient(decision)!;
+    expect(forClient.referenceCounts).toEqual({located: 6, read: 3});
+    expect(forClient.references).toBe(decision.references);
+    // Derived, so a sanitized copy (what every fingerprint reads) never carries it.
+    expect(sanitizeSourceUseDecision(forClient)).toEqual(decision);
+    expect(sanitizeSourceUseDecision(forClient)).not.toHaveProperty('referenceCounts');
+    const empty = {...decision, references: []};
+    expect(sourceUseDecisionForClient(empty)).toBe(empty);
+    expect(sourceUseDecisionForClient(undefined)).toBeUndefined();
   });
 
   it('keeps a binding to a reference the model cited in its visible form, without the internal referenceId', () => {

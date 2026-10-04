@@ -160,7 +160,7 @@ import {
 import { buildTraceContextDataEnvelopes, decorateTraceContextDatasets } from '../agentRuntime/traceContextEvidence';
 import {recordAdaptiveRoutingPostEvidenceBestEffort} from '../agentRuntime/adaptiveRoutingProjection';
 import type { ConclusionContract } from '../agent/core/conclusionContract';
-import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
+import {sanitizeSourceUseDecision, withClientSourceUseCounts} from '../services/codebase/sourceUseDecision';
 import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
@@ -1709,6 +1709,8 @@ function sanitizePersistedAnalysisCompletedEvent(
         terminationMessage: durableResult.terminationMessage,
         quickRun: durableResult.quickRun,
       };
+  // The replayed copy is a client read: its decisions carry their counts, the stored event need not.
+  const clientData = withClientSourceUseCounts(nextData);
   const nextPayload = privateKnowledge
     ? {
         type: 'analysis_completed',
@@ -1720,12 +1722,12 @@ function sanitizePersistedAnalysisCompletedEvent(
         ...(typeof payload?.runSequence === 'number'
           ? {runSequence: payload.runSequence}
           : {}),
-        data: nextData,
+        data: clientData,
         timestamp: typeof payload?.timestamp === 'number' ? payload.timestamp : event.createdAt,
       }
     : payload?.data && typeof payload.data === 'object'
-      ? {...payload, data: nextData}
-      : {...payload, ...nextData};
+      ? {...payload, data: clientData}
+      : {...payload, ...clientData};
   return {
     ...event,
     eventData: JSON.stringify(nextPayload),
@@ -2097,7 +2099,7 @@ function buildTurnDetail(
     ...summary,
     intent: ownerTurnValue(privateSessionId, toJsonSafe(turn.intent)),
     result: displayResult
-      ? toJsonSafe(privateSessionId
+      ? withClientSourceUseCounts(toJsonSafe(privateSessionId
           ? projectOwnerAnalysisResult(privateSessionId, {
               sessionId: turn.id,
               success: displayResult.success !== false,
@@ -2118,7 +2120,7 @@ function buildTurnDetail(
               ...copyAnalysisDeliveryFields(displayResult),
               identityResolutions: displayResult.identityResolutions,
             }, outputLanguage)
-          : displayResult)
+          : displayResult))
       : null,
     findings: toJsonSafe(privateSessionId
       ? projectOwnerFindings(privateSessionId, turn.findings || [])
@@ -2662,7 +2664,7 @@ router.get('/:sessionId/status', async (req, res) => {
       const projectedQualityArtifacts = result;
       const projectedFindings = result.findings;
       const resultContract = buildSessionResultContract(session, projectedFindings);
-      response.result = {
+      response.result = withClientSourceUseCounts({
         ...copyAnalysisDeliveryFields(result),
         sceneTimeline: result.sceneTimeline ? projectSceneTimelineForClient(result.sceneTimeline) : undefined,
         sceneReport: result.sceneReport,
@@ -2699,7 +2701,7 @@ router.get('/:sessionId/status', async (req, res) => {
         resultContract: privateKnowledge
           ? projectOwnerStructuredValue(sessionId, resultContract)
           : resultContract,
-      };
+      });
     }
   }
 
@@ -7248,7 +7250,9 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
         type: 'analysis_completed',
         architecture: 'agent-driven',
         ...observability,
-        data: {
+        // A client read: every decision copy carries its derived counts (the replay log keeps
+        // what was sent; results, snapshots and fingerprints never hold them).
+        data: withClientSourceUseCounts({
           ...(privateKnowledge
             ? {privateProjectionVersion: PRIVATE_ANALYSIS_EVENT_PROJECTION_VERSION}
             : {}),
@@ -7318,7 +7322,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
           resultSnapshotId: finalArtifacts.resultSnapshotId,
           observability,
           terminalRunStatus: terminalRunStatusForResult(result),
-        },
+        }),
         timestamp: Date.now(),
       },
       completedRunId,
