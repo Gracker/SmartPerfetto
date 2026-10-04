@@ -119,7 +119,8 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 `backend/src/agentOpenAI/` 以及 `agentv3/claudeRuntime.ts` 等具体文件继续提供
 旧 import path 的 compatibility re-export；`agentv3/` 目录内的 MCP、strategy、
 planning 仍是 canonical shared layers；`claudeVerifier` 的兼容入口指向共享的
-结构化交付诊断，内容含义和 claim 支持统一交给 finalizer。
+结构化交付诊断，runtime 只经 `agentRuntime/runtimeDraftDiagnostics.ts` 用它决定本轮是否
+续写或补交声明；内容含义、claim 支持和终态统一交给 finalizer。
 
 ## 工具层
 
@@ -198,7 +199,8 @@ scene 必须属于本 run 固定的 registry。声明通过 schema 校验不等�
 `RuntimeTurnPolicy.preflight` 分三档，与预算档无关：`existing_only` 为 `none`，什么都不取；
 已解析的 `scene_wide` 读取为 `full`，额外预取记忆类上下文（知识库、模式、案例、SQL 修复对）；
 bounded 问题和 unavailable 分类为 `trace_facts`，仍然检测焦点应用、架构和 trace 完整性——
-问题再窄，也是针对一份模型没见过的 trace 提出的。厂商不是预检阶段：`invoke_skill` 只在 Skill 有厂商
+问题再窄，也是针对一份模型没见过的 trace 提出的。没有挂载 trace 的 Conversation 不做任何探测，也不绑定 trace
+身份或证据 trace（`resolveRunTurnPolicy`、`runtimeTraceAttachment.ts`，五个 runtime 共用）。厂商不是预检阶段：`invoke_skill` 只在 Skill 有厂商
 override 时、在其自身查询完成后，经共享缓存的 `traceVendorResolver`（只读 trace metadata）
 有上限地等待解析结果，并挂上 `vendorOverride` 提示；五个 runtime 规则相同。
 焦点应用检测在分析窗口内对候选进程统一打分（前台时长、帧、启动、battery top、CPU），没有任何活动的进程
@@ -264,6 +266,11 @@ exact runtime result + private RuntimeFinalizationContext
   -> HTML report / CLI turn files / analysis-result snapshot
   -> frontend visible projection
 ```
+
+runtime 在结果和写入会话的轮次上只记录原生事实（完成状态、轮次上限、超时、provider 失败、
+取消、空正文、隐私替换），不调用质量闸门、不写 `quality_gate_failed`、不发草稿阶段的
+`degraded`；因质量问题而定的 `partial`、`terminationReason` 和置信度由 finalizer 写入，
+路由与 CLI 随后回写已记录的轮次。
 
 产品必须在复制结果前从 exact result 取出 context。context 固定 provider、原始绝对
 deadline、trace identity 和证据读取范围；产品 owner 在 await 前后检查当前 run、取消和

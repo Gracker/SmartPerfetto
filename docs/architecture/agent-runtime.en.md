@@ -126,8 +126,10 @@ for the user-visible contract.
 `backend/src/agentOpenAI/` and individual files such as
 `agentv3/claudeRuntime.ts` retain compatibility re-exports for old import paths.
 MCP, strategy and planning remain canonical shared layers. The `claudeVerifier`
-compatibility entry points to shared structured delivery diagnostics; the
-finalizer owns content meaning and claim support.
+compatibility entry points to shared structured delivery diagnostics, which
+runtimes read through `agentRuntime/runtimeDraftDiagnostics.ts` only to choose a
+same-run repair; the finalizer owns content meaning, claim support and the
+terminal state.
 
 ## Tool Layer
 
@@ -309,7 +311,9 @@ Schema validation does not establish semantic correctness or widen permission.
 (`existing_only`) gathers nothing, `full` (resolved `scene_wide` read) adds
 memory-type prefetch, and `trace_facts` — a bounded question, or an unavailable
 classification — still detects focus app, architecture and trace
-completeness. Vendor is not a preflight phase: `invoke_skill` resolves it only
+completeness. A Conversation without a mounted trace probes nothing and binds no
+trace identity or evidence trace (`resolveRunTurnPolicy`,
+`runtimeTraceAttachment.ts`, shared by all five runtimes). Vendor is not a preflight phase: `invoke_skill` resolves it only
 for a Skill with vendor overrides, after that Skill's own queries, through the
 shared cached `traceVendorResolver` (trace metadata only) with a bounded wait,
 and attaches a `vendorOverride` hint; the rule is the same in all five runtimes. Focus detection scores candidate processes once over the
@@ -387,6 +391,14 @@ exact runtime result + private RuntimeFinalizationContext
   -> HTML report / CLI turn files / analysis-result snapshot
   -> frontend visible projection
 ```
+
+A runtime records only native facts on its result and on the turn it adds to
+the session (completion status, turn limit, timeout, provider failure,
+cancellation, an empty body, a privacy replacement). It never applies the
+quality gate, never marks a result `quality_gate_failed` and emits no draft
+`degraded` update; `partial`, `terminationReason` and confidence for quality
+reasons are written by the finalizer, and the route and CLI annotate the
+recorded turn afterwards.
 
 The product takes the context from the exact result before copying it. The
 context fixes the provider, original absolute deadline, trace identity and

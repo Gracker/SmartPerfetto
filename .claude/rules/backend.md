@@ -62,12 +62,13 @@ Key files:
 | `backend/src/agentv3/mcpToolRegistry.ts` | single registry for MCP tool exposure and allowed tool names |
 | `backend/src/agentv3/planToolCallRecorder.ts` | provider-neutral tool-call evidence log for plan adherence |
 | `backend/src/agentv3/planCompletionStatus.ts` | provider-neutral plan completion status |
-| `backend/src/agentv3/claudeSystemPrompt.ts` | system prompt assembly for Claude path |
+| `backend/src/agentv3/claudeSystemPrompt.ts` | system prompt assembly shared by all five runtimes |
 | `backend/src/agentv3/strategyLoader.ts` | loads `*.strategy.md` and `*.template.md` |
 | `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | typed semantic intent and separate budget/evidence/delivery policy |
 | `backend/src/agentRuntime/analysisFinalizationContext.ts` | private run-bound provider, deadline, evidence reader and terminal context |
 | `backend/src/agentRuntime/runtimeEvidenceContext.ts` | issued in-memory evidence continuity with exact scope and run leases |
-| `backend/src/agentRuntime/engines/claude/claudeVerifier.ts` | shared structured delivery diagnostics; no additional semantic LLM call |
+| `backend/src/agentRuntime/runtimeDraftDiagnostics.ts`, `engines/claude/claudeVerifier.ts` | runtime draft diagnostics that only choose a same-run repair; no semantic LLM call, no terminal state |
+| `backend/src/agentRuntime/runtimeTraceAttachment.ts` | whether a run has a mounted trace, and its trace identity and evidence traces |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | persisted runtime state snapshot |
 | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | canonical body/claim extraction and the single asynchronous finalization boundary |
 | `backend/src/services/finalSemanticAssessment.ts` | bounded no-tool semantic review of the current body and declarations |
@@ -109,6 +110,24 @@ Keep these boundaries intact:
   owner/authorization checks. Its semantic review has no tools and cannot
   restart acquisition, extend the deadline, or rewrite the answer to repair
   style. Missing evidence/review remains explicit.
+- The finalizer alone writes the terminal state. Before `addTurn` a runtime
+  records only native facts: completion status, turn limit, timeout, provider
+  failure, cancellation, an empty native body, a privacy replacement. Its draft
+  diagnostics (`agentRuntime/runtimeDraftDiagnostics.ts`) decide only whether
+  a same-run continuation or declaration repair applies (Claude and Pi; OpenAI,
+  OpenCode and Qoder have no issue-based repair and run no verifier); they set
+  no `partial`, `terminationReason` or `confidence`, emit no `degraded` or
+  progress update, and a failed optional repair keeps the accepted candidate's
+  terminal message. No engine calls `applyFinalResultQualityGate`; the
+  finalizer applies it to the exact candidate once (after joining
+  `claim_verifier@2`, so the gate reads verification results and never
+  classifies prose), and the route and CLI then annotate the recorded turn and
+  publish the gate's `degraded` update. `quickRun.stopReason` describes the
+  delivered candidate's native state, derived after the privacy projection
+  (`refreshQuickRunStopReason`). Self-Evolution replay, which never enters the
+  finalizer, records the native termination reason. Guarded by
+  `runtimeDraftDiagnostics.test.ts` and `tests/helpers/runtimeDraftTerminalState.ts`
+  in all five runtime suites.
 - The one semantic review is skipped only when `✓` is unreachable and no
   obligation needs it. That is an accepted residual, not a claim that the
   review could not matter: a contradiction only the review would find (`~` to
@@ -155,7 +174,10 @@ Keep these boundaries intact:
   answered at once (`review_stop_requested`, even if the review already
   finished): the review resolves `not_checked` / `cancelled_by_user` and the
   run commits its normal `~` turn (report deliverables `!`). A second stop
-  forces: it waits for that commit up to the watchdog, then aborts. The
+  forces: it waits for that commit up to the watchdog, then aborts. All three
+  owners hold a `ReviewStopController` (the handle plus the one watchdog and
+  its expiry); the CLI's owner never persists a partial, so its expiry is the
+  full abort. The
   watchdog (`resolveReviewStopWatchdogMs`, `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`,
   default 15 s, floor 10 s above the SQLite busy timeout) starts only at a stop
   request, since "finalization settles in milliseconds" is an expectation, not
@@ -244,18 +266,11 @@ Keep these boundaries intact:
   provider failure or authorize another report attempt. Unknown native status
   stays unknown; submitted plan/hypothesis obligations and bound report
   assessments are checked separately from evidence and prose semantics.
-- Evidence counts must come from a monotone, run-scoped signal. The two
-  tool-call logs are not one: they are plan-adherence records, capped and
-  trimmed from the front, and `replayPrePlanToolCalls` drops pre-plan calls
-  that match no phase and then clears the pre-plan log — so a run that executed
-  one query before planning can end with both logs empty. Use
-  `countDispatchedToolCalls`, which reads a counter incremented at dispatch and
-  reset only by `resetPrePlanToolCallsForNewRun`.
-- The detector is deliberately biased toward missing failures rather than
-  inventing them. A provider that worked, then died, leaves evidence behind and
-  will not be caught — the run wastes its retries as before. That is the
-  acceptable direction: a false positive corrupts a legitimate analysis, a
-  false negative only costs what today already costs.
+- The two tool-call logs are plan-adherence records, not a run's activity
+  count: they are capped and trimmed from the front, and
+  `replayPrePlanToolCalls` keeps an unmatched pre-plan call only as unbound
+  history. Nothing infers provider failure from them, or from the conclusion's
+  wording; failure is the native terminal record.
 - The OpenAI runtime makes at most one recovery call per run, inside the
   original turn budget and deadline, with tools disabled, from the complete
   current-run transcript and never from `previousResponseId`. Its reason is
@@ -265,7 +280,7 @@ Keep these boundaries intact:
   duplicate marker) and `empty_body` as full-answer continuations. A recovery
   that changes the body, drops declared claims, stays invalid or fails restores
   the original candidate.
-- `plan_phase_updated` is emitted from nine sites across five files. Build its
+- `plan_phase_updated` is emitted from nine sites across six files. Build its
   payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
   always present: the process view shows automatic transitions, which nothing
   else in the stream reports, and skips model-driven ones because the
@@ -484,7 +499,7 @@ Keep these boundaries intact:
   query shapes — it previously required whitespace before the operator, which
   let `p.name='com.foo'` scope a query to one process while reading as
   unscoped. Quick mode answers through model-written raw SQL, where that style
-  is ordinary. It reads the statement's structure (`skillEngine/sqlStructure.ts`):
+  is ordinary. It reads the statement's structure (`services/skillEngine/sqlStructure.ts`):
   any comparison of a process-name column through wrappers (`LOWER`, `TRIM`,
   `COALESCE`, `CAST`, `COLLATE`), either operand order, a simple `CASE`, the
   `glob()`/`like()` forms, columns a CTE or derived table carries out of one
@@ -526,6 +541,15 @@ Tool visibility is request-shaped:
 - Comparison tools are registered only when a `referenceTraceId` exists.
 - External/public contracts should be derived from the registry view, not from
   an old static tool list.
+- `execute_sql` refuses only SmartPerfetto artifact references (`art-N`,
+  `synthesizeArtifacts`, invented artifact tables, `read/query/fetch_artifact`
+  functions; `agentv3/artifactSqlReference.ts`, on the structural Skill SQL
+  tokens) and points at `fetch_artifact`. Real tables, `__intrinsic_*`
+  included, reach trace_processor, which reports an unknown table itself.
+- Model-facing tool text lives in templates: tool descriptions
+  (`prompt-*-tool-description`), the reflect nudge on the first data results
+  (`prompt-reasoning-nudge-{zh,en}`) and the artifact misuse explanation
+  (`prompt-artifact-sql-misuse-*`), localized by `SMARTPERFETTO_OUTPUT_LANGUAGE`.
 
 ## Runtime Concurrency Invariants
 
@@ -648,7 +672,11 @@ Important whitelisted examples:
   (knowledge base, patterns, cases, SQL fix pairs); `trace_facts`, for a bounded
   question or an unavailable classification, still detects the focus app,
   architecture and trace completeness, because a narrow question is
-  still asked about a trace the model has never seen. The device vendor is not
+  still asked about a trace the model has never seen. A conversation without a
+  mounted trace has nothing to probe: `resolveRunTurnPolicy` makes its
+  preflight `none`, and `runtimeTraceAttachment.ts` gives it no trace identity,
+  evidence trace or reference trace, whatever its placeholder trace id. The
+  five runtimes resolve their policy and trace identity there. The device vendor is not
   a preflight step: `services/traceVendor/traceVendorResolver.ts` reads it from
   trace `metadata` (never slice names) only when an `invoke_skill` target has a
   vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
