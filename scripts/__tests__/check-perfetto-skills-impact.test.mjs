@@ -182,12 +182,14 @@ test('collects branch, staged, unstaged, and untracked paths', () => {
   ]);
 });
 
-test('Claude imports the canonical rules exposing the impact gate and decision states', () => {
+test('agent entrypoints import the canonical rules exposing the impact gate and decision states', () => {
   const agents = readFileSync(new URL('../../AGENTS.md', import.meta.url), 'utf8');
-  const claude = readFileSync(new URL('../../CLAUDE.md', import.meta.url), 'utf8');
-  assert.deepEqual(claude.match(/^@\S+$/gm), ['@AGENTS.md']);
-  assert.doesNotMatch(claude, /^```|^~~~|^##\s|^<!-- gitnexus:start -->/m);
-  assert.doesNotMatch(agents, /^@CLAUDE\.md$/m);
+  for (const entrypoint of ['CLAUDE.md', 'GEMINI.md']) {
+    const adapter = readFileSync(new URL(`../../${entrypoint}`, import.meta.url), 'utf8');
+    assert.deepEqual(adapter.match(/^@\S+$/gm), ['@AGENTS.md'], entrypoint);
+    assert.doesNotMatch(adapter, /^```|^~~~|^##\s|^- |^<!-- gitnexus:start -->/m, entrypoint);
+    assert.ok(!agents.split('\n').includes(`@${entrypoint}`), entrypoint);
+  }
   for (const token of [
     'check:perfetto-skills-impact',
     'required',
