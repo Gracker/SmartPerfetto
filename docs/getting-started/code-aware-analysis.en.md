@@ -14,6 +14,16 @@ Code-Aware Analysis lets SmartPerfetto inspect selected local source on demand a
 
 When source mode is off, Add and use selects only the new codebase. In provider-send mode it appends the new codebase; in metadata-only mode it preserves locate-only access. It never activates dormant old selections or silently upgrades existing metadata-only permissions.
 
+After registration, the composer's **Analysis context for this turn** popover
+decides what each turn uses: the source mode (`Off` / `Locate only` /
+`Send text`; the last can check only codebases whose text is allowed), the
+codebases, the source depth (`Auto` / `Quick locate` / `Full analysis`), and the
+knowledge bases. "Where it goes" states which content goes to which AI service
+this turn, "Turn all off" clears source and knowledge at once, and "Manage…"
+opens the Codebases page in Settings. The context cannot change while an
+analysis runs. When the backend sets `SMARTPERFETTO_CODE_AWARE=off`, the popover
+says that source analysis is disabled on the backend.
+
 CLI example:
 
 ```bash
@@ -57,7 +67,7 @@ A source codebase needs only a live registered root. Missing active generations 
 
 When you edit a codebase's selection, a provable narrowing narrows the send grant with it; any other change revokes the grant until you grant it again: `smp codebase authorize-content` shows the exact scope and a token, and `--confirm <token>` grants it (`authorizeContent: true` with `contentDisclosureToken` on the consent API). An actual consent or scope change restarts an ongoing conversation; repeating the same consent, editing an unselected codebase, or reindexing elsewhere does not interrupt it.
 
-Analysis budget and evidence permission are independent: selecting source, reference traces, or private RAG does not automatically promote the requested `fast|auto` mode to `full`. `provider_send` requires two independent authorizations: granting the disclosed scope after registration with `smp codebase authorize-content` (on the Web, **Add and use** grants the disclosure the registration returned) and `--code-aware provider_send` for the current run. Registration itself cannot grant body sending.
+Analysis budget and evidence permission are independent: selecting source, reference traces, or private RAG does not automatically promote the requested `fast|auto` mode to `full`. `provider_send` requires two independent authorizations: granting the disclosed scope after registration with `smp codebase authorize-content` (on the Web, **Add and use for analysis** grants the disclosure the registration returned) and `--code-aware provider_send` for the current run. Registration itself cannot grant body sending.
 
 ## When Source Is Used
 
@@ -128,7 +138,7 @@ An optional-index capacity failure rolls back that indexing attempt and retains 
 
 Source enumeration uses a `ripgrep > git > node-walk` capability ladder and reports the actual backend, fidelity, and coverage in preview, CLI, and index audit results. `.git`, `.hg`, `.svn`, `.repo`, and credential/key files are hard exclusions. Noise such as `node_modules`, `build`, and `Pods` is considered only when a path filter explicitly selects it. AOSP preview reads bounded `.repo/manifest.xml` metadata for project/group scope buttons, while the `.repo` object store itself is never traversed as source. An absent manifest means no scope suggestions are available. Read, parse, or identity-check failures return `manifestUnavailableReason` without rejecting completed file enumeration; only codebase-root identity drift still blocks preview.
 
-`.gitignore`, `.ignore`, and `.rgignore` affect enumeration recall; they are not provider authorization boundaries. Authorization is a dynamic path scope and always intersects the current selection policy with the frozen consent grant. Expanding path filters or relaxing exclude globs never expands provider consent automatically. When `providerGrantScopeCurrent=false`, the added scope remains metadata-only until the user explicitly chooses **Authorize current scope**. Languages added by upgrades—such as Dart, TypeScript, Swift, and Objective-C—can also be located in `metadata_only`, but existing registrations must explicitly authorize the new languages before their text can be sent. Authorizing new languages marks an existing active index for rebuild because that generation may not contain them.
+`.gitignore`, `.ignore`, and `.rgignore` affect enumeration recall; they are not provider authorization boundaries. A source-text grant covers only the path scope and languages reviewed when it was given. Saving a narrower scope provably inside the grant narrows the grant with it; any other scope change revokes the source-text grant (`providerGrantScopeCurrent=false`), and **Allow source text** must be reviewed and confirmed again. Languages are not part of the path scope: languages added by upgrades, such as Dart, TypeScript, Swift, and Objective-C, can only be located in `metadata_only` at first, a file in a language the grant does not cover is withheld from text sending (the search reports `provider_grant_scope`), and allowing source text again covers every currently available language. The CLI also keeps `authorize-selection` / `authorize-extensions`, which update only the path scope or the languages of an existing grant.
 
 Index coverage is modeled independently. Complete deterministic candidates can activate directly. When a complete index already exists, a deterministically truncated candidate becomes pending until the user accepts or rejects it, and the complete index remains active. Timed-out, traversal-error, or nondeterministic candidates never auto-activate. Indexing remains optional acceleration, so pending or failed indexing does not block bounded on-demand access to a live root.
 
@@ -160,24 +170,31 @@ authorized through `SMARTPERFETTO_CODEBASE_ROOTS`.
 
 ## Management And Session Lifecycle
 
-The Web UI `Codebases` tab manages more than registration. It shows root
+The Web UI `Codebases` page manages more than registration. It shows root
 availability, selection/grant revisions, active-index coverage, pending
 candidates, provider-grant mismatch, worktree state, and content provenance.
-Users can completely replace path filters/exclude globs, enable or revoke
-provider-send, authorize new languages or the current selection, accept or
-reject the exact pending generation with CAS, reindex, inspect the safe audit,
-and delete a registration with all indexed generations.
+Users can edit and preview a scope before saving it, **Allow source text**
+(review the server-reported include scope, exclude globs, and languages, then
+**Allow**; a disclosure that changed before confirmation asks to confirm
+again) or **Revoke source text**, accept or reject the exact limited index
+candidate with CAS, build the optional index, inspect the safe audit, and
+delete a registration with all indexed generations.
 
-Any successful action that changes active authorization or available content
-advances the frontend-only `authorizationEpoch`, retires the old backend Agent
-session, and resets conversation state at the new security boundary. The epoch
-is never sent to the backend. Rejecting an inactive pending candidate alone
-does not change current authorization.
+Granting or revoking source text, saving a scope, and deleting a selected
+codebase change the authorization fingerprint: the frontend also advances its
+frontend-only `authorizationEpoch`, the next analysis uses a new backend Agent
+session, and the conversation restarts at the new security boundary. The epoch
+is never sent to the backend. Rebuilding an index, accepting or rejecting an
+index candidate, and editing unselected codebases change no authorization and
+do not interrupt the session. When authorization changes while an analysis
+runs, the run ends before its next model request or tool call
+(`analysis_context_changed_restart_required`) instead of delivering a partial
+result.
 
 ## Security Boundary
 
 - `metadata_only`: the model can search on demand but receives only relative paths, line ranges, and reference `id`s, not source text.
-- `provider_send`: bounded, redacted search/read text can be sent only when the codebase is selected for this run, registered with `sendToProvider` consent, and the relative path is admitted by both the current selection and consent grant. When selection/grant revisions differ, newly added scope stays metadata-only and the authorized intersection is never expanded implicitly.
+- `provider_send`: bounded, redacted search/read text can be sent only when the codebase is selected for this run, holds a source-text grant obtained through the disclosure review, and both the relative path and its language are inside the grant. A grant that no longer matches the current scope refuses to start (`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`); a language the grant does not cover can only be located.
 - On-demand tools enforce registered path filters, exclude globs, file types, per-file size, result and line limits, and credential redaction. Absolute roots remain inside the backend trust boundary and never enter tool results, model context, reports, or exports. Credential redaction reads each whole file in its own syntax and replaces credential values only (values given to credential-named keys, what credential getters return, `Bearer`/`Basic` credentials, known token prefixes, JWTs, PEM private keys, credential-named markup elements and attributes, and heuristically detected keyless random strings); keys, identifiers and every line break stay, so line numbers do not change. A name that ends only in `token` (a window, frame, lexer or model-stream token) has its value replaced only when the value looks like a credential. On-demand reads use these rules at once; an index built earlier keeps the older rule, which replaced whole assignments including the key, until it is rebuilt.
 - Code-graph results are always metadata-only. Reports, snapshots, and CLI artifacts may retain relative `CodeRef` values and source quoted in the analysis, but must not present graph relationships as Trace evidence.
 - System-picker mutation requests require a loopback Host, socket, and Origin; the read-only capability probe may omit Origin. The picker is disabled for Docker, enterprise, or non-loopback listeners. Absolute roots and `rootAuthorization` are never returned by codebase list/detail/audit responses.
