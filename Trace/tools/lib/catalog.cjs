@@ -318,6 +318,21 @@ function validatePathsAndHashes(entry, issues) {
   }
 }
 
+// A fixture case only carries data for a non-analysis test. Coverage would
+// make it an analysis case that the golden evaluation registry skips, so the
+// two roles stay disjoint.
+function validatePurpose(entry, issues) {
+  if (entry.purpose !== 'fixture') return;
+  if (entry.kind !== 'constructed') {
+    issues.push(issue('fixture-case-not-constructed', entry.manifest_path, 'only constructed cases can be fixtures'));
+  }
+  const coverage = entry.coverage ?? {};
+  if ([coverage.skills, coverage.strategies, coverage.expectations].some((items) => items?.length > 0)) {
+    issues.push(issue('fixture-case-with-coverage', entry.manifest_path,
+      'a fixture case carries no Skill or Strategy coverage; drop purpose fixture to make it an analysis case'));
+  }
+}
+
 function validatePublication(entry, publicationExceptions, issues) {
   const source = entry.source ?? {};
   if (source.publication === 'private') {
@@ -499,6 +514,7 @@ function validateCatalog(repoRoot) {
     validateRequiredShape(entry, issues);
     validatePathsAndHashes(entry, issues);
     validatePublication(entry, publicationLedger.exceptions, issues);
+    validatePurpose(entry, issues);
     const evidenceTier = entry.source?.evidence_tier;
     const allowedEvidenceTiers = entry.kind === 'constructed' ? ['R3'] : ['R1', 'R2'];
     if (!allowedEvidenceTiers.includes(evidenceTier)) {

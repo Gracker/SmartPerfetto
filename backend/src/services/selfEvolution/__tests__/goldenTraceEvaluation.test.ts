@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import type {EvalGroundTruthV1} from '../../../types/selfEvolution';
@@ -306,11 +307,16 @@ describe('golden trace registry compiler', () => {
     const catalog = JSON.parse(fs.readFileSync(path.resolve(
       __dirname, '../../../../../Trace/catalog.json',
     ), 'utf8')) as {cases: Array<{
-      id: string; kind: string; trace: {sha256: string};
+      id: string; kind: string; purpose?: string; trace: {sha256: string};
       coverage: {expectations: Array<{id: string}>};
     }>};
+    // Every constructed case is either seeded here or explicitly a fixture;
+    // an unmarked case without a seed fails, and so does a seeded fixture.
+    const constructed = catalog.cases.filter(item => item.kind === 'constructed');
+    const analysisCases = constructed.filter(item => item.purpose !== 'fixture');
+    expect(constructed.filter(item => item.purpose === 'fixture').length).toBeGreaterThan(0);
     expect(authored.cases.map(item => item.catalogAlias).sort()).toEqual(
-      catalog.cases.filter(item => item.kind === 'constructed').map(item => item.id).sort(),
+      analysisCases.map(item => item.id).sort(),
     );
     expect(registry.cases.map(item => item.caseId).sort()).toEqual(
       authored.cases.map(item => item.caseId).sort(),
@@ -337,11 +343,28 @@ describe('golden trace registry compiler', () => {
     expect(registry.cases.flatMap(item => item.groundTruth.requiredFacts)
       .filter(fact => fact.evaluation === 'semantic')).toHaveLength(0);
     expect(new Set(registry.cases.map(item => item.caseId)).size).toBe(authored.cases.length);
-    const expectedEvidenceCount = catalog.cases.filter(item => item.kind === 'constructed')
+    const expectedEvidenceCount = analysisCases
       .reduce((count, item) => count + item.coverage.expectations.length, 0);
     expect(new Set(registry.cases.flatMap(item =>
       item.groundTruth.requiredEvidence.map(evidence => evidence.locator))).size)
       .toBe(expectedEvidenceCount);
+  });
+
+  it('refuses to seed a fixture case', () => {
+    const registryPath = path.resolve(__dirname, '../../../../strategies/golden-trace-eval.registry.json');
+    const authored = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as {cases: Array<{catalogAlias: string}>};
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'golden-trace-fixture-'));
+    try {
+      const fixtureRegistryPath = path.join(directory, 'registry.json');
+      fs.writeFileSync(fixtureRegistryPath, JSON.stringify({
+        ...authored,
+        cases: [{...authored.cases[0], catalogAlias: 'device-identity-pixel-6-pro'}],
+      }));
+      expect(() => loadGoldenTraceRegistry(fixtureRegistryPath))
+        .toThrow('golden_trace_catalog_case_fixture_only:device-identity-pixel-6-pro');
+    } finally {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
   });
 
   it('compiles duration and identity facts but never absolute timestamps or causal edges', () => {

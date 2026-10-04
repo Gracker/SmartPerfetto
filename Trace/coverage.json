@@ -798,6 +798,10 @@
     "R3": [
       "app-background-power",
       "binder-io-blocking",
+      "device-identity-honor-300-pro",
+      "device-identity-oukitel-wp62",
+      "device-identity-pixel-6-pro",
+      "device-identity-vivo-x300-pro",
       "framework-pipelines",
       "general-runtime-contracts",
       "gpu-workload",

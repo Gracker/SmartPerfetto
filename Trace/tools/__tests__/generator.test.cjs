@@ -1204,6 +1204,81 @@ test('probes a real base and builds a combined trace inside its bounds', () => {
   assert.ok(Object.values(build.provenance.cpu_map).every((cpu) => Number(cpu) > 0));
 });
 
+const SYSTEM_INFO_IDENTITY_SQL = `SELECT name, COALESCE(str_value, CAST(int_value AS TEXT)) AS value
+  FROM metadata WHERE name IN ('android_build_fingerprint', 'android_device_manufacturer',
+    'android_soc_model', 'android_sdk_version') ORDER BY name`;
+
+function assertIdentity(tracePath, {fingerprint, manufacturer, sdk, soc}) {
+  assert.match(queryTrace(tracePath, SYSTEM_INFO_IDENTITY_SQL), new RegExp([
+    `"android_build_fingerprint","${fingerprint}"`,
+    `"android_device_manufacturer","${manufacturer}"`,
+    `"android_sdk_version","${sdk}"`,
+    `"android_soc_model","${soc}"`,
+  ].join('\\s+')));
+}
+
+function systemInfoScenario(identity) {
+  const scenario = fixtureScenario();
+  scenario.signals.push({type: 'android-system-info', at_ns: '0', ...identity});
+  return scenario;
+}
+
+test('encodes the declared SystemInfo device identity as trace metadata', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-system-info-'));
+  t.after(() => fs.rmSync(tempDir, {recursive: true, force: true}));
+  const outputPath = path.join(tempDir, 'trace.pftrace');
+  const overlay = encodeScenarioOverlay(repoRoot, systemInfoScenario({
+    android_build_fingerprint: 'acme/widget/widget:16/AB1.000/1:user/release-keys',
+    android_device_manufacturer: 'Acme',
+    android_soc_model: 'MT6000',
+    android_sdk_version: 36,
+  }), {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 424243});
+
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  assertIdentity(outputPath, {fingerprint: 'acme/widget/widget:16/AB1.000/1:user/release-keys',
+    manufacturer: 'Acme', sdk: 36, soc: 'MT6000'});
+});
+
+test('replaces a real base identity and refuses one the overlay cannot remove', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-system-info-base-'));
+  t.after(() => fs.rmSync(tempDir, {recursive: true, force: true}));
+  const basePath = resolveCaseTrace(repoRoot, 'android-startup-light');
+  const scenarioPath = path.join(tempDir, 'scenario.json');
+  const overlayPath = path.join(tempDir, 'trace.overlay.pftrace');
+  const outputPath = path.join(tempDir, 'trace.pftrace');
+  const identity = {
+    android_build_fingerprint: 'acme/widget/widget:15/AB1.000/1:user/release-keys',
+    android_soc_model: 'MT6000',
+    android_sdk_version: 35,
+  };
+  const build = (declared) => {
+    fs.writeFileSync(scenarioPath, `${JSON.stringify(systemInfoScenario(declared), null, 2)}\n`);
+    return buildConstructedTrace(repoRoot, {caseId: 'system-info-identity', basePath, scenarioPath, overlayPath, outputPath});
+  };
+
+  // The base records a manufacturer (Google); leaving it undeclared would
+  // let the base's value pass as the declared device's.
+  assert.throws(() => build(identity), /android_device_manufacturer=\["Google"\].*cannot remove one/s);
+  assert.equal(fs.existsSync(overlayPath), false);
+
+  build({...identity, android_device_manufacturer: 'Acme'});
+  assertIdentity(outputPath, {fingerprint: 'acme/widget/widget:15/AB1.000/1:user/release-keys',
+    manufacturer: 'Acme', sdk: 35, soc: 'MT6000'});
+});
+
+test('rejects an empty, malformed or repeated SystemInfo identity', () => {
+  const encode = (scenario) => encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000', usedPids: new Set(), sequenceId: 424244,
+  });
+  assert.throws(() => encode(systemInfoScenario({})), /must set at least one of/);
+  assert.throws(() => encode(systemInfoScenario({android_sdk_version: 0})), /android_sdk_version must be a positive/);
+  assert.throws(() => encode(systemInfoScenario({android_soc_model: ' '})), /android_soc_model must be a non-empty/);
+  const repeated = systemInfoScenario({android_soc_model: 'MT6000'});
+  repeated.signals.push({type: 'android-system-info', at_ns: '0', android_soc_model: 'SM8650'});
+  assert.throws(() => encode(repeated), /more than one android-system-info/);
+});
+
 test('rebuilds a repository constructed case with matching source hash and provenance', () => {
   const result = buildCatalogCases(repoRoot, {caseIds: ['startup-lifecycle'], check: true});
 

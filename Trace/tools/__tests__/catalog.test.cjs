@@ -566,6 +566,24 @@ test('rejects evidence tiers and constructed runtime revisions that contradict t
   assert.ok(codes.includes('constructed-runtime-revision-mismatch'));
 });
 
+test('keeps fixture cases constructed and free of analysis coverage', () => {
+  const fixture = createFixture();
+  const realManifestPath = path.join(fixture.realDir, 'case.json');
+  const realManifest = JSON.parse(fs.readFileSync(realManifestPath, 'utf8'));
+  realManifest.purpose = 'fixture';
+  writeJson(realManifestPath, realManifest);
+  const constructedManifestPath = path.join(fixture.constructedDir, 'case.json');
+  const constructedManifest = JSON.parse(fs.readFileSync(constructedManifestPath, 'utf8'));
+  assert.ok(constructedManifest.coverage.expectations.length > 0);
+  constructedManifest.purpose = 'fixture';
+  writeJson(constructedManifestPath, constructedManifest);
+
+  const codes = validateCatalog(fixture.repoRoot).issues.map((issue) => issue.code);
+
+  assert.ok(codes.includes('fixture-case-not-constructed'));
+  assert.ok(codes.includes('fixture-case-with-coverage'));
+});
+
 test('repository binds every real trace to source-pinned canonical SQL expectations', () => {
   const repoRoot = path.resolve(__dirname, '../../..');
   const catalog = loadCatalog(repoRoot);

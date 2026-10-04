@@ -4,11 +4,11 @@
 This directory is the source-controlled trace test and reference corpus.
 
 - [Real trace cases](./real/README.md): 6
-- [Constructed trace cases](./constructed/README.md): 22
+- [Constructed trace cases](./constructed/README.md): 26
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Evidence tiers: R1=6, R2=0, R3=22.
+Evidence tiers: R1=6, R2=0, R3=26.
 
 Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
@@ -40,6 +40,8 @@ The command copies evidence atomically into ignored `Trace/real/.private/<id>/`.
 
 Constructed cases keep source scenarios and overlay protobufs in Git; combined traces are generated. Copy [the scenario template](./constructed/_templates/scenario.example.json), declare Android compatibility in `case.json`, assign each target explicitly, then run `npm run trace:regression`. Adding a Skill or Strategy without a current expectation fails validation. Use separate case ids with non-overlapping API ranges when Android behavior differs.
 
+Every constructed case is an analysis scenario that `backend/strategies/golden-trace-eval.registry.json` seeds for Self-Evolution evaluation, unless its `case.json` declares `"purpose": "fixture"`. A fixture case carries data for a non-analysis test only (for example device identity metadata over a borrowed base), has no Skill or Strategy coverage, and must not be seeded; the golden registry compiler rejects a seed for one.
+
 ## Real cases
 
 | Case | Scene | Android | Publication | Analysis | Canonical SQL |
@@ -57,6 +59,10 @@ Constructed cases keep source scenarios and overlay protobufs in Git; combined t
 | --- | --- | --- | --- | --- | --- |
 | [App background power state layers](./constructed/app-background-power/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Binder, lock, and I/O blocking](./constructed/binder-io-blocking/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 25 target(s) |
+| [HONOR 300 Pro device identity metadata](./constructed/device-identity-honor-300-pro/) | general | Android 16 / API 36 | android-startup-light | 0 target(s) |
+| [OUKITEL WP62 device identity metadata](./constructed/device-identity-oukitel-wp62/) | general | Android 15 / API 35 | android-scroll-standard | 0 target(s) |
+| [Google Pixel 6 Pro device identity metadata](./constructed/device-identity-pixel-6-pro/) | general | Android CinnamonBun / API 37 | android-scroll-customer | 0 target(s) |
+| [vivo X300 Pro device identity metadata](./constructed/device-identity-vivo-x300-pro/) | general | Android 16 / API 36 | android-startup-heavy | 0 target(s) |
 | [Framework rendering pipeline signatures](./constructed/framework-pipelines/) | pipeline | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 33 target(s) |
 | [General analysis and runtime contracts](./constructed/general-runtime-contracts/) | general | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 17 target(s) |
 | [GPU workload and frequency](./constructed/gpu-workload/) | gpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 11 target(s) |

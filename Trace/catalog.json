@@ -1808,6 +1808,278 @@
     },
     {
       "schema_version": 1,
+      "id": "device-identity-honor-300-pro",
+      "kind": "constructed",
+      "title": "HONOR 300 Pro device identity metadata",
+      "description": "Device identity only: replays the SystemInfo android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version that a HONOR 300 Pro capture recorded, over the android-startup-light real base. It is not a HONOR 300 Pro trace: apart from this identity and the case marker slice, every packet comes from the base.",
+      "scene": "general",
+      "purpose": "fixture",
+      "tags": [
+        "android",
+        "constructed",
+        "device-identity",
+        "metadata-only"
+      ],
+      "known_issues": [
+        "Derived metadata, not a device trace: only android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version come from the HONOR 300 Pro capture; processes, scheduling, slices and all other metadata belong to the android-startup-light base.",
+        "The source capture is kept outside this repository. Its device serial number and every other per-unit identifier were removed; only build-level identity is kept."
+      ],
+      "aliases": [],
+      "trace": {
+        "file": "trace.overlay.pftrace",
+        "format": "perfetto-protobuf",
+        "sha256": "e7604cf5c6994be04080c1997aa0fa3d2517d585ca21ffc5ebf7d0df0222ebe0",
+        "materialization": "base-plus-overlay"
+      },
+      "android": {
+        "release": "16",
+        "api_level": 36,
+        "device": "HONOR 300 Pro identity over Google raven base",
+        "build_fingerprint": "HONOR/AMP-AN00/HNAMP:16/HONORAMP-AN00/10DLDLD111C00E110:user/release-keys",
+        "compatibility": {
+          "min_api": 36,
+          "max_api": 36
+        }
+      },
+      "source": {
+        "origin": "SmartPerfetto deterministic trace generator; device identity values copied from a maintainer device capture that is not committed",
+        "captured_at": null,
+        "imported_at": "2026-10-04T00:00:00.000Z",
+        "license": "AGPL-3.0-or-later",
+        "consent": "maintainer decision 2026-10-04: commit build-level device identity only",
+        "privacy_review": "approved",
+        "sanitization_review": "approved",
+        "publication": "public",
+        "evidence_tier": "R3"
+      },
+      "analysis": {
+        "results": [
+          "analysis/expected.json"
+        ],
+        "logs": []
+      },
+      "construction": {
+        "base_case_id": "android-startup-light",
+        "scenario_file": "scenario.json",
+        "generator_version": 1,
+        "seed": "device-identity-honor-300-pro-v1",
+        "output": "Trace/.generated/constructed/device-identity-honor-300-pro/trace.pftrace",
+        "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+      },
+      "coverage": {
+        "skills": [],
+        "strategies": [],
+        "expectations": []
+      },
+      "case_dir": "Trace/constructed/device-identity-honor-300-pro",
+      "manifest_path": "Trace/constructed/device-identity-honor-300-pro/case.json"
+    },
+    {
+      "schema_version": 1,
+      "id": "device-identity-oukitel-wp62",
+      "kind": "constructed",
+      "title": "OUKITEL WP62 device identity metadata",
+      "description": "Device identity only: replays the SystemInfo android_build_fingerprint, android_soc_model, android_sdk_version that a OUKITEL WP62 capture recorded, over the android-scroll-standard real base. It is not a OUKITEL WP62 trace: apart from this identity and the case marker slice, every packet comes from the base.",
+      "scene": "general",
+      "purpose": "fixture",
+      "tags": [
+        "android",
+        "constructed",
+        "device-identity",
+        "metadata-only"
+      ],
+      "known_issues": [
+        "Derived metadata, not a device trace: only android_build_fingerprint, android_soc_model, android_sdk_version come from the OUKITEL WP62 capture; processes, scheduling, slices and all other metadata belong to the android-scroll-standard base.",
+        "The source capture is kept outside this repository. Its device serial number and every other per-unit identifier were removed; only build-level identity is kept."
+      ],
+      "aliases": [],
+      "trace": {
+        "file": "trace.overlay.pftrace",
+        "format": "perfetto-protobuf",
+        "sha256": "a046faa89d565fb85ae6be01428cac98398863b43a3bcc3f4762748e6071211c",
+        "materialization": "base-plus-overlay"
+      },
+      "android": {
+        "release": "15",
+        "api_level": 35,
+        "device": "OUKITEL WP62 identity over nubia pacific base",
+        "build_fingerprint": "OUKITEL/WP62_A15_EEA/WP62:15/AP3A.240905.015.A2/2025491:user/release-keys",
+        "compatibility": {
+          "min_api": 35,
+          "max_api": 35
+        }
+      },
+      "source": {
+        "origin": "SmartPerfetto deterministic trace generator; device identity values copied from a maintainer device capture that is not committed",
+        "captured_at": null,
+        "imported_at": "2026-10-04T00:00:00.000Z",
+        "license": "AGPL-3.0-or-later",
+        "consent": "maintainer decision 2026-10-04: commit build-level device identity only",
+        "privacy_review": "approved",
+        "sanitization_review": "approved",
+        "publication": "public",
+        "evidence_tier": "R3"
+      },
+      "analysis": {
+        "results": [
+          "analysis/expected.json"
+        ],
+        "logs": []
+      },
+      "construction": {
+        "base_case_id": "android-scroll-standard",
+        "scenario_file": "scenario.json",
+        "generator_version": 1,
+        "seed": "device-identity-oukitel-wp62-v1",
+        "output": "Trace/.generated/constructed/device-identity-oukitel-wp62/trace.pftrace",
+        "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+      },
+      "coverage": {
+        "skills": [],
+        "strategies": [],
+        "expectations": []
+      },
+      "case_dir": "Trace/constructed/device-identity-oukitel-wp62",
+      "manifest_path": "Trace/constructed/device-identity-oukitel-wp62/case.json"
+    },
+    {
+      "schema_version": 1,
+      "id": "device-identity-pixel-6-pro",
+      "kind": "constructed",
+      "title": "Google Pixel 6 Pro device identity metadata",
+      "description": "Device identity only: replays the SystemInfo android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version that a Google Pixel 6 Pro capture recorded, over the android-scroll-customer real base. It is not a Google Pixel 6 Pro trace: apart from this identity and the case marker slice, every packet comes from the base.",
+      "scene": "general",
+      "purpose": "fixture",
+      "tags": [
+        "android",
+        "constructed",
+        "device-identity",
+        "metadata-only"
+      ],
+      "known_issues": [
+        "Derived metadata, not a device trace: only android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version come from the Google Pixel 6 Pro capture; processes, scheduling, slices and all other metadata belong to the android-scroll-customer base.",
+        "The source capture is kept outside this repository. Its device serial number and every other per-unit identifier were removed; only build-level identity is kept."
+      ],
+      "aliases": [],
+      "trace": {
+        "file": "trace.overlay.pftrace",
+        "format": "perfetto-protobuf",
+        "sha256": "a9175a5bcbe4dc867bdfb85858177b74bc5cffb8711d4fc2b88f9bb5f68be2cc",
+        "materialization": "base-plus-overlay"
+      },
+      "android": {
+        "release": "CinnamonBun",
+        "api_level": 37,
+        "device": "Google Pixel 6 Pro identity over OPPO PKH110 base",
+        "build_fingerprint": "google/raven_beta/raven:CinnamonBun/CP31.260508.005.A1/15421647:user/release-keys",
+        "compatibility": {
+          "min_api": 37,
+          "max_api": 37
+        }
+      },
+      "source": {
+        "origin": "SmartPerfetto deterministic trace generator; device identity values copied from a maintainer device capture that is not committed",
+        "captured_at": null,
+        "imported_at": "2026-10-04T00:00:00.000Z",
+        "license": "AGPL-3.0-or-later",
+        "consent": "maintainer decision 2026-10-04: commit build-level device identity only",
+        "privacy_review": "approved",
+        "sanitization_review": "approved",
+        "publication": "public",
+        "evidence_tier": "R3"
+      },
+      "analysis": {
+        "results": [
+          "analysis/expected.json"
+        ],
+        "logs": []
+      },
+      "construction": {
+        "base_case_id": "android-scroll-customer",
+        "scenario_file": "scenario.json",
+        "generator_version": 1,
+        "seed": "device-identity-pixel-6-pro-v1",
+        "output": "Trace/.generated/constructed/device-identity-pixel-6-pro/trace.pftrace",
+        "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+      },
+      "coverage": {
+        "skills": [],
+        "strategies": [],
+        "expectations": []
+      },
+      "case_dir": "Trace/constructed/device-identity-pixel-6-pro",
+      "manifest_path": "Trace/constructed/device-identity-pixel-6-pro/case.json"
+    },
+    {
+      "schema_version": 1,
+      "id": "device-identity-vivo-x300-pro",
+      "kind": "constructed",
+      "title": "vivo X300 Pro device identity metadata",
+      "description": "Device identity only: replays the SystemInfo android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version that a vivo X300 Pro capture recorded, over the android-startup-heavy real base. It is not a vivo X300 Pro trace: apart from this identity and the case marker slice, every packet comes from the base.",
+      "scene": "general",
+      "purpose": "fixture",
+      "tags": [
+        "android",
+        "constructed",
+        "device-identity",
+        "metadata-only"
+      ],
+      "known_issues": [
+        "Derived metadata, not a device trace: only android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version come from the vivo X300 Pro capture; processes, scheduling, slices and all other metadata belong to the android-startup-heavy base.",
+        "The source capture is kept outside this repository. Its device serial number and every other per-unit identifier were removed; only build-level identity is kept."
+      ],
+      "aliases": [],
+      "trace": {
+        "file": "trace.overlay.pftrace",
+        "format": "perfetto-protobuf",
+        "sha256": "c54757234fb4dafa21523f0e39d22a2b68c10e4b3d03a4ef52096ead052aa1b4",
+        "materialization": "base-plus-overlay"
+      },
+      "android": {
+        "release": "16",
+        "api_level": 36,
+        "device": "vivo X300 Pro identity over Xiaomi pandora base",
+        "build_fingerprint": "vivo/PD2502/PD2502:16/BP2A.250605.031.A3_V000L1/compiler251016035215:user/release-keys",
+        "compatibility": {
+          "min_api": 36,
+          "max_api": 36
+        }
+      },
+      "source": {
+        "origin": "SmartPerfetto deterministic trace generator; device identity values copied from a maintainer device capture that is not committed",
+        "captured_at": null,
+        "imported_at": "2026-10-04T00:00:00.000Z",
+        "license": "AGPL-3.0-or-later",
+        "consent": "maintainer decision 2026-10-04: commit build-level device identity only",
+        "privacy_review": "approved",
+        "sanitization_review": "approved",
+        "publication": "public",
+        "evidence_tier": "R3"
+      },
+      "analysis": {
+        "results": [
+          "analysis/expected.json"
+        ],
+        "logs": []
+      },
+      "construction": {
+        "base_case_id": "android-startup-heavy",
+        "scenario_file": "scenario.json",
+        "generator_version": 1,
+        "seed": "device-identity-vivo-x300-pro-v1",
+        "output": "Trace/.generated/constructed/device-identity-vivo-x300-pro/trace.pftrace",
+        "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+      },
+      "coverage": {
+        "skills": [],
+        "strategies": [],
+        "expectations": []
+      },
+      "case_dir": "Trace/constructed/device-identity-vivo-x300-pro",
+      "manifest_path": "Trace/constructed/device-identity-vivo-x300-pro/case.json"
+    },
+    {
+      "schema_version": 1,
       "id": "flutter-scroll-surface-view",
       "kind": "real",
       "title": "Android 15 Flutter SurfaceView scroll",

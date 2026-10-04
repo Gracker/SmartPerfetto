@@ -46,7 +46,18 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
   'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
+  'android-system-info',
 ]);
+// The SystemInfo device identity an `android-system-info` signal may set,
+// keyed by the name trace processor stores each value under in `metadata`.
+// Trace processor keeps the last SystemInfo value per name, so an overlay
+// replaces a base trace's value but can never remove one the base carries.
+const ANDROID_SYSTEM_INFO_FIELDS = Object.freeze({
+  android_build_fingerprint: 'androidBuildFingerprint',
+  android_device_manufacturer: 'androidDeviceManufacturer',
+  android_soc_model: 'androidSocModel',
+  android_sdk_version: 'androidSdkVersion',
+});
 // Signals that name a CPU twice: once as the ftrace stream (`cpu`) and once as
 // the payload identity (`cpu_id`). Both must be isolated together so an overlay
 // never rewrites a real CPU's counters in the base trace.
@@ -199,6 +210,9 @@ function validateScenario(scenario) {
         throw new Error(`scenario.signals[${index}] ends after scenario.clock.duration_ns`);
       }
     }
+    if (signal.type === 'android-system-info') {
+      androidSystemInfo(signal, `scenario.signals[${index}]`);
+    }
     if (signal.type === 'perf-sample') {
       const sampleCount = positiveSafeInteger(
         signal.sample_count,
@@ -216,6 +230,24 @@ function validateScenario(scenario) {
       }
     }
   }
+  if (scenario.signals.filter((signal) => signal.type === 'android-system-info').length > 1) {
+    throw new Error('scenario declares more than one android-system-info signal');
+  }
+}
+
+/** The identity an `android-system-info` signal declares, by metadata name. */
+function androidSystemInfo(signal, field) {
+  const declared = {};
+  for (const name of Object.keys(ANDROID_SYSTEM_INFO_FIELDS)) {
+    if (signal[name] === undefined) continue;
+    declared[name] = name === 'android_sdk_version'
+      ? positiveSafeInteger(signal[name], `${field}.${name}`)
+      : nonEmptyString(signal[name], `${field}.${name}`);
+  }
+  if (Object.keys(declared).length === 0) {
+    throw new Error(`${field} must set at least one of ${Object.keys(ANDROID_SYSTEM_INFO_FIELDS).join(', ')}`);
+  }
+  return declared;
 }
 
 function buildIdentities(scenario, usedPids) {
@@ -1105,6 +1137,11 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const events = eventsForCpu(signal.cpu ?? 0);
       events.push(printEvent(timestamp, thread.tid, `B|${process.pid}|lmk,${process.pid},${killReason},${signal.oom_score_adj}`));
       events.push(printEvent(end, thread.tid, `E|${process.pid}`));
+    } else if (signal.type === 'android-system-info') {
+      const declared = androidSystemInfo(signal, `scenario.signals[${index}]`);
+      const systemInfo = Object.fromEntries(Object.entries(declared)
+        .map(([name, value]) => [ANDROID_SYSTEM_INFO_FIELDS[name], value]));
+      dataPackets.push({timestamp, systemInfo});
     } else {
       throw new Error(`unsupported signal type: ${signal.type}`);
     }
@@ -1216,6 +1253,18 @@ function parseProbeCsv(output) {
   return lines.slice(1).map((line) => line.split(',').map(unquote));
 }
 
+/** Rows of one query against a trace, as CSV cells; the label names the probe in errors. */
+function queryTraceCsv(repoRoot, tracePath, sql, label) {
+  const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`${label} failed (${result.status}): ${result.stderr}`);
+  return parseProbeCsv(result.stdout);
+}
+
 function probeTrace(repoRoot, tracePath) {
   if (!fs.existsSync(tracePath)) throw new Error(`Missing trace: ${tracePath}`);
   const sql = `
@@ -1241,27 +1290,28 @@ function probeTrace(repoRoot, tracePath) {
       ORDER BY snapshot_id
       LIMIT 1
     ), 0)), ''
+    UNION ALL
+    -- Hex keeps arbitrary identity strings out of the CSV framing.
+    SELECT 'system_info', name, hex(COALESCE(str_value, CAST(int_value AS TEXT))) FROM metadata
+    WHERE name IN (${Object.keys(ANDROID_SYSTEM_INFO_FIELDS).map((name) => `'${name}'`).join(', ')})
     ORDER BY kind, value_1
   `;
-  const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`trace_processor_shell probe failed (${result.status}): ${result.stderr}`);
-  }
-  const rows = parseProbeCsv(result.stdout);
+  const rows = queryTraceCsv(repoRoot, tracePath, sql, 'trace_processor_shell probe');
   const bounds = rows.find(([kind]) => kind === 'bounds');
   if (!bounds) throw new Error('Trace probe did not return bounds');
   decimalString(bounds[1], 'trace start');
   decimalString(bounds[2], 'trace end');
+  // Every value per name: a trace with several machine or trace scopes has more than one.
+  const systemInfo = new Map();
+  for (const [, name, hex] of rows.filter(([kind]) => kind === 'system_info')) {
+    systemInfo.set(name, [...(systemInfo.get(name) ?? []), Buffer.from(hex, 'hex').toString('utf8')]);
+  }
   return {
     start_ns: bounds[1],
     end_ns: bounds[2],
     realtime_offset_ns: rows.find(([kind]) => kind === 'realtime_offset')?.[1] ?? '0',
     monotonic_raw_offset_ns: rows.find(([kind]) => kind === 'monotonic_raw_offset')?.[1] ?? '0',
+    system_info: systemInfo,
     used_pids: new Set(
       rows
         .filter(([kind]) => kind === 'pid')
@@ -1339,12 +1389,31 @@ function probeInputEventIds(repoRoot, tracePath) {
     UNION SELECT CAST(event_id AS TEXT) FROM android_key_events
     UNION SELECT CAST(event_id AS TEXT) FROM android_input_event_dispatch
     UNION SELECT input_event_id FROM android_input_events WHERE input_event_id IS NOT NULL`;
-  const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
-    cwd: repoRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`input identity probe failed: ${result.stderr}`);
-  return new Set(parseProbeCsv(result.stdout).map(([id]) => Number(id)).filter(Number.isInteger));
+  return new Set(queryTraceCsv(repoRoot, tracePath, sql, 'input identity probe')
+    .map(([id]) => Number(id)).filter(Number.isInteger));
+}
+
+/**
+ * The combined trace must report exactly the device identity the scenario
+ * declares. A base value the overlay does not replace, or one trace processor
+ * derives (the SDK version from a fingerprint), would otherwise read as the
+ * declared device's own.
+ */
+function assertSystemInfoIdentity(outputProbe, scenario) {
+  const signal = scenario.signals.find((item) => item.type === 'android-system-info');
+  if (!signal) return;
+  const declared = androidSystemInfo(signal, 'android-system-info');
+  for (const name of Object.keys(ANDROID_SYSTEM_INFO_FIELDS)) {
+    const expected = declared[name] === undefined ? [] : [String(declared[name])];
+    const actual = outputProbe.system_info.get(name) ?? [];
+    if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+      throw new Error(
+        `combined trace reports ${name}=${JSON.stringify(actual)} but the scenario declares ` +
+        `${JSON.stringify(expected)}; an android-system-info overlay replaces base values and cannot ` +
+        'remove one, so declare the field or choose a base trace without it',
+      );
+    }
+  }
 }
 
 function buildConstructedTrace(repoRoot, options) {
@@ -1365,10 +1434,12 @@ function buildConstructedTrace(repoRoot, options) {
       ? probeInputEventIds(repoRoot, options.basePath) : [],
     sequenceId,
   });
+  const materialization = materializeTrace(base, overlay.buffer, options.outputPath);
+  // Checked before the overlay is written, so a rejected identity never replaces a committed one.
+  const outputProbe = probeTrace(repoRoot, options.outputPath);
+  assertSystemInfoIdentity(outputProbe, scenario);
   fs.mkdirSync(path.dirname(options.overlayPath), {recursive: true});
   fs.writeFileSync(options.overlayPath, overlay.buffer);
-  const materialization = materializeTrace(base, overlay.buffer, options.outputPath);
-  const outputProbe = probeTrace(repoRoot, options.outputPath);
   return {
     overlay,
     output_probe: {

@@ -83,9 +83,18 @@ export type GoldenTraceExecutionCaseV1 = Omit<
   'catalogAlias' | 'groundTruth' | 'goldenPoints' | 'split'
 >;
 
+/**
+ * A corpus case's declared role (`purpose` in `Trace/schema/case.schema.json`).
+ * A `fixture` case carries data for a non-analysis test, such as device
+ * identity metadata over a borrowed base, and has no analysis question or
+ * golden facts; an absent purpose is an analysis case.
+ */
+type CatalogCasePurpose = 'analysis' | 'fixture';
+
 interface CatalogCase {
   id: string;
   kind: string;
+  purpose: CatalogCasePurpose;
   case_dir: string;
   trace: {sha256: string};
   coverage: {expectations: Array<{id: string}>};
@@ -236,6 +245,12 @@ function parseRegistry(value: unknown): {
   };
 }
 
+function catalogCasePurpose(value: unknown): CatalogCasePurpose {
+  if (value === undefined || value === 'analysis') return 'analysis';
+  if (value === 'fixture') return 'fixture';
+  throw new Error('golden_trace_catalog_purpose_invalid');
+}
+
 function parseCatalog(value: unknown): Map<string, CatalogCase> {
   const catalog = record(value, 'golden_trace_catalog_invalid');
   if (!Array.isArray(catalog.cases)) throw new Error('golden_trace_catalog_invalid');
@@ -252,6 +267,7 @@ function parseCatalog(value: unknown): Map<string, CatalogCase> {
     return {
       id: nonemptyString(item.id, 'golden_trace_catalog_case_id_invalid'),
       kind: nonemptyString(item.kind, 'golden_trace_catalog_kind_invalid'),
+      purpose: catalogCasePurpose(item.purpose),
       case_dir: nonemptyString(
         item.case_dir,
         'golden_trace_catalog_case_dir_invalid',
@@ -424,6 +440,11 @@ export function loadGoldenTraceRegistry(
       throw new Error(
         `golden_trace_catalog_case_unavailable:${registryCase.catalogAlias}`,
       );
+    }
+    // A fixture case has no analysis question to evaluate; a seed for one
+    // would score an answer against facts the case never claimed.
+    if (catalogCase.purpose === 'fixture') {
+      throw new Error(`golden_trace_catalog_case_fixture_only:${registryCase.catalogAlias}`);
     }
     const scenarioPath = resolveScenarioPath(catalogCase);
     const groundTruth = compileGroundTruth(
