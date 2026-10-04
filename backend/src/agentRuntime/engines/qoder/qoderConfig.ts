@@ -46,11 +46,6 @@ function qoderSdkInstalled(env: EnvLike): boolean {
   }
 }
 
-function truthyEnv(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
-}
-
 function numericEnv(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
@@ -156,4 +151,4 @@ export function resolveQoderRuntimeConfig(env: EnvLike = process.env): QoderRunt
   };
 }
 
-export { truthyEnv, numericEnv, type EnvLike };
+export { numericEnv, type EnvLike };

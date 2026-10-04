@@ -144,6 +144,7 @@ import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
+import {parseFlagValue} from '../../../utils/envFlag';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
 export type PublicOpenCodeRuntimeKind = typeof OPENCODE_RUNTIME_KIND;
@@ -341,11 +342,6 @@ const importEsmModule = new Function(
   'return import(specifier);',
 ) as (specifier: string) => Promise<unknown>;
 
-function truthyEnv(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
-}
-
 function numericEnv(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
@@ -443,7 +439,7 @@ export function getOpenCodeRuntimeDiagnostics(
 ) {
   const modulePath = env[OPENCODE_SDK_MODULE_PATH_ENV]?.trim();
   const projectDir = env[OPENCODE_PROJECT_DIR_ENV]?.trim();
-  const standaloneMcpEnabled = truthyEnv(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV]);
+  const standaloneMcpEnabled = parseFlagValue(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV]) === true;
   const selection: RuntimeSelection<string> = selectedProviderId
     ? {kind, source: 'provider', providerId: selectedProviderId}
     : {kind, source: 'env'};
@@ -509,7 +505,7 @@ export function createOpenCodeStandaloneMcpToolNames(
 export function createOpenCodeStandaloneMcpConfig(
   env: EnvLike = process.env,
 ): Record<string, unknown> {
-  if (!truthyEnv(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV])) {
+  if (parseFlagValue(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV]) !== true) {
     return {};
   }
 
@@ -541,7 +537,7 @@ export function createOpenCodeHardenedConfig(
 ): Record<string, unknown> {
   const mcpToolNames = bridge
     ? createOpenCodeMcpToolNames(allowedToolNames)
-    : truthyEnv(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV])
+    : parseFlagValue(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV]) === true
       ? createOpenCodeStandaloneMcpToolNames()
       : [];
   const mcpConfig = bridge
@@ -2384,7 +2380,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
       if (
         this.selection.kind === OPENCODE_RUNTIME_KIND ||
-        truthyEnv(this.env[OPENCODE_REAL_ANALYSIS_ENV])
+        parseFlagValue(this.env[OPENCODE_REAL_ANALYSIS_ENV]) === true
       ) {
         result = await this.analyzeWithSmartPerfettoTools(
           query,

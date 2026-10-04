@@ -126,9 +126,9 @@ import {
   getQoderRuntimeDiagnostics,
   type QoderRuntimeConfig,
   type EnvLike,
-  truthyEnv,
   numericEnv,
 } from './qoderConfig';
+import {parseFlagValue} from '../../../utils/envFlag';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
@@ -1076,7 +1076,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         mcpServers,
         env: buildQoderSdkEnv(this.env),
         stderr: (data: string) => {
-          if (truthyEnv(this.env.QODER_DEBUG)) {
+          if (parseFlagValue(this.env.QODER_DEBUG) === true) {
             console.error('[Qoder SDK stderr]', data);
           }
         },
