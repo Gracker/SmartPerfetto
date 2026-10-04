@@ -82,6 +82,7 @@ import type {
   ClaudeAnalysisContext,
   Hypothesis,
   UncertaintyFlag,
+  VerificationIssue,
 } from '../../../agentv3/types';
 import {
   recordPlanOrPrePlanToolCall,
@@ -134,7 +135,7 @@ import {
 import {stableStringify} from '../../../utils/stableJson';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns, refreshQuickRunStopReason} from '../../quickBudget';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
@@ -1661,19 +1662,18 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         const nativeProtocol = inspectCandidateProtocol(text);
         if (assistant) this.emit('update', {type: 'progress', content: {phase: 'candidate_protocol',
           candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(nativeProtocol, 'native', attemptId === '1' ? 1 : 2)}, timestamp: Date.now()});
-        // A framing failure or an empty body is repaired by a full-answer correction.
-        if (completion.status === 'completed' &&
-            (nativeProtocol.status === 'invalid' || !nativeProtocol.canonicalBody.trim())) {
-          draft.recoverableIssues.push({type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
+        // Pi repairs a framing failure or an empty body with a full-answer correction.
+        const framingIssue: VerificationIssue | undefined = completion.status === 'completed' &&
+          (nativeProtocol.status === 'invalid' || !nativeProtocol.canonicalBody.trim()) ? {
+            type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
             message: nativeProtocol.status === 'invalid'
               ? localize(outputLanguage, '当前候选的结论声明格式无效，需要按本轮协议重新输出。',
                 'The candidate has invalid conclusion declarations and needs to follow this turn\'s protocol.')
               : localize(outputLanguage, '当前候选没有可交付的正文，需要补全完整答案。',
-                'The candidate has no deliverable body and needs a complete answer.')});
-        }
+                'The candidate has no deliverable body and needs a complete answer.')} : undefined;
         executionLease.throwIfAborted();
         phase.end('ok');
-        return draft;
+        return framingIssue ? {...draft, recoverableIssues: [...draft.recoverableIssues, framingIssue]} : draft;
       } catch (error) {
         phase.end(runtimeOutcomeFromError(error, executionLease.signal));
         throw error;
@@ -1736,13 +1736,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         remainingDeliveryTurns: rounds < turnBudget.totalTurns ? turnBudget.deliveryTurns : 0,
         repairInvalid: true,
       });
-      const recovery = chooseRuntimeDraftRecovery({declarationNeed, recoverableIssues: draft.recoverableIssues,
-        declarationRequest: declarationNeed && nativeDeclarationBodyCanFitOutput(acceptedText, 64 * 1024)
-          ? declarationNeed : undefined});
-      const declarationRequest = recovery?.kind === 'declaration' ? recovery.request : undefined;
+      const declarationRequest = declarationNeed && nativeDeclarationBodyCanFitOutput(acceptedText, 64 * 1024)
+        ? declarationNeed : undefined;
+      const recovery = chooseRuntimeDraftRecovery({declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues});
       if (recovery &&
         rounds < (declarationRequest ? turnBudget.totalTurns : turnBudget.acquisitionTurns)
-        && completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached).status === 'completed') {
+        && acceptedCompletion.status === 'completed') {
         const originalTools = agent.state.tools;
         const originalSystemPrompt = agent.state.systemPrompt;
         const originalError = agent.state.errorMessage;
@@ -1759,8 +1758,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           const correctionPrompt = recovery.kind === 'declaration'
             ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
             : appendRelationProposalRecoveryFragment(
-              `${generateCorrectionPrompt(recovery.issues, acceptedText, outputLanguage,
-                turnIntent.sceneId)}\n\n${JSON.stringify({candidateProtocolDiagnostic: correctionDiagnostic})}`,
+              `${generateCorrectionPrompt(recovery.issues, acceptedText, outputLanguage)}\n\n${JSON.stringify({candidateProtocolDiagnostic: correctionDiagnostic})}`,
               correctionDiagnostic, outputLanguage);
           const candidate = await runProviderPrompt(correctionPrompt,
             declarationRequest ? turnBudget.totalTurns : turnBudget.acquisitionTurns);
@@ -1840,7 +1838,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       outputOrigin: nativeResult.outputOrigin, turnIntent,
     });
     const result = projected.result;
-    refreshQuickRunStopReason(result);
     this.emit('update', {type: 'progress', content: {phase: 'candidate_protocol',
       candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(result.conclusion), 'runtime_projected',
         acceptedAttemptId === '1' ? 1 : 2, projected.conclusionProjection.disposition)}, timestamp: Date.now()});

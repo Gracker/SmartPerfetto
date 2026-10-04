@@ -139,10 +139,14 @@ export function mayPersistUnverifiedBody(input: {
 
 /** What an owner supplies; everything else about a stop lives in the controller. */
 export interface ReviewStopOwner<T> {
-  /** See mayPersistUnverifiedBody; also false once the run has committed. */
-  mayPersistPartial(): boolean;
+  /**
+   * See mayPersistUnverifiedBody; also false once the run has committed. An
+   * owner without it (the CLI) never keeps an unverified body: expiry is its
+   * full cancel.
+   */
+  mayPersistPartial?(): boolean;
   /** Commit the read body as an unverified partial turn; false when another commit won. */
-  commitPartial(body: string): boolean;
+  commitPartial?(body: string): boolean;
   /** The full abort; the body stays live-only. A no-op for a settled run. */
   fullCancel(): T | Promise<T>;
 }
@@ -170,7 +174,7 @@ export class ReviewStopController<T> {
   /** The body the user read (as the owner delivered it); the fallback only. */
   get deliveredBody(): string | undefined { return this.body; }
 
-  markDelivered(body: string): void {
+  markDelivered(body?: string): void {
     this.body = body;
     this.handle.markDelivered();
   }
@@ -212,7 +216,7 @@ export class ReviewStopController<T> {
   private expire(): Promise<ReviewStopExpiry<T>> {
     this.expiry ??= Promise.resolve().then(async (): Promise<ReviewStopExpiry<T>> => {
       const {owner} = this.options;
-      if (this.body?.trim() && owner.mayPersistPartial() && owner.commitPartial(this.body)) return {kind: 'partial'};
+      if (this.body?.trim() && owner.mayPersistPartial?.() && owner.commitPartial?.(this.body)) return {kind: 'partial'};
       return {kind: 'cancelled', value: await owner.fullCancel()};
     });
     return this.expiry;

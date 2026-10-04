@@ -1139,12 +1139,6 @@ interface SqlErrorFixPair {
 /** TTL for error-fix pairs: 30 days. Older pairs may reference outdated schemas. */
 const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/**
- * P0-G2: ReAct reasoning nudge — appended to successful data tool results.
- * Prompts Claude to explicitly reason about observations before next action.
- * Cost: ~20 tokens per data tool call, ~200-300 total per analysis.
- */
-
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
     return path.join(sqlErrorLogDir(), 'error_fix_pairs.json');
@@ -2505,8 +2499,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   /** Planning is optional; a submitted plan keeps its revision and evidence obligations. */
   const analysisPlanRef = options.analysisPlan;
-  // Phase 1-C: Conditional REASONING_NUDGE — only append for first N data tool calls.
-  // After N calls, Claude should have internalized the reflect habit from system prompt.
+  // ReAct reasoning nudge (prompt-reasoning-nudge-*): appended to the first N
+  // successful data tool results, about 20 tokens each; after that the system
+  // prompt's reflect habit is expected to carry.
   const REASONING_NUDGE_MAX_CALLS = 4;
   let dataToolCallCount = 0;
   function getReasoningNudge(): string {

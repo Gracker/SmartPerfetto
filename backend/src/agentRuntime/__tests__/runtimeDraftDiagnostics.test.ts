@@ -40,7 +40,7 @@ describe('assessRuntimeDraft', () => {
     const draft = await assessRuntimeDraft({conclusion: body, plan: pendingPlan(),
       hypotheses: [{id: 'h1', statement: 'Another cause', status: 'formed', formedAt: 1} as never],
       deliveryContext: draftContext(body, 'incomplete'), outputLanguage: 'en'});
-    expect(draft.issues.map(issue => issue.type)).toEqual(expect.arrayContaining(['plan_deviation', 'unresolved_hypothesis', 'truncation']));
+    // The pending plan and the unresolved hypothesis are obligations, not delivery errors.
     expect(draft.deliveryErrors.map(issue => issue.type)).toEqual(['truncation']);
     expect(draft.recoverableIssues).toEqual([expect.objectContaining({type: 'truncation', recoveryKind: 'continue_output'})]);
   });

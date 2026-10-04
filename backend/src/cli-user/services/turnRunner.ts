@@ -56,7 +56,7 @@ function provisionalAnswerOption(renderer: Renderer,
     ? {onProvisionalAnswer: ({conclusion}) => {
         renderer.printProvisionalConclusion?.(conclusion);
         // From now on the user has read the answer: a stop ends only its review.
-        interrupt?.markProvisionalDelivered(conclusion);
+        interrupt?.markProvisionalDelivered();
       }}
     : {};
 }

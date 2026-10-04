@@ -173,7 +173,7 @@ describe('generateCorrectionPrompt', () => {
   it('does not infer a full report from body style, scene, or diagnostic language', () => {
     for (const body of ['短回答', 'Unheaded text'.repeat(200), '# Report\nLonger body']) {
       for (const message of ['Final Report Contract required structure missing: representative frames', '结论文本被截断', '其他']) {
-        const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message}], body, 'en', 'scrolling');
+        const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message}], body, 'en');
         expect(correctionContext(prompt).recoveryKinds).toEqual([]);
         expect(correctionContext(prompt).missingSections).toEqual([]);
       }
@@ -184,7 +184,7 @@ describe('generateCorrectionPrompt', () => {
     const missingSections = [{id: 'scope', label: 'Scope', description: 'State the measured population'}];
     for (const message of ['缺少内容', 'Falta contenido', 'arbitrary diagnostic']) {
       const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message,
-        recoveryKind: 'complete_report_content', missingSections}], 'Original', 'en', 'startup');
+        recoveryKind: 'complete_report_content', missingSections}], 'Original', 'en');
       expect(correctionContext(prompt).missingSections).toEqual(missingSections);
       expect(correctionContext(prompt).recoveryKinds).toEqual(['complete_report_content']);
     }

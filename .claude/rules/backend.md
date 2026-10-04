@@ -123,8 +123,8 @@ Keep these boundaries intact:
   `claim_verifier@2`, so the gate reads verification results and never
   classifies prose), and the route and CLI then annotate the recorded turn and
   publish the gate's `degraded` update. `quickRun.stopReason` describes the
-  delivered candidate's native state, derived after the privacy projection
-  (`refreshQuickRunStopReason`). Self-Evolution replay, which never enters the
+  delivered candidate's native state; the privacy projection re-derives it when
+  it replaces the body (`refreshQuickRunStopReason`). Self-Evolution replay, which never enters the
   finalizer, records the native termination reason. Guarded by
   `runtimeDraftDiagnostics.test.ts` and `tests/helpers/runtimeDraftTerminalState.ts`
   in all five runtime suites.

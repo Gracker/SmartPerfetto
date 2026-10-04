@@ -494,16 +494,17 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             runtime: this.selection.kind, tenantId: normalizedOptions.tenantId, workspaceId: normalizedOptions.workspaceId,
             userId: normalizedOptions.userId, providerId: normalizedOptions.providerId,
             analysisContextFingerprint: normalizedOptions.analysisContextFingerprint});
+          const traceIdentity = runTraceIdentity(traceId, normalizedOptions);
           attachFinalizationContext(result, {
             runId: executionLease.key.runId!, sessionId, deadlineMs: sessionState.deadlineMs,
             turnIntent: sessionState.turnIntent, strategyRegistry: sessionState.strategyRegistry,
             selection: sessionState.analysisRunSelection,
-            traceIdentity: runTraceIdentity(traceId, normalizedOptions),
+            traceIdentity,
             deliveryContext: sessionState.delivery.context, protocolProjection: sessionState.delivery.protocolProjection,
             ...sourceUseFinalizationFields(sessionState.sourceUse),
             evidenceReadView: sessionState.artifactStore?.createEvidenceReadView({
               currentRunId: executionLease.key.runId!,
-              allowedTraces: runAllowedTraces(runTraceIdentity(traceId, normalizedOptions)),
+              allowedTraces: runAllowedTraces(traceIdentity),
               ownerKey,
             }),
             ...(result.success && result.outputOrigin === 'sdk_final' && result.completion?.status === 'completed'

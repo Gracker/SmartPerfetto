@@ -62,7 +62,7 @@ import {createRuntimePerformanceRun, runtimeOutcomeFromError, type RuntimeModelC
   type RuntimeModelCallTrigger, type RuntimePerformanceOutcome, type RuntimePerformanceRun} from '../../runtimePerformance';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
-import {countCompletedQuickConversationTurns, refreshQuickRunStopReason} from '../../quickBudget';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
   buildRuntimeTracePairComparisonContext,
   detectRunFocusApps,
@@ -272,7 +272,6 @@ function finalizeOpenAiCandidate(input: {
   const finalized = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, input.sourceUse, {
     context: nativeContext,
   });
-  refreshQuickRunStopReason(finalized.result);
   if (!finalized.deliveryContext) throw new Error('OpenAI candidate projection omitted delivery context');
   return {...finalized, deliveryContext: finalized.deliveryContext};
 }

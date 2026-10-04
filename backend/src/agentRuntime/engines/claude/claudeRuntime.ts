@@ -1695,21 +1695,20 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           remainingDeliveryTurns: remainingTurns > 0 ? turnBudget.deliveryTurns : 0,
           repairInvalid: true,
         });
-        const admittedDeclaration = declarationNeed &&
+        const declarationRequest = declarationNeed &&
           nativeDeclarationBodyCanFitOutput(nativeCandidate, 128 * 1024) &&
           (remainingBudgetUsd === undefined || remainingBudgetUsd > 0) ? declarationNeed : undefined;
         // Which gate closed is otherwise unrecoverable after the run: the candidate
         // carrying the declaration is private and never persisted.
-        if (!admittedDeclaration) {
+        if (!declarationRequest) {
           console.log(`[ClaudeRuntime] declaration repair skipped: need=${declarationNeed?.reason ?? 'none'} ` +
             `completion=${projectedCandidate.deliveryContext.completion?.status ?? 'unknown'} turns=${remainingTurns} ` +
             `fits=${nativeDeclarationBodyCanFitOutput(nativeCandidate, 128 * 1024)} ` +
             `budget=${remainingBudgetUsd === undefined ? 'unbounded' : remainingBudgetUsd > 0 ? 'available' : 'exhausted'}`);
         }
         const recovery = chooseRuntimeDraftRecovery({
-          declarationNeed, declarationRequest: admittedDeclaration, recoverableIssues: draft.recoverableIssues,
+          declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues,
         });
-        const declarationRequest = recovery?.kind === 'declaration' ? recovery.request : undefined;
         if (recovery &&
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
             remainingTurns > 0 && Date.now() < requestDeadline) {
@@ -1719,7 +1718,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           const {stream, close} = sdkQueryWithRetry({
             prompt: recovery.kind === 'declaration'
               ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
-              : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage, sceneType),
+              : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage),
             options: withAuthorizationHooks({
               model: runtimeConfig.model, maxTurns: 1, systemPrompt: ctx.sdkSystemPrompt,
               includePartialMessages: true, settingSources: [], tools: [], allowedTools: [],

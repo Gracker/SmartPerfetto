@@ -89,15 +89,6 @@ function useIntent(decision: Record<string, unknown>): void {
   mockOpenCodeIntentTransport.mockResolvedValue({status: 'ok', text: JSON.stringify(decision)});
 }
 
-const mockClaudeVerifierVerifyConclusion = jest.fn();
-jest.mock('../engines/claude/claudeVerifier', () => {
-  const actual = jest.requireActual('../engines/claude/claudeVerifier') as any;
-  return {
-    ...actual,
-    verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
-  };
-});
-
 /** The delivery context the run handed to finalization; the context is released. */
 function attachedDeliveryContext(result: Parameters<typeof finalizationContext.takeFinalizationContext>[0]) {
   const context = finalizationContext.takeFinalizationContext(result);
@@ -114,11 +105,6 @@ type FakeTraceProcessorService = TraceProcessorService & {
 beforeEach(() => {
   mockOpenCodeIntentTransport.mockReset();
   useIntent(BOUNDED_INTENT);
-  const actualVerifier = jest.requireActual('../engines/claude/claudeVerifier') as any;
-  mockClaudeVerifierVerifyConclusion.mockReset();
-  mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
-    actualVerifier.verifyConclusion(...args)
-  ));
 });
 
 function createFakeTraceProcessorService(): FakeTraceProcessorService {
@@ -661,7 +647,6 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.partial === true).toBe(nativeError);
     // Only the native failure is recorded; the pending plan and hypothesis stay advisory.
     expect(result.terminationReason).toBe(nativeError ? 'execution_error' : undefined);
-    expect(mockClaudeVerifierVerifyConclusion).not.toHaveBeenCalled();
     const snapshot = harness.runtime.takeSnapshot(sessionId, 'trace-opencode', createSnapshotFields());
     expect(snapshot.analysisPlan?.phases).toEqual([expect.objectContaining({id: 'explore', status: 'pending'})]);
     expect(snapshot.claudeHypotheses).toEqual([expect.objectContaining({id: 'open-hypothesis', status: 'formed'})]);

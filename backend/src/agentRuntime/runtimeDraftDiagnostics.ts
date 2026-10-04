@@ -23,12 +23,10 @@ import {verifyConclusion} from './engines/claude/claudeVerifier';
 import {INVALID_NATIVE_DECLARATION, type NativeDeclarationCompletionRequest} from './runtimeConclusionProtocol';
 
 export interface RuntimeDraftDiagnostics {
-  /** Every runtime diagnostic, submitted plan and hypothesis obligations included. */
-  readonly issues: readonly VerificationIssue[];
   /** Errors about the delivered candidate itself, not about plan or hypothesis bookkeeping. */
   readonly deliveryErrors: readonly VerificationIssue[];
-  /** Delivery errors a same-run correction can address; the caller may add its own. */
-  readonly recoverableIssues: VerificationIssue[];
+  /** Delivery errors a same-run correction can address. */
+  readonly recoverableIssues: readonly VerificationIssue[];
 }
 
 const OBLIGATION_ISSUE_TYPES = new Set<VerificationIssue['type']>(['plan_deviation', 'unresolved_hypothesis']);
@@ -38,19 +36,16 @@ export async function assessRuntimeDraft(input: {
   deliveryContext: AnalysisDeliveryContext;
   plan?: AnalysisPlanV3 | null;
   hypotheses?: Hypothesis[];
-  conclusionContract?: unknown;
   outputLanguage: OutputLanguage;
 }): Promise<RuntimeDraftDiagnostics> {
-  const verification = await verifyConclusion([], input.conclusion, {
+  const {heuristicIssues} = await verifyConclusion([], input.conclusion, {
     plan: input.plan ?? null,
     hypotheses: input.hypotheses,
     outputLanguage: input.outputLanguage,
     deliveryContext: input.deliveryContext,
-    conclusionContract: input.conclusionContract,
   });
-  const issues = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])];
-  const deliveryErrors = issues.filter(issue => issue.severity === 'error' && !OBLIGATION_ISSUE_TYPES.has(issue.type));
-  return {issues, deliveryErrors, recoverableIssues: deliveryErrors.filter(issue => issue.recoveryKind !== undefined)};
+  const deliveryErrors = heuristicIssues.filter(issue => issue.severity === 'error' && !OBLIGATION_ISSUE_TYPES.has(issue.type));
+  return {deliveryErrors, recoverableIssues: deliveryErrors.filter(issue => issue.recoveryKind !== undefined)};
 }
 
 export type RuntimeDraftRecovery =

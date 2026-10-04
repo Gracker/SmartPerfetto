@@ -92,8 +92,6 @@ export class TurnInterruptController {
     this.stop = new ReviewStopController<void>({
       watchdogMs: options.watchdogMs ?? resolveReviewStopWatchdogMs(),
       owner: {
-        mayPersistPartial: () => false,
-        commitPartial: () => false,
         fullCancel: () => {
           if (this.disposed || this.abortController.signal.aborted) return;
           this.notify(localize(this.language,
@@ -115,7 +113,7 @@ export class TurnInterruptController {
   get interrupted(): boolean { return this.abortController.signal.aborted; }
 
   /** The text renderer printed the provisional answer. */
-  markProvisionalDelivered(body: string): void { this.stop.markDelivered(body); }
+  markProvisionalDelivered(): void { this.stop.markDelivered(); }
 
   /** The turn is saved: release Ctrl-C and cancel pending review/grace timers. */
   markCommitted(): void {

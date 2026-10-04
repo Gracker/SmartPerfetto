@@ -15,7 +15,6 @@ import {formatExpectedCall} from '../../../agentv3/types';
 import {getPhaseToolEvidenceStatus} from '../../../agentv3/planToolCallRecorder';
 import {getAnalysisPlanCompletionStatus} from '../../../agentv3/planCompletionStatus';
 import {hasValidPlanSkipDisposition} from '../../../agentv3/planPhaseSemantics';
-import type {SceneType} from '../../../agentv3/sceneClassifier';
 import {DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
 import {assessFinalReportContract} from '../../../services/finalReportContractGate';
 import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
@@ -123,7 +122,6 @@ export function generateCorrectionPrompt(
   issues: readonly VerificationIssue[],
   originalConclusion: string,
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
-  _sceneType?: SceneType,
 ): string {
   const errors = issues.filter(issue => issue.severity === 'error');
   const missingSections = new Map(errors

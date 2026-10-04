@@ -46,7 +46,6 @@ import { localize, parseOutputLanguage, type OutputLanguage } from '../../../age
 import { formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt, toolResultIsFailure } from '../../../agentv3/toolNarration';
 import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
-import { type SceneType } from '../../../agentv3/sceneClassifier';
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
 import type {
   AnalysisNote,
@@ -121,7 +120,7 @@ import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliv
 import {resolveAgentRuntimeBudgetConfig} from '../../../config';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns, refreshQuickRunStopReason} from '../../quickBudget';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
   createJsonSchemaFromZodRawShape,
   normalizeRuntimeToolArgs,
@@ -308,7 +307,6 @@ interface OpenCodeAnalysisPreparation {
   quickMode: boolean;
   turnIntent: AnalysisTurnIntent;
   turnPolicy: RuntimeTurnPolicy;
-  sceneType: SceneType;
   packageName?: string;
   architecture?: ArchitectureInfo;
   sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
@@ -2934,7 +2932,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const {deliveryContext, protocolProjection} = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, prep.sourceUse, {
       context: nativeDeliveryContext,
     });
-    refreshQuickRunStopReason(result);
     executionLease.throwIfAborted();
     prep.sessionContext.addTurn(
       query,
@@ -2968,15 +2965,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const artifactStore = this.artifactStores.get(sessionId);
     const scopeIdentity = (scope: AnalysisRunSpec['scopes']['knowledge']) => scope
       ? Object.fromEntries(Object.entries(scope).filter(([, value]) => value !== undefined)) : null;
+    const traceIdentity = runTraceIdentity(traceId, options);
     attachFinalizationContext(result, {
       runId, sessionId, deadlineMs, turnIntent, strategyRegistry: resolver.strategyRegistry,
       selection: prep.analysisRunSpec.selection,
-      traceIdentity: runTraceIdentity(traceId, options),
+      traceIdentity,
       deliveryContext, protocolProjection,
       ...sourceUseFinalizationFields(prep.sourceUse),
       ...(artifactStore ? {evidenceReadView: artifactStore.createEvidenceReadView({
         currentRunId: runId,
-        allowedTraces: runAllowedTraces(runTraceIdentity(traceId, options)),
+        allowedTraces: runAllowedTraces(traceIdentity),
         ownerKey: canonicalContentHash({runId, sessionId, scopes: {
           provider: scopeIdentity(prep.analysisRunSpec.scopes.provider),
           knowledge: scopeIdentity(prep.analysisRunSpec.scopes.knowledge),
@@ -3220,7 +3218,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         toolDefinitions,
         allowedToolNames,
         quickMode, turnIntent, turnPolicy,
-        sceneType,
         packageName: effectivePackageName,
         architecture,
         sessionContext,
@@ -3270,7 +3267,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       toolDefinitions,
       allowedToolNames,
       quickMode, turnIntent, turnPolicy,
-      sceneType,
       packageName: effectivePackageName,
       architecture,
       sessionContext,
