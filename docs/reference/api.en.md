@@ -150,12 +150,21 @@ result keeps only its reason code (else `source_file_unreadable`). In
 enterprise mode an SSO session or API key lookup failure answers 401 with
 fixed text. Records written before this change keep their stored text.
 
-Analysis run failures are the exception: the Agent analysis `error` SSE
-event, the `error` of `/status`, and the conversation `run_failed` event carry
-the runtime or model provider's failure reason (authentication, quota),
-because it is the only thing the session owner can act on. A run that uses
-private knowledge (source code, external knowledge sources) returns only the
-owner-projected text on every one of them.
+Analysis run failures follow one projection (`projectAnalysisFailure`) on
+every surface the owner reads: the Agent analysis `error` SSE event, the
+`error` of `/status` and of the analyze/run start response, and the
+conversation `run_failed` event and stored run. A runtime or model provider
+that fails (authentication, quota) returns a failed result whose own reason
+reaches the owner through the result. A run that throws keeps the text only of
+a failure SmartPerfetto wrote for the owner (authorization changed, provider
+not found or unreadable, AI disabled, trace processor lease or memory
+admission) or of a bare reason token (`analysis_history_parent_not_authorized`,
+without any detail after `:`). Any other exception (SQLite, the filesystem)
+answers `Analysis did not complete; the server logged the error (request ID:
+<id>).` (Chinese by default), and the cause is logged under that id. A run
+that uses private knowledge (source code, external knowledge sources) passes
+that text through its own output guard, which suppresses it once its session
+was revoked, and logs only the error class.
 
 ## OIDC Authentication
 

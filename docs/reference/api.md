@@ -103,9 +103,14 @@ trace_processor_shell 加载失败时返回 `trace_processor_shell could not loa
 `source_file_unreadable`）。企业模式下 SSO 会话或 API Key 解析出错时 401 只返回固定说明。此前已经
 写入的记录保留原文。
 
-分析 run 本身的失败是例外：Agent 分析的 `error` SSE 事件、`/status` 的 `error`、对话的
-`run_failed` 事件携带运行时或模型服务给出的失败原因（如鉴权、额度），因为这是会话所有者唯一能
-据以处理的信息；使用私有知识（源码、外部知识源）的 run 在这些出口都只返回所有者投影后的文案。
+分析 run 的失败在所有者能读到的每个出口都走同一个投影（`projectAnalysisFailure`）：Agent 分析的
+`error` SSE 事件、`/status` 和 analyze/run 启动响应的 `error`、对话的 `run_failed` 事件与已保存的
+run。运行时或模型服务出错（如鉴权、额度）时返回失败结果，其自身原因随结果交给所有者。run 抛出的异常
+只保留 SmartPerfetto 为所有者写的失败文案（授权已变化、provider 不存在或不可读、AI 已关闭、trace
+processor lease 或内存准入）或纯原因码（如 `analysis_history_parent_not_authorized`，不带 `:` 之后的
+细节）；其余任意异常（SQLite、文件系统等）返回 `分析未能完成，服务端已记录错误（请求 ID：<id>）。`
+（英文输出时为英文），原因只按该 ID 写入服务端日志。使用私有知识（源码、外部知识源）的 run 还会经过
+其自身的输出 guard，会话已撤销时文案被抑制，日志只记录错误类型。
 
 ## OIDC 鉴权
 

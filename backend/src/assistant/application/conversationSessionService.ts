@@ -31,6 +31,8 @@ import {
   ReviewStopController,
   settlesWithin,
 } from '../../services/reviewStopHandle';
+import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
+import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 
 export type {
   ConversationEvidenceRef,
@@ -115,6 +117,8 @@ export interface ConversationRun {
   completion: Promise<ConversationRuntimeOutcome>;
   events: ConversationSessionEvent[];
   lifecycleSettled?: boolean;
+  /** The id of the request that started the run (`StartConversationTurnInput.requestId`). */
+  requestId?: string;
   /**
    * Fixed at admission from the selection this run was authorized with. A
    * session's selection is pinned by its authorization fingerprint, so a
@@ -166,6 +170,8 @@ export interface StartConversationTurnInput {
   runtimeOptions?: Omit<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'runId'>;
   /** The request's current authorization fingerprint; a session's turns all run under one. */
   analysisContextFingerprint: string;
+  /** The starting request's id; a failure's fixed text names it and the server log records the cause under it. */
+  requestId?: string;
 }
 
 /**
@@ -192,12 +198,11 @@ interface ConversationSessionServiceDeps {
   reviewStopWatchdogMs?: number;
   onRunStarted?(session: ConversationSession, run: ConversationRun): void;
   onRunSettled?(session: ConversationSession, run: ConversationRun): void;
-  /**
-   * The owner-facing text of a failed run, used for its stored error and its
-   * `run_failed` event alike, e.g. projected for a private-knowledge run;
-   * undefined keeps the error's message.
-   */
-  projectRunError?(session: ConversationSession, run: ConversationRun, error: unknown): string | undefined;
+}
+
+/** The physical runtime session of one conversation run, whose output guard projects its private text. */
+export function conversationRuntimeSessionId(sessionId: string, runId: string): string {
+  return `${sessionId}:${runId}`;
 }
 
 function defaultCreateId(prefix: 'conversation' | 'run'): string {
@@ -262,7 +267,6 @@ export class ConversationSessionService {
   private readonly reviewStopWatchdogMs: number;
   private readonly onRunStarted?: ConversationSessionServiceDeps['onRunStarted'];
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
-  private readonly projectRunError?: ConversationSessionServiceDeps['projectRunError'];
   private readonly listeners = new Map<string, Set<(event: ConversationPublishedEvent) => void>>();
   private nextEventSeqId = 0;
   private readonly cancellationRequested = new WeakSet<ConversationRun>();
@@ -278,7 +282,6 @@ export class ConversationSessionService {
     this.reviewStopWatchdogMs = deps.reviewStopWatchdogMs ?? resolveReviewStopWatchdogMs();
     this.onRunStarted = deps.onRunStarted;
     this.onRunSettled = deps.onRunSettled;
-    this.projectRunError = deps.projectRunError;
   }
 
   getSession(sessionId: string): ConversationSession | undefined {
@@ -521,6 +524,7 @@ export class ConversationSessionService {
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
       privateContext,
+      ...(input.requestId ? {requestId: input.requestId} : {}),
     };
     const authorizationSelection = runAnalysisSelection(session);
     const authorizationScope = resolveKnowledgeScope(session);
@@ -573,8 +577,11 @@ export class ConversationSessionService {
       .catch((error: unknown) => {
         if (!this.isCurrentRun(session!, run)) return {kind: 'cancelled' as const, message: ''};
         if (this.cancellationRequested.has(run)) return this.settleCancelledRun(session!, run);
-        const message = this.projectRunError?.(session!, run, error) ??
-          (error instanceof Error ? error.message : String(error));
+        // One text for the stored error, the history and `run_failed`.
+        const message = projectAnalysisFailure(error, {privateContext: run.privateContext,
+          guardSessionId: conversationRuntimeSessionId(session!.sessionId, run.runId),
+          language: session!.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
+          requestId: run.requestId ?? run.runId});
         run.status = 'failed';
         run.error = message;
         run.completedAt = this.now();

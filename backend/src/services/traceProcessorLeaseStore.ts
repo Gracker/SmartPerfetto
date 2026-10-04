@@ -282,7 +282,7 @@ export class TraceProcessorLeaseStore {
       const now = options.now ?? Date.now();
       const blockingLease = this.findTraceLeaseByStates(scope, traceId, ['draining']);
       if (blockingLease) {
-        throw new Error(`Trace processor lease ${blockingLease.id} is draining`);
+        throw new TraceProcessorLeaseUnavailableError('not_acquirable', `Trace processor lease ${blockingLease.id} is draining`);
       }
 
       const requestedMode = options.mode ?? 'shared';

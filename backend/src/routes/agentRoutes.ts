@@ -207,6 +207,7 @@ import {
   analysisHasPrivateContext,
 } from '../services/security/analysisPrivateContext';
 import {withDurableLearningPermission} from '../services/security/durableLearning';
+import {projectAnalysisFailure, projectStoredAnalysisFailure} from '../services/analysisFailureProjection';
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
@@ -3658,9 +3659,8 @@ async function runSmartAnalysis(
     }
     const publicErrorMessage = error instanceof SmartPreviewSelectionError
       ? smartPreviewSelectionErrorMessage(outputLanguage, error.reportId)
-      : privateKnowledge
-        ? projectOwnerAnalysisError(sessionId, error, outputLanguage)
-        : error.message || String(error);
+      : projectAnalysisFailure(error, {privateContext: sessionRunPrivateContext(session, runId),
+        guardSessionId: sessionId, language: outputLanguage, requestId: options.runContext.requestId});
     session.status = 'failed';
     session.error = publicErrorMessage;
     markSessionRunStatus(session, 'failed', session.error, runId);
@@ -4519,6 +4519,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   session.status = 'running';
   session.lastActivityAt = Date.now();
   const runIdForAnalysis = session.activeRun?.runId;
+  const runRequestId = session.activeRun?.requestId ?? createRequestId();
   persistSessionRunState(session, 'running', undefined, runIdForAnalysis);
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runIdForAnalysis);
   logger.info('AgentDrivenAnalysis', 'Starting agent-driven analysis', {
@@ -5009,14 +5010,11 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       await retireAuthorizationChangedSession(sessionId, session, handleUpdate);
       if (!finalizationRun.owner.isCurrent()) return;
     }
-    const publicErrorMessage = privateKnowledge
-      ? projectOwnerAnalysisError(sessionId, error, outputLanguage)
-      : error.message;
     if (isSessionRunCancelled(session, runIdForAnalysis)) {
       logger.info('AgentDrivenAnalysis', 'Ignoring analysis error after cancellation', {
         sessionId,
         runId: runIdForAnalysis,
-        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : publicErrorMessage,
+        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : error?.message,
       });
       return;
     }
@@ -5024,10 +5022,14 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       logger.info('AgentDrivenAnalysis', 'Ignoring stale analysis error', {
         sessionId,
         runId: runIdForAnalysis,
-        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : publicErrorMessage,
+        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : error?.message,
       });
       return;
     }
+    const publicErrorMessage = projectAnalysisFailure(error, {
+      privateContext: sessionRunPrivateContext(session, runIdForAnalysis), guardSessionId: sessionId,
+      language: outputLanguage, requestId: runRequestId,
+    });
     session.status = 'failed';
     session.error = publicErrorMessage;
     markSessionRunStatus(session, 'failed', publicErrorMessage, runIdForAnalysis);
@@ -7050,11 +7052,10 @@ function copyStoredClientFindings(findings: AgentRuntimeAnalysisResult['findings
   return findings.map((finding, index) => ({...finding, id: finding.id ?? `finding_${index + 1}`}));
 }
 
-/** A stored error may predate projection (startup and lease failures keep the raw message). */
+/** The stored failure text, already projected when the run failed (`projectAnalysisFailure`). */
 function projectStoredHttpError(session: AnalysisSession): string | undefined {
-  return sessionRunHasPrivateContext(session)
-    ? projectOwnerAnalysisError(session.sessionId, session.error, sessionOutputLanguage(session))
-    : session.error;
+  return projectStoredAnalysisFailure(session.error, {privateContext: sessionRunPrivateContext(session),
+    guardSessionId: session.sessionId, language: sessionOutputLanguage(session)});
 }
 
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {

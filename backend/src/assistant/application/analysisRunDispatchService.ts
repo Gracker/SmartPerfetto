@@ -16,12 +16,13 @@ import {TraceProcessorAdmissionError} from '../../services/traceProcessorRamBudg
 import {prepareAnalysisRunTraceProcessorLeases, analysisRunTraceProcessorFailureSide, type AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions, normalizeSelectionContext} from '../../routes/agent/normalizeAnalyzeOptions';
 import {publicRequestErrorBody} from '../../utils/publicRequestError';
-import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError} from './agentAnalyzeSessionService';
+import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError, sessionRunPrivateContext} from './agentAnalyzeSessionService';
 import {getDefaultAndroidInternalsPackResolver} from '../../services/androidInternalsPack/androidInternalsPackResolver';
 import {knowledgeScopeFromRequestContext} from '../../services/scopedKnowledgeStore';
 import {authorizeAnalysisContext} from '../../services/analysisContextAuthorization';
 import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
-import {privateAnalysisFailureMessage, projectOwnerAnalysisError} from '../../services/security/privateAnalysisProjection';
+import {privateAnalysisFailureMessage} from '../../services/security/privateAnalysisProjection';
+import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import {withRunManifestLifecycle, type RunManifestLifecycle} from '../../services/selfEvolution/runManifestLifecycle';
 import type {RequestContext} from '../../middleware/auth';
@@ -41,6 +42,7 @@ import {AiDisabledError, assertAiFeatureEnabled, buildAiDisabledPayload} from '.
 import {readTraceMetadataForContext} from '../../services/traceMetadataStore';
 import {
   analysisHasPrivateContext,
+  NO_PRIVATE_CONTEXT,
   privateContextRestrictsAudience,
 } from '../../services/security/analysisPrivateContext';
 
@@ -695,15 +697,17 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           respond(200, {success: false, status: 'cancelled', sessionId, runId: runContext.runId});
           return;
         }
+        const leaseFailure = projectAnalysisFailure(leaseError, {privateContext: runContext.privateContext,
+          guardSessionId: sessionId, language: sessionOutputLanguage(sessionForRun), requestId: runContext.requestId});
         sessionForRun.status = 'failed';
-        sessionForRun.error = leaseError.message;
-        markSessionRunStatus(sessionForRun, 'failed', leaseError.message, runContext.runId);
+        sessionForRun.error = leaseFailure;
+        markSessionRunStatus(sessionForRun, 'failed', leaseFailure, runContext.runId);
         const admission = leaseError instanceof TraceProcessorAdmissionError;
         respond(admission ? 503 : 409, {success: false,
           code: admission ? 'TRACE_PROCESSOR_RAM_BUDGET_EXCEEDED' : leaseError.code ??
             (analysisRunTraceProcessorFailureSide(leaseError) === 'reference'
               ? 'REFERENCE_TRACE_PROCESSOR_LEASE_UNAVAILABLE' : 'TRACE_PROCESSOR_LEASE_UNAVAILABLE'),
-          error: leaseError.message, ...(admission ? {details: leaseError.decision} : {}),
+          error: leaseFailure, ...(admission ? {details: leaseError.decision} : {}),
         });
         return;
       }
@@ -731,9 +735,8 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         if (session.activeRun?.runId === runContext.runId &&
           ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(session.activeRun.status)) return;
         const privateKnowledge = privateContextRestrictsAudience(runContext.privateContext);
-        const publicErrorMessage = privateKnowledge
-          ? projectOwnerAnalysisError(sessionId, error, sessionOutputLanguage(session))
-          : error instanceof Error ? error.message : String(error);
+        const publicErrorMessage = projectAnalysisFailure(error, {privateContext: runContext.privateContext,
+          guardSessionId: sessionId, language: sessionOutputLanguage(session), requestId: runContext.requestId});
         session.logger.error('AgentRoutes', 'Analysis failed', privateKnowledge
           ? new Error(privateAnalysisFailureMessage(sessionOutputLanguage(session))) : error);
         session.status = 'failed';
@@ -871,23 +874,31 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         },
       });
     } catch (error: any) {
+      if (executionSession && executionRunId && !executionHandedOff &&
+        (isSessionRunCancelled(executionSession, executionRunId) || isStaleRun(executionSession, executionRunId))) {
+        respond(200, {success: false, status: 'cancelled', sessionId: executionSession.sessionId, runId: executionRunId});
+        return;
+      }
+      // Before a session exists no run has read anything private.
+      const startupFailure = projectAnalysisFailure(error, {
+        privateContext: executionSession ? sessionRunPrivateContext(executionSession, executionRunId) : NO_PRIVATE_CONTEXT,
+        guardSessionId: executionSession?.sessionId, language: executionSession
+          ? sessionOutputLanguage(executionSession) : configuredOutputLanguage(),
+        requestId: input.requestId,
+      });
       if (executionSession && executionRunId && !executionHandedOff) {
-        if (isSessionRunCancelled(executionSession, executionRunId) || isStaleRun(executionSession, executionRunId)) {
-          respond(200, {success: false, status: 'cancelled', sessionId: executionSession.sessionId, runId: executionRunId});
-          return;
-        }
         executionSession.status = 'failed';
-        executionSession.error = error?.message || 'Agent analysis failed';
-        markSessionRunStatus(executionSession, 'failed', executionSession.error, executionRunId);
+        executionSession.error = startupFailure;
+        markSessionRunStatus(executionSession, 'failed', startupFailure, executionRunId);
       }
       if (error instanceof AiDisabledError) {
         respond(403, buildAiDisabledPayload(error));
         return;
       }
-      console.error('[AgentRoutes] Analyze error:', error);
       respond(500, {
         success: false,
-        error: error.message || 'Agent analysis failed',
+        error: startupFailure,
+        requestId: input.requestId,
       });
     } finally {
       if (!executionHandedOff) await finishExecution();
