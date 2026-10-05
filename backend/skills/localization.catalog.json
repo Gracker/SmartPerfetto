@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1368,
-    "explicitColumnCount": 5141
+    "stepCount": 1369,
+    "explicitColumnCount": 5171
   },
   "skills": {
     "ams_module": {
@@ -34812,6 +34812,12 @@
                 "en": "Evidence Status"
               }
             },
+            "present_interval_source": {
+              "label": {
+                "zh-CN": "呈现间隔来源",
+                "en": "Present Interval Source"
+              }
+            },
             "rating": {
               "label": {
                 "zh-CN": "证据边界",
@@ -35211,14 +35217,14 @@
             },
             "total_dur": {
               "label": {
-                "zh-CN": "总耗时",
-                "en": "Total Dur"
+                "zh-CN": "FrameTimeline 时长合计（起点→呈现）",
+                "en": "FrameTimeline duration sum (start to present)"
               }
             },
             "avg_dur": {
               "label": {
-                "zh-CN": "平均耗时",
-                "en": "Avg Dur"
+                "zh-CN": "FrameTimeline 平均时长（起点→呈现，非呈现间隔）",
+                "en": "Mean FrameTimeline duration (start to present, not a present interval)"
               }
             },
             "responsibility": {
@@ -36085,13 +36091,19 @@
             "avg_frame_dur": {
               "label": {
                 "zh-CN": "平均呈现间隔",
-                "en": "Avg Frame Dur"
+                "en": "Mean present interval"
               }
             },
             "p95_frame_dur": {
               "label": {
                 "zh-CN": "P95 呈现间隔",
-                "en": "P95 Frame Dur"
+                "en": "P95 present interval"
+              }
+            },
+            "present_interval_source": {
+              "label": {
+                "zh-CN": "呈现间隔来源",
+                "en": "Present Interval Source"
               }
             },
             "rating": {
@@ -36238,14 +36250,14 @@
             },
             "avg_dur": {
               "label": {
-                "zh-CN": "平均帧耗时",
-                "en": "Avg Dur"
+                "zh-CN": "平均 FrameTimeline 时长（起点→呈现）",
+                "en": "Mean FrameTimeline duration (start to present)"
               }
             },
             "max_dur": {
               "label": {
-                "zh-CN": "最大帧耗时",
-                "en": "Max Dur"
+                "zh-CN": "最大 FrameTimeline 时长（起点→呈现）",
+                "en": "Max FrameTimeline duration (start to present)"
               }
             },
             "session_fps": {
@@ -36344,6 +36356,183 @@
             "en": "Session Thread Core Affinity"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        },
+        "smoothness_basis": {
+          "title": {
+            "zh-CN": "流畅度口径：呈现间隔 vs 帧时长 vs Buffer Stuffing",
+            "en": "Smoothness basis: present gaps vs frame duration vs Buffer Stuffing"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "session_id": {
+              "label": {
+                "zh-CN": "区间",
+                "en": "Session Id"
+              }
+            },
+            "layer_name": {
+              "label": {
+                "zh-CN": "图层",
+                "en": "Layer Name"
+              }
+            },
+            "verdict_basis": {
+              "label": {
+                "zh-CN": "流畅度判定依据",
+                "en": "Smoothness verdict basis"
+              }
+            },
+            "cadence_metric": {
+              "label": {
+                "zh-CN": "节奏口径",
+                "en": "Cadence metric"
+              }
+            },
+            "cadence_gap_p50_ns": {
+              "label": {
+                "zh-CN": "节奏间隔 P50",
+                "en": "Cadence gap P50"
+              }
+            },
+            "cadence_gap_p95_ns": {
+              "label": {
+                "zh-CN": "节奏间隔 P95",
+                "en": "Cadence gap P95"
+              }
+            },
+            "cadence_gap_max_ns": {
+              "label": {
+                "zh-CN": "节奏间隔最大",
+                "en": "Cadence gap max"
+              }
+            },
+            "cadence_gaps_over_1_5x_budget": {
+              "label": {
+                "zh-CN": "超过 1.5 倍预算的间隔",
+                "en": "Gaps over 1.5x budget"
+              }
+            },
+            "cadence_gap_count": {
+              "label": {
+                "zh-CN": "间隔数",
+                "en": "Gap count"
+              }
+            },
+            "budget_ns": {
+              "label": {
+                "zh-CN": "VSync 预算",
+                "en": "VSync budget"
+              }
+            },
+            "budget_source": {
+              "label": {
+                "zh-CN": "预算来源",
+                "en": "Budget source"
+              }
+            },
+            "budget_status": {
+              "label": {
+                "zh-CN": "预算可信度",
+                "en": "Budget status"
+              }
+            },
+            "frame_dur_metric": {
+              "label": {
+                "zh-CN": "帧时长口径",
+                "en": "Frame duration metric"
+              }
+            },
+            "frame_dur_p50_ns": {
+              "label": {
+                "zh-CN": "帧时长 P50（时延，非节奏）",
+                "en": "Frame duration P50 (latency, not cadence)"
+              }
+            },
+            "frame_dur_p95_ns": {
+              "label": {
+                "zh-CN": "帧时长 P95（时延，非节奏）",
+                "en": "Frame duration P95 (latency, not cadence)"
+              }
+            },
+            "frame_dur_max_ns": {
+              "label": {
+                "zh-CN": "帧时长最大（时延，非节奏）",
+                "en": "Frame duration max (latency, not cadence)"
+              }
+            },
+            "buffer_stuffing_pct": {
+              "label": {
+                "zh-CN": "原始 Buffer Stuffing 标签占比",
+                "en": "Raw Buffer Stuffing tag share"
+              }
+            },
+            "buffer_stuffing_frames": {
+              "label": {
+                "zh-CN": "原始 Buffer Stuffing 标签帧",
+                "en": "Raw Buffer Stuffing tagged frames"
+              }
+            },
+            "cadence_status": {
+              "label": {
+                "zh-CN": "呈现节奏核验",
+                "en": "Presentation cadence audit"
+              }
+            },
+            "steady_late_frames": {
+              "label": {
+                "zh-CN": "匀速晚拍帧（信息性）",
+                "en": "Steady late frames (informational)"
+              }
+            },
+            "dropped_frames": {
+              "label": {
+                "zh-CN": "丢弃帧",
+                "en": "Dropped frames"
+              }
+            },
+            "presentation_status": {
+              "label": {
+                "zh-CN": "呈现数据",
+                "en": "Presentation data"
+              }
+            },
+            "frames": {
+              "label": {
+                "zh-CN": "帧数",
+                "en": "Frames"
+              }
+            },
+            "frame_timeline_coverage_status": {
+              "label": {
+                "zh-CN": "FrameTimeline 覆盖状态",
+                "en": "Frame Timeline Coverage Status"
+              }
+            },
+            "start_ts": {
+              "label": {
+                "zh-CN": "开始时间",
+                "en": "Start Ts"
+              }
+            },
+            "end_ts": {
+              "label": {
+                "zh-CN": "结束时间",
+                "en": "End Ts"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            }
+          },
           "synthesizeLabels": {}
         },
         "system_context_window": {

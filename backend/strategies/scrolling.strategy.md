@@ -214,6 +214,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 - 优先保留用户选择的动画/交互时间范围；不要用首尾 FrameTimeline 或识别出的滑动 session 缩掉首帧前、末帧后以及无帧期间的主线程工作。
 - 返回结果以 artifact 引用形式返回（紧凑摘要），包含：
   - `main_thread_work_summary` / `main_thread_work_tasks` / `main_thread_work_cadence`：实际主线程连续执行、可定位任务及 doFrame 节奏；独立于 FrameTimeline。先看覆盖率、未标注执行和任务采样范围，再按具体任务取来源证据。
+  - `smoothness_basis`：每个滑动区间×图层并列呈现间隔节奏、帧时长和原始 Buffer Stuffing 占比，`cadence_status` 按 presentation_cadence_audit 的规则逐区间判定（只用实测 VSYNC-sf 预算）。流畅度按 `verdict_basis` 所指口径下结论；帧时长是时延，不是节奏。`presentation_status = unmeasured`（无 FrameTimeline，只有 doFrame 起点间隔）时不得给出呈现流畅度结论。
   - `jank_type_stats`：掉帧类型分布，**注意 real_jank_count（真实掉帧）vs false_positive（假阳性）**
   - `scroll_sessions`：滑动区间列表
   - `input_data_check` / `input_latency_summary`：可选的 android.input 证据源检测和输入分发/处理/ACK/跟手度概览。缺数据时只能说明 trace 未包含完整 input event 链路，不可据此否定输入延迟问题

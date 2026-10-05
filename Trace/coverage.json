@@ -10904,7 +10904,7 @@
           },
           {
             "id": "performance_summary",
-            "sha256": "b54dd62962a5ca46ad1c5928e34cce8b61a758a50fb4152f5270043d1d257ce9",
+            "sha256": "534c710531d908bb0a41fb4bc946faaa8b51e00140ba25d0099ad56e8ea5127e",
             "required_columns": [
               "total_frames",
               "perceived_jank_frames",
@@ -10917,12 +10917,13 @@
               "refresh_rate",
               "avg_frame_dur",
               "p95_frame_dur",
+              "present_interval_source",
               "rating"
             ]
           },
           {
             "id": "buffer_tx_performance_fallback",
-            "sha256": "e24a2f31bd95dbb85bd8c761c15bd8f58b03648b6e0b471fac40d7aa0f73fddf",
+            "sha256": "1d167502030d3526b1566496a4238f14526eb5c420e8147ad94e2d5859874c78",
             "required_columns": [
               "total_frames",
               "actual_fps",
@@ -10934,7 +10935,42 @@
               "frame_timeline_to_buffer_tx_ratio",
               "coverage_status",
               "evidence_status",
+              "present_interval_source",
               "rating"
+            ]
+          },
+          {
+            "id": "smoothness_basis",
+            "sha256": "dadcf0d5d571680ec9e13d5d0cbdde0b1d5ed6b068f982fa411a75b71cd8e98c",
+            "required_columns": [
+              "process_name",
+              "session_id",
+              "layer_name",
+              "verdict_basis",
+              "cadence_metric",
+              "cadence_gap_p50_ns",
+              "cadence_gap_p95_ns",
+              "cadence_gap_max_ns",
+              "cadence_gaps_over_1_5x_budget",
+              "cadence_gap_count",
+              "budget_ns",
+              "budget_source",
+              "budget_status",
+              "frame_dur_metric",
+              "frame_dur_p50_ns",
+              "frame_dur_p95_ns",
+              "frame_dur_max_ns",
+              "buffer_stuffing_pct",
+              "buffer_stuffing_frames",
+              "cadence_status",
+              "steady_late_frames",
+              "dropped_frames",
+              "presentation_status",
+              "frames",
+              "frame_timeline_coverage_status",
+              "start_ts",
+              "end_ts",
+              "upid"
             ]
           },
           {

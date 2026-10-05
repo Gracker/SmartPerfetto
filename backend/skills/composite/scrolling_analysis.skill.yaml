@@ -773,14 +773,21 @@ steps:
           type: number
         - name: avg_frame_dur
           label: "平均呈现间隔"
+          label_i18n:
+            en: "Mean present interval"
           type: duration
           format: duration_ms
           unit: ns
         - name: p95_frame_dur
           label: "P95 呈现间隔"
+          label_i18n:
+            en: "P95 present interval"
           type: duration
           format: duration_ms
           unit: ns
+        - name: present_interval_source
+          label: "呈现间隔来源"
+          type: string
         - name: rating
           label: "评级"
           type: string
@@ -932,35 +939,22 @@ steps:
           AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6
       ),
       -- App 报告的掉帧（旧逻辑，仅供参考）
+      -- Present-interval columns come from present gaps only. Without a valid
+      -- gap they are NULL: FrameTimeline dur is start-to-present latency, and
+      -- under these labels it once read as a slow cadence.
       app_stats AS (
         SELECT
           COUNT(DISTINCT frame_key) as total,
           COUNT(DISTINCT CASE WHEN jank_type != 'None' THEN frame_key END) as app_janky_frames,
-          COALESCE(
-            (SELECT CAST(ROUND(AVG(frame_interval_ns)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(AVG(CASE WHEN dur > 0 THEN dur ELSE NULL END)) AS INTEGER),
-            0
-          ) as avg_present_interval,
-          COALESCE(
-            (SELECT CAST(MAX(frame_interval_ns) AS INTEGER) FROM valid_frame_intervals),
-            MAX(CASE WHEN dur > 0 THEN dur ELSE NULL END),
-            0
-          ) as max_present_interval,
-          COALESCE(
-            (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 50)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(PERCENTILE(CASE WHEN dur > 0 THEN dur ELSE NULL END, 50)) AS INTEGER),
-            0
-          ) as median_present_interval,
-          COALESCE(
-            (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 95)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(PERCENTILE(CASE WHEN dur > 0 THEN dur ELSE NULL END, 95)) AS INTEGER),
-            0
-          ) as p95_present_interval,
-          COALESCE(
-            (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 99)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(PERCENTILE(CASE WHEN dur > 0 THEN dur ELSE NULL END, 99)) AS INTEGER),
-            0
-          ) as p99_present_interval
+          (SELECT CAST(ROUND(AVG(frame_interval_ns)) AS INTEGER) FROM valid_frame_intervals) as avg_present_interval,
+          (SELECT CAST(MAX(frame_interval_ns) AS INTEGER) FROM valid_frame_intervals) as max_present_interval,
+          (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 50)) AS INTEGER) FROM valid_frame_intervals) as median_present_interval,
+          (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 95)) AS INTEGER) FROM valid_frame_intervals) as p95_present_interval,
+          (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 99)) AS INTEGER) FROM valid_frame_intervals) as p99_present_interval,
+          CASE WHEN EXISTS (SELECT 1 FROM valid_frame_intervals)
+            THEN 'frametimeline_present_gaps'
+            ELSE 'unmeasured_no_valid_present_gap'
+          END as present_interval_source
         FROM app_frame_rows
       ),
       -- Per-layer 帧序列：双信号混合检测基础数据
@@ -1087,6 +1081,7 @@ steps:
         (SELECT median_present_interval FROM app_stats) as median_frame_dur,
         (SELECT p95_present_interval FROM app_stats) as p95_frame_dur,
         (SELECT p99_present_interval FROM app_stats) as p99_frame_dur,
+        (SELECT present_interval_source FROM app_stats) as present_interval_source,
         ROUND((SELECT duration_ns FROM time_range) / 1e9, 2) as duration_sec,
         MIN(
           ROUND(1e9 * (SELECT total FROM app_stats) / NULLIF((SELECT duration_ns FROM time_range), 0), 1),
@@ -1209,6 +1204,9 @@ steps:
         - name: evidence_status
           label: "可交付证据范围"
           type: string
+        - name: present_interval_source
+          label: "呈现间隔来源"
+          type: string
         - name: rating
           label: "证据边界"
           type: string
@@ -1277,6 +1275,7 @@ steps:
         NULL as median_frame_dur,
         NULL as p95_frame_dur,
         NULL as p99_frame_dur,
+        'unmeasured_buffer_tx_fallback' as present_interval_source,
         duration_sec,
         actual_fps,
         CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM vsync_config)) AS INTEGER) as refresh_rate,
@@ -1295,6 +1294,279 @@ steps:
       FROM fallback_summary
     save_as: perf_summary
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && buffer_tx_coverage.data[0]?.should_fallback === 1"
+
+  # ==========================================================================
+  # L1: 流畅度口径对照（每个滑动区间 × 图层）
+  # ==========================================================================
+  # Smoothness is the gap between consecutive presents against the VSync
+  # budget. FrameTimeline dur runs from the app frame's start to its present:
+  # it is latency, and a steady pipeline one buffer deep shows two-VSync dur
+  # with one-VSync presents. Raw Buffer Stuffing tags say the same thing about
+  # queue depth, not visible drops. This step puts the three side by side and
+  # names the basis a verdict may rest on.
+  # Sessions follow scroll_sessions exactly (its split period; frame-end gap
+  # over 6 VSync per process; at least 10 frames and 200ms). The budget is the
+  # shared vsync_config. cadence_status applies the rule of
+  # consumer_jank_detection.presentation_cadence_audit to each session layer,
+  # only against a measured VSYNC-sf budget; the audit itself groups by 500ms
+  # bursts and reads the unsnapped in-window median, so the two can differ at
+  # the edges. Without target FrameTimeline frames, every doFrame start gap of
+  # the main thread is aggregated and presentation is unmeasured: a start gap
+  # is start cadence only.
+  - id: smoothness_basis
+    type: atomic
+    name: "流畅度口径对照"
+    display:
+      level: summary
+      layer: overview
+      title: "流畅度口径：呈现间隔 vs 帧时长 vs Buffer Stuffing"
+      title_i18n:
+        en: "Smoothness basis: present gaps vs frame duration vs Buffer Stuffing"
+      columns:
+        - {name: process_name, label: "进程", type: string}
+        - {name: session_id, label: "区间", type: number}
+        - {name: layer_name, label: "图层", type: string}
+        - {name: verdict_basis, label: "流畅度判定依据", label_i18n: {en: "Smoothness verdict basis"}, type: string}
+        - {name: cadence_metric, label: "节奏口径", label_i18n: {en: "Cadence metric"}, type: string}
+        - {name: cadence_gap_p50_ns, label: "节奏间隔 P50", label_i18n: {en: "Cadence gap P50"}, type: duration, format: duration_ms, unit: ns}
+        - {name: cadence_gap_p95_ns, label: "节奏间隔 P95", label_i18n: {en: "Cadence gap P95"}, type: duration, format: duration_ms, unit: ns}
+        - {name: cadence_gap_max_ns, label: "节奏间隔最大", label_i18n: {en: "Cadence gap max"}, type: duration, format: duration_ms, unit: ns}
+        - {name: cadence_gaps_over_1_5x_budget, label: "超过 1.5 倍预算的间隔", label_i18n: {en: "Gaps over 1.5x budget"}, type: number}
+        - {name: cadence_gap_count, label: "间隔数", label_i18n: {en: "Gap count"}, type: number}
+        - {name: budget_ns, label: "VSync 预算", label_i18n: {en: "VSync budget"}, type: duration, format: duration_ms, unit: ns}
+        - {name: budget_source, label: "预算来源", label_i18n: {en: "Budget source"}, type: string}
+        - {name: budget_status, label: "预算可信度", label_i18n: {en: "Budget status"}, type: string}
+        - {name: frame_dur_metric, label: "帧时长口径", label_i18n: {en: "Frame duration metric"}, type: string}
+        - {name: frame_dur_p50_ns, label: "帧时长 P50（时延，非节奏）", label_i18n: {en: "Frame duration P50 (latency, not cadence)"}, type: duration, format: duration_ms, unit: ns}
+        - {name: frame_dur_p95_ns, label: "帧时长 P95（时延，非节奏）", label_i18n: {en: "Frame duration P95 (latency, not cadence)"}, type: duration, format: duration_ms, unit: ns}
+        - {name: frame_dur_max_ns, label: "帧时长最大（时延，非节奏）", label_i18n: {en: "Frame duration max (latency, not cadence)"}, type: duration, format: duration_ms, unit: ns}
+        - {name: buffer_stuffing_pct, label: "原始 Buffer Stuffing 标签占比", label_i18n: {en: "Raw Buffer Stuffing tag share"}, type: percentage, format: percentage}
+        - {name: buffer_stuffing_frames, label: "原始 Buffer Stuffing 标签帧", label_i18n: {en: "Raw Buffer Stuffing tagged frames"}, type: number}
+        - {name: cadence_status, label: "呈现节奏核验", label_i18n: {en: "Presentation cadence audit"}, type: string}
+        - {name: steady_late_frames, label: "匀速晚拍帧（信息性）", label_i18n: {en: "Steady late frames (informational)"}, type: number}
+        - {name: dropped_frames, label: "丢弃帧", label_i18n: {en: "Dropped frames"}, type: number}
+        - {name: presentation_status, label: "呈现数据", label_i18n: {en: "Presentation data"}, type: string}
+        - {name: frames, label: "帧数", type: number}
+        - {name: frame_timeline_coverage_status, label: "FrameTimeline 覆盖状态", type: string, hidden: true}
+        - {name: start_ts, label: "开始时间", type: timestamp, unit: ns, hidden: true}
+        - {name: end_ts, label: "结束时间", type: timestamp, unit: ns, hidden: true}
+        - {name: upid, label: "UPID", type: number, hidden: true}
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+      - fragments/vsync_config.sql
+      - fragments/main_thread_work.sql
+      - fragments/main_thread_work_cadence.sql
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql: |
+      WITH
+      ft_frames AS MATERIALIZED (
+        SELECT a.id, a.upid, p.name AS process_name, a.layer_name, a.ts, a.dur,
+          a.surface_frame_token, a.jank_type, a.present_type
+        FROM actual_frame_timeline_slice a
+        JOIN effective_target_processes p ON a.upid = p.upid
+        WHERE (
+            ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}'
+            OR p.name GLOB '${package}:*'
+          )
+          AND p.name NOT LIKE '/system/%'
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR a.ts < ${end_ts})
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+      ),
+      -- The split period of scroll_sessions (VSYNC-sf median in the window,
+      -- else 60Hz), so session ids and bounds match that list.
+      session_split_intervals AS (
+        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      ),
+      session_split_config AS (
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 50)
+             FROM session_split_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
+      ),
+      session_markers AS (
+        SELECT upid, ts, dur,
+          CASE WHEN ts - LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts)
+              <= (SELECT vsync_period_ns * 6 FROM session_split_config)
+            THEN 0 ELSE 1 END AS new_session
+        FROM ft_frames WHERE dur > 0
+      ),
+      session_bounds AS (
+        SELECT upid, session_id, MIN(ts) AS start_ts, MAX(ts + dur) AS end_ts
+        FROM (SELECT *, SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) AS session_id
+          FROM session_markers)
+        GROUP BY upid, session_id
+        HAVING COUNT(*) >= 10 AND MAX(ts + dur) - MIN(ts) > 200000000
+      ),
+      expected_frames AS (
+        SELECT upid, layer_name, surface_frame_token,
+          CASE WHEN COUNT(*) = 1 AND MIN(dur) > 0 THEN MAX(ts + dur) END AS expected_present_ts
+        FROM expected_frame_timeline_slice
+        WHERE upid IN (SELECT upid FROM ft_frames)
+        GROUP BY upid, layer_name, surface_frame_token
+      ),
+      session_rows AS (
+        SELECT f.*, b.session_id,
+          CASE WHEN f.dur > 0 AND f.present_type != 'Dropped Frame' THEN f.ts + f.dur END AS present_ts,
+          CASE WHEN f.dur > 0 AND f.present_type != 'Dropped Frame'
+            THEN f.ts + f.dur - e.expected_present_ts END AS lateness_ns
+        FROM ft_frames f
+        JOIN session_bounds b ON b.upid = f.upid AND f.ts >= b.start_ts AND f.ts < b.end_ts
+          AND f.layer_name IS NOT NULL
+        LEFT JOIN expected_frames e ON e.upid = f.upid AND e.layer_name = f.layer_name
+          AND e.surface_frame_token = f.surface_frame_token
+      ),
+      presented_neighbors AS (
+        SELECT *, present_ts - LAG(present_ts) OVER w AS gap_ns,
+          LEAD(present_ts) OVER w - present_ts AS next_gap_ns
+        FROM session_rows WHERE present_ts IS NOT NULL
+        WINDOW w AS (PARTITION BY upid, session_id, layer_name ORDER BY present_ts, id)
+      ),
+      gap_stats AS (
+        SELECT upid, session_id, layer_name, COUNT(gap_ns) AS gap_count,
+          CAST(PERCENTILE(gap_ns, 50) AS INTEGER) AS gap_p50_ns,
+          CAST(PERCENTILE(gap_ns, 95) AS INTEGER) AS gap_p95_ns,
+          MAX(gap_ns) AS gap_max_ns,
+          SUM(CASE WHEN gap_ns > v.vsync_period_ns * 1.5 THEN 1 ELSE 0 END) AS gaps_over_budget,
+          SUM(CASE WHEN gap_ns BETWEEN v.vsync_period_ns * 0.75 AND v.vsync_period_ns * 1.25
+            THEN 1 ELSE 0 END) AS near_budget_gaps,
+          SUM(CASE WHEN present_type = 'Late Present' AND lateness_ns >= v.vsync_period_ns * 0.5
+            AND gap_ns BETWEEN v.vsync_period_ns * 0.75 AND v.vsync_period_ns * 1.25
+            AND next_gap_ns BETWEEN v.vsync_period_ns * 0.75 AND v.vsync_period_ns * 1.25
+            THEN 1 ELSE 0 END) AS steady_late_candidates
+        FROM presented_neighbors CROSS JOIN vsync_config v
+        GROUP BY upid, session_id, layer_name
+      ),
+      layer_stats AS (
+        SELECT upid, process_name, session_id, layer_name,
+          MIN(ts) AS start_ts, MAX(ts + MAX(dur, 0)) AS end_ts, COUNT(*) AS frames,
+          CAST(PERCENTILE(CASE WHEN dur > 0 THEN dur END, 50) AS INTEGER) AS dur_p50_ns,
+          CAST(PERCENTILE(CASE WHEN dur > 0 THEN dur END, 95) AS INTEGER) AS dur_p95_ns,
+          MAX(CASE WHEN dur > 0 THEN dur END) AS dur_max_ns,
+          SUM(CASE WHEN jank_type GLOB '*Buffer Stuffing*' THEN 1 ELSE 0 END) AS buffer_stuffing_frames,
+          SUM(CASE WHEN present_type = 'Dropped Frame' THEN 1 ELSE 0 END) AS dropped_frames,
+          SUM(CASE WHEN dur IS NULL OR dur <= 0 THEN 1 ELSE 0 END) AS incomplete_frames
+        FROM session_rows
+        GROUP BY upid, session_id, layer_name
+      ),
+      -- One row per observed doFrame start, read only when the target has no
+      -- FrameTimeline frame in the window; a duration needs one complete marker.
+      doframe_starts AS (
+        SELECT f.utid, f.raw_ts - f.previous_start_ts AS gap_ns,
+          CASE WHEN f.marker_count = 1 THEN f.execution_end_ts - f.raw_ts END AS dur_ns
+        FROM mtw_frame_sequence f
+        WHERE NOT EXISTS (SELECT 1 FROM ft_frames)
+      ),
+      doframe_stats AS (
+        SELECT t.upid, t.process_name, t.window_start_ts, t.window_end_ts,
+          COUNT(*) AS frames, COUNT(d.gap_ns) AS gap_count,
+          CAST(PERCENTILE(d.gap_ns, 50) AS INTEGER) AS gap_p50_ns,
+          CAST(PERCENTILE(d.gap_ns, 95) AS INTEGER) AS gap_p95_ns,
+          MAX(d.gap_ns) AS gap_max_ns,
+          SUM(CASE WHEN d.gap_ns > v.vsync_period_ns * 1.5 THEN 1 ELSE 0 END) AS gaps_over_budget,
+          CAST(PERCENTILE(d.dur_ns, 50) AS INTEGER) AS dur_p50_ns,
+          CAST(PERCENTILE(d.dur_ns, 95) AS INTEGER) AS dur_p95_ns,
+          MAX(d.dur_ns) AS dur_max_ns
+        FROM doframe_starts d
+        JOIN mtw_threads t USING (utid)
+        CROSS JOIN vsync_config v
+        WHERE ${__process_scope.upid} IS NOT NULL OR '${package}' != ''
+          OR t.process_name NOT LIKE 'com.android.systemui%'
+        GROUP BY t.upid, t.utid
+        HAVING COUNT(d.gap_ns) > 0
+      ),
+      basis_rows AS (
+        SELECT l.upid, l.process_name, l.session_id, l.layer_name, l.start_ts, l.end_ts, l.frames,
+          'frametimeline_present_gap' AS cadence_metric,
+          g.gap_count, g.gap_p50_ns, g.gap_p95_ns, g.gap_max_ns, g.gaps_over_budget,
+          'frametimeline_actual_dur_start_to_present' AS frame_dur_metric,
+          l.dur_p50_ns, l.dur_p95_ns, l.dur_max_ns,
+          l.buffer_stuffing_frames,
+          ROUND(100.0 * l.buffer_stuffing_frames / l.frames, 2) AS buffer_stuffing_pct,
+          CASE
+            WHEN v.vsync_source NOT IN ('scoped_vsync_counter', 'trace_wide_vsync_counter')
+              OR COALESCE(g.gap_count, 0) < 5
+              THEN 'insufficient_cadence_evidence'
+            WHEN g.near_budget_gaps = g.gap_count AND l.dropped_frames = 0 AND l.incomplete_frames = 0
+              THEN CASE WHEN g.steady_late_candidates > 0 THEN 'steady_late' ELSE 'steady_cadence' END
+            WHEN g.steady_late_candidates > 0 THEN 'steady_late_with_cadence_excursions'
+            ELSE 'variable_cadence'
+          END AS cadence_status,
+          CASE WHEN COALESCE(g.gap_count, 0) >= 5 THEN g.steady_late_candidates ELSE 0 END AS steady_late_frames,
+          l.dropped_frames,
+          'measured' AS presentation_status
+        FROM layer_stats l
+        LEFT JOIN gap_stats g USING (upid, session_id, layer_name)
+        CROSS JOIN vsync_config v
+        UNION ALL
+        SELECT upid, process_name, NULL, NULL, window_start_ts, window_end_ts, frames,
+          'doframe_start_gap',
+          gap_count, gap_p50_ns, gap_p95_ns, gap_max_ns, gaps_over_budget,
+          'doframe_main_thread_execution',
+          dur_p50_ns, dur_p95_ns, dur_max_ns,
+          NULL, NULL, 'presentation_unmeasured', NULL, NULL, 'unmeasured'
+        FROM doframe_stats
+      ),
+      frame_timeline_coverage AS (
+        SELECT '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' AS status
+      ),
+      -- A cadence well faster than the budget contradicts the budget (a sparse
+      -- VSync counter), so over-budget counts against it say nothing.
+      budgeted_rows AS (
+        SELECT r.*, v.vsync_period_ns AS budget_ns, v.vsync_source AS budget_source, CASE
+            WHEN v.vsync_source = 'default_60hz_no_trace_timing' THEN 'assumed_default_no_trace_timing'
+            WHEN v.vsync_source NOT IN ('scoped_vsync_counter', 'trace_wide_vsync_counter')
+              THEN 'derived_from_expected_frames'
+            WHEN r.gap_p50_ns * 1.5 < v.vsync_period_ns THEN 'contradicted_by_observed_cadence'
+            ELSE 'measured'
+          END AS budget_status
+        FROM basis_rows r CROSS JOIN vsync_config v
+      )
+      SELECT r.upid, r.process_name, r.session_id, r.layer_name,
+        printf('%d', r.start_ts) AS start_ts, printf('%d', r.end_ts) AS end_ts, r.frames,
+        r.budget_ns, r.budget_source, r.cadence_metric,
+        r.gap_count AS cadence_gap_count, r.gap_p50_ns AS cadence_gap_p50_ns,
+        r.gap_p95_ns AS cadence_gap_p95_ns, r.gap_max_ns AS cadence_gap_max_ns,
+        r.gaps_over_budget AS cadence_gaps_over_1_5x_budget,
+        r.frame_dur_metric,
+        r.dur_p50_ns AS frame_dur_p50_ns, r.dur_p95_ns AS frame_dur_p95_ns, r.dur_max_ns AS frame_dur_max_ns,
+        r.buffer_stuffing_frames, r.buffer_stuffing_pct,
+        r.cadence_status, r.steady_late_frames, r.dropped_frames, r.presentation_status,
+        r.budget_status, c.status AS frame_timeline_coverage_status,
+        CASE
+          WHEN r.presentation_status = 'unmeasured' THEN 'doframe_start_gaps_presentation_unmeasured'
+          WHEN COALESCE(r.gap_count, 0) < 5 THEN 'insufficient_present_gaps'
+          WHEN r.budget_status != 'measured' THEN 'present_gaps_budget_unverified'
+          WHEN c.status IN ('partial_frame_timeline_coverage', 'no_frame_timeline_coverage')
+            THEN 'present_gaps_partial_frame_timeline'
+          ELSE 'present_gaps_vs_budget'
+        END AS verdict_basis
+      FROM budgeted_rows r CROSS JOIN frame_timeline_coverage c
+      ORDER BY r.upid, r.start_ts, r.layer_name
+    save_as: smoothness_basis
+    condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
   # ==========================================================================
   # L1: Input Pipeline 数据源与延迟概览
@@ -1730,13 +2002,19 @@ steps:
         - name: false_positive
           label: "假阳性"
           type: number
+        # FrameTimeline dur runs from the app frame's start to its present:
+        # latency, neither a cost nor a present interval.
         - name: total_dur
-          label: "总耗时"
+          label: "FrameTimeline 时长合计（起点→呈现）"
+          label_i18n:
+            en: "FrameTimeline duration sum (start to present)"
           type: duration
           format: duration_ms
           unit: ns
         - name: avg_dur
-          label: "平均耗时"
+          label: "FrameTimeline 平均时长（起点→呈现，非呈现间隔）"
+          label_i18n:
+            en: "Mean FrameTimeline duration (start to present, not a present interval)"
           type: duration
           format: duration_ms
           unit: ns
@@ -1957,12 +2235,16 @@ steps:
           format: duration_ms
           unit: ns
         - name: avg_dur
-          label: "平均帧耗时"
+          label: "平均 FrameTimeline 时长（起点→呈现）"
+          label_i18n:
+            en: "Mean FrameTimeline duration (start to present)"
           type: duration
           format: duration_ms
           unit: ns
         - name: max_dur
-          label: "最大帧耗时"
+          label: "最大 FrameTimeline 时长（起点→呈现）"
+          label_i18n:
+            en: "Max FrameTimeline duration (start to present)"
           type: duration
           format: duration_ms
           unit: ns

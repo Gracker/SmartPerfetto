@@ -16316,7 +16316,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "d6a305ef49316a14b75752df739349112a9fd2424d1a2db9ecf3e8253e63be46",
+      "source_sha256": "611a06dd906d52c4f70b68262fb7f661fe1ea8b92a26e8ebb2eac7714969c84a",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -16343,6 +16343,7 @@
         "buffer_tx_coverage_probe",
         "performance_summary",
         "buffer_tx_performance_fallback",
+        "smoothness_basis",
         "input_data_fallback_view",
         "input_data_check",
         "input_latency_summary",
@@ -16640,7 +16641,7 @@
           "id": "performance_summary",
           "at": "steps[13].sql",
           "top_level_index": 13,
-          "sha256": "b54dd62962a5ca46ad1c5928e34cce8b61a758a50fb4152f5270043d1d257ce9",
+          "sha256": "534c710531d908bb0a41fb4bc946faaa8b51e00140ba25d0099ad56e8ea5127e",
           "required_columns": [
             "total_frames",
             "perceived_jank_frames",
@@ -16653,6 +16654,7 @@
             "refresh_rate",
             "avg_frame_dur",
             "p95_frame_dur",
+            "present_interval_source",
             "rating"
           ],
           "has_condition": true,
@@ -16670,7 +16672,7 @@
           "id": "buffer_tx_performance_fallback",
           "at": "steps[14].sql",
           "top_level_index": 14,
-          "sha256": "e24a2f31bd95dbb85bd8c761c15bd8f58b03648b6e0b471fac40d7aa0f73fddf",
+          "sha256": "1d167502030d3526b1566496a4238f14526eb5c420e8147ad94e2d5859874c78",
           "required_columns": [
             "total_frames",
             "actual_fps",
@@ -16682,6 +16684,7 @@
             "frame_timeline_to_buffer_tx_ratio",
             "coverage_status",
             "evidence_status",
+            "present_interval_source",
             "rating"
           ],
           "has_condition": true,
@@ -16695,9 +16698,56 @@
           "forceable": true
         },
         {
-          "id": "input_data_fallback_view",
+          "id": "smoothness_basis",
           "at": "steps[15].sql",
           "top_level_index": 15,
+          "sha256": "dadcf0d5d571680ec9e13d5d0cbdde0b1d5ed6b068f982fa411a75b71cd8e98c",
+          "required_columns": [
+            "process_name",
+            "session_id",
+            "layer_name",
+            "verdict_basis",
+            "cadence_metric",
+            "cadence_gap_p50_ns",
+            "cadence_gap_p95_ns",
+            "cadence_gap_max_ns",
+            "cadence_gaps_over_1_5x_budget",
+            "cadence_gap_count",
+            "budget_ns",
+            "budget_source",
+            "budget_status",
+            "frame_dur_metric",
+            "frame_dur_p50_ns",
+            "frame_dur_p95_ns",
+            "frame_dur_max_ns",
+            "buffer_stuffing_pct",
+            "buffer_stuffing_frames",
+            "cadence_status",
+            "steady_late_frames",
+            "dropped_frames",
+            "presentation_status",
+            "frames",
+            "frame_timeline_coverage_status",
+            "start_ts",
+            "end_ts",
+            "upid"
+          ],
+          "has_condition": true,
+          "read_only": true,
+          "placeholders": [
+            "${__process_scope.upid}",
+            "${package}",
+            "${start_ts}",
+            "${end_ts}",
+            "${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}"
+          ],
+          "process_scope_valid": true,
+          "forceable": true
+        },
+        {
+          "id": "input_data_fallback_view",
+          "at": "steps[16].sql",
+          "top_level_index": 16,
           "sha256": "797ec03db4a540ddd186e48e500151a807e2ac0664d51bfadbc4942b46a138b5",
           "required_columns": [
             "dispatch_latency_dur",
@@ -16734,8 +16784,8 @@
         },
         {
           "id": "input_data_check",
-          "at": "steps[16].sql",
-          "top_level_index": 16,
+          "at": "steps[17].sql",
+          "top_level_index": 17,
           "sha256": "d934f8314af4524f26ba5b11a09b578b8cbaac85111fadf744e35835feb5f20a",
           "required_columns": [
             "input_data_status",
@@ -16755,8 +16805,8 @@
         },
         {
           "id": "input_latency_summary",
-          "at": "steps[17].sql",
-          "top_level_index": 17,
+          "at": "steps[18].sql",
+          "top_level_index": 18,
           "sha256": "a49f419a9e11ab1e1aecc1dded9ea39881f18e1c061a23d54ba9546d4c720234",
           "required_columns": [
             "target_process",
@@ -16786,8 +16836,8 @@
         },
         {
           "id": "expert_analysis_window",
-          "at": "steps[18].sql",
-          "top_level_index": 18,
+          "at": "steps[19].sql",
+          "top_level_index": 19,
           "sha256": "ef4a9b5f1aa2fc613db0fa685ca3aaa24ca7dd72fbfc7116a1b10f947fe92c4a",
           "required_columns": [
             "window_start_ts",
@@ -16808,8 +16858,8 @@
         },
         {
           "id": "jank_type_stats",
-          "at": "steps[20].sql",
-          "top_level_index": 20,
+          "at": "steps[21].sql",
+          "top_level_index": 21,
           "sha256": "69839b1893f9ce126571f4315dac7628c6d0c9a8920ad330124ba98046948f30",
           "required_columns": [
             "jank_type",
@@ -16839,8 +16889,8 @@
         },
         {
           "id": "scroll_sessions",
-          "at": "steps[21].sql",
-          "top_level_index": 21,
+          "at": "steps[22].sql",
+          "top_level_index": 22,
           "sha256": "28180efed37ab407fceb9a606b5538e24061885aecb95ccfe9ec720de391a7f4",
           "required_columns": [
             "session_id",
@@ -16867,8 +16917,8 @@
         },
         {
           "id": "session_stats_batch",
-          "at": "steps[22].sql",
-          "top_level_index": 22,
+          "at": "steps[23].sql",
+          "top_level_index": 23,
           "sha256": "2ae328e81205028c807027454acead4d8314d26602dc47d55369fdfbdbdb5253",
           "required_columns": [
             "upid",
@@ -16892,8 +16942,8 @@
         },
         {
           "id": "session_jank",
-          "at": "steps[23].sql",
-          "top_level_index": 23,
+          "at": "steps[24].sql",
+          "top_level_index": 24,
           "sha256": "c9538360f442d987631f482bcde5c3b84356d69f3a32baf0f7588524eb07e09c",
           "required_columns": [
             "session_id",
@@ -16918,8 +16968,8 @@
         },
         {
           "id": "get_app_jank_frames",
-          "at": "steps[24].sql",
-          "top_level_index": 24,
+          "at": "steps[25].sql",
+          "top_level_index": 25,
           "sha256": "845c88b99118261cbb0defbc26de912fdb61f8ca32cbe4182d0614f1486549e9",
           "required_columns": [
             "frame_id",
@@ -16966,8 +17016,8 @@
         },
         {
           "id": "batch_frame_root_cause",
-          "at": "steps[25].sql",
-          "top_level_index": 25,
+          "at": "steps[26].sql",
+          "top_level_index": 26,
           "sha256": "c806bacbc68f741ed7d7ccdb210f207d22b5280110f9fdd19fdde9c7bfb1141b",
           "required_columns": [
             "system_evidence_json",
@@ -17080,8 +17130,8 @@
         },
         {
           "id": "global_context_flags",
-          "at": "steps[26].sql",
-          "top_level_index": 26,
+          "at": "steps[27].sql",
+          "top_level_index": 27,
           "sha256": "cc40526c0a4b844bcfa45f30985a845d8f1d7a09b9aaeef99a8ac726ab1ed9f8",
           "required_columns": [
             "video_during_scroll",
@@ -17117,8 +17167,8 @@
         },
         {
           "id": "session_quadrant_summary",
-          "at": "steps[27].sql",
-          "top_level_index": 27,
+          "at": "steps[28].sql",
+          "top_level_index": 28,
           "sha256": "470a3cec7a602bf939203e4969eaf0bef45822e710c55a7cce835211a9b2298f",
           "required_columns": [
             "window_id",
@@ -17151,8 +17201,8 @@
         },
         {
           "id": "session_cpu_freq",
-          "at": "steps[28].sql",
-          "top_level_index": 28,
+          "at": "steps[29].sql",
+          "top_level_index": 29,
           "sha256": "071f76279ff2a073c0e98875ed25b0fcdb3b82450f4bfc34a1ada1a6e44e21da",
           "required_columns": [
             "window_id",
@@ -17175,8 +17225,8 @@
         },
         {
           "id": "session_thread_core_affinity",
-          "at": "steps[29].sql",
-          "top_level_index": 29,
+          "at": "steps[30].sql",
+          "top_level_index": 30,
           "sha256": "01be20c8375b21163f2527de7de36d9e11621e690157d96ef6b7d574ac3b9ede",
           "required_columns": [
             "window_id",
@@ -17201,8 +17251,8 @@
         },
         {
           "id": "root_cause_classification",
-          "at": "steps[30].sql",
-          "top_level_index": 30,
+          "at": "steps[31].sql",
+          "top_level_index": 31,
           "sha256": "aad23e61096351a712e2f47f436a08789a2f324f89357c7c5d1919168c795b5a",
           "required_columns": [
             "problem_category",
@@ -17225,8 +17275,8 @@
         },
         {
           "id": "fallback_no_frame_timeline",
-          "at": "steps[31].sql",
-          "top_level_index": 31,
+          "at": "steps[32].sql",
+          "top_level_index": 32,
           "sha256": "2b2d963521058e260c0742490de5d54a11b49204824a61e2893622941895a979",
           "required_columns": [
             "status",

@@ -2026,9 +2026,12 @@ describe('scrolling_analysis skill schema', () => {
       'frame_timeline_to_buffer_tx_ratio',
       'coverage_status',
       'evidence_status',
+      'present_interval_source',
     ]) {
       getColumn(fallback, column);
     }
+    // Both perf_summary producers describe where their present intervals came from.
+    getColumn(getStep('performance_summary'), 'present_interval_source');
   });
 
   it('calls coverage full only after a sufficient FrameTimeline/BufferTX comparison', () => {
@@ -3588,6 +3591,179 @@ describe('FrameTimeline gap observation boundary', () => {
       expect(query('gap_list')).toEqual([]);
       db.exec("INSERT INTO actual_frame_timeline_slice VALUES(140000000,20000000,1,'same',13,13)");
       expect(query('gap_list')).toEqual([expect.objectContaining({gap_ms:40,before_frame_id:'10',after_frame_id:'13'})]);
+    } finally { db.close(); }
+  });
+});
+
+describe('smoothness_basis puts present cadence beside frame duration', () => {
+  const scrolling = yaml.load(fs.readFileSync(path.join(process.cwd(),
+    'skills/composite/scrolling_analysis.skill.yaml'), 'utf8')) as any;
+  const consumer = yaml.load(fs.readFileSync(path.join(process.cwd(),
+    'skills/atomic/consumer_jank_detection.skill.yaml'), 'utf8')) as any;
+  const stepOf = (definition: any, id: string) => definition.steps.find((item: any) => item.id === id);
+  const VSYNC = 8333333;
+  const LAYER = 'TX - com.example.app/Main#1';
+
+  const fixture = () => {
+    const db = new Database(':memory:');
+    db.aggregate('PERCENTILE', {
+      start: () => ({values: [] as number[], p: 50}),
+      step: (state: {values: number[]; p: number}, ...args: unknown[]) => {
+        const [value, p] = args as [number | null, number];
+        if (value !== null) state.values.push(value);
+        state.p = p;
+        return state;
+      },
+      result: (state: {values: number[]; p: number}) => {
+        const sorted = state.values.sort((a, b) => a - b);
+        return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * state.p / 100))] : null;
+      },
+    });
+    db.function('android_is_missed_frame_type', (value: unknown) => /App Deadline Missed/.test(String(value)) ? 1 : 0);
+    db.exec(`
+      CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
+      INSERT INTO trace_bounds VALUES (0, 2000000000);
+      CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT, start_ts INTEGER, end_ts INTEGER);
+      CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT, start_ts INTEGER, end_ts INTEGER);
+      CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+      CREATE TABLE slice(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, dur INTEGER,
+        name TEXT, parent_id INTEGER, arg_set_id INTEGER);
+      CREATE TABLE thread_state(utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, io_wait INTEGER,
+        id INTEGER PRIMARY KEY, blocked_function TEXT);
+      CREATE TABLE counter(ts INTEGER, track_id INTEGER);
+      CREATE TABLE counter_track(id INTEGER, name TEXT);
+      CREATE TABLE actual_frame_timeline_slice(id INTEGER, upid INTEGER, display_frame_token INTEGER,
+        surface_frame_token INTEGER, layer_name TEXT, ts INTEGER, dur INTEGER, jank_type TEXT, present_type TEXT);
+      CREATE TABLE expected_frame_timeline_slice(upid INTEGER, layer_name TEXT, surface_frame_token INTEGER,
+        ts INTEGER, dur INTEGER);
+      INSERT INTO process VALUES (1, 100, 'com.example.app', NULL, NULL);
+      INSERT INTO thread VALUES (1, 1, 100, 'main', NULL, NULL);
+      INSERT INTO thread_track VALUES (10, 1);
+      INSERT INTO counter_track VALUES (1, 'VSYNC-sf');
+    `);
+    const tick = db.prepare('INSERT INTO counter VALUES (?, 1)');
+    for (let i = 0; i < 240; i++) tick.run(i * VSYNC);
+    // A steady pipeline one buffer deep: every frame presents one VSync
+    // apart, two VSyncs after its expected present, with a three-VSync dur.
+    const actual = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)');
+    const expected = db.prepare('INSERT INTO expected_frame_timeline_slice VALUES (1, ?, ?, ?, ?)');
+    for (let i = 0; i < 30; i++) {
+      actual.run(i + 1, i + 1, i + 101, LAYER, i * VSYNC, 3 * VSYNC, 'Buffer Stuffing', 'Late Present');
+      expected.run(LAYER, i + 101, i * VSYNC, VSYNC);
+    }
+    return db;
+  };
+  const bind = (sql: string, fragments?: string[]) => renderStepSql(sql, fragments, {
+    '__process_scope.upid': 'NULL', package: 'com.example.app', layer_name: '',
+    start_ts: 'NULL', end_ts: 'NULL', 'buffer_tx_coverage.data[0].coverage_status': 'no_buffer_tx_candidate',
+  });
+  const basis = (db: Database.Database) => {
+    const step = stepOf(scrolling, 'smoothness_basis');
+    return db.prepare(bind(String(step.sql), step.sql_fragments)).all() as Record<string, any>[];
+  };
+  const audit = (db: Database.Database) => db.prepare(bind(String(
+    stepOf(consumer, 'presentation_cadence_audit').sql))).all() as Record<string, any>[];
+
+  it('reads a steady late pipeline as one-VSync presents beside a three-VSync dur', () => {
+    const db = fixture();
+    try {
+      const [row] = basis(db);
+      expect(row).toMatchObject({
+        session_id: 1, layer_name: LAYER, frames: 30, budget_ns: VSYNC, budget_source: 'trace_wide_vsync_counter',
+        cadence_metric: 'frametimeline_present_gap', cadence_gap_count: 29, cadence_gap_p50_ns: VSYNC,
+        cadence_gaps_over_1_5x_budget: 0, frame_dur_metric: 'frametimeline_actual_dur_start_to_present',
+        frame_dur_p50_ns: 3 * VSYNC, buffer_stuffing_frames: 30, buffer_stuffing_pct: 100,
+        cadence_status: 'steady_late', presentation_status: 'measured', budget_status: 'measured',
+        verdict_basis: 'present_gaps_vs_budget',
+      });
+      expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('applies the presentation cadence audit rule to a session with an excursion', () => {
+    const db = fixture();
+    try {
+      db.exec(`UPDATE actual_frame_timeline_slice SET dur = dur + ${2 * VSYNC} WHERE id = 15`);
+      const [row] = basis(db);
+      expect(row.cadence_gaps_over_1_5x_budget).toBe(1);
+      expect(row.cadence_status).toBe('steady_late_with_cadence_excursions');
+      expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('aggregates every doFrame start gap and leaves presentation unmeasured without FrameTimeline', () => {
+    const db = fixture();
+    try {
+      db.exec('DELETE FROM actual_frame_timeline_slice');
+      const insert = db.prepare("INSERT INTO slice VALUES (?, 10, ?, 5000000, 'Choreographer#doFrame', NULL, NULL)");
+      // 40 starts one VSync apart except one skipped VSync: more gaps than the top-K list returns.
+      for (let i = 0; i < 40; i++) insert.run(i + 1, (i < 20 ? i : i + 1) * VSYNC);
+      const rows = basis(db);
+      expect(rows).toEqual([expect.objectContaining({
+        process_name: 'com.example.app', session_id: null, frames: 40,
+        cadence_metric: 'doframe_start_gap', cadence_gap_count: 39, cadence_gaps_over_1_5x_budget: 1,
+        frame_dur_metric: 'doframe_main_thread_execution', frame_dur_p50_ns: 5000000,
+        buffer_stuffing_pct: null, cadence_status: 'presentation_unmeasured',
+        presentation_status: 'unmeasured', verdict_basis: 'doframe_start_gaps_presentation_unmeasured',
+      })]);
+    } finally { db.close(); }
+  });
+
+  it('leaves cadence unjudged without a measured VSYNC-sf budget, as the audit does', () => {
+    const db = fixture();
+    try {
+      db.exec('DELETE FROM counter');
+      const [row] = basis(db);
+      expect(row).toMatchObject({budget_source: 'trace_wide_expected_frame', budget_status: 'derived_from_expected_frames',
+        cadence_status: 'insufficient_cadence_evidence', verdict_basis: 'present_gaps_budget_unverified'});
+      expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('splits sessions with scroll_sessions\' own rule', () => {
+    const db = fixture();
+    try {
+      // A pause past six VSyncs, then a second run: two sessions in both steps.
+      const actual = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)');
+      for (let i = 0; i < 30; i++) {
+        actual.run(i + 101, i + 101, i + 201, LAYER, 1000000000 + i * VSYNC, 3 * VSYNC, 'None', 'On-time Present');
+      }
+      const step = stepOf(scrolling, 'scroll_sessions');
+      const sessions = db.prepare(bind(String(step.sql), step.sql_fragments)).all() as Record<string, any>[];
+      expect(basis(db).map(row => [row.session_id, row.start_ts, row.frames]))
+        .toEqual(sessions.map(row => [row.session_id, row.start_ts, row.frame_count]));
+      expect(sessions).toHaveLength(2);
+    } finally { db.close(); }
+  });
+
+  it('marks a budget the observed cadence contradicts', () => {
+    const db = fixture();
+    try {
+      // A sparse VSync counter: every sixth tick.
+      db.exec(`DELETE FROM counter WHERE (ts / ${VSYNC}) % 6 != 0`);
+      const [row] = basis(db);
+      expect(row).toMatchObject({budget_status: 'contradicted_by_observed_cadence',
+        verdict_basis: 'present_gaps_budget_unverified'});
+    } finally { db.close(); }
+  });
+
+  it('reports no present interval rather than FrameTimeline dur when no present gap is valid', () => {
+    const sql = String(stepOf(scrolling, 'performance_summary').sql);
+    const begin = sql.indexOf('app_frame_intervals AS (');
+    const end = sql.indexOf('-- Per-layer 帧序列', begin);
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(begin);
+    const ctes = sql.slice(begin, end).trim().replace(/,\s*$/, '');
+    const db = fixture();
+    try {
+      // One frame per layer: no gap at all, while every dur is three VSyncs.
+      db.exec("UPDATE actual_frame_timeline_slice SET layer_name = 'layer-' || id");
+      const result = db.prepare(`WITH
+        timing_config(vsync_period_ns) AS (VALUES (${VSYNC})),
+        app_frame_rows AS (SELECT *, 'display:' || display_frame_token AS frame_key FROM actual_frame_timeline_slice),
+        ${ctes} SELECT * FROM app_stats`).get();
+      expect(result).toMatchObject({total: 30, avg_present_interval: null, p95_present_interval: null,
+        max_present_interval: null, present_interval_source: 'unmeasured_no_valid_present_gap'});
     } finally { db.close(); }
   });
 });
