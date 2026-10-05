@@ -77,9 +77,12 @@ import {
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  candidateHasAnswerBody,
+  nativeBodyCompletionNeeded,
 } from '../../runtimeConclusionProtocol';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
+import {dispatchWithModelCallRecord} from '../../intentTransport';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
@@ -1736,6 +1739,14 @@ function registerOpenCodeLightModel(config: OpenCodeModelConfig): OpenCodeModelC
   };
 }
 
+/** A message the provider ended by itself (stop, end_turn, stop_sequence) without an error. */
+function openCodeMessageNativelyCompleted(message: unknown): boolean {
+  if (!isRecord(message)) return false;
+  const info = isRecord(message.info) ? message.info : message;
+  const finish = typeof info.finish === 'string' ? info.finish : undefined;
+  return info.error == null && (finish === 'stop' || finish === 'end_turn' || finish === 'stop_sequence');
+}
+
 function extractTextParts(value: unknown): string {
   if (!value) return '';
   if (Array.isArray(value)) {
@@ -2844,16 +2855,44 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    const initialInfo = acceptedMessage && (isRecord(acceptedMessage.info) ? acceptedMessage.info : acceptedMessage);
-    const initialFinish = typeof initialInfo?.finish === 'string' ? initialInfo.finish : undefined;
-    const initialCompleted = initialInfo?.error == null &&
-      (initialFinish === 'stop' || initialFinish === 'end_turn' || initialFinish === 'stop_sequence');
+    // A completed run whose final reply carries no answer body (only a
+    // declaration, or nothing) spends the one delivery call writing the body
+    // from the returned data; the declaration repair below then has no call left.
+    let deliveryCallSpent = false;
+    const remainingDeliveryTurns = () => !turnLimitReached && !deliveryCallSpent && actualTurns < turnBudget.totalTurns
+      ? turnBudget.deliveryTurns : 0;
+    const continuationPrompt = Date.now() < deadlineMs && nativeBodyCompletionNeeded({intent: turnIntent,
+      completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
+      candidate: conclusion, remainingDeliveryTurns: remainingDeliveryTurns()})
+      ? closeoutTape.buildEmptyBodyPrompt({query, priorConclusion: conclusion, outputLanguage}) : undefined;
+    if (continuationPrompt) {
+      deliveryCallSpent = true;
+      try {
+        assertActive();
+        actualTurns++;
+        const continued = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
+          {purpose: 'continuation', trigger: 'empty_body'},
+          {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
+            outputByteLimit: 64 * 1024},
+          input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
+            createClassifierHost: createNoToolsHost, beforeDispatch}));
+        assertActive();
+        if (continued.status === 'ok' && candidateHasAnswerBody(continued.text)) {
+          conclusion = continued.text;
+          attemptId = crypto.randomUUID();
+          acceptedMessage = {info: {role: 'assistant', finish: continued.finishReason ?? 'stop'},
+            parts: [{type: 'text', text: continued.text}]};
+        }
+      } catch {
+        executionLease.throwIfAborted();
+        // A failed continuation cannot replace the original candidate.
+      }
+    }
     const declarationRequest = requestNativeDeclarationCompletion({
       intent: turnIntent,
-      completion: {status: initialCompleted ? 'completed' : 'unknown'},
+      completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
       candidate: conclusion,
-      remainingDeliveryTurns: !turnLimitReached && actualTurns < turnBudget.totalTurns
-        ? turnBudget.deliveryTurns : 0,
+      remainingDeliveryTurns: remainingDeliveryTurns(),
       repairInvalid: true,
     });
     const declarationOutputLimit = 64 * 1024;
@@ -2895,7 +2934,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const sdkError = info?.error != null;
     const outputLimited = finish === 'length';
     const turnLimited = turnLimitReached;
-    const completed = !sdkError && (finish === 'stop' || finish === 'end_turn' || finish === 'stop_sequence');
+    const completed = openCodeMessageNativelyCompleted(acceptedMessage);
     const completion: AnalysisCompletion = {
       schemaVersion: 1, runtimeKind: prep.analysisRunSpec.runtime.kind,
       candidateRef: crypto.randomUUID(), runId, attemptId,

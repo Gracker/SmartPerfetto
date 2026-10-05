@@ -45,6 +45,12 @@ function boundedValue(value: unknown, state: {nodes: number; omitted: number}, d
   return undefined;
 }
 
+interface DeliveryPromptInput {
+  query: string;
+  priorConclusion: string;
+  outputLanguage?: OutputLanguage;
+}
+
 interface ToolExcerpt {
   toolCallId: string;
   toolName: string;
@@ -97,19 +103,14 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
   };
   /** At least one call returned data that survived projection; an unreadable result gives a delivery call nothing. */
   const hasReturnedData = () => [...entries.values()].some(entry => entry.state === 'returned' && entry.returnedData !== undefined);
-  const buildPrompt = (input: {
-    query: string;
-    priorConclusion: string;
-    outputLanguage?: OutputLanguage;
-    /** Which acquisition budget ran out; the delivery call is the same for both. */
-    budgetExhausted?: 'turn_limit' | 'timeout';
-  }): string | undefined => {
+  const render = (templateName: string, input: DeliveryPromptInput,
+    extra: Record<string, string> = {}): string | undefined => {
     let template: string | undefined;
-    try { template = loadPromptTemplate(`prompt-runtime-turn-closeout-${input.outputLanguage === 'en' ? 'en' : 'zh'}`); }
+    try { template = loadPromptTemplate(`${templateName}-${input.outputLanguage === 'en' ? 'en' : 'zh'}`); }
     catch { return undefined; }
     if (!template?.trim()) return undefined;
     return renderTemplate(template.replace(/<!--[\s\S]*?-->/g, '').trim(), {
-      budget_exhausted: input.budgetExhausted ?? 'turn_limit',
+      ...extra,
       original_query: boundedText(input.query, 6000),
       prior_conclusion: boundedText(input.priorConclusion, 8000),
       returned_data: JSON.stringify({kind: 'current_run_returned_data_excerpts',
@@ -117,5 +118,17 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
         omittedCalls, unavailableResults, entries: [...entries.values()]}),
     });
   };
-  return {observe, buildPrompt, hasReturnedData};
+  const buildPrompt = (input: DeliveryPromptInput & {
+    /** Which acquisition budget ran out; the delivery call is the same for both. */
+    budgetExhausted?: 'turn_limit' | 'timeout';
+  }): string | undefined => render('prompt-runtime-turn-closeout', input,
+    {budget_exhausted: input.budgetExhausted ?? 'turn_limit'});
+  /**
+   * A completed run whose final reply had no answer body (only a declaration,
+   * or nothing): the one delivery call writes the body from the same returned
+   * data. Without returned data there is nothing to answer from, so no prompt.
+   */
+  const buildEmptyBodyPrompt = (input: DeliveryPromptInput): string | undefined =>
+    hasReturnedData() ? render('prompt-runtime-empty-body-continuation', input) : undefined;
+  return {observe, buildPrompt, buildEmptyBodyPrompt, hasReturnedData};
 }

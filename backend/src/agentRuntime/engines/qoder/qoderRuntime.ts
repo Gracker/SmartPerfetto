@@ -83,9 +83,11 @@ import {
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  candidateHasAnswerBody,
+  nativeBodyCompletionNeeded,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
-import {INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS, runIntentTransport} from '../../intentTransport';
+import {dispatchWithModelCallRecord, INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS, runIntentTransport} from '../../intentTransport';
 import {runQoderIntentTransport} from './qoderIntentTransport';
 import type {IntentTransportInput, IntentTransportResult} from '../../intentTransport';
 import {
@@ -1217,6 +1219,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       acquisitionOpen = false;
       sessionState.rounds = Math.max(sdkResultMeta.numTurns ?? 0, observedTurns);
       let closeoutAccepted = false;
+      // Every no-tool delivery call runs after acquisition is retired.
+      const retireAcquisition = async () => {
+        await settleQoderWork(Promise.resolve().then(() => sdkQuery.close()));
+        sessionState.sdkQuery = undefined;
+        q = undefined;
+        executionLease.throwIfAborted();
+      };
       let acceptedAttemptId = 'main';
       let acceptedFinishReason = sdkResultMeta.stopReason;
       const originalAnswer = sdkFinalBodySupplied && sdkFinalResultText.trim()
@@ -1226,10 +1235,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           sessionState.rounds < turnBudget.totalTurns && sessionState.deadlineMs !== undefined &&
           Date.now() < sessionState.deadlineMs) {
         // Retire acquisition before the isolated summary can use the returned tape.
-        await settleQoderWork(Promise.resolve().then(() => sdkQuery.close()));
-        sessionState.sdkQuery = undefined;
-        q = undefined;
-        executionLease.throwIfAborted();
+        await retireAcquisition();
         const prompt = closeoutTape.buildPrompt({query, outputLanguage,
           priorConclusion: sanitizeOwnerCodeAwareText(sessionId, originalAnswer)});
         if (prompt && Date.now() < sessionState.deadlineMs) {
@@ -1253,21 +1259,52 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           }
         }
       }
+      // A completed run whose final reply carries no answer body (only a
+      // declaration, or nothing) spends the one delivery call writing the body
+      // from the returned data; the declaration repair below then has no call left.
+      let deliveryCallSpent = false;
+      const remainingDeliveryTurns = () => sdkResultMeta.reason !== 'turn_limit' && !deliveryCallSpent &&
+        (sessionState.rounds ?? 0) < turnBudget.totalTurns ? turnBudget.deliveryTurns : 0;
+      const continuationPrompt = sessionState.deadlineMs !== undefined && Date.now() < sessionState.deadlineMs &&
+        nativeBodyCompletionNeeded({intent: turnIntent, completion: {status: sdkResultMeta.status},
+          candidate: originalAnswer, remainingDeliveryTurns: remainingDeliveryTurns()})
+        ? closeoutTape.buildEmptyBodyPrompt({query, outputLanguage,
+          priorConclusion: sanitizeOwnerCodeAwareText(sessionId, originalAnswer)}) : undefined;
+      if (continuationPrompt && sessionState.deadlineMs !== undefined) {
+        deliveryCallSpent = true;
+        await retireAcquisition();
+        sessionState.rounds += 1;
+        try {
+          const continued = await dispatchWithModelCallRecord(options?.runManifestAttributionSink?.runtimePerformanceRecorder,
+            {purpose: 'continuation', trigger: 'empty_body'},
+            {prompt: continuationPrompt, systemPrompt: finalSystemPrompt, signal: executionLease.signal,
+              deadlineMs: sessionState.deadlineMs, outputByteLimit: 128 * 1024},
+            input => dispatchQoderText(input, {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
+              beforeDispatch));
+          assertAuthorized();
+          if (continued.status === 'ok' && candidateHasAnswerBody(continued.text)) {
+            sdkFinalBodySupplied = true;
+            sdkFinalResultText = continued.text.trim();
+            closeoutAccepted = true;
+            acceptedAttemptId = 'empty-body-continuation:1';
+            acceptedFinishReason = continued.finishReason;
+          }
+        } catch {
+          executionLease.throwIfAborted();
+          // A failed continuation retains the original candidate.
+        }
+      }
       const declarationOutputLimit = 128 * 1024;
       const declarationRequest = requestNativeDeclarationCompletion({
         intent: turnIntent,
         completion: {status: sdkResultMeta.status},
         candidate: originalAnswer,
-        remainingDeliveryTurns: sdkResultMeta.reason !== 'turn_limit' &&
-          sessionState.rounds < turnBudget.totalTurns ? turnBudget.deliveryTurns : 0,
+        remainingDeliveryTurns: remainingDeliveryTurns(),
         repairInvalid: true,
       });
       if (declarationRequest && nativeDeclarationBodyCanFitOutput(originalAnswer, declarationOutputLimit) &&
           sessionState.deadlineMs !== undefined && Date.now() < sessionState.deadlineMs) {
-        await settleQoderWork(Promise.resolve().then(() => sdkQuery.close()));
-        sessionState.sdkQuery = undefined;
-        q = undefined;
-        executionLease.throwIfAborted();
+        await retireAcquisition();
         sessionState.rounds += 1;
         try {
           const repaired = await dispatchQoderText({

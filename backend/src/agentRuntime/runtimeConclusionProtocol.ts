@@ -125,6 +125,28 @@ export function requestNativeDeclarationCompletion(input: {
     diagnostic});
 }
 
+/** Whether a candidate carries an answer body; a declaration alone is not one. */
+export function candidateHasAnswerBody(candidate: string): boolean {
+  return inspectCandidateProtocol(candidate).canonicalBody.trim().length > 0;
+}
+
+/**
+ * A completed, non-acknowledgement run whose final reply has no answer body
+ * (only a declaration, or nothing) may spend its one delivery call writing the
+ * body. Runtimes without an issue-based correction (OpenCode, Qoder) ask here;
+ * the call is spent once attempted.
+ */
+export function nativeBodyCompletionNeeded(input: {
+  intent: AnalysisTurnIntent;
+  completion: Pick<AnalysisCompletion, 'status'>;
+  candidate: string;
+  remainingDeliveryTurns: number;
+}): boolean {
+  return input.intent.taskKind !== 'acknowledgement' && input.completion.status === 'completed' &&
+    Number.isSafeInteger(input.remainingDeliveryTurns) && input.remainingDeliveryTurns > 0 &&
+    !candidateHasAnswerBody(input.candidate);
+}
+
 /** The body alone must fit; no caller may shorten it to make room for a declaration. */
 export function nativeDeclarationBodyCanFitOutput(
   body: string,

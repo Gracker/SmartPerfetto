@@ -1865,6 +1865,12 @@ strategies:
   backend/strategies/prompt-runtime-history-tool-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime session tool-history projection
+  backend/strategies/prompt-runtime-empty-body-continuation-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime empty-body delivery continuation
+  backend/strategies/prompt-runtime-empty-body-continuation-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime empty-body delivery continuation
   backend/strategies/prompt-runtime-turn-closeout-en.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime turn completion and session continuity orchestration

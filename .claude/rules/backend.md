@@ -328,6 +328,18 @@ Keep these boundaries intact:
   results must not authorize an additional semantic model call in finalization.
   OpenCode's asynchronous observation can overshoot; record its actual count
   and skip a summary if the total allowance is already exhausted.
+- A completed run whose final reply has no answer body (only a declaration, or
+  nothing) uses that same delivery call to write the body: OpenAI through its
+  `empty_body` continuation, Claude and Pi through the `continue_output`
+  correction (the shared draft check reads the canonical body, so a reply that
+  is only a sidecar counts as empty), OpenCode and Qoder through the tape's
+  empty-body prompt (`prompt-runtime-empty-body-continuation-*`, decided by
+  `nativeBodyCompletionNeeded`), only when the tape holds returned data. The
+  call is spent once attempted, so no declaration repair follows it; a
+  continuation without a body restores the original. No delivery
+  call (closeout, continuation, correction, declaration repair) has a cap of
+  its own below the run's delivery deadline: a fixed 120 s Claude cap cut off
+  every GLM declaration repair of 27-29 claims.
 - OpenCode no-tool calls (classifier, closeout, declaration repair, semantic
   review) each start a fresh host whose agent allows two steps. At its step
   limit OpenCode appends its own "maximum steps reached" summary instructions
