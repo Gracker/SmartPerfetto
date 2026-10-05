@@ -854,6 +854,48 @@ describe('probeTraceCompleteness', () => {
     expect(reason).toContain('power/cpu_frequency_limits');
   });
 
+  it('reports a stdlib-empty capability available through its raw events, naming the raw table', async () => {
+    // lock_contention__fault: ART-style "Lock contention on ..." slices the stdlib view does not parse.
+    const tps = makeTraceProcessorMock({android_monitor_contention: 0, slice: 0, 'raw:lock_contention': 3});
+
+    const result = await probeTraceCompleteness(tps, 'trace-1');
+
+    const lock = result.available.find(cap => cap.id === 'lock_contention');
+    expect(lock).toMatchObject({status: 'available', primaryTable: 'android_monitor_contention', rowEstimate: 3});
+    expect(lock?.reason).toContain('slice');
+    expect(lock?.reason).toContain("'Lock contention on*'");
+    expect(result.missingConfig.map(cap => cap.id)).not.toContain('lock_contention');
+    const batchSql = tps.query.mock.calls.map((call: unknown[]) => String(call[1]))
+      .find((sql: string) => sql.includes('UNION ALL')) ?? '';
+    // The raw scan runs only when the stdlib view counted nothing.
+    expect(batchSql).toContain("SELECT 'raw:lock_contention' AS tbl, (SELECT CASE WHEN (SELECT COUNT(*) AS cnt FROM " +
+      '(SELECT 1 FROM android_monitor_contention LIMIT 3)) = 0 THEN (SELECT COUNT(*) AS cnt FROM (SELECT 1 FROM slice WHERE');
+  });
+
+  it('keeps a stdlib-empty capability missing when its raw events are absent too', async () => {
+    const tps = makeTraceProcessorMock({android_monitor_contention: 0, slice: 0, 'raw:lock_contention': 0});
+
+    const result = await probeTraceCompleteness(tps, 'trace-1');
+
+    expect(result.missingConfig.find(cap => cap.id === 'lock_contention'))
+      .toMatchObject({status: 'missing_config_suspected', rowEstimate: 0});
+  });
+
+  it('reports Java heap dumps and heapprofd profiles as memory evidence sources', async () => {
+    // memory_heapgraph__fault: two heap dumps and no slice or counter data at all.
+    const tps = makeTraceProcessorMock({heap_graph_object: 3, 'detail:java_heap_graph': 2, heap_profile_allocation: 0});
+
+    const result = await probeTraceCompleteness(tps, 'trace-1');
+
+    // Totalled across dumps, two identical reachable sets read as one dump with two of everything.
+    const heap = result.available.find(cap => cap.id === 'java_heap_graph');
+    expect(heap).toMatchObject({primaryTable: 'heap_graph_object', rowEstimate: 3});
+    expect(heap?.reason).toContain('2 次 heap dump');
+    expect(heap?.reason).toContain('graph_sample_ts');
+    expect(result.missingConfig.find(cap => cap.id === 'native_heap_profile'))
+      .toMatchObject({primaryTable: 'heap_profile_allocation', rowEstimate: 0});
+  });
+
   it('batches one discriminated probe per capability and reuses the shared table once', async () => {
     const tps = makeTraceProcessorMock(allCapabilityTables(3));
 
@@ -971,6 +1013,43 @@ describe('probeTraceCompleteness', () => {
     } finally {
       now.mockRestore();
     }
+  });
+
+  it('records raw-event rows and the fallback query in the ready manifest, never as the stdlib view', async () => {
+    const tps = makeTraceProcessorMock({android_monitor_contention: 0, slice: 0, 'raw:lock_contention': 3});
+
+    const result = await probeWithManifestDependencies(tps, 'trace-1', readyDependencies());
+
+    expect(result.available.find(cap => cap.id === 'lock_contention')).toMatchObject({rowSource: 'raw_event_fallback'});
+    const resolution = result.capabilityManifestResolution as any;
+    expect(resolution.status).toBe('ready');
+    const entry = resolution.manifest.content.capabilities.find((cap: any) => cap.id === 'lock_contention');
+    expect(entry).toMatchObject({status: 'available', primaryTable: 'android_monitor_contention',
+      rowSource: 'raw_event_fallback', rawEventFallback: {table: 'slice', probeSql: expect.stringContaining('Lock contention on*')}});
+    expect(resolution.manifest.content.capabilities.find((cap: any) => cap.id === 'java_heap_graph'))
+      .toMatchObject({availableDetailSql: expect.stringContaining('graph_sample_ts')});
+  });
+
+  it('reads a systrace-era trace without FrameTimeline as frames from raw doFrame slices', async () => {
+    // gpu_renderstress__normal: 0 FrameTimeline rows, 60 Choreographer#doFrame slices; pi answered with no query.
+    const tps = makeTraceProcessorMock({actual_frame_timeline_slice: 0, slice: 0, 'raw:frame_rendering': 3});
+
+    const result = await probeTraceCompleteness(tps, 'trace-1');
+
+    const frames = result.available.find(cap => cap.id === 'frame_rendering');
+    expect(frames).toMatchObject({rowSource: 'raw_event_fallback', rowEstimate: 3});
+    expect(frames?.reason).toContain('Choreographer#doFrame*');
+    expect(frames?.reason).toContain('呈现节奏未测得');
+  });
+
+  it('reports one or two raw events as sparse, still naming the raw table', async () => {
+    const tps = makeTraceProcessorMock({android_monitor_contention: 0, slice: 0, 'raw:lock_contention': 1});
+
+    const result = await probeTraceCompleteness(tps, 'trace-1');
+
+    const lock = result.insufficient.find(cap => cap.id === 'lock_contention');
+    expect(lock).toMatchObject({status: 'insufficient_or_scene_absent', rowEstimate: 1, rowSource: 'raw_event_fallback'});
+    expect(lock?.reason).toContain('slice');
   });
 
   it('maps present-empty to insufficient only inside the ready manifest', async () => {

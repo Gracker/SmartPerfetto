@@ -1644,7 +1644,7 @@ describe('QoderRuntime', () => {
       expect(result.completion).toMatchObject({status: 'completed', attemptId: 'main'});
     });
 
-    it('retains the original Qoder attempt when a dispatched declaration completion changes the body', async () => {
+    it('keeps the original Qoder body and takes the declaration when a completion changes the body', async () => {
       const body = 'Original bounded answer.';
       const changed = `Changed bounded answer.\n${renderConclusionContractSidecar({
         schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
@@ -1667,9 +1667,10 @@ describe('QoderRuntime', () => {
 
       expect(mockQuery).toHaveBeenCalledTimes(1);
       expect(mockIntentTransport).toHaveBeenCalledTimes(2);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'main',
-        conclusionFingerprint: analysisDeliveryFingerprint(body)});
+      // The completion's declaration is delivered; its edited prose never is.
+      expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'declaration-completion:1'});
       expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
     });
 

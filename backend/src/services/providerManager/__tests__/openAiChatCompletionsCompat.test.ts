@@ -38,6 +38,24 @@ describe('official DeepSeek classification protocol options', () => {
   );
 });
 
+describe('official GLM classification protocol options', () => {
+  it.each(['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'https://api.z.ai/api/paas/v4/chat/completions'])(
+    'disables default thinking for classification only on %s', url => {
+      const requestUrl = new URL(url);
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'classification'}))
+        .toEqual({thinking: {type: 'disabled'}});
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose: 'classification'})).toEqual({});
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'final_semantic'})).toEqual({});
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions'})).toEqual({});
+    },
+  );
+  it.each(['https://open.bigmodel.cn.evil.test/v1/chat/completions', 'http://open.bigmodel.cn/api/paas/v4/chat/completions',
+    'https://gateway.example/open.bigmodel.cn/chat/completions'])('leaves look-alike endpoints unchanged: %s', url => {
+    expect(buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url), protocol: 'chat_completions',
+      purpose: 'classification'})).toEqual({});
+  });
+});
+
 describe('OpenAI Chat Completions token-limit compatibility', () => {
   it.each([
     'gpt-5.6',

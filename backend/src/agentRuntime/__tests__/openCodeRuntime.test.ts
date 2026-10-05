@@ -701,7 +701,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
   }));
 
-  it('retains the original OpenCode attempt when a dispatched declaration completion changes the body', async () => withBackendDataDir(async () => {
+  it('keeps the original OpenCode body and takes the declaration when a completion changes the body', async () => withBackendDataDir(async () => {
     const body = 'Original bounded answer.';
     const changed = `Changed bounded answer.\n${renderConclusionContractSidecar({
       schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
@@ -715,9 +715,10 @@ describe('OpenCode native turn intent and delivery', () => {
     });
     expect(harness.prompts).toHaveLength(3);
     expect(harness.configs).toHaveLength(3);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', runId: 'opencode-declaration-rejected',
-      conclusionFingerprint: analysisDeliveryFingerprint(body)});
+    // The completion's declaration is delivered; its edited prose never is.
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed', runId: 'opencode-declaration-rejected'});
     expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
     expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
   }));
@@ -958,6 +959,17 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.traceProcessor.query).toHaveBeenCalled();
     expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
     expect(fs.existsSync(path.dirname(harness.directories[0]))).toBe(false);
+  }));
+
+  it('disables GLM default thinking on the classifier host only', async () => withBackendDataDir(async () => {
+    // glm-5.3-flash spent its whole 30 s classifier budget reasoning in the E2E matrix.
+    const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
+      providerID: 'smartperfetto', modelID: 'main-model', smallModel: 'light-model',
+      baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'fixture-api-key'})}});
+    await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'fast'});
+    expect(harness.configs[0].provider.smartperfetto.models['light-model'].options)
+      .toEqual({thinking: {type: 'disabled'}});
+    expect(harness.configs[1].provider.smartperfetto.models['main-model'].options).toBeUndefined();
   }));
 
   it('registers the native classifier model and keeps fast comparison tools', async () => withBackendDataDir(async () => {

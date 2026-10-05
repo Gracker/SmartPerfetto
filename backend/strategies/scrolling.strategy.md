@@ -14,7 +14,7 @@ investigation_contract:
       description: "Bind the actual scroll sessions and problematic intervals. Follow continuous main-thread work between frames and framework-specific render/raster tasks; FrameTimeline is a result/reference. Reuse batch window evidence and sample representative critical paths after whole-session totals."
     - id: scrolling_dependencies
       domain: dependency_chain
-      description: "Connect Main/Render/raster/GPU/SF/present only with matching identities and timing. Explain separate app, system and pipeline evidence; a long frame or sleeping main thread is not itself the cause."
+      description: "Link Main/Render/raster/GPU/SF/present only by matching identity and timing; keep app, system and pipeline evidence apart. Smoothness is present gaps vs vsync budget; frame dur is latency; a long frame or sleeping main thread is not itself the cause."
     # A majority of raw Stuffing tags triggers cadence and mechanism review;
     # it does not establish queue delay. The ledger-backed condition remains
     # active when semantic review is unavailable. The threshold is a percentage.

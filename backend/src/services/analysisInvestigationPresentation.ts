@@ -2,9 +2,19 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
-import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
+import {
+  SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE,
+  SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE,
+  semanticClaimIssueCode,
+} from './finalSemanticIssueCodes';
+import {claimReferenceIssueCode} from '../types/claimVerification';
 import type {AnalysisDeliveryAssurance, AnalysisAssuranceStatus} from '../types/analysisDelivery';
 import type {AnalysisReceipt} from '../types/dataContract';
+
+/** A cited reference that resolves to no captured cell: not a disagreement with one. */
+const UNRESOLVED_REFERENCE_CODES: ReadonlySet<string> = new Set(
+  (['missing', 'ambiguous'] as const).map(claimReferenceIssueCode));
+const UNEXPRESSED_CLAIM_CODE = semanticClaimIssueCode('declaration_not_expressed');
 
 /** Presentation only: missing historical fields never become successful checks. */
 export function investigationStatusLines(
@@ -34,6 +44,15 @@ export interface ClaimVerificationStatusSummary {
   verifiedClaimCount?: number;
   /** Claims the verifier marked unsupported: a recorded contradiction or failed check. */
   unsupportedClaimCount?: number;
+  /**
+   * The unsupported claims split by their errors: a cited reference that resolves
+   * to no captured cell, a declared claim the body never states, and the rest,
+   * which contradict the evidence or the body. Absent in older summaries, which
+   * show every unsupported claim as contradicted.
+   */
+  unresolvedReferenceClaimCount?: number;
+  unexpressedClaimCount?: number;
+  contradictedClaimCount?: number;
   /** Claims with at least one reference cell, every one matching the captured evidence. */
   referencesMatchedClaimCount?: number;
   /** Claims whose typed proposition a finite deterministic proof established; absent before verifier@2. */
@@ -94,8 +113,16 @@ export function claimVerificationStatusLine(
     }
     const verified = summary.verifiedClaimCount ?? 0;
     parts.push(localize(language, `已核验 ${verified}/${total}`, `verified ${verified}/${total}`));
-    const contradicted = summary.unsupportedClaimCount ?? 0;
+    const contradicted = summary.contradictedClaimCount ?? summary.unsupportedClaimCount ?? 0;
     if (contradicted > 0) parts.push(localize(language, `矛盾 ${contradicted}`, `contradicted ${contradicted}`));
+    const unresolved = summary.unresolvedReferenceClaimCount ?? 0;
+    if (unresolved > 0) {
+      parts.push(localize(language, `引用未解析 ${unresolved}`, `references unresolved ${unresolved}`));
+    }
+    const unexpressed = summary.unexpressedClaimCount ?? 0;
+    if (unexpressed > 0) {
+      parts.push(localize(language, `声明未在正文表达 ${unexpressed}`, `declared but not stated ${unexpressed}`));
+    }
     const notChecked = summary.notCheckedClaimCount ?? 0;
     if (notChecked > 0) parts.push(localize(language, `未进入核验 ${notChecked}`, `not admitted ${notChecked}`));
     const rounded = summary.unmarkedRoundingClaimCount ?? 0;
@@ -128,7 +155,7 @@ export function claimAuditRows(
     ...(claimAudit.propositionProvedClaims !== undefined
       ? [[localize(language, '命题证明', 'Propositions proved'), claimAudit.propositionProvedClaims] as [string, number]] : []),
     [localize(language, '已核验', 'Verified'), claimAudit.verifiedClaims],
-    [localize(language, '矛盾', 'Contradicted'), claimAudit.unsupportedClaims],
+    [localize(language, '未支持', 'Unsupported'), claimAudit.unsupportedClaims],
     [localize(language, '未确定', 'Uncertain'), claimAudit.uncertainClaims],
   ];
 }
@@ -204,8 +231,25 @@ export function summarizeClaimVerification(verification: {
     (issue.severity === 'error' || issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE) &&
       typeof issue.code === 'string' && !(issue.claimId && claimIds.has(issue.claimId))
       ? [issue.code] : []))];
+  const unsupported = claims.filter(claim => claim.status === 'unsupported');
   // Only claims the rounding left unverified; a contradicted claim is counted as such.
-  const contradictedIds = new Set(claims.filter(claim => claim.status === 'unsupported').map(claim => claim.claimId));
+  const contradictedIds = new Set(unsupported.map(claim => claim.claimId));
+  const errorCodesByClaim = new Map<string, Set<string>>();
+  for (const issue of verification.issues ?? []) {
+    if (issue.severity !== 'error' || !issue.claimId || typeof issue.code !== 'string') continue;
+    errorCodesByClaim.set(issue.claimId, (errorCodesByClaim.get(issue.claimId) ?? new Set()).add(issue.code));
+  }
+  // An unsupported claim with no error of its own (older shapes) or any other
+  // error stays a contradiction; only claims whose every error is one of these is not.
+  const unsupportedKind = (claimId: string | undefined): 'unresolved' | 'unexpressed' | 'contradicted' => {
+    const codes = [...(claimId ? errorCodesByClaim.get(claimId) ?? [] : [])];
+    if (!codes.length || codes.some(code => !UNRESOLVED_REFERENCE_CODES.has(code) && code !== UNEXPRESSED_CLAIM_CODE)) {
+      return 'contradicted';
+    }
+    return codes.includes(UNEXPRESSED_CLAIM_CODE) ? 'unexpressed' : 'unresolved';
+  };
+  const kindCounts = {contradicted: 0, unresolved: 0, unexpressed: 0};
+  for (const claim of unsupported) kindCounts[unsupportedKind(claim.claimId)] += 1;
   const unmarkedRoundingClaimCount = new Set((verification.issues ?? []).flatMap(issue =>
     issue.code === SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE && issue.claimId && !contradictedIds.has(issue.claimId)
       ? [issue.claimId] : [])).size;
@@ -216,7 +260,10 @@ export function summarizeClaimVerification(verification: {
     totalClaimCount: claims.length,
     checkedClaimCount: claims.filter(claim => claim.status !== 'not_checked').length,
     verifiedClaimCount: claims.filter(claim => claim.status === 'verified').length,
-    unsupportedClaimCount: claims.filter(claim => claim.status === 'unsupported').length,
+    unsupportedClaimCount: unsupported.length,
+    contradictedClaimCount: kindCounts.contradicted,
+    unresolvedReferenceClaimCount: kindCounts.unresolved,
+    unexpressedClaimCount: kindCounts.unexpressed,
     referencesMatchedClaimCount: claims.filter(claim => {
       const cells = claimReferences(verification, claim);
       return cells.length > 0 && cells.every(cell => cell.status === 'matched');

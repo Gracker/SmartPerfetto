@@ -162,22 +162,17 @@ function validateDefinitions(
         `capability_manifest_empty_primary_table:${definition.id}`,
       );
     }
-    if (definition.probeSql !== undefined) {
-      if (typeof definition.probeSql !== 'string') {
-        throw new Error(
-          `capability_manifest_invalid_probe_sql:${definition.id}`,
-        );
-      }
-      const probeSql = definition.probeSql.trim();
-      if (probeSql.length === 0) {
-        throw new Error(`capability_manifest_empty_probe_sql:${definition.id}`);
-      }
-      if (!isSingleSelectProbeSql(probeSql)) {
-        throw new Error(
-          `capability_manifest_invalid_probe_sql:${definition.id}`,
-        );
-      }
+    validateProbeSql(definition.probeSql, `capability_manifest_invalid_probe_sql:${definition.id}`,
+      `capability_manifest_empty_probe_sql:${definition.id}`);
+
+    const fallback = definition.rawEventFallback;
+    if (fallback !== undefined) {
+      const invalidFallback = `capability_manifest_invalid_raw_event_fallback:${definition.id}`;
+      if (!isPlainObject(fallback) || !isNonEmptyString(fallback.table)) throw new Error(invalidFallback);
+      validateProbeSql(fallback.probeSql, invalidFallback, invalidFallback);
     }
+    const invalidDetail = `capability_manifest_invalid_available_detail_sql:${definition.id}`;
+    validateProbeSql(definition.availableDetailSql, invalidDetail, invalidDetail);
 
     if (
       definition.requiredModules !== undefined &&
@@ -210,6 +205,15 @@ function validateDefinitions(
     byId.set(definition.id, definition);
   }
   return byId;
+}
+
+/** An optional recorded probe query: a non-empty single read-only SELECT. */
+function validateProbeSql(value: unknown, invalidCode: string, emptyCode: string): void {
+  if (value === undefined) return;
+  if (typeof value !== 'string') throw new Error(invalidCode);
+  const sql = value.trim();
+  if (sql.length === 0) throw new Error(emptyCode);
+  if (!isSingleSelectProbeSql(sql)) throw new Error(invalidCode);
 }
 
 function validateOptionalString(value: unknown, errorCode: string): void {
@@ -441,6 +445,11 @@ function validateBucketResult(
   if (result.primaryTable !== definition.primaryTable) {
     throw new Error(`capability_manifest_primary_table_mismatch:${result.id}`);
   }
+  // Only a definition with a raw-event fallback can have rows from it, and only rows.
+  if (result.rowSource !== undefined && (result.rowSource !== 'raw_event_fallback' ||
+    definition.rawEventFallback === undefined || (bucket !== 'available' && bucket !== 'insufficient'))) {
+    throw new Error(`capability_manifest_invalid_row_source:${bucket}:${result.id}`);
+  }
   // Only an unprobed capability carries a reason code: it is a missingConfig
   // entry with no row count, which the probe could not determine.
   if (
@@ -555,12 +564,20 @@ function mapEntry(
     ...(definition.probeSql === undefined
       ? {}
       : {probeSql: definition.probeSql}),
+    ...(definition.rawEventFallback === undefined
+      ? {}
+      : {rawEventFallback: {...definition.rawEventFallback}}),
+    ...(definition.availableDetailSql === undefined
+      ? {}
+      : {availableDetailSql: definition.availableDetailSql}),
   };
+  const rowSource = indexed.result.rowSource === undefined ? {} : {rowSource: indexed.result.rowSource};
   if (indexed.bucket === 'available') {
     return {
       ...shared,
       status: 'available',
       sourceState: 'present_with_data',
+      ...rowSource,
       rowEstimate: indexed.result.rowEstimate,
     };
   }
@@ -594,6 +611,7 @@ function mapEntry(
       ...shared,
       status: 'insufficient',
       sourceState: 'present_with_data',
+      ...rowSource,
       reasonCode: 'sparse_or_scene_absent',
       rowEstimate: indexed.result.rowEstimate,
     };

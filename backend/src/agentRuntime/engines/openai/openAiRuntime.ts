@@ -868,10 +868,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           finish = resolveOpenAiNativeCompletion({protocol: config.protocol, response: lastResponse,
             chatTerminal, streamCompleted, conclusion});
           providerPhase.end('ok');
-          const nativeProtocol = inspectCandidateProtocol(conclusion);
+          const modelOutput = inspectCandidateProtocol(conclusion);
           modelCall?.end({outcome: 'ok', ...(chatTerminal.model ? {model: chatTerminal.model} : {}),
-            output: {bodyChars: nativeProtocol.canonicalBody.length,
-              sidecarChars: Math.max(0, conclusion.length - nativeProtocol.canonicalBody.length)}});
+            output: {bodyChars: modelOutput.canonicalBody.length,
+              sidecarChars: Math.max(0, conclusion.length - modelOutput.canonicalBody.length)}});
+          // A declaration completion delivers the restored body with its new declaration.
+          const repairedDeclarationCandidate = recoveryCandidate?.declarationRequest
+            ? acceptNativeDeclarationCompletion({request: recoveryCandidate.declarationRequest,
+              completion: finish, candidate: conclusion}) : undefined;
+          if (repairedDeclarationCandidate) conclusion = repairedDeclarationCandidate;
+          const nativeProtocol = repairedDeclarationCandidate ? inspectCandidateProtocol(conclusion) : modelOutput;
           const candidateProtocolDiagnostic = buildCandidateProtocolDiagnostic(nativeProtocol, 'native', recoveringOutputLimit ? 2 : 1);
           this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
             candidateProtocolDiagnostic}, timestamp: Date.now()});
@@ -883,9 +889,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             // A well-framed rejected declaration is repaired alone; the body is kept as delivered.
             repairInvalid: true,
           });
-          const declarationRepairRejected = recoveryCandidate?.declarationRequest &&
-            !acceptNativeDeclarationCompletion({request: recoveryCandidate.declarationRequest,
-              completion: finish, candidate: conclusion});
+          const declarationRepairRejected = recoveryCandidate?.declarationRequest && !repairedDeclarationCandidate;
           const exhaustedBudget = recoveryCandidate?.finish.reason === 'turn_limit' || recoveryCandidate?.finish.reason === 'timeout'
             ? recoveryCandidate.finish.reason : undefined;
           if (recoveringOutputLimit && (finish.status !== 'completed' || bodyEmpty || declarationRepairRejected ||

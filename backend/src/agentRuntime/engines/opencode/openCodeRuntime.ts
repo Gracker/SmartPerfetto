@@ -139,6 +139,8 @@ import {analysisHasPrivateContext} from '../../../services/security/analysisPriv
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 import {parseFlagValue} from '../../../utils/envFlag';
+import {buildOpenAITextRequestPurposeOptions} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {buildChatCompletionsUrl} from '../openai/openAiComplexityClassifier';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
 export type PublicOpenCodeRuntimeKind = typeof OPENCODE_RUNTIME_KIND;
@@ -1642,6 +1644,29 @@ export function validateOpenCodeModelConfiguration(
   }
 }
 
+/**
+ * Classification-only provider controls (GLM and DeepSeek disable default
+ * thinking) on the classifier host's model entry; OpenCode forwards a model's
+ * `options` to its provider request. The answer host never receives them.
+ */
+function withOpenCodeClassifierModelOptions(config: OpenCodeModelConfig): OpenCodeModelConfig {
+  const provider = config.providerConfig?.[config.model.providerID];
+  const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
+  const models = isRecord(provider) && isRecord(provider.models) ? provider.models : undefined;
+  const entry = models?.[config.model.modelID];
+  const baseURL = typeof providerOptions?.baseURL === 'string' ? providerOptions.baseURL : undefined;
+  if (!isRecord(provider) || !models || !isRecord(entry) || !baseURL) return config;
+  let requestUrl: URL;
+  try { requestUrl = buildChatCompletionsUrl(baseURL); } catch { return config; }
+  const purposeOptions = buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions',
+    purpose: 'classification'});
+  if (!Object.keys(purposeOptions).length) return config;
+  return {...config, providerConfig: {...config.providerConfig, [config.model.providerID]: {
+    ...provider, models: {...models, [config.model.modelID]: {...entry,
+      options: {...(isRecord(entry.options) ? entry.options : {}), ...purposeOptions}}},
+  }}};
+}
+
 /** Register an explicitly configured same-provider light model with its complete connection. */
 function registerOpenCodeLightModel(config: OpenCodeModelConfig): OpenCodeModelConfig {
   const configured = config.smallModel?.trim();
@@ -2567,7 +2592,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       try {
         const classifierEnv = {...pinnedEnv, [OPENCODE_ENABLE_STANDALONE_MCP_ENV]: '0'};
         const config = createOpenCodeHardenedConfig([], classifierEnv, undefined,
-          {...modelConfig, model, smallModel: undefined}, 1);
+          withOpenCodeClassifierModelOptions({...modelConfig, model, smallModel: undefined}), 1);
         instance = await createOpenCodeInstanceWithExplicitEnv(sdk, dirs, classifierEnv, {
           hostname: '127.0.0.1', timeout: Math.max(1, deadlineMs - Date.now()), config,
         });
@@ -2866,14 +2891,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           beforeDispatch,
         });
         assertActive();
-        if (repaired.status === 'ok' && acceptNativeDeclarationCompletion({
+        // The accepted candidate is the original body with the completion's declaration.
+        const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
           request: declarationRequest, completion: {status: 'completed'}, candidate: repaired.text,
           outputByteLimit: declarationOutputLimit,
-        })) {
-          conclusion = repaired.text;
+        });
+        if (accepted) {
+          conclusion = accepted;
           attemptId = crypto.randomUUID();
           acceptedMessage = {info: {role: 'assistant', finish: repaired.finishReason ?? 'stop'},
-            parts: [{type: 'text', text: repaired.text}]};
+            parts: [{type: 'text', text: accepted}]};
         }
       } catch {
         executionLease.throwIfAborted();

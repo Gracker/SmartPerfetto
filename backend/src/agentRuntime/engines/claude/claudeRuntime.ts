@@ -740,10 +740,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }),
         signal: executionLease.signal,
         deadlineMs: Date.now() + resolvedConfig.classifierTimeoutMs,
+        // Classification needs no deliberation. The CLI drops `thinking: disabled`, and a
+        // thinking-by-default gateway (GLM) then spent 30-40 s on this prompt, past the 30 s
+        // classifier budget; low effort is what the CLI forwards (~7-12 s there). The review
+        // and closeout calls on this transport keep the SDK default.
         dispatch: input => runClaudeIntentTransport({
           ...input, config: resolvedConfig, sdkEnv,
           sdkBinaryOptions: getSdkBinaryOption(sdkEnv),
-          loadSdk: authorizedSdk,
+          loadSdk: authorizedSdk, effort: 'low',
         }),
       });
       turnIntent = await intentResolver.resolve();
@@ -1064,6 +1068,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const turnMetricsList: TurnMetrics[] = [];
       let currentTurnMetrics: TurnMetrics | null = null;
       let turnCounter = 0;
+      let currentAssistantMessageId: string | undefined;
       let firstTokenReceived = false;
 
       function recordAuthoritativeEvaluationUsage(
@@ -1229,12 +1234,27 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             }
           }
 
-          // assistant message = new turn starts; finalize previous turn + watchdog tracking
+          // A new assistant message id starts a turn; finalize the previous turn + watchdog tracking.
+          // The SDK emits one `assistant` message per content block (thinking, text, tool_use) of a
+          // single model response, all with that response's id, so counting messages counted each
+          // response two or three times and left the reserved delivery turn negative.
           if (msg.type === 'assistant' && Array.isArray((msg as any).message?.content)) {
-            finalizeTurnMetrics();
-            turnCounter++;
-            observedTurns++;
-            firstTokenReceived = false;
+            const messageId = typeof (msg as any).message?.id === 'string' ? (msg as any).message.id as string : undefined;
+            const continuesTurn = messageId !== undefined && messageId === currentAssistantMessageId && currentTurnMetrics !== null;
+            currentAssistantMessageId = messageId;
+            if (!continuesTurn) {
+              finalizeTurnMetrics();
+              turnCounter++;
+              observedTurns++;
+              firstTokenReceived = false;
+              currentTurnMetrics = {
+                turnIndex: turnCounter,
+                startMs: Date.now(),
+                toolCalls: [],
+                toolResultPayloadBytes: 0,
+                hasExtendedThinking: false,
+              };
+            }
             const toolNames: string[] = [];
             for (const block of (msg as any).message.content) {
               if (block.type === 'tool_use') {
@@ -1259,13 +1279,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 }
               }
             }
-            currentTurnMetrics = {
-              turnIndex: turnCounter,
-              startMs: Date.now(),
-              toolCalls: toolNames,
-              toolResultPayloadBytes: 0,
-              hasExtendedThinking: false,
-            };
+            currentTurnMetrics!.toolCalls.push(...toolNames);
           }
 
           if (msg.type === 'user' && ((msg as any).tool_use_result !== undefined || extractSdkToolResultBlocks(msg).length > 0)) {
@@ -1759,11 +1773,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   (message as any).result.trim()) {
                 const candidateText = (message as any).result as string;
                 assertAuthorized();
-                if (declarationRequest && !acceptNativeDeclarationCompletion({
+                // A declaration completion delivers the original body with its new declaration.
+                const acceptedText = declarationRequest ? acceptNativeDeclarationCompletion({
                   request: declarationRequest, completion: terminal, candidate: candidateText,
                   outputByteLimit: 128 * 1024,
-                })) return;
-                conclusionText = candidateText.trim();
+                }) : candidateText;
+                if (!acceptedText) return;
+                conclusionText = acceptedText.trim();
                 acceptedAttemptId = correctionAttemptId;
                 acceptedTerminal = terminal;
                 acceptedOrigin = 'sdk_final';

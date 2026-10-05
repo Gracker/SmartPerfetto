@@ -249,8 +249,10 @@ export interface CapabilityProbeResult {
    * the bucket and `rowEstimate`, which keeps the prompt payload small.
    */
   reasonCode?: CapabilityUnprobedReasonCode;
-  /** Human-readable reason when not available */
+  /** Human-readable reason when not available, or how to read available rows */
   reason?: string;
+  /** Set when the rows were counted from the raw-event fallback, not the primary table. */
+  rowSource?: 'raw_event_fallback';
 }
 
 /** One positive `stats` row whose trace_processor severity is `data_loss`. */

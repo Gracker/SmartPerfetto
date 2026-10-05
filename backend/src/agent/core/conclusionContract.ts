@@ -498,22 +498,44 @@ function claimSemanticsFailure(raw: unknown): ClaimSemanticsFailure | undefined 
   if (raw.conditions !== undefined && !stringList(raw.conditions)) return {field: 'semantics.conditions'};
   const scope = raw.scope;
   if (!record(scope)) return {field: 'semantics.scope'};
-  if (!keysWithin(scope, ['subjectRefs', 'objectRefs', 'population', 'timeRangeNs'])) {
+  if (!keysWithin(scope, ['subjectRefs', 'objectRefs', 'population', 'timeRangeNs',
+    ...(nestedScopeConditions(raw) ? ['conditions'] : [])])) {
     return {field: 'semantics.scope.unknown_field'};
   }
   if (!oneOf(scope.population, CONCLUSION_PROTOCOL_VALUES.population)) return {field: 'semantics.scope.population'};
   if (scope.subjectRefs !== undefined && !referenceList(scope.subjectRefs)) return {field: 'semantics.scope.subjectRefs'};
   if (scope.objectRefs !== undefined && !referenceList(scope.objectRefs)) return {field: 'semantics.scope.objectRefs'};
   if (scope.timeRangeNs !== undefined) {
-    const range = scope.timeRangeNs;
-    if (!record(range) || !keysWithin(range, ['start', 'end']) || !decimalNanoseconds(range.start) ||
-      !decimalNanoseconds(range.end) || BigInt(range.start) > BigInt(range.end)) return {field: 'semantics.scope.timeRangeNs'};
+    const range = timeRangeBounds(scope.timeRangeNs);
+    if (!range || !decimalNanoseconds(range.start) || !decimalNanoseconds(range.end) ||
+      BigInt(range.start) > BigInt(range.end)) return {field: 'semantics.scope.timeRangeNs'};
   }
   const numeric = raw.numeric === undefined ? undefined : numericFailure(raw.numeric);
   if (numeric) return {field: 'semantics.numeric', subreason: numeric};
   // `source` (a retired model-declared location) is accepted and dropped: source
   // claims are judged from the run's issued references, never from a declaration.
   return undefined;
+}
+
+/**
+ * A time window's bounds: the `{start, end}` the schema declares, or the same
+ * ordered pair written as a two-item array (`["start", "end"]`), which has no
+ * other reading. Anything else is not a window.
+ */
+function timeRangeBounds(range: unknown): {start: unknown; end: unknown} | undefined {
+  if (Array.isArray(range)) return range.length === 2 ? {start: range[0], end: range[1]} : undefined;
+  return record(range) && keysWithin(range, ['start', 'end']) ? {start: range.start, end: range.end} : undefined;
+}
+
+/**
+ * `conditions` written inside `scope` rather than beside it: the claim's own
+ * conditions one level too deep. Only a string list, and only when the
+ * semantics declare no conditions of their own, so there is one reading.
+ */
+function nestedScopeConditions(raw: Record<string, unknown>): string[] | undefined {
+  const scope = raw.scope;
+  return raw.conditions === undefined && record(scope) && hasOwn(scope, 'conditions') && stringList(scope.conditions)
+    ? scope.conditions : undefined;
 }
 
 type ClaimSemanticsResult = {semantics?: ClaimSemanticsV1; rawSemantics?: unknown;
@@ -529,13 +551,17 @@ function claimSemanticsResult(raw: unknown, path: string, failure: ClaimSemantic
   if (failure) return {rawSemantics: raw, semanticsParseIssues: [{code: 'invalid_semantics', path}]};
   const clone = structuredClone(raw) as Record<string, unknown>;
   delete clone.source;
-  const semantics = (hasOwn(clone, 'schemaVersion') ? clone
-    : {schemaVersion: CONCLUSION_PROTOCOL_VALUES.semanticsSchemaVersion, ...clone}) as unknown as ClaimSemanticsV1;
-  const range = semantics.scope.timeRangeNs;
-  if (range) {
-    range.start = String(range.start);
-    range.end = String(range.end);
-  }
+  // Nested conditions move to where the verbose declaration writes them, before `scope`:
+  // key order is part of the canonical bytes `analysisDeliveryFingerprint` hashes.
+  const nestedConditions = nestedScopeConditions(clone);
+  const placed = nestedConditions ? Object.fromEntries(Object.entries(clone).flatMap(([key, value]) => key === 'scope'
+    ? [['conditions', nestedConditions], [key, value]] : [[key, value]])) : clone;
+  if (nestedConditions) delete (placed.scope as Record<string, unknown>).conditions;
+  const semantics = (hasOwn(placed, 'schemaVersion') ? placed
+    : {schemaVersion: CONCLUSION_PROTOCOL_VALUES.semanticsSchemaVersion, ...placed}) as unknown as ClaimSemanticsV1;
+  const scope = semantics.scope as ClaimSemanticsV1['scope'] & {timeRangeNs?: unknown};
+  const range = timeRangeBounds(scope.timeRangeNs);
+  if (range) scope.timeRangeNs = {start: String(range.start), end: String(range.end)};
   return {semantics};
 }
 

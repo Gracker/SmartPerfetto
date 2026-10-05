@@ -48,7 +48,8 @@ describe('Claude intent transport', () => {
       settingSources: [], skills: [], plugins: [], persistSession: false, permissionMode: 'dontAsk',
     });
     expect(sent.options.env).toBe(input.sdkEnv);
-    for (const key of ['resume', 'sessionId', 'allowDangerouslySkipPermissions']) {
+    // Effort is the caller's choice; the transport adds none of its own.
+    for (const key of ['resume', 'sessionId', 'allowDangerouslySkipPermissions', 'effort']) {
       expect(sent.options).not.toHaveProperty(key);
     }
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);

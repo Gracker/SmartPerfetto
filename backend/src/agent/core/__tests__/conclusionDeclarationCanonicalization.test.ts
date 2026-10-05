@@ -103,6 +103,24 @@ function withIntegerTimeRanges(claims: Json[]): Json[] {
   });
 }
 
+/** glm-5.3 E2E: a time window written as an ordered `["start", "end"]` pair. */
+function withPairTimeRanges(claims: Json[]): Json[] {
+  return claims.map(claim => {
+    const range = claim.semantics?.scope?.timeRangeNs;
+    return range ? {...claim, semantics: {...claim.semantics, scope: {...claim.semantics.scope,
+      timeRangeNs: [range.start, range.end]}}} : claim;
+  });
+}
+
+/** glm-5.3 E2E: the claim's `conditions` written inside `scope`. */
+function withConditionsInScope(claims: Json[]): Json[] {
+  return claims.map(claim => {
+    if (!claim.semantics?.conditions) return claim;
+    const {conditions, ...semantics} = claim.semantics;
+    return {...claim, semantics: {...semantics, scope: {...semantics.scope, conditions}}};
+  });
+}
+
 /** Everything a consumer reads from one declaration, serialized in the parser's own key order. */
 function canonicalSurfaces(raw: string) {
   const parsed = parseConclusionContractSidecar(raw);
@@ -162,6 +180,9 @@ describe('lighter declaration wire forms keep the valid canonical contract byte-
       semanticsVersionOmitted: verboseDeclaration(withoutSemanticsSchemaVersion(CLAIMS)),
       relationVersionOmitted: verboseDeclaration(CLAIMS, withoutRelationSchemaVersion(RELATIONS)),
       integerTimeWindows: verboseDeclaration(withIntegerTimeRanges(CLAIMS)),
+      pairTimeWindows: verboseDeclaration(withPairTimeRanges(CLAIMS)),
+      integerPairTimeWindows: verboseDeclaration(withPairTimeRanges(withIntegerTimeRanges(CLAIMS))),
+      conditionsInScope: verboseDeclaration(withConditionsInScope(CLAIMS)),
       allTogether: verboseDeclaration(withIntegerTimeRanges(withoutSemanticsSchemaVersion(CLAIMS)),
         withoutRelationSchemaVersion(RELATIONS)),
     };
@@ -302,6 +323,20 @@ describe('lighter declaration forms accept nothing else', () => {
     const relation = parse(verboseDeclaration([claim], [{...RELATION_PROPOSAL, schemaVersion: 'evidence_relation_candidate@2'}]));
     expect(relation.issues).toEqual([expect.objectContaining({code: 'invalid_relation_proposal',
       relationProposalDiagnostic: {scope: 'item', ordinal: 1, reason: 'invalid_schema_version'}})]);
+  });
+
+  it('reads a nested condition list or a two-item window only when there is one reading', () => {
+    const claim = REAL.cond_rel;
+    const {conditions, ...semantics} = claim.semantics;
+    const both = {...claim, semantics: {...claim.semantics, scope: {...semantics.scope, conditions}}};
+    expect(firstClaimField(verboseDeclaration([both]))).toBe('semantics.scope.unknown_field');
+    const notStrings = {...claim, semantics: {...semantics, scope: {...semantics.scope, conditions: [1]}}};
+    expect(firstClaimField(verboseDeclaration([notStrings]))).toBe('semantics.scope.unknown_field');
+    for (const range of [['1'], ['1', '2', '3'], ['5', '4'], [1.5, 2]]) {
+      expect(firstClaimField(verboseDeclaration([withRange(range[0], range[1] as any)].map(item =>
+        ({...item, semantics: {...item.semantics, scope: {...item.semantics.scope, timeRangeNs: range}}})))))
+        .toBe('semantics.scope.timeRangeNs');
+    }
   });
 
   it('keeps unsafe or non-integer time windows invalid', () => {

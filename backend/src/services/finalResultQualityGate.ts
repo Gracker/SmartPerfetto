@@ -10,6 +10,7 @@ import type {StoredSourceClaimVerificationResult} from './codebase/sourceClaimVe
 import {isUnusedSourceDecision} from './codebase/sourceUseDecision';
 import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
 import {claimReferences} from './analysisInvestigationPresentation';
+import {claimReferenceIssueCode} from '../types/claimVerification';
 import type {IdentityResolutionV1} from '../types/identityContract';
 import {
   analysisDeliveryFingerprint,
@@ -124,7 +125,7 @@ function describeContradictedClaims(
   }
   const referenceFailureCounts = (claim: (typeof results)[number], status: 'value_mismatch' | 'missing') => {
     const codes = errorCodesByClaim.get(claim.claimId);
-    return codes ? codes.has(`claim_reference_${status}`) : claim.status === 'unsupported';
+    return codes ? codes.has(claimReferenceIssueCode(status)) : claim.status === 'unsupported';
   };
   for (const claim of results) {
     const references = claimReferences(verification, claim);

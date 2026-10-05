@@ -22,6 +22,11 @@ export type ClaimReferenceVerificationStatus =
   | 'ineligible'
   | 'not_checked';
 
+/** The issue code a failing reference carries: `claim_reference_<status>`. */
+export function claimReferenceIssueCode(status: ClaimReferenceVerificationStatus): string {
+  return `claim_reference_${status}`;
+}
+
 export interface ClaimReferenceVerificationResult {
   evidenceRefId?: string;
   sourceRef?: string;

@@ -68,13 +68,30 @@ describe('runtime native declaration completion', () => {
     expect(prompt).toContain('"ordinal":2');
   });
 
-  it('accepts a repair only when it keeps the body and every declared claim', () => {
+  it('delivers the original body with a repaired declaration that keeps every declared claim', () => {
     const request = repair(`${body}\n\n${rejected}`)!;
     const accept = (candidate: string) => acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate});
-    expect(accept(`${body}\n\n${contract([claim('a'), claim('b')])}`)).toBeDefined();
-    expect(accept(`${body}\n\n${contract([claim('a')])}`)).toBeUndefined();
-    expect(accept(`${body} Edited.\n\n${contract([claim('a'), claim('b')])}`)).toBeUndefined();
-    expect(accept(`${body}\n\n${rejected}`)).toBeUndefined();
+    const repaired = contract([claim('a'), claim('b')]);
+    // The completion supplies only the declaration; the product attaches it to the body.
+    expect(accept(repaired)).toBe(`${body}\n\n${repaired}`);
+    expect(accept(`${body}\n\n${repaired}`)).toBe(`${body}\n\n${repaired}`);
+    expect(accept(contract([claim('a')]))).toBeUndefined();
+    expect(accept(rejected)).toBeUndefined();
+  });
+
+  it('never delivers prose a completion adds around its declaration', () => {
+    const request = repair(`${body}\n\n${rejected}`)!;
+    const repaired = contract([claim('a'), claim('b')]);
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+        candidate: `${body} Edited CANARY_EDIT.\n\n${repaired}`})).toBe(`${body}\n\n${repaired}`);
+      const lines = log.mock.calls.map(call => String(call[0]));
+      expect(lines).toEqual([`[DeclarationRepair] completion prose discarded: request=invalid_declaration ` +
+        `proseChars=${body.length + ' Edited CANARY_EDIT.'.length} originalChars=${body.length}`]);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('logs why a completion was rejected in closed vocabulary, never the model text', () => {
@@ -84,18 +101,31 @@ describe('runtime native declaration completion', () => {
       candidate: original, remainingDeliveryTurns: 1})!;
     const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
-      const fullWidth = original.replace(':', '：').replace(',', '，');
+      const invalid = contract([claim('a', {semantics: {...semantics, polarity: 'HWC_CANARY'}})]);
       expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
-        candidate: `${fullWidth}\n\n${contract([claim('a')])}`})).toBeUndefined();
+        candidate: `${original}\n\n${invalid}`})).toBeUndefined();
       expect(acceptNativeDeclarationCompletion({request, completion: {status: 'unknown'},
         candidate: `${original}\n\n${contract([claim('a')])}`})).toBeUndefined();
       const lines = log.mock.calls.map(call => String(call[0]));
       expect(lines).toEqual([
-        '[DeclarationRepair] completion rejected: request=missing_declaration reason=body_changed ' +
-          `originalChars=${original.length} repairedChars=${original.length} firstDifference=5 nfkcEqual=true`,
+        '[DeclarationRepair] completion rejected: request=missing_declaration reason=declaration_not_valid ' +
+          'repaired=invalid sidecar=invalid issues=invalid_semantics claimDiagnostics=1:invalid_semantics:semantics.polarity',
         '[DeclarationRepair] completion rejected: request=missing_declaration reason=completion_not_completed completion=unknown',
       ]);
       expect(lines.join('\n')).not.toContain('HWC');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('logs a requested repair by claim position and schema field only', () => {
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      repair(`${body}\n\n${rejected}`);
+      expect(log.mock.calls.map(call => String(call[0]))).toEqual([
+        '[DeclarationRepair] requested: reason=invalid_declaration issues=invalid_semantics claims=2 ' +
+          'claimDiagnostics=2:invalid_semantics:semantics.scope.population',
+      ]);
     } finally {
       log.mockRestore();
     }
@@ -215,29 +245,46 @@ describe('runtime native declaration completion', () => {
     expect(prompt).not.toContain('registry');
   });
 
-  it('accepts a valid full candidate with an unchanged body, including need_input', () => {
+  it('attaches a valid declaration to the original body, including need_input', () => {
     for (const mode of ['focused_answer', 'need_input'] as const) {
       const originalBody = mode === 'need_input' ? 'Which trace should I inspect?' : 'Measured value: 42 ms.';
       const request = requestNativeDeclarationCompletion({
         intent: intent('investigation'), completion: {status: 'completed'}, candidate: originalBody, remainingDeliveryTurns: 1,
       })!;
-      const candidate = `${originalBody}\n${declaration(mode)}`;
-      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate})).toBe(candidate);
+      const expected = `${originalBody}\n\n${declaration(mode)}`;
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+        candidate: declaration(mode)})).toBe(expected);
+      // An unchanged echo is already the candidate.
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+        candidate: `${originalBody}\n${declaration(mode)}`})).toBe(`${originalBody}\n${declaration(mode)}`);
+      expect(inspectCandidateProtocol(expected)).toMatchObject({status: 'valid', canonicalBody: `${originalBody}\n\n`});
     }
   });
 
   it.each([
     ['middle edit', 'Measured value: 43 ms.\n'],
     ['line-ending edit', 'first\nsecond\n'],
-    ['truncated body', 'Measured value:'],
-    ['absent declaration', 'Measured value: 42 ms.'],
-  ])('rejects %s', (_name, repairedBody) => {
+    ['truncated body', 'Measured value:\n'],
+  ])('keeps the original body over a %s', (_name, repairedBody) => {
     const originalBody = _name === 'line-ending edit' ? 'first\r\nsecond\r\n' : 'Measured value: 42 ms.';
     const request = requestNativeDeclarationCompletion({
       intent: intent('investigation'), completion: {status: 'completed'}, candidate: originalBody, remainingDeliveryTurns: 1,
     })!;
-    const candidate = _name === 'absent declaration' ? repairedBody : `${repairedBody}${declaration()}`;
-    expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate})).toBeUndefined();
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+        candidate: `${repairedBody}${declaration()}`})).toBe(`${originalBody.trim()}\n\n${declaration()}`);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('rejects a completion without a declaration', () => {
+    const request = requestNativeDeclarationCompletion({
+      intent: intent('investigation'), completion: {status: 'completed'}, candidate: 'Measured value: 42 ms.', remainingDeliveryTurns: 1,
+    })!;
+    expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+      candidate: 'Measured value: 42 ms.'})).toBeUndefined();
   });
 
   it('rejects invalid, failed and incomplete repairs', () => {

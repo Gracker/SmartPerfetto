@@ -61,7 +61,22 @@ export interface CapabilityManifestCapabilityDefinition {
    * counted, so the content hash has to carry the query itself.
    */
   probeSql?: string;
+  /**
+   * The raw events a stdlib view is derived from, counted when the view is
+   * empty. Part of the identity: an entry's rows may come from this query.
+   */
+  rawEventFallback?: CapabilityManifestRawEventFallback;
+  /** Bounded count that qualifies an available capability (heap dumps in a heap graph). */
+  availableDetailSql?: string;
 }
+
+export interface CapabilityManifestRawEventFallback {
+  table: string;
+  probeSql: string;
+}
+
+/** Where an available or sparse capability's rows came from, when not its primary table. */
+export type CapabilityRowSource = 'raw_event_fallback';
 
 export interface CapabilityManifestLegacyProbeResult {
   id: string;
@@ -79,6 +94,7 @@ export interface CapabilityManifestLegacyProbeResult {
    */
   reasonCode?: CapabilityUnprobedReasonCode;
   reason?: string;
+  rowSource?: CapabilityRowSource;
 }
 
 export interface CapabilityManifestLegacyProbeInput {
@@ -125,8 +141,12 @@ export interface CapabilityManifestEntryV1 {
   primaryTable: string;
   requiredModules?: string[];
   probeSql?: string;
+  rawEventFallback?: CapabilityManifestRawEventFallback;
+  availableDetailSql?: string;
   status: CapabilityManifestStatus;
   sourceState: CapabilitySourceState;
+  /** Set when the rows were counted from the raw-event fallback, not the primary table. */
+  rowSource?: CapabilityRowSource;
   reasonCode?: CapabilityReasonCode;
   rowEstimate?: number;
 }

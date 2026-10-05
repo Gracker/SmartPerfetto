@@ -1779,7 +1779,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               checked.deliveryErrors.length === 0 && checked.recoverableIssues.length === 0;
             if (acceptedDeclaration || ordinaryCorrectionAccepted) {
               acceptedAssistant = candidate.assistant;
-              acceptedText = candidate.text;
+              // A declaration completion delivers the original body with its new declaration.
+              acceptedText = acceptedDeclaration ?? candidate.text;
               acceptedAttemptId = candidate.attemptId;
               acceptedTurnLimitReached = candidate.turnLimitReached;
             }

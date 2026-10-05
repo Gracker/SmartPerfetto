@@ -3118,7 +3118,38 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(result.completion?.attemptId).not.toContain(':correction:1');
   });
 
-  it('retains the original Claude attempt when a dispatched declaration completion changes the body', async () => {
+  it('counts one turn per model response, not per streamed content block, so the delivery turn survives', async () => {
+    // The SDK emits one assistant message per content block, all with the response id.
+    // Counting messages spent the reserved delivery turn of a 1-response run (claude glm-5.3 E2E).
+    const body = 'One response answer.';
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false, maxTurns: 4});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    let sdkCallCount = 0;
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      sdkCallCount += 1;
+      if (sdkCallCount === 1) {
+        for (const text of ['a', 'b', 'c', 'd', 'e']) {
+          yield {type: 'assistant', parent_tool_use_id: null,
+            message: {id: 'msg-one-response', role: 'assistant', content: [{type: 'text', text}]}};
+        }
+      }
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-one-response', num_turns: 1,
+        result: sdkCallCount === 1 ? body : declaredCandidate(body)};
+    });
+
+    const result = await runtime.analyze('分析当前证据', 'session-claude-one-response', 'trace-one-response',
+      {analysisMode: 'full', runId: 'claude-one-response', packageName: 'com.example.app'});
+
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    // Only classification asks for low effort; the answer and its repair keep the run's own.
+    const classifierCalls = rawClaudeSdkMock.__getQueryCalls().filter(isClassifierCall);
+    expect(classifierCalls.map((call: any) => call.options.effort)).toEqual(['low']);
+    expect(claudeSdkMock.__getQueryCalls().every((call: any) => call.options.effort !== 'low')).toBe(true);
+  });
+
+  it('keeps the original Claude body and takes the declaration when a completion changes the body', async () => {
     const body = 'Original bounded answer.';
     const changed = declaredCandidate('Changed bounded answer.');
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
@@ -3138,10 +3169,11 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         packageName: 'com.example.app'});
 
     expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', runId: 'claude-declaration-changed-body',
-      conclusionFingerprint: analysisDeliveryFingerprint(body)});
-    expect(result.completion?.attemptId).not.toContain(':correction:1');
+    // The completion's declaration is delivered; its edited prose never is.
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed', runId: 'claude-declaration-changed-body'});
+    expect(result.completion?.attemptId).toContain(':correction:1');
     expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
   });
 

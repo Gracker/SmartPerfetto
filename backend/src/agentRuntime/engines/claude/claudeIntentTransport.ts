@@ -23,6 +23,8 @@ export interface ClaudeIntentTransportInput extends IntentTransportInput {
   /** Already resolved by getSdkBinaryOption using that same scoped environment. */
   sdkBinaryOptions: Pick<Options, 'pathToClaudeCodeExecutable'>;
   loadSdk(): Promise<ClaudeIntentSdk>;
+  /** Only the caller knows how much deliberation its request needs; omitted, the SDK default. */
+  effort?: Options['effort'];
 }
 
 /** Uses the caller's pinned Claude environment for one isolated classification query. */
@@ -49,6 +51,7 @@ export function runClaudeIntentTransport(input: ClaudeIntentTransportInput) {
         cwd: input.config.cwd,
         env: input.sdkEnv,
         systemPrompt: input.systemPrompt,
+        ...(input.effort ? {effort: input.effort} : {}),
         maxTurns: 1,
         tools: [], allowedTools: [], mcpServers: {}, strictMcpConfig: true,
         settingSources: [], skills: [], plugins: [], persistSession: false,

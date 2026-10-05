@@ -354,7 +354,7 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('Evidence refs');
     // A receipt written before the reference/proof split renders without those rows.
     expect(html).toContain('<span>断言总数</span><span>5</span>');
-    expect(html).toContain('<span>矛盾</span><span>1</span>');
+    expect(html).toContain('<span>未支持</span><span>1</span>');
     expect(html).not.toContain('<span>引用匹配</span>');
     expect(html).toContain('report-receipt');
     expect(html).toContain('snapshot-receipt');

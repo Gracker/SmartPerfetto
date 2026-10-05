@@ -84,6 +84,50 @@ describe('locatedNumbersShowDeclaredRounding', () => {
     }
   });
 
+  // E2E 4-runtime matrix: faithful roundings written as lists were counted as contradictions.
+  it('reads each listed quantity as one value, with a bare item taking the list\'s trailing unit', () => {
+    expect(quote('cpu4 busy 3.203、2.626 s', '3.203', eq(3202743000, 'ns'))).toBe(true);
+    expect(quote('合计 5390.8 ms / 15.02s', '5390.8 ms', eq('5390.844669', 'ms'))).toBe(true);
+    // A slash with a unitless side may be a fraction or a rate, so it stays closed.
+    expect(quote('主循环 247 ms / 441 次', '247 ms', eq('247.2', 'ms'))).toBe(false);
+    expect(quote('依次 3.2、4.1、5.0 ms', '3.2', eq('3.2', 'ms'))).toBe(true);
+    // A listed value is still checked, and every selected item must agree.
+    expect(quote('依次 3.2、4.1、5.0 ms', '3.2', eq('3.3', 'ms'))).toBe(false);
+    expect(line('依次 3.2、4.1、5.0 ms', eq('5.0', 'ms'))).toBe(false);
+    // A slash between two numbers without units is a fraction; ranges and alternatives stay closed.
+    expect(quote('命中 1/3 的帧', '1', eq(1, 'count'))).toBe(false);
+    // A fraction of a unit is no list, whichever side the location selects.
+    expect(quote('平均 1/3 ms', '1', eq(1, 'ms'))).toBe(false);
+    expect(quote('平均 1/3 ms', '1', eq(1, 'count'))).toBe(false);
+    expect(quote('占比 50/100 %', '50', eq(50, 'percent'))).toBe(false);
+    // A bare decimal before a slash is a fraction's numerator just the same.
+    expect(quote('平均 1.0/3 ms', '1.0', eq('1.0', 'ms'))).toBe(false);
+    expect(quote('平均 -1.0/3 ms', '-1.0', eq('-1.0', 'ms'))).toBe(false);
+    expect(quote('占比 50.0/100 %', '50.0', eq('50.0', 'percent'))).toBe(false);
+    expect(quote('占比 50.0/100%', '50.0', eq('50.0', 'percent'))).toBe(false);
+    expect(quote('CPU 合计 3191.2/3999.6 ms', '3191.2', eq(3191200000, 'ns'))).toBe(false);
+    // A slash with a side that has no closed unit may be a rate, so it stays closed too.
+    expect(quote('主循环 441 次 / 247 ms', '441', eq(441, 'count'))).toBe(false);
+    expect(quote('主循环 441 次 / 247 ms', '247 ms', eq('247.2', 'ms'))).toBe(false);
+    // Full-width slashes and colon ratios are fractions and ratios as well.
+    expect(quote('平均 1／3 ms', '3 ms', eq(3, 'ms'))).toBe(false);
+    expect(quote('占比 50／100%', '100%', eq(100, 'percent'))).toBe(false);
+    expect(quote('比例 1:3', '3', eq(3, 'count'))).toBe(false);
+    expect(quote('比例 1:3 ms', '3 ms', eq(3, 'ms'))).toBe(false);
+    // A bare item listed beside a measured one is no value of its own (its unit was left out).
+    for (const text of ['durations 3 ms, 4', 'durations 3 ms，4', 'durations 3 ms、4']) {
+      expect(quote(text, '4', eq(4, 'count'))).toBe(false);
+    }
+    // `and` / `和` also bound ranges, so they stay closed as on the original rule.
+    for (const [text, selected, value] of [['between 3 and 4 ms', '3', 3], ['between 3 and 4 ms', '4 ms', 4],
+      ['介于 3 和 4 ms', '3', 3], ['介于 3 和 4 ms', '4 ms', 4]] as const) {
+      expect(quote(text, selected, eq(value, 'ms'))).toBe(false);
+    }
+    expect(quote('合计 5390.8 ms／15.02 s', '5390.8 ms', eq('5390.844669', 'ms'))).toBe(true);
+    expect(quote('耗时 3 或 4 ms', '4 ms', eq(4, 'ms'))).toBe(false);
+    expect(quote('耗时 3.1~4.0 ms', '4.0 ms', eq(4, 'ms'))).toBe(false);
+  });
+
   it('fails closed on units and magnitudes outside the closed mapping and on case-shifted units', () => {
     for (const span of ['耗时 6000 毫秒（5,844.24 ms）', '1.2 万 ms，5,844.24 ms', '3 倍，5,844.24 ms', '6 秒；5,844.24 ms']) {
       expect(line(span, eq(5844240564, 'ns'))).toBe(false);
