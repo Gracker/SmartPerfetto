@@ -461,9 +461,19 @@ evidence contract" at the end):
 
 An invalid `exact_sql` or `investigation_evidence` is an error everywhere; an
 invalid `process_scope` only makes the exact scope unavailable and reports
-`process_scope_invalid`. Every `exact_sql` unit in the corpus must be executed
-and pass under some Trace case's `exact_scope` binding, or
-`npm run trace:sql-regression` fails.
+`process_scope_invalid`. Every exact unit in the corpus (each `exact_sql`, and
+each step without one whose own SQL binds the UPID through
+`binding: native_upid`) must be executed and pass under some Trace case's
+`exact_scope` binding, or `npm run trace:sql-regression` fails. Passing also
+requires its rows to depend on that UPID alone: rerun without the process
+selectors the identity gate wrote (the package and its aliases, upid, pid) it
+must answer the same, and rerun unscoped it must answer differently (otherwise
+the trace cannot tell the processes apart and the binding is inconclusive).
+This proves independence from process-selection parameters, not that the data
+itself is per process: rx packets record only a socket uid, so processes that
+share a uid (a same-package `:worker`) share packet evidence, and a step that
+reads such data says so in `process_scope.limitations`, which makes its exact
+support partial.
 
 ---
 

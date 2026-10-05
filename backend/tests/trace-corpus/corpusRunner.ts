@@ -6,9 +6,10 @@ import path from 'path';
 import crypto from 'crypto';
 
 import {loadStrategies} from '../../src/agentv3/strategyLoader';
-import {executableSqlUnits} from '../../src/services/skillEngine/processScopeSql';
+import {executableSqlUnits, sqlRunBy} from '../../src/services/skillEngine/processScopeSql';
 import type {SkillDefinition} from '../../src/services/skillEngine/types';
-import {createSkillEvaluator, SkillEvaluator, type EvalStepResult} from '../skill-eval/runner';
+import {createSkillEvaluator, SkillEvaluator, type EvalStepResult, type ScopeProbeOutcome} from '../skill-eval/runner';
+import {stableStringify} from '../../src/utils/stableJson';
 import {analysisTracePath} from '../helpers/traceCorpus';
 
 type FixtureTokenContext = {
@@ -121,9 +122,18 @@ export const exactUnitKey = (target: string, unit: string): string => `${target}
 /** A SQL string literal. */
 const sqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
-/** The Skill's exact_sql units, from the walk every Skill SQL check shares. */
+/**
+ * The units a Skill runs as target SQL under an exact UPID, from the walk
+ * every Skill SQL check shares: each exact_sql, and the SQL of a step that has
+ * none and binds the scope's UPID itself (`binding: native_upid`), which an
+ * exact run executes as written (processScopeSql.sqlRunBy). A step bound
+ * through `effective_target_processes` also runs as written, but is not yet
+ * held to a binding: that is the contract's next stage, not an exemption.
+ */
 function exactSqlUnits(definition: SkillDefinition) {
-  return executableSqlUnits(definition).filter(unit => unit.variant === 'exact');
+  return executableSqlUnits(definition).filter(unit => unit.variant === 'exact'
+    || (sqlRunBy(unit.node, 'exact') === unit.source && unit.source.process_scope?.binding === 'native_upid'
+      && unit.source.process_scope.exact_unavailable === undefined));
 }
 
 export function exactSqlUnitPaths(definition: SkillDefinition): string[] {
@@ -495,7 +505,17 @@ async function runExactUnits(
   if (params.upid !== undefined && Number(params.upid) !== upid) {
     throw new Error(`exact_scope UPID ${upid} conflicts with the expectation's upid parameter ${String(params.upid)}`);
   }
-  const results = await runRequiredSteps(evaluator, expectation.required_steps ?? [], {...params, upid});
+  const exactParams = {...params, upid};
+  const required = expectation.required_steps ?? [];
+  const units = binding.units.map(unit => ({unit, stepId: exactUnitStepId(definition, unit.unit)!}));
+  const probeStepIds = units.map(({stepId}) => stepId);
+  // Each bound step's scope probe rides on the exact run itself. A root-atomic
+  // Skill's exact run takes the production root path, which has no fork
+  // point, so its probe gets one run of its own (SkillEvaluator scopeProbeStepIds).
+  const rootOnly = required.length === 1 && required[0] === 'root';
+  const results = rootOnly
+    ? await runRequiredSteps(evaluator, required, exactParams)
+    : await evaluator.executeStepSequence(required, exactParams, {scopeProbeStepIds: probeStepIds});
   // A step may be skipped or declare exact scope unavailable; it may not fail.
   for (const result of results) {
     if (result.code === 'optional_query_error' ||
@@ -504,8 +524,7 @@ async function runExactUnits(
     }
   }
   const evidence = noExactEvidence();
-  for (const unit of binding.units) {
-    const stepId = exactUnitStepId(definition, unit.unit);
+  for (const {unit, stepId} of units) {
     const result = results.find(candidate => candidate.stepId === stepId);
     const error = exactUnitResultError(unit.unit, result, upid);
     if (error) throw new Error(error);
@@ -524,7 +543,50 @@ async function runExactUnits(
       evidence.execution_only.push(unit.unit);
     }
   }
+  const probed = rootOnly
+    ? await evaluator.executeStepSequence(required, exactParams, {scopeProbeStepIds: probeStepIds})
+    : results;
+  const isolation = scopeIsolationFailures(units.map(({unit, stepId}) => ({unit: unit.unit, stepId})), probed, upid);
+  if (isolation.length > 0) throw new Error(isolation.join('; '));
   return evidence;
+}
+
+/** A step result as the isolation probe compares it: its outcome and its rows. */
+const probedOutcome = ({success, code, error, data}: ScopeProbeOutcome): string =>
+  stableStringify({success, code, error, data});
+
+/**
+ * Why the bound units' rows depend on more than the exact UPID, or why this
+ * trace cannot tell, from a run with each unit's step probed (SkillEvaluator
+ * scopeProbeStepIds). `blanked` reran it without the process selectors, which
+ * turns a named-mode fallback into every process: a unit whose exact branch
+ * still admits rows by package (a same-package `:worker`, say), pid or upid
+ * parameter answers it differently. `open` reran it unscoped, which is every
+ * process: if that answers like the exact run, no other process in this trace
+ * carries the unit's evidence and the first check proved nothing, so the
+ * fixture, not the Skill, is insufficient. A step with an exact_sql has no
+ * unscoped form, so only its blanked check applies.
+ */
+export function scopeIsolationFailures(
+  units: ReadonlyArray<{unit: string; stepId: string}>,
+  results: readonly EvalStepResult[],
+  upid: number,
+): string[] {
+  return units.flatMap(({unit, stepId}) => {
+    const result = results.find(candidate => candidate.stepId === stepId);
+    if (!result?.scopeProbe) return [`${unit} was not probed for scope isolation`];
+    const exact = probedOutcome(result);
+    if (probedOutcome(result.scopeProbe.blanked) !== exact) {
+      return [`${unit} reads more than its exact UPID: without the process selectors the identity gate `
+        + 'wrote it answers differently, so its exact branch still admits rows by package, pid or upid parameter'];
+    }
+    if (result.scopeProbe.open && probedOutcome(result.scopeProbe.open) === exact) {
+      return [`${unit} isolation is inconclusive: it answers for every process as for UPID ${upid}, `
+        + 'so no other process in this trace carries its evidence; '
+        + 'bind a trace where one does (the fixture is insufficient, not the Skill)'];
+    }
+    return [];
+  });
 }
 
 /** The expectation's steps as written, with its forced, isolated and declared-skip contracts. */

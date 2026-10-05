@@ -11,12 +11,15 @@
 import path from 'path';
 import { TraceProcessorService } from '../../src/services/traceProcessorService';
 import { SkillExecutor, createSkillExecutor, LayeredResult } from '../../src/services/skillEngine/skillExecutor';
-import { SkillDefinition, StepResult, SkillExecutionResult, SkillExecutionContext } from '../../src/services/skillEngine/types';
+import { SkillDefinition, SkillStep, StepResult, SkillExecutionResult, SkillExecutionContext } from '../../src/services/skillEngine/types';
 import { validateSkillInputs } from '../../src/services/skillEngine/skillValidator';
 import { selectedStepResult } from '../../src/services/skillEngine/referencedSkillStep';
 import { resultScopeProvenance } from '../../src/services/skillEngine/scopeEvidence';
 import { normalizeSkillDefinition } from '../../src/services/skillEngine/skillLoader';
-import { assertEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
+import { assertEffectiveProcessScope, createEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
+import { getEffectiveIdentityConfig, processSelectorKeys } from '../../src/services/processIdentity/identityGate';
+import { sqlIsReadOnly } from '../../src/services/skillEngine/sqlStructure';
+import { sqlRunBy } from '../../src/services/skillEngine/processScopeSql';
 import type { EvidenceScopeProvenanceV1 } from '../../src/types/identityContract';
 import yaml from 'js-yaml';
 import fs from 'fs';
@@ -35,6 +38,11 @@ export interface EvalStepResult {
   executionTimeMs: number;
   /** The process scope the step's evidence was produced under, as the executor recorded it. */
   scopeProvenance?: EvidenceScopeProvenanceV1;
+  /**
+   * The step's scope-isolation variants, for a step named in `scopeProbeStepIds`;
+   * `open` only where an unscoped run executes the same SQL (no exact_sql).
+   */
+  scopeProbe?: {blanked: ScopeProbeOutcome; open?: ScopeProbeOutcome};
 }
 
 export interface EvalSkillResult {
@@ -53,7 +61,24 @@ export interface EvalStepSequenceOptions {
    * list manifest-backed; the default path always preserves conditions.
    */
   forceSqlStepIds?: readonly string[];
+  /**
+   * Steps that, after their production run, also rerun in each scope-probe
+   * variant on a fork of the context that is never bound back, so every later
+   * step sees exactly the production results.
+   */
+  scopeProbeStepIds?: readonly string[];
 }
+
+/**
+ * How a scope-isolation probe reruns a step beside its production run.
+ * `blanked` keeps the exact process scope and removes the process selectors
+ * (processSelectorKeys), so a unit that still reads them under an exact scope
+ * sees its every-process fallback. `open` also swaps in an unscoped scope:
+ * that fallback itself, what every process in the trace carries.
+ */
+type ScopeProbeVariant = 'blanked' | 'open';
+
+export type ScopeProbeOutcome = Pick<EvalStepResult, 'success' | 'code' | 'error' | 'data'>;
 
 export interface NormalizedResult {
   layers: {
@@ -377,7 +402,13 @@ export class SkillEvaluator {
     const results: EvalStepResult[] = [];
     const forcedSqlSteps = new Set(options.forceSqlStepIds || []);
     for (const stepId of stepIds) {
-      const step = this.skill.steps?.find(s => s.id === stepId);
+      // A root-atomic Skill's SQL runs here as its one step. The production
+      // root path is executeRootAtomic; this one serves the scope probe, whose
+      // variants and baseline must share an execution path.
+      const step = stepId === 'root' && this.skill.sql
+        ? {id: 'root', type: 'atomic', sql: this.skill.sql, sql_fragments: this.skill.sql_fragments,
+          process_scope: this.skill.process_scope, exact_sql: this.skill.exact_sql} as SkillStep
+        : this.skill.steps?.find(s => s.id === stepId);
       if (!step) {
         throw new Error(`Step not found: ${stepId}`);
       }
@@ -389,6 +420,9 @@ export class SkillEvaluator {
         ? { ...step, condition: undefined }
         : step;
       const stepResult = await executor.executeStep(executionStep, context, this.skill.name) as StepResult;
+      const scopeProbe = options.scopeProbeStepIds?.includes(stepId)
+        ? await this.runScopeProbe(executionStep, context)
+        : undefined;
       if (stepResult.success) {
         context.results[step.id] = stepResult;
         // The production binding, so save_from and its unobserved-step rule apply here too.
@@ -403,10 +437,43 @@ export class SkillEvaluator {
         code: stepResult.code,
         executionTimeMs: stepResult.executionTimeMs || 0,
         scopeProvenance: resultScopeProvenance(stepResult),
+        ...(scopeProbe ? {scopeProbe} : {}),
       });
     }
 
     return results;
+  }
+
+  /**
+   * Reruns `step` on forks of `context`: blanked, and open where an unscoped
+   * run executes the same SQL. The forks share the loaded trace, so the SQL an
+   * exact run executes must be read-only: a view one run created would
+   * otherwise answer the next. Its fragments need no check: each is a bare CTE
+   * body the executor places inside that statement's WITH.
+   */
+  private async runScopeProbe(step: any, context: SkillExecutionContext): Promise<EvalStepResult['scopeProbe']> {
+    const exact = sqlRunBy(step, 'exact');
+    if (!exact?.sql || !sqlIsReadOnly(exact.sql)) {
+      throw new Error(`Scope-isolation probe of ${step.id} needs read-only step SQL`);
+    }
+    const selectors = new Set(processSelectorKeys(getEffectiveIdentityConfig(this.skill!)));
+    const strip = (values: Record<string, any> | undefined) =>
+      Object.fromEntries(Object.entries(values ?? {}).filter(([key]) => !selectors.has(key)));
+    const run = async (variant: ScopeProbeVariant): Promise<ScopeProbeOutcome> => {
+      const fork: SkillExecutionContext = {
+        ...context,
+        params: strip(context.params),
+        inherited: strip(context.inherited),
+        results: {...context.results},
+        variables: {...context.variables},
+        processScope: variant === 'open' ? createEffectiveProcessScope(this.traceId!, 'current') : context.processScope,
+      };
+      const result = await (this.executor as any).executeStep(step, fork, this.skill!.name) as StepResult;
+      return {success: result.success, code: result.code, error: result.error, data: this.extractStepData(result)};
+    };
+    // Unscoped, a step with an exact_sql runs its named SQL: another statement.
+    const openApplies = sqlRunBy(step, 'named') === exact;
+    return {blanked: await run('blanked'), ...(openApplies ? {open: await run('open')} : {})};
   }
 
   /** Execute a root-level atomic Skill through the production runtime path. */

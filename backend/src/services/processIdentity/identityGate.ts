@@ -655,7 +655,7 @@ export function getConsumableProcessIdentitySelectors(skill: SkillDefinition): S
     (config.policy === 'required' || config.policy === 'verify_if_present') &&
     (!skill.process_scope || skill.process_scope.role === 'target');
   if (hasProcessGate) {
-    for (const key of [...DEFAULT_PROCESS_IDENTITY_ALIASES, ...(config.aliases || []), 'upid', 'pid']) allowed.add(key);
+    for (const key of processSelectorKeys(config)) allowed.add(key);
   } else if (targetBinding) {
     allowed.add('upid');
     allowed.add('pid');
@@ -663,6 +663,11 @@ export function getConsumableProcessIdentitySelectors(skill: SkillDefinition): S
   // Resolving a thread's process does not make the Skill's SQL thread-scoped.
   for (const key of ['thread_name', 'threadName']) if (!declared.has(key)) allowed.delete(key);
   return allowed;
+}
+
+/** The parameters that select a Skill's process: every name alias it reads, upid and pid. */
+export function processSelectorKeys(config: SkillIdentityConfig): string[] {
+  return [...new Set([...DEFAULT_PROCESS_IDENTITY_ALIASES, ...(config.aliases || []), 'upid', 'pid'])];
 }
 
 function firstValue(source: Record<string, any>, keys: string[]): any {
@@ -686,7 +691,7 @@ export function extractProcessIdentityTarget(
   config: SkillIdentityConfig,
 ): ProcessIdentityTarget {
   const aliases = config.aliases?.length ? config.aliases : DEFAULT_PROCESS_IDENTITY_ALIASES;
-  const hasExplicitSelector = firstValue(params, [...DEFAULT_PROCESS_IDENTITY_ALIASES, ...aliases, 'upid', 'pid']) !== undefined;
+  const hasExplicitSelector = firstValue(params, processSelectorKeys(config)) !== undefined;
   const requestedName = firstValue(params, [...aliases, ...DEFAULT_PROCESS_IDENTITY_ALIASES]) ??
     (hasExplicitSelector ? undefined : firstValue(inherited, aliases));
   const threadName = firstValue(params, ['thread_name', 'threadName']) ?? firstValue(inherited, ['thread_name', 'threadName']);

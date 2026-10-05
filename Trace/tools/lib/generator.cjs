@@ -23,6 +23,14 @@ const FIRST_SYNTHETIC_PID = 700000;
 const DEFAULT_APP_UID = 10999;
 const PROCESS_STATE_ENUM = 'com.android.internal.ProcessStateEnum';
 const HEAP_GRAPH_EXTENSION = '.com.android.art.tracing.ArtHeapGraphTracePacket.heapGraph';
+const NETWORK_PACKET_EXTENSION = '.android.net.connectivity.tracing.ConnectivityTracePacket.networkPacket';
+// Ftrace common_flags bits trace processor reads as a wakeup from interrupt
+// context (thread_state.irq_context = 1): TRACE_FLAG_HARDIRQ, TRACE_FLAG_SOFTIRQ.
+// Trace processor reads them only from compact sched wakings, which name no
+// waker: it attributes the wakeup to whatever ran on that CPU, as an
+// interrupt does.
+const IRQ_CONTEXT_COMMON_FLAGS = Object.freeze({hardirq: 0x08, softirq: 0x10});
+const NETWORK_PACKET_DIRECTIONS = Object.freeze({received: 'DIR_INGRESS', transmitted: 'DIR_EGRESS'});
 const HEAP_GRAPH_LIMITS = Object.freeze({types: 5000, objects: 10000, roots: 1000, references: 50000});
 const GPU_COMPUTE_KERNELS_EXTENSION = '.perfetto.protos.GpuInternedData.computeKernels';
 const GPU_COMPUTE_ARG_NAMES_EXTENSION = '.perfetto.protos.GpuInternedData.computeArgNames';
@@ -46,7 +54,7 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
   'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
-  'android-system-info',
+  'android-system-info', 'android-network-packet', 'android-packages-list',
 ]);
 // The SystemInfo device identity an `android-system-info` signal may set,
 // keyed by the name trace processor stores each value under in `metadata`.
@@ -667,6 +675,12 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     if (!ftraceByCpu.has(cpu)) ftraceByCpu.set(cpu, []);
     return ftraceByCpu.get(cpu);
   }
+  const compactWakingsByCpu = new Map();
+  function compactWakingsForCpu(cpu) {
+    eventsForCpu(cpu);
+    if (!compactWakingsByCpu.has(cpu)) compactWakingsByCpu.set(cpu, []);
+    return compactWakingsByCpu.get(cpu);
+  }
 
   for (const [index, signal] of scenario.signals.entries()) {
     const timestamp = absoluteTimestamp(anchorNs, signal.at_ns, `scenario.signals[${index}].at_ns`);
@@ -750,15 +764,32 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const thread = schedActor(signal.thread, identities, 'sched-waking thread');
       const waker = schedActor(signal.waker_thread, identities, 'sched-waking waker_thread');
       if (thread.tid === 0) throw new Error('sched-waking cannot wake the idle thread');
+      const prio = schedPriority(signal.sched_priority, 'sched-waking sched_priority');
+      const targetCpu = nonNegativeInteger(signal.target_cpu, 'sched-waking target_cpu');
+      if (signal.irq_context !== undefined) {
+        if (!Object.hasOwn(IRQ_CONTEXT_COMMON_FLAGS, signal.irq_context)) {
+          throw new Error('sched-waking irq_context must be hardirq or softirq');
+        }
+        if (signal.waker_thread !== null) throw new Error('an interrupt-context sched-waking has no waker_thread');
+        compactWakingsForCpu(signal.cpu).push({
+          timestamp: BigInt(timestamp),
+          pid: thread.tid,
+          comm: thread.name,
+          prio,
+          targetCpu,
+          commonFlags: IRQ_CONTEXT_COMMON_FLAGS[signal.irq_context],
+        });
+        continue;
+      }
       eventsForCpu(signal.cpu).push({
         timestamp,
         pid: waker.tid,
         schedWaking: {
           comm: thread.name,
           pid: thread.tid,
-          prio: schedPriority(signal.sched_priority, 'sched-waking sched_priority'),
+          prio,
           success: 1,
-          targetCpu: nonNegativeInteger(signal.target_cpu, 'sched-waking target_cpu'),
+          targetCpu,
         },
       });
     } else if (signal.type === 'process-stats') {
@@ -843,6 +874,36 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
               loadTraceType(repoRoot).root.lookupEnum('com.android.internal.OomChangeReasonEnum'), signal.reason, 'android-process-state-change reason')} : {}),
             seqId: String(nonNegativeInteger(signal.seq_id ?? index, 'android-process-state-change seq_id')),
           },
+        },
+      });
+    } else if (signal.type === 'android-network-packet') {
+      // The packet's socket uid is its owner actor's uid; trace processor
+      // names it by that uid's app id in package_list (android-packages-list).
+      const owner = processActor(identities, signal.owner_process, 'android-network-packet owner_process');
+      if (!Object.hasOwn(NETWORK_PACKET_DIRECTIONS, signal.direction)) {
+        throw new Error('android-network-packet direction must be received or transmitted');
+      }
+      dataPackets.push({
+        timestamp,
+        [NETWORK_PACKET_EXTENSION]: {
+          direction: NETWORK_PACKET_DIRECTIONS[signal.direction],
+          networkInterface: nonEmptyString(signal.interface, 'android-network-packet interface'),
+          length: positiveUint32(signal.length, 'android-network-packet length'),
+          uid: owner.uid,
+          ipProto: 6,
+        },
+      });
+    } else if (signal.type === 'android-packages-list') {
+      if (!Array.isArray(signal.packages) || signal.packages.length === 0) {
+        throw new Error('android-packages-list packages must be a non-empty array');
+      }
+      dataPackets.push({
+        timestamp,
+        packagesList: {
+          packages: signal.packages.map((entry, packageIndex) => {
+            const process = processActor(identities, entry.process, `android-packages-list packages[${packageIndex}] process`);
+            return {name: nonEmptyString(entry.name, `android-packages-list packages[${packageIndex}] name`), uid: String(process.uid)};
+          }),
         },
       });
     } else if (signal.type === 'managed-heap-graph') {
@@ -1189,7 +1250,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       .map(([cpu, event]) => ({
         timestamp: anchorNs,
         trustedPacketSequenceId: options.sequenceId,
-        ftraceEvents: {cpu, event},
+        ftraceEvents: {cpu, event, ...(compactWakingsByCpu.has(cpu) ? {compactSched: compactSched(compactWakingsByCpu.get(cpu))} : {})},
       })),
   ];
   const buffer = encodeTrace(repoRoot, packets);
@@ -1204,6 +1265,21 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       ...(Object.keys(inputEventIds).length > 0 ? {input_event_ids: inputEventIds} : {}),
       overlay_sha256: sha256Buffer(buffer),
     },
+  };
+}
+
+/** Compact sched wakings of one CPU bundle: delta-encoded timestamps, interned comms. */
+function compactSched(wakings) {
+  const sorted = [...wakings].sort((left, right) => (left.timestamp < right.timestamp ? -1 : left.timestamp > right.timestamp ? 1 : 0));
+  const internTable = [...new Set(sorted.map((waking) => waking.comm))];
+  return {
+    internTable,
+    wakingTimestamp: sorted.map((waking, index) => String(index === 0 ? waking.timestamp : waking.timestamp - sorted[index - 1].timestamp)),
+    wakingPid: sorted.map((waking) => waking.pid),
+    wakingTargetCpu: sorted.map((waking) => waking.targetCpu),
+    wakingPrio: sorted.map((waking) => waking.prio),
+    wakingCommIndex: sorted.map((waking) => internTable.indexOf(waking.comm)),
+    wakingCommonFlags: sorted.map((waking) => waking.commonFlags),
   };
 }
 

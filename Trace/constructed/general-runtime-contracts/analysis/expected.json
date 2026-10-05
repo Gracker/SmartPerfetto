@@ -186,7 +186,17 @@
         "percent",
         "self_percent"
       ],
-      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "root",
+            "mode": "execution",
+            "min_rows": 1
+          }
+        ]
+      }
     },
     {
       "id": "execute-main_thread_states_in_range",
@@ -220,7 +230,17 @@
         "pct",
         "count"
       ],
-      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "root",
+            "mode": "execution",
+            "min_rows": 1
+          }
+        ]
+      }
     },
     {
       "id": "definition-multi_trace_result_comparison",

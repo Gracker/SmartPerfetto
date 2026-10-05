@@ -59,6 +59,7 @@ function loadTraceType(repoRoot) {
   root.loadSync([
     path.join(perfettoRoot, 'protos/perfetto/trace/trace.proto'),
     path.join(perfettoRoot, 'protos/third_party/android/art/heap_graph.proto'),
+    path.join(perfettoRoot, 'protos/third_party/android/connectivity/network_trace.proto'),
     path.join(perfettoRoot, 'protos/perfetto/trace/gpu/gpu_interned_data.proto'),
     path.join(perfettoRoot, `${FRAMEWORKS_BASE_TRACING}/frameworks_base_trace_packet.proto`),
     path.join(perfettoRoot, `${FRAMEWORKS_BASE_TRACING}/frameworks_base_track_event.proto`),

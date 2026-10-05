@@ -66,7 +66,7 @@
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
               "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
               "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change",
-              "android-system-info"
+              "android-system-info", "android-network-packet", "android-packages-list"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -76,6 +76,25 @@
           "prev_thread": {"type": ["string", "null"], "description": "Explicit sched-switch source actor; null denotes idle."},
           "next_thread": {"type": ["string", "null"], "description": "Explicit sched-switch destination actor; null denotes idle."},
           "waker_thread": {"type": ["string", "null"]},
+          "irq_context": {"enum": ["hardirq", "softirq"], "description": "sched-waking raised from interrupt context: sets the ftrace common_flags bit trace processor reads as thread_state.irq_context."},
+          "direction": {"enum": ["received", "transmitted"], "description": "android-network-packet traffic direction."},
+          "interface": {"type": "string", "minLength": 1, "description": "android-network-packet network interface name."},
+          "length": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "android-network-packet length in bytes."},
+          "owner_process": {"type": "string", "description": "Actor whose uid owns a battery-stats-span or an android-network-packet socket."},
+          "packages": {
+            "type": "array",
+            "minItems": 1,
+            "description": "android-packages-list entries: a package name for an actor's uid.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "process"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "process": {"type": "string", "minLength": 1}
+              }
+            }
+          },
           "prev_priority": {"type": "integer", "minimum": -1, "maximum": 139},
           "next_priority": {"type": "integer", "minimum": -1, "maximum": 139},
           "sched_priority": {"type": "integer", "minimum": -1, "maximum": 139},
@@ -92,7 +111,6 @@
           "atom": {"enum": ["app_standby_bucket_changed", "app_freeze_changed"], "description": "Statsd atom grafted from the pinned trace processor atoms.descriptor."},
           "fields": {"type": "object", "description": "Statsd atom fields by snake_case proto name; enum fields take value names."},
           "event": {"enum": ["longwake"], "description": "BatteryStats history event for battery-stats-span."},
-          "owner_process": {"type": "string", "description": "Actor whose uid owns a battery-stats-span."},
           "records": {
             "type": "array",
             "minItems": 1,
@@ -267,6 +285,14 @@
           {
             "if": {"properties": {"type": {"const": "sched-waking"}}},
             "then": {"required": ["cpu", "thread", "waker_thread", "target_cpu", "sched_priority"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-network-packet"}}},
+            "then": {"required": ["direction", "interface", "length", "owner_process"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-packages-list"}}},
+            "then": {"required": ["packages"]}
           },
           {
             "if": {"properties": {"type": {"const": "cpu-frequency-limits"}}},

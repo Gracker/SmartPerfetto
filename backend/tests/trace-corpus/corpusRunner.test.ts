@@ -22,6 +22,7 @@ import {
   resolveFrameTokens,
   resolveParameterTokens,
   runCorpusRegression,
+  scopeIsolationFailures,
   sqlResultState,
   unboundExactUnitFailures,
   validateStrategyExpectationDeclaration,
@@ -125,6 +126,87 @@ describe('SkillEvaluator step sequence identity admission', () => {
       expect(named.data).toEqual([{selected_upid: 43}]);
       expect(exactUnitResultError('target.exact_sql', named, 43)).toContain('did not record evidence');
     } finally {db.close();}
+  });
+
+  describe('scope-isolation probe', () => {
+    // A native_upid step whose own SQL an exact run executes, in the fixture
+    // above: 42 is com.example, 43 its same-uid com.example.worker.
+    const probeSkill = (sql: string): SkillDefinition => ({name: 'corpus_scoped_steps', version: '1', type: 'composite',
+      meta: {display_name: 'Probe', description: 'Scope isolation fixture'},
+      identity: {policy: 'required'},
+      inputs: [{name: 'upid', type: 'integer', required: false}, {name: 'package', type: 'string', required: false}],
+      steps: [{id: 'target', type: 'atomic', process_scope: {role: 'target', binding: 'native_upid'}, sql}]});
+    const isolated = 'SELECT upid FROM process WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})'
+      + " AND (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR name = '${package}') ORDER BY upid";
+    // Keeps the trusted token but still admits rows by the package parameter.
+    const leaky = "SELECT upid FROM process WHERE upid = ${__process_scope.upid} OR '${package}' = ''"
+      + " OR name GLOB '${package}:*' ORDER BY upid";
+    // The probe as the runner applies it: one run with the unit's step probed.
+    const probe = async (evaluator: SkillEvaluator) => scopeIsolationFailures([{unit: 'target', stepId: 'target'}],
+      await evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']}), 42);
+    const withSkill = (sql: string) => {
+      const fixture = scopedEvaluator();
+      const skill = probeSkill(sql);
+      fixture.executor.registerSkills([skill]);
+      Object.assign(fixture.evaluator, {skill});
+      return {...fixture, skill};
+    };
+
+    it('counts a native_upid step without exact_sql as an exact unit by its step name', () => {
+      expect(exactSqlUnitPaths(probeSkill(isolated))).toEqual(['target']);
+      const unavailable = probeSkill(isolated);
+      (unavailable.steps![0] as any).process_scope = {role: 'target', binding: 'native_upid', exact_unavailable: 'no exact form'};
+      expect(exactSqlUnitPaths(unavailable)).toEqual([]);
+      expect(unboundExactUnitFailures([probeSkill(isolated)], new Set())[0].reason)
+        .toBe('exact SQL unit target was not executed by any corpus exact_scope binding');
+    });
+
+    it('reruns a probed step on forks: blanked keeps the exact scope, open is every process', async () => {
+      const {db, evaluator} = withSkill(isolated);
+      try {
+        const [result] = await evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']});
+        expect(result.data).toEqual([{upid: 42}]);
+        expect(result.scopeProbe?.blanked.data).toEqual([{upid: 42}]);
+        expect(result.scopeProbe?.open?.data).toEqual([{upid: 42}, {upid: 43}]);
+        await expect(probe(evaluator)).resolves.toEqual([]);
+      } finally {db.close();}
+    });
+
+    it('fails a unit that still admits rows by package under the exact scope', async () => {
+      const {db, evaluator} = withSkill(leaky);
+      try {
+        expect(await probe(evaluator)).toEqual([expect.stringContaining('target reads more than its exact UPID')]);
+      } finally {db.close();}
+    });
+
+    it('calls a trace that cannot tell the processes apart inconclusive, not the Skill wrong', async () => {
+      const {db, evaluator} = withSkill(isolated);
+      try {
+        db.exec('DELETE FROM process WHERE upid = 43');
+        const failures = await probe(evaluator);
+        expect(failures).toEqual([expect.stringContaining('target isolation is inconclusive')]);
+        expect(failures[0]).toContain('the fixture is insufficient, not the Skill');
+      } finally {db.close();}
+    });
+
+    it('gives a step with an exact_sql no unscoped rerun, which would run its named SQL', async () => {
+      const {db, evaluator, skill} = withSkill(leaky);
+      (skill.steps![0] as any).exact_sql = {process_scope: {role: 'target', binding: 'native_upid'},
+        sql: 'SELECT upid FROM process WHERE upid = ${__process_scope.upid}'};
+      try {
+        const [result] = await evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']});
+        expect(result.data).toEqual([{upid: 42}]);
+        expect(result.scopeProbe).toEqual({blanked: expect.objectContaining({data: [{upid: 42}]})});
+      } finally {db.close();}
+    });
+
+    it('refuses to probe SQL that changes state', async () => {
+      const {db, evaluator} = withSkill("CREATE VIEW IF NOT EXISTS probe_view AS SELECT ${__process_scope.upid} AS upid");
+      try {
+        await expect(evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']}))
+          .rejects.toThrow('Scope-isolation probe of target needs read-only step SQL');
+      } finally {db.close();}
+    });
   });
 
   it('preserves unverified named filtering when the optional resolver is unavailable', async () => {

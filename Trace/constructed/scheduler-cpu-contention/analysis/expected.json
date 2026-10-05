@@ -988,7 +988,17 @@
         "first_ts",
         "last_ts"
       ],
-      "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+      "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "root",
+            "mode": "execution",
+            "min_rows": 1
+          }
+        ]
+      }
     },
     {
       "id": "execute-sched_latency_in_range",

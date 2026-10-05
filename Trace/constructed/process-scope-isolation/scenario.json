@@ -1,0 +1,751 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "worker",
+        "name": "com.smartperfetto.fixture:worker",
+        "uid": 10999
+      },
+      {
+        "id": "peer",
+        "name": "com.smartperfetto.peer",
+        "uid": 10998
+      },
+      {
+        "id": "system",
+        "name": "system_server",
+        "uid": 1000
+      }
+    ],
+    "threads": [
+      {
+        "id": "app-main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "app-net",
+        "process": "app",
+        "name": "OkHttp Network"
+      },
+      {
+        "id": "worker-main",
+        "process": "worker",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "worker-net",
+        "process": "worker",
+        "name": "OkHttp Network"
+      },
+      {
+        "id": "peer-main",
+        "process": "peer",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "peer-net",
+        "process": "peer",
+        "name": "OkHttp Network"
+      },
+      {
+        "id": "system-main",
+        "process": "system",
+        "name": "system_server",
+        "is_main": true
+      },
+      {
+        "id": "input-reader",
+        "process": "system",
+        "name": "InputReader"
+      },
+      {
+        "id": "input-dispatcher",
+        "process": "system",
+        "name": "InputDispatcher"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "0",
+      "duration_ns": "1000000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "SmartPerfetto::CASE::process-scope-isolation"
+    },
+    {
+      "type": "android-packages-list",
+      "at_ns": "0",
+      "packages": [
+        {
+          "name": "com.smartperfetto.fixture",
+          "process": "app"
+        },
+        {
+          "name": "com.smartperfetto.peer",
+          "process": "peer"
+        }
+      ]
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "10000000",
+      "duration_ns": "1000000",
+      "thread": "app-net",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "android-network-packet",
+      "at_ns": "49500000",
+      "direction": "received",
+      "interface": "wlan0",
+      "length": 1500,
+      "owner_process": "app"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "50000000",
+      "cpu": 0,
+      "thread": "app-net",
+      "waker_thread": null,
+      "target_cpu": 0,
+      "sched_priority": 120,
+      "irq_context": "softirq"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "50100000",
+      "duration_ns": "1000000",
+      "thread": "app-net",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "android-network-packet",
+      "at_ns": "149500000",
+      "direction": "received",
+      "interface": "wlan0",
+      "length": 1500,
+      "owner_process": "peer"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "150000000",
+      "cpu": 0,
+      "thread": "app-net",
+      "waker_thread": null,
+      "target_cpu": 0,
+      "sched_priority": 120,
+      "irq_context": "softirq"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "150100000",
+      "duration_ns": "1000000",
+      "thread": "app-net",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "10000000",
+      "duration_ns": "1000000",
+      "thread": "worker-net",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "android-network-packet",
+      "at_ns": "249500000",
+      "direction": "received",
+      "interface": "wlan0",
+      "length": 1500,
+      "owner_process": "worker"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "250000000",
+      "cpu": 1,
+      "thread": "worker-net",
+      "waker_thread": null,
+      "target_cpu": 1,
+      "sched_priority": 120,
+      "irq_context": "softirq"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "250100000",
+      "duration_ns": "1000000",
+      "thread": "worker-net",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "10000000",
+      "duration_ns": "1000000",
+      "thread": "peer-net",
+      "cpu": 2,
+      "end_state": "S"
+    },
+    {
+      "type": "android-network-packet",
+      "at_ns": "349500000",
+      "direction": "received",
+      "interface": "wlan0",
+      "length": 1500,
+      "owner_process": "peer"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "350000000",
+      "cpu": 2,
+      "thread": "peer-net",
+      "waker_thread": null,
+      "target_cpu": 2,
+      "sched_priority": 120,
+      "irq_context": "softirq"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "350100000",
+      "duration_ns": "1000000",
+      "thread": "peer-net",
+      "cpu": 2,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "400000000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-reader",
+      "name": "UnwantedInteractionBlocker::notifyMotion(id=0x5a000001)",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401000000",
+      "duration_ns": "300000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "enqueueDispatchEntryAndStartDispatchCycleLocked(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), id=0x5a000001)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401020000",
+      "duration_ns": "250000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "startDispatchCycleLocked(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server))",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401050000",
+      "duration_ns": "150000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "publishMotionEvent(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), action=DOWN)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401060000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "sendMessage(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), seq=0x1a01, type=MOTION)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401300000",
+      "duration_ns": "20000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "receiveMessage(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (client), seq=0x1a01, type=MOTION)",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401400000",
+      "duration_ns": "2000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "dispatchInputEvent MotionEvent ACTION_DOWN deviceId=3 source=0x1002 historySize=0",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "401450000",
+      "duration_ns": "1800000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "deliverInputEvent src=0x1002 eventTimeNano=9400000000 id=0x5a000001",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "403000000",
+      "duration_ns": "30000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "sendMessage(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (client), seq=0x1a01, type=FINISHED)",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "404000000",
+      "duration_ns": "20000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "receiveMessage(inputChannel=1a01a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), seq=0x1a01, type=FINISHED)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "405000000",
+      "duration_ns": "8000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "Choreographer#doFrame 9001",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "420000000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-reader",
+      "name": "UnwantedInteractionBlocker::notifyMotion(id=0x5a000002)",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421000000",
+      "duration_ns": "300000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "enqueueDispatchEntryAndStartDispatchCycleLocked(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), id=0x5a000002)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421020000",
+      "duration_ns": "250000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "startDispatchCycleLocked(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server))",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421050000",
+      "duration_ns": "150000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "publishMotionEvent(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), action=MOVE)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421060000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "sendMessage(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), seq=0x1a02, type=MOTION)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421300000",
+      "duration_ns": "20000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "receiveMessage(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (client), seq=0x1a02, type=MOTION)",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421400000",
+      "duration_ns": "2000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "dispatchInputEvent MotionEvent ACTION_MOVE deviceId=3 source=0x1002 historySize=0",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "421450000",
+      "duration_ns": "1800000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "deliverInputEvent src=0x1002 eventTimeNano=9420000000 id=0x5a000002",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "423000000",
+      "duration_ns": "30000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "sendMessage(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (client), seq=0x1a02, type=FINISHED)",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "424000000",
+      "duration_ns": "20000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "receiveMessage(inputChannel=1a02a1 com.smartperfetto.fixture/com.smartperfetto.fixture.MainActivity (server), seq=0x1a02, type=FINISHED)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "425000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "Choreographer#doFrame 9002",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "500000000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-reader",
+      "name": "UnwantedInteractionBlocker::notifyMotion(id=0x5b000001)",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501000000",
+      "duration_ns": "300000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "enqueueDispatchEntryAndStartDispatchCycleLocked(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), id=0x5b000001)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501020000",
+      "duration_ns": "250000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "startDispatchCycleLocked(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server))",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501050000",
+      "duration_ns": "150000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "publishMotionEvent(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), action=DOWN)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501060000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "sendMessage(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), seq=0x1b01, type=MOTION)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501300000",
+      "duration_ns": "20000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "receiveMessage(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (client), seq=0x1b01, type=MOTION)",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501400000",
+      "duration_ns": "2000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "dispatchInputEvent MotionEvent ACTION_DOWN deviceId=3 source=0x1002 historySize=0",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "501450000",
+      "duration_ns": "1800000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "deliverInputEvent src=0x1002 eventTimeNano=9500000000 id=0x5b000001",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "503000000",
+      "duration_ns": "30000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "sendMessage(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (client), seq=0x1b01, type=FINISHED)",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "504000000",
+      "duration_ns": "20000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "receiveMessage(inputChannel=1b01a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), seq=0x1b01, type=FINISHED)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "505000000",
+      "duration_ns": "40000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "Choreographer#doFrame 9101",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "520000000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-reader",
+      "name": "UnwantedInteractionBlocker::notifyMotion(id=0x5b000002)",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521000000",
+      "duration_ns": "300000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "enqueueDispatchEntryAndStartDispatchCycleLocked(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), id=0x5b000002)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521020000",
+      "duration_ns": "250000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "startDispatchCycleLocked(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server))",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521050000",
+      "duration_ns": "150000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "publishMotionEvent(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), action=MOVE)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521060000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "sendMessage(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), seq=0x1b02, type=MOTION)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521300000",
+      "duration_ns": "20000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "receiveMessage(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (client), seq=0x1b02, type=MOTION)",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521400000",
+      "duration_ns": "2000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "dispatchInputEvent MotionEvent ACTION_MOVE deviceId=3 source=0x1002 historySize=0",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "521450000",
+      "duration_ns": "1800000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "deliverInputEvent src=0x1002 eventTimeNano=9520000000 id=0x5b000002",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "523000000",
+      "duration_ns": "30000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "sendMessage(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (client), seq=0x1b02, type=FINISHED)",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "524000000",
+      "duration_ns": "20000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "receiveMessage(inputChannel=1b02a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), seq=0x1b02, type=FINISHED)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "525000000",
+      "duration_ns": "40000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "Choreographer#doFrame 9102",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "540000000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-reader",
+      "name": "UnwantedInteractionBlocker::notifyMotion(id=0x5b000003)",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541000000",
+      "duration_ns": "300000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "enqueueDispatchEntryAndStartDispatchCycleLocked(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), id=0x5b000003)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541020000",
+      "duration_ns": "250000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "startDispatchCycleLocked(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server))",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541050000",
+      "duration_ns": "150000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "publishMotionEvent(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), action=UP)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541060000",
+      "duration_ns": "100000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "sendMessage(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), seq=0x1b03, type=MOTION)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541300000",
+      "duration_ns": "20000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "receiveMessage(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (client), seq=0x1b03, type=MOTION)",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541400000",
+      "duration_ns": "2000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "dispatchInputEvent MotionEvent ACTION_UP deviceId=3 source=0x1002 historySize=0",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "541450000",
+      "duration_ns": "1800000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "deliverInputEvent src=0x1002 eventTimeNano=9540000000 id=0x5b000003",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "543000000",
+      "duration_ns": "30000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "sendMessage(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (client), seq=0x1b03, type=FINISHED)",
+      "cpu": 6
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "544000000",
+      "duration_ns": "20000",
+      "process": "system",
+      "thread": "input-dispatcher",
+      "name": "receiveMessage(inputChannel=1b03a1 com.smartperfetto.peer/com.smartperfetto.peer.MainActivity (server), seq=0x1b03, type=FINISHED)",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "545000000",
+      "duration_ns": "40000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "Choreographer#doFrame 9103",
+      "cpu": 6
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "700000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "cookie": 701,
+      "token": 801,
+      "display_frame_token": 901,
+      "layer_name": "ScopeIsolationLayer",
+      "jank_type": 1
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "740000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "cookie": 702,
+      "token": 802,
+      "display_frame_token": 902,
+      "layer_name": "ScopeIsolationLayer",
+      "jank_type": 1
+    }
+  ]
+}

@@ -516,12 +516,14 @@ test('accepts an exact_scope binding only with a value-level contract for semant
 
   assert.deepEqual(schemaIssues({process_name: 'com.example', units: [unit]}), []);
   assert.deepEqual(schemaIssues({process_name: 'com.example', units: [{unit: 'step.exact_sql', mode: 'execution'}]}), []);
+  // A step whose own SQL binds the scope's UPID (native_upid) is an exact unit by its step name.
+  assert.deepEqual(schemaIssues({process_name: 'com.example', units: [{unit: 'step', mode: 'execution', min_rows: 0}]}), []);
   for (const invalid of [
     {process_name: 'com.example', units: []},
     {units: [unit]},
     {process_name: 'com.example', upid: 7, units: [unit]},
     {process_name: 'com.example', units: [{...unit, assertions: undefined}]},
-    {process_name: 'com.example', units: [{...unit, unit: 'step'}]},
+    {process_name: 'com.example', units: [{...unit, unit: ''}]},
   ]) {
     assert.equal(schemaIssues(JSON.parse(JSON.stringify(invalid))).length, 1, JSON.stringify(invalid));
   }

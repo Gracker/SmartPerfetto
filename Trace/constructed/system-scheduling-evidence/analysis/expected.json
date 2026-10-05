@@ -101,7 +101,32 @@
       "expected_condition_skips": [],
       "semantic_step": "network_packet_correlation",
       "expected_empty_reason": "This scenario emits only sched switch/waking events: the fixture process has no network-role thread, no irq-context wake and no android_network_packets row, so no wait can be raised from a candidate to a packet-correlated receive.",
-      "required_marker": "SmartPerfetto::CASE::system-scheduling-evidence"
+      "required_marker": "SmartPerfetto::CASE::system-scheduling-evidence",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "wake_evidence_scope",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "role_state_summary",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "wait_class_summary",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "top_waits",
+            "mode": "execution",
+            "min_rows": 1
+          }
+        ]
+      }
     },
     {
       "id": "native-target-clipped-summary",

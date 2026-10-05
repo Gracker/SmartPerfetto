@@ -221,10 +221,27 @@ Click actions should be explicit, for example:
   execute (no forced or isolated probe, so the trace must reach it), record
   its evidence under that UPID (target scope, or context evidence relative to
   it) and meet its row counts and assertions; a `semantic` unit also names
-  exactly the columns it returns. Every exact unit in the registry must be
-  executed by a passing binding somewhere in the corpus, so a new `exact_sql`
-  without one fails `trace:sql-regression`. The runner sees only the root and
-  top-level steps; a nested exact unit fails as not yet supported.
+  exactly the columns it returns. Exact units are each `exact_sql` and each
+  step without one whose own SQL binds the scope's UPID (`binding:
+  native_upid`), named by its step id (`root` for an atomic root); an exact
+  run executes it as written. A bound unit's rows must depend on that UPID
+  alone: its step reruns on forks of the run's context (read-only SQL only)
+  with the process selectors the identity gate wrote removed, which must
+  answer the same, and unscoped, which must answer differently, or the trace
+  carries the unit's evidence in no other process and the binding fails as
+  inconclusive (bind a case where another process, such as a same-package
+  `:worker`, carries it; `process-scope-isolation` exists for that). An
+  `exact_sql` has no unscoped form, so only its first check applies. The
+  check is differential, so a leak that yields the same rows on the bound
+  trace stays unseen. It proves independence from process-selection
+  parameters, not from data the trace attributes more coarsely than a
+  process: rx packets carry only a socket uid, so processes sharing a uid (a
+  same-package `:worker`) share them, and a step reading such data says so in
+  `process_scope.limitations`, which makes its exact support partial. Every
+  exact unit in the registry must be executed by a passing binding somewhere
+  in the corpus, so a new `exact_sql` or `native_upid` step without one fails
+  `trace:sql-regression`. The runner sees only the root and top-level steps;
+  a nested exact unit fails as not yet supported.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

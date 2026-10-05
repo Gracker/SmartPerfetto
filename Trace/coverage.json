@@ -498,8 +498,11 @@
     ],
     "execution": [
       "battery_drain_attribution",
+      "frame_production_gap",
       "lock_binder_wait",
       "power_consumption_overview",
+      "scroll_session_analysis",
+      "scrolling_analysis",
       "thermal_throttling_chain"
     ],
     "graceful_empty": [],
@@ -813,6 +816,7 @@
       "media-network-camera",
       "memory-gc-pressure",
       "power-thermal",
+      "process-scope-isolation",
       "process-state-residency",
       "rendering-jank",
       "scene-observation-contracts",
@@ -4553,7 +4557,7 @@
           },
           {
             "id": "network_packet_correlation",
-            "sha256": "0f8cdb90bf9a54061e8b61b2ac1e8511522edd03a0c8577b767e7f86f5c74efe",
+            "sha256": "178d39341d9a853cc1829c921bb36da8cc5ed00f3906b8aec7b47ca595e291df",
             "required_columns": [
               "wait_start_ts",
               "dur_ns",

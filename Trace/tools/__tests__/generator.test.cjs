@@ -672,6 +672,44 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
   assert.match(output, /\n(?:[1-9][0-9]*,){15}[1-9][0-9]*\s*$/);
 });
 
+test('encodes an interrupt-context wakeup, a received network packet and its package name', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'peer', name: 'com.smartperfetto.peer', uid: 10998});
+  scenario.actors.threads.push({id: 'net', process: 'app', name: 'OkHttp Network'});
+  scenario.signals.push(
+    {type: 'sched-running', at_ns: '10000000', duration_ns: '1000000', thread: 'net', cpu: 1, end_state: 'S'},
+    {type: 'android-network-packet', at_ns: '19500000', direction: 'received', interface: 'wlan0',
+      length: 1500, owner_process: 'app'},
+    {type: 'android-network-packet', at_ns: '19600000', direction: 'transmitted', interface: 'wlan0',
+      length: 60, owner_process: 'peer'},
+    {type: 'sched-waking', at_ns: '20000000', cpu: 1, thread: 'net', waker_thread: null, target_cpu: 1,
+      sched_priority: 120, irq_context: 'softirq'},
+    {type: 'sched-running', at_ns: '20100000', duration_ns: '1000000', thread: 'net', cpu: 1, end_state: 'S'},
+    {type: 'android-packages-list', at_ns: '0', packages: [
+      {name: 'com.smartperfetto.fixture', process: 'app'}, {name: 'com.smartperfetto.peer', process: 'peer'}]},
+  );
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 454545,
+  });
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-network-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.network_packets;
+    SELECT
+      (SELECT COUNT(*) FROM thread_state ts JOIN thread t USING (utid)
+        WHERE t.name = 'OkHttp Network' AND ts.state IN ('R', 'R+') AND ts.irq_context = 1) AS irq_wakes,
+      (SELECT group_concat(package_name || '/' || direction || '/' || socket_uid || '/' || packet_length, ';')
+        FROM (SELECT * FROM android_network_packets ORDER BY ts)) AS packets`);
+  assert.match(output, /\n1,"com\.smartperfetto\.fixture\/Received\/10999\/1500;com\.smartperfetto\.peer\/Transmitted\/10998\/60"\s*$/);
+  assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+    {type: 'sched-waking', at_ns: '1', cpu: 0, thread: 'net', waker_thread: null, target_cpu: 0,
+      sched_priority: 120, irq_context: 'nmi'}]}, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}),
+  /irq_context must be hardirq or softirq/);
+});
+
 function thermalLimitSignals() {
   return [
     {

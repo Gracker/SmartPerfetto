@@ -726,7 +726,27 @@
           "dur_ms",
           "percentage"
         ],
-        "required_marker": "SmartPerfetto::CASE::rendering-jank"
+        "required_marker": "SmartPerfetto::CASE::rendering-jank",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "quadrant_analysis",
+              "mode": "execution",
+              "min_rows": 1
+            },
+            {
+              "unit": "binder_calls",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "lock_contention",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "jank_frame_detail-no-limit-track-names-no-limit",

@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "id": "process-scope-isolation",
+  "kind": "constructed",
+  "title": "Process scope isolation across same-package and peer processes",
+  "description": "An app, its same-package :worker sibling (same uid) and an unrelated peer app each carry the same kind of evidence, so a unit run under the app's exact UPID can show its rows do not depend on process-selection parameters. Evidence the trace attributes only per uid (rx packets) stays shared by same-uid processes; such steps declare it.",
+  "scene": "cpu",
+  "tags": [
+    "android",
+    "constructed",
+    "cpu",
+    "input",
+    "network",
+    "process-identity",
+    "rendering"
+  ],
+  "aliases": [],
+  "trace": {
+    "file": "trace.overlay.pftrace",
+    "format": "perfetto-protobuf",
+    "sha256": "2d50c935fcfd10cb15c8a4d8d01dcbb782f51a25c1c64e9cdd9f4a293d7a819a",
+    "materialization": "base-plus-overlay"
+  },
+  "android": {
+    "release": "16",
+    "api_level": 36,
+    "device": "OPPO PKH110 base",
+    "build_fingerprint": null,
+    "compatibility": {
+      "min_api": 35,
+      "max_api": 36
+    }
+  },
+  "source": {
+    "origin": "SmartPerfetto deterministic trace generator",
+    "captured_at": null,
+    "imported_at": "2026-10-05T00:00:00.000Z",
+    "license": "AGPL-3.0-or-later",
+    "consent": "generated",
+    "privacy_review": "not-applicable",
+    "sanitization_review": "not-applicable",
+    "publication": "public",
+    "evidence_tier": "R3"
+  },
+  "analysis": {
+    "results": [
+      "analysis/expected.json"
+    ],
+    "logs": []
+  },
+  "construction": {
+    "base_case_id": "android-scroll-customer",
+    "scenario_file": "scenario.json",
+    "generator_version": 1,
+    "seed": "process-scope-isolation-v1",
+    "output": "Trace/.generated/constructed/process-scope-isolation/trace.pftrace",
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+  },
+  "coverage": {
+    "skills": [
+      "frame_production_gap",
+      "process_thread_wait_sources_in_range",
+      "scroll_session_analysis",
+      "scrolling_analysis"
+    ],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "wait-sources-packet-confirmed-receive-exact-scope",
+        "type": "skill",
+        "target": "process_thread_wait_sources_in_range",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/process_thread_wait_sources_in_range.skill.yaml",
+        "parameters": {
+          "package": "com.smartperfetto.fixture",
+          "upid": "${fixture_upid}",
+          "start_ts": "${trace_start}",
+          "end_ts": "${trace_end}"
+        },
+        "required_steps": [
+          "wake_evidence_scope",
+          "role_state_summary",
+          "wait_class_summary",
+          "top_waits",
+          "packet_check",
+          "network_packet_correlation"
+        ],
+        "required_sql_steps": [
+          "wake_evidence_scope",
+          "role_state_summary",
+          "wait_class_summary",
+          "top_waits",
+          "packet_check",
+          "network_packet_correlation"
+        ],
+        "forced_sql_steps": [
+          "network_packet_correlation"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "network_packet_correlation",
+        "min_rows": 1,
+        "max_rows": 1,
+        "required_columns": [
+          "wait_start_ts",
+          "dur_ns",
+          "wait_ms",
+          "thread_name",
+          "thread_role",
+          "wait_class",
+          "evidence_class",
+          "packet_ts",
+          "packet_gap_ms",
+          "packet_length",
+          "packet_iface"
+        ],
+        "assertions": [
+          {
+            "column": "wait_class",
+            "operator": "eq",
+            "value": "network_receive"
+          },
+          {
+            "column": "evidence_class",
+            "operator": "eq",
+            "value": "trace_direct:packet_activity"
+          },
+          {
+            "column": "packet_gap_ms",
+            "operator": "eq",
+            "value": 0.5
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "wake_evidence_scope",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "role_state_summary",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "wait_class_summary",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "top_waits",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "network_packet_correlation",
+              "mode": "semantic",
+              "min_rows": 1,
+              "max_rows": 1,
+              "required_columns": [
+                "wait_start_ts",
+                "dur_ns",
+                "wait_ms",
+                "thread_name",
+                "thread_role",
+                "wait_class",
+                "evidence_class",
+                "packet_ts",
+                "packet_gap_ms",
+                "packet_length",
+                "packet_iface"
+              ],
+              "assertions": [
+                {
+                  "column": "wait_class",
+                  "operator": "eq",
+                  "value": "network_receive"
+                },
+                {
+                  "column": "evidence_class",
+                  "operator": "eq",
+                  "value": "trace_direct:packet_activity"
+                },
+                {
+                  "column": "packet_gap_ms",
+                  "operator": "eq",
+                  "value": 0.5
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "scrolling-input-exact-scope",
+        "type": "skill",
+        "target": "scrolling_analysis",
+        "mode": "execution",
+        "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
+        "parameters": {
+          "enable_frame_details": true,
+          "enable_expert_probes": true,
+          "frame_variance_probe_min_janky_frames": 1,
+          "frame_variance_transition_threshold_ms": 1,
+          "input_handling_budget_ratio": 0.5,
+          "input_event_backlog_threshold": 3,
+          "package": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "system_context_window",
+          "system_cpu_context",
+          "system_task_summary",
+          "system_task_handoffs",
+          "main_thread_work_summary",
+          "main_thread_work_tasks",
+          "main_thread_work_sources",
+          "main_thread_work_cadence",
+          "init_cpu_topology",
+          "frame_timeline_check",
+          "vsync_config",
+          "frame_timeline_population",
+          "buffer_tx_coverage_probe",
+          "performance_summary",
+          "buffer_tx_performance_fallback",
+          "input_data_fallback_view",
+          "input_data_check",
+          "input_latency_summary",
+          "expert_analysis_window",
+          "frame_variance_probe",
+          "jank_type_stats",
+          "scroll_sessions",
+          "session_stats_batch",
+          "session_jank",
+          "get_app_jank_frames",
+          "batch_frame_root_cause",
+          "global_context_flags",
+          "session_quadrant_summary",
+          "session_cpu_freq",
+          "session_thread_core_affinity",
+          "root_cause_classification",
+          "fallback_no_frame_timeline"
+        ],
+        "required_sql_steps": [
+          "system_context_window",
+          "main_thread_work_summary",
+          "main_thread_work_tasks",
+          "main_thread_work_sources",
+          "main_thread_work_cadence",
+          "frame_timeline_check",
+          "vsync_config",
+          "frame_timeline_population",
+          "buffer_tx_coverage_probe",
+          "performance_summary",
+          "buffer_tx_performance_fallback",
+          "input_data_fallback_view",
+          "input_data_check",
+          "input_latency_summary",
+          "expert_analysis_window",
+          "jank_type_stats",
+          "scroll_sessions",
+          "session_stats_batch",
+          "session_jank",
+          "get_app_jank_frames",
+          "batch_frame_root_cause",
+          "global_context_flags",
+          "session_quadrant_summary",
+          "session_cpu_freq",
+          "session_thread_core_affinity",
+          "root_cause_classification",
+          "fallback_no_frame_timeline"
+        ],
+        "forced_sql_steps": [
+          "vsync_config",
+          "frame_timeline_population",
+          "buffer_tx_coverage_probe",
+          "performance_summary",
+          "buffer_tx_performance_fallback",
+          "input_latency_summary",
+          "expert_analysis_window",
+          "jank_type_stats",
+          "scroll_sessions",
+          "session_stats_batch",
+          "session_jank",
+          "get_app_jank_frames",
+          "batch_frame_root_cause",
+          "session_quadrant_summary",
+          "session_cpu_freq",
+          "session_thread_core_affinity",
+          "root_cause_classification",
+          "fallback_no_frame_timeline"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "input_data_check",
+        "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "input_data_check",
+              "mode": "execution"
+            },
+            {
+              "unit": "input_latency_summary",
+              "mode": "execution"
+            }
+          ]
+        }
+      },
+      {
+        "id": "frame_production_gap-exact-scope",
+        "type": "skill",
+        "target": "frame_production_gap",
+        "mode": "execution",
+        "source_file": "backend/skills/atomic/frame_production_gap.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "gap_summary",
+          "gap_list"
+        ],
+        "required_sql_steps": [
+          "gap_summary",
+          "gap_list"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "gap_list",
+        "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "gap_summary",
+              "mode": "execution",
+              "min_rows": 1
+            },
+            {
+              "unit": "gap_list",
+              "mode": "execution",
+              "min_rows": 1
+            }
+          ]
+        }
+      },
+      {
+        "id": "scroll_session_analysis-exact-scope",
+        "type": "skill",
+        "target": "scroll_session_analysis",
+        "mode": "execution",
+        "source_file": "backend/skills/composite/scroll_session_analysis.skill.yaml",
+        "parameters": {
+          "session_id": 1,
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
+          "touch_start_ts": "${trace_start}",
+          "touch_end_ts": "${trace_end}",
+          "fling_start_ts": "${trace_start}",
+          "fling_end_ts": "${trace_end}",
+          "has_fling": 1,
+          "package": "com.smartperfetto.fixture",
+          "vsync_period_ns": 16666667
+        },
+        "required_steps": [
+          "system_context_window",
+          "system_cpu_context",
+          "system_task_summary",
+          "system_task_handoffs",
+          "full_session_stats",
+          "touch_phase_stats",
+          "fling_phase_stats",
+          "identify_janky_frames"
+        ],
+        "required_sql_steps": [
+          "system_context_window",
+          "full_session_stats",
+          "touch_phase_stats",
+          "fling_phase_stats",
+          "identify_janky_frames"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [
+          {
+            "step": "touch_phase_stats",
+            "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
+          },
+          {
+            "step": "fling_phase_stats",
+            "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
+          }
+        ],
+        "semantic_step": "identify_janky_frames",
+        "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "full_session_stats",
+              "mode": "execution",
+              "min_rows": 1
+            },
+            {
+              "unit": "touch_phase_stats",
+              "mode": "execution",
+              "min_rows": 1
+            },
+            {
+              "unit": "fling_phase_stats",
+              "mode": "execution",
+              "min_rows": 1
+            },
+            {
+              "unit": "identify_janky_frames",
+              "mode": "execution",
+              "min_rows": 1
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

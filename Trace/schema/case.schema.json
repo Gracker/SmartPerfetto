@@ -224,9 +224,9 @@
                       "additionalProperties": false,
                       "required": ["unit", "mode"],
                       "properties": {
-                        "unit": {"type": "string", "pattern": "\\.exact_sql$"},
+                        "unit": {"type": "string", "minLength": 1},
                         "mode": {"enum": ["semantic", "execution"]},
-                        "min_rows": {"type": "integer", "minimum": 1},
+                        "min_rows": {"type": "integer", "minimum": 0},
                         "max_rows": {"type": "integer", "minimum": 0},
                         "required_columns": {"$ref": "#/properties/coverage/properties/expectations/items/properties/required_columns"},
                         "assertions": {"$ref": "#/properties/coverage/properties/expectations/items/properties/assertions"}

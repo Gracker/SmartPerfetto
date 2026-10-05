@@ -82,7 +82,7 @@ Pinned Perfetto SQL source: \`${sqlSources.runtime_revision ?? 'unavailable'}\`.
 
 Skill execution quality: ${modes.semantic ?? 0} source-column-backed semantic, ${modes.execution ?? 0} execution-only composition, ${modes.negative ?? 0} expected-empty negative, ${modes.deferred ?? 0} explicit deferred prerequisite, ${modes.definition ?? 0} definition-only.
 
-Exact-scope \`exact_sql\` bindings: ${exactModes.semantic ?? 0} semantic, ${exactModes.execution ?? 0} execution-only.
+Exact-scope unit bindings (each \`exact_sql\` and each \`native_upid\` step): ${exactModes.semantic ?? 0} semantic, ${exactModes.execution ?? 0} execution-only.
 
 ## Commands
 
@@ -90,7 +90,7 @@ Exact-scope \`exact_sql\` bindings: ${exactModes.semantic ?? 0} semantic, ${exac
 
 \`npm run trace:build\` deterministically materializes every base-plus-overlay case under ignored \`Trace/.generated/\` and reparses it with the pinned trace processor.
 
-\`npm run trace:sql-regression\` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every \`exact_sql\` unit under the exact UPID of the uniquely named process its expectation binds (\`exact_scope\`), and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
+\`npm run trace:sql-regression\` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every exact unit (each \`exact_sql\`, and each step whose own SQL binds the scope's UPID through \`native_upid\`) under the exact UPID of the uniquely named process its expectation binds (\`exact_scope\`) and checks that its rows depend on that UPID alone, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
 
 \`npm run trace:regression\` validates, builds, and executes the complete corpus. Per-case evidence is written below \`Trace/.generated/<real|constructed>/<case-id>/\`.
 
