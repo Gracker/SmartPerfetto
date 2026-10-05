@@ -401,6 +401,8 @@ export class SkillEvaluator {
       processScope: gate.processScope,
       results: {},
       variables: {},
+      variableScopes: {},
+      variableSteps: {},
       moduleIncludes,
     };
 
@@ -429,7 +431,7 @@ export class SkillEvaluator {
         ? { ...step, condition: undefined }
         : step;
       const stepResult = await executor.executeStep(executionStep, context, this.skill.name) as StepResult;
-      this.bindStepResult(step, stepResult, context);
+      this.recordStepResult(step, stepResult, context);
       const scopeProbe = probes && index <= lastProbed
         ? await this.runScopeProbeStep(executionStep, stepResult, probes, probed.has(stepId)) : undefined;
 
@@ -448,11 +450,9 @@ export class SkillEvaluator {
     return results;
   }
 
-  /** A successful step's result, bound as production binds it (save_from and its unobserved-step rule too). */
-  private bindStepResult(step: SkillStep, result: StepResult, context: SkillExecutionContext): void {
-    if (!result.success) return;
-    context.results[step.id] = result;
-    (this.executor as any).bindSaveAs(step, result, context);
+  /** Records a step's result and its save_as through production's own recording path. */
+  private recordStepResult(step: SkillStep, result: StepResult, context: SkillExecutionContext): void {
+    this.executor!['recordStepResult'](step, result, context);
   }
 
   /**
@@ -467,7 +467,7 @@ export class SkillEvaluator {
       Object.fromEntries(Object.entries(values ?? {}).filter(([key]) => !selectors.has(key)));
     const copy = (processScope: SkillExecutionContext['processScope']): SkillExecutionContext => ({
       ...context, params: strip(context.params), inherited: strip(context.inherited),
-      results: {}, variables: {}, processScope,
+      results: {}, variables: {}, variableScopes: {}, variableSteps: {}, processScope,
     });
     return {blanked: copy(context.processScope), open: copy(createEffectiveProcessScope(this.traceId!, 'current'))};
   }
@@ -495,12 +495,12 @@ export class SkillEvaluator {
       if (probed || bindsPlaceholder) {
         throw new Error(`Scope-isolation probe of ${step.id} needs read-only step SQL`);
       }
-      for (const context of Object.values(probes)) this.bindStepResult(step, production, context);
+      for (const context of Object.values(probes)) this.recordStepResult(step, production, context);
       return undefined;
     }
     const run = async (variant: ScopeProbeVariant): Promise<ScopeProbeOutcome> => {
       const result = await (this.executor as any).executeStep(step, probes[variant], this.skill!.name) as StepResult;
-      this.bindStepResult(step, result, probes[variant]);
+      this.recordStepResult(step, result, probes[variant]);
       return {success: result.success, code: result.code, error: result.error, data: this.extractStepData(result)};
     };
     const blanked = await run('blanked');

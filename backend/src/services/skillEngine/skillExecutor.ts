@@ -1994,8 +1994,8 @@ export class SkillExecutor {
       : stepResult.success ? selectedStepResult(stepResult) : stepResult;
     const observed = stepResult.success && source !== undefined && (!saveFrom || isObservedStepResult(source));
     context.variables[step.save_as] = observed ? source.data ?? null : null;
-    if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(source);
-    if (context.variableSteps) context.variableSteps[step.save_as] = step.id;
+    context.variableScopes[step.save_as] = resultScopeProvenance(source);
+    context.variableSteps[step.save_as] = step.id;
   }
 
   /**
@@ -2006,7 +2006,7 @@ export class SkillExecutor {
    */
   private boundSourceStepId(source: string, context: SkillExecutionContext): string | undefined {
     const binding = ExpressionEvaluator.resolveRootBinding(source, context);
-    if (binding?.source === 'variable') return context.variableSteps?.[source];
+    if (binding?.source === 'variable') return context.variableSteps[source];
     return binding?.source === 'result' ? source : undefined;
   }
 
@@ -2037,7 +2037,7 @@ export class SkillExecutor {
    */
   private inputScopeProvenance(name: string, context: SkillExecutionContext): EvidenceScopeProvenanceV1 | undefined {
     const binding = ExpressionEvaluator.resolveRootBinding(name, context);
-    if (binding?.source === 'variable') return context.variableScopes?.[name];
+    if (binding?.source === 'variable') return context.variableScopes[name];
     if (binding?.source === 'result') return resultScopeProvenance(binding.result);
     return undefined;
   }
@@ -2149,7 +2149,7 @@ export class SkillExecutor {
     const bindSource = this.getDisplayConfig(step)?.expandableBindSource;
     if (!bindSource) return undefined;
     const rows = context.variables[bindSource];
-    return Array.isArray(rows) && rows.length > 0 ? { rows, scope: context.variableScopes?.[bindSource] } : undefined;
+    return Array.isArray(rows) && rows.length > 0 ? { rows, scope: context.variableScopes[bindSource] } : undefined;
   }
 
   /**

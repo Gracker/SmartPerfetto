@@ -80,6 +80,13 @@ describe('SkillEvaluator step sequence identity admission', () => {
     }) as SkillEvaluator;
     return {db, executor, evaluator, query, definition};
   }
+  // The fixture evaluating `skill` in place of the default definition.
+  const withDefinition = (skill: SkillDefinition) => {
+    const fixture = scopedEvaluator();
+    fixture.executor.registerSkills([skill]);
+    Object.assign(fixture.evaluator, {skill});
+    return {...fixture, skill};
+  };
 
   it('prepares the real exact identity before forced SQL and preserves gate parameters and context', async () => {
     const {db, executor, evaluator, query} = scopedEvaluator();
@@ -132,6 +139,30 @@ describe('SkillEvaluator step sequence identity admission', () => {
     } finally {db.close();}
   });
 
+  // `first` declares save_as `marker`, the name of an input too: a step that did
+  // not observe anything binds null, so `second` must not read the input instead.
+  it.each([
+    ['failed', undefined, {sql: 'SELECT missing FROM no_such_table'}],
+    ['skipped by its condition', 'condition_not_met', {condition: 'false', sql: "SELECT 'from-step' AS value"}],
+  ])('binds an earlier %s step\'s save_as to null in every run, as production does', async (_label, code, first) => {
+    const {db, executor, evaluator, skill} = withDefinition({name: 'corpus_scoped_steps', version: '1', type: 'composite',
+      meta: {display_name: 'Unobserved save_as', description: 'Binding fixture'},
+      identity: {policy: 'required'},
+      inputs: [{name: 'upid', type: 'integer', required: false}, {name: 'marker', type: 'string', required: false}],
+      steps: [{id: 'first', type: 'atomic', save_as: 'marker', process_scope: {role: 'identity_metadata'}, ...first},
+        {id: 'second', type: 'atomic', process_scope: {role: 'identity_metadata'}, sql: "SELECT '${marker}' AS seen"}]});
+    const params = {upid: 42, marker: 'from-input'};
+    try {
+      const production = await executor.executeCompositeSkill(skill, params, {traceId: 'scope-trace'});
+      expect(production.stepResults?.find(step => step.stepId === 'second')?.data).toEqual([{seen: ''}]);
+      const [earlier, later] = await evaluator.executeStepSequence(['first', 'second'], params, {scopeProbeStepIds: ['second']});
+      expect(earlier).toMatchObject({success: false, data: [], code});
+      expect(later.data).toEqual([{seen: ''}]);
+      expect(later.scopeProbe?.blanked.data).toEqual([{seen: ''}]);
+      expect(later.scopeProbe?.open?.data).toEqual([{seen: ''}]);
+    } finally {db.close();}
+  });
+
   describe('scope-isolation probe', () => {
     // A native_upid step whose own SQL an exact run executes, in the fixture
     // above: 42 is com.example, 43 its same-uid com.example.worker.
@@ -151,12 +182,6 @@ describe('SkillEvaluator step sequence identity admission', () => {
     const isolationOf = (results: Awaited<ReturnType<typeof probeRun>>) =>
       scopeIsolationFailures([{unit: 'target', stepId: 'target'}], results, 42);
     const probe = async (evaluator: SkillEvaluator, stepIds?: string[]) => isolationOf(await probeRun(evaluator, stepIds));
-    const withDefinition = (skill: SkillDefinition) => {
-      const fixture = scopedEvaluator();
-      fixture.executor.registerSkills([skill]);
-      Object.assign(fixture.evaluator, {skill});
-      return {...fixture, skill};
-    };
     const withSkill = (sql: string) => withDefinition(probeSkill(sql));
 
     it('counts a native_upid step without exact_sql as an exact unit by its step name', () => {
