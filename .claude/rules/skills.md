@@ -226,15 +226,22 @@ Click actions should be explicit, for example:
   token (`binding: native_upid`) or the target relation (`binding:
   effective_target_processes`), named by its step id (`root` for an atomic
   root); an exact run executes it as written. A bound unit's rows must depend on that UPID
-  alone: its step reruns on forks of the run's context (read-only SQL only)
-  with the process selectors the identity gate wrote removed, which must
-  answer the same, and unscoped, which must answer differently, or the trace
-  carries the unit's evidence in no other process and the binding fails as
-  inconclusive (bind a case where another process, such as a same-package
-  `:worker`, carries it; `process-scope-isolation` exists for that). An
-  `exact_sql` has no unscoped form, so only its first check applies. The
-  check is differential, so a leak that yields the same rows on the bound
-  trace stays unseen. It proves independence from process-selection
+  alone: the run's steps rerun beside it in two probe runs from its starting
+  context, one with the process selectors the identity gate wrote removed,
+  where the unit must answer the same, and one also unscoped, where it must
+  answer differently, or the trace carries the unit's evidence in no other
+  process and the binding fails as inconclusive (bind a case where another
+  process, such as a same-package `:worker`, carries it;
+  `process-scope-isolation` exists for that). Each probe run binds its own
+  results, so a unit that takes its process from an earlier result
+  (`target_process`) is judged through the choice that run made; a fork of
+  the production context would keep the production choice and could never
+  tell. The probed SQL must be read-only; a state-writing step the probe
+  runs share only when neither its SQL nor its fragments bind a placeholder. An `exact_sql` has no
+  unscoped form, so only its first check applies. The check is differential,
+  so a leak that yields the same rows on the bound trace stays unseen, and
+  it cannot tell a name filter from a UPID filter when no other instance of
+  the bound process shares its name. It proves independence from process-selection
   parameters, not from data the trace attributes more coarsely than a
   process: rx packets carry only a socket uid, so processes sharing a uid (a
   same-package `:worker`) share them, and a step reading such data says so in

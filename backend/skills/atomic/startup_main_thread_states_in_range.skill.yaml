@@ -22,6 +22,13 @@ prerequisites:
   modules:
     - android.startup.startups
 
+# 按启动的 package 过滤（android_startups.package，不是进程名列），检测器不会把它认作
+# 进程名过滤；显式声明身份门禁，命名运行的目标证据才有已验证的进程身份。
+identity:
+  policy: verify_if_present
+  scope: process
+  aliases: [package]
+
 inputs:
   - name: package
     type: string
@@ -75,7 +82,11 @@ display:
       type: string
       format: truncate
 
+process_scope:
+  role: target
+  binding: effective_target_processes
 sql_fragments:
+  - fragments/effective_target_processes.sql
   - fragments/io_blocked_function_families.sql
 sql: |
   WITH state_rows AS (
@@ -90,8 +101,10 @@ sql: |
     FROM thread_state ts
     JOIN android_startup_threads st ON ts.utid = st.utid
     JOIN android_startups s ON st.startup_id = s.startup_id
+    JOIN effective_target_processes p ON st.upid = p.upid
     WHERE st.is_main_thread = 1
-      AND (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
+      AND (${__process_scope.upid} IS NOT NULL
+        OR '${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*')
       AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})

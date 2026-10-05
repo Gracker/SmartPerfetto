@@ -12,9 +12,9 @@ Evidence tiers: R1=6, R2=0, R3=27.
 
 Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 264 source-column-backed semantic, 14 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 264 source-column-backed semantic, 24 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
-Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 3 semantic, 87 execution-only.
+Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 16 semantic, 108 execution-only.
 
 ## Commands
 
@@ -74,7 +74,7 @@ Every constructed case is an analysis scenario unless its `case.json` declares `
 | [Media, network, and camera pipeline](./constructed/media-network-camera/) | media | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 8 target(s) |
 | [Memory and GC pressure](./constructed/memory-gc-pressure/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 20 target(s) |
 | [Power and thermal throttling](./constructed/power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
-| [Process scope isolation across same-package and peer processes](./constructed/process-scope-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 6 target(s) |
+| [Process scope isolation across same-package and peer processes](./constructed/process-scope-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 16 target(s) |
 | [Framework process state residency](./constructed/process-state-residency/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Rendering pipeline jank](./constructed/rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 47 target(s) |
 | [Scene observation and device state contracts](./constructed/scene-observation-contracts/) | scene_reconstruction | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |

@@ -79,6 +79,9 @@ display:
       label: "影响等级"
       type: string
 
+# Cache miss 计数器是系统级（CPU/PMU）轨道，不按进程归属。
+process_scope:
+  role: global_context
 sql: |
   WITH raw AS (
     SELECT

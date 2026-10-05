@@ -67,7 +67,7 @@
               "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
               "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change",
               "android-system-info", "android-network-packet", "android-packages-list",
-              "sched-blocked-reason"
+              "sched-blocked-reason", "binder-transaction"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -83,6 +83,9 @@
           "length": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "android-network-packet length in bytes."},
           "owner_process": {"type": "string", "description": "Actor whose uid owns a battery-stats-span or an android-network-packet socket."},
           "io_wait": {"type": "boolean", "description": "sched-blocked-reason: whether the thread's latest D state waited on IO."},
+          "server_thread": {"type": "string", "description": "binder-transaction: the thread that receives the call and replies; `thread` is the caller."},
+          "server_cpu": {"type": "integer", "minimum": 0, "description": "binder-transaction: CPU of the server's receive and reply events; defaults to `cpu`."},
+          "code": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "binder-transaction transaction code; defaults to 1."},
           "packages": {
             "type": "array",
             "minItems": 1,
@@ -295,6 +298,10 @@
           {
             "if": {"properties": {"type": {"const": "sched-blocked-reason"}}},
             "then": {"required": ["thread", "io_wait"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "binder-transaction"}}},
+            "then": {"required": ["thread", "server_thread", "duration_ns"]}
           },
           {
             "if": {"properties": {"type": {"const": "android-packages-list"}}},

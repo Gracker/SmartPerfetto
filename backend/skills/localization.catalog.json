@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1368,
-    "explicitColumnCount": 5141
+    "stepCount": 1369,
+    "explicitColumnCount": 5146
   },
   "skills": {
     "ams_module": {
@@ -9534,9 +9534,48 @@
           "columns": {},
           "synthesizeLabels": {}
         },
+        "input_app_receive": {
+          "title": {
+            "zh-CN": "应用端输入接收 (aq:pending:deliver / deliverInputEvent)",
+            "en": "Input App Receive"
+          },
+          "columns": {
+            "stage": {
+              "label": {
+                "zh-CN": "管线阶段",
+                "en": "Stage"
+              }
+            },
+            "start_ts": {
+              "label": {
+                "zh-CN": "开始时间",
+                "en": "Start Ts"
+              }
+            },
+            "dur_ms": {
+              "label": {
+                "zh-CN": "耗时(ms)",
+                "en": "Dur ms"
+              }
+            },
+            "thread_name": {
+              "label": {
+                "zh-CN": "线程",
+                "en": "Thread Name"
+              }
+            },
+            "detail": {
+              "label": {
+                "zh-CN": "详情",
+                "en": "Detail"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "input_dispatch_breakdown": {
           "title": {
-            "zh-CN": "输入分发管线 (kernel→InputDispatcher→App)",
+            "zh-CN": "输入分发 (InputReader→InputDispatcher，system_server)",
             "en": "Input Dispatch Breakdown"
           },
           "columns": {

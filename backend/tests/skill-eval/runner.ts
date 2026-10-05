@@ -19,7 +19,8 @@ import { normalizeSkillDefinition } from '../../src/services/skillEngine/skillLo
 import { assertEffectiveProcessScope, createEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
 import { getEffectiveIdentityConfig, processSelectorKeys } from '../../src/services/processIdentity/identityGate';
 import { sqlIsReadOnly } from '../../src/services/skillEngine/sqlStructure';
-import { exactProcessScopeSupportCatalog, sqlRunBy, type ExactProcessScopeSupport } from '../../src/services/skillEngine/processScopeSql';
+import { exactProcessScopeSupportCatalog, sqlRunBy, type ExactProcessScopeSupport, type ScopedSqlSource } from '../../src/services/skillEngine/processScopeSql';
+import { boundSqlPlaceholders } from '../../src/services/skillEngine/sqlTemplate';
 import type { EvidenceScopeProvenanceV1 } from '../../src/types/identityContract';
 import yaml from 'js-yaml';
 import fs from 'fs';
@@ -62,19 +63,20 @@ export interface EvalStepSequenceOptions {
    */
   forceSqlStepIds?: readonly string[];
   /**
-   * Steps that, after their production run, also rerun in each scope-probe
-   * variant on a fork of the context that is never bound back, so every later
-   * step sees exactly the production results.
+   * Steps whose scope-probe answers the results report. Naming any runs the
+   * whole sequence in both probe runs beside the production run
+   * (scopeProbeContexts); the production context never sees their results.
    */
   scopeProbeStepIds?: readonly string[];
 }
 
 /**
- * How a scope-isolation probe reruns a step beside its production run.
- * `blanked` keeps the exact process scope and removes the process selectors
- * (processSelectorKeys), so a unit that still reads them under an exact scope
- * sees its every-process fallback. `open` also swaps in an unscoped scope:
- * that fallback itself, what every process in the trace carries.
+ * How a scope-isolation probe reruns a step sequence beside its production
+ * run. `blanked` keeps the exact process scope and removes the process
+ * selectors (processSelectorKeys), so a unit that still reads them under an
+ * exact scope, itself or through an earlier step's result, sees its
+ * every-process fallback. `open` also swaps in an unscoped scope: that
+ * fallback itself, what every process in the trace carries.
  */
 type ScopeProbeVariant = 'blanked' | 'open';
 
@@ -404,7 +406,11 @@ export class SkillEvaluator {
 
     const results: EvalStepResult[] = [];
     const forcedSqlSteps = new Set(options.forceSqlStepIds || []);
-    for (const stepId of stepIds) {
+    const probed = new Set(options.scopeProbeStepIds ?? []);
+    // Steps after the last probed one feed no comparison, so the probe runs stop there.
+    const lastProbed = Math.max(-1, ...stepIds.map((id, index) => probed.has(id) ? index : -1));
+    const probes = probed.size ? this.scopeProbeContexts(context) : undefined;
+    for (const [index, stepId] of stepIds.entries()) {
       // A root-atomic Skill's SQL runs here as its one step. The production
       // root path is executeRootAtomic; this one serves the scope probe, whose
       // variants and baseline must share an execution path.
@@ -423,14 +429,9 @@ export class SkillEvaluator {
         ? { ...step, condition: undefined }
         : step;
       const stepResult = await executor.executeStep(executionStep, context, this.skill.name) as StepResult;
-      const scopeProbe = options.scopeProbeStepIds?.includes(stepId)
-        ? await this.runScopeProbe(executionStep, context)
-        : undefined;
-      if (stepResult.success) {
-        context.results[step.id] = stepResult;
-        // The production binding, so save_from and its unobserved-step rule apply here too.
-        executor.bindSaveAs(step, stepResult, context);
-      }
+      this.bindStepResult(step, stepResult, context);
+      const scopeProbe = probes && index <= lastProbed
+        ? await this.runScopeProbeStep(executionStep, stepResult, probes, probed.has(stepId)) : undefined;
 
       results.push({
         success: stepResult.success,
@@ -447,36 +448,65 @@ export class SkillEvaluator {
     return results;
   }
 
+  /** A successful step's result, bound as production binds it (save_from and its unobserved-step rule too). */
+  private bindStepResult(step: SkillStep, result: StepResult, context: SkillExecutionContext): void {
+    if (!result.success) return;
+    context.results[step.id] = result;
+    (this.executor as any).bindSaveAs(step, result, context);
+  }
+
   /**
-   * Reruns `step` on forks of `context`: blanked, and open where an unscoped
-   * run executes the same SQL. The forks share the loaded trace, so the SQL an
-   * exact run executes must be read-only: a view one run created would
-   * otherwise answer the next. Its fragments need no check: each is a bare CTE
-   * body the executor places inside that statement's WITH.
+   * The two probe runs (ScopeProbeVariant), copies of the production run's
+   * starting context that start with no results and bind their own: a unit
+   * that takes its process from an earlier result is judged through the
+   * choice its own run made, not the production run's.
    */
-  private async runScopeProbe(step: any, context: SkillExecutionContext): Promise<EvalStepResult['scopeProbe']> {
-    const exact = sqlRunBy(step, 'exact');
-    if (!exact?.sql || !sqlIsReadOnly(exact.sql)) {
-      throw new Error(`Scope-isolation probe of ${step.id} needs read-only step SQL`);
-    }
+  private scopeProbeContexts(context: SkillExecutionContext): Record<ScopeProbeVariant, SkillExecutionContext> {
     const selectors = new Set(processSelectorKeys(getEffectiveIdentityConfig(this.skill!)));
     const strip = (values: Record<string, any> | undefined) =>
       Object.fromEntries(Object.entries(values ?? {}).filter(([key]) => !selectors.has(key)));
+    const copy = (processScope: SkillExecutionContext['processScope']): SkillExecutionContext => ({
+      ...context, params: strip(context.params), inherited: strip(context.inherited),
+      results: {}, variables: {}, processScope,
+    });
+    return {blanked: copy(context.processScope), open: copy(createEffectiveProcessScope(this.traceId!, 'current'))};
+  }
+
+  /**
+   * Runs `step` in both probe runs and, when it is `probed`, returns what each
+   * answered. The runs share the loaded trace, so SQL that writes state runs
+   * once, and its production answer is theirs only when neither it nor its
+   * fragments bind a placeholder (an idempotent fallback view): nothing of the
+   * scope or a parameter can reach it. Unscoped, a step with an exact_sql runs
+   * its named SQL, another statement, so its open answer is no comparison.
+   */
+  private async runScopeProbeStep(
+    step: any,
+    production: StepResult,
+    probes: Record<ScopeProbeVariant, SkillExecutionContext>,
+    probed: boolean,
+  ): Promise<EvalStepResult['scopeProbe']> {
+    const sources = (['exact', 'named'] as const).map(variant => sqlRunBy(step, variant))
+      .filter((source): source is ScopedSqlSource => typeof source?.sql === 'string');
+    if (!sources.every(source => sqlIsReadOnly(source.sql!))) {
+      const fragments = SkillEvaluator.loadFragmentRegistry(path.join(process.cwd(), 'skills'));
+      const bindsPlaceholder = sources.some(source => [source.sql!, ...(source.sql_fragments ?? [])
+        .map(fragment => fragments.get(fragment) ?? '')].some(sql => boundSqlPlaceholders(sql).length > 0));
+      if (probed || bindsPlaceholder) {
+        throw new Error(`Scope-isolation probe of ${step.id} needs read-only step SQL`);
+      }
+      for (const context of Object.values(probes)) this.bindStepResult(step, production, context);
+      return undefined;
+    }
     const run = async (variant: ScopeProbeVariant): Promise<ScopeProbeOutcome> => {
-      const fork: SkillExecutionContext = {
-        ...context,
-        params: strip(context.params),
-        inherited: strip(context.inherited),
-        results: {...context.results},
-        variables: {...context.variables},
-        processScope: variant === 'open' ? createEffectiveProcessScope(this.traceId!, 'current') : context.processScope,
-      };
-      const result = await (this.executor as any).executeStep(step, fork, this.skill!.name) as StepResult;
+      const result = await (this.executor as any).executeStep(step, probes[variant], this.skill!.name) as StepResult;
+      this.bindStepResult(step, result, probes[variant]);
       return {success: result.success, code: result.code, error: result.error, data: this.extractStepData(result)};
     };
-    // Unscoped, a step with an exact_sql runs its named SQL: another statement.
-    const openApplies = sqlRunBy(step, 'named') === exact;
-    return {blanked: await run('blanked'), ...(openApplies ? {open: await run('open')} : {})};
+    const blanked = await run('blanked');
+    const open = await run('open');
+    if (!probed) return undefined;
+    return {blanked, ...(sqlRunBy(step, 'named') === sqlRunBy(step, 'exact') ? {open} : {})};
   }
 
   /** Execute a root-level atomic Skill through the production runtime path. */

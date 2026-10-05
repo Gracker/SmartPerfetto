@@ -2,7 +2,7 @@
   "schema_version": 1,
   "clock": {
     "anchor": "trace-middle",
-    "duration_ns": "1000000000"
+    "duration_ns": "2000000000"
   },
   "actors": {
     "processes": [
@@ -76,6 +76,31 @@
         "id": "input-dispatcher",
         "process": "system",
         "name": "InputDispatcher"
+      },
+      {
+        "id": "app-jit",
+        "process": "app",
+        "name": "Jit thread pool"
+      },
+      {
+        "id": "app-binder",
+        "process": "app",
+        "name": "Binder:fixture_1"
+      },
+      {
+        "id": "peer-jit",
+        "process": "peer",
+        "name": "Jit thread pool"
+      },
+      {
+        "id": "peer-binder",
+        "process": "peer",
+        "name": "Binder:peer_1"
+      },
+      {
+        "id": "system-binder",
+        "process": "system",
+        "name": "binder:system_1"
       }
     ]
   },
@@ -1014,6 +1039,326 @@
       "thread": "peer-main",
       "cpu": 5,
       "end_state": "S"
+    },
+    {
+      "type": "atrace-async-slice",
+      "at_ns": "1000000000",
+      "duration_ns": "300000000",
+      "process": "system",
+      "thread": "system-main",
+      "name": "launchingActivity#901",
+      "cookie": 901,
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1300000000",
+      "duration_ns": "0",
+      "process": "system",
+      "thread": "system-main",
+      "name": "launchingActivity#901:completed-cold:com.smartperfetto.fixture",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1010000000",
+      "duration_ns": "50000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "bindApplication",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1020000000",
+      "duration_ns": "8000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "SQLiteDatabase query settings",
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1100000000",
+      "duration_ns": "50000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "activityStart",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1110000000",
+      "duration_ns": "6000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "readFile layout_cache.bin",
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1160000000",
+      "duration_ns": "40000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "activityResume",
+      "cpu": 6
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1005000000",
+      "duration_ns": "60000000",
+      "thread": "app-main",
+      "cpu": 4,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "1090000000",
+      "cpu": 5,
+      "thread": "app-main",
+      "waker_thread": "app-binder",
+      "target_cpu": 5,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1095000000",
+      "duration_ns": "60000000",
+      "thread": "app-main",
+      "cpu": 5,
+      "end_state": "D"
+    },
+    {
+      "type": "sched-blocked-reason",
+      "at_ns": "1155000001",
+      "thread": "app-main",
+      "cpu": 5,
+      "io_wait": true,
+      "function_name": "filemap_fault"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "1158000000",
+      "cpu": 6,
+      "thread": "app-main",
+      "waker_thread": null,
+      "target_cpu": 6,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1158000000",
+      "duration_ns": "50000000",
+      "thread": "app-main",
+      "cpu": 6,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1030000000",
+      "duration_ns": "25000000",
+      "thread": "app-jit",
+      "cpu": 6,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1031000000",
+      "duration_ns": "20000000",
+      "process": "app",
+      "thread": "app-jit",
+      "name": "JIT compiling void com.smartperfetto.Startup.init()",
+      "cpu": 6
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1080000000",
+      "duration_ns": "5000000",
+      "thread": "app-binder",
+      "cpu": 4,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1200000000",
+      "duration_ns": "4000000",
+      "thread": "app-binder",
+      "cpu": 4,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-async-slice",
+      "at_ns": "1500000000",
+      "duration_ns": "300000000",
+      "process": "system",
+      "thread": "system-main",
+      "name": "launchingActivity#902",
+      "cookie": 902,
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1800000000",
+      "duration_ns": "0",
+      "process": "system",
+      "thread": "system-main",
+      "name": "launchingActivity#902:completed-cold:com.smartperfetto.peer",
+      "cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1510000000",
+      "duration_ns": "50000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "bindApplication",
+      "cpu": 1
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1520000000",
+      "duration_ns": "8000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "SQLiteDatabase query settings",
+      "cpu": 1
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1600000000",
+      "duration_ns": "50000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "activityStart",
+      "cpu": 2
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1610000000",
+      "duration_ns": "6000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "readFile layout_cache.bin",
+      "cpu": 2
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1660000000",
+      "duration_ns": "40000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "activityResume",
+      "cpu": 3
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1505000000",
+      "duration_ns": "60000000",
+      "thread": "peer-main",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "1590000000",
+      "cpu": 2,
+      "thread": "peer-main",
+      "waker_thread": "peer-binder",
+      "target_cpu": 2,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1595000000",
+      "duration_ns": "60000000",
+      "thread": "peer-main",
+      "cpu": 2,
+      "end_state": "D"
+    },
+    {
+      "type": "sched-blocked-reason",
+      "at_ns": "1655000001",
+      "thread": "peer-main",
+      "cpu": 2,
+      "io_wait": true,
+      "function_name": "filemap_fault"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "1658000000",
+      "cpu": 3,
+      "thread": "peer-main",
+      "waker_thread": null,
+      "target_cpu": 3,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1658000000",
+      "duration_ns": "50000000",
+      "thread": "peer-main",
+      "cpu": 3,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1530000000",
+      "duration_ns": "25000000",
+      "thread": "peer-jit",
+      "cpu": 3,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1531000000",
+      "duration_ns": "20000000",
+      "process": "peer",
+      "thread": "peer-jit",
+      "name": "JIT compiling void com.smartperfetto.Startup.init()",
+      "cpu": 3
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1580000000",
+      "duration_ns": "5000000",
+      "thread": "peer-binder",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1700000000",
+      "duration_ns": "4000000",
+      "thread": "peer-binder",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "400500000",
+      "duration_ns": "3000000",
+      "thread": "app-main",
+      "cpu": 5,
+      "end_state": "S"
+    },
+    {
+      "type": "binder-transaction",
+      "at_ns": "401100000",
+      "duration_ns": "100000",
+      "thread": "app-main",
+      "server_thread": "system-binder",
+      "cpu": 5,
+      "server_cpu": 3
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "405000000",
+      "duration_ns": "400000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "deliverInputEvent src=0x1002 eventTimeNano=9405000000 id=0x5c000001",
+      "cpu": 6
     }
   ]
 }

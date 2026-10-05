@@ -206,6 +206,7 @@
           "init_cpu_topology",
           "event_info",
           "input_dispatch_breakdown",
+          "input_app_receive",
           "input_pipeline_lifecycle",
           "cpu_core_analysis",
           "quadrant_analysis"
@@ -214,6 +215,7 @@
           "system_context_window",
           "event_info",
           "input_dispatch_breakdown",
+          "input_app_receive",
           "input_pipeline_lifecycle",
           "cpu_core_analysis",
           "quadrant_analysis"

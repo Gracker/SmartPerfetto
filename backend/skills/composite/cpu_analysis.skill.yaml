@@ -979,6 +979,9 @@ steps:
     type: atomic
     name: "Cache Miss 计数器检测"
     display: false
+    # 只看 trace 是否有系统级 cache miss 计数器轨道，与进程无关。
+    process_scope:
+      role: global_context
     sql: |
       SELECT
         CASE WHEN EXISTS (

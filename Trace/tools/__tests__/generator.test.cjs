@@ -710,6 +710,33 @@ test('encodes an interrupt-context wakeup, a received network packet and its pac
   /irq_context must be hardirq or softirq/);
 });
 
+test('encodes a synchronous binder call that trace processor pairs into one transaction', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'server', name: 'system_server', uid: 1000});
+  scenario.actors.threads.push({id: 'server-binder', process: 'server', name: 'binder:1000_2'});
+  scenario.signals.push({type: 'binder-transaction', at_ns: '10000000', duration_ns: '3000000',
+    thread: 'main', server_thread: 'server-binder', cpu: 1, server_cpu: 2, code: 7});
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 515151,
+  });
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-binder-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.binder;
+    SELECT group_concat(client_process || '/' || client_thread || '/' || server_process || '/'
+      || client_dur || '/' || is_sync, ';') AS txns
+    FROM android_binder_txns`);
+  assert.match(output, /\n"com\.smartperfetto\.fixture\/main\/system_server\/3000000\/1"\s*$/);
+  for (const invalid of [{server_thread: 'main'}, {duration_ns: '2'}, {server_thread: null}]) {
+    assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+      {type: 'binder-transaction', at_ns: '1', duration_ns: '1000', thread: 'main', server_thread: 'server-binder',
+        ...invalid}]}, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}), /binder-transaction/);
+  }
+});
+
 test('encodes a D-state blocked reason with its kernel symbol, and an interpolated frame', () => {
   const scenario = fixtureScenario();
   scenario.signals.push(
