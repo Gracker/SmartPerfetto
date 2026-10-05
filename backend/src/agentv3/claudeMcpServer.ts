@@ -1466,11 +1466,26 @@ export interface SourceUseDecisionAccessor {
   getKnowledgeUse?(): KnowledgeUseRecord | undefined;
 }
 
+const LIGHTWEIGHT_ARTIFACT_PREVIEW_LIMIT = 10;
+
+/**
+ * Which artifacts keep an inline preview in lightweight mode: overview steps
+ * first, then the rest in order. Overview steps carry a Skill's verdicts;
+ * scrolling_analysis put its smoothness summary twelfth, so in order it lost
+ * its preview to eight context tables and the model never read the verdict.
+ */
+function lightweightPreviewIndexes(results: readonly {layer?: string}[], limit: number): Set<number> {
+  const indexes = results.map((_result, index) => index);
+  const isOverview = (index: number) => results[index].layer === 'overview';
+  return new Set([...indexes.filter(isOverview), ...indexes.filter(index => !isOverview(index))].slice(0, limit));
+}
+
 /**
  * Creates an in-process MCP server scoped to a specific trace session.
  * Exposes domain tools: execute_sql, invoke_skill, list_skills,
  * detect_architecture, lookup_sql_schema, and optionally write_analysis_note.
  */
+
 export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const { traceId, traceProcessorService, skillExecutor, packageName, emitUpdate, onSkillResult, analysisNotes, artifactStore } = options;
   const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
@@ -3322,9 +3337,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (artifactStore && (artifacts?.length || diagnosticsArtifactId || synthesizeArtifacts?.length)) {
           // Bound inline previews, not the evidence inventory. Later, empty and
           // unavailable artifacts still need locators so findings are not lost.
-          const lightweightArtifacts = options.lightweight
+          const previewIndexes = options.lightweight
+            ? lightweightPreviewIndexes(result.displayResults ?? [], LIGHTWEIGHT_ARTIFACT_PREVIEW_LIMIT) : undefined;
+          const lightweightArtifacts = previewIndexes
             ? artifacts?.map((summary, index) => {
-                if (index < 10) return summary;
+                if (previewIndexes.has(index)) return summary;
                 const {preview: _preview, ...locator} = summary;
                 return {...locator, previewOmitted: true};
               })

@@ -855,7 +855,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(new Set(drafts.map(update => update.content.runId)).size).toBe(1);
   });
 
-  it('retains the original undeclared candidate when completion changes its body', async () => {
+  it('delivers the original undeclared body with the declaration when completion changes its body', async () => {
     const body = 'Measured value: 42 ms.';
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
     const run = mockRun()
@@ -863,10 +863,11 @@ describe('OpenAI bounded output-limit recovery', () => {
       .mockResolvedValueOnce(recoverableStream(`Measured value: 43 ms.\n${protocolSidecar}`, 'completed'));
     const result = await runtime.analyze('query', 'changed-declaration-recovery', 'trace', {providerId: null});
     expect(run).toHaveBeenCalledTimes(2);
-    expect(result.conclusion).toBe(body);
-    expect(result.conclusionContract?.bindingEligibility).not.toBe('eligible');
-    expect(result.completion).toMatchObject({status: 'completed',
-      conclusionFingerprint: analysisDeliveryFingerprint(body)});
+    // The completion's declaration is kept; its edited prose is never delivered.
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(result.conclusion).not.toContain('43 ms');
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+    expect(result.completion).toMatchObject({status: 'completed'});
   });
 
   it('declines missing-declaration completion when the full history and prompt exceed the existing input cap', async () => {
@@ -1010,9 +1011,25 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(result.completion.status).toBe('completed');
   });
 
-  it.each(['plain-body', 'sidecar-only', 'invalid-schema'])('retains the original candidate when correction returns %s', async kind => {
+  it('attaches a sidecar-only correction to the original body', async () => {
     const first = `The marker is present.\n${protocolSidecar.replace('"focused_answer"', '"invalid-mode"')}`;
-    const second = kind === 'plain-body' ? 'The marker is present.' : kind === 'sidecar-only' ? protocolSidecar : first;
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const run = mockRun().mockResolvedValueOnce(recoverableStream(first, 'completed'))
+      .mockResolvedValueOnce(recoverableStream(protocolSidecar, 'completed'));
+    const result = await runtime.analyze('query', 'rejected-protocol-recovery-sidecar-only', 'trace', {providerId: null});
+    expect(run).toHaveBeenCalledTimes(2);
+    const context = finalization.takeFinalizationContext(result)!;
+    finalizationContexts.push(context);
+    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw)
+      .toBe(`The marker is present.\n\n${protocolSidecar}`);
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('The marker is present.');
+    expect(result.completion.status).toBe('completed');
+  });
+
+  it.each(['plain-body', 'invalid-schema'])('retains the original candidate when correction returns %s', async kind => {
+    const first = `The marker is present.\n${protocolSidecar.replace('"focused_answer"', '"invalid-mode"')}`;
+    const second = kind === 'plain-body' ? 'The marker is present.' : first;
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
     const run = mockRun().mockResolvedValueOnce(recoverableStream(first, 'completed')).mockResolvedValueOnce(recoverableStream(second, 'completed'));
     const result = await runtime.analyze('query', `rejected-protocol-recovery-${kind}`, 'trace', {providerId: null});
@@ -1296,8 +1313,17 @@ describe('OpenAI bounded output-limit recovery', () => {
       expect(result.completion).toMatchObject({status: 'completed'});
     });
 
+    it('keeps the original body when the repair changes it', async () => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const run = mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'completed'))
+        .mockResolvedValueOnce(recoverableStream(declared(claimed, 'The marker is absent.'), 'completed'));
+      const result = await runtime.analyze('query', 'declaration-repair-body-changed', 'trace', {providerId: null});
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(nativeRaw(result)).toBe(`${body}\n\n${renderConclusionContractSidecar(claimed)}`);
+      expect(result.conclusion).not.toContain('absent');
+    });
+
     it.each([
-      ['changes the body', () => declared(claimed, 'The marker is absent.')],
       ['drops a declared claim', () => declared({...claimed, claims: []} as ConclusionContract)],
       ['is rejected again', () => rejected],
     ])('restores the rejected candidate when the repair %s, without a second recovery', async (_label, second) => {

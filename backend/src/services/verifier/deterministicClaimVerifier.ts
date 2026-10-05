@@ -14,6 +14,7 @@ import type {
   DeterministicClaimProof,
   DeterministicClaimProofKind,
 } from '../../types/claimVerification';
+import {claimReferenceIssueCode} from '../../types/claimVerification';
 import {
   getCapturedAnchorFacts,
   uncheckedEvidenceAnchorReason,
@@ -476,7 +477,7 @@ function issueForReference(claim: ClaimSupportV1, reference: ClaimReferenceVerif
   return {
     claimId: claim.claimId,
     severity: advisory ? 'warning' : 'error',
-    code: `claim_reference_${reference.status}`,
+    code: claimReferenceIssueCode(reference.status),
     message: reference.message || `claim reference ${reference.status}`,
     evidenceRefId: reference.evidenceRefId,
   };

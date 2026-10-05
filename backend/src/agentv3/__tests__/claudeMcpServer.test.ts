@@ -2273,6 +2273,23 @@ describe('createClaudeMcpServer', () => {
       ]);
     });
 
+    it('gives overview steps the lightweight inline previews before later detail steps', async () => {
+      // sfb_doubao: scrolling_analysis's smoothness verdict was the 12th artifact and lost its preview.
+      const {tools, mockSkillExecutor} = createTestServer({lightweight: true});
+      const displayResults = Array.from({length: 13}, (_, index) => ({
+        stepId: `step_${index}`, title: `Finding ${index}`, layer: index === 11 ? 'overview' : 'list', format: 'table',
+        data: {columns: ['value'], rows: [[index]]},
+      }));
+      mockSkillExecutor.execute.mockResolvedValueOnce({
+        skillId: 'scrolling_analysis', success: true, displayResults, diagnostics: [], executionTimeMs: 5,
+      } as any);
+      const result = await callTool(tools, 'invoke_skill', {skillId: 'scrolling_analysis'});
+      const previewed = result.artifacts.filter((artifact: any) => artifact.preview).map((artifact: any) => artifact.stepId);
+      expect(previewed).toEqual(['step_0', 'step_1', 'step_2', 'step_3', 'step_4', 'step_5', 'step_6', 'step_7',
+        'step_8', 'step_11']);
+      expect(result.artifacts.map((artifact: any) => artifact.stepId)).toEqual(displayResults.map(row => row.stepId));
+    });
+
     it('keeps every lightweight evidence locator while bounding only inline previews', async () => {
       const {tools, mockSkillExecutor} = createTestServer({lightweight: true});
       const displayResults = Array.from({length: 14}, (_, index) => ({

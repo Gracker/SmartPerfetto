@@ -14,7 +14,7 @@ investigation_contract:
       description: "Select allocation, GC, reclaim, page-fault or LMK windows and their actual tasks. Relate observed memory pressure and task states; use CPU frequency only where execution slowdown is relevant."
     - id: memory_dependencies
       domain: dependency_chain
-      description: "Keep memory growth, leakage, OOM/LMK, reclaim and GC evidence distinct. A high allocation count or concurrent pressure alone does not establish a latency or failure cause."
+      description: "Keep memory growth, leakage, OOM/LMK, reclaim and GC evidence distinct. A high allocation count or concurrent pressure alone does not establish a latency or failure cause. When the trace holds Java heap dumps (heap_graph_object) and no counters, read the dumps rather than reporting memory data missing. Across two or more dumps a leak needs reachable instances or retained size to grow; growth only in unreachable objects with a stable reachable set is allocation churn awaiting GC, not a leak."
 classification_description: "Memory usage, allocation, garbage collection, pressure, leaks and memory-related process termination."
 priority: 4
 effort: medium
@@ -22,6 +22,8 @@ required_capabilities:
   - gc_memory
   - memory_pressure
 optional_capabilities:
+  - java_heap_graph
+  - native_heap_profile
   - cpu_scheduling
   - binder_ipc
   - battery_counters
@@ -77,7 +79,7 @@ final_report_contract:
 
 **Route card**: 内存 / memory / oom / 泄漏 / leak / lmk / 内存压力 / 内存不足 / low memory / out of memory
 
-**Capabilities**: required=[gc_memory, memory_pressure], optional=[cpu_scheduling, binder_ipc, battery_counters]
+**Capabilities**: required=[gc_memory, memory_pressure], optional=[java_heap_graph, native_heap_profile, cpu_scheduling, binder_ipc, battery_counters]
 
 **Execution contract**
 - 先 submit_plan；计划必须覆盖下列 frontmatter mandatory aspects，并在 expectedCalls 中声明关键 Skill/工具。

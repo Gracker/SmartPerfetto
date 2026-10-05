@@ -68,14 +68,33 @@ const UNIT_AFTER =
 // CJK word after a bare integer (`33 段`, `3 约`) is prose, not a unit.
 const UNKNOWN_UNIT_AFTER =
   /^[\s  ]*(?:[A-Za-zµμ％‰°]|毫秒|微秒|纳秒|秒|分钟|小时|赫兹|兆赫|千赫|字节|千字节|兆字节|百|千|万|兆|亿|倍|成|折|帧)/u;
-// Only separators between two numbers: a range or a list, not one value.
-const RANGE_OR_LIST = /^\s*(?:[-–—~～/、,，]|至|到|和|或|or|and)\s*$/i;
+// Only separators between two numbers that make them a range (`3 to 4`,
+// `between 3 and 4`, `介于 3 和 4`), alternatives or a ratio (`1:3`), never one value each.
+const RANGE_OR_ALTERNATIVE = /^\s*(?:[-–—~～:：]|至|到|和|或|or|and)\s*$/i;
+// Only punctuation between two listed values. Each item is one value, and a bare
+// item takes the unit its list ends with: `3.2、4.1 ms` lists two durations.
+const LIST = /^\s*[/／、,，]\s*$/;
+// A slash anywhere between two numbers may write a fraction or a rate (`1/3 ms`,
+// `1.0／3 ms`, `441 次 / 247 ms`): no unit crosses it, and both sides need their own.
+const SLASH = /[/／]/;
 // Digits joined by a separator: every such run must lie inside one parsed number.
 const JOINED_DIGITS = /\d[.,]\d/g;
 // A dash right before a number that was not read as its sign.
 const DASH = /[-−－–—]/u;
 // Where a clause ends; a comparison word applies within its clause.
 const CLAUSE_BREAK = /[，。；;！？!?：:|\n]/u;
+
+/**
+ * Two adjacent numbers are not one value each: a range, alternatives or a
+ * ratio, or a list or slash with a side that has no unit (`3 ms, 4`, `1/3 ms`).
+ * Only two measured quantities make one a list; a bare item has a unit only
+ * when it took its list's trailing unit, which never crosses a slash.
+ */
+function notOneValue(line: string, left: Token, right: Token): boolean {
+  const between = line.slice(left.end, right.start);
+  return RANGE_OR_ALTERNATIVE.test(between) ||
+    ((LIST.test(between) || SLASH.test(between)) && (!left.unit || !right.unit));
+}
 
 interface Token {
   rational?: Rational;
@@ -103,6 +122,17 @@ function tokenizeLine(line: string): {tokens: Token[]; malformed: Array<[number,
       start,
       end,
     });
+  }
+  // A list's trailing unit belongs to each bare item before it (right to left, so
+  // `3.2、4.1、5.0 ms` reaches the first item); an unknown unit stops it.
+  for (let index = tokens.length - 2; index >= 0; index -= 1) {
+    const token = tokens[index];
+    const next = tokens[index + 1];
+    const between = line.slice(token.end, next.start);
+    // Never across a slash: `1/3 ms` and `1.0/3 ms` are fractions of one unit.
+    if (!token.unit && !token.unknownUnit && next.unit && LIST.test(between) && !SLASH.test(between)) {
+      token.unit = next.unit;
+    }
   }
   // `1,2345` or a European `12,5` cannot be split into numbers.
   const malformed: Array<[number, number]> = [];
@@ -179,8 +209,8 @@ export function locatedNumbersShowDeclaredRounding(
       const index = tokens.indexOf(token);
       const previous = tokens[index - 1];
       const next = tokens[index + 1];
-      if (previous && RANGE_OR_LIST.test(line.slice(previous.end, token.start))) return false;
-      if (next && RANGE_OR_LIST.test(line.slice(token.end, next.start))) return false;
+      if (previous && notOneValue(line, previous, token)) return false;
+      if (next && notOneValue(line, token, next)) return false;
       if (QUALIFIER.test(clauseAround(line, token.start, token.end))) return false;
       if (token.start > 0 && DASH.test(line[token.start - 1])) return false;
       // The declared value expressed in the displayed unit.

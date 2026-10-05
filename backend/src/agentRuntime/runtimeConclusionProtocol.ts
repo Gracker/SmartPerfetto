@@ -39,7 +39,7 @@ export function appendRelationProposalRecoveryFragment(
 
 export interface NativeDeclarationCompletionRequest {
   readonly reason: typeof MISSING_NATIVE_DECLARATION | typeof INVALID_NATIVE_DECLARATION;
-  /** The visible answer, free of machine protocol segments; the completion must echo it. */
+  /** The visible answer, free of machine protocol segments; the accepted candidate is this body plus the new declaration. */
   readonly originalBody: string;
   /** The well-framed declaration segment the parser rejected; invalid_declaration only. */
   readonly rejectedDeclaration?: string;
@@ -50,6 +50,17 @@ export interface NativeDeclarationCompletionRequest {
 
 /** Framing failures can truncate or blur the body, so only a well-framed rejected declaration is repaired. */
 const UNREPAIRABLE_DECLARATION_ISSUES = new Set(['invalid_framing', 'duplicate_marker']);
+
+/** Parse issue codes, a closed vocabulary. */
+function formatIssueCodes(issues: readonly {code: string}[]): string {
+  return issues.map(issue => issue.code).join('|') || 'none';
+}
+
+/** Closed vocabulary only (claim position, issue code, schema field), never model values. */
+function formatClaimDiagnostics(diagnostic: CandidateProtocolDiagnostic): string {
+  return diagnostic.claimDiagnostics?.map(detail =>
+    `${detail.ordinal}:${detail.code}:${detail.field}${detail.subreason ? `:${detail.subreason}` : ''}`).join(',') || 'none';
+}
 
 function projectTurnIntentForDeclarationCompletion(intent: AnalysisTurnIntent) {
   return {
@@ -94,7 +105,8 @@ export function requestNativeDeclarationCompletion(input: {
     if (inspected.status === 'invalid') {
       console.log(`[DeclarationRepair] not requested: repairInvalid=${input.repairInvalid === true} ` +
         `sidecar=${inspected.sidecar.status} segments=${inspected.sidecar.machineSegments.length} ` +
-        `issues=${inspected.sidecar.issues.map(issue => issue.code).join('|') || 'none'}`);
+        `issues=${formatIssueCodes(inspected.sidecar.issues)} ` +
+        `claimDiagnostics=${formatClaimDiagnostics(diagnostic)}`);
     }
     return undefined;
   }
@@ -104,6 +116,9 @@ export function requestNativeDeclarationCompletion(input: {
     const id = item && typeof item === 'object' ? (item as {id?: unknown}).id : undefined;
     return typeof id === 'string' && id.trim() ? [id] : [];
   }))] : [];
+  console.log(`[DeclarationRepair] requested: reason=${INVALID_NATIVE_DECLARATION} ` +
+    `issues=${formatIssueCodes(inspected.sidecar.issues)} ` +
+    `claims=${diagnostic.claimCount ?? 0} claimDiagnostics=${formatClaimDiagnostics(diagnostic)}`);
   // Edge whitespace left at the removed segment's seam is not part of the answer.
   return Object.freeze({reason: INVALID_NATIVE_DECLARATION, originalBody: inspected.canonicalBody.trim(),
     rejectedDeclaration: input.candidate.slice(segment.start, segment.end), declaredClaimIds: Object.freeze(declaredClaimIds),
@@ -154,8 +169,12 @@ export function buildNativeDeclarationCompletionPrompt(input: {
 }
 
 /**
- * A completion may add only a valid declaration around the same visible body.
- * Internal line endings and all non-edge whitespace remain significant.
+ * The completion supplies only the declaration; the delivered candidate is the
+ * original body plus that declaration, so the answer the user reads can never
+ * change here. Asking a model to re-copy a long answer verbatim fails often
+ * (one changed character rejected most glm-5.3 repairs) and costs as many
+ * output tokens as the answer; prose the completion adds around its
+ * declaration is discarded, never delivered.
  */
 export function acceptNativeDeclarationCompletion(input: {
   request: NativeDeclarationCompletionRequest;
@@ -164,7 +183,7 @@ export function acceptNativeDeclarationCompletion(input: {
   outputByteLimit?: number;
 }): string | undefined {
   // The rejected candidate reaches no report or snapshot, so a dropped repair is
-  // otherwise invisible: log the deciding facts in closed vocabulary and offsets
+  // otherwise invisible: log the deciding facts in closed vocabulary and counts
   // only, never model text (rooted_lock_monitor delivered its undeclared first
   // candidate after a valid 14-claim completion with no trace of why).
   const reject = (reason: string, facts: Record<string, string | number | boolean> = {}): undefined => {
@@ -175,17 +194,14 @@ export function acceptNativeDeclarationCompletion(input: {
   if (input.completion.status !== 'completed') return reject('completion_not_completed', {completion: input.completion.status});
   if (!nativeDeclarationCandidateFitsOutput(input.candidate, input.outputByteLimit)) return reject('output_limit');
   const original = inspectCandidateProtocol(input.request.originalBody);
-  const repaired = inspectCandidateProtocol(input.candidate);
   if (original.status !== 'absent') return reject('original_not_absent', {original: original.status});
-  if (repaired.status !== 'valid') return reject('declaration_not_valid', {repaired: repaired.status});
-  const originalBody = original.canonicalBody.trim();
-  const repairedBody = repaired.canonicalBody.trim();
-  if (repairedBody !== originalBody) {
-    let firstDifference = 0;
-    while (firstDifference < Math.min(originalBody.length, repairedBody.length) &&
-      originalBody[firstDifference] === repairedBody[firstDifference]) firstDifference += 1;
-    return reject('body_changed', {originalChars: originalBody.length, repairedChars: repairedBody.length, firstDifference,
-      nfkcEqual: originalBody.normalize('NFKC') === repairedBody.normalize('NFKC')});
+  const repaired = inspectCandidateProtocol(input.candidate);
+  const [segment, ...others] = repaired.sidecar.machineSegments;
+  if (repaired.status !== 'valid' || repaired.sidecar.status !== 'valid' || !segment || others.length) {
+    const diagnostic = buildCandidateProtocolDiagnostic(repaired, 'native', 2);
+    return reject('declaration_not_valid', {repaired: repaired.status, sidecar: repaired.sidecar.status,
+      issues: formatIssueCodes(repaired.sidecar.issues),
+      claimDiagnostics: formatClaimDiagnostics(diagnostic)});
   }
   // A repair that drops declared claims turns an unverified answer into one with undeclared assertions.
   if (input.request.reason === INVALID_NATIVE_DECLARATION) {
@@ -197,5 +213,13 @@ export function acceptNativeDeclarationCompletion(input: {
         repairedClaims: claims.length, droppedIds});
     }
   }
-  return input.candidate;
+  const originalBody = original.canonicalBody.trim();
+  const completionProse = repaired.canonicalBody.trim();
+  // A completion that echoed the body unchanged is already the candidate.
+  if (completionProse === originalBody) return input.candidate;
+  if (completionProse) {
+    console.log(`[DeclarationRepair] completion prose discarded: request=${input.request.reason} ` +
+      `proseChars=${completionProse.length} originalChars=${originalBody.length}`);
+  }
+  return `${originalBody}\n\n${input.candidate.slice(segment.start, segment.end)}`;
 }

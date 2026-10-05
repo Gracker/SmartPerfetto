@@ -48,8 +48,30 @@ describe('claim verification status line', () => {
       ], issues: [{claimId: 'b', severity: 'error', code: 'x'}, {claimId: '', severity: 'error', code: 'semantic_undeclared_claim'},
         {claimId: 'a', severity: 'warning', code: 'y'}]} as never))
       .toEqual({status: 'failed', totalClaimCount: 3, checkedClaimCount: 2, verifiedClaimCount: 1,
-        unsupportedClaimCount: 1, referencesMatchedClaimCount: 1, propositionProvedClaimCount: 1, notCheckedClaimCount: 1,
+        unsupportedClaimCount: 1, contradictedClaimCount: 1, unresolvedReferenceClaimCount: 0, unexpressedClaimCount: 0,
+        referencesMatchedClaimCount: 1, propositionProvedClaimCount: 1, notCheckedClaimCount: 1,
         globalErrorCodes: ['semantic_undeclared_claim'], issueCount: 3});
+  });
+
+  it('names an unresolved reference and an unstated declaration apart from a contradiction (zh/en)', () => {
+    // opencode binder_storm__fault "矛盾 3": every one was a cited row the evidence could not resolve.
+    const summary = summarizeClaimVerification({status: 'failed', schemaVersion: 'claim_verifier@2', claimResults: [
+      {claimId: 'ref', status: 'unsupported', referenceCells: [{status: 'missing'}], deterministicProof: proof('not_checked')},
+      {claimId: 'unstated', status: 'unsupported', referenceCells: [{status: 'matched'}], deterministicProof: proof('candidate')},
+      {claimId: 'value', status: 'unsupported', referenceCells: [{status: 'matched'}], deterministicProof: proof('candidate')},
+      {claimId: 'both', status: 'unsupported', referenceCells: [{status: 'missing'}], deterministicProof: proof('candidate')},
+    ], issues: [
+      {claimId: 'ref', severity: 'error', code: 'claim_reference_missing'},
+      {claimId: 'unstated', severity: 'error', code: 'semantic_declaration_not_expressed'},
+      {claimId: 'value', severity: 'error', code: 'semantic_numeric_mismatch'},
+      {claimId: 'both', severity: 'error', code: 'claim_reference_missing'},
+      {claimId: 'both', severity: 'error', code: 'semantic_numeric_mismatch'},
+    ]} as never);
+    expect(summary).toMatchObject({unsupportedClaimCount: 4, contradictedClaimCount: 2,
+      unresolvedReferenceClaimCount: 1, unexpressedClaimCount: 1});
+    expect(claimVerificationStatusLine(summary, 'zh-CN')).toBe('断言核验: 未通过 — 引用匹配 2/4 · 命题证明 0/4 · ' +
+      '已核验 0/4 · 矛盾 2 · 引用未解析 1 · 声明未在正文表达 1');
+    expect(claimVerificationStatusLine(summary, 'en')).toContain('contradicted 2 · references unresolved 1 · declared but not stated 1');
   });
 
   it('names unmarked roundings and a warning-level undeclared assertion on an unverified answer (zh/en)', () => {
@@ -121,9 +143,9 @@ describe('claim verification status line', () => {
 
   it('renders receipt claim-audit rows in the same vocabulary, including receipts written before the split counts', () => {
     const legacy = {totalClaims: 3, verifiedClaims: 1, unsupportedClaims: 1, uncertainClaims: 1};
-    expect(claimAuditRows(legacy, 'zh-CN')).toEqual([['断言总数', 3], ['已核验', 1], ['矛盾', 1], ['未确定', 1]]);
+    expect(claimAuditRows(legacy, 'zh-CN')).toEqual([['断言总数', 3], ['已核验', 1], ['未支持', 1], ['未确定', 1]]);
     expect(claimAuditRows({...legacy, referencesMatchedClaims: 2, propositionProvedClaims: 1}, 'en')).toEqual([
-      ['Total claims', 3], ['References matched', 2], ['Propositions proved', 1], ['Verified', 1], ['Contradicted', 1], ['Uncertain', 1]]);
+      ['Total claims', 3], ['References matched', 2], ['Propositions proved', 1], ['Verified', 1], ['Unsupported', 1], ['Uncertain', 1]]);
   });
 });
 

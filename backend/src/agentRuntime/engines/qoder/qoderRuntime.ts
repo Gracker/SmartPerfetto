@@ -1278,12 +1278,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             outputByteLimit: declarationOutputLimit,
           }, {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
           assertAuthorized();
-          if (repaired.status === 'ok' && acceptNativeDeclarationCompletion({
+          // The accepted candidate is the original body with the completion's declaration.
+          const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
             request: declarationRequest, completion: {status: 'completed'}, candidate: repaired.text,
             outputByteLimit: declarationOutputLimit,
-          })) {
+          });
+          if (accepted) {
             sdkFinalBodySupplied = true;
-            sdkFinalResultText = repaired.text;
+            sdkFinalResultText = accepted;
             closeoutAccepted = true;
             acceptedAttemptId = 'declaration-completion:1';
             acceptedFinishReason = repaired.finishReason;

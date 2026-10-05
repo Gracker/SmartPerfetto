@@ -277,8 +277,9 @@ Keep these boundaries intact:
   chosen in order: `output_limit`, then the declaration request
   (`missing_declaration` or `invalid_declaration`, a declaration-only repair of
   the unchanged body), then `invalid_protocol` (framing failures such as a
-  duplicate marker) and `empty_body` as full-answer continuations. A recovery
-  that changes the body, drops declared claims, stays invalid or fails restores
+  duplicate marker) and `empty_body` as full-answer continuations. A
+  declaration recovery delivers the original body with the completion's
+  declaration; one that drops declared claims, stays invalid or fails restores
   the original candidate.
 - `plan_phase_updated` is emitted from nine sites across six files. Build its
   payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
@@ -395,9 +396,13 @@ Keep these boundaries intact:
   position and schema field (the first failing field per claim, at most 24
   entries, so the prompt asks for a declaration that passes the full
   protocol; a `semantics.numeric` failure adds the closed `subreason`
-  `shape|operator|value|unit`). The repair is accepted only if the body is
-  unchanged and it keeps every declared claim id and at least as many
-  claims; for Pi it replaces the former full-answer correction of such a
+  `shape|operator|value|unit`). The completion supplies only the
+  declaration: `acceptNativeDeclarationCompletion` returns the original body
+  plus the completion's one valid sidecar (an unchanged echo as written), and
+  discards any prose the completion adds, so the delivered answer cannot change
+  in a repair. Re-copying a long body verbatim failed most glm-5.3 repairs on
+  one changed character. A repair must keep every declared claim id and at
+  least as many claims; for Pi it replaces the former full-answer correction of such a
   declaration, and for OpenAI its
   `invalid_protocol` continuation. Framing failures keep the existing
   full-answer path.

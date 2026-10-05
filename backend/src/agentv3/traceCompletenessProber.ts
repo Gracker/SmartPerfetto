@@ -81,6 +81,7 @@ const PROBE_COUNT_QUERY_TIMEOUT_MS = 30_000;
 const PROBE_SINGLE_COUNT_QUERY_TIMEOUT_MS = 10_000;
 /** Table names, capability ids and SQL literals the probe builder may interpolate. */
 const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const HEAP_DUMP_COUNT_LIMIT = 16;
 const CAPABILITY_METADATA_QUERY_OPTIONS = {
   priority: 'p1',
   timeoutMs: 2000,
@@ -200,10 +201,32 @@ interface CapabilityDef {
   requiredModules?: string[];
   /** Capture guidance appended when the table is missing or empty. */
   captureHint?: string;
+  /**
+   * The raw events a stdlib view is derived from. A view can be empty while
+   * those events exist, when the stdlib parser does not recognize their
+   * format; the capability is then available through the raw table, and its
+   * reason names that table so no reader takes the empty view for no data.
+   */
+  rawEventFallback?: {
+    table: string;
+    /** Single-integer bounded count; build it with {@link boundedProbeCountSql}. */
+    probeSql: string;
+    /** How to read the raw events, in each output language. */
+    readHint: {zh: string; en: string};
+  };
   /** Architectures where this capability is relevant (empty = all) */
   applicableArchs?: RenderingArchitectureType[];
   /** Architectures where this capability is explicitly NOT relevant */
   excludedArchs?: RenderingArchitectureType[];
+  /**
+   * A second bounded count that says how to read an available capability's
+   * rows, reported as its reason (how many heap dumps a heap graph holds).
+   */
+  availableDetail?: {
+    /** Single-integer bounded count; build it with {@link boundedProbeCountSql}. */
+    probeSql: string;
+    describe: (count: number, language: OutputLanguage) => string;
+  };
   /** Priority for reporting: CRITICAL capabilities are flagged prominently when missing */
   priority: 'critical' | 'recommended' | 'optional';
 }
@@ -215,8 +238,8 @@ interface CapabilityDef {
  * resulting string embeds the threshold, so changing it changes the manifest
  * identity rather than silently reclassifying old traces.
  */
-function boundedProbeCountSql(rowSource: string): string {
-  return `SELECT COUNT(*) AS cnt FROM (${rowSource} LIMIT ${INSUFFICIENT_THRESHOLD})`;
+function boundedProbeCountSql(rowSource: string, limit = INSUFFICIENT_THRESHOLD): string {
+  return `SELECT COUNT(*) AS cnt FROM (${rowSource} LIMIT ${limit})`;
 }
 
 /**
@@ -257,6 +280,16 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     displayName: '帧渲染/滑动分析',
     primaryTable: 'actual_frame_timeline_slice',
     excludedArchs: ['FLUTTER', 'WEBVIEW', 'GAME_ENGINE'],
+    // A systrace-era trace has no FrameTimeline but does have the frames'
+    // atrace slices; read as missing, it got a no-query "cannot judge" answer.
+    rawEventFallback: {
+      table: 'slice',
+      probeSql: boundedProbeCountSql("SELECT 1 FROM slice WHERE name GLOB 'Choreographer#doFrame*'"),
+      readHint: {
+        zh: "按 slice.name GLOB 'Choreographer#doFrame*'（及 RenderThread 'DrawFrame*'）读帧；起点间隔只是起点节奏，没有呈现数据时呈现节奏未测得",
+        en: "read frames from slice.name GLOB 'Choreographer#doFrame*' (and RenderThread 'DrawFrame*'); start gaps are start cadence only, and presentation cadence is unmeasured without present data",
+      },
+    },
     priority: 'critical',
   },
   {
@@ -293,6 +326,20 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     displayName: '锁竞争分析',
     primaryTable: 'android_monitor_contention',
     requiredModules: ['android.monitor_contention'],
+    // ART writes "monitor contention with owner ..." and "Lock contention on ..."
+    // atrace slices; the stdlib view parses only the formats it knows.
+    rawEventFallback: {
+      table: 'slice',
+      // One GLOB per branch, so each is a prefix filter trace_processor can apply itself.
+      probeSql: boundedProbeCountSql(
+        "SELECT 1 FROM slice WHERE name GLOB 'monitor contention*' " +
+        "UNION ALL SELECT 1 FROM slice WHERE name GLOB 'Lock contention on*'",
+      ),
+      readHint: {
+        zh: "按 slice.name GLOB 'monitor contention*' / 'Lock contention on*' 直接查询原始切片",
+        en: "query the raw slices directly with slice.name GLOB 'monitor contention*' / 'Lock contention on*'",
+      },
+    },
     priority: 'recommended',
   },
 
@@ -310,6 +357,33 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     primaryTable: 'android_oom_adj_intervals',
     requiredModules: ['android.oom_adjuster'],
     priority: 'recommended',
+  },
+
+  {
+    id: 'java_heap_graph',
+    displayName: 'Java Heap Dump（heap graph）',
+    primaryTable: 'heap_graph_object',
+    captureHint: '需要 android.java_hprof 数据源（ART heap dump）',
+    // Rows are one per object per dump. Totalled across dumps, two identical
+    // reachable sets read as one dump holding two of every instance.
+    availableDetail: {
+      // Every dump has GC roots, and roots are a small fraction of a dump's objects.
+      probeSql: boundedProbeCountSql(
+        'SELECT DISTINCT upid, graph_sample_ts FROM heap_graph_object WHERE root_type IS NOT NULL',
+        HEAP_DUMP_COUNT_LIMIT,
+      ),
+      describe: (count, language) => localize(language,
+        `${count >= HEAP_DUMP_COUNT_LIMIT ? `至少 ${count}` : count} 次 heap dump（按 upid, graph_sample_ts 区分）；每行是某次 dump 中的一个对象，比较或汇总前先按 graph_sample_ts 分开`,
+        `${count >= HEAP_DUMP_COUNT_LIMIT ? `at least ${count}` : count} heap dump(s) (by upid, graph_sample_ts); each row is one object in one dump, so separate dumps by graph_sample_ts before comparing or totalling`),
+    },
+    priority: 'optional',
+  },
+  {
+    id: 'native_heap_profile',
+    displayName: 'Native/Java 分配剖析（heapprofd）',
+    primaryTable: 'heap_profile_allocation',
+    captureHint: '需要 android.heapprofd 数据源',
+    priority: 'optional',
   },
 
   // ── CPU ──
@@ -499,7 +573,18 @@ function isInterpolatableProbe(cap: CapabilityDef): boolean {
   if (!SQL_IDENTIFIER.test(cap.id) || !SQL_IDENTIFIER.test(cap.primaryTable)) {
     return false;
   }
-  return cap.probeSql === undefined || isSingleSelectProbeSql(cap.probeSql);
+  return (cap.probeSql === undefined || isSingleSelectProbeSql(cap.probeSql)) &&
+    (cap.rawEventFallback === undefined || (SQL_IDENTIFIER.test(cap.rawEventFallback.table) &&
+      isSingleSelectProbeSql(cap.rawEventFallback.probeSql))) &&
+    (cap.availableDetail === undefined || isSingleSelectProbeSql(cap.availableDetail.probeSql));
+}
+
+function rawFallbackProbeKey(cap: {id: string}): string {
+  return `raw:${cap.id}`;
+}
+
+function availableDetailProbeKey(cap: {id: string}): string {
+  return `detail:${cap.id}`;
 }
 
 /**
@@ -521,12 +606,16 @@ function planCapabilityProbes(
       );
       continue;
     }
-    units.set(key, {
-      key,
-      selectSql: cap.probeSql === undefined
-        ? `SELECT '${key}' AS tbl, (${boundedProbeCountSql(`SELECT 1 FROM ${cap.primaryTable}`)}) AS cnt`
-        : `SELECT '${key}' AS tbl, (${cap.probeSql}) AS cnt`,
-    });
+    const primarySql = cap.probeSql ?? boundedProbeCountSql(`SELECT 1 FROM ${cap.primaryTable}`);
+    const add = (unitKey: string, countSql: string) =>
+      units.set(unitKey, {key: unitKey, selectSql: `SELECT '${unitKey}' AS tbl, (${countSql}) AS cnt`});
+    add(key, primarySql);
+    if (cap.availableDetail) add(availableDetailProbeKey(cap), cap.availableDetail.probeSql);
+    const fallback = cap.rawEventFallback;
+    // The raw scan only runs when the stdlib view is empty, the only case that reads it.
+    if (fallback && existingTables.has(fallback.table)) {
+      add(rawFallbackProbeKey(cap), `SELECT CASE WHEN (${primarySql}) = 0 THEN (${fallback.probeSql}) ELSE 0 END`);
+    }
   }
   return [...units.values()];
 }
@@ -830,6 +919,9 @@ async function resolveCapabilityManifestShadow(
         ...(capability.probeSql === undefined
           ? {}
           : {probeSql: capability.probeSql}),
+        ...(capability.rawEventFallback === undefined ? {} : {rawEventFallback: {
+          table: capability.rawEventFallback.table, probeSql: capability.rawEventFallback.probeSql}}),
+        ...(capability.availableDetail === undefined ? {} : {availableDetailSql: capability.availableDetail.probeSql}),
       })),
       legacyProbe: legacyResult,
       traceProcessor,
@@ -1128,7 +1220,23 @@ async function probeTimelessTraceCompleteness(
 
     // Data existence
     const rowCount = dataPresence.get(capabilityProbeKey(cap));
-    if (rowCount === undefined) {
+    const fallback = cap.rawEventFallback;
+    const rawRowCount = fallback ? dataPresence.get(rawFallbackProbeKey(cap)) : undefined;
+    if (rowCount === 0 && fallback && rawRowCount) {
+      const reason = localize(probeLanguage(),
+        `stdlib 视图 ${cap.primaryTable} 为空（未解析该 trace 的事件格式），但原始表 ${fallback.table} 中有对应事件：${fallback.readHint.zh}`,
+        `stdlib view ${cap.primaryTable} is empty (it does not parse this trace's event format), but raw table ${fallback.table} has the events: ${fallback.readHint.en}`);
+      const sparse = rawRowCount < INSUFFICIENT_THRESHOLD;
+      (sparse ? insufficient : available).push({
+        id: cap.id,
+        displayName: cap.displayName,
+        status: sparse ? 'insufficient_or_scene_absent' : 'available',
+        primaryTable: cap.primaryTable,
+        rowEstimate: rawRowCount,
+        reason,
+        rowSource: 'raw_event_fallback',
+      });
+    } else if (rowCount === undefined) {
       missingConfig.push(unprobedResult(cap, 'probe_query_failed', probeQueryFailedReason(cap)));
     } else if (rowCount === 0) {
       missingConfig.push({
@@ -1156,12 +1264,15 @@ async function probeTimelessTraceCompleteness(
         reason: `仅 ${rowCount} 行数据 — trace 时长可能不够或场景未充分发生`,
       });
     } else {
+      const detail = cap.availableDetail;
+      const detailCount = detail ? dataPresence.get(availableDetailProbeKey(cap)) : undefined;
       available.push({
         id: cap.id,
         displayName: cap.displayName,
         status: 'available',
         primaryTable: cap.primaryTable,
         rowEstimate: rowCount,
+        ...(detail && detailCount ? {reason: detail.describe(detailCount, probeLanguage())} : {}),
       });
     }
   }

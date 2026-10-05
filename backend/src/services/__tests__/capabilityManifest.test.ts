@@ -486,6 +486,27 @@ describe('CapabilityManifest contract', () => {
     expectErrorCode(unprobedWithRows, 'capability_manifest_invalid_row_estimate:missingConfig:frame_rendering');
   });
 
+  it('accepts raw-event rows only from a declared fallback, and records the fallback query', () => {
+    const fallback = {table: 'slice', probeSql: "SELECT COUNT(*) AS cnt FROM (SELECT 1 FROM slice WHERE name GLOB 'x*' LIMIT 3)"};
+    const undeclared = baseInput();
+    undeclared.legacyProbe.missingConfig = [undeclared.legacyProbe.missingConfig[0]];
+    undeclared.legacyProbe.available = [{...legacyResult('startup', 'available', 'android_startups', 3),
+      rowSource: 'raw_event_fallback'}];
+    expectErrorCode(undeclared, 'capability_manifest_invalid_row_source:available:startup');
+
+    const declared = baseInput();
+    declared.definitions[1] = {...declared.definitions[1], rawEventFallback: fallback};
+    declared.legacyProbe.missingConfig = [declared.legacyProbe.missingConfig[0]];
+    declared.legacyProbe.available = [{...legacyResult('startup', 'available', 'android_startups', 3),
+      rowSource: 'raw_event_fallback'}];
+    const entry = buildCapabilityManifest(declared).content.capabilities.find(cap => cap.id === 'startup');
+    expect(entry).toMatchObject({status: 'available', rowSource: 'raw_event_fallback', rawEventFallback: fallback});
+
+    const badSql = baseInput();
+    badSql.definitions[1] = {...badSql.definitions[1], rawEventFallback: {table: 'slice', probeSql: 'DELETE FROM slice'}};
+    expectErrorCode(badSql, 'capability_manifest_invalid_raw_event_fallback:startup');
+  });
+
   it('rejects a primary-table mismatch', () => {
     const input = baseInput();
     input.legacyProbe.missingConfig[0].primaryTable = 'wrong_table';

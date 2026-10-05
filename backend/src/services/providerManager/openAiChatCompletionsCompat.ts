@@ -15,6 +15,14 @@ export type OpenAITextRequestPurposeOptions = {
   text?: {format: {type: 'json_object'}};
 };
 
+/** Official Zhipu GLM origins (mainland and international). Their chat
+ * completions think by default; a classification prompt then spent ~1.5k
+ * reasoning tokens and 28-30 s on glm-5.3-flash, at the 30 s classifier
+ * budget, versus ~4.5 s with thinking disabled.
+ * https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode
+ */
+const GLM_ORIGINS = new Set(['https://open.bigmodel.cn', 'https://api.z.ai']);
+
 /** Apply purpose-specific controls only to the exact official origin.
  * Classification disables default thinking; final semantic review requests JSON
  * syntax without changing its thinking policy. Gateways own their protocol semantics.
@@ -26,6 +34,11 @@ export function buildOpenAITextRequestPurposeOptions(input: {
   protocol: 'chat_completions' | 'responses';
   purpose?: OpenAITextRequestPurpose;
 }): OpenAITextRequestPurposeOptions {
+  if (GLM_ORIGINS.has(input.requestUrl.origin)) {
+    // GLM serves chat completions only; its JSON mode is not relied on here.
+    return input.purpose === 'classification' && input.protocol === 'chat_completions'
+      ? {thinking: {type: 'disabled'}} : {};
+  }
   if (input.requestUrl.origin !== 'https://api.deepseek.com') return {};
   if (input.purpose === 'classification') {
     return input.protocol === 'responses' ? {reasoning: {effort: 'none'}} : {thinking: {type: 'disabled'}};
