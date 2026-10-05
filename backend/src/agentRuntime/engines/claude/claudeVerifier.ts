@@ -20,6 +20,7 @@ import {assessFinalReportContract} from '../../../services/finalReportContractGa
 import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {isProductionAgentRuntimeKind} from '../../runtimeKinds';
+import {candidateHasAnswerBody} from '../../runtimeConclusionProtocol';
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -165,7 +166,8 @@ function assessDeliveryIssues(
       '当前候选缺少匹配的完成记录或内容来源，完成状态尚未确认。',
       'The current candidate lacks a matching terminal record or output origin; completion is unconfirmed.'),
   });
-  if (!conclusion.trim()) issues.push({
+  // A declaration alone is not a body: a reply that carries only one gets the same continuation.
+  if (!candidateHasAnswerBody(conclusion)) issues.push({
     type: 'missing_reasoning', severity: 'error',
     message: localize(outputLanguage, '当前候选没有可交付的正文。', 'The current candidate has no deliverable body.'),
     ...(canContinue ? {recoveryKind: 'continue_output' as const} : {}),

@@ -3018,6 +3018,51 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     takeFinalizationContext(result)?.dispose();
   });
 
+  it('lets a slow declaration repair finish inside the run deadline and records the call', async () => {
+    // A declaration for dozens of claims took GLM over two minutes; a fixed 120 s cap discarded every one.
+    jest.useFakeTimers({doNotFake: ['nextTick', 'setImmediate']});
+    let repairStarted = false;
+    const body = 'Frame 12 missed its deadline.';
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: [], rows: []}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1,
+      fullPathPerTurnMs: 600_000, fullRequestTimeoutMs: 2_400_000, streamIdleTimeoutMs: 600_000});
+    (runtime as any).architectureCache.set('trace-slow-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    let sdkCallCount = 0;
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      sdkCallCount += 1;
+      if (sdkCallCount === 2) {
+        repairStarted = true;
+        await new Promise(resolve => setTimeout(resolve, 150_000));
+      }
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-slow-declaration', num_turns: 1,
+        total_cost_usd: 0.1, result: candidateWithPopulation(body, sdkCallCount === 1 ? 'everywhere' : 'cited_rows', 'miss')};
+    });
+    const recorder = createRuntimePerformanceRecorder();
+    try {
+      const pending = withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze('分析当前证据', 'session-slow-declaration', 'trace-slow-declaration', {
+          analysisMode: 'full', runId: 'claude-slow-declaration', packageName: 'com.example.app',
+          runManifestAttributionSink: createNoopAttributionSink(recorder),
+        }));
+      let settled = false;
+      void pending.finally(() => {settled = true;}).catch(() => undefined);
+      // Step the clock: earlier stages wait on their own timers before the repair starts.
+      for (let step = 0; step < 400 && !settled; step++) await jest.advanceTimersByTimeAsync(1_000);
+      expect(repairStarted).toBe(true);
+      const result = await pending;
+      expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+      expect(result.completion).toMatchObject({status: 'completed', attemptId: expect.stringContaining(':correction:1')});
+      expect(recorder.seal().modelCalls).toContainEqual(expect.objectContaining({
+        purpose: 'declaration_repair', trigger: 'invalid_declaration', outcome: 'ok'}));
+      takeFinalizationContext(result)?.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps the issue-based correction when a rejected declaration is too large to repair', async () => {
     const body = `${'Frame 12 missed its deadline. '.repeat(4700)}`.trimEnd();
     expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(128 * 1024);

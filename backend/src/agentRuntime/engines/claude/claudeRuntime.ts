@@ -201,8 +201,6 @@ import {
 } from '../../runtimePerformance';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 
-const TEXT_ONLY_CORRECTION_TIMEOUT_MS = 120_000;
-
 // Notes persistence now handled by unified SessionStateSnapshot — no separate disk I/O.
 // The old logs/session_notes/ directory is no longer written to.
 
@@ -1728,6 +1726,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           assertAuthorized();
           answerDraft?.reset();
           const correctionAttemptId = `${runId}:correction:1`;
+          const correctionCall = runtimePerformance.startModelCall({
+            purpose: recovery.kind === 'declaration' ? 'declaration_repair' : 'continuation',
+            ...(recovery.kind === 'declaration' ? {trigger: recovery.request.reason} : {}),
+            model: runtimeConfig.model,
+          });
+          let correctionTerminal = 'none' as 'none' | 'completed' | 'failed';
           const {stream, close} = sdkQueryWithRetry({
             prompt: recovery.kind === 'declaration'
               ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
@@ -1748,9 +1752,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           let correctionActive = true;
           let correctionTimedOut = false;
           let timeout: ReturnType<typeof setTimeout> | undefined;
+          // A declaration for dozens of claims takes a slow provider minutes; the
+          // run's delivery deadline bounds this call, as it bounds every runtime's.
           const timeoutPromise = new Promise<void>(resolve => {
             timeout = setTimeout(() => {correctionTimedOut = true; close(); resolve();},
-              Math.max(1, Math.min(TEXT_ONLY_CORRECTION_TIMEOUT_MS, requestDeadline - Date.now())));
+              Math.max(1, requestDeadline - Date.now()));
           });
           let onCorrectionAbort: (() => void) | undefined;
           const abortPromise = new Promise<never>((_, reject) => {
@@ -1765,6 +1771,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               correctionWorkObserved ||= sdkAttemptHasObservedWork(message);
               if (message.type !== 'result') continue;
               const terminal = claudeTerminalState(message);
+              correctionCall.end({outcome: terminal.status === 'completed' ? 'ok' : 'error'});
+              correctionTerminal = terminal.status === 'completed' ? 'completed' : 'failed';
               const reportedTurns = (message as any).num_turns;
               if (typeof reportedTurns === 'number' && Number.isFinite(reportedTurns) && reportedTurns >= 0) {
                 correctionReportedTurns = reportedTurns;
@@ -1794,6 +1802,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             await Promise.race([collectCorrection(), timeoutPromise, abortPromise]);
           } finally {
             correctionActive = false;
+            // The receipt's closed outcomes have no timeout; the log line names it.
+            correctionCall.end({outcome: correctionTimedOut || executionLease.signal.aborted ? 'cancelled' : 'error'});
+            console.log(`[ClaudeRuntime] correction ended: kind=${recovery.kind} outcome=${correctionTimedOut ? 'timeout'
+              : acceptedAttemptId === correctionAttemptId ? 'accepted'
+                : correctionTerminal === 'completed' ? 'rejected' : correctionTerminal === 'failed' ? 'failed' : 'no_result'}`);
             rounds = turnsBeforeCorrection + Math.max(correctionReportedTurns, correctionWorkObserved ? 1 : 0);
             if (onCorrectionAbort) executionLease.signal.removeEventListener('abort', onCorrectionAbort);
             if (timeout) clearTimeout(timeout);

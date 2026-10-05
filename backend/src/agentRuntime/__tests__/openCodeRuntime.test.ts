@@ -656,6 +656,61 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(snapshot.claudeHypotheses).toEqual([expect.objectContaining({id: 'open-hypothesis', status: 'formed'})]);
   }));
 
+  describe('empty answer body', () => {
+    const declarationOnly = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
+      uncertainties: [], nextSteps: []} as ConclusionContract);
+    const returnData = async (harness: ReturnType<typeof createNativeIntentHarness>) => {
+      const submitHypothesis = harness.getTools().find(tool => tool.name === 'submit_hypothesis');
+      await submitHypothesis.shared.handler({id: 'anr-input', statement: 'Three ANRs are recorded.'});
+    };
+    const run = async (input: Parameters<typeof createNativeIntentHarness>[0], withData = true) => {
+      let harness!: ReturnType<typeof createNativeIntentHarness>;
+      harness = createNativeIntentHarness({answer: declarationOnly, ...input,
+        ...(withData ? {beforeAnswerReply: () => returnData(harness)} : {})});
+      const result = await harness.runtime.analyze('Any ANR here?', `opencode-empty-body-${harness.prompts.length}`,
+        'trace-opencode', {analysisMode: 'full'});
+      return {harness, result};
+    };
+
+    it('spends the delivery call writing the body from the returned data, with no declaration repair after it',
+      async () => withBackendDataDir(async () => {
+        // Its declaration is missing, which alone would ask for a repair; the call is already spent.
+        const {harness, result} = await run({closeoutAnswer: 'Three ANRs are recorded for com.example.app.'});
+        expect(harness.prompts).toHaveLength(3);
+        expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
+        const prompt = harness.prompts[2].body.parts[0].text;
+        expect(prompt).toContain('Any ANR here?');
+        expect(prompt).toContain('anr-input');
+        expect(prompt).not.toContain('missing_declaration');
+        expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim())
+          .toBe('Three ANRs are recorded for com.example.app.');
+        expect(result.completion).toMatchObject({status: 'completed'});
+        expect(result.rounds).toBe(2);
+        finalizationContext.takeFinalizationContext(result)?.dispose();
+      }));
+
+    it.each([
+      ['fails', {closeoutError: true}],
+      ['also has no body', {closeoutAnswer: declarationOnly}],
+    ])('keeps the original candidate when the continuation %s', async (_name, input) => withBackendDataDir(async () => {
+      const {harness, result} = await run(input);
+      expect(harness.prompts).toHaveLength(3);
+      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('');
+      finalizationContext.takeFinalizationContext(result)?.dispose();
+    }));
+
+    it('does not continue without returned data to answer from', async () => withBackendDataDir(async () => {
+      const {harness} = await run({closeoutAnswer: 'An answer with nothing behind it.'}, false);
+      expect(harness.prompts).toHaveLength(2);
+    }));
+
+    it('does not continue when the run has no delivery call left', async () => withBackendDataDir(async () => {
+      const {harness} = await run({closeoutAnswer: 'Unreached.', env: {AGENT_MAX_TURNS: '1'}});
+      expect(harness.prompts).toHaveLength(2);
+    }));
+  });
+
   it('uses the reserved delivery turn to repair a rejected declaration around the unchanged body', async () => withBackendDataDir(async () => {
     const body = 'Frame 12 missed its deadline.';
     const harness = createNativeIntentHarness({answer: candidateWithPopulation(body, 'everywhere'), closeoutAnswer: candidateWithPopulation(body, 'cited_rows')});

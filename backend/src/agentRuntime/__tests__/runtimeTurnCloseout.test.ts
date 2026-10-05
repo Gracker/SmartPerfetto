@@ -242,3 +242,24 @@ describe('runtime closeout returned-data tape', () => {
     }
   });
 });
+
+describe('runtime empty-body continuation prompt', () => {
+  it('asks for the missing body from the same returned data, not for a budget-exhausted closeout', async () => {
+    const tape = createRuntimeTurnCloseoutTape();
+    expect(tape.hasReturnedData()).toBe(false);
+    await tape.observe({...invocation, phase: 'completed', result: createRuntimeToolResult({
+      rows: [{anr_type: 'input', ts: 1041}], success: true,
+    })});
+    expect(tape.hasReturnedData()).toBe(true);
+    const declarationOnly = '<!-- smartperfetto:conclusion-contract {"claims":[]} -->';
+    for (const outputLanguage of ['en', 'zh-CN'] as const) {
+      const prompt = tape.buildEmptyBodyPrompt({...question, priorConclusion: declarationOnly, outputLanguage});
+      expect(prompt).toContain(question.query);
+      expect(prompt).toContain(declarationOnly);
+      expect(readPromptData(prompt).entries[0].returnedData).toMatchObject({rows: [{anr_type: 'input', ts: 1041}]});
+      // The run finished: nothing here frames it as an exhausted budget.
+      expect(prompt).not.toMatch(/budget_exhausted|turn_limit|耗尽预算/);
+      expect(prompt).not.toContain('{{');
+    }
+  });
+});

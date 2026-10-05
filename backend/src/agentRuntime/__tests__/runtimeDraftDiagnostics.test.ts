@@ -8,6 +8,7 @@ import {describe, expect, it} from '@jest/globals';
 
 import type {AnalysisPlanV3, VerificationIssue} from '../../agentv3/types';
 import {analysisDeliveryFingerprint, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
+import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {assessRuntimeDraft, chooseRuntimeDraftRecovery} from '../runtimeDraftDiagnostics';
 import {
   INVALID_NATIVE_DECLARATION,
@@ -51,6 +52,19 @@ describe('assessRuntimeDraft', () => {
       outputLanguage: 'zh-CN'});
     expect(draft.deliveryErrors.length).toBeGreaterThan(0);
     expect(draft.recoverableIssues).toEqual([]);
+  });
+});
+
+describe('assessRuntimeDraft on a reply without an answer body', () => {
+  it('asks for the body when the completed reply carries only a declaration', async () => {
+    // Claude assesses the reply with its sidecar still attached; a non-empty string is not a body.
+    const declarationOnly = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
+      uncertainties: [], nextSteps: []});
+    const draft = await assessRuntimeDraft({conclusion: declarationOnly,
+      deliveryContext: draftContext(declarationOnly, 'completed'), outputLanguage: 'en'});
+    expect(draft.recoverableIssues).toEqual([
+      expect.objectContaining({type: 'missing_reasoning', recoveryKind: 'continue_output'})]);
   });
 });
 

@@ -1604,6 +1604,68 @@ describe('QoderRuntime', () => {
       takeFinalizationContext(result)?.dispose();
     });
 
+    describe('empty answer body', () => {
+      const declarationOnly = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
+        uncertainties: [], nextSteps: []} as ConclusionContract);
+      const mainRun = (withData: boolean) => mockQuery.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          if (withData) {
+            const mcp = mockCreateClaudeMcpServer.mock.calls.slice(-1)[0]![0] as any;
+            await mcp.toolObserver({phase: 'started', toolCallId: 'anr-1', toolName: 'execute_sql', params: {}, extra: {}});
+            await mcp.toolObserver({phase: 'completed', toolCallId: 'anr-1', toolName: 'execute_sql', params: {}, extra: {},
+              result: {content: [{type: 'text', text: JSON.stringify({columns: ['anr_type'], rows: [['input']]})}]}});
+          }
+          yield {type: 'result', subtype: 'success', is_error: false, result: declarationOnly, num_turns: 1};
+        }, interrupt: mockInterrupt, close: mockClose,
+      }));
+
+      it('retires acquisition and spends the delivery call on the body, with no declaration repair after it', async () => {
+        mockIntentTransport
+          .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+          .mockResolvedValueOnce({status: 'ok', text: 'The input ANR is recorded.', finishReason: 'end_turn'});
+        mainRun(true);
+        mockClose.mockClear();
+        const result = await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body', 'trace-1',
+          {analysisMode: 'full', runId: 'qoder-empty-body'});
+        // Its declaration is missing, which alone would ask for a repair; the call is already spent.
+        expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+        const continuation = mockIntentTransport.mock.calls[1][0] as any;
+        expect(continuation.prompt).toContain('Any ANR here?');
+        expect(continuation.prompt).toContain('execute_sql');
+        expect(continuation.prompt).not.toContain('missing_declaration');
+        expect(mockClose).toHaveBeenCalled();
+        expect(mockClose.mock.invocationCallOrder[0]).toBeLessThan(mockIntentTransport.mock.invocationCallOrder[1]);
+        expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('The input ANR is recorded.');
+        expect(result.completion).toMatchObject({status: 'completed', attemptId: 'empty-body-continuation:1'});
+        takeFinalizationContext(result)?.dispose();
+      });
+
+      it.each([
+        ['fails', {status: 'unavailable', reason: 'provider_error'}],
+        ['also has no body', {status: 'ok', text: declarationOnly, finishReason: 'end_turn'}],
+      ])('keeps the original candidate when the continuation %s', async (_name, reply) => {
+        mockIntentTransport
+          .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+          .mockResolvedValueOnce(reply as any);
+        mainRun(true);
+        const result = await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body-kept', 'trace-1',
+          {analysisMode: 'full'});
+        expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+        expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('');
+        expect(result.completion?.attemptId).toBe('main');
+        takeFinalizationContext(result)?.dispose();
+      });
+
+      it('does not continue without returned data to answer from', async () => {
+        mockIntentTransport.mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)});
+        mainRun(false);
+        await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body-no-data', 'trace-1',
+          {analysisMode: 'full'});
+        expect(mockIntentTransport).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('uses one no-tools delivery turn for an unchanged full native declaration candidate', async () => {
       const body = `${'启动正文保持完整。'.repeat(850)}\n${'Native body remains unchanged. '.repeat(170)}`.trimEnd();
       expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
