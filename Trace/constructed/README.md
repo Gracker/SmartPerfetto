@@ -22,6 +22,7 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 | [Media, network, and camera pipeline](./media-network-camera/) | media | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 8 target(s) |
 | [Memory and GC pressure](./memory-gc-pressure/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 20 target(s) |
 | [Power and thermal throttling](./power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
+| [Process restart: two instances of one package](./process-restart-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 9 target(s) |
 | [Process scope isolation across same-package and peer processes](./process-scope-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 16 target(s) |
 | [Framework process state residency](./process-state-residency/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Rendering pipeline jank](./rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 47 target(s) |

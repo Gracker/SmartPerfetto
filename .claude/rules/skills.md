@@ -214,8 +214,10 @@ Click actions should be explicit, for example:
   inventory lists named SQL only; exact units come from `executableSqlUnits`
   in the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An
   executed Skill expectation's `exact_scope` names a process that must
-  resolve to exactly one UPID in the case trace and lists the exact units it
-  binds; the runner reloads the trace (so no view the named run created
+  resolve to exactly one UPID in the case trace, or, with `instance:
+  newest|oldest`, to several same-named processes (a restarted app) of
+  which it picks one by UPID order, and lists the exact units it binds; the
+  runner reloads the trace (so no view the named run created
   leaks in) and repeats the expectation's steps through the production
   identity gate and exact admission with that UPID. Each bound unit must
   execute (no forced or isolated probe, so the trace must reach it), record
@@ -238,10 +240,19 @@ Click actions should be explicit, for example:
   the production context would keep the production choice and could never
   tell. The probed SQL must be read-only; a state-writing step the probe
   runs share only when neither its SQL nor its fragments bind a placeholder. An `exact_sql` has no
-  unscoped form, so only its first check applies. The check is differential,
-  so a leak that yields the same rows on the bound trace stays unseen, and
-  it cannot tell a name filter from a UPID filter when no other instance of
-  the bound process shares its name. It proves independence from process-selection
+  unscoped form, so only its first check applies. Neither probe changes a
+  process name, so a unit that selects by name (itself, or through an
+  earlier result such as `target_process.data[0].process_name`) passes both;
+  a binding with `instance` adds a third probe run, admitted through the
+  identity gate from the expectation's own parameters under the next
+  same-named instance's UPID, where every bound unit must answer
+  differently, so the case must give the instances distinct evidence for
+  each unit it binds (`process-restart-isolation` exists for that). A unit
+  bound only in a case without a same-named instance is not checked for a
+  name filter. The checks are differential, so a leak that yields the same
+  rows on the bound trace stays unseen, and a unit that projects a scope
+  constant (the bound UPID) differs from its sibling whatever it reads; bound
+  it with `max_rows`, which a name filter exceeds. It proves independence from process-selection
   parameters, not from data the trace attributes more coarsely than a
   process: rx packets carry only a socket uid, so processes sharing a uid (a
   same-package `:worker`) share them, and a step reading such data says so in

@@ -56,11 +56,15 @@ type CorpusExpectation = {
 /**
  * Runs the expectation's steps again under an exact UPID scope, so the
  * executor selects each step's exact_sql (processScopeSql.sqlRunBy). The
- * process is named, never numbered: it must resolve to exactly one UPID in
- * the case trace. Each bound unit is an `executableSqlUnits` exact path.
+ * process is named, never numbered: without `instance` the name must resolve
+ * to exactly one UPID in the case trace; with it, to several (an app that was
+ * restarted), of which `instance` picks one by UPID order, as `fixture_upid`
+ * does (selectExactScopeInstance). Each bound unit is an `executableSqlUnits`
+ * exact path.
  */
 type ExactScopeBinding = {
   process_name: string;
+  instance?: 'newest' | 'oldest';
   units: ExactUnitBinding[];
 };
 
@@ -176,6 +180,34 @@ export function exactScopeBindingError(
   const nested = bound.filter(unit => !exactUnitStepId(definition, unit));
   if (nested.length > 0) return `${NESTED_UNSUPPORTED}: ${nested.join(', ')}`;
   return undefined;
+}
+
+/**
+ * The UPID `binding` runs under, from the UPIDs its process name matches in
+ * ascending order, and the same-named instance the scope probe compares it
+ * with: the next one in the same direction. One sibling is enough, since a
+ * selection by name admits every instance that shares it.
+ */
+export function selectExactScopeInstance(
+  upids: readonly number[],
+  binding: Pick<ExactScopeBinding, 'process_name' | 'instance'>,
+): {upid: number; sibling?: number} {
+  const matched = `exact_scope process ${binding.process_name} matches ${upids.length} process(es)`;
+  if (upids.some(upid => !Number.isSafeInteger(upid) || upid <= 0)) {
+    throw new Error(`${matched}, not all with a positive UPID`);
+  }
+  if (!binding.instance) {
+    if (upids.length !== 1) {
+      throw new Error(`${matched}; an exact binding needs exactly one positive UPID, `
+        + 'or an instance (newest|oldest) when the name is shared');
+    }
+    return {upid: upids[0]};
+  }
+  if (upids.length < 2) {
+    throw new Error(`${matched}; instance ${binding.instance} picks among same-named processes, so the name must be shared`);
+  }
+  const ordered = binding.instance === 'newest' ? [...upids].reverse() : upids;
+  return {upid: ordered[0], sibling: ordered[1]};
 }
 
 /** Why `result` is not `unit` executed under exact UPID `upid`, or undefined when it is. */
@@ -496,27 +528,24 @@ async function runExactUnits(
   binding: ExactScopeBinding,
   params: Record<string, unknown>,
 ): Promise<ExactSqlEvidence> {
-  const processes = await evaluator.executeSQL(`SELECT upid FROM process WHERE name = ${sqlString(binding.process_name)}`);
+  const processes = await evaluator.executeSQL(
+    `SELECT upid FROM process WHERE name = ${sqlString(binding.process_name)} ORDER BY upid`);
   if (processes.error) throw new Error(`exact_scope process lookup failed: ${processes.error}`);
-  const upid = Number(processes.rows[0]?.[0]);
-  if (processes.rows.length !== 1 || !Number.isSafeInteger(upid) || upid <= 0) {
-    throw new Error(`exact_scope process ${binding.process_name} matches ${processes.rows.length} process(es); `
-      + 'an exact binding needs exactly one positive UPID');
-  }
+  const {upid, sibling} = selectExactScopeInstance(processes.rows.map(row => Number(row[0])), binding);
   if (params.upid !== undefined && Number(params.upid) !== upid) {
     throw new Error(`exact_scope UPID ${upid} conflicts with the expectation's upid parameter ${String(params.upid)}`);
   }
   const exactParams = {...params, upid};
   const required = expectation.required_steps ?? [];
   const units = binding.units.map(unit => ({unit, stepId: exactUnitStepId(definition, unit.unit)!}));
-  const probeStepIds = units.map(({stepId}) => stepId);
+  const probe = {scopeProbeStepIds: units.map(({stepId}) => stepId), scopeProbeSiblingUpid: sibling};
   // Each bound step's scope probe rides on the exact run itself. A root-atomic
   // Skill's exact run takes the production root path, which has no fork
   // point, so its probe gets one run of its own (SkillEvaluator scopeProbeStepIds).
   const rootOnly = required.length === 1 && required[0] === 'root';
   const results = rootOnly
     ? await runRequiredSteps(evaluator, required, exactParams)
-    : await evaluator.executeStepSequence(required, exactParams, {scopeProbeStepIds: probeStepIds});
+    : await evaluator.executeStepSequence(required, exactParams, probe);
   // A step may be skipped or declare exact scope unavailable; it may not fail.
   for (const result of results) {
     if (result.code === 'optional_query_error' ||
@@ -545,9 +574,9 @@ async function runExactUnits(
     }
   }
   const probed = rootOnly
-    ? await evaluator.executeStepSequence(required, exactParams, {scopeProbeStepIds: probeStepIds})
+    ? await evaluator.executeStepSequence(required, exactParams, probe)
     : results;
-  const isolation = scopeIsolationFailures(units.map(({unit, stepId}) => ({unit: unit.unit, stepId})), probed, upid);
+  const isolation = scopeIsolationFailures(units.map(({unit, stepId}) => ({unit: unit.unit, stepId})), probed, upid, sibling);
   if (isolation.length > 0) throw new Error(isolation.join('; '));
   return evidence;
 }
@@ -567,12 +596,16 @@ const probedOutcome = ({success, code, error, data}: ScopeProbeOutcome): string 
  * that answers like the exact run, no other process in this trace carries the
  * unit's evidence and the first check proved nothing, so the fixture, not the
  * Skill, is insufficient. A step with an exact_sql has no unscoped form, so
- * only its blanked check applies.
+ * only its blanked check applies. When the bound process shares its name,
+ * `sibling` ran it under the other instance's UPID, which each unit must
+ * answer differently: an equal answer reads by name (ScopeProbeVariant), or
+ * the two instances carry the same evidence.
  */
 export function scopeIsolationFailures(
   units: ReadonlyArray<{unit: string; stepId: string}>,
   results: readonly EvalStepResult[],
   upid: number,
+  siblingUpid?: number,
 ): string[] {
   return units.flatMap(({unit, stepId}) => {
     const result = results.find(candidate => candidate.stepId === stepId);
@@ -586,6 +619,13 @@ export function scopeIsolationFailures(
       return [`${unit} isolation is inconclusive: it answers for every process as for UPID ${upid}, `
         + 'so no other process in this trace carries its evidence; '
         + 'bind a trace where one does (the fixture is insufficient, not the Skill)'];
+    }
+    if (siblingUpid === undefined) return [];
+    if (!result.scopeProbe.sibling) return [`${unit} was not probed under same-named UPID ${siblingUpid}`];
+    if (probedOutcome(result.scopeProbe.sibling) === exact) {
+      return [`${unit} answers alike under UPID ${upid} and UPID ${siblingUpid}, which share a process name: `
+        + 'its exact branch selects by name, itself or through an earlier result, '
+        + 'or the instances carry the same evidence (give them distinct evidence)'];
     }
     return [];
   });

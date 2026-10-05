@@ -41,9 +41,10 @@ export interface EvalStepResult {
   scopeProvenance?: EvidenceScopeProvenanceV1;
   /**
    * The step's scope-isolation variants, for a step named in `scopeProbeStepIds`;
-   * `open` only where an unscoped run executes the same SQL (no exact_sql).
+   * `open` only where an unscoped run executes the same SQL (no exact_sql),
+   * `sibling` only when `scopeProbeSiblingUpid` names one.
    */
-  scopeProbe?: {blanked: ScopeProbeOutcome; open?: ScopeProbeOutcome};
+  scopeProbe?: {blanked: ScopeProbeOutcome; open?: ScopeProbeOutcome; sibling?: ScopeProbeOutcome};
 }
 
 export interface EvalSkillResult {
@@ -64,10 +65,12 @@ export interface EvalStepSequenceOptions {
   forceSqlStepIds?: readonly string[];
   /**
    * Steps whose scope-probe answers the results report. Naming any runs the
-   * whole sequence in both probe runs beside the production run
+   * whole sequence in each probe run beside the production run
    * (scopeProbeContexts); the production context never sees their results.
    */
   scopeProbeStepIds?: readonly string[];
+  /** A same-named instance of the run's exact UPID, probed as ScopeProbeVariant `sibling`. */
+  scopeProbeSiblingUpid?: number;
 }
 
 /**
@@ -76,9 +79,14 @@ export interface EvalStepSequenceOptions {
  * selectors (processSelectorKeys), so a unit that still reads them under an
  * exact scope, itself or through an earlier step's result, sees its
  * every-process fallback. `open` also swaps in an unscoped scope: that
- * fallback itself, what every process in the trace carries.
+ * fallback itself, what every process in the trace carries. `sibling` is the
+ * production run again, admitted from the same parameters under the UPID of
+ * a same-named instance: a unit that selects by process name, which neither
+ * stripping selectors nor dropping the scope can change, sees that instance's
+ * rows in both runs.
  */
-type ScopeProbeVariant = 'blanked' | 'open';
+type ScopeProbeVariant = 'blanked' | 'open' | 'sibling';
+type ScopeProbeContexts = Record<Exclude<ScopeProbeVariant, 'sibling'>, SkillExecutionContext> & {sibling?: SkillExecutionContext};
 
 export type ScopeProbeOutcome = Pick<EvalStepResult, 'success' | 'code' | 'error' | 'data'>;
 
@@ -373,16 +381,7 @@ export class SkillEvaluator {
       throw new Error('SkillEvaluator not initialized. Call loadTrace() first.');
     }
 
-    const gate = await this.executor.prepareInvocation(this.skill.name, this.traceId, params);
-    if (!gate.allowed) throw new Error(gate.error ?? 'Skill identity admission failed');
-    if (!gate.processScope) throw new Error('Skill identity admission did not issue a process scope');
-    assertEffectiveProcessScope(gate.processScope, this.traceId, 'current');
-    const validation = validateSkillInputs(this.skill.name, this.skill.inputs, gate.params);
-    if (validation.errors.length > 0) {
-      const msg = validation.errors.map(error => `${error.paramName}: ${error.message}`).join('; ');
-      throw new Error(`Input validation failed: ${msg}`);
-    }
-
+    const admitted = await this.admitStepSequence(params);
     const executor = this.executor as any;
     // Perfetto stdlib tables declared by a Skill do not exist until their
     // modules are included. Match the production execution order before
@@ -396,9 +395,7 @@ export class SkillEvaluator {
 
     const context: SkillExecutionContext = {
       traceId: this.traceId,
-      params: validation.params,
-      inherited: gate.inherited,
-      processScope: gate.processScope,
+      ...admitted,
       results: {},
       variables: {},
       moduleIncludes,
@@ -409,7 +406,8 @@ export class SkillEvaluator {
     const probed = new Set(options.scopeProbeStepIds ?? []);
     // Steps after the last probed one feed no comparison, so the probe runs stop there.
     const lastProbed = Math.max(-1, ...stepIds.map((id, index) => probed.has(id) ? index : -1));
-    const probes = probed.size ? this.scopeProbeContexts(context) : undefined;
+    const probes = probed.size
+      ? await this.scopeProbeContexts(context, params, options.scopeProbeSiblingUpid) : undefined;
     for (const [index, stepId] of stepIds.entries()) {
       // A root-atomic Skill's SQL runs here as its one step. The production
       // root path is executeRootAtomic; this one serves the scope probe, whose
@@ -456,12 +454,36 @@ export class SkillEvaluator {
   }
 
   /**
-   * The two probe runs (ScopeProbeVariant), copies of the production run's
-   * starting context that start with no results and bind their own: a unit
-   * that takes its process from an earlier result is judged through the
-   * choice its own run made, not the production run's.
+   * The production identity gate and input validation for `params`: what a
+   * run of the sequence starts from.
    */
-  private scopeProbeContexts(context: SkillExecutionContext): Record<ScopeProbeVariant, SkillExecutionContext> {
+  private async admitStepSequence(params: Record<string, any>):
+    Promise<Pick<SkillExecutionContext, 'params' | 'inherited' | 'processScope'>> {
+    const gate = await this.executor!.prepareInvocation(this.skill!.name, this.traceId!, params);
+    if (!gate.allowed) throw new Error(gate.error ?? 'Skill identity admission failed');
+    if (!gate.processScope) throw new Error('Skill identity admission did not issue a process scope');
+    assertEffectiveProcessScope(gate.processScope, this.traceId!, 'current');
+    const validation = validateSkillInputs(this.skill!.name, this.skill!.inputs, gate.params);
+    if (validation.errors.length > 0) {
+      const msg = validation.errors.map(error => `${error.paramName}: ${error.message}`).join('; ');
+      throw new Error(`Input validation failed: ${msg}`);
+    }
+    return {params: validation.params, inherited: gate.inherited, processScope: gate.processScope};
+  }
+
+  /**
+   * The probe runs (ScopeProbeVariant), each starting with no results and
+   * binding its own: a unit that takes its process from an earlier result is
+   * judged through the choice its own run made, not the production run's.
+   * `blanked` and `open` copy the production run's starting context; `sibling`
+   * is admitted afresh from the caller's `params`, never the gate's rewrite of
+   * them, which may have consumed the production UPID.
+   */
+  private async scopeProbeContexts(
+    context: SkillExecutionContext,
+    params: Record<string, any>,
+    siblingUpid: number | undefined,
+  ): Promise<ScopeProbeContexts> {
     const selectors = new Set(processSelectorKeys(getEffectiveIdentityConfig(this.skill!)));
     const strip = (values: Record<string, any> | undefined) =>
       Object.fromEntries(Object.entries(values ?? {}).filter(([key]) => !selectors.has(key)));
@@ -469,11 +491,22 @@ export class SkillEvaluator {
       ...context, params: strip(context.params), inherited: strip(context.inherited),
       results: {}, variables: {}, processScope,
     });
-    return {blanked: copy(context.processScope), open: copy(createEffectiveProcessScope(this.traceId!, 'current'))};
+    const contexts: ScopeProbeContexts = {
+      blanked: copy(context.processScope),
+      open: copy(createEffectiveProcessScope(this.traceId!, 'current')),
+    };
+    if (siblingUpid !== undefined) {
+      const sibling = await this.admitStepSequence({...params, upid: siblingUpid});
+      if (sibling.processScope?.mode !== 'exact_upid' || sibling.processScope.upid !== siblingUpid) {
+        throw new Error(`Scope-isolation sibling UPID ${siblingUpid} was not admitted as an exact scope`);
+      }
+      contexts.sibling = {...context, ...sibling, results: {}, variables: {}};
+    }
+    return contexts;
   }
 
   /**
-   * Runs `step` in both probe runs and, when it is `probed`, returns what each
+   * Runs `step` in each probe run and, when it is `probed`, returns what each
    * answered. The runs share the loaded trace, so SQL that writes state runs
    * once, and its production answer is theirs only when neither it nor its
    * fragments bind a placeholder (an idempotent fallback view): nothing of the
@@ -483,7 +516,7 @@ export class SkillEvaluator {
   private async runScopeProbeStep(
     step: any,
     production: StepResult,
-    probes: Record<ScopeProbeVariant, SkillExecutionContext>,
+    probes: ScopeProbeContexts,
     probed: boolean,
   ): Promise<EvalStepResult['scopeProbe']> {
     const sources = (['exact', 'named'] as const).map(variant => sqlRunBy(step, variant))
@@ -498,15 +531,20 @@ export class SkillEvaluator {
       for (const context of Object.values(probes)) this.bindStepResult(step, production, context);
       return undefined;
     }
-    const run = async (variant: ScopeProbeVariant): Promise<ScopeProbeOutcome> => {
-      const result = await (this.executor as any).executeStep(step, probes[variant], this.skill!.name) as StepResult;
-      this.bindStepResult(step, result, probes[variant]);
+    const run = async (context: SkillExecutionContext): Promise<ScopeProbeOutcome> => {
+      const result = await (this.executor as any).executeStep(step, context, this.skill!.name) as StepResult;
+      this.bindStepResult(step, result, context);
       return {success: result.success, code: result.code, error: result.error, data: this.extractStepData(result)};
     };
-    const blanked = await run('blanked');
-    const open = await run('open');
+    const blanked = await run(probes.blanked);
+    const open = await run(probes.open);
+    const sibling = probes.sibling && await run(probes.sibling);
     if (!probed) return undefined;
-    return {blanked, ...(sqlRunBy(step, 'named') === sqlRunBy(step, 'exact') ? {open} : {})};
+    return {
+      blanked,
+      ...(sqlRunBy(step, 'named') === sqlRunBy(step, 'exact') ? {open} : {}),
+      ...(sibling ? {sibling} : {}),
+    };
   }
 
   /** Execute a root-level atomic Skill through the production runtime path. */

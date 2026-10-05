@@ -23,6 +23,7 @@ import {
   resolveParameterTokens,
   runCorpusRegression,
   scopeIsolationFailures,
+  selectExactScopeInstance,
   sqlResultState,
   unboundExactUnitFailures,
   validateStrategyExpectationDeclaration,
@@ -272,6 +273,73 @@ describe('SkillEvaluator step sequence identity admission', () => {
         await expect(evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']}))
           .rejects.toThrow('Scope-isolation probe of target needs read-only step SQL');
       } finally {db.close();}
+    });
+
+    describe('same-named sibling', () => {
+      // 44 is com.example again: the app after a restart, beside 42.
+      const restarted = (sql: string) => {
+        const fixture = withSkill(sql);
+        fixture.db.exec("INSERT INTO process VALUES (44,4444,'com.example','com.example',1000,1000,500,1000)");
+        return fixture;
+      };
+      // Reads the bound UPID's name and then every process carrying it, as a
+      // step that re-selects its target process by name would.
+      const byName = 'SELECT upid FROM process WHERE ${__process_scope.upid} IS NULL OR name = '
+        + '(SELECT name FROM process WHERE upid = ${__process_scope.upid}) ORDER BY upid';
+      const siblingRun = (evaluator: SkillEvaluator) => evaluator.executeStepSequence(['target'], {upid: 42},
+        {scopeProbeStepIds: ['target'], scopeProbeSiblingUpid: 44});
+
+      it('admits the sibling through the identity gate and runs the unit under its UPID', async () => {
+        const {db, evaluator} = restarted(isolated);
+        try {
+          const results = await siblingRun(evaluator);
+          expect(results[0].data).toEqual([{upid: 42}]);
+          expect(results[0].scopeProbe?.sibling?.data).toEqual([{upid: 44}]);
+          expect(scopeIsolationFailures([{unit: 'target', stepId: 'target'}], results, 42, 44)).toEqual([]);
+        } finally {db.close();}
+      });
+
+      it('fails a unit that selects by name, which the blanked and open runs cannot see', async () => {
+        const {db, evaluator} = restarted(byName);
+        try {
+          const results = await siblingRun(evaluator);
+          expect(results[0].data).toEqual([{upid: 42}, {upid: 44}]);
+          expect(scopeIsolationFailures([{unit: 'target', stepId: 'target'}], results, 42)).toEqual([]);
+          expect(scopeIsolationFailures([{unit: 'target', stepId: 'target'}], results, 42, 44))
+            .toEqual([expect.stringContaining('target answers alike under UPID 42 and UPID 44')]);
+        } finally {db.close();}
+      });
+
+      it('reports a probe that never ran under the sibling', async () => {
+        const {db, evaluator} = restarted(isolated);
+        try {
+          const results = await probeRun(evaluator);
+          expect(scopeIsolationFailures([{unit: 'target', stepId: 'target'}], results, 42, 44))
+            .toEqual(['target was not probed under same-named UPID 44']);
+        } finally {db.close();}
+      });
+    });
+  });
+
+  describe('exact_scope instance', () => {
+    const binding = (instance?: 'newest' | 'oldest') => ({process_name: 'com.example', instance});
+
+    it('keeps a unique name to exactly one UPID when no instance is named', () => {
+      expect(selectExactScopeInstance([42], binding())).toEqual({upid: 42});
+      expect(() => selectExactScopeInstance([42, 44], binding()))
+        .toThrow('matches 2 process(es); an exact binding needs exactly one positive UPID, or an instance');
+      expect(() => selectExactScopeInstance([], binding())).toThrow('matches 0 process(es)');
+    });
+
+    it('picks one of several same-named instances by UPID order, with the next as its sibling', () => {
+      expect(selectExactScopeInstance([42, 44, 47], binding('newest'))).toEqual({upid: 47, sibling: 44});
+      expect(selectExactScopeInstance([42, 44, 47], binding('oldest'))).toEqual({upid: 42, sibling: 44});
+    });
+
+    it('refuses an instance on an unshared name, and a UPID that is not positive', () => {
+      expect(() => selectExactScopeInstance([42], binding('newest')))
+        .toThrow('instance newest picks among same-named processes, so the name must be shared');
+      expect(() => selectExactScopeInstance([0, 42], binding('oldest'))).toThrow('not all with a positive UPID');
     });
   });
 

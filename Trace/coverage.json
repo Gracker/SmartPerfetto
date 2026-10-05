@@ -830,6 +830,7 @@
       "media-network-camera",
       "memory-gc-pressure",
       "power-thermal",
+      "process-restart-isolation",
       "process-scope-isolation",
       "process-state-residency",
       "rendering-jank",

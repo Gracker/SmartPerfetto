@@ -4,17 +4,17 @@
 This directory is the source-controlled trace test and reference corpus.
 
 - [Real trace cases](./real/README.md): 6
-- [Constructed trace cases](./constructed/README.md): 27
+- [Constructed trace cases](./constructed/README.md): 28
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Evidence tiers: R1=6, R2=0, R3=27.
+Evidence tiers: R1=6, R2=0, R3=28.
 
 Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 264 source-column-backed semantic, 24 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 264 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
-Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 16 semantic, 110 execution-only.
+Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 27 semantic, 127 execution-only.
 
 ## Commands
 
@@ -22,7 +22,7 @@ Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 16
 
 `npm run trace:build` deterministically materializes every base-plus-overlay case under ignored `Trace/.generated/` and reparses it with the pinned trace processor.
 
-`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every exact unit (each `exact_sql`, and each target step whose own SQL binds the scope's UPID through `native_upid` or `effective_target_processes`, in every Skill the executor admits to an exact run) under the exact UPID of the uniquely named process its expectation binds (`exact_scope`) and checks that its rows depend on that UPID alone, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
+`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every exact unit (each `exact_sql`, and each target step whose own SQL binds the scope's UPID through `native_upid` or `effective_target_processes`, in every Skill the executor admits to an exact run) under the exact UPID of the process its expectation binds (`exact_scope`: a unique name, or one instance of a shared name picked by `instance`) and checks that its rows depend on that UPID alone, and not on the process name when another instance shares it, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
 
 `npm run trace:regression` validates, builds, and executes the complete corpus. Per-case evidence is written below `Trace/.generated/<real|constructed>/<case-id>/`.
 
@@ -74,6 +74,7 @@ Every constructed case is an analysis scenario unless its `case.json` declares `
 | [Media, network, and camera pipeline](./constructed/media-network-camera/) | media | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 8 target(s) |
 | [Memory and GC pressure](./constructed/memory-gc-pressure/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 20 target(s) |
 | [Power and thermal throttling](./constructed/power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
+| [Process restart: two instances of one package](./constructed/process-restart-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 9 target(s) |
 | [Process scope isolation across same-package and peer processes](./constructed/process-scope-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 16 target(s) |
 | [Framework process state residency](./constructed/process-state-residency/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Rendering pipeline jank](./constructed/rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 47 target(s) |
