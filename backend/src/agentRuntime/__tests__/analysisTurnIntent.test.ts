@@ -108,6 +108,16 @@ describe('analysis turn intent protocol', () => {
     }
   });
 
+  it('rejects an OpenCode last-step summary that wraps a fenced decision', () => {
+    // GLM via OpenCode when the classifier's only request was the agent's last step (2026-10-05 E2E).
+    const text = 'Maximum steps for this agent have been reached; responding with text only.\n\n'
+      + 'Accomplished: parsed the intent of the request.\n\nIntent classification result:\n\n'
+      + '```json\n' + JSON.stringify(decision, null, 2) + '\n```\n\n'
+      + 'Remaining tasks: none — the only required output was this classification JSON.\n\n'
+      + 'Recommendation: use this JSON as the intent signal for downstream analysis.';
+    expect(parseAnalysisTurnIntentDecision(text, registry)).toBeUndefined();
+  });
+
   it('sends a closed JSON Schema whose enum fields require scalar strings', async () => {
     let schema!: Record<string, any>;
     const dispatch = jest.fn(async (input: IntentTransportInput) => {
