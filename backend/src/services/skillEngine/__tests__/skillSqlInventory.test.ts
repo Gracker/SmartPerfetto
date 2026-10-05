@@ -9,9 +9,15 @@
  */
 
 import crypto from 'crypto';
+import fs from 'fs';
+import yaml from 'js-yaml';
 import { describe, expect, it } from '@jest/globals';
+import { executableSqlUnits } from '../processScopeSql';
+import { builtInSkillsDir } from '../skillFragments';
+import { listSkillFiles } from '../skillLayout';
 import { skillSqlInventoryEntry, type SkillSqlInventorySkill } from '../skillSqlInventory';
 import { sqlIsReadOnly, sqlResultColumns } from '../sqlStructure';
+import { withStepFragments } from '../../../../tests/helpers/skillFragmentSql';
 
 const EFFECTIVE = 'fragments/effective_target_processes.sql';
 const fragments = new Map([[EFFECTIVE, 'effective_target_processes AS (SELECT upid FROM process WHERE upid = ${__process_scope.upid})']]);
@@ -150,7 +156,39 @@ describe('structural SQL readers the inventory uses', () => {
     // A label naming a phase is no UPDATE statement.
     expect(sqlIsReadOnly("SELECT CASE WHEN name GLOB '*updateTexImage*' THEN 'Update Texture' END AS phase FROM slice")).toBe(true);
     expect(sqlIsReadOnly('SELECT 1 /* DELETE later */')).toBe(true);
-    // Conservative: the REPLACE() function reads as the statement.
-    expect(sqlIsReadOnly("SELECT REPLACE(name, 'a', 'b') FROM t")).toBe(false);
+  });
+
+  it('reads replace() as the string function and the REPLACE statement as a write', () => {
+    expect(sqlIsReadOnly("SELECT REPLACE(name, 'a', 'b') FROM t")).toBe(true);
+    expect(sqlIsReadOnly("SELECT substr(replace /* call */ (name, '/', ' '), 1, 4) AS owner FROM t")).toBe(true);
+    expect(sqlIsReadOnly('WITH x AS (SELECT 1 AS a) REPLACE INTO t SELECT a FROM x')).toBe(false);
+    // A replace() call inside the statement clears no REPLACE statement.
+    expect(sqlIsReadOnly("SELECT 1; REPLACE INTO t(a) VALUES (replace('x', 'y', 'z'))")).toBe(false);
+    expect(sqlIsReadOnly('SELECT 1; INSERT OR REPLACE INTO t(a) VALUES (1)')).toBe(false);
+    expect(sqlIsReadOnly('CREATE OR REPLACE PERFETTO TABLE t AS SELECT 1')).toBe(false);
+    // Only REPLACE names a function: a parenthesized operand clears no other writing word.
+    expect(sqlIsReadOnly("SELECT 1; ATTACH ('other.db') AS other")).toBe(false);
+    // Conservative: a writing word as a bare name still reads as the statement.
+    expect(sqlIsReadOnly('SELECT replace FROM t')).toBe(false);
+  });
+
+  it('reads Perfetto functions that define objects or run metric SQL as writes', () => {
+    expect(sqlIsReadOnly("SELECT RUN_METRIC('android/android_startup.sql')")).toBe(false);
+    expect(sqlIsReadOnly("SELECT CREATE_FUNCTION('f(x INT)', 'INT', 'SELECT $x')")).toBe(false);
+    expect(sqlIsReadOnly("SELECT CREATE_VIEW_FUNCTION('v(x INT)', 'y INT', 'SELECT $x AS y')")).toBe(false);
+    expect(sqlIsReadOnly("SELECT 1 -- RUN_METRIC('x.sql') is not code")).toBe(true);
+  });
+
+  it('reads every built-in Skill SQL unit the same with its fragments as written', () => {
+    // The inventory and the scope-isolation probe judge SQL as written: each
+    // fragment is a bare CTE body placed inside that statement's WITH.
+    const differing = listSkillFiles(builtInSkillsDir(), { includeCustom: true }).flatMap(({ path: file }) => {
+      const definition = yaml.load(fs.readFileSync(file, 'utf8')) as any;
+      return executableSqlUnits(definition).flatMap(({ path: unitPath, source }) => {
+        if (typeof source.sql !== 'string' || !Array.isArray(source.sql_fragments) || source.sql_fragments.length === 0) return [];
+        return sqlIsReadOnly(withStepFragments(source.sql, source.sql_fragments)) === sqlIsReadOnly(source.sql) ? [] : [`${definition.name}:${unitPath}`];
+      });
+    });
+    expect(differing).toEqual([]);
   });
 });

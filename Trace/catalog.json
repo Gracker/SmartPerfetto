@@ -4710,33 +4710,20 @@
             ],
             "forced_sql_steps": [
               "screen_state_changes",
+              "top_app_changes",
               "user_gestures",
               "scroll_initiation",
               "navigation_keys",
+              "anr_events",
               "inertial_scrolls",
               "idle_periods",
+              "app_launches",
               "jank_events",
+              "clean_timeline",
               "merged_timeline"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "top_app_changes",
-                "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-              },
-              {
-                "step": "anr_events",
-                "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-              },
-              {
-                "step": "app_launches",
-                "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-              },
-              {
-                "step": "clean_timeline",
-                "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "trace_time_range",
             "required_columns": [
               "start_ts_str",
@@ -4783,15 +4770,11 @@
               "device_state_lane_fallback",
               "input_state_lane_frames",
               "input_state_lane_fallback",
+              "app_state_lane",
               "app_state_lane_fallback"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "app_state_lane",
-                "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "device_state_lane",
             "required_columns": [
               "lane",
@@ -11141,33 +11124,20 @@
             ],
             "forced_sql_steps": [
               "screen_state_changes",
+              "top_app_changes",
               "user_gestures",
               "scroll_initiation",
               "navigation_keys",
+              "anr_events",
               "inertial_scrolls",
               "idle_periods",
+              "app_launches",
               "jank_events",
+              "clean_timeline",
               "merged_timeline"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "top_app_changes",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "anr_events",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "app_launches",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "clean_timeline",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "user_gestures",
             "required_columns": [
               "ts",
@@ -11263,33 +11233,20 @@
             ],
             "forced_sql_steps": [
               "screen_state_changes",
+              "top_app_changes",
               "user_gestures",
               "scroll_initiation",
               "navigation_keys",
+              "anr_events",
               "inertial_scrolls",
               "idle_periods",
+              "app_launches",
               "jank_events",
+              "clean_timeline",
               "merged_timeline"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "top_app_changes",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "anr_events",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "app_launches",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "clean_timeline",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "user_gestures",
             "required_columns": [
               "ts",
@@ -11385,33 +11342,20 @@
             ],
             "forced_sql_steps": [
               "screen_state_changes",
+              "top_app_changes",
               "user_gestures",
               "scroll_initiation",
               "navigation_keys",
+              "anr_events",
               "inertial_scrolls",
               "idle_periods",
+              "app_launches",
               "jank_events",
+              "clean_timeline",
               "merged_timeline"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "top_app_changes",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "anr_events",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "app_launches",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "clean_timeline",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "user_gestures",
             "required_columns": [
               "ts",
@@ -11512,33 +11456,20 @@
             ],
             "forced_sql_steps": [
               "screen_state_changes",
+              "top_app_changes",
               "user_gestures",
               "scroll_initiation",
               "navigation_keys",
+              "anr_events",
               "inertial_scrolls",
               "idle_periods",
+              "app_launches",
               "jank_events",
+              "clean_timeline",
               "merged_timeline"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "top_app_changes",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "anr_events",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "app_launches",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "clean_timeline",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "user_gestures",
             "required_columns": [
               "ts",
@@ -11634,33 +11565,20 @@
             ],
             "forced_sql_steps": [
               "screen_state_changes",
+              "top_app_changes",
               "user_gestures",
               "scroll_initiation",
               "navigation_keys",
+              "anr_events",
               "inertial_scrolls",
               "idle_periods",
+              "app_launches",
               "jank_events",
+              "clean_timeline",
               "merged_timeline"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "top_app_changes",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "anr_events",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "app_launches",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              },
-              {
-                "step": "clean_timeline",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "user_gestures",
             "required_columns": [
               "ts",
@@ -11734,15 +11652,11 @@
               "device_state_lane_fallback",
               "input_state_lane_frames",
               "input_state_lane_fallback",
+              "app_state_lane",
               "app_state_lane_fallback"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "app_state_lane",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "input_state_lane_frames",
             "required_columns": [
               "lane",
@@ -11811,15 +11725,11 @@
               "device_state_lane_fallback",
               "input_state_lane_frames",
               "input_state_lane_fallback",
+              "app_state_lane",
               "app_state_lane_fallback"
             ],
             "isolated_sql_probes": [],
-            "expected_condition_skips": [
-              {
-                "step": "app_state_lane",
-                "reason": "Run on its declared production condition; the current SQL contract does not independently force this branch."
-              }
-            ],
+            "expected_condition_skips": [],
             "semantic_step": "device_state_lane",
             "required_columns": [
               "lane",

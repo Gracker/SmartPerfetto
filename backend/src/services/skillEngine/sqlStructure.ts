@@ -221,16 +221,21 @@ export function sqlResultColumns(sql: string): string[] {
   return [...new Set(names.filter((name): name is string => Boolean(name)))];
 }
 
-/** Statements that write, or change the connection. */
+/**
+ * Statements that write or change the connection, and the Perfetto functions
+ * that define objects or run metric SQL (`RUN_METRIC(…)`, `CREATE_FUNCTION(…)`).
+ */
 const WRITING_WORDS: ReadonlySet<string> = new Set([
   'ALTER', 'ATTACH', 'CREATE', 'DELETE', 'DETACH', 'DROP', 'INSERT', 'PRAGMA', 'REPLACE', 'UPDATE', 'VACUUM',
+  'CREATE_FUNCTION', 'CREATE_VIEW_FUNCTION', 'RUN_METRIC',
 ]);
 
 /**
  * Whether SQL only reads: after any leading `INCLUDE PERFETTO MODULE …;`
  * statements it is a query (SELECT or WITH), and no writing keyword appears
- * in its code (comments and string literals are not code). Conservative: the
- * REPLACE() function reads as the REPLACE statement.
+ * in its code (comments and string literals are not code). Conservative: a
+ * writing keyword used as a bare name (a column called `pragma`) still reads
+ * as the statement.
  */
 export function sqlIsReadOnly(sql: string): boolean {
   const tokens = structuralSqlTokens(sql);
@@ -242,5 +247,9 @@ export function sqlIsReadOnly(sql: string): boolean {
     at++;
   }
   if (!word(at, 'SELECT') && !word(at, 'WITH')) return false;
-  return !tokens.some(token => token.kind === 'word' && WRITING_WORDS.has(token.text));
+  // `replace(…)` is the string function: the REPLACE statement and conflict
+  // clause never put `(` after the word, while other writing words may
+  // (`ATTACH ('x.db') AS y`), so the call form clears REPLACE alone.
+  return !tokens.some((token, index) => token.kind === 'word' && WRITING_WORDS.has(token.text)
+    && !(token.text === 'REPLACE' && punct(index + 1, '(')));
 }

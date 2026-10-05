@@ -15405,12 +15405,12 @@
             "category"
           ],
           "has_condition": true,
-          "read_only": false,
+          "read_only": true,
           "placeholders": [
             "${scene_row_limit|4096}"
           ],
           "process_scope_valid": null,
-          "forceable": false
+          "forceable": true
         },
         {
           "id": "activity_lifecycle",
@@ -15549,12 +15549,12 @@
             "category"
           ],
           "has_condition": true,
-          "read_only": false,
+          "read_only": true,
           "placeholders": [
             "${scene_row_limit|4096}"
           ],
           "process_scope_valid": null,
-          "forceable": false
+          "forceable": true
         },
         {
           "id": "ime_events",
@@ -15634,12 +15634,12 @@
             "category"
           ],
           "has_condition": true,
-          "read_only": false,
+          "read_only": true,
           "placeholders": [
             "${scene_row_limit|4096}"
           ],
           "process_scope_valid": null,
-          "forceable": false
+          "forceable": true
         },
         {
           "id": "system_events",
@@ -15798,12 +15798,12 @@
             "rating"
           ],
           "has_condition": true,
-          "read_only": false,
+          "read_only": true,
           "placeholders": [
             "${scene_row_limit|4096}"
           ],
           "process_scope_valid": null,
-          "forceable": false
+          "forceable": true
         },
         {
           "id": "merged_timeline",
@@ -18935,12 +18935,12 @@
             "source_status"
           ],
           "has_condition": true,
-          "read_only": false,
+          "read_only": true,
           "placeholders": [
             "${scene_row_limit|4096}"
           ],
           "process_scope_valid": null,
-          "forceable": false
+          "forceable": true
         },
         {
           "id": "app_state_lane_fallback",
