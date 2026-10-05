@@ -39,14 +39,12 @@ describe('createSdkEnv provider isolation', () => {
     cwd: process.cwd(),
     effort: 'high',
     enableSubAgents: false,
-    enableVerification: true,
     subAgentTimeoutMs: 120_000,
     fullPathPerTurnMs: 60_000,
     fullRequestTimeoutMs: 20 * 60_000,
     maxRunTimeoutMs: 60 * 60_000,
     streamIdleTimeoutMs: 5 * 60_000,
     quickPathPerTurnMs: 40_000,
-    verifierTimeoutMs: 60_000,
     classifierTimeoutMs: 30_000,
     outputLanguage: 'zh-CN',
   };
@@ -120,9 +118,11 @@ describe('createSdkEnv provider isolation', () => {
         maxTurns: 7,
         effort: 'low',
         enableSubAgents: false,
+        classifierTimeoutMs: 7000,
+        // Retired knobs a stored profile may still carry; nothing reads them.
         enableVerification: false,
-        verifierTimeoutMs: 7000,
-      },
+        verifierTimeoutMs: 9000,
+      } as any,
     });
     svc.activate(p.id);
 
@@ -134,8 +134,9 @@ describe('createSdkEnv provider isolation', () => {
     expect(config.maxTurns).toBe(7);
     expect(config.effort).toBe('low');
     expect(config.enableSubAgents).toBe(false);
-    expect(config.enableVerification).toBe(false);
-    expect(config.verifierTimeoutMs).toBe(7000);
+    expect(config.classifierTimeoutMs).toBe(7000);
+    expect(config).not.toHaveProperty('enableVerification');
+    expect(config).not.toHaveProperty('verifierTimeoutMs');
   });
 
   it('ignores an active OpenAI provider when resolving Claude env without an explicit providerId', () => {

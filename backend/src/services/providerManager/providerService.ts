@@ -39,6 +39,7 @@ import type {
   ProviderMutationScope,
 } from './providerMutationGeneration';
 import {isPiProviderEnvKey, isQoderByokEnvKey} from './envIsolation';
+import { withoutRetiredTuning } from './retiredTuning';
 
 const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'apiKey',
@@ -274,7 +275,7 @@ export class ProviderService {
       updatedAt: now,
       models: input.models,
       connection: input.connection,
-      ...(input.tuning ? { tuning: input.tuning } : {}),
+      ...(input.tuning ? { tuning: withoutRetiredTuning(input.tuning) } : {}),
       ...(input.custom ? { custom: input.custom } : {}),
     };
 
@@ -324,7 +325,7 @@ export class ProviderService {
           }
           updated.connection = merged;
         }
-        if (input.tuning !== undefined) updated.tuning = input.tuning ?? undefined;
+        if (input.tuning !== undefined) updated.tuning = withoutRetiredTuning(input.tuning) ?? undefined;
         if (input.custom !== undefined) {
           updated.custom = input.custom ?? undefined;
         }
@@ -759,10 +760,8 @@ export class ProviderService {
       if (provider.tuning?.maxBudgetUsd) env.CLAUDE_MAX_BUDGET_USD = String(provider.tuning.maxBudgetUsd);
       if (provider.tuning?.fullPerTurnMs) env.CLAUDE_FULL_PER_TURN_MS = String(provider.tuning.fullPerTurnMs);
       if (provider.tuning?.quickPerTurnMs) env.CLAUDE_QUICK_PER_TURN_MS = String(provider.tuning.quickPerTurnMs);
-      if (provider.tuning?.verifierTimeoutMs) env.CLAUDE_VERIFIER_TIMEOUT_MS = String(provider.tuning.verifierTimeoutMs);
       if (provider.tuning?.classifierTimeoutMs) env.CLAUDE_CLASSIFIER_TIMEOUT_MS = String(provider.tuning.classifierTimeoutMs);
       if (provider.tuning?.enableSubAgents !== undefined) env.CLAUDE_ENABLE_SUB_AGENTS = String(provider.tuning.enableSubAgents);
-      if (provider.tuning?.enableVerification !== undefined) env.CLAUDE_ENABLE_VERIFICATION = String(provider.tuning.enableVerification);
     }
 
     return env;

@@ -53,7 +53,6 @@ export interface RuntimeBudgetInputs {
   fullPathPerTurnMs?: number;
   quickPathPerTurnMs?: number;
   classifierTimeoutMs?: number;
-  verifierTimeoutMs?: number;
 }
 
 export type AnalysisRunSelection =

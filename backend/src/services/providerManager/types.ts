@@ -74,10 +74,8 @@ export interface ProviderTuning {
   effort?: 'low' | 'medium' | 'high' | 'max';
   fullPerTurnMs?: number;
   quickPerTurnMs?: number;
-  verifierTimeoutMs?: number;
   classifierTimeoutMs?: number;
   enableSubAgents?: boolean;
-  enableVerification?: boolean;
 }
 
 export interface ProviderCustom {

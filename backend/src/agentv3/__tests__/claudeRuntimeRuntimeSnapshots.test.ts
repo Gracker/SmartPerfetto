@@ -269,8 +269,7 @@ afterEach(async () => {
 describe('ClaudeRuntime runtime state and snapshots', () => {
   it('scene runtime matrix: runs the pinned Claude provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('claude');
-    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-pinned-claude',
-      enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-pinned-claude', enableSubAgents: false});
     let tool: any;
     let response: any;
     claudeSdkMock.__setQueryImplementation(async function* (params: any) {
@@ -297,8 +296,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
   it('scene runtime: extends a producing scene run past its base request budget', async () => {
     const f = createSceneRuntimeMatrixFixture('claude-deadline');
     // The fixed cap alone would cancel this run at 300 ms; tool results keep arriving every 150 ms.
-    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-deadline-claude',
-      enableVerification: false, enableSubAgents: false, maxTurns: 3, fullPathPerTurnMs: 100,
+    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-deadline-claude', enableSubAgents: false, maxTurns: 3, fullPathPerTurnMs: 100,
       fullRequestTimeoutMs: 300, maxRunTimeoutMs: 6_000, streamIdleTimeoutMs: 60_000});
     const outcomes: unknown[] = [];
     claudeSdkMock.__setQueryImplementation(async function* (params: any) {
@@ -374,7 +372,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
   it('restores a legacy SDK session id without resuming it or saving it again', async () => {
     intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'existing_only'};
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const snapshotFields = {
@@ -437,7 +434,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
   it('does not persist intermediate model state for private source sessions', () => {
     const now = 1_700_000_000_000;
     const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).sessionNotes.set('session-private', [{content: 'PRIVATE_NOTE_CANARY'}]);
@@ -487,7 +483,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-quick', {
@@ -541,7 +536,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -580,7 +574,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       }),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -630,7 +623,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         throw new Error('no trace processor exists for conversation');
       }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -664,7 +656,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
     } as any, {
       outputLanguage: 'zh-CN',
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-language-quick', {
@@ -706,7 +697,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const focus = jest.spyOn(focusAppDetector, 'detectFocusApps');
     const architecture = jest.spyOn(architectureDetector, 'createArchitectureDetector');
     const knowledge = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase');
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
         session_id: `sdk-bounded-${analysisMode}`, num_turns: 1, result: 'ECONNRESET 是这段记录中的事件名称'};
@@ -735,7 +726,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const focus = jest.spyOn(focusAppDetector, 'detectFocusApps');
     const architecture = jest.spyOn(architectureDetector, 'createArchitectureDetector');
     const knowledge = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase');
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
         session_id: 'sdk-existing-only', num_turns: 1, result: '之前的证据已经够回答这个问题'};
@@ -751,7 +742,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
   it('keeps comparison identity and prior artifacts with existing-only evidence in a fast budget', async () => {
     intentDecision = {...defaultIntent, taskKind: 'comparison', scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'existing_only'};
     const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', num_turns: 1, result: 'The earlier evidence is sufficient.'};
@@ -773,7 +764,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
   // execute_sql learns fixes.
   it('gives the shared MCP tools the vendor hint without a vendor preflight, and the run grant', async () => {
     const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', num_turns: 1, result: '启动分析完成'};
@@ -1011,7 +1002,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     intentDecision = {...defaultIntent};
     const sessionId = 'claude-private-experience';
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableSubAgents: false, enableVerification: false});
+      {enableSubAgents: false});
     const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
     const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
     const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
@@ -1294,7 +1285,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -1357,7 +1347,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
 
@@ -1455,7 +1444,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const traceId = 'trace-claude-focus-evidence';
     const sessionId = 'session-claude-focus-evidence';
     const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: [], durationMs: 1})), getTrace: jest.fn(() => undefined)};
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     const spies = [
       jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized').mockResolvedValue(undefined),
       jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase').mockResolvedValue({getContextForAI: () => undefined} as any),
@@ -1497,7 +1486,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const releaseRegistry = createDeferred<void>();
@@ -1562,7 +1550,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const abortController = new AbortController();
@@ -1682,7 +1669,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -1753,7 +1739,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         traceFormat: 'perfetto_protobuf',
       })),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -1804,7 +1789,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-cache-boundary', {
@@ -1857,7 +1841,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-claude-overlap', {
@@ -1913,7 +1896,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-claude-isolated', {
@@ -2097,7 +2079,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: true,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2160,7 +2141,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2247,7 +2227,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
       outputLanguage: 'zh-CN',
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-language-full', {
@@ -2310,7 +2289,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-private-sdk', {
@@ -2398,7 +2376,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         query: async () => ({columns: ['cnt'], rows: [[0]]}),
         getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
       } as any, {
-        enableVerification: false,
         enableSubAgents: false,
       });
       (runtime as any).architectureCache.set(traceId, {
@@ -2457,7 +2434,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2512,7 +2488,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2569,7 +2544,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-generic-stream-failure', {
@@ -2678,7 +2652,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-private-stream-recovery', {
@@ -2783,7 +2756,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({ columns: [], rows: [] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-context-pressure', {
@@ -2860,7 +2832,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-evaluation-usage', {
@@ -2947,7 +2918,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
       maxTurns: 1,
       fullPathPerTurnMs: 100,
@@ -3026,7 +2996,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableVerification: false, enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
     (runtime as any).architectureCache.set('trace-invalid-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
@@ -3055,7 +3025,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableVerification: false, enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
     (runtime as any).architectureCache.set('trace-oversized-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: false, durationMs: 1, llmIssues: [], heuristicIssues: [
       {type: 'missing_evidence', severity: 'error', message: 'Needs evidence', recoveryKind: 'correct_evidence'}]});
@@ -3078,7 +3048,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableVerification: false, enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
     (runtime as any).architectureCache.set('trace-missing-declaration', {
       type: 'STANDARD', confidence: 0.9, evidence: [],
     });
@@ -3112,7 +3082,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     {name: '128 KiB output cap', body: 'x'.repeat(128 * 1024), maxBudgetUsd: undefined, totalCostUsd: undefined},
   ])('does not dispatch declaration completion past the $name', async ({body, maxBudgetUsd, totalCostUsd}) => {
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4, ...(maxBudgetUsd === undefined ? {} : {maxBudgetUsd})});
+      {enableSubAgents: false, maxTurns: 4, ...(maxBudgetUsd === undefined ? {} : {maxBudgetUsd})});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', session_id: 'sdk-declaration-no-dispatch', num_turns: 1,
@@ -3132,7 +3102,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(128 * 1024);
     expect(Buffer.byteLength(repaired, 'utf8')).toBeGreaterThan(128 * 1024);
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -3152,7 +3122,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const body = 'Original bounded answer.';
     const changed = declaredCandidate('Changed bounded answer.');
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -3179,7 +3149,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const body = 'Authorized candidate body.';
     const repaired = declaredCandidate(body);
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
     let revoked = false;
@@ -3218,7 +3188,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const PRIVATE_RUN = {analysisMode: 'full' as const, packageName: 'com.example.app',
       codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
     const newRuntime = () => new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
 
     it('ends the run when authorization changes after a body read, before the continuation that resends it', async () => {
       let revoked = false;
@@ -3319,7 +3289,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
           fullPerTurnMs: 10000,
           effort: 'max',
           enableSubAgents: true,
-          enableVerification: false,
         },
       });
       svc.activate(provider.id);
@@ -3328,7 +3297,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         query: async () => ({ columns: [], rows: [] }),
         getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
       } as any, {
-        enableVerification: false,
         enableSubAgents: false,
         model: 'base-claude-main',
         maxTurns: 60,
@@ -3420,7 +3388,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
           maxTurns: 4,
           fullPerTurnMs: 10000,
           effort: 'max',
-          enableVerification: true,
           enableSubAgents: false,
         },
       });
@@ -3430,7 +3397,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         query: async () => ({ columns: [], rows: [] }),
         getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
       } as any, {
-        enableVerification: true,
         enableSubAgents: false,
         model: 'base-claude-main',
         maxTurns: 60,
@@ -3563,7 +3529,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')

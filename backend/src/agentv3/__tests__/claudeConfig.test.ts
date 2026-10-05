@@ -228,7 +228,6 @@ describe('createQuickConfig', () => {
 
     expect(config.maxTurns).toBe(50);
     expect(config.quickTargetTurns).toBe(5);
-    expect(config.enableVerification).toBe(false);
     expect(config.enableSubAgents).toBe(false);
   });
 

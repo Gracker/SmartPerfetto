@@ -755,7 +755,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const runtimeConfig = turnPolicy.budgetMode === 'quick' ? {
         ...quickBudgetConfig,
         model: turnIntent.status === 'unavailable' ? resolvedConfig.model : quickBudgetConfig.model,
-        enableVerification: resolvedConfig.enableVerification,
         enableSubAgents: resolvedConfig.enableSubAgents,
       } : resolvedConfig;
       resolvedQuickBudget = turnPolicy.budgetMode === 'quick' ? resolveQuickTurnBudget({
@@ -777,7 +776,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           model: runtimeConfig.model, lightModel: runtimeConfig.lightModel,
           maxTurns: runtimeConfig.maxTurns, maxBudgetUsd: runtimeConfig.maxBudgetUsd,
           fullPathPerTurnMs: runtimeConfig.fullPathPerTurnMs, quickPathPerTurnMs: runtimeConfig.quickPathPerTurnMs,
-          classifierTimeoutMs: runtimeConfig.classifierTimeoutMs, verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
+          classifierTimeoutMs: runtimeConfig.classifierTimeoutMs,
         },
       });
       metricsCollector.recordAnalysisMode(options.analysisMode ?? 'auto',

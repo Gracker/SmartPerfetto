@@ -30,6 +30,7 @@ import {
   type ProviderMutationScope,
 } from './providerMutationGeneration';
 import {LOCAL_DEV_OWNER} from '../../utils/localDevIdentity';
+import { withoutRetiredTuning } from './retiredTuning';
 
 type ProviderCredentialScope = 'personal' | 'workspace' | 'org';
 
@@ -344,7 +345,8 @@ function parseLegacyProviders(raw: string): Map<string, ProviderConfig> {
       || !isPlainJsonObject(entry.connection)) {
       throw new Error('providers.json holds an invalid provider entry');
     }
-    providers.set(entry.id, entry as unknown as ProviderConfig);
+    const provider = entry as unknown as ProviderConfig;
+    providers.set(entry.id, provider.tuning ? {...provider, tuning: withoutRetiredTuning(provider.tuning)} : provider);
   }
   return providers;
 }
@@ -952,7 +954,7 @@ export class ProviderStore {
         ...(typeof models.subAgent === 'string' ? { subAgent: models.subAgent } : {}),
       },
       connection,
-      ...(policy.tuning ? { tuning: policy.tuning } : {}),
+      ...(policy.tuning ? { tuning: withoutRetiredTuning(policy.tuning) } : {}),
       ...(custom ? {custom} : {}),
     };
   }
