@@ -710,6 +710,39 @@ test('encodes an interrupt-context wakeup, a received network packet and its pac
   /irq_context must be hardirq or softirq/);
 });
 
+test('encodes a D-state blocked reason with its kernel symbol, and an interpolated frame', () => {
+  const scenario = fixtureScenario();
+  scenario.signals.push(
+    {type: 'sched-running', at_ns: '10000000', duration_ns: '1000000', thread: 'main', cpu: 1, end_state: 'D'},
+    {type: 'sched-blocked-reason', at_ns: '11000001', thread: 'main', cpu: 1, io_wait: true,
+      function_name: 'filemap_fault'},
+    {type: 'sched-waking', at_ns: '15000000', cpu: 1, thread: 'main', waker_thread: null, target_cpu: 1, sched_priority: 120},
+    {type: 'sched-running', at_ns: '15100000', duration_ns: '1000000', thread: 'main', cpu: 1, end_state: 'S'},
+    {type: 'frame-timeline', at_ns: '20000000', duration_ns: '8000000', process: 'app', cookie: 7, token: 70,
+      display_frame_token: -1, layer_name: 'InterpolatedLayer'},
+  );
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 474747,
+  });
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-blocked-reason-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    SELECT
+      (SELECT group_concat(ts.state || '/' || ts.io_wait || '/' || ts.blocked_function || '/' || ts.dur, ';')
+        FROM thread_state ts JOIN thread t USING (utid) WHERE t.name = 'main' AND ts.state = 'D') AS blocked,
+      (SELECT group_concat(display_frame_token, ';') FROM actual_frame_timeline_slice
+        WHERE layer_name = 'InterpolatedLayer') AS interpolated`);
+  assert.match(output, /\n"D\/1\/filemap_fault\/4000000","-1"\s*$/);
+  for (const invalid of [{io_wait: 'yes'}, {thread: null}]) {
+    assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+      {type: 'sched-blocked-reason', at_ns: '1', thread: 'main', io_wait: false, ...invalid}]},
+    {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}), /sched-blocked-reason/);
+  }
+});
+
 function thermalLimitSignals() {
   return [
     {

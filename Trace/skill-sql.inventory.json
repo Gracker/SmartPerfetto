@@ -16316,7 +16316,7 @@
     },
     "scrolling_analysis": {
       "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
-      "source_sha256": "8016df273414d989f2aaa25e0e34647bbb695e925fcdcb07a400e74b9a806728",
+      "source_sha256": "d6a305ef49316a14b75752df739349112a9fd2424d1a2db9ecf3e8253e63be46",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -16640,7 +16640,7 @@
           "id": "performance_summary",
           "at": "steps[13].sql",
           "top_level_index": 13,
-          "sha256": "556ad0a637e6c5d7e97e1159407fd2d0e961d5cb2dc58a6f41253c49df856b2a",
+          "sha256": "b54dd62962a5ca46ad1c5928e34cce8b61a758a50fb4152f5270043d1d257ce9",
           "required_columns": [
             "total_frames",
             "perceived_jank_frames",
@@ -16788,7 +16788,7 @@
           "id": "expert_analysis_window",
           "at": "steps[18].sql",
           "top_level_index": 18,
-          "sha256": "9dd8bd4d8bc353a53405482f93b7ee1a8bd379f628b3f57848df17493a99ff88",
+          "sha256": "ef4a9b5f1aa2fc613db0fa685ca3aaa24ca7dd72fbfc7116a1b10f947fe92c4a",
           "required_columns": [
             "window_start_ts",
             "window_end_ts",
@@ -16810,7 +16810,7 @@
           "id": "jank_type_stats",
           "at": "steps[20].sql",
           "top_level_index": 20,
-          "sha256": "0b24e61087f6f11b7dfc83e0753c9c3403d2101e3bacb6350e12cd481f955ad3",
+          "sha256": "69839b1893f9ce126571f4315dac7628c6d0c9a8920ad330124ba98046948f30",
           "required_columns": [
             "jank_type",
             "count",
@@ -16841,7 +16841,7 @@
           "id": "scroll_sessions",
           "at": "steps[21].sql",
           "top_level_index": 21,
-          "sha256": "6dbde53f7368e55a5889e2fdd3c145bc369fd383c51ef4d6e097b513abefc628",
+          "sha256": "28180efed37ab407fceb9a606b5538e24061885aecb95ccfe9ec720de391a7f4",
           "required_columns": [
             "session_id",
             "process_name",
@@ -16869,7 +16869,7 @@
           "id": "session_stats_batch",
           "at": "steps[22].sql",
           "top_level_index": 22,
-          "sha256": "d4e60770adfcfb1ce536ba83b618d815d568977fc3b2ff014463bad1aebc54ed",
+          "sha256": "2ae328e81205028c807027454acead4d8314d26602dc47d55369fdfbdbdb5253",
           "required_columns": [
             "upid",
             "session_id",
@@ -16894,7 +16894,7 @@
           "id": "session_jank",
           "at": "steps[23].sql",
           "top_level_index": 23,
-          "sha256": "d9602a2bded2ba7c1dc33b44f9367521bbd22fa7da8ffc10d6d784a792e84a73",
+          "sha256": "c9538360f442d987631f482bcde5c3b84356d69f3a32baf0f7588524eb07e09c",
           "required_columns": [
             "session_id",
             "frame_count",
@@ -16920,7 +16920,7 @@
           "id": "get_app_jank_frames",
           "at": "steps[24].sql",
           "top_level_index": 24,
-          "sha256": "f8046a468c31f8911e2f257c283e8aa68cba6ac8639ff70783156c6ef06b1d35",
+          "sha256": "845c88b99118261cbb0defbc26de912fdb61f8ca32cbe4182d0614f1486549e9",
           "required_columns": [
             "frame_id",
             "frame_identity_key",
@@ -16968,7 +16968,7 @@
           "id": "batch_frame_root_cause",
           "at": "steps[25].sql",
           "top_level_index": 25,
-          "sha256": "247d25017bb2e6eec9a6693366c70f7cfdf23f594a613ded8d1156c9a91ceb31",
+          "sha256": "c806bacbc68f741ed7d7ccdb210f207d22b5280110f9fdd19fdde9c7bfb1141b",
           "required_columns": [
             "system_evidence_json",
             "frame_id",
@@ -17082,7 +17082,7 @@
           "id": "global_context_flags",
           "at": "steps[26].sql",
           "top_level_index": 26,
-          "sha256": "58f55a8eeefe92781f5e7ba5c53d0a524417d8d8476fc4ab2e09bfec06e6c6b4",
+          "sha256": "cc40526c0a4b844bcfa45f30985a845d8f1d7a09b9aaeef99a8ac726ab1ed9f8",
           "required_columns": [
             "video_during_scroll",
             "video_slice_count",
@@ -17119,7 +17119,7 @@
           "id": "session_quadrant_summary",
           "at": "steps[27].sql",
           "top_level_index": 27,
-          "sha256": "faadccf699a105080dd50f5ef5b185b28ad541edfe8d4a0512fd36c9661c79ad",
+          "sha256": "470a3cec7a602bf939203e4969eaf0bef45822e710c55a7cce835211a9b2298f",
           "required_columns": [
             "window_id",
             "upid",
@@ -17177,7 +17177,7 @@
           "id": "session_thread_core_affinity",
           "at": "steps[29].sql",
           "top_level_index": 29,
-          "sha256": "ec0f4562fa90aa8dd20065aadd36ed6f81a048c2cf9bc90c165811ca7fce8e29",
+          "sha256": "01be20c8375b21163f2527de7de36d9e11621e690157d96ef6b7d574ac3b9ede",
           "required_columns": [
             "window_id",
             "upid",
@@ -17203,7 +17203,7 @@
           "id": "root_cause_classification",
           "at": "steps[30].sql",
           "top_level_index": 30,
-          "sha256": "8f84665b0b0bb27f2b9226fb025b28004c99fd88cc4af7fa4947561776d861e5",
+          "sha256": "aad23e61096351a712e2f47f436a08789a2f324f89357c7c5d1919168c795b5a",
           "required_columns": [
             "problem_category",
             "problem_component",

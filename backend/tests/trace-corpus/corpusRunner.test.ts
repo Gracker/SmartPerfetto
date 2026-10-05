@@ -157,8 +157,18 @@ describe('SkillEvaluator step sequence identity admission', () => {
       const unavailable = probeSkill(isolated);
       (unavailable.steps![0] as any).process_scope = {role: 'target', binding: 'native_upid', exact_unavailable: 'no exact form'};
       expect(exactSqlUnitPaths(unavailable)).toEqual([]);
-      expect(unboundExactUnitFailures([probeSkill(isolated)], new Set())[0].reason)
+      expect(unboundExactUnitFailures([probeSkill(isolated)], new Map(), new Set())[0].reason)
         .toBe('exact SQL unit target was not executed by any corpus exact_scope binding');
+    });
+
+    it('counts a target step bound through effective_target_processes, and no context step', () => {
+      const relation = probeSkill(isolated);
+      (relation.steps![0] as any).process_scope = {role: 'target', binding: 'effective_target_processes'};
+      expect(exactSqlUnitPaths(relation)).toEqual(['target']);
+      (relation.steps![0] as any).process_scope = {role: 'global_context'};
+      expect(exactSqlUnitPaths(relation)).toEqual([]);
+      (relation.steps![0] as any).process_scope = {role: 'target'};
+      expect(exactSqlUnitPaths(relation)).toEqual([]);
     });
 
     it('reruns a probed step on forks: blanked keeps the exact scope, open is every process', async () => {
@@ -478,10 +488,16 @@ describe('Trace corpus regression runner', () => {
     });
 
     it('fails every exact unit no passing binding executed instead of skipping it', () => {
-      expect(unboundExactUnitFailures([exactSkill], new Set())).toEqual([{case_id: 'corpus', target: 'exact_fixture',
+      const supports = new Map([['exact_fixture', {supported: true}]]);
+      expect(unboundExactUnitFailures([exactSkill], supports, new Set())).toEqual([{case_id: 'corpus', target: 'exact_fixture',
         reason: 'exact SQL unit probe.exact_sql was not executed by any corpus exact_scope binding'}]);
-      expect(unboundExactUnitFailures([exactSkill], new Set(['exact_fixture:probe.exact_sql']))).toEqual([]);
-      expect(unboundExactUnitFailures([exactSkill], new Set(), new Set(['other']))).toEqual([]);
+      expect(unboundExactUnitFailures([exactSkill], supports, new Set(['exact_fixture:probe.exact_sql']))).toEqual([]);
+      expect(unboundExactUnitFailures([exactSkill], supports, new Set(), new Set(['other']))).toEqual([]);
+      // A Skill the executor never admits to an exact run owes no binding; one it does not know of still does.
+      expect(unboundExactUnitFailures([exactSkill],
+        new Map([['exact_fixture', {supported: false, reason: 'other: SQL has no process_scope declaration'}]]),
+        new Set())).toEqual([]);
+      expect(unboundExactUnitFailures([exactSkill], new Map(), new Set())).toHaveLength(1);
     });
 
     it('names a nested exact unit as unsupported rather than not attempted', () => {
@@ -492,7 +508,7 @@ describe('Trace corpus regression runner', () => {
       expect(unit).toBeDefined();
       expect(exactScopeBindingError('nested_fixture', nestedSkill, {process_name: 'p', units: [{unit, mode: 'execution'}]}))
         .toBe(`nested exact units are not yet supported by the corpus runner: ${unit}`);
-      expect(unboundExactUnitFailures([nestedSkill], new Set())[0].reason)
+      expect(unboundExactUnitFailures([nestedSkill], new Map(), new Set())[0].reason)
         .toContain('(nested exact units are not yet supported by the corpus runner)');
     });
 
@@ -501,7 +517,7 @@ describe('Trace corpus regression runner', () => {
         .flatMap(expectation => (expectation.exact_scope?.units ?? []).map(unit => exactUnitKey(expectation.target, unit.unit)))));
       const definitions = SkillEvaluator.listSkillDefinitions();
       expect(definitions.some(definition => exactSqlUnitPaths(definition).length > 0)).toBe(true);
-      expect(unboundExactUnitFailures(definitions, bound)).toEqual([]);
+      expect(unboundExactUnitFailures(definitions, SkillEvaluator.exactScopeSupportCatalog(), bound)).toEqual([]);
     });
   });
 

@@ -222,9 +222,10 @@ Click actions should be explicit, for example:
   its evidence under that UPID (target scope, or context evidence relative to
   it) and meet its row counts and assertions; a `semantic` unit also names
   exactly the columns it returns. Exact units are each `exact_sql` and each
-  step without one whose own SQL binds the scope's UPID (`binding:
-  native_upid`), named by its step id (`root` for an atomic root); an exact
-  run executes it as written. A bound unit's rows must depend on that UPID
+  target step without one whose own SQL binds the scope's UPID, through the
+  token (`binding: native_upid`) or the target relation (`binding:
+  effective_target_processes`), named by its step id (`root` for an atomic
+  root); an exact run executes it as written. A bound unit's rows must depend on that UPID
   alone: its step reruns on forks of the run's context (read-only SQL only)
   with the process selectors the identity gate wrote removed, which must
   answer the same, and unscoped, which must answer differently, or the trace
@@ -239,9 +240,12 @@ Click actions should be explicit, for example:
   same-package `:worker`) share them, and a step reading such data says so in
   `process_scope.limitations`, which makes its exact support partial. Every
   exact unit in the registry must be executed by a passing binding somewhere
-  in the corpus, so a new `exact_sql` or `native_upid` step without one fails
-  `trace:sql-regression`. The runner sees only the root and top-level steps;
-  a nested exact unit fails as not yet supported.
+  in the corpus, so a new `exact_sql` or UPID-bound target step without one
+  fails `trace:sql-regression`. A Skill the executor never admits to an exact
+  run (`getExactProcessScopeSupport`: some step it runs has no
+  `process_scope`) runs none of its units under one and owes no binding until
+  it is admitted. The runner sees only the root and top-level steps; a nested
+  exact unit fails as not yet supported.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

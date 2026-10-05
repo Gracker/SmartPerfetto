@@ -408,8 +408,10 @@ evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}
 
 无效的 `exact_sql` 或 `investigation_evidence` 在任何地方都是错误；无效的 `process_scope` 只会让精确范围
 不可用，报 `process_scope_invalid`。语料中每个精确单元（每个 `exact_sql`，以及没有 `exact_sql`、
-自身 SQL 用 `binding: native_upid` 绑定 UPID 的步骤）都必须被某个 Trace case 的 `exact_scope` 绑定
-实际执行并通过，否则 `npm run trace:sql-regression` 失败。通过还要求它的结果只取决于这个 UPID：
+自身 SQL 用 `binding: native_upid` 或 `binding: effective_target_processes` 绑定 UPID 的 target 步骤）
+都必须被某个 Trace case 的 `exact_scope` 绑定实际执行并通过，否则 `npm run trace:sql-regression` 失败；
+执行器不准入精确运行的 Skill（某个会执行的步骤没有 `process_scope`）不会在精确范围下运行任何单元，
+在被准入之前不要求绑定。通过还要求它的结果只取决于这个 UPID：
 去掉身份门禁写入的进程选择参数（package 及其别名、upid、pid）重跑必须结果不变，去掉进程范围重跑
 必须结果不同（否则这条 trace 区分不出进程，绑定判为证据不足）。这只证明结果不依赖进程选择参数，
 不证明数据本身按进程区分：收包行只记 socket uid，同 uid 的进程（同包 `:worker`）共享收包证据，

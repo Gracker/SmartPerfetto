@@ -19,7 +19,7 @@ import { normalizeSkillDefinition } from '../../src/services/skillEngine/skillLo
 import { assertEffectiveProcessScope, createEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
 import { getEffectiveIdentityConfig, processSelectorKeys } from '../../src/services/processIdentity/identityGate';
 import { sqlIsReadOnly } from '../../src/services/skillEngine/sqlStructure';
-import { sqlRunBy } from '../../src/services/skillEngine/processScopeSql';
+import { exactProcessScopeSupportCatalog, sqlRunBy, type ExactProcessScopeSupport } from '../../src/services/skillEngine/processScopeSql';
 import type { EvidenceScopeProvenanceV1 } from '../../src/types/identityContract';
 import yaml from 'js-yaml';
 import fs from 'fs';
@@ -103,6 +103,7 @@ export class SkillEvaluator {
   private availablePrerequisiteModules: string[] | null = null;
   private static sharedTraceProcessor: TraceProcessorService | null = null;
   private static skillRegistry: Map<string, SkillDefinition> | null = null;
+  private static fragmentRegistry: Map<string, string> | null = null;
 
   constructor(skillId: string) {
     this.skillId = skillId;
@@ -143,7 +144,7 @@ export class SkillEvaluator {
     this.skill = null;
     this.availablePrerequisiteModules = null;
     this.executor = createSkillExecutor(this.traceProcessor);
-    this.executor.setFragmentRegistry(this.loadFragmentRegistry(path.join(process.cwd(), 'skills')));
+    this.executor.setFragmentRegistry(SkillEvaluator.loadFragmentRegistry(path.join(process.cwd(), 'skills')));
     await this.loadSkill();
     if (!this.skill) throw new Error(`Skill not found: ${skillId}`);
     this.executor.registerSkill(this.skill);
@@ -200,7 +201,8 @@ export class SkillEvaluator {
     return registry;
   }
 
-  private loadFragmentRegistry(skillsDir: string): Map<string, string> {
+  private static loadFragmentRegistry(skillsDir: string): Map<string, string> {
+    if (SkillEvaluator.fragmentRegistry) return SkillEvaluator.fragmentRegistry;
     const fragmentsRoot = path.join(skillsDir, 'fragments');
     const registry = new Map<string, string>();
     if (!fs.existsSync(fragmentsRoot)) return registry;
@@ -218,6 +220,7 @@ export class SkillEvaluator {
         }
       }
     }
+    SkillEvaluator.fragmentRegistry = registry;
     return registry;
   }
 
@@ -769,6 +772,13 @@ export class SkillEvaluator {
   /** Every Skill the evaluator can select, normalized as the production loader does. */
   static listSkillDefinitions(): SkillDefinition[] {
     return [...SkillEvaluator.getSkillRegistry(path.join(process.cwd(), 'skills')).values()];
+  }
+
+  /** Whether the executor admits an exact UPID run of each Skill, by name (the admission closure). */
+  static exactScopeSupportCatalog(): ReadonlyMap<string, ExactProcessScopeSupport> {
+    const skillsDir = path.join(process.cwd(), 'skills');
+    return exactProcessScopeSupportCatalog(
+      SkillEvaluator.getSkillRegistry(skillsDir), SkillEvaluator.loadFragmentRegistry(skillsDir));
   }
 
   /**

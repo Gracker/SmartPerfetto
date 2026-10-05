@@ -66,7 +66,8 @@
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
               "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
               "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change",
-              "android-system-info", "android-network-packet", "android-packages-list"
+              "android-system-info", "android-network-packet", "android-packages-list",
+              "sched-blocked-reason"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -81,6 +82,7 @@
           "interface": {"type": "string", "minLength": 1, "description": "android-network-packet network interface name."},
           "length": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "android-network-packet length in bytes."},
           "owner_process": {"type": "string", "description": "Actor whose uid owns a battery-stats-span or an android-network-packet socket."},
+          "io_wait": {"type": "boolean", "description": "sched-blocked-reason: whether the thread's latest D state waited on IO."},
           "packages": {
             "type": "array",
             "minItems": 1,
@@ -162,7 +164,7 @@
           "irq": {"type": "integer", "minimum": 0},
           "cookie": {"type": "integer", "minimum": 0},
           "token": {"type": "integer", "minimum": 0},
-          "display_frame_token": {"type": "integer", "minimum": 0},
+          "display_frame_token": {"type": "integer", "minimum": -1, "description": "frame-timeline display frame token; -1 marks a frame the device inserted (OEM frame interpolation)."},
           "jank_type": {"type": "integer", "minimum": 0},
           "old_state": {"type": "integer", "minimum": 0},
           "new_state": {"type": "integer", "minimum": 0},
@@ -289,6 +291,10 @@
           {
             "if": {"properties": {"type": {"const": "android-network-packet"}}},
             "then": {"required": ["direction", "interface", "length", "owner_process"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "sched-blocked-reason"}}},
+            "then": {"required": ["thread", "io_wait"]}
           },
           {
             "if": {"properties": {"type": {"const": "android-packages-list"}}},

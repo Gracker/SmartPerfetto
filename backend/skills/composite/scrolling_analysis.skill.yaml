@@ -847,8 +847,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND (a.display_frame_token IS NOT NULL OR a.surface_frame_token IS NOT NULL)
@@ -1627,8 +1627,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
@@ -1830,8 +1830,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -2027,8 +2027,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -2137,8 +2137,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -2381,8 +2381,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -2570,8 +2570,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -2769,8 +2769,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
       ),
       -- GET_APP_DISPLAY_DEDUP_CTE_END
       ranked_frames AS (
@@ -3416,8 +3416,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -4754,8 +4754,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND COALESCE(a.display_frame_token, -999) = -1
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
@@ -4842,7 +4842,7 @@ steps:
       ),system_target_threads AS (
         SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
         FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
+        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
       ),scene_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
           COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source
@@ -4919,7 +4919,7 @@ steps:
       ),system_target_threads AS (
         SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
         FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid = p.pid OR t.name IN ('RenderThread','GPU completion','hwuiTask0','hwuiTask1'))
+        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid = p.pid OR t.name IN ('RenderThread','GPU completion','hwuiTask0','hwuiTask1'))
       ),scene_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
           COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source
@@ -5050,8 +5050,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -5115,8 +5115,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -5138,7 +5138,7 @@ steps:
       ),system_target_threads AS (
         SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
         FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
+        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
       ),scene_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
           COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source

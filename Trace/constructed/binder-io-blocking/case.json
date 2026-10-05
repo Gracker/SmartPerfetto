@@ -398,7 +398,17 @@
           "max_block_ms",
           "is_main_blocked"
         ],
-        "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
+        "required_marker": "SmartPerfetto::CASE::binder-io-blocking",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-binder_detail",
@@ -467,7 +477,17 @@
           "avg_delay_ms",
           "slow_calls"
         ],
-        "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
+        "required_marker": "SmartPerfetto::CASE::binder-io-blocking",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-binder_module",
@@ -1004,6 +1024,111 @@
         "expected_strategy": "io",
         "source_file": "backend/strategies/io.strategy.md",
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
+      },
+      {
+        "id": "anr_detail-window-exact-scope",
+        "type": "skill",
+        "target": "anr_detail",
+        "mode": "execution",
+        "source_file": "backend/skills/composite/anr_detail.skill.yaml",
+        "parameters": {
+          "anr_ts": "${fixture_end}",
+          "timeout_ns": 2000000000,
+          "process_name": "com.smartperfetto.fixture",
+          "pid": 700000,
+          "upid": "${fixture_upid}",
+          "anr_type": ""
+        },
+        "required_steps": [
+          "system_context_window",
+          "system_cpu_context",
+          "system_task_summary",
+          "system_task_handoffs",
+          "init_cpu_topology",
+          "anr_info",
+          "main_thread_quadrant",
+          "blocking_reasons",
+          "render_thread_analysis",
+          "binder_calls",
+          "main_thread_sync_binder",
+          "sched_latency",
+          "lock_contention",
+          "app_freeze_check",
+          "wakeup_chain",
+          "main_thread_slices",
+          "thread_evidence_availability",
+          "direct_blocker_evidence_gap",
+          "direct_blocker_classification",
+          "direct_blocker_slice_evidence_gap",
+          "direct_blocker_slice_classification",
+          "logcat_availability",
+          "anr_logcat_evidence_gap",
+          "anr_logcat_context"
+        ],
+        "required_sql_steps": [
+          "system_context_window",
+          "anr_info",
+          "main_thread_quadrant",
+          "render_thread_analysis",
+          "lock_contention",
+          "app_freeze_check",
+          "wakeup_chain",
+          "thread_evidence_availability",
+          "direct_blocker_evidence_gap",
+          "direct_blocker_classification",
+          "direct_blocker_slice_evidence_gap",
+          "direct_blocker_slice_classification",
+          "logcat_availability",
+          "anr_logcat_evidence_gap",
+          "anr_logcat_context"
+        ],
+        "forced_sql_steps": [
+          "direct_blocker_evidence_gap",
+          "direct_blocker_classification",
+          "direct_blocker_slice_evidence_gap",
+          "direct_blocker_slice_classification",
+          "anr_logcat_evidence_gap",
+          "anr_logcat_context"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "anr_info",
+        "required_marker": "SmartPerfetto::CASE::binder-io-blocking",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "main_thread_quadrant",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "lock_contention",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "app_freeze_check",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "wakeup_chain",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "direct_blocker_classification",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "direct_blocker_slice_classification",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       }
     ]
   }

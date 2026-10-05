@@ -362,7 +362,17 @@
         "scheduling_policy_evidence",
         "evidence_scope"
       ],
-      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "root",
+            "mode": "execution",
+            "min_rows": 0
+          }
+        ]
+      }
     },
     {
       "id": "execute-thread_system_summary_in_range",
@@ -432,7 +442,17 @@
         "migrations",
         "evidence_scope"
       ],
-      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+      "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "root",
+            "mode": "execution",
+            "min_rows": 0
+          }
+        ]
+      }
     },
     {
       "id": "strategy-general",

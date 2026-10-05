@@ -31,7 +31,17 @@
         "avg_frame_dur_ms",
         "max_frame_dur_ms"
       ],
-      "required_marker": "SmartPerfetto::CASE::rendering-jank"
+      "required_marker": "SmartPerfetto::CASE::rendering-jank",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "app_production_stats",
+            "mode": "execution",
+            "min_rows": 0
+          }
+        ]
+      }
     },
     {
       "id": "execute-buffer_transaction_lifecycle",
@@ -337,7 +347,17 @@
         "high_variance_transitions",
         "variance_level"
       ],
-      "required_marker": "SmartPerfetto::CASE::rendering-jank"
+      "required_marker": "SmartPerfetto::CASE::rendering-jank",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "root",
+            "mode": "execution",
+            "min_rows": 0
+          }
+        ]
+      }
     },
     {
       "id": "execute-frame_production_gap",
@@ -641,6 +661,26 @@
           },
           {
             "unit": "lock_contention",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "main_thread_slices",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "render_thread_slices",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "gc_in_frame",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "root_cause_summary",
             "mode": "execution",
             "min_rows": 0
           }
@@ -1774,6 +1814,248 @@
       "expected_strategy": "scrolling",
       "source_file": "backend/strategies/scrolling.strategy.md",
       "required_marker": "SmartPerfetto::CASE::rendering-jank"
+    },
+    {
+      "id": "anr_detail-render-thread-exact-scope",
+      "type": "skill",
+      "target": "anr_detail",
+      "mode": "execution",
+      "source_file": "backend/skills/composite/anr_detail.skill.yaml",
+      "parameters": {
+        "anr_ts": "${fixture_end}",
+        "timeout_ns": 600000000,
+        "process_name": "com.smartperfetto.fixture",
+        "pid": 700000,
+        "upid": "${fixture_upid}",
+        "anr_type": ""
+      },
+      "required_steps": [
+        "system_context_window",
+        "system_cpu_context",
+        "system_task_summary",
+        "system_task_handoffs",
+        "init_cpu_topology",
+        "anr_info",
+        "main_thread_quadrant",
+        "blocking_reasons",
+        "render_thread_analysis",
+        "binder_calls",
+        "main_thread_sync_binder",
+        "sched_latency",
+        "lock_contention",
+        "app_freeze_check",
+        "wakeup_chain",
+        "main_thread_slices",
+        "thread_evidence_availability",
+        "direct_blocker_evidence_gap",
+        "direct_blocker_classification",
+        "direct_blocker_slice_evidence_gap",
+        "direct_blocker_slice_classification",
+        "logcat_availability",
+        "anr_logcat_evidence_gap",
+        "anr_logcat_context"
+      ],
+      "required_sql_steps": [
+        "system_context_window",
+        "anr_info",
+        "main_thread_quadrant",
+        "render_thread_analysis",
+        "lock_contention",
+        "app_freeze_check",
+        "wakeup_chain",
+        "thread_evidence_availability",
+        "direct_blocker_evidence_gap",
+        "direct_blocker_classification",
+        "direct_blocker_slice_evidence_gap",
+        "direct_blocker_slice_classification",
+        "logcat_availability",
+        "anr_logcat_evidence_gap",
+        "anr_logcat_context"
+      ],
+      "forced_sql_steps": [
+        "direct_blocker_evidence_gap",
+        "direct_blocker_classification",
+        "direct_blocker_slice_evidence_gap",
+        "direct_blocker_slice_classification",
+        "anr_logcat_evidence_gap",
+        "anr_logcat_context"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "anr_info",
+      "required_marker": "SmartPerfetto::CASE::rendering-jank",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "main_thread_quadrant",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "render_thread_analysis",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "app_freeze_check",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "wakeup_chain",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "direct_blocker_classification",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "direct_blocker_slice_classification",
+            "mode": "execution",
+            "min_rows": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "scrolling_analysis-systemui-exact-scope",
+      "type": "skill",
+      "target": "scrolling_analysis",
+      "mode": "execution",
+      "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
+      "parameters": {
+        "enable_frame_details": true,
+        "enable_expert_probes": true,
+        "frame_variance_probe_min_janky_frames": 1,
+        "frame_variance_transition_threshold_ms": 1,
+        "input_handling_budget_ratio": 0.5,
+        "input_event_backlog_threshold": 3
+      },
+      "required_steps": [
+        "system_context_window",
+        "system_cpu_context",
+        "system_task_summary",
+        "system_task_handoffs",
+        "main_thread_work_summary",
+        "main_thread_work_tasks",
+        "main_thread_work_sources",
+        "main_thread_work_cadence",
+        "init_cpu_topology",
+        "frame_timeline_check",
+        "vsync_config",
+        "frame_timeline_population",
+        "buffer_tx_coverage_probe",
+        "performance_summary",
+        "buffer_tx_performance_fallback",
+        "input_data_fallback_view",
+        "input_data_check",
+        "input_latency_summary",
+        "expert_analysis_window",
+        "frame_variance_probe",
+        "jank_type_stats",
+        "scroll_sessions",
+        "session_stats_batch",
+        "session_jank",
+        "get_app_jank_frames",
+        "batch_frame_root_cause",
+        "global_context_flags",
+        "session_quadrant_summary",
+        "session_cpu_freq",
+        "session_thread_core_affinity",
+        "root_cause_classification",
+        "fallback_no_frame_timeline"
+      ],
+      "required_sql_steps": [
+        "system_context_window",
+        "main_thread_work_summary",
+        "main_thread_work_tasks",
+        "main_thread_work_sources",
+        "main_thread_work_cadence",
+        "frame_timeline_check",
+        "vsync_config",
+        "frame_timeline_population",
+        "buffer_tx_coverage_probe",
+        "performance_summary",
+        "buffer_tx_performance_fallback",
+        "input_data_fallback_view",
+        "input_data_check",
+        "input_latency_summary",
+        "expert_analysis_window",
+        "jank_type_stats",
+        "scroll_sessions",
+        "session_stats_batch",
+        "session_jank",
+        "get_app_jank_frames",
+        "batch_frame_root_cause",
+        "global_context_flags",
+        "session_quadrant_summary",
+        "session_cpu_freq",
+        "session_thread_core_affinity",
+        "root_cause_classification",
+        "fallback_no_frame_timeline"
+      ],
+      "forced_sql_steps": [
+        "vsync_config",
+        "frame_timeline_population",
+        "buffer_tx_coverage_probe",
+        "performance_summary",
+        "buffer_tx_performance_fallback",
+        "input_latency_summary",
+        "expert_analysis_window",
+        "jank_type_stats",
+        "scroll_sessions",
+        "session_stats_batch",
+        "session_jank",
+        "get_app_jank_frames",
+        "batch_frame_root_cause",
+        "session_quadrant_summary",
+        "session_cpu_freq",
+        "session_thread_core_affinity",
+        "root_cause_classification",
+        "fallback_no_frame_timeline"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "batch_frame_root_cause",
+      "required_marker": "SmartPerfetto::CASE::rendering-jank",
+      "exact_scope": {
+        "process_name": "com.android.systemui",
+        "units": [
+          {
+            "unit": "performance_summary",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "expert_analysis_window",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "jank_type_stats",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "session_quadrant_summary",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "session_thread_core_affinity",
+            "mode": "execution",
+            "min_rows": 1
+          },
+          {
+            "unit": "root_cause_classification",
+            "mode": "execution",
+            "min_rows": 1
+          }
+        ]
+      }
     }
   ]
 }

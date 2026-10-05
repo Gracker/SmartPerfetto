@@ -477,6 +477,65 @@
         }
       ],
       "required_marker": "SmartPerfetto::CASE::main-thread-frame-work"
+    },
+    {
+      "id": "main_thread_frame_work-trace-window-exact-scope",
+      "type": "skill",
+      "target": "main_thread_frame_work",
+      "mode": "execution",
+      "source_file": "backend/skills/composite/main_thread_frame_work.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "start_ts": "${trace_start}",
+        "end_ts": "${trace_end}"
+      },
+      "required_steps": [
+        "system_context_window",
+        "system_cpu_context",
+        "system_task_summary",
+        "system_task_handoffs",
+        "main_thread_work_summary",
+        "main_thread_work_tasks",
+        "main_thread_work_sources",
+        "main_thread_work_cadence"
+      ],
+      "required_sql_steps": [
+        "system_context_window",
+        "main_thread_work_summary",
+        "main_thread_work_tasks",
+        "main_thread_work_sources",
+        "main_thread_work_cadence"
+      ],
+      "forced_sql_steps": [],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "main_thread_work_tasks",
+      "required_marker": "SmartPerfetto::CASE::main-thread-frame-work",
+      "exact_scope": {
+        "process_name": "com.smartperfetto.fixture",
+        "units": [
+          {
+            "unit": "main_thread_work_summary",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "main_thread_work_tasks",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "main_thread_work_sources",
+            "mode": "execution",
+            "min_rows": 0
+          },
+          {
+            "unit": "main_thread_work_cadence",
+            "mode": "execution",
+            "min_rows": 0
+          }
+        ]
+      }
     }
   ]
 }

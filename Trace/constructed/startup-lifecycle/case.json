@@ -337,7 +337,17 @@
           "used_cpus",
           "core_types"
         ],
-        "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
+        "required_marker": "SmartPerfetto::CASE::startup-lifecycle",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-startup_critical_tasks",
@@ -396,7 +406,17 @@
           "process_name",
           "priority_evidence"
         ],
-        "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
+        "required_marker": "SmartPerfetto::CASE::startup-lifecycle",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-startup_detail",
@@ -610,7 +630,17 @@
           "eligible_slice_count",
           "selected_slice_count"
         ],
-        "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
+        "required_marker": "SmartPerfetto::CASE::startup-lifecycle",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-startup_jit_analysis",

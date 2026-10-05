@@ -6,7 +6,7 @@ import path from 'path';
 import crypto from 'crypto';
 
 import {loadStrategies} from '../../src/agentv3/strategyLoader';
-import {executableSqlUnits, sqlRunBy} from '../../src/services/skillEngine/processScopeSql';
+import {executableSqlUnits, sqlRunBy, type ExactProcessScopeSupport} from '../../src/services/skillEngine/processScopeSql';
 import type {SkillDefinition} from '../../src/services/skillEngine/types';
 import {createSkillEvaluator, SkillEvaluator, type EvalStepResult, type ScopeProbeOutcome} from '../skill-eval/runner';
 import {stableStringify} from '../../src/utils/stableJson';
@@ -124,16 +124,17 @@ const sqlString = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
 /**
  * The units a Skill runs as target SQL under an exact UPID, from the walk
- * every Skill SQL check shares: each exact_sql, and the SQL of a step that has
- * none and binds the scope's UPID itself (`binding: native_upid`), which an
- * exact run executes as written (processScopeSql.sqlRunBy). A step bound
- * through `effective_target_processes` also runs as written, but is not yet
- * held to a binding: that is the contract's next stage, not an exemption.
+ * every Skill SQL check shares: each exact_sql, and the SQL of a target step
+ * that has none and binds the scope's UPID itself, through the token
+ * (`binding: native_upid`) or the target relation
+ * (`binding: effective_target_processes`), which an exact run executes as
+ * written (processScopeSql.sqlRunBy). Whether the executor admits an exact
+ * run of the Skill at all is a separate question (unboundExactUnitFailures).
  */
 function exactSqlUnits(definition: SkillDefinition) {
-  return executableSqlUnits(definition).filter(unit => unit.variant === 'exact'
-    || (sqlRunBy(unit.node, 'exact') === unit.source && unit.source.process_scope?.binding === 'native_upid'
-      && unit.source.process_scope.exact_unavailable === undefined));
+  return executableSqlUnits(definition).filter(({variant, node, source}) => variant === 'exact'
+    || (sqlRunBy(node, 'exact') === source && source.process_scope?.role === 'target'
+      && source.process_scope.binding !== undefined && source.process_scope.exact_unavailable === undefined));
 }
 
 export function exactSqlUnitPaths(definition: SkillDefinition): string[] {
@@ -962,22 +963,29 @@ export async function runCorpusRegression(
   // Every exact_sql the executor can run needs a binding somewhere in the
   // corpus; a case selection sees only part of the corpus, so it cannot judge.
   if (!options.caseIds) {
-    for (const failure of unboundExactUnitFailures(
-      SkillEvaluator.listSkillDefinitions(), boundExactUnits, targetFilter)) {
+    for (const failure of unboundExactUnitFailures(SkillEvaluator.listSkillDefinitions(),
+      SkillEvaluator.exactScopeSupportCatalog(), boundExactUnits, targetFilter)) {
       result.failures.push(failure);
     }
   }
   return result;
 }
 
-/** Exact units of the selected Skills that no corpus expectation binds to a process. */
+/**
+ * Exact units of the selected Skills that no corpus expectation binds to a
+ * process. A Skill the executor never admits to an exact run (`supports`,
+ * the admission closure: some step has no process_scope) runs none of its
+ * units under one, so it owes no binding until that changes.
+ */
 export function unboundExactUnitFailures(
   definitions: SkillDefinition[],
+  supports: ReadonlyMap<string, ExactProcessScopeSupport>,
   boundExactUnits: ReadonlySet<string>,
   targetFilter: ReadonlySet<string> | null = null,
 ): CorpusRunResult['failures'] {
   return definitions
-    .filter(definition => !targetFilter || targetFilter.has(definition.name))
+    .filter(definition => (!targetFilter || targetFilter.has(definition.name))
+      && supports.get(definition.name)?.supported !== false)
     .flatMap(definition => exactSqlUnitPaths(definition)
       .filter(unit => !boundExactUnits.has(exactUnitKey(definition.name, unit)))
       .map(unit => ({case_id: 'corpus', target: definition.name,

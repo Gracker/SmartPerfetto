@@ -746,6 +746,274 @@
       "display_frame_token": 902,
       "layer_name": "ScopeIsolationLayer",
       "jank_type": 1
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "600000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1101,
+      "token": 1201,
+      "display_frame_token": 1301,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "620000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1102,
+      "token": 1202,
+      "display_frame_token": 1302,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "640000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1103,
+      "token": 1203,
+      "display_frame_token": 1303,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "660000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1104,
+      "token": 1204,
+      "display_frame_token": -1,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "680000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1105,
+      "token": 1205,
+      "display_frame_token": 1305,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "700000000",
+      "duration_ns": "18000000",
+      "process": "peer",
+      "cookie": 1106,
+      "token": 1206,
+      "display_frame_token": 1306,
+      "layer_name": "ScopeIsolationPeerLayer",
+      "jank_type": 64
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "720000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1107,
+      "token": 1207,
+      "display_frame_token": 1307,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "740000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1108,
+      "token": 1208,
+      "display_frame_token": -1,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "760000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1109,
+      "token": 1209,
+      "display_frame_token": 1309,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "780000000",
+      "duration_ns": "18000000",
+      "process": "peer",
+      "cookie": 1110,
+      "token": 1210,
+      "display_frame_token": 1310,
+      "layer_name": "ScopeIsolationPeerLayer",
+      "jank_type": 64
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "800000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1111,
+      "token": 1211,
+      "display_frame_token": 1311,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "820000000",
+      "duration_ns": "10000000",
+      "process": "peer",
+      "cookie": 1112,
+      "token": 1212,
+      "display_frame_token": 1312,
+      "layer_name": "ScopeIsolationPeerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "850000000",
+      "duration_ns": "10000000",
+      "process": "worker",
+      "cookie": 1401,
+      "token": 1501,
+      "display_frame_token": -1,
+      "layer_name": "ScopeIsolationWorkerLayer"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "870000000",
+      "duration_ns": "10000000",
+      "process": "worker",
+      "cookie": 1402,
+      "token": 1502,
+      "display_frame_token": -1,
+      "layer_name": "ScopeIsolationWorkerLayer"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "900000000",
+      "duration_ns": "1000000",
+      "process": "app",
+      "thread": "app-main",
+      "name": "Choreographer#doFrame - resynced to 9301 in 2.5ms",
+      "cpu": 7
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "902000000",
+      "duration_ns": "1000000",
+      "thread": "app-main",
+      "cpu": 7,
+      "end_state": "D"
+    },
+    {
+      "type": "sched-blocked-reason",
+      "at_ns": "903000001",
+      "thread": "app-main",
+      "cpu": 7,
+      "io_wait": true,
+      "function_name": "do_page_fault"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "908000000",
+      "cpu": 7,
+      "thread": "app-main",
+      "waker_thread": null,
+      "target_cpu": 7,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "908100000",
+      "duration_ns": "1000000",
+      "thread": "app-main",
+      "cpu": 7,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "920000000",
+      "duration_ns": "1000000",
+      "process": "worker",
+      "thread": "worker-main",
+      "name": "Choreographer#doFrame - resynced to 9301 in 2.5ms",
+      "cpu": 6
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "922000000",
+      "duration_ns": "1000000",
+      "thread": "worker-main",
+      "cpu": 6,
+      "end_state": "D"
+    },
+    {
+      "type": "sched-blocked-reason",
+      "at_ns": "923000001",
+      "thread": "worker-main",
+      "cpu": 6,
+      "io_wait": true,
+      "function_name": "do_page_fault"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "928000000",
+      "cpu": 6,
+      "thread": "worker-main",
+      "waker_thread": null,
+      "target_cpu": 6,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "928100000",
+      "duration_ns": "1000000",
+      "thread": "worker-main",
+      "cpu": 6,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "940000000",
+      "duration_ns": "1000000",
+      "process": "peer",
+      "thread": "peer-main",
+      "name": "Choreographer#doFrame - resynced to 9301 in 2.5ms",
+      "cpu": 5
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "942000000",
+      "duration_ns": "1000000",
+      "thread": "peer-main",
+      "cpu": 5,
+      "end_state": "D"
+    },
+    {
+      "type": "sched-blocked-reason",
+      "at_ns": "943000001",
+      "thread": "peer-main",
+      "cpu": 5,
+      "io_wait": true,
+      "function_name": "do_page_fault"
+    },
+    {
+      "type": "sched-waking",
+      "at_ns": "948000000",
+      "cpu": 5,
+      "thread": "peer-main",
+      "waker_thread": null,
+      "target_cpu": 5,
+      "sched_priority": 120
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "948100000",
+      "duration_ns": "1000000",
+      "thread": "peer-main",
+      "cpu": 5,
+      "end_state": "S"
     }
   ]
 }

@@ -54,7 +54,7 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
   'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
-  'android-system-info', 'android-network-packet', 'android-packages-list',
+  'android-system-info', 'android-network-packet', 'android-packages-list', 'sched-blocked-reason',
 ]);
 // The SystemInfo device identity an `android-system-info` signal may set,
 // keyed by the name trace processor stores each value under in `metadata`.
@@ -750,6 +750,26 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const events = eventsForCpu(signal.cpu);
       events.push(schedSwitchEvent(timestamp, idle, task, '0'));
       events.push(schedSwitchEvent(end, task, idle, endState));
+    } else if (signal.type === 'sched-blocked-reason') {
+      // Why the thread's latest D state blocked: trace processor writes io_wait
+      // and the kernel symbol the caller iid names onto that thread_state row,
+      // so this follows the sched-running that ends in D.
+      const thread = schedActor(signal.thread, identities, 'sched-blocked-reason thread');
+      if (thread.tid === 0) throw new Error('sched-blocked-reason cannot describe the idle thread');
+      if (typeof signal.io_wait !== 'boolean') throw new Error('sched-blocked-reason io_wait must be a boolean');
+      let caller;
+      if (signal.function_name !== undefined) {
+        caller = (index + 1) * 1000 + 1;
+        dataPackets.push({timestamp, internedData: {kernelSymbols: [{
+          iid: caller,
+          str: Buffer.from(nonEmptyString(signal.function_name, 'sched-blocked-reason function_name')),
+        }]}});
+      }
+      eventsForCpu(signal.cpu ?? 0).push({
+        timestamp,
+        pid: thread.tid,
+        schedBlockedReason: {pid: thread.tid, ioWait: signal.io_wait ? 1 : 0, ...(caller ? {caller} : {})},
+      });
     } else if (signal.type === 'sched-switch') {
       const prev = schedActor(signal.prev_thread, identities, 'sched-switch prev_thread');
       const next = schedActor(signal.next_thread, identities, 'sched-switch next_thread');
@@ -1158,7 +1178,9 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
           actualSurfaceFrameStart: {
             cookie,
             token: nonNegativeInteger(signal.token, 'frame-timeline token'),
-            displayFrameToken: nonNegativeInteger(signal.display_frame_token, 'frame-timeline display_frame_token'),
+            // -1: a frame the device inserted (OEM frame interpolation), with no display frame of its own.
+            displayFrameToken: signal.display_frame_token === -1
+              ? -1 : nonNegativeInteger(signal.display_frame_token, 'frame-timeline display_frame_token'),
             pid: process.pid,
             layerName: nonEmptyString(signal.layer_name, 'frame-timeline layer_name'),
             presentType: signal.jank_type ? 2 : 1,
