@@ -143,6 +143,8 @@ steps:
   # ========== 事件基本信息 ==========
   - id: event_info
     type: atomic
+    process_scope:
+      role: identity_metadata
     name: "事件基本信息"
     display:
       level: key
@@ -221,11 +223,14 @@ steps:
   # ========== 输入分发管线分解 ==========
   - id: input_dispatch_breakdown
     type: atomic
-    name: "输入分发管线分解"
+    # system_server 的读取与分发切片：同一时间窗内的对端上下文，不属于目标进程。
+    process_scope:
+      role: peer_context
+    name: "输入分发阶段"
     display:
       level: detail
       layer: deep
-      title: "输入分发管线 (kernel→InputDispatcher→App)"
+      title: "输入分发 (InputReader→InputDispatcher，system_server)"
       columns:
         - name: stage
           label: "管线阶段"
@@ -246,48 +251,73 @@ steps:
           label: "详情"
           type: string
     sql: |
-      -- 分解 Input dispatch 管线: kernel → InputDispatcher (system_server) → App
-      WITH dispatch_slices AS (
-        -- InputDispatcher 处理阶段 (system_server 进程)
-        SELECT
-          'InputDispatcher' as stage,
-          s.ts as start_ts,
-          s.dur,
-          t.name as thread_name,
-          s.name as detail
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE (p.name = 'system_server' OR p.name LIKE '/system/bin/%')
-          AND (s.name GLOB '*InputDispatcher*' OR s.name GLOB '*InputReader*' OR s.name GLOB '*dispatchMotion*')
-          AND s.ts >= (${event_ts} - 50000000)
-          AND s.ts <= (${event_ts} + 50000000)
-        UNION ALL
-        -- App 端接收阶段 (aq:pending:deliver)
-        SELECT
-          'App接收' as stage,
-          s.ts as start_ts,
-          s.dur,
-          t.name as thread_name,
-          s.name as detail
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE ('${process_name}' = '' OR p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
-          AND (s.name GLOB '*deliverInput*' OR s.name GLOB 'aq:pending:deliver*' OR s.name GLOB '*InputEvent*')
-          AND s.ts >= (${event_ts} - 10000000)
-          AND s.ts <= (${event_end_ts} + 10000000)
-      )
       SELECT
-        stage,
-        printf('%d', start_ts) as start_ts,
-        ROUND(dur / 1e6, 2) as dur_ms,
-        thread_name,
-        detail
-      FROM dispatch_slices
-      ORDER BY start_ts
+        'InputDispatcher' as stage,
+        printf('%d', s.ts) as start_ts,
+        ROUND(s.dur / 1e6, 2) as dur_ms,
+        t.name as thread_name,
+        s.name as detail
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE (p.name = 'system_server' OR p.name LIKE '/system/bin/%')
+        AND (s.name GLOB '*InputDispatcher*' OR s.name GLOB '*InputReader*' OR s.name GLOB '*dispatchMotion*')
+        AND s.ts >= (${event_ts} - 50000000)
+        AND s.ts <= (${event_ts} + 50000000)
+      ORDER BY s.ts
+      LIMIT 20
+    optional: true
+
+  # ========== 应用端输入接收 ==========
+  - id: input_app_receive
+    type: atomic
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+    name: "应用端输入接收"
+    display:
+      level: detail
+      layer: deep
+      title: "应用端输入接收 (aq:pending:deliver / deliverInputEvent)"
+      columns:
+        - name: stage
+          label: "管线阶段"
+          type: string
+        - name: start_ts
+          label: "开始时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: dur_ms
+          label: "耗时(ms)"
+          type: duration
+          format: duration_ms
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: detail
+          label: "详情"
+          type: string
+    sql: |
+      SELECT
+        'App接收' as stage,
+        printf('%d', s.ts) as start_ts,
+        ROUND(s.dur / 1e6, 2) as dur_ms,
+        t.name as thread_name,
+        s.name as detail
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN effective_target_processes p ON t.upid = p.upid
+      WHERE (${__process_scope.upid} IS NOT NULL
+          OR '${process_name}' = '' OR p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
+        AND (s.name GLOB '*deliverInput*' OR s.name GLOB 'aq:pending:deliver*' OR s.name GLOB '*InputEvent*')
+        AND s.ts >= (${event_ts} - 10000000)
+        AND s.ts <= (${event_end_ts} + 10000000)
+      ORDER BY s.ts
       LIMIT 20
     optional: true
 
@@ -359,6 +389,9 @@ steps:
         - name: is_speculative_frame
           label: "推测帧"
           type: boolean
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments: [fragments/android_input_events_normalized.sql]
     sql: |
       -- 父 Skill 直接传入 android_input_events 的精确事件边界；不猜测相邻事件。
@@ -366,7 +399,8 @@ steps:
       WITH target_event AS (
         SELECT *
         FROM android_input_events_normalized
-        WHERE process_name = '${process_name}'
+        WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
+          AND (${__process_scope.upid} IS NOT NULL OR process_name = '${process_name}')
           AND dispatch_ts = ${event_ts}
           AND receive_ts + receive_dur = ${event_end_ts}
         ORDER BY input_event_id, event_channel

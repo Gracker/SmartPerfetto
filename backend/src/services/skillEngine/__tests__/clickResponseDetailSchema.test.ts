@@ -12,7 +12,7 @@ import {
   completeAndroidInputEventsFixture,
   createOwnMonitorInputFixture,
 } from '../../../../tests/helpers/androidInputEventsFixture';
-import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
+import {renderStepSql} from '../../../../tests/helpers/skillFragmentSql';
 
 const skillPath = path.join(
   process.cwd(),
@@ -22,14 +22,15 @@ const skillPath = path.join(
 );
 const skill = yaml.load(fs.readFileSync(skillPath, 'utf8')) as any;
 
-function inputPipelineTargetEventSql(): string {
+/** The input_pipeline_lifecycle target_event selector, rendered for one event and scope. */
+function inputPipelineTargetEventSql(vars: Record<string, string>): string {
   const step = skill.steps?.find((candidate: any) => candidate.id === 'input_pipeline_lifecycle');
   expect(step).toBeDefined();
   const match = String(step.sql).match(
     /WITH target_event AS \(\s*([\s\S]*?LIMIT 1)\s*\)\s*SELECT/,
   );
   expect(match).not.toBeNull();
-  return withStepFragments(match![1], step.sql_fragments);
+  return renderStepSql(match![1], step.sql_fragments, {event_ts: '100', event_end_ts: '200', ...vars});
 }
 
 describe('click_response_analysis target process selection', () => {
@@ -41,14 +42,21 @@ describe('click_response_analysis target process selection', () => {
   const getProcess = analysisSkill.steps.find((candidate: any) => candidate.id === 'get_process');
 
   type TargetRow = {process_name: string; event_count: number; app_delivery_events: number; max_total_ms: number};
+  // Named runs bind no process scope; an exact run binds its UPID (`scopeUpid`).
   const renderStep = (stepId: string, vars: Record<string, string | number>) => {
     const step = analysisSkill.steps.find((candidate: any) => candidate.id === stepId);
-    return renderStepSql(String(step.sql), step.sql_fragments, {start_ts: 'NULL', end_ts: 'NULL', ...vars});
+    return renderStepSql(String(step.sql), step.sql_fragments,
+      {start_ts: 'NULL', end_ts: 'NULL', '__process_scope.upid': 'NULL', ...vars});
   };
-  const selectTarget = (db: Database.Database, packageName: string, startTs: string | number = 'NULL') =>
-    db.prepare(renderStep('get_process', {package: packageName, start_ts: startTs})).all() as TargetRow[];
-  const runForTarget = (db: Database.Database, stepId: string, target: TargetRow, startTs: string | number = 'NULL') =>
-    db.prepare(renderStep(stepId, {start_ts: startTs, 'target_process.data[0].process_name': target.process_name}))
+  type RunOptions = {startTs?: number; scopeUpid?: number};
+  const runVars = ({startTs, scopeUpid}: RunOptions) => ({
+    ...(startTs !== undefined ? {start_ts: startTs} : {}),
+    ...(scopeUpid !== undefined ? {'__process_scope.upid': scopeUpid} : {}),
+  });
+  const selectTarget = (db: Database.Database, packageName: string, options: RunOptions = {}) =>
+    db.prepare(renderStep('get_process', {package: packageName, ...runVars(options)})).all() as TargetRow[];
+  const runForTarget = (db: Database.Database, stepId: string, target: TargetRow, options: RunOptions = {}) =>
+    db.prepare(renderStep(stepId, {'target_process.data[0].process_name': target.process_name, ...runVars(options)}))
       .all() as Array<Record<string, unknown>>;
 
   const createInputFixture = (rows: string): Database.Database => {
@@ -93,7 +101,7 @@ describe('click_response_analysis target process selection', () => {
       const roles = db.prepare(renderStepSql(
         'SELECT delivery_role FROM android_input_scoped_deliveries',
         getProcess.sql_fragments,
-        {start_ts: 100, end_ts: 'NULL'},
+        {start_ts: 100, end_ts: 'NULL', '__process_scope.upid': 'NULL'},
       )).all();
 
       expect(roles).toEqual(Array(3).fill({delivery_role: 'monitor_copy'}));
@@ -136,7 +144,7 @@ describe('click_response_analysis target process selection', () => {
       const rows = db.prepare(renderStepSql(
         'SELECT process_name, window_owner, unresolved_window_event_key FROM android_input_event_deliveries ORDER BY upid, event_channel',
         getProcess.sql_fragments,
-        {start_ts: 'NULL', end_ts: 'NULL'},
+        {start_ts: 'NULL', end_ts: 'NULL', '__process_scope.upid': 'NULL'},
       )).all();
 
       expect(rows).toEqual([
@@ -211,9 +219,9 @@ describe('click_response_analysis target process selection', () => {
     const db = createOwnMonitorFixture();
     try {
       // Only events 4-6 are inside; the monitor's copies of 1-3 are not.
-      const [target] = selectTarget(db, '', 350);
+      const [target] = selectTarget(db, '', {startTs: 350});
       expect(target).toMatchObject({process_name: 'com.example.launcher', event_count: 3, app_delivery_events: 0});
-      expect(runForTarget(db, 'input_latency_overview', target, 350)).toEqual([
+      expect(runForTarget(db, 'input_latency_overview', target, {startTs: 350})).toEqual([
         expect.objectContaining({total_events: 3, max_total_ms: 4}),
       ]);
     } finally {
@@ -237,6 +245,34 @@ describe('click_response_analysis target process selection', () => {
       expect(target).toMatchObject({process_name: 'com.example.launcher', event_count: 6, max_total_ms: 4});
       expect(runForTarget(db, 'input_latency_overview', target)).toEqual([
         expect.objectContaining({total_events: 6, max_total_ms: 4}),
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('analyzes only the pinned instance, judged per upid, under an exact process scope', () => {
+    const db = createOwnMonitorFixture();
+    try {
+      // The same second launcher instance, now the exact target: what it observed is all it has.
+      db.exec(`
+        INSERT INTO android_input_events(upid, process_name, event_channel, normalized_event_channel,
+          input_event_id, event_type, event_action, total_latency_dur, dispatch_ts, receive_ts, receive_dur)
+        VALUES (3, 'com.example.launcher', '[Gesture Monitor] swipe-up (server)', '[Gesture Monitor] swipe-up (server)',
+          '1', 'MOTION', NULL, 20000000, 101, 106, 10),
+          (3, 'com.example.launcher', '[Gesture Monitor] swipe-up (server)', '[Gesture Monitor] swipe-up (server)',
+          '2', 'MOTION', NULL, 20000000, 201, 206, 10);
+      `);
+      // An exact run reads its UPID, never the package or the named target it was given.
+      const [observer] = selectTarget(db, 'com.android.systemui', {scopeUpid: 3});
+      expect(observer).toEqual({process_name: 'com.example.launcher', event_count: 2, app_delivery_events: 0, max_total_ms: 20});
+      expect(runForTarget(db, 'input_latency_overview', {...observer, process_name: 'unrelated'}, {scopeUpid: 3})).toEqual([
+        expect.objectContaining({total_events: 2, max_total_ms: 20}),
+      ]);
+      const [app] = selectTarget(db, '', {scopeUpid: 1});
+      expect(app).toEqual({process_name: 'com.example.launcher', event_count: 6, app_delivery_events: 3, max_total_ms: 4});
+      expect(runForTarget(db, 'latency_distribution', app, {scopeUpid: 1})).toEqual([
+        {latency_bucket: '<16ms (极快)', count: 6, percent: 100},
       ]);
     } finally {
       db.close();
@@ -333,10 +369,7 @@ describe('click_response_detail input event identity', () => {
       `);
       completeAndroidInputEventsFixture(db);
 
-      const selector = inputPipelineTargetEventSql()
-        .replace(/\$\{process_name\}/g, 'com.foo')
-        .replace(/\$\{event_ts\}/g, '100')
-        .replace(/\$\{event_end_ts\}/g, '200');
+      const selector = inputPipelineTargetEventSql({'__process_scope.upid': 'NULL', process_name: 'com.foo'});
       const selected = db.prepare(selector).get() as {
         process_name: string;
         input_event_id: number;
@@ -344,6 +377,26 @@ describe('click_response_detail input event identity', () => {
 
       expect(selected.process_name).toBe('com.foo');
       expect(selected.input_event_id).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('selects the event of the exact UPID, whatever process name it was given', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE android_input_events (
+          upid INTEGER, process_name TEXT, dispatch_ts INTEGER, receive_ts INTEGER, receive_dur INTEGER,
+          input_event_id INTEGER, event_channel TEXT
+        );
+        INSERT INTO android_input_events VALUES
+          (7, 'com.foo', 100, 180, 20, 1, 'first'),
+          (8, 'com.foo', 100, 180, 20, 2, 'restarted');
+      `);
+      completeAndroidInputEventsFixture(db);
+      const selector = inputPipelineTargetEventSql({'__process_scope.upid': '8', process_name: ''});
+      expect(db.prepare(selector).all()).toEqual([expect.objectContaining({upid: 8, input_event_id: 2})]);
     } finally {
       db.close();
     }

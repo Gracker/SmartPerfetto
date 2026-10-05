@@ -227,10 +227,12 @@ describe('cross-scene canonical system consumers', () => {
     } finally { db.close(); }
   });
 
+  // The startup graph's named run selects by package, `:*` children included,
+  // so its rows are read unscoped; an exact run keeps UPID 42 alone (below).
   it.each([
-    ['atomic/startup_thread_blocking_graph', 'root'],
-    ['atomic/anr_main_thread_blocking', 'wakeup_chain'],
-  ])('%s keeps native wait/wakeup identity and clipping without inventing blockers', (name, step) => {
+    ['atomic/startup_thread_blocking_graph', 'root', {'__process_scope.upid': 'NULL'}],
+    ['atomic/anr_main_thread_blocking', 'wakeup_chain', {}],
+  ] as Array<[string, string, Record<string, string>]>)('%s keeps native wait/wakeup identity and clipping without inventing blockers', (name, step, scope) => {
     const db = fixture();
     try {
       db.exec(`ALTER TABLE process ADD COLUMN uid INTEGER;
@@ -259,7 +261,8 @@ describe('cross-scene canonical system consumers', () => {
           (63,4,15000000,1000000,'R',NULL,3,0),
           (64,5,10000000,5000000,'S',NULL,NULL,NULL),
           (65,6,10000000,5000000,'S',NULL,NULL,NULL);`);
-      const rows = query(db,name,step);
+      const run = (extra: Record<string, string> = {}) => query(db,name,step,{...scope,...extra});
+      const rows = run();
       const wait = (id: number) => rows.find(row=>row.thread_state_id===id);
       expect(wait(50)).toMatchObject({upid:42,utid:1,raw_start_ts:'5000000',raw_end_ts:'20000000',
         start_ts:'10000000',end_ts:'20000000',left_censored:1,right_censored:0,is_unfinished:0,
@@ -280,16 +283,19 @@ describe('cross-scene canonical system consumers', () => {
         expect(wait(52)).toMatchObject({waker_current_slice:'-',waker_slice_status:'not_observed'});
         expect(wait(59).total_block_ms).toBe(4);
         expect(wait(64).utid).not.toBe(wait(65).utid);
+        const exact = query(db,name,step);
+        expect(exact.length).toBeGreaterThan(0);
+        expect(exact.every(row => row.upid === 42)).toBe(true);
         db.exec("INSERT INTO slice VALUES(4,1,20000000,3000000,1,'ambiguous_task')");
-        expect(query(db,name,step).find(row=>row.thread_state_id===50)).toMatchObject({
+        expect(run().find(row=>row.thread_state_id===50)).toMatchObject({
           waker_current_slice:'-',waker_slice_id:null,waker_slice_status:'ambiguous_deepest'});
       } else {
         expect(wait(50)).toMatchObject({ts:'20000000',sleep_dur_ms:10,wait_span_count:1});
         expect(wait(59)).toMatchObject({ts:null,sleep_dur_ms:4});
       }
-      expect(query(db,name,step,{end_ts:'20000000'}).find(row=>row.thread_state_id===50))
+      expect(run({end_ts:'20000000'}).find(row=>row.thread_state_id===50))
         .toMatchObject({wakeup_count:0,wakeup_status:'no_in_window_wakeup',end_ts:'20000000'});
-      expect(query(db,name,step,{end_ts:'60000000'}).find(row=>row.thread_state_id===59))
+      expect(run({end_ts:'60000000'}).find(row=>row.thread_state_id===59))
         .toMatchObject({end_ts:'50000000',is_unfinished:1,wakeup_count:0});
       const declared = new Set(load(name,step).display.columns.map((column: any)=>column.name));
       for (const field of Object.keys(rows[0])) expect(declared.has(field)).toBe(true);

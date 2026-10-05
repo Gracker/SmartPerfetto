@@ -129,6 +129,10 @@ describe('IdentityGate', () => {
       // the policy stays verify_if_present.
       'art_module',
       'flutter_scrolling_analysis',
+      // This, the startup_binder/jit/thread_blocking entries and
+      // thread_affinity_violation filter by package through
+      // `effective_target_processes p`, like scheduler_module below.
+      'main_thread_file_io_in_range',
       // Its filter (p.name = i.target_name) is in a fragment. Its step SQL
       // alone read as one only through a bare name in one query block and a
       // process read in another, which block scoping no longer joins; the
@@ -143,12 +147,19 @@ describe('IdentityGate', () => {
       // text read as one only because a `SELECT *` over a process read marked
       // every output column of that query as a process name.
       'selection_range_cpu_sched_summary',
+      // effective_target_processes, as main_thread_file_io_in_range.
+      'startup_binder_pool_analysis',
       'startup_cpu_placement_timeline',
       'startup_hot_slice_states',
+      // effective_target_processes, as main_thread_file_io_in_range.
+      'startup_jit_analysis',
+      'startup_thread_blocking_graph',
       // Its fragment matches daemon processes by LOWER(COALESCE(p.name, '')) GLOB,
       // which the structural detection reads through the wrappers; the Skill
       // takes a package it attributes with, so verifying it is intended.
       'thermal_throttling',
+      // effective_target_processes, as main_thread_file_io_in_range.
+      'thread_affinity_violation',
     ]);
     expect(lost).toEqual([]);
   });

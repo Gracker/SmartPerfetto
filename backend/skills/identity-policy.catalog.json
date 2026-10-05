@@ -1900,7 +1900,13 @@
       "policy": "none"
     },
     "startup_main_thread_states_in_range": {
-      "policy": "none"
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
     },
     "startup_main_thread_sync_binder_in_range": {
       "policy": "verify_if_present",

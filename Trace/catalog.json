@@ -4554,6 +4554,7 @@
               "init_cpu_topology",
               "event_info",
               "input_dispatch_breakdown",
+              "input_app_receive",
               "input_pipeline_lifecycle",
               "cpu_core_analysis",
               "quadrant_analysis"
@@ -4562,6 +4563,7 @@
               "system_context_window",
               "event_info",
               "input_dispatch_breakdown",
+              "input_app_receive",
               "input_pipeline_lifecycle",
               "cpu_core_analysis",
               "quadrant_analysis"
@@ -7981,7 +7983,7 @@
       "id": "process-scope-isolation",
       "kind": "constructed",
       "title": "Process scope isolation across same-package and peer processes",
-      "description": "An app, its same-package :worker sibling (same uid) and an unrelated peer app each carry the same kind of evidence, so a unit run under one of them by exact UPID can show its rows do not depend on process-selection parameters: network waits and rx packets, input, frames (a peer scroll session with device-inserted frames, two inserted worker frames), and a resynced doFrame and a page-fault IO wait on each main thread. Evidence the trace attributes only per uid (rx packets) stays shared by same-uid processes; such steps declare it.",
+      "description": "An app, its same-package :worker sibling (same uid) and an unrelated peer app each carry the same kind of evidence, so a unit run under one of them by exact UPID can show its rows do not depend on process-selection parameters: network waits and rx packets, input (the app's first event also runs its main thread through a synchronous binder call to system_server), frames (a peer scroll session with device-inserted frames, two inserted worker frames), a resynced doFrame and a page-fault IO wait on each main thread, and a cold startup of the app and of the peer, each with main-thread file IO, a D-state wait, a JIT thread pool and a binder pool thread. Evidence the trace attributes only per uid (rx packets) stays shared by same-uid processes; such steps declare it.",
       "scene": "cpu",
       "tags": [
         "android",
@@ -7996,7 +7998,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "07e8287ee4b83ce919f1a759176d1db066da13c4dcc7ba49ae9427c83602d147",
+        "sha256": "94abb4110b0902a1dc000a17e186f1428236375ad5f9c90b2e7a43b895e225c9",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -8036,12 +8038,22 @@
       },
       "coverage": {
         "skills": [
+          "click_response_analysis",
+          "click_response_detail",
+          "cpu_analysis",
           "frame_production_gap",
           "jank_frame_detail",
+          "main_thread_file_io_in_range",
           "page_fault_in_range",
           "process_thread_wait_sources_in_range",
           "scroll_session_analysis",
-          "scrolling_analysis"
+          "scrolling_analysis",
+          "startup_binder_pool_analysis",
+          "startup_detail",
+          "startup_jit_analysis",
+          "startup_main_thread_states_in_range",
+          "startup_thread_blocking_graph",
+          "thread_affinity_violation"
         ],
         "strategies": [],
         "expectations": [
@@ -8746,6 +8758,876 @@
                       "column": "count",
                       "operator": "eq",
                       "value": 1
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "click-response-exact-scope",
+            "type": "skill",
+            "target": "click_response_analysis",
+            "mode": "execution",
+            "source_file": "backend/skills/composite/click_response_analysis.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "slow_event_threshold_ms": 1,
+              "thread_state_min_dur_ms": 1,
+              "enable_per_event_detail": false
+            },
+            "required_steps": [
+              "check_input_data",
+              "get_process",
+              "input_latency_overview",
+              "latency_by_event_type",
+              "latency_by_window",
+              "slow_input_events",
+              "input_thread_state",
+              "input_binder_calls",
+              "input_to_frame",
+              "latency_distribution"
+            ],
+            "required_sql_steps": [
+              "check_input_data",
+              "get_process",
+              "input_latency_overview",
+              "latency_by_event_type",
+              "latency_by_window",
+              "slow_input_events",
+              "input_thread_state",
+              "input_binder_calls",
+              "input_to_frame",
+              "latency_distribution"
+            ],
+            "forced_sql_steps": [
+              "get_process",
+              "input_latency_overview",
+              "latency_by_event_type",
+              "latency_by_window",
+              "slow_input_events",
+              "input_thread_state",
+              "input_binder_calls",
+              "input_to_frame",
+              "latency_distribution"
+            ],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "get_process",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "check_input_data",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "get_process",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 1,
+                  "required_columns": [
+                    "process_name",
+                    "event_count",
+                    "app_delivery_events",
+                    "max_total_ms"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "process_name",
+                      "operator": "eq",
+                      "value": "com.smartperfetto.fixture"
+                    },
+                    {
+                      "column": "event_count",
+                      "operator": "eq",
+                      "value": 2
+                    }
+                  ]
+                },
+                {
+                  "unit": "input_latency_overview",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "latency_by_event_type",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "latency_by_window",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "slow_input_events",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "input_thread_state",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "input_binder_calls",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 1,
+                  "required_columns": [
+                    "server_process",
+                    "aidl_name",
+                    "call_count",
+                    "total_dur_ms",
+                    "avg_dur_ms",
+                    "main_thread_calls"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "server_process",
+                      "operator": "eq",
+                      "value": "system_server"
+                    },
+                    {
+                      "column": "call_count",
+                      "operator": "eq",
+                      "value": 1
+                    },
+                    {
+                      "column": "main_thread_calls",
+                      "operator": "eq",
+                      "value": 1
+                    }
+                  ]
+                },
+                {
+                  "unit": "input_to_frame",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "latency_distribution",
+                  "mode": "execution",
+                  "min_rows": 0
+                }
+              ]
+            }
+          },
+          {
+            "id": "click-response-detail-exact-scope",
+            "type": "skill",
+            "target": "click_response_detail",
+            "mode": "execution",
+            "source_file": "backend/skills/composite/click_response_detail.skill.yaml",
+            "parameters": {
+              "event_ts": "506733285717456",
+              "event_end_ts": "506733285977456",
+              "total_ms": 2.94,
+              "dispatch_ms": 0.24,
+              "handling_ms": 1.7,
+              "event_type": "MOTION",
+              "event_action": "ACTION_DOWN",
+              "process_name": "com.smartperfetto.fixture"
+            },
+            "required_steps": [
+              "system_context_window",
+              "event_info",
+              "input_dispatch_breakdown",
+              "input_app_receive",
+              "input_pipeline_lifecycle",
+              "cpu_core_analysis",
+              "quadrant_analysis"
+            ],
+            "required_sql_steps": [
+              "system_context_window",
+              "event_info",
+              "input_dispatch_breakdown",
+              "input_app_receive",
+              "input_pipeline_lifecycle",
+              "cpu_core_analysis",
+              "quadrant_analysis"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "event_info",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "input_app_receive",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "required_columns": [
+                    "stage",
+                    "start_ts",
+                    "dur_ms",
+                    "thread_name",
+                    "detail"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "thread_name",
+                      "operator": "eq",
+                      "value": "main"
+                    },
+                    {
+                      "column": "detail",
+                      "operator": "contains",
+                      "value": "id=0x5a000001"
+                    }
+                  ]
+                },
+                {
+                  "unit": "input_pipeline_lifecycle",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 1,
+                  "required_columns": [
+                    "input_id",
+                    "channel",
+                    "total_latency_ms",
+                    "reader_ts",
+                    "reader_ms",
+                    "dispatch_ts",
+                    "dispatch_ms",
+                    "receive_ts",
+                    "receive_ms",
+                    "consume_ts",
+                    "consume_ms",
+                    "frame_ts",
+                    "frame_ms",
+                    "is_speculative_frame"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "input_id",
+                      "operator": "eq",
+                      "value": "0x5a000001"
+                    },
+                    {
+                      "column": "channel",
+                      "operator": "contains",
+                      "value": "com.smartperfetto.fixture/"
+                    }
+                  ]
+                },
+                {
+                  "unit": "cpu_core_analysis",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "quadrant_analysis",
+                  "mode": "execution",
+                  "min_rows": 0
+                }
+              ]
+            }
+          },
+          {
+            "id": "cpu-analysis-exact-scope",
+            "type": "skill",
+            "target": "cpu_analysis",
+            "mode": "execution",
+            "source_file": "backend/skills/composite/cpu_analysis.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture"
+            },
+            "required_steps": [
+              "get_process",
+              "core_type_stats",
+              "thread_cpu_usage",
+              "main_thread_states",
+              "runnable_latency",
+              "main_thread_cores",
+              "blocked_functions",
+              "cpu_frequency_distribution",
+              "wakeup_chain",
+              "cache_counter_check"
+            ],
+            "required_sql_steps": [
+              "get_process",
+              "core_type_stats",
+              "thread_cpu_usage",
+              "main_thread_states",
+              "runnable_latency",
+              "main_thread_cores",
+              "blocked_functions",
+              "cpu_frequency_distribution",
+              "wakeup_chain",
+              "cache_counter_check"
+            ],
+            "forced_sql_steps": [
+              "core_type_stats",
+              "thread_cpu_usage",
+              "main_thread_states",
+              "runnable_latency",
+              "main_thread_cores",
+              "blocked_functions",
+              "cpu_frequency_distribution",
+              "wakeup_chain",
+              "cache_counter_check"
+            ],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "get_process",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "get_process",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 1,
+                  "required_columns": [
+                    "upid",
+                    "pid",
+                    "process_name"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "process_name",
+                      "operator": "eq",
+                      "value": "com.smartperfetto.fixture"
+                    }
+                  ]
+                },
+                {
+                  "unit": "core_type_stats",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "thread_cpu_usage",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "main_thread_states",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "runnable_latency",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "required_columns": [
+                    "upid",
+                    "window_start_ts",
+                    "window_end_ts",
+                    "utid",
+                    "wait_ms",
+                    "ts_ms",
+                    "ts_str",
+                    "dur_ns",
+                    "thread_name",
+                    "waker_thread",
+                    "waker_process",
+                    "severity"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "thread_name",
+                      "operator": "eq",
+                      "value": "main"
+                    },
+                    {
+                      "column": "waker_thread",
+                      "operator": "eq",
+                      "value": "Binder:fixture_1"
+                    },
+                    {
+                      "column": "waker_process",
+                      "operator": "eq",
+                      "value": "com.smartperfetto.fixture"
+                    }
+                  ]
+                },
+                {
+                  "unit": "main_thread_cores",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "blocked_functions",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "wakeup_chain",
+                  "mode": "execution",
+                  "min_rows": 0
+                }
+              ]
+            }
+          },
+          {
+            "id": "startup-detail-exact-scope",
+            "type": "skill",
+            "target": "startup_detail",
+            "mode": "execution",
+            "source_file": "backend/skills/composite/startup_detail.skill.yaml",
+            "parameters": {
+              "startup_id": 901,
+              "start_ts": "506733884657456",
+              "end_ts": "506734184657456",
+              "dur_ms": 300,
+              "package": "com.smartperfetto.fixture",
+              "startup_type": "cold"
+            },
+            "required_steps": [
+              "startup_info",
+              "cpu_core_analysis",
+              "cpu_freq_analysis",
+              "per_cpu_system_context",
+              "preemption",
+              "quadrant_analysis",
+              "actionable_main_thread_slices"
+            ],
+            "required_sql_steps": [
+              "startup_info",
+              "cpu_core_analysis",
+              "cpu_freq_analysis",
+              "per_cpu_system_context",
+              "preemption",
+              "quadrant_analysis",
+              "actionable_main_thread_slices"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "startup_info",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "cpu_core_analysis",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "cpu_freq_analysis",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "per_cpu_system_context",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "preemption",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "quadrant_analysis",
+                  "mode": "execution",
+                  "min_rows": 0
+                },
+                {
+                  "unit": "actionable_main_thread_slices",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "required_columns": [
+                    "slice_name",
+                    "count",
+                    "total_ms",
+                    "self_ms",
+                    "avg_ms",
+                    "max_ms",
+                    "percent",
+                    "self_percent",
+                    "is_framework_wrapper"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "slice_name",
+                      "operator": "eq",
+                      "value": "SQLiteDatabase query settings"
+                    },
+                    {
+                      "column": "total_ms",
+                      "operator": "eq",
+                      "value": 8
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "main-thread-file-io-in-range-exact-scope",
+            "type": "skill",
+            "target": "main_thread_file_io_in_range",
+            "mode": "execution",
+            "source_file": "backend/skills/atomic/main_thread_file_io_in_range.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "start_ts": "${trace_start}",
+              "end_ts": "${trace_end}"
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "root",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 2,
+                  "required_columns": [
+                    "io_slice",
+                    "count",
+                    "total_ms",
+                    "avg_ms",
+                    "max_ms",
+                    "percent"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "io_slice",
+                      "operator": "eq",
+                      "value": "SQLiteDatabase query settings"
+                    },
+                    {
+                      "column": "count",
+                      "operator": "eq",
+                      "value": 1
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "thread-affinity-violation-exact-scope",
+            "type": "skill",
+            "target": "thread_affinity_violation",
+            "mode": "execution",
+            "source_file": "backend/skills/atomic/thread_affinity_violation.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "start_ts": "${trace_start}",
+              "end_ts": "${trace_end}"
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "root",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 1,
+                  "required_columns": [
+                    "process_name",
+                    "thread_name",
+                    "run_samples",
+                    "distinct_cpus",
+                    "migration_count",
+                    "migration_ratio_pct",
+                    "affinity_violation"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "process_name",
+                      "operator": "eq",
+                      "value": "com.smartperfetto.fixture"
+                    },
+                    {
+                      "column": "thread_name",
+                      "operator": "eq",
+                      "value": "main"
+                    },
+                    {
+                      "column": "distinct_cpus",
+                      "operator": "eq",
+                      "value": 4
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "startup-binder-pool-analysis-exact-scope",
+            "type": "skill",
+            "target": "startup_binder_pool_analysis",
+            "mode": "execution",
+            "source_file": "backend/skills/atomic/startup_binder_pool_analysis.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "start_ts": "${trace_start}",
+              "end_ts": "${trace_end}"
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "root",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 3,
+                  "required_columns": [
+                    "metric",
+                    "value",
+                    "assessment"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "metric",
+                      "operator": "eq",
+                      "value": "线程池大小"
+                    },
+                    {
+                      "column": "value",
+                      "operator": "eq",
+                      "value": "1 个 Binder 线程"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "startup-main-thread-states-in-range-exact-scope",
+            "type": "skill",
+            "target": "startup_main_thread_states_in_range",
+            "mode": "execution",
+            "source_file": "backend/skills/atomic/startup_main_thread_states_in_range.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "start_ts": "${trace_start}",
+              "end_ts": "${trace_end}"
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "root",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "required_columns": [
+                    "state",
+                    "state_desc",
+                    "total_dur_ms",
+                    "percent",
+                    "count",
+                    "io_wait",
+                    "evidence_strength",
+                    "blocked_functions"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "state",
+                      "operator": "eq",
+                      "value": "D"
+                    },
+                    {
+                      "column": "blocked_functions",
+                      "operator": "eq",
+                      "value": "filemap_fault"
+                    },
+                    {
+                      "column": "evidence_strength",
+                      "operator": "eq",
+                      "value": "direct_io_wait"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "startup-thread-blocking-graph-exact-scope",
+            "type": "skill",
+            "target": "startup_thread_blocking_graph",
+            "mode": "execution",
+            "source_file": "backend/skills/atomic/startup_thread_blocking_graph.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "start_ts": "${trace_start}",
+              "end_ts": "${trace_end}"
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "root",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "required_columns": [
+                    "upid",
+                    "utid",
+                    "thread_state_id",
+                    "blocked_thread",
+                    "blocked_role",
+                    "blocked_state",
+                    "blocked_function",
+                    "raw_start_ts",
+                    "raw_end_ts",
+                    "start_ts",
+                    "end_ts",
+                    "is_unfinished",
+                    "left_censored",
+                    "right_censored",
+                    "wakeup_state_id",
+                    "wakeup_ts",
+                    "observed_waker_utid",
+                    "irq_context",
+                    "waker_utid",
+                    "waker_upid",
+                    "waker_thread",
+                    "waker_process",
+                    "waker_current_slice",
+                    "waker_slice_id",
+                    "waker_slice_status",
+                    "wakeup_status",
+                    "wakeup_count",
+                    "block_count",
+                    "total_block_ms",
+                    "max_block_ms",
+                    "avg_block_ms",
+                    "relation_status",
+                    "evidence_scope"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "blocked_thread",
+                      "operator": "eq",
+                      "value": "main"
+                    },
+                    {
+                      "column": "blocked_state",
+                      "operator": "eq",
+                      "value": "D"
+                    },
+                    {
+                      "column": "blocked_function",
+                      "operator": "eq",
+                      "value": "filemap_fault"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "id": "startup-jit-analysis-exact-scope",
+            "type": "skill",
+            "target": "startup_jit_analysis",
+            "mode": "execution",
+            "source_file": "backend/skills/atomic/startup_jit_analysis.skill.yaml",
+            "parameters": {
+              "package": "com.smartperfetto.fixture",
+              "start_ts": "${trace_start}",
+              "end_ts": "${trace_end}"
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 1,
+            "required_marker": "SmartPerfetto::CASE::process-scope-isolation",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "root",
+                  "mode": "semantic",
+                  "min_rows": 1,
+                  "max_rows": 4,
+                  "required_columns": [
+                    "metric",
+                    "value",
+                    "assessment"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "metric",
+                      "operator": "eq",
+                      "value": "JIT 编译次数"
+                    },
+                    {
+                      "column": "value",
+                      "operator": "eq",
+                      "value": "1 次 (20.0 ms)"
                     }
                   ]
                 }

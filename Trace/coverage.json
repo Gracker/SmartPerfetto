@@ -499,15 +499,25 @@
     "execution": [
       "anr_detail",
       "battery_drain_attribution",
+      "click_response_analysis",
+      "click_response_detail",
+      "cpu_analysis",
       "frame_production_gap",
       "jank_frame_detail",
       "lock_binder_wait",
+      "main_thread_file_io_in_range",
       "main_thread_frame_work",
       "page_fault_in_range",
       "power_consumption_overview",
       "scroll_session_analysis",
       "scrolling_analysis",
-      "thermal_throttling_chain"
+      "startup_binder_pool_analysis",
+      "startup_detail",
+      "startup_jit_analysis",
+      "startup_main_thread_states_in_range",
+      "startup_thread_blocking_graph",
+      "thermal_throttling_chain",
+      "thread_affinity_violation"
     ],
     "graceful_empty": [],
     "unavailable": [],
@@ -3896,7 +3906,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "4808290f0f9ded94b86cbe3e60d04970e7480473e853232ee3c52b89ea7f3835",
+            "sha256": "66187a2b9aba05ff3c42c5c704cb016446eaeadd2ad27090751f53fa4382fbb9",
             "required_columns": [
               "io_slice",
               "count",
@@ -5101,7 +5111,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "6c744ef5c67b255f51b1d6f55b1cdb9e0590a0ea1674f69516f893d8b93de023",
+            "sha256": "58291873f2dbe0eec397cacc4b833a8b4facdc1850fe6ef51fd89392e02e2863",
             "required_columns": [
               "metric",
               "value",
@@ -5394,7 +5404,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "d1396e03502931f0cf223b882284f9edba945b4050cf93c44223cac25f24061a",
+            "sha256": "b7c318f844626d94d3e2f1066387fbdccdfe362c3be0c54a8d1d4d3541ada715",
             "required_columns": [
               "metric",
               "value",
@@ -5500,7 +5510,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "20f216db4708db3c84223d7fa203b2f9f7d63868c956f7ff9009976f71db5c72",
+            "sha256": "9e12e7b55b1e9e39a316fbb613f40ea2df91d71fbbe6183ee717f7846c46710d",
             "required_columns": [
               "state",
               "state_desc",
@@ -5620,7 +5630,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "717c46149fccc513514a61468fbe6996f3716f1f96cc1eac5709ce7ce687fc99",
+            "sha256": "613706f940e08afe4274516572bf36817b10beee5db0175a2818d068c04fc987",
             "required_columns": [
               "is_unfinished",
               "left_censored",
@@ -5852,7 +5862,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "d4e8bf799b46b552de8608edc863cb97fd8a2b4dcd3fa02c0ba1ae37601df70f",
+            "sha256": "a3a5f3948e9f0ceb5372251b87f3645b9e23b328acfee3d8d56853febe6b4a4c",
             "required_columns": [
               "process_name",
               "thread_name",
@@ -7441,7 +7451,7 @@
         "steps": [
           {
             "id": "check_input_data",
-            "sha256": "fdec831dd61edd82e03bdae8ec7bf7d53b16a2fbdddb1331898e99a5e87a0873",
+            "sha256": "9c6bf0705ec69e286761441393db9a3c5bf300631aad470b6681f1549305eba8",
             "required_columns": [
               "event_count",
               "status"
@@ -7449,7 +7459,7 @@
           },
           {
             "id": "get_process",
-            "sha256": "199fb10d2209683cbd768ded44474c39051f965c18ad0e353ea66228619ff51f",
+            "sha256": "68ea8976e03505b5e2cac7949a26faf8e5ce77592bef7a214472a4021911a32a",
             "required_columns": [
               "process_name",
               "event_count",
@@ -7459,7 +7469,7 @@
           },
           {
             "id": "input_latency_overview",
-            "sha256": "6b81105d70389421871c7149789d13850c37c2035cfd62eb8fee6985d5acacb6",
+            "sha256": "c25cea61e9c3b9d2ece3ad98907e756f05f5dbe1bd96ce5844ee9adbe61efdca",
             "required_columns": [
               "total_events",
               "avg_dispatch_ms",
@@ -7477,7 +7487,7 @@
           },
           {
             "id": "latency_by_event_type",
-            "sha256": "8fe1793e18a10c49ac8a7a58cd2a75a3638e98d2ec8f3d70088079377699f770",
+            "sha256": "1d21a95047c9c5e79516debd19d5d95ac4c56a86ba0caf9028c605658d30c3dc",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7490,7 +7500,7 @@
           },
           {
             "id": "latency_by_window",
-            "sha256": "250d1c4e819fde772c8c533ba18dfa846abf9d204debf984aca551f14fb74987",
+            "sha256": "203a5d0a93895ada23fe965f36c744a2429752e38034a5edb598832328f72af4",
             "required_columns": [
               "window",
               "count",
@@ -7502,7 +7512,7 @@
           },
           {
             "id": "slow_input_events",
-            "sha256": "5e4484783de227a4b0bac37582814ab985f117f65cb11c541a3ec3812c675bd1",
+            "sha256": "f89b9b137fce7dd19c66fa0b8233cefafafd12de979f6617dc4169e3ad8fbde8",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7527,7 +7537,7 @@
           },
           {
             "id": "input_thread_state",
-            "sha256": "a85f856007384b2f9d7c9872b6cfb0520d5d2902c72cd2cd390e71a033bc2633",
+            "sha256": "b28547b48d2f54c894dccfb581b72b62a3aec71c2df0925fa6b1698b739cdb10",
             "required_columns": [
               "window_id",
               "upid",
@@ -7543,7 +7553,7 @@
           },
           {
             "id": "input_binder_calls",
-            "sha256": "72b12e7d224113f8ef292cd2f78d190bf7a7ecbd3ca0d20a7db5c251520c8768",
+            "sha256": "311a91d8e872b72126b17619517a6f510ffbdb888a55b7a499fb9af659d0936e",
             "required_columns": [
               "server_process",
               "aidl_name",
@@ -7555,7 +7565,7 @@
           },
           {
             "id": "input_to_frame",
-            "sha256": "51f1b9159ab79f56e3c9966dd57ba501e0d2933bfd9b57fce37e6b98f680444d",
+            "sha256": "dbd95bec1dad60babe4cf3d6e03148d365157a956470a0605f99bf029ee84ce6",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7568,7 +7578,7 @@
           },
           {
             "id": "latency_distribution",
-            "sha256": "f072edb763cae438c23b1a1aeb25427fa54fe581ffc4ea5d545f0f8bfce2d4c7",
+            "sha256": "b18318d929aaa7085d83135a68a8ca57432c61a9ff99f00b6364e08b8abdab2b",
             "required_columns": [
               "latency_bucket",
               "count",
@@ -7623,7 +7633,18 @@
           },
           {
             "id": "input_dispatch_breakdown",
-            "sha256": "630c075ddd442742ff2fd5aebb761b35aedbeec9521281db7129f16c04a14115",
+            "sha256": "342942b8096b5201690d5d92f5a71aef259faa2e12148c05a302895417a66ba7",
+            "required_columns": [
+              "stage",
+              "start_ts",
+              "dur_ms",
+              "thread_name",
+              "detail"
+            ]
+          },
+          {
+            "id": "input_app_receive",
+            "sha256": "c43f1cdbf1d3670327305135ea20ea69a8e7680576c1d27d1f4d4bc5ea20b0f3",
             "required_columns": [
               "stage",
               "start_ts",
@@ -7634,7 +7655,7 @@
           },
           {
             "id": "input_pipeline_lifecycle",
-            "sha256": "7e226f9d35139c25edd3b48b7c27e502c583642712c45b991df1ca025b033ca2",
+            "sha256": "369f194396556889c2b3d7c973d40a8df9781cdc75be34af8ef18f48da2dffde",
             "required_columns": [
               "input_id",
               "channel",
@@ -11629,7 +11650,7 @@
           },
           {
             "id": "actionable_main_thread_slices",
-            "sha256": "bce2dbd31784a524e214a2d02d85c18209b2816f1b6c9e6488a6a93cf02fa637",
+            "sha256": "970651bd95e2626d1600a78ca82c15a1bd3db4a1def6a2256d6046c74e8d1a50",
             "required_columns": [
               "slice_name",
               "count",

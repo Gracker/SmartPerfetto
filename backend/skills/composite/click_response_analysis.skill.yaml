@@ -124,19 +124,24 @@ steps:
         - name: status
           label: "状态"
           type: string
-    # 每个接收通道一行：按物理事件（physical_event_key）计数，只读下游实际分析的行（analyzed_for_name），
+    # 每个接收通道一行：按物理事件（physical_event_key）计数，只读下游实际分析的行（analyzed，见 android_input_target_deliveries），
     # 进程自带 monitor 看到、却没投递到它窗口的事件不计入（见 fragment）。
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         COUNT(DISTINCT physical_event_key) as event_count,
         CASE WHEN COUNT(*) > 0 THEN 'available' ELSE 'unavailable' END as status
-      FROM android_input_scoped_deliveries
-      WHERE analyzed_for_name
-        AND ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
+      FROM android_input_target_deliveries
+      WHERE analyzed
+        AND (${__process_scope.upid} IS NOT NULL
+          OR '${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
     save_as: input_check
 
   # ========== 选择目标进程（让分析更聚焦）==========
@@ -166,19 +171,24 @@ steps:
           unit: ms
     # 按应用投递排序而非行数：monitor 副本会让系统进程行数更多。
     # 无 action 时先比本进程所属窗口上的事件，monitor 看到全屏触摸、事件数可更多（见 fragment）。
-    # event_count（物理事件数）/ max_total_ms 只算下游实际分析的行（analyzed_for_name），排序仍用全部行。
+    # event_count（物理事件数）/ max_total_ms 只算下游实际分析的行（analyzed，见 android_input_target_deliveries），排序仍用全部行。
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         process_name,
-        COUNT(DISTINCT CASE WHEN analyzed_for_name THEN physical_event_key END) as event_count,
+        COUNT(DISTINCT CASE WHEN analyzed THEN physical_event_key END) as event_count,
         SUM(delivery_role = 'action') as app_delivery_events,
-        ROUND(MAX(CASE WHEN analyzed_for_name THEN total_latency_dur END) / 1e6, 2) as max_total_ms
-      FROM android_input_scoped_deliveries
-      WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
+        ROUND(MAX(CASE WHEN analyzed THEN total_latency_dur END) / 1e6, 2) as max_total_ms
+      FROM android_input_target_deliveries
+      WHERE (${__process_scope.upid} IS NOT NULL
+        OR '${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
       GROUP BY process_name
       ORDER BY app_delivery_events DESC,
         COUNT(DISTINCT unresolved_window_event_key) DESC,
@@ -271,10 +281,14 @@ steps:
         - name: rating
           label: "评级"
           type: string
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     # 事件计数按物理事件计（与 check_input_data 一致）；延迟值逐投递统计（每个接收通道各有延迟与帧关联）。
     sql: |
       SELECT
@@ -301,9 +315,9 @@ steps:
           WHEN AVG(total_latency_dur) / 1e6 < ${critical_event_threshold_ms|200} THEN '可接受 (100-200ms)'
           ELSE '较差 (>200ms)'
         END as rating
-      FROM android_input_scoped_deliveries
-      WHERE process_name = '${target_process.data[0].process_name}'
-        AND analyzed_for_name
+      FROM android_input_target_deliveries
+      WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+        AND analyzed
     save_as: latency_overview
     condition: input_check.data[0]?.status === 'available' && target_process.data.length > 0
 
@@ -357,10 +371,14 @@ steps:
         - name: slow_events
           label: "慢事件数"
           type: number
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         event_type,
@@ -371,9 +389,9 @@ steps:
         ROUND(MAX(total_latency_dur) / 1e6, 2) as max_latency_ms,
         ROUND(AVG(handling_latency_dur) / 1e6, 2) as avg_handling_ms,
         COUNT(DISTINCT CASE WHEN total_latency_dur / 1e6 > ${slow_event_threshold_ms|100} THEN physical_event_key END) as slow_events
-      FROM android_input_scoped_deliveries
-      WHERE process_name = '${target_process.data[0].process_name}'
-        AND analyzed_for_name
+      FROM android_input_target_deliveries
+      WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+        AND analyzed
       GROUP BY event_type, event_action
       ORDER BY avg_latency_ms DESC
     save_as: latency_by_type
@@ -425,10 +443,14 @@ steps:
         - name: slow_events
           label: "慢事件数"
           type: number
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         normalized_event_channel as window,
@@ -437,9 +459,9 @@ steps:
         ROUND(MAX(total_latency_dur) / 1e6, 2) as max_latency_ms,
         ROUND(AVG(handling_latency_dur) / 1e6, 2) as avg_handling_ms,
         SUM(CASE WHEN total_latency_dur / 1e6 > ${slow_event_threshold_ms|100} THEN 1 ELSE 0 END) as slow_events
-      FROM android_input_scoped_deliveries
-      WHERE process_name = '${target_process.data[0].process_name}'
-        AND analyzed_for_name
+      FROM android_input_target_deliveries
+      WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+        AND analyzed
         AND normalized_event_channel IS NOT NULL
       GROUP BY normalized_event_channel
       HAVING COUNT(*) > 1
@@ -546,10 +568,14 @@ steps:
         - name: main_bottleneck
           label: "主要瓶颈"
           type: string
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         event_type,
@@ -582,9 +608,9 @@ steps:
           WHEN handling_latency_dur > ack_latency_dur THEN '应用处理'
           ELSE 'ACK'
         END as main_bottleneck
-      FROM android_input_scoped_deliveries
-      WHERE process_name = '${target_process.data[0].process_name}'
-        AND analyzed_for_name
+      FROM android_input_target_deliveries
+      WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+        AND analyzed
         AND total_latency_dur > ${slow_event_threshold_ms|100} * 1000000  -- > slow threshold
       ORDER BY total_latency_dur DESC
       LIMIT 20
@@ -601,6 +627,7 @@ steps:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
       - fragments/effective_target_processes.sql
       - fragments/system_thread_state_spans.sql
     name: "输入期间主线程状态"
@@ -649,9 +676,9 @@ steps:
           receive_ts + receive_dur as input_end_ts,
           total_latency_dur,
           event_type
-        FROM android_input_scoped_deliveries
-        WHERE process_name = '${target_process.data[0].process_name}'
-          AND analyzed_for_name
+        FROM android_input_target_deliveries
+        WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+          AND analyzed
           AND total_latency_dur > ${thread_state_min_dur_ms|50} * 1000000  -- > thread state threshold
         ORDER BY total_latency_dur DESC
         LIMIT 10
@@ -707,19 +734,25 @@ steps:
         - name: main_thread_calls
           label: "主线程调用"
           type: number
+    process_scope:
+      role: target
+      binding: native_upid
+      context_fields:
+        peer_context: [server_process, aidl_name]
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       WITH slow_inputs AS (
         SELECT
           dispatch_ts as input_ts,
           receive_ts + receive_dur as input_end_ts,
           total_latency_dur
-        FROM android_input_scoped_deliveries
-        WHERE process_name = '${target_process.data[0].process_name}'
-          AND analyzed_for_name
+        FROM android_input_target_deliveries
+        WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+          AND analyzed
           AND total_latency_dur > ${thread_state_min_dur_ms|50} * 1000000
         ORDER BY total_latency_dur DESC
         LIMIT 10
@@ -735,7 +768,8 @@ steps:
       JOIN slow_inputs si ON (
         bt.client_ts >= si.input_ts AND bt.client_ts < si.input_end_ts
       )
-      WHERE bt.client_process = '${target_process.data[0].process_name}'
+      WHERE (${__process_scope.upid} IS NULL OR bt.client_upid = ${__process_scope.upid})
+        AND (${__process_scope.upid} IS NOT NULL OR bt.client_process = '${target_process.data[0].process_name}')
         AND (${start_ts} IS NULL OR bt.client_ts + bt.client_dur > ${start_ts})
         AND (${end_ts} IS NULL OR bt.client_ts < ${end_ts})
       GROUP BY bt.server_process, bt.aidl_name
@@ -781,10 +815,14 @@ steps:
         - name: rating
           label: "评级"
           type: enum
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         ie.event_type,
@@ -801,11 +839,11 @@ steps:
           WHEN ie.exact_end_to_end_latency_dur / 1e6 > ${thread_state_min_dur_ms|50} THEN 'notice'
           ELSE 'good'
         END as rating
-      FROM android_input_scoped_deliveries ie
+      FROM android_input_target_deliveries ie
       -- exact association only (see fragments/android_input_events_normalized.sql)
       LEFT JOIN android_frames af ON ie.exact_frame_id = af.frame_id
-      WHERE ie.process_name = '${target_process.data[0].process_name}'
-        AND ie.analyzed_for_name
+      WHERE (${__process_scope.upid} IS NOT NULL OR ie.process_name = '${target_process.data[0].process_name}')
+        AND ie.analyzed
         AND ie.exact_frame_id IS NOT NULL
         AND ie.exact_end_to_end_latency_dur > 0
       ORDER BY ie.exact_end_to_end_latency_dur DESC
@@ -843,10 +881,14 @@ steps:
           label: "占比"
           type: percentage
           format: percentage
+    process_scope:
+      role: target
+      binding: native_upid
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+      - fragments/android_input_target_deliveries.sql
     sql: |
       SELECT
         CASE
@@ -861,9 +903,9 @@ steps:
       -- 每个物理事件一行，按其最慢的分析投递分桶，事件数与 input_latency_overview 的事件总数一致。
       FROM (
         SELECT MAX(total_latency_dur) AS total_latency_dur
-        FROM android_input_scoped_deliveries
-        WHERE process_name = '${target_process.data[0].process_name}'
-          AND analyzed_for_name
+        FROM android_input_target_deliveries
+        WHERE (${__process_scope.upid} IS NOT NULL OR process_name = '${target_process.data[0].process_name}')
+          AND analyzed
         GROUP BY physical_event_key
       )
       GROUP BY latency_bucket

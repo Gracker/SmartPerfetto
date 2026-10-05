@@ -109,6 +109,9 @@ steps:
   # ========== 启动基本信息 ==========
   - id: startup_info
     type: atomic
+    # 回显父 Skill 传入的启动参数，不读 trace。
+    process_scope:
+      role: identity_metadata
     name: "启动基本信息"
     display:
       level: key
@@ -897,12 +900,18 @@ steps:
         - name: is_framework_wrapper
           label: "框架包裹切片"
           type: boolean
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql_fragments:
+      - fragments/effective_target_processes.sql
     sql: |
       WITH main_thread AS (
         SELECT t.utid
         FROM thread t
-        JOIN process p ON t.upid = p.upid
-        WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
+        JOIN effective_target_processes p ON t.upid = p.upid
+        WHERE (${__process_scope.upid} IS NOT NULL
+            OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND t.tid = p.pid
       ),
       slice_with_self AS (

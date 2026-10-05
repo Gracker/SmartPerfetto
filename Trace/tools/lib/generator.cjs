@@ -55,7 +55,11 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
   'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
   'android-system-info', 'android-network-packet', 'android-packages-list', 'sched-blocked-reason',
+  'binder-transaction',
 ]);
+// Binder debug ids pair a transaction with its receipt across the whole trace,
+// so an overlay's ids sit far above the small incrementing ids a device writes.
+const BINDER_DEBUG_ID_BASE = 0x7f000000;
 // The SystemInfo device identity an `android-system-info` signal may set,
 // keyed by the name trace processor stores each value under in `metadata`.
 // Trace processor keeps the last SystemInfo value per name, so an overlay
@@ -770,6 +774,32 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
         pid: thread.tid,
         schedBlockedReason: {pid: thread.tid, ioWait: signal.io_wait ? 1 : 0, ...(caller ? {caller} : {})},
       });
+    } else if (signal.type === 'binder-transaction') {
+      // A synchronous call: the client sends at at_ns, the server receives it
+      // 1 ns later, replies 1 ns before the end and the client receives the
+      // reply at at_ns + duration_ns. Trace processor pairs each send with its
+      // receipt by debug id and derives android_binder_txns from the pairs.
+      const client = schedActor(signal.thread, identities, 'binder-transaction thread');
+      const server = schedActor(signal.server_thread, identities, 'binder-transaction server_thread');
+      if (client.tid === 0 || server.tid === 0) throw new Error('binder-transaction needs a client and a server thread');
+      if (client.tid === server.tid) throw new Error('binder-transaction client and server must be different threads');
+      const duration = BigInt(positiveUint64String(signal.duration_ns, 'binder-transaction duration_ns'));
+      if (duration < 3n) throw new Error('binder-transaction duration_ns must leave room for the server to receive and reply');
+      const code = signal.code === undefined ? 1 : uint32(signal.code, 'binder-transaction code');
+      const clientCpu = signal.cpu ?? 0;
+      const serverCpu = signal.server_cpu ?? clientCpu;
+      const callId = BINDER_DEBUG_ID_BASE + index * 2;
+      const at = (offset) => absoluteTimestamp(timestamp, offset.toString(), `scenario.signals[${index}]`);
+      const transaction = (to, debugId, reply) => ({
+        debugId, targetNode: reply ? 0 : 1, toProc: to.tgid, toThread: to.tid, reply: reply ? 1 : 0, code, flags: 0,
+      });
+      eventsForCpu(clientCpu).push(
+        {timestamp, pid: client.tid, binderTransaction: transaction(server, callId, false)});
+      eventsForCpu(serverCpu).push(
+        {timestamp: at(1n), pid: server.tid, binderTransactionReceived: {debugId: callId}},
+        {timestamp: at(duration - 1n), pid: server.tid, binderTransaction: transaction(client, callId + 1, true)});
+      eventsForCpu(clientCpu).push(
+        {timestamp: at(duration), pid: client.tid, binderTransactionReceived: {debugId: callId + 1}});
     } else if (signal.type === 'sched-switch') {
       const prev = schedActor(signal.prev_thread, identities, 'sched-switch prev_thread');
       const next = schedActor(signal.next_thread, identities, 'sched-switch next_thread');
@@ -1455,6 +1485,7 @@ function isolateScenarioCpus(scenario, usedCpus) {
         signal.cpu,
         ...(CPU_ID_SIGNAL_TYPES.has(signal.type) ? [signal.cpu_id] : []),
         ...(signal.type === 'sched-waking' ? [signal.target_cpu] : []),
+        ...(signal.type === 'binder-transaction' ? [signal.server_cpu] : []),
       ])
       .filter((cpu) => Number.isInteger(cpu))
       .map((cpu) => nonNegativeInteger(cpu, 'scenario CPU identity')),
@@ -1476,6 +1507,8 @@ function isolateScenarioCpus(scenario, usedCpus) {
         ...(Number.isInteger(signal.cpu) ? {cpu: cpuMap[signal.cpu]} : {}),
         ...(CPU_ID_SIGNAL_TYPES.has(signal.type) ? {cpu_id: cpuMap[signal.cpu_id]} : {}),
         ...(signal.type === 'sched-waking' ? {target_cpu: cpuMap[signal.target_cpu]} : {}),
+        ...(signal.type === 'binder-transaction' && Number.isInteger(signal.server_cpu)
+          ? {server_cpu: cpuMap[signal.server_cpu]} : {}),
       })),
     },
   };

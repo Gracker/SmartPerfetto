@@ -559,14 +559,15 @@ const probedOutcome = ({success, code, error, data}: ScopeProbeOutcome): string 
 /**
  * Why the bound units' rows depend on more than the exact UPID, or why this
  * trace cannot tell, from a run with each unit's step probed (SkillEvaluator
- * scopeProbeStepIds). `blanked` reran it without the process selectors, which
- * turns a named-mode fallback into every process: a unit whose exact branch
- * still admits rows by package (a same-package `:worker`, say), pid or upid
- * parameter answers it differently. `open` reran it unscoped, which is every
- * process: if that answers like the exact run, no other process in this trace
- * carries the unit's evidence and the first check proved nothing, so the
- * fixture, not the Skill, is insufficient. A step with an exact_sql has no
- * unscoped form, so only its blanked check applies.
+ * scopeProbeStepIds). `blanked` ran the sequence again without the process
+ * selectors, which turns a named-mode fallback into every process: a unit
+ * whose exact branch, or an earlier step whose result it reads, still admits
+ * rows by package (a same-package `:worker`, say), pid or upid parameter
+ * answers it differently. `open` ran it unscoped, which is every process: if
+ * that answers like the exact run, no other process in this trace carries the
+ * unit's evidence and the first check proved nothing, so the fixture, not the
+ * Skill, is insufficient. A step with an exact_sql has no unscoped form, so
+ * only its blanked check applies.
  */
 export function scopeIsolationFailures(
   units: ReadonlyArray<{unit: string; stepId: string}>,

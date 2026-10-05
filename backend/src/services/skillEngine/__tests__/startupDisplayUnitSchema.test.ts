@@ -632,8 +632,8 @@ describe('nullable thread-state evidence', () => {
       INSERT INTO slice VALUES(10,1,10000000,12000000,'selected',0);
       CREATE TABLE android_startups(startup_id INTEGER,package TEXT,startup_type TEXT,ts INTEGER,dur INTEGER);
       INSERT INTO android_startups VALUES(7,'com.example.app','cold',10000000,12000000);
-      CREATE TABLE android_startup_threads(startup_id INTEGER,utid INTEGER,is_main_thread INTEGER,ts INTEGER,dur INTEGER);
-      INSERT INTO android_startup_threads VALUES(7,1,1,10000000,12000000);
+      CREATE TABLE android_startup_threads(startup_id INTEGER,upid INTEGER,utid INTEGER,is_main_thread INTEGER,ts INTEGER,dur INTEGER);
+      INSERT INTO android_startup_threads VALUES(7,42,1,1,10000000,12000000);
       CREATE TABLE thread_state(id INTEGER PRIMARY KEY,ts INTEGER,dur INTEGER,cpu INTEGER,ucpu INTEGER,
         utid INTEGER,state TEXT,io_wait INTEGER,blocked_function TEXT,waker_utid INTEGER,irq_context INTEGER);
       INSERT INTO thread_state VALUES
@@ -844,7 +844,10 @@ describe('startup primitive unit authority', () => {
     executor.setFragmentRegistry(new Map((skill.sql_fragments ?? []).map((fragment: string) =>
       [fragment, fs.readFileSync(path.join(process.cwd(), 'skills', fragment), 'utf8').trim()])));
     executor.registerSkill(normalizeSkillDefinition(skill, `${name}.skill.yaml`)!);
-    const params = {package: 'example.app', startup_id: 1, startup_type: 'cold', start_ts: 0, end_ts: 10000000, min_dur_ns: 0, top_k: 15};
+    // A named run of a target-scoped Skill cites evidence that needs a verified
+    // process identity, and this harness registers no resolver; unscoped, it needs none.
+    const selector = skill.process_scope?.role === 'target' ? {} : {package: 'example.app'};
+    const params = {...selector, startup_id: 1, startup_type: 'cold', start_ts: 0, end_ts: 10000000, min_dur_ns: 0, top_k: 15};
     let executedSkill = name;
     let inputNames = skill.inputs.map((input: any) => input.name);
     if (name === 'startup_breakdown_in_range') {

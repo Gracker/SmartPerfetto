@@ -53,6 +53,10 @@ describe('SkillEvaluator step sequence identity admission', () => {
       const rendered = sql.replace(/INCLUDE PERFETTO MODULE [^;]+;/g, '').trim();
       if (!rendered) return {columns: [], rows: []};
       const statement = db.prepare<[], unknown[]>(rendered);
+      if (!statement.reader) {
+        statement.run();
+        return {columns: [], rows: []};
+      }
       return {columns: statement.columns().map(column => column.name), rows: statement.raw().all()};
     });
     const resolverPath = path.join(repoRoot, 'backend/skills/atomic/process_identity_resolver.skill.yaml');
@@ -142,15 +146,18 @@ describe('SkillEvaluator step sequence identity admission', () => {
     const leaky = "SELECT upid FROM process WHERE upid = ${__process_scope.upid} OR '${package}' = ''"
       + " OR name GLOB '${package}:*' ORDER BY upid";
     // The probe as the runner applies it: one run with the unit's step probed.
-    const probe = async (evaluator: SkillEvaluator) => scopeIsolationFailures([{unit: 'target', stepId: 'target'}],
-      await evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']}), 42);
-    const withSkill = (sql: string) => {
+    const probeRun = (evaluator: SkillEvaluator, stepIds = ['target']) =>
+      evaluator.executeStepSequence(stepIds, {upid: 42}, {scopeProbeStepIds: ['target']});
+    const isolationOf = (results: Awaited<ReturnType<typeof probeRun>>) =>
+      scopeIsolationFailures([{unit: 'target', stepId: 'target'}], results, 42);
+    const probe = async (evaluator: SkillEvaluator, stepIds?: string[]) => isolationOf(await probeRun(evaluator, stepIds));
+    const withDefinition = (skill: SkillDefinition) => {
       const fixture = scopedEvaluator();
-      const skill = probeSkill(sql);
       fixture.executor.registerSkills([skill]);
       Object.assign(fixture.evaluator, {skill});
       return {...fixture, skill};
     };
+    const withSkill = (sql: string) => withDefinition(probeSkill(sql));
 
     it('counts a native_upid step without exact_sql as an exact unit by its step name', () => {
       expect(exactSqlUnitPaths(probeSkill(isolated))).toEqual(['target']);
@@ -171,7 +178,7 @@ describe('SkillEvaluator step sequence identity admission', () => {
       expect(exactSqlUnitPaths(relation)).toEqual([]);
     });
 
-    it('reruns a probed step on forks: blanked keeps the exact scope, open is every process', async () => {
+    it('reruns a probed step in both probe runs: blanked keeps the exact scope, open is every process', async () => {
       const {db, evaluator} = withSkill(isolated);
       try {
         const [result] = await evaluator.executeStepSequence(['target'], {upid: 42}, {scopeProbeStepIds: ['target']});
@@ -208,6 +215,55 @@ describe('SkillEvaluator step sequence identity admission', () => {
         expect(result.data).toEqual([{upid: 42}]);
         expect(result.scopeProbe).toEqual({blanked: expect.objectContaining({data: [{upid: 42}]})});
       } finally {db.close();}
+    });
+
+    // A target unit that takes its process from an earlier step's result, as
+    // cpu_analysis's steps take target_process: `pick` falls back to the
+    // highest UPID when nothing selects a process.
+    const pickedSkill = (pickSql: string): SkillDefinition => ({...probeSkill(isolated), steps: [
+      {id: 'pick', type: 'atomic', save_as: 'picked', process_scope: {role: 'target', binding: 'native_upid'}, sql: pickSql},
+      {id: 'target', type: 'atomic', process_scope: {role: 'target', binding: 'native_upid'},
+        sql: 'SELECT upid FROM process WHERE upid = ${picked.data[0].upid} AND COALESCE(${__process_scope.upid}, upid) = upid'}]});
+    const pickIsolated = isolated + ' DESC LIMIT 1';
+    const pickLeaky = "SELECT upid FROM process WHERE upid = ${__process_scope.upid} OR '${package}' = '' ORDER BY upid DESC LIMIT 1";
+
+    it('judges a unit that reads an earlier result through the result each probe run computed', async () => {
+      const {db, evaluator} = withDefinition(pickedSkill(pickIsolated));
+      try {
+        const results = await probeRun(evaluator, ['pick', 'target']);
+        const result = results[1];
+        expect(result.data).toEqual([{upid: 42}]);
+        expect(result.scopeProbe?.blanked.data).toEqual([{upid: 42}]);
+        // Unscoped, the open run's own pick chose another process. A fork of the
+        // production context would have kept its pick and called this inconclusive.
+        expect(result.scopeProbe?.open?.data).toEqual([{upid: 43}]);
+        expect(isolationOf(results)).toEqual([]);
+      } finally {db.close();}
+    });
+
+    it('fails a unit whose earlier result still reads the package under the exact scope', async () => {
+      const {db, evaluator} = withDefinition(pickedSkill(pickLeaky));
+      try {
+        expect(await probe(evaluator, ['pick', 'target'])).toEqual([expect.stringContaining('target reads more than its exact UPID')]);
+      } finally {db.close();}
+    });
+
+    it('lets the probe runs share a placeholder-free state-writing step, and refuses any other', async () => {
+      const withSetup = (setupSql: string) => {
+        const skill = probeSkill(isolated);
+        skill.steps!.unshift({id: 'setup', type: 'atomic', process_scope: {role: 'identity_metadata'}, sql: setupSql} as any);
+        return withDefinition(skill);
+      };
+      const shared = withSetup('CREATE VIEW IF NOT EXISTS probe_setup AS SELECT 1 AS one');
+      try {
+        const [, result] = await probeRun(shared.evaluator, ['setup', 'target']);
+        expect(result.scopeProbe?.open?.data).toEqual([{upid: 42}, {upid: 43}]);
+      } finally {shared.db.close();}
+      const scoped = withSetup("CREATE VIEW IF NOT EXISTS probe_setup AS SELECT '${package}' AS name");
+      try {
+        await expect(probeRun(scoped.evaluator, ['setup', 'target']))
+          .rejects.toThrow('Scope-isolation probe of setup needs read-only step SQL');
+      } finally {scoped.db.close();}
     });
 
     it('refuses to probe SQL that changes state', async () => {
