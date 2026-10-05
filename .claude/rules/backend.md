@@ -328,6 +328,18 @@ Keep these boundaries intact:
   results must not authorize an additional semantic model call in finalization.
   OpenCode's asynchronous observation can overshoot; record its actual count
   and skip a summary if the total allowance is already exhausted.
+- OpenCode no-tool calls (classifier, closeout, declaration repair, semantic
+  review) each start a fresh host whose agent allows two steps. At its step
+  limit OpenCode appends its own "maximum steps reached" summary instructions
+  as an assistant message, so a one-step host received them on its only
+  request, and GLM answered 6 of 16 classifications with a progress summary
+  instead of the decision. The transport reads the session back and accepts
+  only a single assistant reply, so a step after a tool call is `tool_use`.
+  Provider controls go in that agent's `options`, which OpenCode puts into the
+  request body (a model entry's `options` never reach it), selected by the
+  call's `purpose`. Only the classifier passes one; the review does not yet
+  pass `final_semantic` (DeepSeek JSON mode in the OpenAI runtime), which is
+  unverified on OpenCode's wire.
 - `perTurnMs × maxTurns` is an initial deadline, not a wall. The OpenAI runtime
   uses `createProgressAwareRunDeadline`: each returned tool result moves the
   deadline by the slowest recent round, provider output (text, reasoning, tool

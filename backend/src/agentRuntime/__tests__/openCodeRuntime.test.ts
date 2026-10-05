@@ -392,6 +392,7 @@ function createNativeIntentHarness(input: {
       const abort = jest.fn(async () => ({}));
       serverCloses.push(close);
       aborts.push(abort);
+      let noToolReply: any;
       return {
         server: {url: 'http://127.0.0.1:4106', close},
         client: {session: {
@@ -410,12 +411,14 @@ function createNativeIntentHarness(input: {
             }),
             status: input.mainSession?.status ?? (async () => ({data: {[`native-${index}`]: {type: 'busy'}}})),
           } : {}),
+          // A no-tool session holds the user message and the one reply its prompt returned.
+          ...(index !== 1 ? {messages: async () => ({data: [{info: {role: 'user'}}, noToolReply?.data]})} : {}),
           prompt: async request => {
             prompts.push(request);
             if (index === 0) {
               expect(traceProcessor.query).not.toHaveBeenCalled();
               await input.beforeClassifierReply?.();
-              return input.classifierResponse ?? {data: {
+              return noToolReply = input.classifierResponse ?? {data: {
                 info: {id: 'intent-message', role: 'assistant', finish: 'stop',
                   time: {completed: Date.now()}, modelID: 'light-model'},
                 parts: [{type: 'text', text: JSON.stringify(input.decision ?? BOUNDED_INTENT)}],
@@ -423,7 +426,7 @@ function createNativeIntentHarness(input: {
             }
             if (index > 1) {
               if (input.closeoutError) throw new Error('closeout provider failure');
-              return {data: {info: {id: 'closeout-message', role: 'assistant', finish: 'stop',
+              return noToolReply = {data: {info: {id: 'closeout-message', role: 'assistant', finish: 'stop',
                 time: {completed: Date.now()}, modelID: 'main-model'},
                 parts: [{type: 'text', text: input.closeoutAnswer ?? 'The cause remains unknown; ask about the main-thread interval.'}]}};
             }
@@ -561,7 +564,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.conclusion).toBe(closeoutError ? 'Only the frame interval is known.'
       : 'The frame interval is known. The cause is unverified; inspect the main-thread interval next.');
     expect(harness.prompts).toHaveLength(3);
-    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([1, 1, 1]);
+    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([2, 1, 2]);
     expect(harness.prompts[2].body.model).toEqual(harness.prompts[1].body.model);
     expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
     expect(harness.prompts[2].body.parts[0].text).toContain('Only the frame interval is known.');
@@ -678,7 +681,7 @@ describe('OpenCode native turn intent and delivery', () => {
       analysisMode: 'full', runId: 'opencode-missing-declaration',
     });
     expect(harness.prompts).toHaveLength(3);
-    expect(harness.configs[2].agent.smartperfetto.maxSteps).toBe(1);
+    expect(harness.configs[2].agent.smartperfetto.maxSteps).toBe(2);
     expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
     expect(harness.prompts[2].body.parts[0].text).toContain('missing_declaration');
     expect(inspectCandidateProtocol(repaired).canonicalBody.trim()).toBe(body);
@@ -771,7 +774,7 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(response).toMatchObject({status: 'ok', actualModel: 'main-model'});
       expect(mockOpenCodeIntentTransport.mock.calls[1][0].deadlineMs).toBe(context!.deadlineMs);
       expect(harness.configs[2]).toMatchObject({model: 'smartperfetto/main-model', mcp: {}, instructions: [],
-        agent: {smartperfetto: {maxSteps: 1}}});
+        agent: {smartperfetto: {maxSteps: 2}}});
       for (const config of [harness.configs[1], harness.configs[2]]) {
         expect(config.provider.smartperfetto).toMatchObject({
           npm: '@ai-sdk/openai-compatible', name: 'Pinned provider',
@@ -954,7 +957,8 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.completion).toMatchObject({status: 'completed', runId: 'current-run',
       sdkFinishReason: 'stop', conclusionFingerprint: analysisDeliveryFingerprint(answer)});
     expect(result.outputOrigin).toBe('sdk_final');
-    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([1, 8, 1]);
+    // No-tool hosts stay above one step: OpenCode turns the last step into its own summary request.
+    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([2, 8, 2]);
     expect(harness.prompts).toHaveLength(3);
     expect(harness.traceProcessor.query).toHaveBeenCalled();
     expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
@@ -966,10 +970,12 @@ describe('OpenCode native turn intent and delivery', () => {
     const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
       providerID: 'smartperfetto', modelID: 'main-model', smallModel: 'light-model',
       baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'fixture-api-key'})}});
-    await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'fast'});
-    expect(harness.configs[0].provider.smartperfetto.models['light-model'].options)
-      .toEqual({thinking: {type: 'disabled'}});
-    expect(harness.configs[1].provider.smartperfetto.models['main-model'].options).toBeUndefined();
+    await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'full'});
+    expect(harness.configs[0].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
+    expect(harness.configs[0].provider.smartperfetto.models['light-model'].options).toBeUndefined();
+    // The answer host and the no-tool declaration repair keep the provider default.
+    expect(harness.configs).toHaveLength(3);
+    for (const config of harness.configs.slice(1)) expect(config.agent.smartperfetto.options).toBeUndefined();
   }));
 
   it('registers the native classifier model and keeps fast comparison tools', async () => withBackendDataDir(async () => {

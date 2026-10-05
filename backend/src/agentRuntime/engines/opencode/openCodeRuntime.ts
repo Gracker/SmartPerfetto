@@ -112,6 +112,7 @@ import {
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import {runOpenCodeIntentTransport, type OpenCodeClassifierHost, type OpenCodeIntentTransportInput} from './openCodeIntentTransport';
+import {getOpenCodeAssistantMessageId, getOpenCodeAssistantMessages, getOpenCodeMessageRole} from './openCodeMessages';
 import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {attachFinalizationContext, sourceUseFinalizationFields} from '../../analysisFinalizationContext';
@@ -139,7 +140,7 @@ import {analysisHasPrivateContext} from '../../../services/security/analysisPriv
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 import {parseFlagValue} from '../../../utils/envFlag';
-import {buildOpenAITextRequestPurposeOptions} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {buildOpenAITextRequestPurposeOptions, type OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {buildChatCompletionsUrl} from '../openai/openAiComplexityClassifier';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
@@ -528,6 +529,7 @@ export function createOpenCodeHardenedConfig(
   bridge?: OpenCodeMcpBridgeHandle,
   modelConfig?: OpenCodeModelConfig,
   maxSteps = resolveAgentRuntimeBudgetConfig(env).maxTurns,
+  agentOptions?: Record<string, unknown>,
 ): Record<string, unknown> {
   const mcpToolNames = bridge
     ? createOpenCodeMcpToolNames(allowedToolNames)
@@ -584,6 +586,7 @@ export function createOpenCodeHardenedConfig(
         tools,
         permission,
         maxSteps,
+        ...(agentOptions ? { options: agentOptions } : {}),
       },
     },
   };
@@ -1645,26 +1648,71 @@ export function validateOpenCodeModelConfiguration(
 }
 
 /**
- * Classification-only provider controls (GLM and DeepSeek disable default
- * thinking) on the classifier host's model entry; OpenCode forwards a model's
- * `options` to its provider request. The answer host never receives them.
+ * Per-call provider controls (GLM and DeepSeek disable default thinking for
+ * classification) for one no-tool host. OpenCode forwards an agent's `options`
+ * into the provider request body; a model entry's `options` never reach it.
  */
-function withOpenCodeClassifierModelOptions(config: OpenCodeModelConfig): OpenCodeModelConfig {
+function openCodePurposeAgentOptions(
+  config: OpenCodeModelConfig,
+  purpose: OpenAITextRequestPurpose | undefined,
+): Record<string, unknown> | undefined {
+  if (!purpose) return undefined;
   const provider = config.providerConfig?.[config.model.providerID];
   const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
-  const models = isRecord(provider) && isRecord(provider.models) ? provider.models : undefined;
-  const entry = models?.[config.model.modelID];
   const baseURL = typeof providerOptions?.baseURL === 'string' ? providerOptions.baseURL : undefined;
-  if (!isRecord(provider) || !models || !isRecord(entry) || !baseURL) return config;
-  let requestUrl: URL;
-  try { requestUrl = buildChatCompletionsUrl(baseURL); } catch { return config; }
-  const purposeOptions = buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions',
-    purpose: 'classification'});
-  if (!Object.keys(purposeOptions).length) return config;
-  return {...config, providerConfig: {...config.providerConfig, [config.model.providerID]: {
-    ...provider, models: {...models, [config.model.modelID]: {...entry,
-      options: {...(isRecord(entry.options) ? entry.options : {}), ...purposeOptions}}},
-  }}};
+  if (!baseURL) return undefined;
+  try {
+    const options = buildOpenAITextRequestPurposeOptions({requestUrl: buildChatCompletionsUrl(baseURL),
+      protocol: 'chat_completions', purpose});
+    return Object.keys(options).length ? options : undefined;
+  } catch { return undefined; }
+}
+
+/**
+ * OpenCode turns the request at its agent's step limit into its own "maximum
+ * steps reached" summary request, so a one-step host never sends the caller's
+ * prompt as written. The transport rejects any second step.
+ */
+const OPENCODE_NO_TOOLS_HOST_STEPS = 2;
+
+/** Each call gets a fresh isolated server with no tools, MCP, or instructions. */
+function createOpenCodeNoToolsHostFactory(input: {
+  loadSdk: () => Promise<OpenCodeSdkModule>;
+  env: EnvLike;
+  modelConfig: OpenCodeModelConfig;
+}): OpenCodeIntentTransportInput['createClassifierHost'] {
+  return async ({signal, deadlineMs, model, purpose}) => {
+    const sdk = await input.loadSdk();
+    signal.throwIfAborted();
+    const dirs = createEphemeralOpenCodeSessionDirs();
+    let instance: OpenCodeInstance | undefined;
+    try {
+      const classifierEnv = {...input.env, [OPENCODE_ENABLE_STANDALONE_MCP_ENV]: '0'};
+      const modelConfig = {...input.modelConfig, model, smallModel: undefined};
+      const config = createOpenCodeHardenedConfig([], classifierEnv, undefined, modelConfig,
+        OPENCODE_NO_TOOLS_HOST_STEPS, openCodePurposeAgentOptions(modelConfig, purpose));
+      instance = await createOpenCodeInstanceWithExplicitEnv(sdk, dirs, classifierEnv, {
+        hostname: '127.0.0.1', timeout: Math.max(1, deadlineMs - Date.now()), config,
+      });
+      // The transport owns late resources too: return the host even if its
+      // deadline elapsed while the native server was being created.
+      const host = instance;
+      return {
+        client: host.client as OpenCodeClassifierHost['client'],
+        projectDir: dirs.projectDir,
+        agentName: 'smartperfetto',
+        disabledTools: createOpenCodeToolAllowlist([]),
+        close: async () => {
+          try { await host.server.close(); }
+          finally { fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true}); }
+        },
+      };
+    } catch (error) {
+      try { await instance?.server.close(); }
+      finally { fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true}); }
+      throw error;
+    }
+  };
 }
 
 /** Register an explicitly configured same-provider light model with its complete connection. */
@@ -1701,12 +1749,6 @@ function extractTextParts(value: unknown): string {
   return Array.isArray(value.parts) ? extractTextParts(value.parts) : '';
 }
 
-function getOpenCodeMessageRole(value: Record<string, unknown>): string | undefined {
-  if (typeof value.role === 'string') return value.role;
-  const info = isRecord(value.info) ? value.info : undefined;
-  return typeof info?.role === 'string' ? info.role : undefined;
-}
-
 function collectOpenCodeAssistantTexts(value: unknown, output: string[]): void {
   if (!value) return;
   if (Array.isArray(value)) {
@@ -1739,40 +1781,9 @@ function selectBestOpenCodeAssistantText(texts: readonly string[]): string | und
   return texts[texts.length - 1];
 }
 
-function collectOpenCodeAssistantMessages(value: unknown, output: Record<string, unknown>[]): void {
-  if (!value) return;
-  if (Array.isArray(value)) {
-    for (const item of value) collectOpenCodeAssistantMessages(item, output);
-    return;
-  }
-  if (!isRecord(value)) return;
-  if (getOpenCodeMessageRole(value) === 'assistant') {
-    output.push(value);
-    return;
-  }
-  for (const key of ['data', 'message', 'messages', 'response', 'result']) {
-    if (key in value) collectOpenCodeAssistantMessages(value[key], output);
-  }
-}
-
-function getOpenCodeAssistantMessages(value: unknown): Record<string, unknown>[] {
-  const messages: Record<string, unknown>[] = [];
-  collectOpenCodeAssistantMessages(value, messages);
-  return messages;
-}
-
 interface OpenCodeAssistantMessageWatermark {
   id?: string;
   signature: string;
-}
-
-function getOpenCodeAssistantMessageId(message: Record<string, unknown>): string | undefined {
-  const info = isRecord(message.info) ? message.info : message;
-  return typeof info.id === 'string'
-    ? info.id
-    : typeof message.id === 'string'
-      ? message.id
-      : undefined;
 }
 
 function projectOpenCodeStructuredValue(value: unknown): unknown {
@@ -2584,37 +2595,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       getTurns: () => sessionContext.getAnalysisHistory?.() ?? (sessionContext.getAllTurns?.() ?? [])
         .map(turn => toAnalysisHistoryTurn({...turn, traceId, sourceDerived: turn.result?.sourceDerived,
           analysisContextFingerprint: turn.result?.analysisContextFingerprint})), assertActive});
-    const createNoToolsHost: OpenCodeIntentTransportInput['createClassifierHost'] = async ({signal, deadlineMs, model}) => {
-      const sdk = await loadSdk();
-      signal.throwIfAborted();
-      const dirs = createEphemeralOpenCodeSessionDirs();
-      let instance: OpenCodeInstance | undefined;
-      try {
-        const classifierEnv = {...pinnedEnv, [OPENCODE_ENABLE_STANDALONE_MCP_ENV]: '0'};
-        const config = createOpenCodeHardenedConfig([], classifierEnv, undefined,
-          withOpenCodeClassifierModelOptions({...modelConfig, model, smallModel: undefined}), 1);
-        instance = await createOpenCodeInstanceWithExplicitEnv(sdk, dirs, classifierEnv, {
-          hostname: '127.0.0.1', timeout: Math.max(1, deadlineMs - Date.now()), config,
-        });
-        // The transport owns late resources too: return the host even if its
-        // deadline elapsed while the native server was being created.
-        const host = instance;
-        return {
-          client: host.client as OpenCodeClassifierHost['client'],
-          projectDir: dirs.projectDir,
-          agentName: 'smartperfetto',
-          disabledTools: createOpenCodeToolAllowlist([]),
-          close: async () => {
-            try { await host.server.close(); }
-            finally { fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true}); }
-          },
-        };
-      } catch (error) {
-        try { await instance?.server.close(); }
-        finally { fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true}); }
-        throw error;
-      }
-    };
+    const createNoToolsHost = createOpenCodeNoToolsHostFactory({loadSdk, env: pinnedEnv, modelConfig});
     const resolver = createAnalysisTurnIntentResolver({
       productRun: {options, runId: executionLease.key.runId!, sessionId, traceId},
       context: buildComplexityClassifierInput({
@@ -2627,6 +2608,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       dispatch: input => runOpenCodeIntentTransport({
         ...input,
         model: classifierModel,
+        purpose: 'classification',
         createClassifierHost: createNoToolsHost,
         beforeDispatch,
       }),

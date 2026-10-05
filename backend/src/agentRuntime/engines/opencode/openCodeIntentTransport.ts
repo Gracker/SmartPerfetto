@@ -2,7 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
+import {getOpenCodeAssistantMessageId, getOpenCodeAssistantMessages} from './openCodeMessages';
 
 export interface OpenCodeIntentModel {
   providerID: string;
@@ -28,6 +30,7 @@ export interface OpenCodeClassifierHost {
           parts: Array<{type: 'text'; text: string}>;
         };
       }): Promise<unknown>;
+      messages(input: SessionRequest): Promise<unknown>;
       abort(input: SessionRequest): Promise<unknown>;
       delete?(input: SessionRequest): Promise<unknown>;
     };
@@ -41,6 +44,8 @@ export interface OpenCodeClassifierHost {
 
 export interface OpenCodeIntentTransportInput extends IntentTransportInput {
   model: OpenCodeIntentModel;
+  /** Selects this call's provider controls; closeout, repair and review pass none. */
+  purpose?: OpenAITextRequestPurpose;
   /**
    * Reuse the runtime's explicit-env launcher and hardened config. The fresh
    * host must disable built-ins, MCP, instructions, and extra agent steps.
@@ -49,6 +54,7 @@ export interface OpenCodeIntentTransportInput extends IntentTransportInput {
     signal: AbortSignal;
     deadlineMs: number;
     model: OpenCodeIntentModel;
+    purpose?: OpenAITextRequestPurpose;
   }): Promise<OpenCodeClassifierHost>;
   /** The run's authorization, checked after the host started, right before the prompt is sent. */
   beforeDispatch?: () => void;
@@ -71,7 +77,7 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
     const host = await input.createClassifierHost({
-      signal: scope.signal, deadlineMs: input.deadlineMs, model: input.model,
+      signal: scope.signal, deadlineMs: input.deadlineMs, model: input.model, purpose: input.purpose,
     });
     let removeAbortListener: (() => void) | undefined;
     scope.onCleanup(async signal => {
@@ -129,6 +135,15 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
     }
     if (finishReason === 'length' || finishReason === 'error') {
       return {status: 'unavailable', reason: 'incomplete_output'};
+    }
+    // The prompt returns only the last step. Another assistant message means
+    // OpenCode ran a step after a tool call, which a no-tool call never accepts.
+    const history = await host.client.session.messages({path, query, signal: scope.signal});
+    scope.throwIfInactive();
+    const replies = getOpenCodeAssistantMessages(object(history)?.error == null ? history : undefined);
+    if (typeof info.id !== 'string' || replies.length === 0) return {status: 'unavailable', reason: 'invalid_response'};
+    if (replies.length > 1 || getOpenCodeAssistantMessageId(replies[0]!) !== info.id) {
+      return {status: 'unavailable', reason: 'tool_use'};
     }
     const text = parts.filter(part => part?.type === 'text' && typeof part.text === 'string')
       .map(part => part!.text).join('');
