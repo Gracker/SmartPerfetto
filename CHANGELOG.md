@@ -13,6 +13,18 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.15.1] - 2026-10-06
+
+### Fixed
+
+- CLI `doctor` now opens, queries and closes an isolated in-memory SQLite database. Missing native bindings and probe/close failures are diagnostic errors, including when AI is disabled, instead of remaining hidden behind successful version/help checks.
+- Four Agent HTTP fixtures now isolate enterprise/session databases, provider data, logs and scene artifacts before importing runtime modules. Owned sessions, streams and stores finish before temporary directories are removed; shared suite listeners retain their lifecycle.
+
+### Changed
+
+- Public npm smoke explicitly approves reviewed source pins in its own consumer project, checks the SQLite probe and executes a real query against an immutable committed trace fixture. The OIDC publish job and hash-bound tarball boundary remain separate.
+- CLI installation docs explain conditional dependency-script approval for project, global and one-off contexts. A publisher's `allowScripts` does not authorize a consumer installation; Node.js 24 remains required.
+
 ## [1.15.0] - 2026-10-06
 
 ### Security

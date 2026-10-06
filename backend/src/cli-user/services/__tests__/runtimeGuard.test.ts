@@ -8,6 +8,18 @@ import * as path from 'path';
 import { assertAnalysisRuntimeReady, collectDoctorReport } from '../runtimeGuard';
 import { resetProviderService } from '../../../services/providerManager';
 
+const mockSqliteMemory = jest.fn();
+
+jest.mock('better-sqlite3', () => {
+  const ActualDatabase = jest.requireActual('better-sqlite3');
+  return jest.fn((filename: string, options?: unknown) => {
+    if (filename === ':memory:' && mockSqliteMemory.getMockImplementation()) {
+      return mockSqliteMemory(filename);
+    }
+    return new ActualDatabase(filename, options);
+  });
+});
+
 describe('runtime guard', () => {
   const originalEnv = { ...process.env };
   let tmpDir: string;
@@ -15,6 +27,7 @@ describe('runtime guard', () => {
   let consoleLogSpy: jest.SpyInstance;
 
   beforeEach(() => {
+    mockSqliteMemory.mockReset();
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-runtime-guard-'));
@@ -40,11 +53,55 @@ describe('runtime guard', () => {
   });
 
   afterEach(() => {
+    mockSqliteMemory.mockReset();
     resetProviderService();
     process.env = originalEnv;
     fs.rmSync(tmpDir, { recursive: true, force: true });
     consoleErrorSpy.mockRestore();
     consoleLogSpy.mockRestore();
+  });
+
+  test('checks SQLite independently when AI is disabled, without opening a persisted database', () => {
+    process.env.SMARTPERFETTO_AI_ENABLED = 'false';
+    const get = jest.fn(() => ({value: 1}));
+    const close = jest.fn();
+    mockSqliteMemory.mockReturnValue({prepare: jest.fn(() => ({get})), close});
+    const report = collectDoctorReport(tmpDir);
+    expect(report.checks.find(check => check.name === 'sqlite_native'))
+      .toMatchObject({ok: true, status: 'ok'});
+    expect(mockSqliteMemory).toHaveBeenCalledTimes(1);
+    expect(mockSqliteMemory).toHaveBeenCalledWith(':memory:');
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports a missing SQLite binding even when AI credentials are not required', () => {
+    process.env.SMARTPERFETTO_AI_ENABLED = 'false';
+    mockSqliteMemory.mockImplementation(() => {throw new Error('Could not locate the bindings file');});
+    const report = collectDoctorReport(tmpDir);
+    expect(report.ok).toBe(false);
+    expect(report.checks.find(check => check.name === 'sqlite_native'))
+      .toMatchObject({ok: false, status: 'error', details: {error: 'Could not locate the bindings file'}});
+    expect(() => JSON.stringify(report)).not.toThrow();
+  });
+
+  test('closes the SQLite probe after a query failure and preserves a diagnostic report', () => {
+    const close = jest.fn();
+    mockSqliteMemory.mockReturnValue({prepare: jest.fn(() => {throw new Error('query failed');}), close});
+    const report = collectDoctorReport(tmpDir);
+    expect(report.checks.find(check => check.name === 'sqlite_native'))
+      .toMatchObject({status: 'error', details: {error: 'query failed'}});
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  test('reports SQLite close failure rather than interrupting doctor JSON', () => {
+    const close = jest.fn(() => {throw new Error('close failed');});
+    mockSqliteMemory.mockReturnValue({prepare: jest.fn(() => ({get: () => ({value: 1})})), close});
+    const report = collectDoctorReport(tmpDir);
+    expect(report.checks.find(check => check.name === 'sqlite_native'))
+      .toMatchObject({status: 'error', details: {error: 'close failed'}});
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(() => JSON.stringify(report)).not.toThrow();
   });
 
   test('rejects Claude without credentials even when the SDK binary is executable', () => {

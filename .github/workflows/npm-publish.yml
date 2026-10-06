@@ -322,6 +322,12 @@ jobs:
       NPM_CONFIG_USERCONFIG: /dev/null
       VERSION: ${{ needs.package.outputs.version }}
     steps:
+      - name: Read immutable fixture and reviewed install policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.package.outputs.release_sha }}
+          persist-credentials: false
+
       - name: Set up supported Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -333,6 +339,22 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/npm-smoke"
           cd "${RUNNER_TEMP}/npm-smoke"
           npm init -y >/dev/null
+          # This job explicitly approves the source-reviewed pins for its own
+          # consumer project; a dependency's allowScripts cannot authorize it.
+          node <<'NODE'
+          const fs = require('node:fs');
+          const source = JSON.parse(fs.readFileSync(`${process.env.GITHUB_WORKSPACE}/backend/package.json`, 'utf8'));
+          const consumer = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          if (!source.allowScripts || typeof source.allowScripts !== 'object' || Array.isArray(source.allowScripts) ||
+              Object.entries(source.allowScripts).some(([pin, value]) =>
+                !/^(?:@[^/@\s]+\/)?[^/@\s]+@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pin) || typeof value !== 'boolean')) {
+            throw new Error('reviewed source install policy is missing or invalid');
+          }
+          consumer.allowScripts = source.allowScripts;
+          fs.writeFileSync('package.json', JSON.stringify(consumer, null, 2) + '\n');
+          NODE
+          export SMARTPERFETTO_HOME="${RUNNER_TEMP}/npm-smoke-home"
+          mkdir -m 700 "${SMARTPERFETTO_HOME}"
           npm install --no-audit --no-fund "@gracker/smartperfetto@${VERSION}"
           node <<'NODE'
           const {spawnSync} = require('node:child_process');
@@ -349,10 +371,12 @@ jobs:
           const packageJson = JSON.parse(
             readFileSync(join(packageRoot, 'package.json'), 'utf8'),
           );
+          const smokeTrace = join(process.env.GITHUB_WORKSPACE, 'Trace/constructed/app-background-power/trace.overlay.pftrace');
           const commands = [
             ['smp', ['--version']],
             ['smartperfetto', ['--help']],
             ['smp', ['doctor', '--format', 'json']],
+            ['smp', ['query', smokeTrace, '--sql', 'select count(*) as cnt from slice', '--format', 'json']],
           ];
           // Without credentials doctor reports the unconfigured AI runtime and
           // exits 1; package health is asserted from its JSON report below.
@@ -415,6 +439,13 @@ jobs:
             failDoctor('public CLI doctor exit status does not match its report');
           }
           if (!doctor.node?.ok) throw new Error('public CLI does not accept Node.js 24');
+          const sqlite = doctor.checks.find(check => check.name === 'sqlite_native');
+          if (sqlite?.status !== 'ok') failDoctor('public CLI SQLite native binding cannot execute its in-memory probe');
+          const query = JSON.parse(outputs.get(`smp:query ${smokeTrace} --sql select count(*) as cnt from slice --format json`).stdout);
+          if (query.ok !== true || JSON.stringify(query.result?.columns) !== '["cnt"]' ||
+              JSON.stringify(query.result?.rows) !== '[[11]]') {
+            throw new Error('public CLI cannot persist a session and query the committed trace fixture');
+          }
           if (!doctor.traceProcessor?.exists || !doctor.traceProcessor?.executable) {
             throw new Error('public CLI trace_processor_shell is unavailable');
           }

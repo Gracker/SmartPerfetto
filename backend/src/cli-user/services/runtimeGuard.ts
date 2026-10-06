@@ -57,6 +57,33 @@ function chosenSdkBinaryPath(sdkBinary: unknown): string | undefined {
   return typeof chosenPath === 'string' ? chosenPath : undefined;
 }
 
+function buildSqliteNativeCheck(): DoctorCheck {
+  try {
+    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
+    const database = new Database(':memory:');
+    try {
+      const row = database.prepare('SELECT 1 AS value').get() as {value: number} | undefined;
+      if (row?.value !== 1) throw new Error('SQLite native probe returned an unexpected result');
+    } finally {
+      database.close();
+    }
+    return {
+      name: 'sqlite_native',
+      ok: true,
+      status: 'ok',
+      message: 'SQLite native binding can open, query and close an in-memory database',
+    };
+  } catch (error) {
+    return {
+      name: 'sqlite_native',
+      ok: false,
+      status: 'error',
+      message: 'SQLite native binding is unavailable. Review dependency installation scripts and rebuild under Node.js 24; see docs/reference/cli.md.',
+      details: {error: error instanceof Error ? error.message : String(error)},
+    };
+  }
+}
+
 export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): RuntimeGuardResult {
   assertAiFeatureEnabled(options.aiFeature ?? 'agent_analyze');
   const selection = resolveAgentRuntimeSelection(options.providerId, options.runtimeOverride);
@@ -223,6 +250,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       status: nodeMajor >= 24 && nodeMajor < 25 ? 'ok' : 'error',
       message: `Node.js ${process.version} (expected >=24 <25)`,
     },
+    buildSqliteNativeCheck(),
     {
       name: 'ai_policy',
       ok: aiPolicy.aiEnabled || aiPolicy.env?.valid === true,

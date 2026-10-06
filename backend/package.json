@@ -1,6 +1,6 @@
 {
   "name": "@gracker/smartperfetto",
-  "version": "1.15.0",
+  "version": "1.15.1",
   "description": "SmartPerfetto CLI and backend runtime",
   "repository": {
     "type": "git",

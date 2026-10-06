@@ -93,6 +93,19 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
   smp doctor
   ```
 
+如果 npm 提示依赖安装脚本被 blocked 或 skipped，先审查对应脚本，再仅为所需依赖
+授权并重装：
+
+```bash
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+```
+
+`better-sqlite3` 提供 CLI 核心命令使用的原生 SQLite 绑定；选择 OpenCode 运行时时
+需要运行 `opencode-ai` 的安装脚本。发布包里的脚本审批不会替使用者授权。项目内
+安装的审批方式，以及 doctor 和真实 query 检查，见
+[CLI 安装说明](docs/reference/cli.md#npm-阻止安装脚本时)和
+[npm 官方安装策略](https://docs.npmjs.com/cli/install/)。
+
 完整前置条件与运行方式见 [快速开始](docs/getting-started/quick-start.md)。
 
 ### 2. 配置一个 AI Provider

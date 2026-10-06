@@ -107,6 +107,20 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   smp doctor
   ```
 
+If npm reports that dependency install scripts were blocked or skipped, review
+those scripts and retry with approval limited to the required packages:
+
+```bash
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+```
+
+`better-sqlite3` provides the native SQLite binding used by core CLI commands;
+`opencode-ai` needs its install script when selecting the OpenCode runtime.
+Package-publisher approvals do not approve scripts for your installation. See
+[npm's install policy](https://docs.npmjs.com/cli/install/) and the
+[CLI installation guide](docs/reference/cli.en.md#when-npm-blocks-install-scripts)
+for project-local approval and doctor/query checks.
+
 The complete prerequisites and distribution choices are in the
 [Quick Start](docs/getting-started/quick-start.en.md).
 

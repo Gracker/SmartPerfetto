@@ -1,35 +1,132 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-import {afterEach, describe, expect, it} from '@jest/globals';
+import {beforeEach, afterAll, beforeAll, afterEach, describe, expect, it} from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 
 import type {SceneReport} from '../../agent/scene/types';
-import {
-  agentRoutesSmartPreviewSelectionTestSeam,
-  default as agentRoutes,
-  buildSmartDeepDiveRunOptions,
-  isUsableSmartPreviewReport,
-  resolveSmartPreviewReportForSelection,
-  smartPreviewSelectionErrorMessage,
-  SmartPreviewSelectionError,
-} from '../agentRoutes';
+
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 const loopbackServers = createLoopbackServerFixture();
+
+let agentRoutesSmartPreviewSelectionTestSeam: typeof import('../agentRoutes')['agentRoutesSmartPreviewSelectionTestSeam'];
+let agentRoutes: typeof import('../agentRoutes')['default'];
+let buildSmartDeepDiveRunOptions: typeof import('../agentRoutes')['buildSmartDeepDiveRunOptions'];
+let isUsableSmartPreviewReport: typeof import('../agentRoutes')['isUsableSmartPreviewReport'];
+let resolveSmartPreviewReportForSelection: typeof import('../agentRoutes')['resolveSmartPreviewReportForSelection'];
+let smartPreviewSelectionErrorMessage: typeof import('../agentRoutes')['smartPreviewSelectionErrorMessage'];
+let SmartPreviewSelectionError: typeof import('../agentRoutes')['SmartPreviewSelectionError'];
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService')['SessionPersistenceService'];
+let resetConversationSessionStoreForTests: typeof import('../../services/conversationSessionStore')['resetConversationSessionStoreForTests'];
+let resetProviderService: typeof import('../../services/providerManager')['resetProviderService'];
+let resetAnalysisRunStoreForTests: typeof import('../../services/analysisRunStore')['resetAnalysisRunStoreForTests'];
+let resetAgentEventStoreForTests: typeof import('../../services/agentEventStore')['resetAgentEventStoreForTests'];
+let resetAnalysisHistoryStoreForTests: typeof import('../../services/analysisHistoryStore')['resetAnalysisHistoryStoreForTests'];
+let resetRunManifestStoreForTests: typeof import('../../services/selfEvolution/runManifestStore')['resetRunManifestStoreForTests'];
+
+const fixtureEnvKeys = ['SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE', 'SCENE_REPORT_DIR',
+  'SCENE_JOB_ARTIFACT_DIR', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR'] as const;
+const fixtureOriginalEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let caseRoot: string;
+const caseRoots = new Set<string>();
+let cleanupFailed = false;
+
+function useFixturePaths(root: string): void {
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(root, 'sessions.sqlite');
+  process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(root, 'data');
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(root, 'logs');
+  process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(root, 'providers');
+  process.env.SMARTPERFETTO_DATA_DIR = path.join(root, 'enterprise-data');
+  process.env.UPLOAD_DIR = path.join(root, 'uploads');
+}
+
+function closeFixtureStores(): void {
+  SessionPersistenceService.resetForTests();
+  resetConversationSessionStoreForTests();
+  resetAnalysisRunStoreForTests();
+  resetAgentEventStoreForTests();
+  resetAnalysisHistoryStoreForTests();
+  resetRunManifestStoreForTests();
+  resetProviderService();
+}
+
+beforeAll(async () => {
+  suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-private-http-'));
+  useFixturePaths(suiteRoot);
+  console.info('[HTTP fixture] agentRoutesSmartPreviewSelection owns', suiteRoot);
+  // These paths are captured by config/route singletons at import time.
+  process.env.SCENE_REPORT_DIR = path.join(suiteRoot, 'scene-reports');
+  process.env.SCENE_JOB_ARTIFACT_DIR = path.join(suiteRoot, 'scene-jobs');
+  ({agentRoutesSmartPreviewSelectionTestSeam, default: agentRoutes, buildSmartDeepDiveRunOptions, isUsableSmartPreviewReport, resolveSmartPreviewReportForSelection, smartPreviewSelectionErrorMessage, SmartPreviewSelectionError} = await import('../agentRoutes'));
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+  ({resetConversationSessionStoreForTests} = await import('../../services/conversationSessionStore'));
+  ({resetProviderService} = await import('../../services/providerManager'));
+  ({resetAnalysisRunStoreForTests} = await import('../../services/analysisRunStore'));
+  ({resetAgentEventStoreForTests} = await import('../../services/agentEventStore'));
+  ({resetAnalysisHistoryStoreForTests} = await import('../../services/analysisHistoryStore'));
+  ({resetRunManifestStoreForTests} = await import('../../services/selfEvolution/runManifestStore'));
+});
+
+beforeEach(async () => {
+  if (cleanupFailed) throw new Error(`Previous fixture cleanup failed; retained ${suiteRoot}`);
+  caseRoot = await fs.mkdtemp(path.join(suiteRoot, 'case-'));
+  caseRoots.add(caseRoot);
+  useFixturePaths(caseRoot);
+  closeFixtureStores();
+});
+
+async function removeCaseRoots(): Promise<void> {
+  if (cleanupFailed) return;
+  for (const root of caseRoots) {
+    await fs.rm(root, {recursive: true, force: true});
+  }
+  caseRoots.clear();
+}
+
+afterAll(async () => {
+  try {
+    closeFixtureStores();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  } finally {
+    for (const [key, value] of fixtureOriginalEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    if (!cleanupFailed) {
+      const root = suiteRoot;
+      await fs.rm(root, {recursive: true, force: true});
+      console.info('[HTTP fixture] agentRoutesSmartPreviewSelection cleanup complete', root);
+    }
+  }
+});
 
 const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const ROUTE_SESSION_ID = 'smart-stale-route-session';
 
 afterEach(async () => {
-  await loopbackServers.close();
-  if (originalAiEnabled === undefined) delete process.env.SMARTPERFETTO_AI_ENABLED;
-  else process.env.SMARTPERFETTO_AI_ENABLED = originalAiEnabled;
-  if (originalApiKey === undefined) delete process.env.SMARTPERFETTO_API_KEY;
-  else process.env.SMARTPERFETTO_API_KEY = originalApiKey;
-  agentRoutesSmartPreviewSelectionTestSeam.deleteSession(ROUTE_SESSION_ID);
+  try {
+    agentRoutesSmartPreviewSelectionTestSeam.deleteSession(ROUTE_SESSION_ID);
+    await loopbackServers.close();
+    closeFixtureStores();
+    await removeCaseRoots();
+    if (originalAiEnabled === undefined) delete process.env.SMARTPERFETTO_AI_ENABLED;
+    else process.env.SMARTPERFETTO_AI_ENABLED = originalAiEnabled;
+    if (originalApiKey === undefined) delete process.env.SMARTPERFETTO_API_KEY;
+    else process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+    useFixturePaths(suiteRoot);
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  }
 });
 
 const OWNER = {

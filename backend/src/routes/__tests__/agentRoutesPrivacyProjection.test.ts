@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {afterAll, afterEach, beforeAll, describe, expect, it, jest} from '@jest/globals';
+import {beforeEach, afterAll, afterEach, beforeAll, describe, expect, it, jest} from '@jest/globals';
 import {EventEmitter} from 'events';
 import express from 'express';
 import fs from 'fs';
@@ -10,36 +10,135 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import ts from 'typescript';
-import agentRoutes, {
-  agentRoutesPrivacyProjectionTestSeam,
-  agentRoutesReceiptTestSeam,
-  agentRoutesCancellationTestSeam,
-} from '../agentRoutes';
-import {
-  clearCodeAwareOutputGuards,
-  registerCodeAwareCanary,
-  sanitizeCodeAwareText,
-} from '../../services/security/codeAwareOutputRegistry';
-import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
-import {ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} from '../../services/enterpriseDb';
-import {resetAnalysisRunStoreForTests} from '../../services/analysisRunStore';
-import {resetAgentEventStoreForTests} from '../../services/agentEventStore';
-import {routeAdaptiveEvidencePreflight} from '../../agentRuntime/adaptiveEvidenceRouter';
-import {createDataEnvelope} from '../../types/dataContract';
-import * as claimPreparation from '../../services/evidence/analysisRelationPreparation';
-import * as qualityGate from '../../services/finalResultQualityGate';
-import * as finalizer from '../../services/finalizeAnalysisResult';
-import * as reportRoutes from '../reportRoutes';
-import * as snapshots from '../../services/analysisResultSnapshotPipeline';
-import * as eventStore from '../../services/agentEventStore';
-import * as traceMetadataStore from '../../services/traceMetadataStore';
-import {SessionPersistenceService} from '../../services/sessionPersistenceService';
-import {registerAgentReportRoutes} from '../agentReportRoutes';
-import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
-import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
+
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
 const loopbackServers = createLoopbackServerFixture();
+
+let agentRoutes: typeof import('../agentRoutes').default;
+let agentRoutesPrivacyProjectionTestSeam: typeof import('../agentRoutes')['agentRoutesPrivacyProjectionTestSeam'];
+let agentRoutesReceiptTestSeam: typeof import('../agentRoutes')['agentRoutesReceiptTestSeam'];
+let agentRoutesCancellationTestSeam: typeof import('../agentRoutes')['agentRoutesCancellationTestSeam'];
+let clearCodeAwareOutputGuards: typeof import('../../services/security/codeAwareOutputRegistry')['clearCodeAwareOutputGuards'];
+let registerCodeAwareCanary: typeof import('../../services/security/codeAwareOutputRegistry')['registerCodeAwareCanary'];
+let sanitizeCodeAwareText: typeof import('../../services/security/codeAwareOutputRegistry')['sanitizeCodeAwareText'];
+let ENTERPRISE_FEATURE_FLAG_ENV: typeof import('../../config')['ENTERPRISE_FEATURE_FLAG_ENV'];
+let ENTERPRISE_DB_PATH_ENV: typeof import('../../services/enterpriseDb')['ENTERPRISE_DB_PATH_ENV'];
+let openEnterpriseDb: typeof import('../../services/enterpriseDb')['openEnterpriseDb'];
+let resetAnalysisRunStoreForTests: typeof import('../../services/analysisRunStore')['resetAnalysisRunStoreForTests'];
+let resetAgentEventStoreForTests: typeof import('../../services/agentEventStore')['resetAgentEventStoreForTests'];
+let routeAdaptiveEvidencePreflight: typeof import('../../agentRuntime/adaptiveEvidenceRouter')['routeAdaptiveEvidencePreflight'];
+let createDataEnvelope: typeof import('../../types/dataContract')['createDataEnvelope'];
+let claimPreparation: typeof import('../../services/evidence/analysisRelationPreparation');
+let qualityGate: typeof import('../../services/finalResultQualityGate');
+let finalizer: typeof import('../../services/finalizeAnalysisResult');
+let reportRoutes: typeof import('../reportRoutes');
+let snapshots: typeof import('../../services/analysisResultSnapshotPipeline');
+let eventStore: typeof import('../../services/agentEventStore');
+let traceMetadataStore: typeof import('../../services/traceMetadataStore');
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService')['SessionPersistenceService'];
+let registerAgentReportRoutes: typeof import('../agentReportRoutes')['registerAgentReportRoutes'];
+let analysisDeliveryFingerprint: typeof import('../../types/analysisDelivery')['analysisDeliveryFingerprint'];
+let analysisHasPrivateContext: typeof import('../../services/security/analysisPrivateContext')['analysisHasPrivateContext'];
+let resetConversationSessionStoreForTests: typeof import('../../services/conversationSessionStore')['resetConversationSessionStoreForTests'];
+let resetProviderService: typeof import('../../services/providerManager')['resetProviderService'];
+let resetAnalysisHistoryStoreForTests: typeof import('../../services/analysisHistoryStore')['resetAnalysisHistoryStoreForTests'];
+let resetRunManifestStoreForTests: typeof import('../../services/selfEvolution/runManifestStore')['resetRunManifestStoreForTests'];
+
+const fixtureEnvKeys = ['SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE', 'SCENE_REPORT_DIR',
+  'SCENE_JOB_ARTIFACT_DIR', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR'] as const;
+const fixtureOriginalEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let caseRoot: string;
+const caseRoots = new Set<string>();
+let cleanupFailed = false;
+
+function useFixturePaths(root: string): void {
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(root, 'sessions.sqlite');
+  process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(root, 'data');
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(root, 'logs');
+  process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(root, 'providers');
+  process.env.SMARTPERFETTO_DATA_DIR = path.join(root, 'enterprise-data');
+  process.env.UPLOAD_DIR = path.join(root, 'uploads');
+}
+
+function closeFixtureStores(): void {
+  SessionPersistenceService.resetForTests();
+  resetConversationSessionStoreForTests();
+  resetAnalysisRunStoreForTests();
+  resetAgentEventStoreForTests();
+  resetAnalysisHistoryStoreForTests();
+  resetRunManifestStoreForTests();
+  resetProviderService();
+}
+
+beforeAll(async () => {
+  suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-private-http-'));
+  useFixturePaths(suiteRoot);
+  console.info('[HTTP fixture] agentRoutesPrivacyProjection owns', suiteRoot);
+  // These paths are captured by config/route singletons at import time.
+  process.env.SCENE_REPORT_DIR = path.join(suiteRoot, 'scene-reports');
+  process.env.SCENE_JOB_ARTIFACT_DIR = path.join(suiteRoot, 'scene-jobs');
+  agentRoutes = (await import('../agentRoutes')).default;
+  ({agentRoutesPrivacyProjectionTestSeam, agentRoutesReceiptTestSeam, agentRoutesCancellationTestSeam} = await import('../agentRoutes'));
+  ({clearCodeAwareOutputGuards, registerCodeAwareCanary, sanitizeCodeAwareText} = await import('../../services/security/codeAwareOutputRegistry'));
+  ({ENTERPRISE_FEATURE_FLAG_ENV} = await import('../../config'));
+  ({ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} = await import('../../services/enterpriseDb'));
+  ({resetAnalysisRunStoreForTests} = await import('../../services/analysisRunStore'));
+  ({resetAgentEventStoreForTests} = await import('../../services/agentEventStore'));
+  ({routeAdaptiveEvidencePreflight} = await import('../../agentRuntime/adaptiveEvidenceRouter'));
+  ({createDataEnvelope} = await import('../../types/dataContract'));
+  claimPreparation = await import('../../services/evidence/analysisRelationPreparation');
+  qualityGate = await import('../../services/finalResultQualityGate');
+  finalizer = await import('../../services/finalizeAnalysisResult');
+  reportRoutes = await import('../reportRoutes');
+  snapshots = await import('../../services/analysisResultSnapshotPipeline');
+  eventStore = await import('../../services/agentEventStore');
+  traceMetadataStore = await import('../../services/traceMetadataStore');
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+  ({registerAgentReportRoutes} = await import('../agentReportRoutes'));
+  ({analysisDeliveryFingerprint} = await import('../../types/analysisDelivery'));
+  ({analysisHasPrivateContext} = await import('../../services/security/analysisPrivateContext'));
+  ({resetConversationSessionStoreForTests} = await import('../../services/conversationSessionStore'));
+  ({resetProviderService} = await import('../../services/providerManager'));
+  ({resetAnalysisHistoryStoreForTests} = await import('../../services/analysisHistoryStore'));
+  ({resetRunManifestStoreForTests} = await import('../../services/selfEvolution/runManifestStore'));
+});
+
+beforeEach(async () => {
+  if (cleanupFailed) throw new Error(`Previous fixture cleanup failed; retained ${suiteRoot}`);
+  caseRoot = fs.mkdtempSync(path.join(suiteRoot, 'case-'));
+  caseRoots.add(caseRoot);
+  useFixturePaths(caseRoot);
+  closeFixtureStores();
+});
+
+async function removeCaseRoots(): Promise<void> {
+  if (cleanupFailed) return;
+  for (const root of caseRoots) {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+  caseRoots.clear();
+}
+
+afterAll(async () => {
+  try {
+    closeFixtureStores();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  } finally {
+    for (const [key, value] of fixtureOriginalEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    if (!cleanupFailed) {
+      const root = suiteRoot;
+      fs.rmSync(root, {recursive: true, force: true});
+      console.info('[HTTP fixture] agentRoutesPrivacyProjection cleanup complete', root);
+    }
+  }
+});
 
 const sessionId = 'private-route-projection';
 
@@ -77,7 +176,19 @@ function completedSnapshotInputFromRoute(): ts.ObjectLiteralExpression | undefin
   return snapshotInput;
 }
 
-afterEach(() => {clearCodeAwareOutputGuards(sessionId); jest.restoreAllMocks();});
+afterEach(async () => {
+  try {
+    await loopbackServers.close();
+    closeFixtureStores();
+    await removeCaseRoots();
+    clearCodeAwareOutputGuards(sessionId);
+    jest.restoreAllMocks();
+    useFixturePaths(suiteRoot);
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  }
+});
 
 describe('agent route private projections', () => {
   it.each([false, true])('uses native completion and delivery state consistently in SSE, turn history and report (qualityFailure=%s)', qualityFailure => {
@@ -688,7 +799,7 @@ describe('agent route private projections', () => {
 
   it('persists generic private run metadata and projected replay events in enterprise SQLite', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'private-route-db-'));
-    const originalEnterprise = process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+    const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
     const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
     process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
     process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
@@ -761,7 +872,7 @@ describe('agent route private projections', () => {
       else process.env[ENTERPRISE_FEATURE_FLAG_ENV] = originalEnterprise;
       if (originalDbPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV];
       else process.env[ENTERPRISE_DB_PATH_ENV] = originalDbPath;
-      fs.rmSync(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -847,7 +958,7 @@ describe('agent route private projections', () => {
       } else {
         process.env[ENTERPRISE_DB_PATH_ENV] = originalDbPath;
       }
-      fs.rmSync(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -855,12 +966,11 @@ describe('agent route private projections', () => {
     const canary = 'PRIVATE_SCENE_STATUS_CANARY';
     const credential = 'sk-scenestatusfallback0123456789';
     const owner = {tenantId: 'tenant-scene-status', workspaceId: 'workspace-scene-status', userId: 'user-scene-status'};
-    const envKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', ENTERPRISE_FEATURE_FLAG_ENV] as const;
+    const envKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', 'SMARTPERFETTO_ENTERPRISE'] as const;
     const originalEnv = new Map(envKeys.map(key => [key, process.env[key]]));
     const sessionIds: string[] = [];
+    const sceneStatusServers = createLoopbackServerFixture();
     const app = express();
-    app.use(express.json());
-    app.use('/api/agent/v1', agentRoutes);
     let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
     const get = (url: string) => request(server).get(`/api/agent/v1${url}`)
       .set('X-SmartPerfetto-SSO-User-Id', owner.userId)
@@ -882,7 +992,9 @@ describe('agent route private projections', () => {
     };
 
     beforeAll(async () => {
-      server = await loopbackServers.listen(app);
+      app.use(express.json());
+      app.use('/api/agent/v1', agentRoutes);
+      server = await sceneStatusServers.listen(app);
       delete process.env.SMARTPERFETTO_API_KEY;
       process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
       process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
@@ -894,7 +1006,12 @@ describe('agent route private projections', () => {
       }
     });
     afterAll(async () => {
-      await loopbackServers.close();
+      try {
+        await sceneStatusServers.close();
+      } catch (error) {
+        cleanupFailed = true;
+        throw error;
+      }
       for (const [key, value] of originalEnv) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }

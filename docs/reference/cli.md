@@ -24,6 +24,49 @@ npm install -g @gracker/smartperfetto
 CLI 包是独立终端产品，不启动也不包含 Web UI launcher；需要浏览器体验时使用
 Docker 或 GitHub 免安装包。
 
+### npm 阻止安装脚本时
+
+如果安装输出列出 blocked 或 skipped 的依赖脚本，先检查对应依赖的安装脚本。
+`better-sqlite3` 的原生绑定用于 `query`、`skill` 等核心命令；即使禁用 AI 也需要它。
+选择 OpenCode 运行时时，还需要 `opencode-ai` 的安装脚本。`@google/genai`、
+`protobufjs`、`esbuild` 等其他条目要按实际脚本和所用功能判断，不能只凭名单认定
+SQLite 或整个 CLI 已损坏。
+
+全局安装或一次性 `npm exec` / `npx` 使用命令级审批，仅授权审查过的依赖：
+
+```bash
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+npm exec --allow-scripts=better-sqlite3,opencode-ai --package=@gracker/smartperfetto -- smp doctor
+```
+
+这些参数只用于本次命令。项目内安装由消费项目根目录 `package.json` 的
+`allowScripts` 决定；SmartPerfetto 发布包中的 `allowScripts` 不能替消费项目授权。
+全局和一次性命令的用法见 [npm 官方安装策略](https://docs.npmjs.com/cli/install/)。
+
+在项目内，如果当前 npm 提供 `install-scripts` 命令，先列出待审查脚本，审查后审批
+所需依赖并定向重建 SQLite：
+
+```bash
+npm install-scripts ls
+npm install-scripts approve better-sqlite3
+npm rebuild better-sqlite3
+```
+
+审批会写入消费项目的 `allowScripts`。使用 OpenCode 时，审查后将 `opencode-ai`
+加入审批和重建命令。具体用法见
+[npm install-scripts](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/)。
+安装和重建仍须使用 Node.js 24；无需修改全局 npm 配置或允许全部依赖脚本。
+
+审批、重装或重建后，在同一安装中运行 doctor，并用本机已有 trace 执行真实 SQL：
+
+```bash
+smp doctor --format json
+smp query /path/to/trace.pftrace --sql "SELECT COUNT(*) AS slice_count FROM slice" --format json
+```
+
+将路径换成实际 trace。项目内安装使用 `npx --no-install smp` 替代 `smp`，确保检查
+的是本地安装。确认 doctor 中 `sqlite_native` 为 `ok`，并且 query 成功返回结果。
+
 ## 全局选项
 
 ```text
@@ -157,6 +200,11 @@ Runtime 判断按实际选择的 provider/runtime 执行：
 - OpenAI Agents SDK：需要 `OPENAI_API_KEY`，或本地
   `localhost` / `127.0.0.1` / `0.0.0.0` OpenAI-compatible endpoint。
 - Ollama provider 默认走 OpenAI-compatible runtime。
+
+从 v1.15.1 起，`smp doctor` 的 `sqlite_native` 检查会加载原生 SQLite 绑定；
+缺失或无法加载时返回 `error`，命令退出码为 1。该检查在 AI 禁用时也执行，
+因为确定性 query 和 Skill 仍使用 SQLite。安装脚本审批或重建后的检查方式见
+[安装说明](#npm-阻止安装脚本时)。
 
 设置 `SMARTPERFETTO_AI_ENABLED=false` 后，`smp doctor` 会显示 AI policy。
 `smp analyze`、`smp resume`、`smp provider test` 和 `smp capture android --analyze`

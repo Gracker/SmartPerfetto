@@ -2,63 +2,240 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import {beforeEach, afterAll, beforeAll, afterEach, describe, expect, it, jest } from '@jest/globals';
 import express from 'express';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import {EventEmitter} from 'events';
-import * as agentRuntime from '../../agentRuntime';
-import {createDataEnvelope} from '../../types/dataContract';
-import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
-import { EnhancedSessionContext, sessionContextManager } from '../../agent/context/enhancedSessionContext';
-import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
-import {
-  deleteTraceMetadata,
-  ENTERPRISE_DATA_DIR_ENV,
-  writeTraceMetadata,
-} from '../../services/traceMetadataStore';
-import {
-  persistSerializedAgentEvent,
-  resetAgentEventStoreForTests,
-} from '../../services/agentEventStore';
-import {
-  getAnalysisRunLifecycle,
-  resetAnalysisRunStoreForTests,
-} from '../../services/analysisRunStore';
-import {
-  getTraceProcessorLeaseStore,
-  setTraceProcessorLeaseStoreForTests,
-} from '../../services/traceProcessorLeaseStore';
-import { SessionPersistenceService } from '../../services/sessionPersistenceService';
-import { clearRunManifestLifecyclesForTests } from '../../services/selfEvolution/runManifestLifecycle';
-import { resetRunManifestStoreForTests } from '../../services/selfEvolution/runManifestStore';
-import {
-  TraceProcessorService,
-  setTraceProcessorServiceForTests,
-  type TraceProcessor,
-} from '../../services/traceProcessorService';
-import { ClaudeRuntime } from '../../agentRuntime/engines/claude/claudeRuntime';
+
+import type {TraceProcessor} from '../../services/traceProcessorService';
+
 import type { AnalysisOptions, AnalysisResult } from '../../agent/core/orchestratorTypes';
 import type { TracePairContext } from '../../agentv3/types';
-import * as defaultCodebaseServices from '../../services/codebase/defaultCodebaseServices';
-import * as externalKnowledgeServices from '../../services/externalKnowledgeSourceRegistry';
-import {getProviderService, resetProviderService} from '../../services/providerManager';
-import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
-import {AnalysisHistoryStore} from '../../services/analysisHistoryStore';
-import {getSessionBackgroundKnowledgeReferences} from '../../services/knowledge/sessionBackgroundKnowledgeRegistry';
-import {refreshPersistedAgentSnapshot} from '../../services/persistAgentSession';
-import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
 const loopbackServers = createLoopbackServerFixture();
 
+let agentRuntime: typeof import('../../agentRuntime');
+let createDataEnvelope: typeof import('../../types/dataContract')['createDataEnvelope'];
+let ENTERPRISE_FEATURE_FLAG_ENV: typeof import('../../config')['ENTERPRISE_FEATURE_FLAG_ENV'];
+let EnhancedSessionContext: typeof import('../../agent/context/enhancedSessionContext')['EnhancedSessionContext'];
+let sessionContextManager: typeof import('../../agent/context/enhancedSessionContext')['sessionContextManager'];
+let ENTERPRISE_DB_PATH_ENV: typeof import('../../services/enterpriseDb')['ENTERPRISE_DB_PATH_ENV'];
+let openEnterpriseDb: typeof import('../../services/enterpriseDb')['openEnterpriseDb'];
+let deleteTraceMetadata: typeof import('../../services/traceMetadataStore')['deleteTraceMetadata'];
+let ENTERPRISE_DATA_DIR_ENV: typeof import('../../services/traceMetadataStore')['ENTERPRISE_DATA_DIR_ENV'];
+let writeTraceMetadata: typeof import('../../services/traceMetadataStore')['writeTraceMetadata'];
+let persistSerializedAgentEvent: typeof import('../../services/agentEventStore')['persistSerializedAgentEvent'];
+let resetAgentEventStoreForTests: typeof import('../../services/agentEventStore')['resetAgentEventStoreForTests'];
+let getAnalysisRunLifecycle: typeof import('../../services/analysisRunStore')['getAnalysisRunLifecycle'];
+let resetAnalysisRunStoreForTests: typeof import('../../services/analysisRunStore')['resetAnalysisRunStoreForTests'];
+let getTraceProcessorLeaseStore: typeof import('../../services/traceProcessorLeaseStore')['getTraceProcessorLeaseStore'];
+let setTraceProcessorLeaseStoreForTests: typeof import('../../services/traceProcessorLeaseStore')['setTraceProcessorLeaseStoreForTests'];
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService')['SessionPersistenceService'];
+let clearRunManifestLifecyclesForTests: typeof import('../../services/selfEvolution/runManifestLifecycle')['clearRunManifestLifecyclesForTests'];
+let resetRunManifestStoreForTests: typeof import('../../services/selfEvolution/runManifestStore')['resetRunManifestStoreForTests'];
+let TraceProcessorService: typeof import('../../services/traceProcessorService')['TraceProcessorService'];
+type TraceProcessorService = import('../../services/traceProcessorService').TraceProcessorService;
+let setTraceProcessorServiceForTests: typeof import('../../services/traceProcessorService')['setTraceProcessorServiceForTests'];
+let ClaudeRuntime: typeof import('../../agentRuntime/engines/claude/claudeRuntime')['ClaudeRuntime'];
+type ClaudeRuntime = import('../../agentRuntime/engines/claude/claudeRuntime').ClaudeRuntime;
+let defaultCodebaseServices: typeof import('../../services/codebase/defaultCodebaseServices');
+let externalKnowledgeServices: typeof import('../../services/externalKnowledgeSourceRegistry');
+let getProviderService: typeof import('../../services/providerManager')['getProviderService'];
+let resetProviderService: typeof import('../../services/providerManager')['resetProviderService'];
+let agentRoutes: typeof import('../agentRoutes').default;
+let agentRoutesCancellationTestSeam: typeof import('../agentRoutes')['agentRoutesCancellationTestSeam'];
+let AnalysisHistoryStore: typeof import('../../services/analysisHistoryStore')['AnalysisHistoryStore'];
+let getSessionBackgroundKnowledgeReferences: typeof import('../../services/knowledge/sessionBackgroundKnowledgeRegistry')['getSessionBackgroundKnowledgeReferences'];
+let refreshPersistedAgentSnapshot: typeof import('../../services/persistAgentSession')['refreshPersistedAgentSnapshot'];
+let NO_PRIVATE_CONTEXT: typeof import('../../services/security/analysisPrivateContext')['NO_PRIVATE_CONTEXT'];
+let resetConversationSessionStoreForTests: typeof import('../../services/conversationSessionStore')['resetConversationSessionStoreForTests'];
+let resetAnalysisHistoryStoreForTests: typeof import('../../services/analysisHistoryStore')['resetAnalysisHistoryStoreForTests'];
+let AssistantApplicationService: typeof import('../../assistant/application/assistantApplicationService')['AssistantApplicationService'];
+
+const fixtureEnvKeys = ['SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE', 'SCENE_REPORT_DIR',
+  'SCENE_JOB_ARTIFACT_DIR', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR'] as const;
+const fixtureOriginalEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let caseRoot: string;
+const caseRoots = new Set<string>();
+type ManagedSession = import('../../assistant/application/assistantApplicationService').ManagedAssistantSession;
+type AnalysisSession = Parameters<typeof agentRoutesCancellationTestSeam.setSession>[1];
+type ConversationSession = import('../../assistant/application/conversationSessionService').ConversationSession;
+type SessionService = InstanceType<typeof AssistantApplicationService<ManagedSession>>;
+type LeaseStore = ReturnType<typeof getTraceProcessorLeaseStore>;
+const ownedSessions = new Map<ManagedSession, SessionService>();
+const ownedLeaseStores = new Set<LeaseStore>();
+const closedLeaseStores = new WeakSet<LeaseStore>();
+
+function isConversationSession(session: ManagedSession): session is ConversationSession {
+  return 'runtime' in session && 'historyTurns' in session;
+}
+
+function isAnalysisSession(session: ManagedSession): session is AnalysisSession {
+  return 'orchestrator' in session;
+}
+
+async function waitForOwnedRun<T>(completion: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([completion, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Owned fixture run did not settle')), 5000);
+    })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function settleOwnedSessions(): Promise<void> {
+  for (const [session, service] of ownedSessions) {
+    if (service.getSession(session.sessionId) !== session) continue;
+    if (isConversationSession(session)) {
+      const run = session.activeRun;
+      if (run) {
+        await waitForOwnedRun(session.runtime.cancel(session.sessionId, run.runId));
+        await waitForOwnedRun(run.completion);
+      }
+      await session.runtime.dispose?.();
+    } else if (isAnalysisSession(session)) {
+      agentRoutesCancellationTestSeam.abortHttpFinalizationRuns(session);
+      for (const runId of session.executingRunIds ?? []) {
+        await waitForOwnedRun(agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId));
+      }
+      const deadline = Date.now() + 5000;
+      while (session.executingRunIds?.size) {
+        if (Date.now() >= deadline) throw new Error('Owned analysis execution did not settle');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      await session.orchestrator.cleanupSession?.(session.sessionId);
+    }
+    for (const client of session.sseClients) client.end();
+    service.deleteSession(session.sessionId);
+    sessionContextManager.remove(session.sessionId);
+  }
+  ownedSessions.clear();
+}
+
+let cleanupFailed = false;
+
+function useFixturePaths(root: string): void {
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(root, 'sessions.sqlite');
+  process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(root, 'data');
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(root, 'logs');
+  process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(root, 'providers');
+  process.env.SMARTPERFETTO_DATA_DIR = path.join(root, 'enterprise-data');
+  process.env.UPLOAD_DIR = path.join(root, 'uploads');
+}
+
+function closeFixtureStores(): void {
+  SessionPersistenceService.resetForTests();
+  resetConversationSessionStoreForTests();
+  resetAnalysisRunStoreForTests();
+  resetAgentEventStoreForTests();
+  resetAnalysisHistoryStoreForTests();
+  resetRunManifestStoreForTests();
+  resetProviderService();
+}
+
+beforeAll(async () => {
+  suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-private-http-'));
+  useFixturePaths(suiteRoot);
+  console.info('[HTTP fixture] agentRoutesRbac owns', suiteRoot);
+  // These paths are captured by config/route singletons at import time.
+  process.env.SCENE_REPORT_DIR = path.join(suiteRoot, 'scene-reports');
+  process.env.SCENE_JOB_ARTIFACT_DIR = path.join(suiteRoot, 'scene-jobs');
+  agentRuntime = await import('../../agentRuntime');
+  ({createDataEnvelope} = await import('../../types/dataContract'));
+  ({ENTERPRISE_FEATURE_FLAG_ENV} = await import('../../config'));
+  ({EnhancedSessionContext, sessionContextManager} = await import('../../agent/context/enhancedSessionContext'));
+  ({ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} = await import('../../services/enterpriseDb'));
+  ({deleteTraceMetadata, ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata} = await import('../../services/traceMetadataStore'));
+  ({persistSerializedAgentEvent, resetAgentEventStoreForTests} = await import('../../services/agentEventStore'));
+  ({getAnalysisRunLifecycle, resetAnalysisRunStoreForTests} = await import('../../services/analysisRunStore'));
+  ({getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} = await import('../../services/traceProcessorLeaseStore'));
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+  ({clearRunManifestLifecyclesForTests} = await import('../../services/selfEvolution/runManifestLifecycle'));
+  ({resetRunManifestStoreForTests} = await import('../../services/selfEvolution/runManifestStore'));
+  ({TraceProcessorService, setTraceProcessorServiceForTests} = await import('../../services/traceProcessorService'));
+  ({ClaudeRuntime} = await import('../../agentRuntime/engines/claude/claudeRuntime'));
+  defaultCodebaseServices = await import('../../services/codebase/defaultCodebaseServices');
+  externalKnowledgeServices = await import('../../services/externalKnowledgeSourceRegistry');
+  ({getProviderService, resetProviderService} = await import('../../services/providerManager'));
+  agentRoutes = (await import('../agentRoutes')).default;
+  ({agentRoutesCancellationTestSeam} = await import('../agentRoutes'));
+  ({AnalysisHistoryStore} = await import('../../services/analysisHistoryStore'));
+  ({getSessionBackgroundKnowledgeReferences} = await import('../../services/knowledge/sessionBackgroundKnowledgeRegistry'));
+  ({refreshPersistedAgentSnapshot} = await import('../../services/persistAgentSession'));
+  ({NO_PRIVATE_CONTEXT} = await import('../../services/security/analysisPrivateContext'));
+  ({resetConversationSessionStoreForTests} = await import('../../services/conversationSessionStore'));
+  ({resetAnalysisHistoryStoreForTests} = await import('../../services/analysisHistoryStore'));
+  ({AssistantApplicationService} = await import('../../assistant/application/assistantApplicationService'));
+});
+
+beforeEach(async () => {
+  if (cleanupFailed) throw new Error(`Previous fixture cleanup failed; retained ${suiteRoot}`);
+  caseRoot = await fs.mkdtemp(path.join(suiteRoot, 'case-'));
+  caseRoots.add(caseRoot);
+  useFixturePaths(caseRoot);
+  closeFixtureStores();
+  const setSession = AssistantApplicationService.prototype.setSession;
+  jest.spyOn(AssistantApplicationService.prototype, 'setSession').mockImplementation(function (
+    this: SessionService, sessionId: string, session: ManagedSession,
+  ) {
+    ownedSessions.set(session, this);
+    setSession.call(this, sessionId, session);
+  });
+  const leaseModule = await import('../../services/traceProcessorLeaseStore');
+  const getLeaseStore = leaseModule.getTraceProcessorLeaseStore;
+  jest.spyOn(leaseModule, 'getTraceProcessorLeaseStore').mockImplementation(() => {
+    const store = getLeaseStore();
+    ownedLeaseStores.add(store);
+    return store;
+  });
+  getTraceProcessorLeaseStore = leaseModule.getTraceProcessorLeaseStore;
+  const closeLeaseStore = leaseModule.TraceProcessorLeaseStore.prototype.close;
+  jest.spyOn(leaseModule.TraceProcessorLeaseStore.prototype, 'close').mockImplementation(function (this: LeaseStore) {
+    closeLeaseStore.call(this);
+    closedLeaseStores.add(this);
+  });
+});
+
+async function removeCaseRoots(): Promise<void> {
+  if (cleanupFailed) return;
+  for (const root of caseRoots) {
+    await fs.rm(root, {recursive: true, force: true});
+  }
+  caseRoots.clear();
+}
+
+afterAll(async () => {
+  try {
+    closeFixtureStores();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  } finally {
+    for (const [key, value] of fixtureOriginalEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    if (!cleanupFailed) {
+      const root = suiteRoot;
+      await fs.rm(root, {recursive: true, force: true});
+      console.info('[HTTP fixture] agentRoutesRbac cleanup complete', root);
+    }
+  }
+});
+
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
-const originalEnterprise = process.env[ENTERPRISE_FEATURE_FLAG_ENV];
-const originalEnterpriseDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
-const originalEnterpriseDataDir = process.env[ENTERPRISE_DATA_DIR_ENV];
+const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
+const originalEnterpriseDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
+const originalEnterpriseDataDir = process.env.SMARTPERFETTO_DATA_DIR;
 const originalUploadDir = process.env.UPLOAD_DIR;
 const originalAgentRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
 const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
@@ -246,34 +423,47 @@ function minimalSessionSnapshot(
 }
 
 afterEach(async () => {
-  sessionContextManager.remove('session-resume-integration');
-  await loopbackServers.close();
-  jest.restoreAllMocks();
-  setTraceProcessorServiceForTests(null);
-  setTraceProcessorLeaseStoreForTests(null);
-  SessionPersistenceService.resetForTests();
-  resetAgentEventStoreForTests();
-  resetAnalysisRunStoreForTests();
-  clearRunManifestLifecyclesForTests();
-  resetRunManifestStoreForTests();
-  resetProviderService();
-  if (originalApiKey === undefined) {
-    delete process.env.SMARTPERFETTO_API_KEY;
-  } else {
-    process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+  try {
+    await settleOwnedSessions();
+    sessionContextManager.remove('session-resume-integration');
+    await loopbackServers.close();
+    for (const store of ownedLeaseStores) {
+      if (!closedLeaseStores.has(store)) store.close();
+    }
+    ownedLeaseStores.clear();
+    jest.restoreAllMocks();
+    setTraceProcessorServiceForTests(null);
+    setTraceProcessorLeaseStoreForTests(null);
+    SessionPersistenceService.resetForTests();
+    resetAgentEventStoreForTests();
+    resetAnalysisRunStoreForTests();
+    clearRunManifestLifecyclesForTests();
+    resetRunManifestStoreForTests();
+    resetProviderService();
+    closeFixtureStores();
+    await removeCaseRoots();
+    if (originalApiKey === undefined) {
+      delete process.env.SMARTPERFETTO_API_KEY;
+    } else {
+      process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+    }
+    restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalSsoTrustedHeaders);
+    restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnterprise);
+    restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnterpriseDbPath);
+    restoreEnvValue(ENTERPRISE_DATA_DIR_ENV, originalEnterpriseDataDir);
+    restoreEnvValue('UPLOAD_DIR', originalUploadDir);
+    restoreEnvValue('SMARTPERFETTO_AGENT_RUNTIME', originalAgentRuntime);
+    restoreEnvValue('SMARTPERFETTO_AI_ENABLED', originalAiEnabled);
+    restoreEnvValue('SMARTPERFETTO_CODE_AWARE', originalCodeAware);
+    restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
+    restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
+    restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
+    restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalProviderDataDir);
+    useFixturePaths(suiteRoot);
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
   }
-  restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalSsoTrustedHeaders);
-  restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnterprise);
-  restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnterpriseDbPath);
-  restoreEnvValue(ENTERPRISE_DATA_DIR_ENV, originalEnterpriseDataDir);
-  restoreEnvValue('UPLOAD_DIR', originalUploadDir);
-  restoreEnvValue('SMARTPERFETTO_AGENT_RUNTIME', originalAgentRuntime);
-  restoreEnvValue('SMARTPERFETTO_AI_ENABLED', originalAiEnabled);
-  restoreEnvValue('SMARTPERFETTO_CODE_AWARE', originalCodeAware);
-  restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
-  restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
-  restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
-  restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalProviderDataDir);
 });
 
 describe('agent route RBAC', () => {
@@ -468,7 +658,7 @@ describe('agent route RBAC', () => {
         scope: '当前交互',
       });
     } finally {
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -636,7 +826,7 @@ describe('agent route RBAC', () => {
       expect(changed.body.code).toBe('CONVERSATION_PROVIDER_CHANGED');
     } finally {
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -697,7 +887,7 @@ describe('agent route RBAC', () => {
       expect(changed.body.code).toBe('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED');
     } finally {
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -767,7 +957,7 @@ describe('agent route RBAC', () => {
       );
     } finally {
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -876,7 +1066,7 @@ describe('agent route RBAC', () => {
       releaseSecondLoad?.();
       await deleteTraceMetadata(traceId);
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -964,7 +1154,7 @@ describe('agent route RBAC', () => {
       expect(retainedButDeleted.body.code).toBe('TRACE_NOT_UPLOADED');
       expect(getOrLoadTrace).toHaveBeenCalledTimes(1);
     } finally {
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1014,7 +1204,7 @@ describe('agent route RBAC', () => {
     } finally {
       if (previousRoots === undefined) delete process.env.SMARTPERFETTO_CODEBASE_ROOTS;
       else process.env.SMARTPERFETTO_CODEBASE_ROOTS = previousRoots;
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1223,7 +1413,7 @@ describe('agent route RBAC', () => {
       });
     } finally {
       await rejectPendingDeferredRuntimes(deferreds, 'feedback test cleanup');
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1266,7 +1456,7 @@ describe('agent route RBAC', () => {
       }));
       expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1475,7 +1665,7 @@ describe('agent route RBAC', () => {
     } finally {
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1533,7 +1723,7 @@ describe('agent route RBAC', () => {
       await rejectPendingDeferredRuntimes(deferreds, 'full-analysis cleanup');
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1706,7 +1896,7 @@ describe('agent route RBAC', () => {
       await rejectPendingDeferredRuntimes(deferreds, 'event replay cleanup');
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1780,7 +1970,7 @@ describe('agent route RBAC', () => {
       await rejectPendingDeferredRuntimes(deferreds, 'trace context replay cleanup');
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2016,7 +2206,7 @@ describe('agent route RBAC', () => {
     } finally {
       delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2155,7 +2345,7 @@ describe('agent route RBAC', () => {
       leaseStore?.close();
       delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2345,7 +2535,7 @@ describe('agent route RBAC', () => {
       }
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2519,7 +2709,7 @@ describe('agent route RBAC', () => {
         for (const sessionId of sessionIds) {
           sessionContextManager.remove(sessionId);
         }
-        await fs.rm(tmpDir, { recursive: true, force: true });
+        caseRoots.add(tmpDir);
       }
     });
   }
@@ -2630,7 +2820,7 @@ describe('agent route RBAC', () => {
       for (const sessionId of sessionIds) {
         sessionContextManager.remove(sessionId);
       }
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2729,7 +2919,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove('session-resume-integration');
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2804,7 +2994,7 @@ describe('agent route RBAC', () => {
       await waitForCompleted(followUp.body.runId);
     } finally {
       delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2844,7 +3034,7 @@ describe('agent route RBAC', () => {
       expect(getOrLoadTrace).not.toHaveBeenCalled();
     } finally {
       sessionContextManager.remove(sessionId);
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2913,7 +3103,7 @@ describe('agent route RBAC', () => {
     } finally {
       agentRoutesCancellationTestSeam.deleteSession(sessionId);
       sessionContextManager.remove(sessionId);
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2955,7 +3145,7 @@ describe('agent route RBAC', () => {
       expect(getSessionBackgroundKnowledgeReferences(sessionId)).toEqual([]);
     } finally {
       sessionContextManager.remove(sessionId);
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -3045,7 +3235,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove(sessionId);
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -3180,7 +3370,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove(sessionId);
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -3279,7 +3469,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove(sessionId);
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 });
