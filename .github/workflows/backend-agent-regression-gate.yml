@@ -150,14 +150,19 @@ jobs:
           GO111MODULE: "off"
         run: go test ./scripts/portable-health-probe
 
-      - name: Test and build the Windows portable launcher
+      - name: Test the Windows portable launcher
         if: ${{ matrix.os == 'windows-latest' }}
         shell: pwsh
         env:
           GO111MODULE: "off"
-        run: |
-          go test ./scripts/portable-launcher
-          go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher
+        run: go test ./scripts/portable-launcher
+
+      - name: Build the Windows portable launcher
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        env:
+          GO111MODULE: "off"
+        run: go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher
 
       - name: Build the fixed Windows gate helper
         if: ${{ matrix.os == 'windows-latest' }}

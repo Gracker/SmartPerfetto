@@ -467,6 +467,11 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
   const workflow = readFileSync(workflowPath, 'utf8');
   const {packageJob, publishJob, propagationJob, smokeJob} =
     splitNpmPublishJobs(workflow);
+  const lfWorkflow = workflow.replace(/\r\n/g, '\n');
+  assert.deepEqual(
+    splitNpmPublishJobs(lfWorkflow.replace(/\n/g, '\r\n')),
+    splitNpmPublishJobs(lfWorkflow),
+  );
 
   assert.match(workflow, /release:\s+types:\s+\[published\]/);
   assert.match(workflow, /workflow_dispatch:[\s\S]*?release_id:/);
@@ -538,6 +543,7 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
 });
 
 function splitNpmPublishJobs(workflow) {
+  workflow = workflow.replace(/\r\n/g, '\n');
   const starts = ['  package:', '  publish:', '  propagation:', '  smoke:'].map(
     (header) => workflow.indexOf(`\n${header}\n`),
   );
@@ -778,10 +784,21 @@ test('Windows cross-platform contracts build and inject the fixed Go gate helper
     crossPlatform,
     /Verify Windows cross-platform runtime contracts[\s\S]*?npm run test:governance/,
   );
-  assert.match(
-    crossPlatform,
-    /Test and build the Windows portable launcher[\s\S]*?go test \.\/scripts\/portable-launcher[\s\S]*?go build[\s\S]*?\.\/scripts\/portable-launcher/,
+  const steps = loadYaml(workflow).jobs['cross-platform-contracts'].steps;
+  const testStep = steps.find((step) => step.name === 'Test the Windows portable launcher');
+  const buildStep = steps.find((step) => step.name === 'Build the Windows portable launcher');
+  assert.equal(testStep?.run, 'go test ./scripts/portable-launcher');
+  assert.equal(
+    buildStep?.run,
+    'go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher',
   );
+  for (const step of [testStep, buildStep]) {
+    assert.equal(step.shell, 'pwsh');
+    assert.deepEqual(step.env, {GO111MODULE: 'off'});
+    assert.equal(step.if, "${{ matrix.os == 'windows-latest' }}");
+    assert.notEqual(step['continue-on-error'], true);
+  }
+  assert.ok(steps.indexOf(testStep) < steps.indexOf(buildStep));
   assert.match(
     crossPlatform,
     /Test Windows Provider secret storage[\s\S]*?localSecretStore\.test\.ts/,
