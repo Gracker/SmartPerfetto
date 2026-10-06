@@ -2,27 +2,74 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
-import { authenticate } from '../../middleware/auth';
-import { registerAgentReportRoutes } from '../agentReportRoutes';
-import { registerAgentSessionCatalogRoutes } from '../agentSessionCatalogRoutes';
-import reportRoutes, { persistReport, reportStore } from '../reportRoutes';
-import traceRoutes from '../simpleTraceRoutes';
-import {
-  clearCodeAwareOutputGuards,
-  registerCodeAwareCanary,
-  registerPrivateAnalysisQueryForEcho,
-} from '../../services/security/codeAwareOutputRegistry';
-import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+// Product imports follow the suite's private runtime paths, including scene config.
+let authenticate: typeof import('../../middleware/auth').authenticate;
+let registerAgentReportRoutes: typeof import('../agentReportRoutes').registerAgentReportRoutes;
+let registerAgentSessionCatalogRoutes: typeof import('../agentSessionCatalogRoutes').registerAgentSessionCatalogRoutes;
+let reportRoutes: typeof import('../reportRoutes').default;
+let persistReport: typeof import('../reportRoutes').persistReport;
+let reportStore: typeof import('../reportRoutes').reportStore;
+let traceRoutes: typeof import('../simpleTraceRoutes').default;
+let clearCodeAwareOutputGuards: typeof import('../../services/security/codeAwareOutputRegistry').clearCodeAwareOutputGuards;
+let registerCodeAwareCanary: typeof import('../../services/security/codeAwareOutputRegistry').registerCodeAwareCanary;
+let registerPrivateAnalysisQueryForEcho: typeof import('../../services/security/codeAwareOutputRegistry').registerPrivateAnalysisQueryForEcho;
+let NO_PRIVATE_CONTEXT: typeof import('../../services/security/analysisPrivateContext').NO_PRIVATE_CONTEXT;
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService').SessionPersistenceService;
 
 const loopbackServers = createLoopbackServerFixture();
+
+const runtimePathKeys = [
+  'SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'SMARTPERFETTO_DATA_DIR', 'SMARTPERFETTO_LOGS_DIR',
+  'SMARTPERFETTO_TRACE_UPLOAD_DIR', 'SCENE_REPORT_DIR', 'SCENE_JOB_ARTIFACT_DIR',
+] as const;
+const originalRuntimePaths = new Map(runtimePathKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let cleanupFailed = false;
+
+beforeAll(async () => {
+  suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-owner-suite-'));
+  Object.assign(process.env, {
+    SMARTPERFETTO_ENTERPRISE_DB_PATH: path.join(suiteRoot, 'enterprise.sqlite'),
+    SMARTPERFETTO_BACKEND_DATA_DIR: path.join(suiteRoot, 'data'),
+    SMARTPERFETTO_BACKEND_LOG_DIR: path.join(suiteRoot, 'logs'),
+    SMARTPERFETTO_DATA_DIR: path.join(suiteRoot, 'legacy-data'),
+    SMARTPERFETTO_LOGS_DIR: path.join(suiteRoot, 'legacy-logs'),
+    SMARTPERFETTO_TRACE_UPLOAD_DIR: '',
+    SCENE_REPORT_DIR: path.join(suiteRoot, 'scene-reports'),
+    SCENE_JOB_ARTIFACT_DIR: path.join(suiteRoot, 'scene-jobs'),
+  });
+  ({authenticate} = await import('../../middleware/auth'));
+  ({registerAgentReportRoutes} = await import('../agentReportRoutes'));
+  ({registerAgentSessionCatalogRoutes} = await import('../agentSessionCatalogRoutes'));
+  ({default: reportRoutes, persistReport, reportStore} = await import('../reportRoutes'));
+  ({default: traceRoutes} = await import('../simpleTraceRoutes'));
+  ({clearCodeAwareOutputGuards, registerCodeAwareCanary, registerPrivateAnalysisQueryForEcho} =
+    await import('../../services/security/codeAwareOutputRegistry'));
+  ({NO_PRIVATE_CONTEXT} = await import('../../services/security/analysisPrivateContext'));
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+});
+
+afterAll(async () => {
+  try {
+    await loopbackServers.close();
+    SessionPersistenceService?.resetForTests();
+  } finally {
+    for (const [key, value] of originalRuntimePaths) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  // A case cleanup failure preserves the suite's files for diagnosis.
+  if (!cleanupFailed && suiteRoot) await fs.rm(suiteRoot, {recursive: true, force: true});
+});
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -87,14 +134,23 @@ async function writeTraceMetadata(
 }
 
 beforeEach(async () => {
+  SessionPersistenceService.resetForTests();
   uploadDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-owner-'));
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(uploadDir, 'enterprise.sqlite');
   process.env.UPLOAD_DIR = uploadDir;
   process.env.SMARTPERFETTO_API_KEY = API_KEY;
   reportStore.clear();
 });
 
 afterEach(async () => {
-  await loopbackServers.close();
+  try {
+    await loopbackServers.close();
+    SessionPersistenceService.resetForTests();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  }
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(suiteRoot, 'enterprise.sqlite');
   reportStore.clear();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;

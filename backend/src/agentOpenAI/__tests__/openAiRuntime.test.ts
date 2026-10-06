@@ -56,10 +56,13 @@ import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../../services/enterpriseMigration';
 import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
+import {resetAnalysisHistoryStoreForTests} from '../../services/analysisHistoryStore';
+import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
 
 const runtimes: OpenAIRuntime[] = [];
 const privacySessions: string[] = [];
 const finalizationContexts: finalization.RuntimeFinalizationContext[] = [];
+let ownedHistoryFixture: {root: string; previousDbPath: string | undefined} | undefined;
 const decision: AnalysisTurnIntentDecision = {
   schemaVersion: 1, taskKind: 'fact', sceneId: 'general', scope: 'bounded_question',
   recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new',
@@ -79,6 +82,20 @@ afterEach(() => {
   for (const runtime of runtimes.splice(0)) runtime.reset();
   for (const sessionId of privacySessions.splice(0)) clearCodeAwareOutputGuards(sessionId);
   jest.restoreAllMocks();
+  const fixture = ownedHistoryFixture;
+  ownedHistoryFixture = undefined;
+  if (fixture) {
+    let closed = false;
+    try {
+      resetAnalysisHistoryStoreForTests();
+      closed = true;
+    } finally {
+      if (fixture.previousDbPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV];
+      else process.env[ENTERPRISE_DB_PATH_ENV] = fixture.previousDbPath;
+      // A connection that did not close retains its files for diagnosis.
+      if (closed) fs.rmSync(fixture.root, {recursive: true, force: true});
+    }
+  }
 });
 /** The delivery context the run handed to finalization (the context is kept for disposal). */
 function attachedDeliveryContext(result: Parameters<typeof finalization.takeFinalizationContext>[0]) {
@@ -2028,6 +2045,12 @@ describe('OpenAI finalization handoff', () => {
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
   });
   it('reads the captured row beyond the display preview and denies another trace without querying', async () => {
+    // Scoped history opens lazily during analyze(), before the evidence handoff.
+    // This case owns that database rather than reading ambient user history.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-openai-history-'));
+    fs.chmodSync(root, 0o700);
+    ownedHistoryFixture = {root, previousDbPath: process.env[ENTERPRISE_DB_PATH_ENV]};
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(root, 'history.db');
     const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
     const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);
     const store = new ArtifactStore();
