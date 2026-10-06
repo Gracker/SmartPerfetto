@@ -402,6 +402,75 @@ describe('shared CPU cluster load', () => {
     expect(clusterTable(db).find(row => row.cluster === '小核簇')?.load_pct).toBe(15);
     expect(jankClusterLoad(db)).toEqual({big_load_pct: 18.8, little_load_pct: 15});
   });
+
+  const resetCpuFixture = (db: Database.Database, fixture: string): void => {
+    db.exec(`DELETE FROM cpu; DELETE FROM sched_slice; DELETE FROM thread_state;
+      ${fixture}
+      DROP TABLE _cpu_topology;`);
+    db.exec(loadCreateTopologySql().replace(/^\s*CREATE\s+PERFETTO\s+TABLE\s+/i, 'CREATE TABLE '));
+  };
+
+  it.each([
+    {source: 'multi_machine_unresolved', cpus: '(0, 0, 1, 100), (1, 0, 2, 300)'},
+    {source: 'ambiguous_cpu_metadata', cpus: '(0, 0, 1, 100), (1, 0, 1, 300)'},
+  ])('withholds cluster metrics for $source instead of merging local CPU identities', ({source, cpus}) => {
+    const db = openFixture(ts => ts);
+    resetCpuFixture(db, `INSERT INTO cpu VALUES ${cpus};
+      INSERT INTO thread_state VALUES (1, 1000, 1000, 'Running', 0), (2, 1000, 1000, 'Running', 0);`);
+    expect(clusterTable(db)).toEqual([expect.objectContaining({
+      cluster: '未分类核心', load_status: source,
+      core_count: null, active_core_count: null, awake_ms: null, running_ms: null,
+      total_capacity_ms: null, load_pct: null, idle_pct: null, max_single_core_pct: null,
+    })]);
+    expect(jankClusterLoad(db)).toEqual({big_load_pct: null, little_load_pct: null});
+    db.close();
+  });
+
+  it('keeps a single-machine unknown capacity measurable', () => {
+    const db = openFixture(ts => ts);
+    resetCpuFixture(db, `INSERT INTO cpu VALUES (0, 0, 1, NULL);
+      INSERT INTO thread_state VALUES (1, 1000, 500, 'Running', 0);`);
+    expect(clusterTable(db)).toEqual([expect.objectContaining({
+      cluster: '未分类核心', load_status: 'available', core_count: 1,
+      active_core_count: 1, load_pct: 50, idle_pct: 50, max_single_core_pct: 50,
+    })]);
+    db.close();
+  });
+
+  it('subtracts suspend from clipped Running spans as well as the window', () => {
+    // The requested window is 1000..2000; 1200..1700 is suspended.
+    const db = openFixture(ts => ts <= 1200 ? ts : ts < 1700 ? 1200 : ts - 500);
+    resetCpuFixture(db, `INSERT INTO cpu VALUES (0, 0, 1, NULL);
+      INSERT INTO thread_state VALUES (1, 500, 2000, 'Running', 0);`);
+    expect(clusterTable(db)[0]).toMatchObject({
+      load_status: 'available', clock_basis: 'monotonic',
+      load_pct: 100, idle_pct: 0, max_single_core_pct: 100,
+    });
+    db.close();
+  });
+
+  it('uses wall-clock for both sides when a clipped span cannot be converted', () => {
+    const db = openFixture(ts => ts === 1800 ? null : ts >= 2000 ? ts - 500 : ts);
+    resetCpuFixture(db, `INSERT INTO cpu VALUES (0, 0, 1, NULL);
+      INSERT INTO thread_state VALUES (1, 1000, 800, 'Running', 0);`);
+    expect(clusterTable(db)[0]).toMatchObject({
+      load_status: 'available', clock_basis: 'wall_clock',
+      load_pct: 80, idle_pct: 20, max_single_core_pct: 80,
+    });
+    db.close();
+  });
+
+  it('keeps a fully suspended window at zero awake time with no load percentage', () => {
+    const db = openFixture(() => 1000);
+    resetCpuFixture(db, `INSERT INTO cpu VALUES (0, 0, 1, NULL);
+      INSERT INTO thread_state VALUES (1, 1000, 1000, 'Running', 0);`);
+    expect(clusterTable(db)[0]).toMatchObject({
+      load_status: 'available', clock_basis: 'monotonic', awake_ms: 0,
+      active_core_count: 0, running_ms: 0, total_capacity_ms: 0, load_pct: null,
+      idle_pct: null, max_single_core_pct: null,
+    });
+    db.close();
+  });
 });
 
 describe('cpu_topology_view as a referenced Skill', () => {

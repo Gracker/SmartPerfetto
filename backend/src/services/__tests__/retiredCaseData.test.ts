@@ -8,6 +8,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
@@ -26,6 +27,8 @@ import * as retiredCaseData from '../retiredCaseData';
 import {isRetiredRagChunk, RETIRED_RAG_CHUNK_SQL} from '../retiredCaseData';
 import {upsertScopedKnowledgeRecord, type KnowledgeScope} from '../scopedKnowledgeStore';
 import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const curator = caseCurationGrantForMarkdownIngest();
 
@@ -145,7 +148,7 @@ async function deleteThroughApi(library: CaseLibrary, graph: CaseGraph, caseId: 
   const app = express();
   app.use(express.json());
   app.use('/api/cases', createCaseRoutes(library, graph));
-  return request(app).delete(`/api/cases/${caseId}`)
+  return request(await loopbackServers.listen(app)).delete(`/api/cases/${caseId}`)
     .set('Authorization', `Bearer ${OPERATOR_KEY}`)
     .set('x-tenant-id', TENANT)
     .set('x-workspace-id', WORKSPACE);
@@ -158,7 +161,8 @@ beforeEach(() => {
   for (const key of ENV_KEYS) delete process.env[key];
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   for (const key of ENV_KEYS) {
     const value = originalEnv[key];
     if (value === undefined) delete process.env[key];

@@ -17,6 +17,9 @@ import {
   type PerfBaselineKey,
   makeSparkProvenance,
 } from '../../types/sparkContracts';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const ANON_KEY: PerfBaselineKey = {
   appId: 'anon-app-001',
@@ -54,16 +57,19 @@ function makeBaseline(overrides: Partial<BaselineRecord> = {}): BaselineRecord {
 
 let tmpDir: string;
 let app: express.Express;
+let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'baseline-route-test-'));
   const store = new BaselineStore(path.join(tmpDir, 'baselines.json'));
   app = express();
   app.use(express.json({limit: '5mb'}));
   app.use('/api/baselines', createBaselineRoutes(store));
+  server = await loopbackServers.listen(app);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   if (fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   }
@@ -72,14 +78,14 @@ afterEach(() => {
 describe('POST /api/baselines', () => {
   it('creates a baseline and returns 201', async () => {
     const record = makeBaseline({baselineId: 'b1'});
-    const res = await request(app).post('/api/baselines').send(record);
+    const res = await request(server).post('/api/baselines').send(record);
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
     expect(res.body.baseline.baselineId).toBe('b1');
   });
 
   it('rejects an empty body with 400', async () => {
-    const res = await request(app).post('/api/baselines').send({});
+    const res = await request(server).post('/api/baselines').send({});
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
@@ -92,7 +98,7 @@ describe('POST /api/baselines', () => {
       redactionState: 'partial',
       sampleCount: 12,
     });
-    const res = await request(app).post('/api/baselines').send(record);
+    const res = await request(server).post('/api/baselines').send(record);
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/redactionState/);
   });
@@ -101,14 +107,14 @@ describe('POST /api/baselines', () => {
 describe('GET /api/baselines/:id', () => {
   it('returns the baseline when present', async () => {
     const record = makeBaseline({baselineId: 'b1'});
-    await request(app).post('/api/baselines').send(record);
-    const res = await request(app).get('/api/baselines/b1');
+    await request(server).post('/api/baselines').send(record);
+    const res = await request(server).get('/api/baselines/b1');
     expect(res.status).toBe(200);
     expect(res.body.baseline.baselineId).toBe('b1');
   });
 
   it('returns 404 when missing', async () => {
-    const res = await request(app).get('/api/baselines/does-not-exist');
+    const res = await request(server).get('/api/baselines/does-not-exist');
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
   });
@@ -116,29 +122,29 @@ describe('GET /api/baselines/:id', () => {
 
 describe('DELETE /api/baselines/:id', () => {
   it('removes a baseline and returns 200', async () => {
-    await request(app)
+    await request(server)
       .post('/api/baselines')
       .send(makeBaseline({baselineId: 'b1'}));
-    const res = await request(app).delete('/api/baselines/b1');
+    const res = await request(server).delete('/api/baselines/b1');
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
 
-    const get = await request(app).get('/api/baselines/b1');
+    const get = await request(server).get('/api/baselines/b1');
     expect(get.status).toBe(404);
   });
 
   it('returns 404 when removing a missing id', async () => {
-    const res = await request(app).delete('/api/baselines/missing');
+    const res = await request(server).delete('/api/baselines/missing');
     expect(res.status).toBe(404);
   });
 });
 
 describe('GET /api/baselines (list)', () => {
   beforeEach(async () => {
-    await request(app)
+    await request(server)
       .post('/api/baselines')
       .send(makeBaseline({baselineId: 'a/d/b/c', status: 'draft'}));
-    await request(app)
+    await request(server)
       .post('/api/baselines')
       .send(
         makeBaseline({
@@ -148,13 +154,13 @@ describe('GET /api/baselines (list)', () => {
           sampleCount: 5,
         }),
       );
-    await request(app)
+    await request(server)
       .post('/api/baselines')
       .send(makeBaseline({baselineId: 'b/e/b/c', status: 'reviewed'}));
   });
 
   it('lists all baselines without filters', async () => {
-    const res = await request(app).get('/api/baselines');
+    const res = await request(server).get('/api/baselines');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(3);
     expect(res.body.baselines.map((b: BaselineRecord) => b.baselineId)).toEqual([
@@ -165,14 +171,14 @@ describe('GET /api/baselines (list)', () => {
   });
 
   it('respects status filter', async () => {
-    const res = await request(app).get('/api/baselines?status=published');
+    const res = await request(server).get('/api/baselines?status=published');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(1);
     expect(res.body.baselines[0].baselineId).toBe('b/d/b/c');
   });
 
   it('respects keyPrefix filter', async () => {
-    const res = await request(app).get('/api/baselines?keyPrefix=b/');
+    const res = await request(server).get('/api/baselines?keyPrefix=b/');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(2);
   });

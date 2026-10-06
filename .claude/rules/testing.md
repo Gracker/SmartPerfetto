@@ -488,6 +488,31 @@ The regression uses 6 canonical traces:
 
 The aliases above resolve through `Trace/catalog.json`; maintained source must not add paths to the retired flat fixture directory. The default backend gate runs `trace:sql-regression`, which materializes committed overlays without the Perfetto source submodule and executes every discovered Skill SQL contract through the production path, explicit read-only/context probes, or isolated state-changing branch probes, and runs every exact unit (each `exact_sql`, and the own SQL of each target step that binds the UPID through `native_upid` or `effective_target_processes`, from `executableSqlUnits`, in every Skill the executor admits to an exact run) through the production path under the exact UPID of a uniquely named process its expectation binds (`exact_scope`), checking that its rows depend on that UPID alone (`.claude/rules/skills.md`). Skipped or unavailable SQL, and an exact unit with no binding, fail the gate. Full generator/release verification is `npm run trace:regression`. It runs the registered Trace tooling tests before generated-corpus build and SQL execution. Its report keeps source-column-backed positive semantic coverage, expected-empty negative coverage, deferred prerequisites, execution-only composition, definition-only contracts, and exact_sql semantic versus execution-only units separate; inventory assignment alone is not an execution or semantic pass.
 
+## HTTP Test Listeners
+
+Use `backend/tests/helpers/loopbackServer.ts` for owned Supertest HTTP servers.
+Await `fixture.listen(app)` before passing the returned server to Supertest,
+then await `fixture.close()` after stopping owned streams/sessions and before
+restoring environment variables or removing fixture directories. Inline application factories
+must also await listener readiness. Preserve explicit native WebSocket/TCP
+listeners and their existing cleanup.
+
+Do not pass an unbound Express application directly to Supertest. Its implicit
+`app.listen(0)` can bind IPv6 while its client always connects to `127.0.0.1`.
+On macOS, an existing IPv4 listener can own that same port and receive the
+request. The shared fixture binds IPv4 explicitly and rejects occupied ports;
+its registered regression also verifies response identity and port release.
+
+## Test Data Isolation
+
+Persistence fixtures must use an owned temporary directory and the relevant
+database/data-path overrides. Never delete or clear the default user database.
+Set overrides before importing modules that capture paths or create stores;
+declare singleton variables during collection and initialize them in hooks.
+Stop owned sessions/streams and close owned listeners and database stores before
+restoring the environment and removing the fixture directory. If cleanup fails,
+keep the directory rather than deleting files held by a live connection.
+
 ## Focused Unit Tests
 
 Useful focused suites:

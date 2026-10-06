@@ -7,12 +7,15 @@ import express from 'express';
 import http from 'http';
 import net from 'net';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { normalizeCorsOrigins } from '../../security/requestOriginPolicy';
 import * as traceProcessorProxy from '../../routes/traceProcessorProxyRoutes';
 import { REJECTED_UPGRADE_LINGER_MS } from '../../routes/traceProcessorProxyRoutes';
 import { REQUEST_ID_HEADER, requestIdMiddleware } from '../requestId';
 import { createCorsMiddleware, dispatchUpgrade, UNTRUSTED_KEYLESS_HOST } from '../httpEdge';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const FRONTEND_ORIGIN = 'http://localhost:10000';
 const ALLOWED_ORIGINS = normalizeCorsOrigins([FRONTEND_ORIGIN]);
@@ -32,19 +35,21 @@ afterAll(() => {
 });
 
 describe('createCorsMiddleware', () => {
+  afterEach(async () => {await loopbackServers.close();});
+
   /** Mirrors index.ts: the request id first, then CORS. */
-  function makeApp(): express.Express {
+  async function makeApp() {
     const app = express();
     app.use(requestIdMiddleware);
     app.use(createCorsMiddleware(ALLOWED_ORIGINS));
     app.get('/api/probe', (_req, res) => {
       res.json({ ok: true });
     });
-    return app;
+    return loopbackServers.listen(app);
   }
 
   it('lets an allowed cross-origin page read the request id header', async () => {
-    const res = await request(makeApp()).get('/api/probe')
+    const res = await request(await makeApp()).get('/api/probe')
       .set('Origin', FRONTEND_ORIGIN)
       .set('X-Request-Id', 'cross-origin-1');
 
@@ -59,7 +64,7 @@ describe('createCorsMiddleware', () => {
   });
 
   it('admits the preflight of an allowed origin', async () => {
-    const res = await request(makeApp()).options('/api/probe')
+    const res = await request(await makeApp()).options('/api/probe')
       .set('Origin', FRONTEND_ORIGIN)
       .set('Access-Control-Request-Method', 'GET')
       .set('Access-Control-Request-Headers', 'x-request-id');
@@ -71,7 +76,7 @@ describe('createCorsMiddleware', () => {
   it('grants nothing to an origin outside the list and answers it 403 with the public error body', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    const res = await request(makeApp()).get('/api/probe')
+    const res = await request(await makeApp()).get('/api/probe')
       .set('Origin', 'http://localhost:10001')
       .set('X-Request-Id', 'cross-origin-denied');
 
@@ -94,7 +99,7 @@ describe('createCorsMiddleware', () => {
 
   it('answers the preflight of an origin outside the list 403 without reaching the route', async () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const res = await request(makeApp()).options('/api/probe')
+    const res = await request(await makeApp()).options('/api/probe')
       .set('Origin', 'http://localhost:10001')
       .set('Access-Control-Request-Method', 'POST');
 

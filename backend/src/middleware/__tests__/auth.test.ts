@@ -9,6 +9,7 @@ import type { IncomingMessage } from 'http';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import {
   attachRequestContext,
   authenticate,
@@ -18,6 +19,8 @@ import {
 } from '../auth';
 import { EnterpriseApiKeyService } from '../../services/enterpriseApiKeyService';
 import { openEnterpriseDb } from '../../services/enterpriseDb';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
@@ -44,7 +47,7 @@ function headerRequest(headers: Record<string, string>): IncomingMessage {
   return { headers } as unknown as IncomingMessage;
 }
 
-function makeProbeApp(middleware = authenticate): express.Express {
+async function makeProbeApp(middleware = authenticate) {
   const app = express();
   app.use(express.json());
   app.get('/probe', middleware, (req, res) => {
@@ -54,10 +57,11 @@ function makeProbeApp(middleware = authenticate): express.Express {
       requestContext: authReq.requestContext,
     });
   });
-  return app;
+  return loopbackServers.listen(app);
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
   } else {
@@ -83,7 +87,7 @@ describe('authenticate RequestContext', () => {
   it('injects default dev context when API key auth is not configured', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 
-    const res = await request(makeProbeApp()).get('/probe');
+    const res = await request(await makeProbeApp()).get('/probe');
 
     expect(res.status).toBe(200);
     expect(res.body.user).toMatchObject({
@@ -105,7 +109,7 @@ describe('authenticate RequestContext', () => {
   it('uses workspace headers and sanitizes request/window identifiers', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('X-Tenant-Id', 'tenant:alpha')
       .set('X-Workspace-Id', 'workspace_01')
@@ -124,7 +128,7 @@ describe('authenticate RequestContext', () => {
   it('rejects missing API key when auth is configured', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeProbeApp()).get('/probe');
+    const res = await request(await makeProbeApp()).get('/probe');
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
@@ -137,7 +141,7 @@ describe('authenticate RequestContext', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_ENTERPRISE = 'true';
 
-    const res = await request(makeProbeApp()).get('/probe');
+    const res = await request(await makeProbeApp()).get('/probe');
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
@@ -151,7 +155,7 @@ describe('authenticate RequestContext', () => {
     process.env.SMARTPERFETTO_ENTERPRISE = 'true';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('X-SSO-User-Id', 'alice');
 
@@ -164,7 +168,7 @@ describe('authenticate RequestContext', () => {
     process.env.SMARTPERFETTO_ENTERPRISE = 'true';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('X-SmartPerfetto-SSO-User-Id', 'user<>alice')
       .set('X-SmartPerfetto-SSO-Email', 'alice@example.test')
@@ -194,7 +198,7 @@ describe('authenticate RequestContext', () => {
   it('injects API-key RequestContext for valid bearer auth', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('Authorization', 'Bearer test-secret')
       .set('X-Tenant-Id', 'tenant-a')
@@ -216,7 +220,7 @@ describe('authenticate RequestContext', () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
     setOidcEnv();
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('Authorization', 'Bearer test-secret')
       .set('X-Tenant-Id', 'tenant-a')
@@ -233,7 +237,7 @@ describe('authenticate RequestContext', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     setOidcEnv();
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('Cookie', 'sp_sso_session=%');
 
@@ -258,7 +262,7 @@ describe('authenticate RequestContext', () => {
       // The shared resolver also serves the WebSocket upgrade, which has no
       // outer OIDC check of its own.
       expect(resolveCredentialIdentity(headerRequest(forged))).toEqual({ kind: 'none' });
-      const res = await request(makeProbeApp()).get('/probe').set(forged);
+      const res = await request(await makeProbeApp()).get('/probe').set(forged);
       expect(res.status).toBe(401);
       expect(res.body.details).toBe('OIDC session authentication is required');
     },
@@ -336,7 +340,7 @@ describe('authenticate RequestContext', () => {
   it('treats a malformed SSO session cookie as no session outside OIDC', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 
-    const res = await request(makeProbeApp())
+    const res = await request(await makeProbeApp())
       .get('/probe')
       .set('Cookie', 'sp_sso_session=%');
 
@@ -347,7 +351,7 @@ describe('authenticate RequestContext', () => {
   it('attachRequestContext keeps the same behavior as authenticate for route coverage', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 
-    const res = await request(makeProbeApp(attachRequestContext)).get('/probe');
+    const res = await request(await makeProbeApp(attachRequestContext)).get('/probe');
 
     expect(res.status).toBe(200);
     expect(res.body.requestContext).toMatchObject({

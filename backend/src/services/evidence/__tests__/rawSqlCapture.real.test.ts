@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../../tests/helpers/loopbackServer';
 import {randomUUID} from 'crypto';
 import {once} from 'events';
 import {WorkingTraceProcessor, TraceProcessorFactory} from '../../workingTraceProcessor';
@@ -39,6 +40,8 @@ import {getCapturedAnchorFacts} from '../evidenceCapture';
 import {readRawSqlCaptureMetadata} from '../rawSqlNativeProvenance';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import type {EvidenceReadView} from '../evidenceReadView';
+
+const loopbackServers = createLoopbackServerFixture();
 
 jest.setTimeout(120_000);
 const processors: WorkingTraceProcessor[] = [];
@@ -241,7 +244,8 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       const app = express();
       app.use(express.json());
       app.use('/api/traces', traceRoutes);
-      const upload = await request(app).post('/api/traces/upload').attach('file', path.resolve(process.cwd(),
+      const server = await loopbackServers.listen(app);
+      const upload = await request(server).post('/api/traces/upload').attach('file', path.resolve(process.cwd(),
         '../Trace/.generated/constructed/source-analysis-semantic/trace.pftrace'));
       expect(upload.status).toBe(200);
       expect(upload.body.success).toBe(true);
@@ -279,7 +283,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
           expect(proof.claimVerificationResult.claimResults[0].deterministicProof?.nativeRows)
             .toMatchObject([{traceId, traceSide: 'current', relation: 'slice', idColumn: 'id', id: expect.any(Number)}]);
           if (phase === 'before_stats') {
-            const stats = await request(app).get('/api/traces/stats');
+            const stats = await request(server).get('/api/traces/stats');
             expect(stats.status).toBe(200);
             expect(stats.body.stats.processors.count).toBe(2);
             expect(stats.body.stats.processors.items.map((item: {httpPort: number}) => item.httpPort)).toEqual([sharedPort]);
@@ -312,7 +316,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       expect(TraceProcessorFactory.get(privateKey)).toBeUndefined();
       expect(getPortPool().getStats().allocations.some(allocation => allocation.traceId === privateKey)).toBe(false);
       expect(TraceProcessorFactory.get(traceId)).toBe(shared);
-      const viewer = await request(app).get(`/api/traces/${traceId}`);
+      const viewer = await request(server).get(`/api/traces/${traceId}`);
       expect(viewer.status).toBe(200);
       expect(viewer.body.trace.port).toBe(sharedPort);
       const uiStatus = await fetch(`http://127.0.0.1:${sharedPort}/status`);
@@ -327,6 +331,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       setTraceProcessorServiceForTests(null);
       getTraceProcessorLeaseStore().close();
       setTraceProcessorLeaseStoreForTests(null);
+      await loopbackServers.close();
       for (const [key, value] of previousEnv) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }

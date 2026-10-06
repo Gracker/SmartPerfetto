@@ -50,6 +50,9 @@ import {AnalysisHistoryStore} from '../../services/analysisHistoryStore';
 import {getSessionBackgroundKnowledgeReferences} from '../../services/knowledge/sessionBackgroundKnowledgeRegistry';
 import {refreshPersistedAgentSnapshot} from '../../services/persistAgentSession';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
@@ -71,11 +74,11 @@ type DeferredRuntime = {
   settled: boolean;
 };
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/agent/v1', agentRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 /** Keep registration, lease storage and ALS real; simulate native/provider execution. */
@@ -243,6 +246,8 @@ function minimalSessionSnapshot(
 }
 
 afterEach(async () => {
+  sessionContextManager.remove('session-resume-integration');
+  await loopbackServers.close();
   jest.restoreAllMocks();
   setTraceProcessorServiceForTests(null);
   setTraceProcessorLeaseStoreForTests(null);
@@ -269,7 +274,6 @@ afterEach(async () => {
   restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
   restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
   restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalProviderDataDir);
-  sessionContextManager.remove('session-resume-integration');
 });
 
 describe('agent route RBAC', () => {
@@ -290,7 +294,7 @@ describe('agent route RBAC', () => {
       rounds: 1,
       totalDurationMs: 5,
     }));
-    const app = makeApp();
+    const app = await makeApp();
 
     const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
       .send({query: '帮我分析性能需求'});
@@ -343,7 +347,7 @@ describe('agent route RBAC', () => {
         totalDurationMs: 5,
       };
     });
-    const app = makeApp();
+    const app = await makeApp();
     const selectedSlice = {
       kind: 'track_event',
       source: 'track_event_selection',
@@ -392,7 +396,7 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze');
 
-    const response = await viewerHeaders(request(makeApp()).post('/api/agent/v1/conversation'))
+    const response = await viewerHeaders(request(await makeApp()).post('/api/agent/v1/conversation'))
       .send({
         query: 'review this source',
         options: {
@@ -430,7 +434,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const owner = {userId: 'conversation-owner', workspaceId: 'workspace-a'};
       const other = {userId: 'conversation-other', workspaceId: 'workspace-a'};
 
@@ -480,7 +484,7 @@ describe('agent route RBAC', () => {
     jest.spyOn(ClaudeRuntime.prototype, 'abortSession').mockImplementation(async () => {
       rejectRuntime?.(new Error('Analysis aborted'));
     });
-    const app = makeApp();
+    const app = await makeApp();
     const owner = {userId: 'cancel-owner', workspaceId: 'workspace-a'};
     const other = {userId: 'cancel-other', workspaceId: 'workspace-a'};
 
@@ -511,7 +515,7 @@ describe('agent route RBAC', () => {
         rejectRuntime = reject;
       })
     ));
-    const app = makeApp();
+    const app = await makeApp();
     const owner = {userId: 'permission-owner', workspaceId: 'workspace-a'};
     const started = await scopedAnalystHeaders(
       request(app).post('/api/agent/v1/conversation'),
@@ -552,7 +556,7 @@ describe('agent route RBAC', () => {
       rounds: 1,
       totalDurationMs: 5,
     }));
-    const app = makeApp();
+    const app = await makeApp();
     const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
       .send({query: '第一轮'});
     expect(started.status).toBe(202);
@@ -616,7 +620,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮'});
       expect(started.status).toBe(202);
@@ -675,7 +679,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮'});
       expect(started.status).toBe(202);
@@ -738,7 +742,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮', providerId: explicitProvider.id});
       expect(started.status).toBe(202);
@@ -849,7 +853,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮', traceId});
       expect(started.status).toBe(202);
@@ -921,7 +925,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
 
       const noTrace = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '先讨论问题'});
@@ -989,7 +993,7 @@ describe('agent route RBAC', () => {
       const traceService = {getOrLoadTrace: jest.fn()};
       setTraceProcessorServiceForTests(traceService as any);
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
         .send({
           traceId: 'trace-a',
@@ -1024,7 +1028,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as any);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read')
       .send({
         traceId: 'trace-a',
@@ -1055,7 +1059,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as any);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
       .send({
         traceId: 'trace-a',
@@ -1099,7 +1103,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as any);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
       .send({
         traceId: 'trace-a',
@@ -1122,7 +1126,7 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_AI_ENABLED = 'true';
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({traceId: 'trace-a', query: 'scene reconstruction', entry: 'scene_reconstruction',
         sceneRunBinding: {verified: true}, options: {entry: 'scene_reconstruction'}});
     expect(res.status).toBe(400);
@@ -1134,7 +1138,7 @@ describe('agent route RBAC', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
 
-    const res = await viewerHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await viewerHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
     expect(res.status).toBe(403);
@@ -1171,7 +1175,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyze = await analystHeaders(
         request(app).post('/api/agent/v1/analyze'),
       ).send({traceId, query: 'analyze for feedback'});
@@ -1251,7 +1255,7 @@ describe('agent route RBAC', () => {
       const traceService = { getOrLoadTrace: jest.fn() };
       setTraceProcessorServiceForTests(traceService as any);
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
       expect(res.status).toBe(423);
@@ -1273,7 +1277,7 @@ describe('agent route RBAC', () => {
     const traceService = { getOrLoadTrace: jest.fn() };
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
     expect(res.status).toBe(403);
@@ -1293,7 +1297,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({
         traceId: 'trace-a',
         referenceTraceId: 'trace-b',
@@ -1320,7 +1324,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .set('X-Request-Id', 'req-analyze-options')
       .send({traceId: 'trace-a', query: 'Analyze this trace', options: {maxRounds: 3, outputLanguage: 'en'}});
 
@@ -1361,7 +1365,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({traceId: 'trace-a', query: '分析性能', options});
 
     expect(res.status).toBe(400);
@@ -1376,7 +1380,7 @@ describe('agent route RBAC', () => {
     const traceService = { getOrLoadTrace: jest.fn() };
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/sessions/session-a/runs'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/sessions/session-a/runs'))
       .send({ traceId: 'trace-a', query: 'continue analysis' });
 
     expect(res.status).toBe(403);
@@ -1395,7 +1399,7 @@ describe('agent route RBAC', () => {
     const traceService = { getOrLoadTrace: jest.fn() };
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/scene-reconstruct'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/scene-reconstruct'))
       .send({ traceId: 'trace-a' });
 
     expect(res.status).toBe(403);
@@ -1412,7 +1416,7 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     process.env.SMARTPERFETTO_AI_ENABLED = 'false';
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
       .send({ sessionId: 'session-disabled' });
 
     expect(res.status).toBe(403);
@@ -1461,7 +1465,7 @@ describe('agent route RBAC', () => {
       leaseStore.markReady(scope, lease.id);
       leaseStore.beginDraining(scope, lease.id);
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({ traceId, query: 'analyze this trace' });
 
       expect(res.status).toBe(409);
@@ -1503,7 +1507,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({
           traceId,
           query: 'analyze this trace',
@@ -1561,7 +1565,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const analyzeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const analyzeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({ traceId, query: 'analyze this trace' });
 
       expect(analyzeRes.status).toBe(200);
@@ -1655,7 +1659,7 @@ describe('agent route RBAC', () => {
       });
 
       const streamRes = await analystHeaders(
-        request(makeApp())
+        request(await makeApp())
           .get(`/api/agent/v1/${sessionId}/stream?lastEventId=100`)
           .set('Last-Event-ID', '98')
           .set('Accept', 'text/event-stream'),
@@ -1675,7 +1679,7 @@ describe('agent route RBAC', () => {
       expect(streamRes.text).not.toContain('"deliveryAssurance"');
 
       const legacyQueryStreamRes = await analystHeaders(
-        request(makeApp())
+        request(await makeApp())
           .get(`/api/agent/v1/${sessionId}/stream?lastEventId=98`)
           .set('Accept', 'text/event-stream'),
       );
@@ -1734,7 +1738,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyzeRes = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({
           traceId,
@@ -1944,7 +1948,7 @@ describe('agent route RBAC', () => {
         ],
       };
 
-      const app = makeApp();
+      const app = await makeApp();
       const firstRun = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({
           traceId,
@@ -2100,7 +2104,7 @@ describe('agent route RBAC', () => {
       });
       jest.spyOn(agentRuntime, 'createAgentOrchestrator').mockReturnValue(runtime as unknown as ReturnType<typeof agentRuntime.createAgentOrchestrator>);
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyzeRes = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({
           traceId,
@@ -2196,7 +2200,7 @@ describe('agent route RBAC', () => {
         [...traces.values()], () => createDeferredRuntime(deferreds).promise,
       ));
 
-      const app = makeApp();
+      const app = await makeApp();
       const [analyzeA, analyzeB] = await Promise.all([
         scopedAnalystHeaders(
           request(app).post('/api/agent/v1/analyze'),
@@ -2394,7 +2398,7 @@ describe('agent route RBAC', () => {
 
         setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => makeDeferred().promise));
 
-        const app = makeApp();
+        const app = await makeApp();
         const analyzeA = await analystHeaders(
           request(app).post('/api/agent/v1/analyze'),
         ).send({ traceId, query: 'run A' });
@@ -2566,7 +2570,7 @@ describe('agent route RBAC', () => {
 
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => makeDeferred().promise));
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyzeA = await analystHeaders(
         request(app).post('/api/agent/v1/analyze'),
       ).send({ traceId, query: 'run A' });
@@ -2694,7 +2698,7 @@ describe('agent route RBAC', () => {
         {activeRun: undefined, lastRun: undefined, queryHistory: []}), {sessionContext: context,
         owner: {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'}})).toBe(true);
 
-      const resumeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+      const resumeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
       expect(resumeRes.status).toBe(200);
@@ -2710,7 +2714,7 @@ describe('agent route RBAC', () => {
       }));
 
       const respondRes = await analystHeaders(
-        request(makeApp())
+        request(await makeApp())
           .post(`/api/agent/v1/${sessionId}/respond`)
           .send({ action: 'abort', runId: `run-${sessionId}-1` }),
       );
@@ -2771,7 +2775,7 @@ describe('agent route RBAC', () => {
           rounds: 1, totalDurationMs: 1};
       });
 
-      const app = makeApp();
+      const app = await makeApp();
       const first = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({traceId, query: 'why is startup slow', options: {analysisMode: 'auto'}});
       expect(first.status).toBe(200);
@@ -2833,7 +2837,7 @@ describe('agent route RBAC', () => {
         {activeRun: undefined, lastRun: undefined, analysisContextFingerprint: 'fingerprint-private',
           codeAwareMode: 'provider_send', codebaseIds: ['app']}), {owner, sessionContext: context})).toBe(true);
 
-      const resumed = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      const resumed = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
       expect(resumed.status).toBe(404);
       // Nothing was rehydrated: no live session, no runtime, no trace load.
       expect(agentRoutesCancellationTestSeam.getSession(sessionId)).toBeUndefined();
@@ -2879,7 +2883,7 @@ describe('agent route RBAC', () => {
         backgroundKnowledgeReferences: [backgroundReference],
       }), {owner, sessionContext: context})).toBe(true);
 
-      const resumed = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      const resumed = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
       expect(resumed.status).toBe(200);
       expect(resumed.body).toMatchObject({success: true, restored: true, providerSnapshotChanged: true});
       // The live session carries what the next analysis compares against, and
@@ -2945,7 +2949,7 @@ describe('agent route RBAC', () => {
           sectionHeading: 'Frames', chunkId: 'chunk', chunkHash: 'hash', license: 'CC-BY-4.0'}],
       }), {owner, sessionContext: context})).toBe(true);
 
-      const resumed = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      const resumed = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
       expect(resumed.status).toBe(404);
       expect(resumed.body.code).toBe('PROVIDER_NOT_FOUND');
       expect(getSessionBackgroundKnowledgeReferences(sessionId)).toEqual([]);
@@ -3027,7 +3031,7 @@ describe('agent route RBAC', () => {
         },
       )).toBe(true);
 
-      const resumeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+      const resumeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
       expect(resumeRes.status).toBe(200);
@@ -3144,7 +3148,7 @@ describe('agent route RBAC', () => {
         },
       )).toBe(true);
 
-      const app = makeApp();
+      const app = await makeApp();
       const resumeRes = await analystHeaders(request(app).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
@@ -3261,7 +3265,7 @@ describe('agent route RBAC', () => {
         },
       )).toBe(true);
 
-      const resumeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+      const resumeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
       expect(resumeRes.status).toBe(200);

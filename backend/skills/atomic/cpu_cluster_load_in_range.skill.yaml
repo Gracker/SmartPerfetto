@@ -9,6 +9,9 @@
 # 负载 = Running 时间 / (非挂起时长 × 簇内核心数)
 # 100% 表示该簇所有核心在设备醒着的时间里完全跑满
 #
+# v2.3: Running 区间和窗口统一扣除挂起；任一转换缺失时整体回退墙钟。
+#   多 machine 或重复 CPU 元数据时负载不可用，保留原因，不合并身份或钳位百分比。
+#
 # v2.2: 计算移入 fragments/cpu_cluster_load.sql，jank_frame_detail 根因的
 #   大/小核负载复用同一定义，簇表与根因文本不再各算一套
 #
@@ -27,7 +30,7 @@
 #   - 支持 prime/big/medium/little 四级分类
 
 name: cpu_cluster_load_in_range
-version: "2.2"
+version: "2.3"
 type: composite
 category: cpu
 tier: B
@@ -72,6 +75,16 @@ steps:
       columns:
         - name: cluster
           label: "CPU 簇"
+          type: string
+        - name: load_status
+          label: "负载测量状态"
+          label_i18n:
+            en: "Load measurement status"
+          type: string
+        - name: clock_basis
+          label: "计时口径"
+          label_i18n:
+            en: "Clock basis"
           type: string
         - name: core_count
           label: "核心数"
@@ -118,6 +131,8 @@ steps:
           WHEN 'little' THEN '小核簇'
           ELSE '未分类核心'
         END AS cluster,
+        cs.load_status,
+        cs.clock_basis,
         cs.core_count,
         cs.active_core_count,
         ROUND(cs.awake_ns / 1e6, 2) AS awake_ms,

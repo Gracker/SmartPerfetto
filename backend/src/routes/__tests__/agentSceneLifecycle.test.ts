@@ -37,6 +37,9 @@ import {EnhancedSessionContext, sessionContextManager} from '../../agent/context
 import {AssistantApplicationService} from '../../assistant/application/assistantApplicationService';
 import {SkillExecutor} from '../../services/skillEngine/skillExecutor';
 import * as reportRoutes from '../reportRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const owner = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'scene-owner'};
 const traceId = 'scene-http-trace';
@@ -48,6 +51,7 @@ const envKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', '
 const originalEnv = new Map(envKeys.map(key => [key, process.env[key]]));
 let dir: string;
 let app: express.Express;
+let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
 let service: TraceProcessorService;
 let providerId: string;
 let runtime: ClaudeRuntime;
@@ -74,7 +78,7 @@ function events(text: string): Array<{type: string; payload: any}> {
   });
 }
 async function start() {
-  const response = await auth(request(app).post(`${prefix}/scene-reconstruct`))
+  const response = await auth(request(server).post(`${prefix}/scene-reconstruct`))
     .send({traceId, providerId, options: {outputLanguage: 'en'}});
   expect(response.status).toBe(200);
   const receipt = response.body as {sessionId: string; analysisId: string; runId: string};
@@ -86,13 +90,13 @@ async function start() {
 async function stream(receipt: {sessionId: string; runId: string}, compat = false) {
   const deadline = Date.now() + 5000;
   while (true) {
-    const status = await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`));
+    const status = await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`));
     expect(status.status).toBe(200);
     if (['completed', 'failed', 'cancelled'].includes(status.body.status)) break;
     if (Date.now() >= deadline) throw new Error('scene HTTP run did not settle');
     await new Promise(resolve => setTimeout(resolve, 10));
   }
-  return auth(request(app).get(`${prefix}/${compat ? 'scene-reconstruct/' : ''}${receipt.sessionId}/stream?runId=${receipt.runId}`))
+  return auth(request(server).get(`${prefix}/${compat ? 'scene-reconstruct/' : ''}${receipt.sessionId}/stream?runId=${receipt.runId}`))
     .timeout({response: 5000, deadline: 10000});
 }
 
@@ -172,6 +176,7 @@ beforeEach(async () => {
       conclusion: 'Partial scene observation.', confidence: 0, rounds: 1, totalDurationMs: 1};
   });
   app = express(); app.use(express.json()); app.use(prefix, agentRoutes);
+  server = await loopbackServers.listen(app);
 });
 
 afterEach(async () => {
@@ -182,6 +187,7 @@ afterEach(async () => {
     sessionContextManager.remove(sessionId);
   }
   sessions = []; holdRuntime = undefined; releaseRuntime = undefined;
+  await loopbackServers.close();
   jest.restoreAllMocks();
   setTraceProcessorServiceForTests(null); setTraceProcessorLeaseStoreForTests(null);
   SessionPersistenceService.resetForTests(); resetAgentEventStoreForTests(); resetAnalysisRunStoreForTests();
@@ -212,21 +218,21 @@ describe('scene HTTP shared lifecycle', () => {
     expect(final.sceneTimeline.segments[0].segment.id).toBe('http-segment');
     expect(final.sceneTimeline.segments[0].semanticStatus).toBe('unverified');
     expect(final.sceneReport).toMatchObject({traceId, sessionId: receipt.sessionId, runId: receipt.runId, revision: 1});
-    const ordinary = await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`));
-    const compat = await auth(request(app).get(`${prefix}/scene-reconstruct/${receipt.sessionId}/status`));
+    const ordinary = await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`));
+    const compat = await auth(request(server).get(`${prefix}/scene-reconstruct/${receipt.sessionId}/status`));
     expect(ordinary.status).toBe(200); expect(compat.status).toBe(200);
     expect(ordinary.body.result.sceneTimeline).toEqual(final.sceneTimeline);
     expect(compat.body.result.sceneTimeline).toEqual(final.sceneTimeline);
-    const tracks = await auth(request(app).get(`${prefix}/scene-reconstruct/${receipt.sessionId}/tracks`));
+    const tracks = await auth(request(server).get(`${prefix}/scene-reconstruct/${receipt.sessionId}/tracks`));
     expect(tracks.status).toBe(200); expect(tracks.body.sceneTimeline).toEqual(final.sceneTimeline);
-    const archived = await auth(request(app).get(`${prefix}/scene-reconstruct/report/${final.sceneReport.reportId}`));
+    const archived = await auth(request(server).get(`${prefix}/scene-reconstruct/report/${final.sceneReport.reportId}`));
     expect(archived.status).toBe(200);
     expect(archived.body.report.sceneTimeline).toEqual(final.sceneTimeline);
   });
 
   it.each(['metadata_deleted', 'archive_expired'] as const)('rejects ordinary and compatibility history after %s, including owner aliases', async kind => {
     const receipt = await start(); await stream(receipt);
-    const status = await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`));
+    const status = await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`));
     const ref = status.body.result.sceneReport;
     expect(ref).toBeDefined();
     if (kind === 'metadata_deleted') await deleteTraceMetadata(traceId);
@@ -235,7 +241,7 @@ describe('scene HTTP shared lifecycle', () => {
       `/runs/${receipt.runId}/stream`, `/scene-reconstruct/${receipt.sessionId}/status`,
       `/scene-reconstruct/${receipt.sessionId}/tracks`, `/scene-reconstruct/${receipt.sessionId}/stream?runId=${receipt.runId}`,
       `/scene-reconstruct/report/${ref.reportId}`]) {
-      const response = await auth(request(app).get(`${prefix}${route}`).timeout({deadline: 5000}));
+      const response = await auth(request(server).get(`${prefix}${route}`).timeout({deadline: 5000}));
       expect({route, status: response.status}).toEqual({route, status: 404});
     }
   });
@@ -246,12 +252,12 @@ describe('scene HTTP shared lifecycle', () => {
       for (const route of [`/${receipt.sessionId}/status`, `/${receipt.sessionId}/stream?runId=${receipt.runId}`,
         `/scene-reconstruct/${receipt.sessionId}/status`, `/scene-reconstruct/${receipt.sessionId}/tracks`,
         `/scene-reconstruct/${receipt.sessionId}/stream?runId=${receipt.runId}`]) {
-        const hidden = await auth(request(app).get(`${prefix}${route}`), user, workspace);
+        const hidden = await auth(request(server).get(`${prefix}${route}`), user, workspace);
         expect({route, status: hidden.status}).toEqual({route, status: 404});
       }
     }
     const execute = jest.spyOn(SkillExecutor.prototype, 'execute');
-    const dive = await auth(request(app).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/deep-dive`))
+    const dive = await auth(request(server).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/deep-dive`))
       .send({eventId: 'http-segment', eventType: 'scroll', startTs: '1', endTs: '2'});
     expect(dive.status).toBe(409); expect(dive.body.code).toBe('SCENE_INVESTIGATION_REQUIRED');
     expect(execute).not.toHaveBeenCalled();
@@ -260,13 +266,13 @@ describe('scene HTTP shared lifecycle', () => {
   it('requires the active runId for cancellation and drops late runtime updates after the one terminal', async () => {
     const held = new Promise<void>(resolve => {releaseRuntime = resolve;}); holdRuntime = () => held;
     const receipt = await start();
-    const missing = await auth(request(app).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/cancel`)).send({});
+    const missing = await auth(request(server).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/cancel`)).send({});
     expect(missing.status).toBe(400); expect(missing.body.code).toBe('RUN_ID_REQUIRED');
-    const wrong = await auth(request(app).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/cancel`)).send({runId: 'wrong-run'});
+    const wrong = await auth(request(server).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/cancel`)).send({runId: 'wrong-run'});
     expect(wrong.status).toBe(404); expect(wrong.body.code).toBe('RUN_NOT_FOUND');
-    const status = await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`));
+    const status = await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`));
     expect(status.body.status).toBe('running');
-    const cancelled = await auth(request(app).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/cancel`)).send({runId: receipt.runId});
+    const cancelled = await auth(request(server).post(`${prefix}/scene-reconstruct/${receipt.sessionId}/cancel`)).send({runId: receipt.runId});
     expect(cancelled.status).toBe(200); expect(cancelled.body.status).toBe('cancelled');
     releaseRuntime!();
     const response = await stream(receipt, true);
@@ -289,18 +295,18 @@ describe('scene HTTP shared lifecycle', () => {
     expect(persistence.saveSessionContext(receipt.sessionId, context)).toBe(true);
     expect(persistence.loadSessionContext(receipt.sessionId)).not.toBeNull();
     const reads = jest.spyOn(AssistantApplicationService.prototype, 'getSession');
-    await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`));
+    await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`));
     const original = reads.mock.results.find(result => result.type === 'return' && result.value?.sessionId === receipt.sessionId)!.value as any;
     let resolveCleanup!: () => void;
     let entered!: () => void;
     const cleaning = new Promise<void>(resolve => {entered = resolve;});
     const cleanup = new Promise<void>(resolve => {resolveCleanup = resolve;});
     jest.spyOn(runtime, 'cleanupSession').mockImplementationOnce(async () => {entered(); await cleanup;});
-    const deletion = auth(request(app).delete(`${prefix}/scene-reconstruct/${receipt.sessionId}`)).then(response => response);
+    const deletion = auth(request(server).delete(`${prefix}/scene-reconstruct/${receipt.sessionId}`)).then(response => response);
     await cleaning;
     expect(original.sceneExecutionInFlightRunId).toBe(`delete:${receipt.sessionId}`);
     for (const route of ['/analyze', `/sessions/${receipt.sessionId}/runs`]) {
-      const refused = await auth(request(app).post(`${prefix}${route}`))
+      const refused = await auth(request(server).post(`${prefix}${route}`))
         .send({sessionId: receipt.sessionId, traceId, query: 'A new analysis during deletion', providerId});
       expect(refused.status).toBe(409); expect(refused.body.code).toBe('RUN_ALREADY_ACTIVE');
     }
@@ -309,7 +315,7 @@ describe('scene HTTP shared lifecycle', () => {
     resolveCleanup();
     expect((await deletion).status).toBe(200);
     expect(original.sceneExecutionInFlightRunId).toBeUndefined();
-    expect((await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`))).status).toBe(200);
+    expect((await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`))).status).toBe(200);
     expect(reads.mock.results.some(result => result.type === 'return' && result.value === replacement)).toBe(true);
   });
 
@@ -317,10 +323,10 @@ describe('scene HTTP shared lifecycle', () => {
     const receipt = await start(); await stream(receipt);
     const cleanup = jest.spyOn(runtime, 'cleanupSession').mockImplementationOnce(async () => {throw new Error('fixture cleanup failure');})
       .mockImplementationOnce(() => {});
-    const failed = await auth(request(app).delete(`${prefix}/scene-reconstruct/${receipt.sessionId}`));
+    const failed = await auth(request(server).delete(`${prefix}/scene-reconstruct/${receipt.sessionId}`));
     expect(failed.status).toBe(500);
-    expect((await auth(request(app).get(`${prefix}/${receipt.sessionId}/status`))).status).toBe(200);
-    const retried = await auth(request(app).delete(`${prefix}/scene-reconstruct/${receipt.sessionId}`));
+    expect((await auth(request(server).get(`${prefix}/${receipt.sessionId}/status`))).status).toBe(200);
+    const retried = await auth(request(server).delete(`${prefix}/scene-reconstruct/${receipt.sessionId}`));
     expect(retried.status).toBe(200); expect(cleanup).toHaveBeenCalledTimes(2);
   });
 });

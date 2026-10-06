@@ -23,6 +23,10 @@ import {
 } from '../../services/batchTrace/batchTraceTypes';
 import batchTraceRoutes from '../batchTraceRoutes';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 jest.mock('../../services/batchTrace/batchTraceRunner', () => ({
   runBatchSkill: jest.fn(),
 }));
@@ -50,7 +54,7 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use(
@@ -60,7 +64,7 @@ function makeApp(): express.Express {
     requireWorkspaceRouteContext,
     batchTraceRoutes,
   );
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function ssoHeaders(req: request.Test, scopes: string, userId = 'batch-user'): request.Test {
@@ -214,6 +218,7 @@ describe('batch trace workspace routes', () => {
   });
 
   afterEach(async () => {
+    await loopbackServers.close();
     jest.clearAllMocks();
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
     restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnv.enterpriseDbPath);
@@ -224,7 +229,7 @@ describe('batch trace workspace routes', () => {
   });
 
   it('creates, reads, exports, promotes, and compares a workspace batch run', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const allScopes = 'agent:run,report:read,analysis_result:create,comparison:create';
 
     const created = await ssoHeaders(
@@ -308,7 +313,7 @@ describe('batch trace workspace routes', () => {
 
   it('requires agent run permission to create a batch run', async () => {
     const res = await ssoHeaders(
-      request(makeApp()).post('/api/workspaces/workspace-a/batch-traces').send({
+      request(await makeApp()).post('/api/workspaces/workspace-a/batch-traces').send({
         skillId: 'startup_analysis',
         traceIds: ['trace-a'],
       }),
@@ -321,7 +326,7 @@ describe('batch trace workspace routes', () => {
 
   it('rejects malformed create bodies', async () => {
     const res = await ssoHeaders(
-      request(makeApp()).post('/api/workspaces/workspace-a/batch-traces').send({
+      request(await makeApp()).post('/api/workspaces/workspace-a/batch-traces').send({
         skillId: 'startup_analysis',
         traceIds: [],
       }),
@@ -336,7 +341,7 @@ describe('batch trace workspace routes', () => {
     process.env.SMARTPERFETTO_BATCH_TRACE_API_SYNC_MAX_TRACES = '1';
 
     const res = await ssoHeaders(
-      request(makeApp()).post('/api/workspaces/workspace-a/batch-traces').send({
+      request(await makeApp()).post('/api/workspaces/workspace-a/batch-traces').send({
         skillId: 'startup_analysis',
         traceIds: ['trace-a', 'trace-b'],
       }),
@@ -350,7 +355,7 @@ describe('batch trace workspace routes', () => {
 
   it('limits process-wide synchronous API batch runs', async () => {
     process.env.SMARTPERFETTO_BATCH_TRACE_API_MAX_IN_FLIGHT_RUNS = '1';
-    const app = makeApp();
+    const app = await makeApp();
     const deferred = deferredBatchRun();
 
     const first = ssoHeaders(

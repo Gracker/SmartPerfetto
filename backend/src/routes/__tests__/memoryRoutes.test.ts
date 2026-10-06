@@ -23,6 +23,9 @@ import {
   type MemoryPromotionPolicy,
   type ProjectMemoryEntry,
 } from '../../types/sparkContracts';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -34,16 +37,19 @@ const originalEnv = {
 let tmpDir: string;
 let memory: ProjectMemory;
 let app: express.Express;
+let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-routes-test-'));
   memory = new ProjectMemory(path.join(tmpDir, 'memory.json'));
   app = express();
   app.use(express.json({limit: '5mb'}));
   app.use('/api/memory', createMemoryRoutes(memory));
+  server = await loopbackServers.listen(app);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   jest.restoreAllMocks();
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
   restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
@@ -118,7 +124,7 @@ describe('POST /api/memory/sweep-confirm', () => {
       totalPromoted: 3,
     });
 
-    const res = await ssoHeaders(request(app).post('/api/memory/sweep-confirm')).send({});
+    const res = await ssoHeaders(request(server).post('/api/memory/sweep-confirm')).send({});
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
@@ -154,17 +160,17 @@ describe('GET /api/memory', () => {
       role: 'analyst',
       scopes: 'trace:read,report:read',
     };
-    const listRes = await ssoHeaders(request(app).get('/api/memory'), analystHeaders);
+    const listRes = await ssoHeaders(request(server).get('/api/memory'), analystHeaders);
     expect(listRes.status).toBe(403);
     expect(listRes.body.details).toContain('Memory administration requires audit:read permission');
 
-    const auditRes = await ssoHeaders(request(app).get('/api/memory/audit'), analystHeaders);
+    const auditRes = await ssoHeaders(request(server).get('/api/memory/audit'), analystHeaders);
     expect(auditRes.status).toBe(403);
 
-    const deleteRes = await ssoHeaders(request(app).delete('/api/memory/a'), analystHeaders);
+    const deleteRes = await ssoHeaders(request(server).delete('/api/memory/a'), analystHeaders);
     expect(deleteRes.status).toBe(403);
 
-    const adminRes = await ssoHeaders(request(app).get('/api/memory'));
+    const adminRes = await ssoHeaders(request(server).get('/api/memory'));
     expect(adminRes.status).toBe(200);
     expect(adminRes.body.success).toBe(true);
   });
@@ -172,7 +178,7 @@ describe('GET /api/memory', () => {
   it('lists entries with count', async () => {
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'a'}));
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'b'}));
-    const res = await request(app).get('/api/memory');
+    const res = await request(server).get('/api/memory');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(2);
     expect(res.body.entries.map((e: ProjectMemoryEntry) => e.entryId)).toEqual([
@@ -196,7 +202,7 @@ describe('GET /api/memory', () => {
         },
       }),
     );
-    const res = await request(app).get('/api/memory?scope=world');
+    const res = await request(server).get('/api/memory?scope=world');
     expect(res.body.count).toBe(1);
     expect(res.body.entries[0].entryId).toBe('b');
   });
@@ -208,7 +214,7 @@ describe('GET /api/memory', () => {
     memory.saveProjectMemoryEntry(
       makeEntry({entryId: 'b', projectKey: 'com.other/pixel'}),
     );
-    const res = await request(app).get(
+    const res = await request(server).get(
       '/api/memory?projectKey=com.example/pixel',
     );
     expect(res.body.count).toBe(1);
@@ -217,7 +223,7 @@ describe('GET /api/memory', () => {
 
   it('ignores invalid scope values silently', async () => {
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'a'}));
-    const res = await request(app).get('/api/memory?scope=invalid');
+    const res = await request(server).get('/api/memory?scope=invalid');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(1);
   });
@@ -233,7 +239,7 @@ describe('GET /api/memory/audit', () => {
       reviewer: 'chris',
       promotedAt: 1714600000000,
     });
-    const res = await request(app).get('/api/memory/audit');
+    const res = await request(server).get('/api/memory/audit');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(1);
     expect(res.body.audit[0].entryId).toBe('a');
@@ -241,7 +247,7 @@ describe('GET /api/memory/audit', () => {
   });
 
   it('returns empty audit when nothing promoted', async () => {
-    const res = await request(app).get('/api/memory/audit');
+    const res = await request(server).get('/api/memory/audit');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(0);
   });
@@ -258,7 +264,7 @@ describe('POST /api/memory/promote', () => {
 
   it('promotes a project entry to world', async () => {
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'a', scope: 'project'}));
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/memory/promote')
       .send({entryId: 'a', policy: REVIEWER_POLICY});
     expect(res.status).toBe(200);
@@ -279,13 +285,13 @@ describe('POST /api/memory/promote', () => {
       userId: 'memory-admin',
     });
     const promoteRes = await ssoHeaders(
-      request(app)
+      request(server)
         .post('/api/memory/promote')
         .send({entryId: 'a', policy: REVIEWER_POLICY}),
     );
     expect(promoteRes.status).toBe(200);
 
-    const deleteRes = await ssoHeaders(request(app).delete('/api/memory/a'));
+    const deleteRes = await ssoHeaders(request(server).delete('/api/memory/a'));
     expect(deleteRes.status).toBe(200);
 
     expect(readEnterpriseAuditActions(dbPath)).toEqual(expect.arrayContaining([
@@ -295,14 +301,14 @@ describe('POST /api/memory/promote', () => {
   });
 
   it('400 on missing body fields', async () => {
-    const res = await request(app).post('/api/memory/promote').send({});
+    const res = await request(server).post('/api/memory/promote').send({});
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
 
   it('surfaces auto_inferred trigger rejection as 400', async () => {
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'a', scope: 'project'}));
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/memory/promote')
       .send({
         entryId: 'a',
@@ -314,7 +320,7 @@ describe('POST /api/memory/promote', () => {
 
   it("surfaces 'world without reviewer_approval' rejection as 400", async () => {
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'a', scope: 'project'}));
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/memory/promote')
       .send({
         entryId: 'a',
@@ -325,7 +331,7 @@ describe('POST /api/memory/promote', () => {
   });
 
   it('surfaces missing entry as 404', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/memory/promote')
       .send({entryId: 'missing', policy: REVIEWER_POLICY});
     expect(res.status).toBe(404);
@@ -337,13 +343,13 @@ describe('POST /api/memory/promote', () => {
 describe('DELETE /api/memory/:entryId', () => {
   it('removes an entry and returns 200', async () => {
     memory.saveProjectMemoryEntry(makeEntry({entryId: 'a'}));
-    const res = await request(app).delete('/api/memory/a');
+    const res = await request(server).delete('/api/memory/a');
     expect(res.status).toBe(200);
     expect(memory.getProjectMemoryEntry('a')).toBeUndefined();
   });
 
   it('returns 404 for unknown entryId', async () => {
-    const res = await request(app).delete('/api/memory/missing');
+    const res = await request(server).delete('/api/memory/missing');
     expect(res.status).toBe(404);
   });
 });

@@ -28,6 +28,10 @@ import { NativeDirectoryPickerError } from '../../services/codebase/nativeDirect
 import * as traceConfigProposal from '../../services/traceConfigProposal';
 import { ConversationRequestError, ConversationSessionService } from '../../assistant/application/conversationSessionService';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 const CANARY = 'canary-7e3a /Users/someone/.smartperfetto/secret.db SELECT api_key FROM providers';
 
 jest.mock('../../middleware/auth', () => {
@@ -46,7 +50,7 @@ const context: RequestContext = {
   requestId: 'req-route-failure-variants',
 };
 
-function appWith(mount: (app: express.Express) => void): express.Express {
+async function appWith(mount: (app: express.Express) => void) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -56,7 +60,7 @@ function appWith(mount: (app: express.Express) => void): express.Express {
     next();
   });
   mount(app);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 const downstream = (): never => {
@@ -73,7 +77,8 @@ describe('route failure variants', () => {
     jest.spyOn(console, 'log').mockImplementation(() => undefined);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     jest.restoreAllMocks();
   });
 
@@ -113,7 +118,7 @@ describe('route failure variants', () => {
   describe('knowledge curation', () => {
     test('baseline save: a store failure is fixed, a publish gate keeps its text', async () => {
       const store = {addBaseline: jest.fn(downstream)};
-      const app = appWith(a => a.use('/api/baselines', createBaselineRoutes(store as never)));
+      const app = await appWith(a => a.use('/api/baselines', createBaselineRoutes(store as never)));
       const record = {baselineId: 'b1', key: {}, status: 'published'};
 
       expectFixedFailure(await request(app).post('/api/baselines').send(record), 500, 'baseline_save_failed');
@@ -129,7 +134,7 @@ describe('route failure variants', () => {
       const library = {publishCase: jest.fn(() => {
         throw new KnowledgeCurationError('case_not_found', 'Cannot publish case \'c1\': not found', 404);
       })};
-      const app = appWith(a => a.use('/api/cases', createCaseRoutes(library as never, {} as never)));
+      const app = await appWith(a => a.use('/api/cases', createCaseRoutes(library as never, {} as never)));
 
       expectPublicError(await request(app).post('/api/cases/c1/publish').send({reviewer: 'r'}), 404,
         'case_not_found', 'Cannot publish case \'c1\': not found');
@@ -142,7 +147,7 @@ describe('route failure variants', () => {
 
     test('memory promote answers a storage failure with fixed text', async () => {
       const memory = {promoteEntry: jest.fn(downstream)};
-      const app = appWith(a => a.use('/api/memory', createMemoryRoutes(memory as never)));
+      const app = await appWith(a => a.use('/api/memory', createMemoryRoutes(memory as never)));
 
       expectFixedFailure(
         await request(app).post('/api/memory/promote').send({entryId: 'm1', policy: {trigger: 'user_feedback'}}),
@@ -154,7 +159,7 @@ describe('route failure variants', () => {
 
   test('enterprise API key: delegation errors keep text, database failures do not', async () => {
     const apiKeyService = {createApiKey: jest.fn(downstream)};
-    const app = appWith(a => a.use('/api/auth', createEnterpriseApiKeyRouter({apiKeyService: apiKeyService as never})));
+    const app = await appWith(a => a.use('/api/auth', createEnterpriseApiKeyRouter({apiKeyService: apiKeyService as never})));
 
     expectFixedFailure(await request(app).post('/api/auth/api-keys').send({}), 500, 'api_key_create_failed');
 
@@ -166,7 +171,7 @@ describe('route failure variants', () => {
   });
 
   test('trace config proposal: field validation keeps its text, an internal failure is fixed', async () => {
-    const app = appWith(a => a.use('/api/trace-config', traceConfigProposalRoutes));
+    const app = await appWith(a => a.use('/api/trace-config', traceConfigProposalRoutes));
 
     expectPublicError(
       await request(app).post('/api/trace-config/proposals').send({request: 'startup', durationSeconds: -1}),
@@ -200,7 +205,7 @@ describe('route failure variants', () => {
 
     test('knowledge source consent: unknown source is a typed 404, a database failure is fixed', async () => {
       expectFixedFailure(
-        await request(app()).patch('/api/rag/knowledge/k1/consent').send({sendToProvider: true}),
+        await request(await app()).patch('/api/rag/knowledge/k1/consent').send({sendToProvider: true}),
         500,
         'knowledge_source_consent_failed',
       );
@@ -209,7 +214,7 @@ describe('route failure variants', () => {
         throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_NOT_FOUND', 'External knowledge source \'k1\' not found', 404);
       });
       expectPublicError(
-        await request(app()).patch('/api/rag/knowledge/k1/consent').send({sendToProvider: true}),
+        await request(await app()).patch('/api/rag/knowledge/k1/consent').send({sendToProvider: true}),
         404,
         'KNOWLEDGE_SOURCE_NOT_FOUND',
         'External knowledge source \'k1\' not found',
@@ -220,7 +225,7 @@ describe('route failure variants', () => {
       services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('source_changed_during_ingest:docs/secret-canary-7e3a.md');
       });
-      const reason = await request(app()).post('/api/rag/knowledge/k1/reindex');
+      const reason = await request(await app()).post('/api/rag/knowledge/k1/reindex');
       expect(reason.status).toBe(400);
       expect(reason.body).toEqual({
         success: false,
@@ -232,7 +237,7 @@ describe('route failure variants', () => {
       expect(JSON.stringify(warnLog.mock.calls)).toContain('secret-canary-7e3a');
 
       services.documentCollectionIngester.ingest.mockImplementation(async () => downstream());
-      expectPathFreeFixedFailure(await request(app()).post('/api/rag/knowledge/k1/reindex'), 500,
+      expectPathFreeFixedFailure(await request(await app()).post('/api/rag/knowledge/k1/reindex'), 500,
         'KNOWLEDGE_COLLECTION_REINDEX_FAILED');
     });
 
@@ -240,7 +245,7 @@ describe('route failure variants', () => {
       services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('staged_chunk_count_mismatch:3:2');
       });
-      const internal = await request(app()).post('/api/rag/knowledge/k1/reindex');
+      const internal = await request(await app()).post('/api/rag/knowledge/k1/reindex');
       expect(internal.status).toBe(500);
       expect(internal.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
       expect(internal.text).not.toContain('staged_chunk_count_mismatch');
@@ -249,7 +254,7 @@ describe('route failure variants', () => {
       services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('codebase_delete_not_started');
       });
-      const prefixed = await request(app()).post('/api/rag/knowledge/k1/reindex');
+      const prefixed = await request(await app()).post('/api/rag/knowledge/k1/reindex');
       expect(prefixed.status).toBe(500);
       expect(prefixed.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
       expect(prefixed.text).not.toContain('codebase_delete_not_started');
@@ -257,13 +262,13 @@ describe('route failure variants', () => {
       services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('provider_send_not_consented');
       });
-      const consent = await request(app()).post('/api/rag/knowledge/k1/reindex');
+      const consent = await request(await app()).post('/api/rag/knowledge/k1/reindex');
       expect(consent.status).toBe(400);
       expect(consent.body.code).toBe('provider_send_not_consented');
     });
 
     test('a server-side directory picker failure keeps its fixed text and logs its cause', async () => {
-      const res = await request(app()).post('/api/rag/codebases/preview')
+      const res = await request(await app()).post('/api/rag/codebases/preview')
         .set('Origin', 'http://127.0.0.1:10000')
         .send({rootPath: '/src/app', directorySelectionId: 'selection-1'});
       expectPublicError(res, 500, 'DIRECTORY_PICKER_FAILED', 'Unable to open the system directory picker');
@@ -273,23 +278,23 @@ describe('route failure variants', () => {
     });
 
     test('codebase delete: a storage failure is fixed', async () => {
-      expectFixedFailure(await request(app()).delete('/api/rag/codebases/cb1'), 500, 'CODEBASE_DELETE_FAILED');
+      expectFixedFailure(await request(await app()).delete('/api/rag/codebases/cb1'), 500, 'CODEBASE_DELETE_FAILED');
     });
 
     test('codebase read: a management error keeps its status, anything else is fixed', async () => {
-      expectFixedFailure(await request(app()).get('/api/rag/codebases/cb1'), 500, 'CODEBASE_READ_FAILED');
+      expectFixedFailure(await request(await app()).get('/api/rag/codebases/cb1'), 500, 'CODEBASE_READ_FAILED');
 
       services.codebaseManagementService.get.mockImplementation(() => {
         throw new CodebaseManagementError('CODEBASE_NOT_FOUND', 404, 'Codebase \'cb1\' not found');
       });
-      expectPublicError(await request(app()).get('/api/rag/codebases/cb1'), 404,
+      expectPublicError(await request(await app()).get('/api/rag/codebases/cb1'), 404,
         'CODEBASE_NOT_FOUND', 'Codebase \'cb1\' not found');
     });
   });
 
   test('self-evolution answers prose with its fallback code and logs it', async () => {
     const service = {overview: jest.fn(downstream)};
-    const app = appWith(a => a.use('/api/admin/self-evolution', createSelfEvolutionAdminRoutes(service as never)));
+    const app = await appWith(a => a.use('/api/admin/self-evolution', createSelfEvolutionAdminRoutes(service as never)));
 
     const prose = await request(app).get('/api/admin/self-evolution/overview');
     expect(prose.status).toBe(500);

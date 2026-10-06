@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import {
   getLegacyApiUsageSnapshot,
   resetLegacyApiUsageTelemetryForTests,
@@ -19,11 +20,15 @@ import {
   rejectRemovedTemplateAnalysisApi,
 } from '../removedApi';
 
-function appFor(mount: string, handler: express.RequestHandler) {
+const loopbackServers = createLoopbackServerFixture();
+
+async function appFor(mount: string, handler: express.RequestHandler) {
   const app = express();
   app.use(mount, handler);
-  return app;
+  return loopbackServers.listen(app);
 }
+
+afterEach(async () => {await loopbackServers.close();});
 
 const perfettoSqlApp = () => appFor('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 
@@ -33,7 +38,7 @@ describe('removed /api/perfetto-sql', () => {
   });
 
   test('maps scene endpoints to the Skill with the same request body', async () => {
-    const res = await request(perfettoSqlApp())
+    const res = await request(await perfettoSqlApp())
       .post('/api/perfetto-sql/click-response/?debug=1')
       .send({ traceId: 't1', packageName: "x' OR 1=1 --" })
       .expect(410);
@@ -54,7 +59,7 @@ describe('removed /api/perfetto-sql', () => {
   });
 
   test('matches scene paths case-insensitively like the router it replaces', async () => {
-    const res = await request(perfettoSqlApp()).head('/api/perfetto-sql/Startup').expect(410);
+    const res = await request(await perfettoSqlApp()).head('/api/perfetto-sql/Startup').expect(410);
     expect(res.headers.link).toBe('</api/skills/execute/startup_analysis>; rel="successor-version"');
   });
 
@@ -64,7 +69,7 @@ describe('removed /api/perfetto-sql', () => {
     ['post', '/api/perfetto-sql/analyze'],
     ['get', '/api/perfetto-sql'],
   ] as const)('%s %s has no direct successor', async (method, url) => {
-    const res = await request(perfettoSqlApp())[method](url).send({ sql: 'SELECT 1' }).expect(410);
+    const res = await request(await perfettoSqlApp())[method](url).send({ sql: 'SELECT 1' }).expect(410);
     expect(res.headers.link).toBeUndefined();
     expect(res.body.migration).toEqual({ successor: null, fallback: FALLBACK });
   });
@@ -77,10 +82,10 @@ describe('removed /api/perfetto-sql', () => {
 
 describe('removed /api/sessions', () => {
   const sessionsFallback = '/api/agent/v1/sessions';
-  const sessionsApp = () => {
+  const sessionsApp = async () => {
     const app = express();
     app.use('/api/sessions', rejectRemovedSessionsApi);
-    return app;
+    return loopbackServers.listen(app);
   };
 
   afterEach(() => {
@@ -92,7 +97,7 @@ describe('removed /api/sessions', () => {
     ['get', '/api/sessions/agent-1790-abc', '/api/agent/v1/agent-1790-abc/turns'],
     ['delete', '/api/sessions/agent-1790-abc', '/api/agent/v1/agent-1790-abc'],
   ] as const)('%s %s points at its owner-scoped successor', async (method, url, successor) => {
-    const res = await request(sessionsApp())[method](url).expect(410);
+    const res = await request(await sessionsApp())[method](url).expect(410);
     expect(res.headers.link).toBe(`<${successor}>; rel="successor-version"`);
     expect(res.body).toMatchObject({
       success: false,
@@ -107,7 +112,7 @@ describe('removed /api/sessions', () => {
     '/api/sessions/a%3Cscript%3E',
     '/api/sessions/a/b',
   ])('%s has no direct successor', async (url) => {
-    const res = await request(sessionsApp()).get(url).expect(410);
+    const res = await request(await sessionsApp()).get(url).expect(410);
     expect(res.headers.link).toBeUndefined();
     expect(res.body.migration).toEqual({ successor: null, fallback: sessionsFallback });
   });
@@ -121,7 +126,7 @@ describe('removed /api/template-analysis', () => {
     ['post', '/api/template-analysis/frame-stats'],
     ['get', '/api/template-analysis'],
   ] as const)('%s %s answers 410 with the agent fallback', async (method, url) => {
-    const app = appFor('/api/template-analysis', rejectRemovedTemplateAnalysisApi);
+    const app = await appFor('/api/template-analysis', rejectRemovedTemplateAnalysisApi);
     const res = await request(app)[method](url).expect(410);
 
     expect(res.headers.link).toBeUndefined();
@@ -143,7 +148,7 @@ describe('removed /api/sql', () => {
     ['post', '/api/sql/generate'],
     ['get', '/api/sql'],
   ] as const)('%s %s answers 410 with the agent fallback', async (method, url) => {
-    const app = appFor('/api/sql', rejectRemovedSqlApi);
+    const app = await appFor('/api/sql', rejectRemovedSqlApi);
     const res = await request(app)[method](url).send({ query: 'slowest frames' }).expect(410);
 
     expect(res.headers.deprecation).toBe('true');

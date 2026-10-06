@@ -17,10 +17,13 @@ import reportRoutes from '../reportRoutes';
 import batchTraceRoutes from '../batchTraceRoutes';
 import skillPackRoutes from '../skillPackRoutes';
 import traceRoutes from '../simpleTraceRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use(
@@ -69,10 +72,11 @@ function makeApp(): express.Express {
     requireWorkspaceRouteContext,
     batchTraceRoutes,
   );
-  return app;
+  return loopbackServers.listen(app);
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
   } else {
@@ -84,7 +88,7 @@ describe('RequestContext route coverage', () => {
   it('keeps trace health available through dev fallback', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 
-    const res = await request(makeApp()).get('/api/traces/health');
+    const res = await request(await makeApp()).get('/api/traces/health');
 
     expect(res.status).toBe(200);
     expect(res.body.available).toBe(true);
@@ -93,7 +97,7 @@ describe('RequestContext route coverage', () => {
   it('keeps trace health public when API key auth is configured', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp()).get('/api/traces/health');
+    const res = await request(await makeApp()).get('/api/traces/health');
 
     expect(res.status).toBe(200);
     expect(res.body.available).toBe(true);
@@ -102,7 +106,7 @@ describe('RequestContext route coverage', () => {
   it('applies RequestContext auth middleware to trace resource routes when API key auth is configured', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp()).get('/api/traces');
+    const res = await request(await makeApp()).get('/api/traces');
 
     expect(res.status).toBe(401);
     expect(res.headers.deprecation).toBe('true');
@@ -113,7 +117,7 @@ describe('RequestContext route coverage', () => {
   it('applies RequestContext auth middleware to report routes when API key auth is configured', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp()).get('/api/reports/missing-report');
+    const res = await request(await makeApp()).get('/api/reports/missing-report');
 
     expect(res.status).toBe(401);
     expect(res.headers.deprecation).toBe('true');
@@ -124,7 +128,7 @@ describe('RequestContext route coverage', () => {
   it('applies RequestContext auth middleware to legacy agent routes before analysis starts', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/agent/v1/analyze')
       .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
@@ -137,7 +141,7 @@ describe('RequestContext route coverage', () => {
   it('applies RequestContext auth middleware to legacy provider routes', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp()).get('/api/v1/providers');
+    const res = await request(await makeApp()).get('/api/v1/providers');
 
     expect(res.status).toBe(401);
     expect(res.headers.deprecation).toBe('true');
@@ -148,7 +152,7 @@ describe('RequestContext route coverage', () => {
   it('applies RequestContext auth middleware to workspace skill pack routes', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp()).get('/api/workspaces/workspace-a/skill-packs');
+    const res = await request(await makeApp()).get('/api/workspaces/workspace-a/skill-packs');
 
     expect(res.status).toBe(401);
     expect(res.body.error).toBe('Unauthorized');
@@ -157,7 +161,7 @@ describe('RequestContext route coverage', () => {
   it('applies RequestContext auth middleware to workspace batch trace routes', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
 
-    const res = await request(makeApp()).get('/api/workspaces/workspace-a/batch-traces');
+    const res = await request(await makeApp()).get('/api/workspaces/workspace-a/batch-traces');
 
     expect(res.status).toBe(401);
     expect(res.body.error).toBe('Unauthorized');

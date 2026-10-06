@@ -12,6 +12,10 @@ import {
 import traceConfigProposalRoutes from '../traceConfigProposalRoutes';
 import {LOADING_ROUTING_CASES} from '../../../tests/helpers/traceConfigProposalRoutingCases';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 const originalEnv = {
   apiKey: process.env.SMARTPERFETTO_API_KEY,
   trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
@@ -19,7 +23,7 @@ const originalEnv = {
 
 const API_KEY = 'trace-config-proposal-secret';
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use(
@@ -29,7 +33,7 @@ function makeApp(): express.Express {
     requireWorkspaceRouteContext,
     traceConfigProposalRoutes,
   );
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function authHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
@@ -55,13 +59,14 @@ describe('trace config proposal routes', () => {
     delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     restoreEnvValue('SMARTPERFETTO_API_KEY', originalEnv.apiKey);
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
   });
 
   it('creates a workspace-scoped startup proposal without side effects', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const res = await authHeaders(
       request(app)
@@ -88,7 +93,7 @@ describe('trace config proposal routes', () => {
 
   it.each(LOADING_ROUTING_CASES)('routes "$request" to $preset over HTTP ($why)', async ({request: text, preset}) => {
     const res = await authHeaders(
-      request(makeApp())
+      request(await makeApp())
         .post('/api/workspaces/workspace-a/trace-config/proposals')
         .send({request: text}),
     );
@@ -99,7 +104,7 @@ describe('trace config proposal routes', () => {
   it('requires trace write permission for enterprise SSO callers', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     delete process.env.SMARTPERFETTO_API_KEY;
-    const app = makeApp();
+    const app = await makeApp();
 
     const res = await ssoHeaders(
       request(app)
@@ -113,7 +118,7 @@ describe('trace config proposal routes', () => {
   });
 
   it('rejects malformed requests', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const missingRequest = await authHeaders(
       request(app)

@@ -10,6 +10,10 @@ import { authenticate } from '../../middleware/auth';
 import { getLogLevel, setLogLevel } from '../../utils/logger';
 import { registerAgentLogsRoutes } from '../agentLogsRoutes';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
   trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
@@ -21,14 +25,14 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   else process.env[key] = value;
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   const router = express.Router();
   router.use(authenticate);
   registerAgentLogsRoutes(router);
   app.use('/api/agent/v1', router);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function ssoHeaders(req: request.Test, role: string, scopes: string): request.Test {
@@ -41,7 +45,8 @@ function ssoHeaders(req: request.Test, role: string, scopes: string): request.Te
 }
 
 describe('runtime log level routes', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     setLogLevel(null);
     restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
@@ -57,7 +62,7 @@ describe('runtime log level routes', () => {
 
     it('refuses a caller without runtime:manage and leaves the level unchanged', async () => {
       const before = getLogLevel();
-      const app = makeApp();
+      const app = await makeApp();
       const put = await ssoHeaders(request(app).put('/api/agent/v1/admin/log-level'), 'analyst', 'profile')
         .send({level: 'debug'});
       expect(put.status).toBe(403);
@@ -68,7 +73,7 @@ describe('runtime log level routes', () => {
     });
 
     it('lets a runtime administrator read and set the level', async () => {
-      const app = makeApp();
+      const app = await makeApp();
       const put = await ssoHeaders(request(app).put('/api/agent/v1/admin/log-level'), 'org_admin', '*')
         .send({level: 'debug'});
       expect(put.status).toBe(200);
@@ -81,7 +86,7 @@ describe('runtime log level routes', () => {
   it('keeps the local single-user mode able to set the level', async () => {
     delete process.env[ENTERPRISE_FEATURE_FLAG_ENV];
     delete process.env.SMARTPERFETTO_API_KEY;
-    const response = await request(makeApp()).put('/api/agent/v1/admin/log-level').send({level: 'warn'});
+    const response = await request(await makeApp()).put('/api/agent/v1/admin/log-level').send({level: 'warn'});
     expect(response.status).toBe(200);
     expect(getLogLevel()).toBe('warn');
   });

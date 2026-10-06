@@ -3,7 +3,8 @@
 import { jest } from '@jest/globals';
 import request from 'supertest';
 import express from 'express';
-import {createServer} from 'http';
+import {createServer, type Server} from 'http';
+import {createLoopbackServerFixture} from '../../../../tests/helpers/loopbackServer';
 import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -32,7 +33,8 @@ const originalEnv = {
 };
 
 describe('Provider Routes', () => {
-  let app: express.Express;
+  const loopbackServers = createLoopbackServerFixture();
+  let appServer: Server;
   let dir: string;
 
   beforeEach(async () => {
@@ -42,12 +44,14 @@ describe('Provider Routes', () => {
     resetProviderService();
 
     const { default: providerRoutes } = await import('../../../routes/providerRoutes');
-    app = express();
+    const app = express();
     app.use(express.json());
     app.use('/api/v1/providers', providerRoutes);
+    appServer = await loopbackServers.listen(app);
   });
 
   afterEach(async () => {
+    await loopbackServers.close();
     delete process.env.PROVIDER_DATA_DIR_OVERRIDE;
     restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
@@ -96,7 +100,7 @@ describe('Provider Routes', () => {
   }
 
   it('GET /api/v1/providers returns empty list initially', async () => {
-    const res = await request(app).get('/api/v1/providers');
+    const res = await request(appServer).get('/api/v1/providers');
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.providers).toEqual([]);
@@ -111,13 +115,13 @@ describe('Provider Routes', () => {
       .map(method => jest.spyOn(console, method).mockImplementation(() => undefined));
     const bodies: string[] = [];
     try {
-      const list = await request(app).get('/api/v1/providers');
+      const list = await request(appServer).get('/api/v1/providers');
       expect(list.status).toBe(200);
       expect(list.body.providers).toEqual([]);
       expect(list.body.store).toEqual({status: 'unreadable', code: 'provider_store_unreadable'});
       bodies.push(list.text);
 
-      const effective = await request(app).get('/api/v1/providers/effective');
+      const effective = await request(appServer).get('/api/v1/providers/effective');
       expect(effective.status).toBe(200);
       expect(effective.body.store.status).toBe('unreadable');
       // Analyses that follow the active provider are refused, so neither the
@@ -127,19 +131,19 @@ describe('Provider Routes', () => {
       bodies.push(effective.text);
 
       const writes: Array<() => request.Test> = [
-        () => request(app).post('/api/v1/providers').send({
+        () => request(appServer).post('/api/v1/providers').send({
           name: 'New',
           category: 'official',
           type: 'anthropic',
           models: {primary: 'claude-sonnet-5', light: 'claude-haiku-4-5'},
           connection: {apiKey: 'sk-new'},
         }),
-        () => request(app).patch('/api/v1/providers/kept').send({name: 'Renamed'}),
-        () => request(app).delete('/api/v1/providers/kept'),
-        () => request(app).post('/api/v1/providers/kept/activate'),
-        () => request(app).post('/api/v1/providers/deactivate'),
-        () => request(app).post('/api/v1/providers/kept/runtime').send({agentRuntime: 'openai-agents-sdk'}),
-        () => request(app).post('/api/v1/providers/kept/rotate-secret'),
+        () => request(appServer).patch('/api/v1/providers/kept').send({name: 'Renamed'}),
+        () => request(appServer).delete('/api/v1/providers/kept'),
+        () => request(appServer).post('/api/v1/providers/kept/activate'),
+        () => request(appServer).post('/api/v1/providers/deactivate'),
+        () => request(appServer).post('/api/v1/providers/kept/runtime').send({agentRuntime: 'openai-agents-sdk'}),
+        () => request(appServer).post('/api/v1/providers/kept/rotate-secret'),
       ];
       for (const write of writes) {
         const res = await write();
@@ -165,10 +169,10 @@ describe('Provider Routes', () => {
         models: {primary: 'claude-sonnet-5', light: 'claude-haiku-4-5'},
         connection: {apiKey: 'sk-repaired-key'},
       }]));
-      const repaired = await request(app).get('/api/v1/providers');
+      const repaired = await request(appServer).get('/api/v1/providers');
       expect(repaired.body.store).toEqual({status: 'ok'});
       expect(repaired.body.providers.map((p: {id: string}) => p.id)).toEqual(['kept']);
-      const renamed = await request(app).patch('/api/v1/providers/kept').send({name: 'Renamed'});
+      const renamed = await request(appServer).patch('/api/v1/providers/kept').send({name: 'Renamed'});
       expect(renamed.status).toBe(200);
     } finally {
       for (const spy of consoleSpies) spy.mockRestore();
@@ -176,7 +180,7 @@ describe('Provider Routes', () => {
   });
 
   it('GET /api/v1/providers/templates returns provider templates including custom runtime entry', async () => {
-    const res = await request(app).get('/api/v1/providers/templates');
+    const res = await request(appServer).get('/api/v1/providers/templates');
     expect(res.status).toBe(200);
     expect(res.body.templates.length).toBeGreaterThan(0);
     expect(res.body.templates[0].type).toBe('anthropic');
@@ -216,7 +220,7 @@ describe('Provider Routes', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Missing test server address');
       const createProvider = (name: string, apiKey: string) =>
-        request(app).post('/api/v1/providers').send({
+        request(appServer).post('/api/v1/providers').send({
         name,
         category: 'official',
         type: 'openai',
@@ -233,8 +237,8 @@ describe('Provider Routes', () => {
       expect(providerB.status).toBe(201);
 
       const [modelsA, modelsB] = await Promise.all([
-        request(app).get(`/api/v1/providers/${providerA.body.provider.id}/models`),
-        request(app).get(`/api/v1/providers/${providerB.body.provider.id}/models`),
+        request(appServer).get(`/api/v1/providers/${providerA.body.provider.id}/models`),
+        request(appServer).get(`/api/v1/providers/${providerB.body.provider.id}/models`),
       ]);
       expect(modelsA.status).toBe(200);
       expect(modelsB.status).toBe(200);
@@ -265,19 +269,19 @@ describe('Provider Routes', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
 
     const analystRes = await ssoHeaders(
-      request(app).get('/api/v1/providers'),
+      request(appServer).get('/api/v1/providers'),
       { userId: 'provider-analyst', role: 'analyst', scopes: 'trace:read,report:read' },
     );
     expect(analystRes.status).toBe(403);
     expect(analystRes.body.details).toContain('Provider management requires provider:manage_workspace permission');
 
-    const adminRes = await ssoHeaders(request(app).get('/api/v1/providers/templates'));
+    const adminRes = await ssoHeaders(request(appServer).get('/api/v1/providers/templates'));
     expect(adminRes.status).toBe(200);
     expect(adminRes.body.success).toBe(true);
   });
 
   it('POST + GET + DELETE lifecycle', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'Test',
       category: 'official',
       type: 'anthropic',
@@ -287,16 +291,16 @@ describe('Provider Routes', () => {
     expect(createRes.status).toBe(201);
     const id = createRes.body.provider.id;
 
-    const getRes = await request(app).get(`/api/v1/providers/${id}`);
+    const getRes = await request(appServer).get(`/api/v1/providers/${id}`);
     expect(getRes.status).toBe(200);
     expect(getRes.body.provider.connection.apiKey).toMatch(/^\*{4}/);
 
-    const deleteRes = await request(app).delete(`/api/v1/providers/${id}`);
+    const deleteRes = await request(appServer).delete(`/api/v1/providers/${id}`);
     expect(deleteRes.status).toBe(200);
   });
 
   it('POST /:id/activate sets active', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'Activate Me',
       category: 'official',
       type: 'bedrock',
@@ -305,15 +309,15 @@ describe('Provider Routes', () => {
     });
     const id = createRes.body.provider.id;
 
-    const activateRes = await request(app).post(`/api/v1/providers/${id}/activate`);
+    const activateRes = await request(appServer).post(`/api/v1/providers/${id}/activate`);
     expect(activateRes.status).toBe(200);
 
-    const effectiveRes = await request(app).get('/api/v1/providers/effective');
+    const effectiveRes = await request(appServer).get('/api/v1/providers/effective');
     expect(effectiveRes.body.source).toBe('provider-manager');
   });
 
   it('POST /:id/runtime switches provider SDK runtime', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'DeepSeek Dual',
       category: 'official',
       type: 'deepseek',
@@ -327,7 +331,7 @@ describe('Provider Routes', () => {
     });
     const id = createRes.body.provider.id;
 
-    const runtimeRes = await request(app)
+    const runtimeRes = await request(appServer)
       .post(`/api/v1/providers/${id}/runtime`)
       .send({ agentRuntime: 'openai-agents-sdk' });
 
@@ -336,7 +340,7 @@ describe('Provider Routes', () => {
   });
 
   it('POST /:id/runtime rejects unsupported SDK runtime for provider type', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'Anthropic Only',
       category: 'official',
       type: 'anthropic',
@@ -345,7 +349,7 @@ describe('Provider Routes', () => {
     });
     const id = createRes.body.provider.id;
 
-    const runtimeRes = await request(app)
+    const runtimeRes = await request(appServer)
       .post(`/api/v1/providers/${id}/runtime`)
       .send({ agentRuntime: 'openai-agents-sdk' });
 
@@ -354,7 +358,7 @@ describe('Provider Routes', () => {
   });
 
   it('POST /:id/runtime rejects public Pi runtime for non-custom providers', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'DeepSeek Dual',
       category: 'official',
       type: 'deepseek',
@@ -368,7 +372,7 @@ describe('Provider Routes', () => {
     });
     const id = createRes.body.provider.id;
 
-    const runtimeRes = await request(app)
+    const runtimeRes = await request(appServer)
       .post(`/api/v1/providers/${id}/runtime`)
       .send({ agentRuntime: 'pi-agent-core' });
 
@@ -378,7 +382,7 @@ describe('Provider Routes', () => {
 
   it('keeps provider configuration available but blocks connection tests when AI is disabled', async () => {
     process.env.SMARTPERFETTO_AI_ENABLED = 'false';
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'Disabled Test Provider',
       category: 'official',
       type: 'deepseek',
@@ -391,8 +395,8 @@ describe('Provider Routes', () => {
     });
     expect(createRes.status).toBe(201);
     const id = createRes.body.provider.id;
-    expect(await request(app).get(`/api/v1/providers/${id}`)).toHaveProperty('status', 200);
-    expect(await request(app).post(`/api/v1/providers/${id}/activate`)).toHaveProperty('status', 200);
+    expect(await request(appServer).get(`/api/v1/providers/${id}`)).toHaveProperty('status', 200);
+    expect(await request(appServer).post(`/api/v1/providers/${id}/activate`)).toHaveProperty('status', 200);
 
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ data: [] }), {
@@ -401,7 +405,7 @@ describe('Provider Routes', () => {
       }),
     );
     try {
-      const testRes = await request(app).post(`/api/v1/providers/${id}/test`);
+      const testRes = await request(appServer).post(`/api/v1/providers/${id}/test`);
       expect(testRes.status).toBe(403);
       expect(testRes.body).toMatchObject({
         success: false,
@@ -415,7 +419,7 @@ describe('Provider Routes', () => {
   });
 
   it('creates and activates custom Pi agent-core providers without exposing model JSON', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'Pi Custom',
       category: 'custom',
       type: 'custom',
@@ -433,10 +437,10 @@ describe('Provider Routes', () => {
     expect(JSON.stringify(createRes.body)).not.toContain('sk-pi-secret');
 
     const id = createRes.body.provider.id;
-    const activateRes = await request(app).post(`/api/v1/providers/${id}/activate`);
+    const activateRes = await request(appServer).post(`/api/v1/providers/${id}/activate`);
     expect(activateRes.status).toBe(200);
 
-    const effectiveRes = await request(app).get('/api/v1/providers/effective');
+    const effectiveRes = await request(appServer).get('/api/v1/providers/effective');
     expect(effectiveRes.status).toBe(200);
     expect(effectiveRes.body.provider.connection.agentRuntime).toBe('pi-agent-core');
     expect(effectiveRes.body.env.SMARTPERFETTO_AGENT_RUNTIME).toBe('pi-agent-core');
@@ -445,7 +449,7 @@ describe('Provider Routes', () => {
   });
 
   it('creates and activates custom OpenCode providers without exposing model JSON', async () => {
-    const createRes = await request(app).post('/api/v1/providers').send({
+    const createRes = await request(appServer).post('/api/v1/providers').send({
       name: 'OpenCode Custom',
       category: 'custom',
       type: 'custom',
@@ -466,10 +470,10 @@ describe('Provider Routes', () => {
     expect(JSON.stringify(createRes.body)).not.toContain('sk-opencode-secret');
 
     const id = createRes.body.provider.id;
-    const activateRes = await request(app).post(`/api/v1/providers/${id}/activate`);
+    const activateRes = await request(appServer).post(`/api/v1/providers/${id}/activate`);
     expect(activateRes.status).toBe(200);
 
-    const effectiveRes = await request(app).get('/api/v1/providers/effective');
+    const effectiveRes = await request(appServer).get('/api/v1/providers/effective');
     expect(effectiveRes.status).toBe(200);
     expect(effectiveRes.body.provider.connection.agentRuntime).toBe('opencode');
     expect(effectiveRes.body.env.SMARTPERFETTO_AGENT_RUNTIME).toBe('opencode');
@@ -488,7 +492,7 @@ describe('Provider Routes', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     resetProviderService();
 
-    const createRes = await ssoHeaders(request(app).post('/api/v1/providers')).send({
+    const createRes = await ssoHeaders(request(appServer).post('/api/v1/providers')).send({
       name: 'Audited DeepSeek',
       category: 'official',
       type: 'deepseek',
@@ -503,12 +507,12 @@ describe('Provider Routes', () => {
     expect(createRes.status).toBe(201);
     const id = createRes.body.provider.id;
 
-    expect(await ssoHeaders(request(app).get(`/api/v1/providers/${id}`))).toHaveProperty('status', 200);
-    expect(await ssoHeaders(request(app).patch(`/api/v1/providers/${id}`)).send({
+    expect(await ssoHeaders(request(appServer).get(`/api/v1/providers/${id}`))).toHaveProperty('status', 200);
+    expect(await ssoHeaders(request(appServer).patch(`/api/v1/providers/${id}`)).send({
       name: 'Audited DeepSeek Updated',
     })).toHaveProperty('status', 200);
-    expect(await ssoHeaders(request(app).post(`/api/v1/providers/${id}/activate`))).toHaveProperty('status', 200);
-    expect(await ssoHeaders(request(app).post(`/api/v1/providers/${id}/runtime`)).send({
+    expect(await ssoHeaders(request(appServer).post(`/api/v1/providers/${id}/activate`))).toHaveProperty('status', 200);
+    expect(await ssoHeaders(request(appServer).post(`/api/v1/providers/${id}/runtime`)).send({
       agentRuntime: 'openai-agents-sdk',
     })).toHaveProperty('status', 200);
     const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
@@ -518,13 +522,13 @@ describe('Provider Routes', () => {
       }),
     );
     try {
-      expect(await ssoHeaders(request(app).post(`/api/v1/providers/${id}/test`))).toHaveProperty('status', 200);
+      expect(await ssoHeaders(request(appServer).post(`/api/v1/providers/${id}/test`))).toHaveProperty('status', 200);
     } finally {
       fetchSpy.mockRestore();
     }
-    expect(await ssoHeaders(request(app).post(`/api/v1/providers/${id}/rotate-secret`))).toHaveProperty('status', 200);
-    expect(await ssoHeaders(request(app).post('/api/v1/providers/deactivate'))).toHaveProperty('status', 200);
-    expect(await ssoHeaders(request(app).delete(`/api/v1/providers/${id}`))).toHaveProperty('status', 200);
+    expect(await ssoHeaders(request(appServer).post(`/api/v1/providers/${id}/rotate-secret`))).toHaveProperty('status', 200);
+    expect(await ssoHeaders(request(appServer).post('/api/v1/providers/deactivate'))).toHaveProperty('status', 200);
+    expect(await ssoHeaders(request(appServer).delete(`/api/v1/providers/${id}`))).toHaveProperty('status', 200);
 
     expect(readEnterpriseAuditActions(dbPath)).toEqual(expect.arrayContaining([
       'provider.created',
@@ -559,9 +563,10 @@ describe('Provider Routes', () => {
       requireWorkspaceRouteContext,
       workspaceProviderRoutes,
     );
+    const workspaceServer = await loopbackServers.listen(workspaceApp);
 
     const createRes = await ssoHeaders(
-      request(workspaceApp).post('/api/workspaces/workspace-a/providers'),
+      request(workspaceServer).post('/api/workspaces/workspace-a/providers'),
     ).send({
       name: 'Workspace OpenAI',
       category: 'official',
@@ -576,7 +581,7 @@ describe('Provider Routes', () => {
     expect(createRes.status).toBe(201);
     const id = createRes.body.provider.id;
     expect(await ssoHeaders(
-      request(workspaceApp).post(`/api/workspaces/workspace-a/providers/${id}/activate`),
+      request(workspaceServer).post(`/api/workspaces/workspace-a/providers/${id}/activate`),
     )).toHaveProperty('status', 200);
 
     const db = openEnterpriseDb(dbPath);
@@ -614,9 +619,10 @@ describe('Provider Routes', () => {
       requireWorkspaceRouteContext,
       workspaceProviderRoutes,
     );
+    const workspaceServer = await loopbackServers.listen(workspaceApp);
 
     const createRes = await ssoHeaders(
-      request(workspaceApp).post('/api/workspaces/workspace-a/providers'),
+      request(workspaceServer).post('/api/workspaces/workspace-a/providers'),
     ).send({
       name: 'Organization Default',
       category: 'official',
@@ -642,11 +648,11 @@ describe('Provider Routes', () => {
     }
 
     const inherited = await ssoHeaders(
-      request(workspaceApp).get(`/api/workspaces/workspace-a/providers/${id}`),
+      request(workspaceServer).get(`/api/workspaces/workspace-a/providers/${id}`),
     );
     expect(inherited.status).toBe(200);
 
-    const update = await ssoHeaders(request(workspaceApp)
+    const update = await ssoHeaders(request(workspaceServer)
       .patch(`/api/workspaces/workspace-a/providers/${id}`))
       .send({name: 'Updated Outside OIDC'});
     expect(update.status).toBe(200);

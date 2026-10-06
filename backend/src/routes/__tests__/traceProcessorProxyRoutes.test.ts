@@ -32,6 +32,13 @@ import traceProcessorProxyRoutes, {
   REJECTED_UPGRADE_LINGER_MS,
 } from '../traceProcessorProxyRoutes';
 import { dispatchUpgrade } from '../../middleware/httpEdge';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
+async function makeHttpApp() {
+  return loopbackServers.listen(makeApp());
+}
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -397,6 +404,7 @@ afterEach(async () => {
     socket.destroy();
   }
   await closeServer(upstreamServer);
+  await loopbackServers.close();
   setTraceProcessorServiceForTests(null);
   setTraceProcessorLeaseStoreForTests(null);
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
@@ -424,7 +432,7 @@ describe('trace processor lease proxy routes', () => {
     store.markStarting(scope, privateLease.id);
     privateLease = store.markReady(scope, privateLease.id);
     const before = store.getLeaseById(scope, privateLease.id);
-    const response = await ssoHeaders(request(makeApp()).post(`/api/tp/${privateLease.id}/${endpoint}`).send({visibility: 'visible'}));
+    const response = await ssoHeaders(request(await makeHttpApp()).post(`/api/tp/${privateLease.id}/${endpoint}`).send({visibility: 'visible'}));
     expect(response.status).toBe(403);
     expect(response.body.details).toContain('Private analysis processor');
     expect(store.getLeaseById(scope, privateLease.id)).toEqual(before);
@@ -464,7 +472,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('proxies status and query bytes through the scoped lease', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
 
     const statusRes = await ssoHeaders(
       request(app)
@@ -504,7 +512,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('preserves scoped lease routing for concurrent proxy queries', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
     queryRawMock.mockImplementation(async (_traceId: string, body: Buffer) => {
       if (body.equals(Buffer.from([1, 2, 3]))) {
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -553,7 +561,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('hides leases from other workspaces', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
 
     const res = await ssoHeaders(
       request(app).post(`/api/tp/${lease.id}/status`),
@@ -564,7 +572,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('refreshes frontend holder heartbeat with hidden visibility TTL', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
     const before = Date.now();
 
     const res = await ssoHeaders(
@@ -600,7 +608,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('reacquires the frontend holder on heartbeat after the window holder disappeared', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
     const store = getTraceProcessorLeaseStore();
     store.releaseHolder(scope, lease.id, 'frontend_http_rpc', WINDOW_A_HOLDER);
     expect(store.getLeaseById(scope, lease.id)?.holderCount).toBe(0);
@@ -638,7 +646,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('rejects invalid frontend heartbeat visibility', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
 
     const res = await ssoHeaders(
       request(app)
@@ -664,7 +672,7 @@ describe('trace processor lease proxy routes', () => {
     }
 
     it('keeps one holder for a client without a window id across requests', async () => {
-      const app = makeApp();
+      const app = await makeHttpApp();
       const client = {windowId: null};
 
       expect((await userSsoHeaders(request(app).post(`/api/tp/${lease.id}/status`), client)).status).toBe(200);
@@ -687,7 +695,7 @@ describe('trace processor lease proxy routes', () => {
     });
 
     it('does not merge windows that reuse one correlation id', async () => {
-      const app = makeApp();
+      const app = await makeHttpApp();
 
       for (const windowId of ['window-a', 'window-b']) {
         const res = await userSsoHeaders(
@@ -702,7 +710,7 @@ describe('trace processor lease proxy routes', () => {
     });
 
     it('keeps another user with the same window id off the existing holder', async () => {
-      const app = makeApp();
+      const app = await makeHttpApp();
 
       const res = await userSsoHeaders(
         request(app).post(`/api/tp/${lease.id}/heartbeat`).send({visibility: 'visible'}),
@@ -719,7 +727,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('requires runtime manage permission for lease admin actions', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
 
     const res = await ssoHeaders(
       request(app)
@@ -732,7 +740,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('lets workspace admins drain a scoped lease and block new proxy work', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
 
     const drainRes = await adminHeaders(
       request(app)
@@ -759,7 +767,7 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('lets workspace admins restart a scoped lease without changing the lease id', async () => {
-    const app = makeApp();
+    const app = await makeHttpApp();
 
     const restartRes = await adminHeaders(
       request(app)
@@ -975,6 +983,7 @@ describe('trace processor lease proxy routes', () => {
     let rawServer: net.Server | undefined;
 
     afterEach(async () => {
+      await loopbackServers.close();
       if (rawServer?.listening) await new Promise<void>(resolve => rawServer!.close(() => resolve()));
       rawServer = undefined;
     });

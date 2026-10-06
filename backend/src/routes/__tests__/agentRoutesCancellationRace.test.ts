@@ -55,6 +55,9 @@ import { ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata } from '../../services/trac
 import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
 import {NO_PRIVATE_CONTEXT, resolveAnalysisPrivateContext} from '../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../services/security/durableLearning';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const envKeys = [
   'SMARTPERFETTO_API_KEY',
@@ -68,11 +71,11 @@ const envKeys = [
 ] as const;
 const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/agent/v1', agentRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function analystHeaders(testRequest: request.Test): request.Test {
@@ -108,7 +111,8 @@ function restoreEnvironment(): void {
   }
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   jest.restoreAllMocks();
   setTraceProcessorServiceForTests(null);
   setTraceProcessorLeaseStoreForTests(null);
@@ -191,7 +195,7 @@ describe('agent analyze cancellation races', () => {
       jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
         input.owner.assertAuthorized(); input.context?.dispose(); return {result: input.result};
       });
-      const app = makeApp();
+      const app = await makeApp();
       const response = await analystHeaders(request(app).post('/api/agent/v1/analyze')).send({traceId, referenceTraceId, query: 'Return the local fixture'});
       if (response.status !== 200) throw new Error(JSON.stringify(response.body));
       sessionId = response.body.sessionId;
@@ -303,7 +307,7 @@ describe('agent analyze cancellation races', () => {
       const cleanup = jest.spyOn(service, 'cleanupLeaseProcessor').mockReturnValue(true);
       jest.spyOn(ClaudeRuntime.prototype, 'cleanupSession').mockImplementation(() => undefined);
       setTraceProcessorServiceForTests(service);
-      const response = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze')).send({
+      const response = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze')).send({
         traceId, query: 'Analyze this Trace', ...(preset === 'smart' ? {options: {preset: 'smart'}} : {}),
       });
       expect(response.status).toBe(200);
@@ -405,7 +409,10 @@ describe('agent analyze cancellation races', () => {
 
   describe('deliver first, verify after', () => {
     beforeEach(() => agentRoutesCancellationTestSeam.setReviewStopWatchdogMs(25));
-    afterEach(() => agentRoutesCancellationTestSeam.setReviewStopWatchdogMs(15_000));
+    afterEach(async () => {
+      await loopbackServers.close();
+      agentRoutesCancellationTestSeam.setReviewStopWatchdogMs(15_000);
+    });
     const selection = {codeAwareMode: 'off' as const};
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
     const liveSession = (sessionId: string, extra: Record<string, unknown> = {}) => {
@@ -508,7 +515,7 @@ describe('agent analyze cancellation races', () => {
             status: 'not_checked', passed: false, checkedClaimCount: 0, unsupportedClaimCount: 0, claimResults: [],
             issues: [], notCheckedReason: 'cancelled_by_user'}}};
         });
-        const app = makeApp();
+        const app = await makeApp();
         const response = await analystHeaders(request(app).post('/api/agent/v1/analyze')).send({traceId, query: 'trace 时长'});
         if (response.status !== 200) throw new Error(JSON.stringify(response.body));
         sessionId = response.body.sessionId;
@@ -590,7 +597,7 @@ describe('agent analyze cancellation races', () => {
           input.context?.dispose();
           throw owner.reason;
         });
-        const app = makeApp();
+        const app = await makeApp();
         const response = await analystHeaders(request(app).post('/api/agent/v1/analyze')).send({traceId, query: 'trace 时长'});
         if (response.status !== 200) throw new Error(JSON.stringify(response.body));
         sessionId = response.body.sessionId;
@@ -694,7 +701,7 @@ describe('agent analyze cancellation races', () => {
             status: 'partial', passed: false, checkedClaimCount: 0, unsupportedClaimCount: 0, claimResults: [],
             issues: [], notCheckedReason: 'not_required'}}};
         });
-        const app = makeApp();
+        const app = await makeApp();
         const response = await analystHeaders(request(app).post('/api/agent/v1/analyze')).send({traceId, query: 'trace 时长'});
         if (response.status !== 200) throw new Error(JSON.stringify(response.body));
         sessionId = response.body.sessionId;
@@ -878,7 +885,7 @@ describe('agent analyze cancellation races', () => {
 
   it('persists terminal attribution when the runtime fails', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-runtime-failure-'));
-    const app = makeApp();
+    const app = await makeApp();
     let sessionId: string | undefined;
     let leaseStore: ReturnType<typeof getTraceProcessorLeaseStore> | undefined;
     try {
@@ -969,7 +976,7 @@ describe('agent analyze cancellation races', () => {
 
   it.each([false, true])('does not start the runtime when its run is cancelled while lease startup is pending (enterprise=%s)', async enterprise => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-lease-cancel-'));
-    const app = makeApp();
+    const app = await makeApp();
     let sessionId: string | undefined;
     let leaseStore: ReturnType<typeof getTraceProcessorLeaseStore> | undefined;
     let resolveLease: ((processor: TraceProcessor) => void) | undefined;
@@ -1189,7 +1196,7 @@ describe('agent analyze cancellation races', () => {
 
   it.each([false, true])('does not project a runtime success that arrives after the exact run was cancelled (enterprise=%s)', async enterprise => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-late-success-'));
-    const app = makeApp();
+    const app = await makeApp();
     let sessionId: string | undefined;
     let leaseStore: ReturnType<typeof getTraceProcessorLeaseStore> | undefined;
     let resolveAnalysis: ((result: AnalysisResult) => void) | undefined;

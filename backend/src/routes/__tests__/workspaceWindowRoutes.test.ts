@@ -18,6 +18,9 @@ import {
 } from '../../middleware/workspaceRouteContext';
 import { openEnterpriseDb } from '../../services/enterpriseDb';
 import workspaceWindowRoutes from '../workspaceWindowRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   dbPath: process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH,
@@ -37,7 +40,7 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function app(): express.Express {
+async function app() {
   const server = express();
   server.use(express.json());
   server.use(
@@ -47,7 +50,7 @@ function app(): express.Express {
     requireWorkspaceRouteContext,
     workspaceWindowRoutes,
   );
-  return server;
+  return loopbackServers.listen(server);
 }
 
 function seedGraph({
@@ -109,6 +112,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   restoreEnvValue('SMARTPERFETTO_ENTERPRISE_DB_PATH', originalEnv.dbPath);
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
   restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
@@ -118,7 +122,7 @@ afterEach(async () => {
 
 describe('workspace window routes', () => {
   test('persists heartbeat and returns active peer windows', async () => {
-    await request(app())
+    await request(await app())
       .post('/api/workspaces/workspace-a/windows/window-a/heartbeat')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -131,7 +135,7 @@ describe('workspace window routes', () => {
       })
       .expect(200);
 
-    const response = await request(app())
+    const response = await request(await app())
       .post('/api/workspaces/workspace-a/windows/window-b/heartbeat')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -152,7 +156,7 @@ describe('workspace window routes', () => {
   test('persists heartbeat before any workspace rows exist locally', async () => {
     clearGraph();
 
-    const response = await request(app())
+    const response = await request(await app())
       .post('/api/workspaces/workspace-a/windows/window-a/heartbeat')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -179,7 +183,7 @@ describe('workspace window routes', () => {
     clearGraph();
 
     const response = await trustedSsoHeaders(
-      request(app()).post('/api/workspaces/workspace-missing/windows/window-a/heartbeat'),
+      request(await app()).post('/api/workspaces/workspace-missing/windows/window-a/heartbeat'),
       'workspace-missing',
     )
       .send({
@@ -213,7 +217,7 @@ describe('workspace window routes', () => {
     });
 
     const response = await trustedSsoHeaders(
-      request(app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'),
+      request(await app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'),
     )
       .send({
         traceId: 'trace-a',
@@ -228,13 +232,13 @@ describe('workspace window routes', () => {
   });
 
   test('lists active windows while excluding the requester', async () => {
-    await request(app())
+    await request(await app())
       .post('/api/workspaces/workspace-a/windows/window-a/heartbeat')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ latestSnapshotId: 'snapshot-a', sceneType: 'startup' })
       .expect(200);
 
-    const response = await request(app())
+    const response = await request(await app())
       .get('/api/workspaces/workspace-a/windows/active?excludeWindowId=window-a')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -250,24 +254,24 @@ describe('workspace window routes', () => {
     seedGraph({ tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a' });
     const asUser = (req: request.Test, userId: string) => trustedSsoHeaders(req, 'workspace-a', userId);
 
-    await asUser(request(app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'), 'user-a')
+    await asUser(request(await app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'), 'user-a')
       .send({ traceId: 'trace-a', activeSessionId: 'session-a', traceTitle: 'A private trace' })
       .expect(200);
 
-    const listedToB = await asUser(request(app()).get('/api/workspaces/workspace-a/windows/active'), 'user-b')
+    const listedToB = await asUser(request(await app()).get('/api/workspaces/workspace-a/windows/active'), 'user-b')
       .expect(200);
     // A's window points at no result B can read, so B is not told it exists.
     expect(listedToB.body.activeWindows).toEqual([]);
 
     const hijack = await asUser(
-      request(app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'),
+      request(await app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'),
       'user-b',
     )
       .send({ traceId: 'trace-b', activeSessionId: 'session-b' })
       .expect(200);
     expect(hijack.body.windowState).toMatchObject({ userId: 'user-b', windowId: 'window-a', traceId: 'trace-b' });
 
-    const seenByA = await asUser(request(app()).get('/api/workspaces/workspace-a/windows/active'), 'user-a')
+    const seenByA = await asUser(request(await app()).get('/api/workspaces/workspace-a/windows/active'), 'user-a')
       .expect(200);
     expect(seenByA.body.activeWindows).toEqual([
       expect.objectContaining({
@@ -281,7 +285,7 @@ describe('workspace window routes', () => {
   });
 
   test('rejects invalid heartbeat scene type', async () => {
-    await request(app())
+    await request(await app())
       .post('/api/workspaces/workspace-a/windows/window-a/heartbeat')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ sceneType: 'bad' })

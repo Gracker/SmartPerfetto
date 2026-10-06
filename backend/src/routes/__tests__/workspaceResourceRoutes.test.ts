@@ -19,6 +19,9 @@ import providerRoutes from '../providerRoutes';
 import reportRoutes, { reportStore } from '../reportRoutes';
 import traceRoutes from '../simpleTraceRoutes';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -29,7 +32,7 @@ const API_USER_ID = `api-key-${crypto.createHash('sha256').update(API_KEY).diges
 
 let uploadDir: string;
 
-function makeWorkspaceApp(): express.Express {
+async function makeWorkspaceApp() {
   const app = express();
   const workspaceMiddlewares = [
     bindWorkspaceRouteContext,
@@ -41,7 +44,7 @@ function makeWorkspaceApp(): express.Express {
   app.use('/api/workspaces/:workspaceId/reports', ...workspaceMiddlewares, reportRoutes);
   app.use('/api/workspaces/:workspaceId/agent', ...workspaceMiddlewares, agentRoutes);
   app.use('/api/workspaces/:workspaceId/providers', ...workspaceMiddlewares, providerRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function authHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
@@ -99,6 +102,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   reportStore.clear();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
@@ -127,7 +131,7 @@ describe('workspace resource routes', () => {
   it('binds trace list ownership to the workspace path without legacy headers', async () => {
     await writeTraceMetadata('trace-a', 'workspace-a');
     await writeTraceMetadata('trace-b', 'workspace-b');
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const res = await authHeaders(
       request(app).get('/api/workspaces/workspace-b/traces'),
@@ -141,7 +145,7 @@ describe('workspace resource routes', () => {
 
   it('rejects trusted SSO requests whose selected workspace differs from the workspace path', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const res = await trustedSsoHeaders(
       request(app).get('/api/workspaces/workspace-b/traces'),
@@ -162,7 +166,7 @@ describe('workspace resource routes', () => {
       workspaceId: 'workspace-b',
       userId: API_USER_ID,
     });
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const res = await authHeaders(
       request(app).get('/api/workspaces/workspace-b/reports/report-b'),
@@ -176,7 +180,7 @@ describe('workspace resource routes', () => {
 
   it('mounts provider and agent aliases under the workspace resource root', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const providerRes = await trustedSsoHeaders(
       request(app).get('/api/workspaces/workspace-b/providers/templates'),

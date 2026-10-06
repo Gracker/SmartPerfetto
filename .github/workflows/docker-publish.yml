@@ -31,8 +31,8 @@ jobs:
       - name: Install backend dependencies
         run: cd backend && npm ci
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install verification tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck ripgrep
 
       - name: Run root quality checks
         run: npm run quality

@@ -8,6 +8,10 @@
  * Tests for EntityStore and SessionContext persistence across restarts.
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import { SessionPersistenceService } from '../sessionPersistenceService';
 import { createEntityStore } from '../../agent/context/entityStore';
 import { EnhancedSessionContext } from '../../agent/context/enhancedSessionContext';
@@ -16,6 +20,26 @@ import { createInitialTraceAgentState } from '../../agent/state/traceAgentState'
 import { StoredSession } from '../../models/sessionSchema';
 import { inspect } from 'util';
 import { consoleCallsDuring, warningsDuring } from '../../../tests/helpers/consoleWarnings';
+
+const previousDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
+let temporaryRoot: string;
+
+beforeAll(() => {
+  temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-session-persistence-'));
+  process.env[ENTERPRISE_DB_PATH_ENV] = path.join(temporaryRoot, 'sessions.db');
+  SessionPersistenceService.resetForTests();
+});
+
+afterAll(() => {
+  try {
+    SessionPersistenceService.resetForTests();
+  } finally {
+    if (previousDbPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV];
+    else process.env[ENTERPRISE_DB_PATH_ENV] = previousDbPath;
+  }
+  // A failed close throws before deletion, leaving the fixture available for diagnosis.
+  if (temporaryRoot) fs.rmSync(temporaryRoot, {recursive: true, force: true});
+});
 
 describe('SessionPersistenceService - Phase 3 Features', () => {
   let service: SessionPersistenceService;
@@ -604,8 +628,12 @@ describe('SessionPersistenceService - Phase 3 Features', () => {
 describe('SessionPersistenceService - unreadable stored JSON', () => {
   // Unquoted, so V8 quotes the text around it in its own message.
   const CANARY = 'SESSION-CANARY-5c1e';
-  const service = SessionPersistenceService.getInstance();
-  const db = (service as unknown as {db: {prepare(sql: string): {run(...values: unknown[]): unknown}}}).db;
+  let service: SessionPersistenceService;
+  let db: {prepare(sql: string): {run(...values: unknown[]): unknown}};
+  beforeAll(() => {
+    service = SessionPersistenceService.getInstance();
+    db = (service as unknown as {db: typeof db}).db;
+  });
   const id = `test_unreadable_${Date.now()}`;
   const session = (): StoredSession => ({id, traceId: `trace_${id}`, traceName: 'trace', question: 'question',
     createdAt: Date.now(), updatedAt: Date.now(), metadata: {ownerUserId: 'owner-1'}, messages: [

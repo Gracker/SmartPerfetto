@@ -8,8 +8,11 @@ import os from 'os';
 import path from 'path';
 import { buildRuntimeHealthPayload } from '../runtimeHealth';
 import { getProviderService, resetProviderService } from '../../services/providerManager';
+import { ENTERPRISE_DB_PATH_ENV } from '../../services/enterpriseDb';
 
 const ENV_KEYS = [
+  ENTERPRISE_DB_PATH_ENV,
+  'SMARTPERFETTO_BACKEND_DATA_DIR',
   'PROVIDER_DATA_DIR_OVERRIDE',
   'SMARTPERFETTO_AI_ENABLED',
   'SMARTPERFETTO_AGENT_RUNTIME',
@@ -88,12 +91,14 @@ describe('buildRuntimeHealthPayload', () => {
     clearEnv();
     dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-runtime-health-'));
     process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(dir, 'enterprise.db');
+    process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(dir, 'data');
     resetProviderService();
   });
 
   afterEach(async () => {
-    restoreEnv();
     resetProviderService();
+    restoreEnv();
     await fsp.rm(dir, { recursive: true, force: true });
   });
 

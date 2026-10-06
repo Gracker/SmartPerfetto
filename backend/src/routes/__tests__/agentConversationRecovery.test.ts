@@ -22,6 +22,9 @@ import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
 import {registerAgentConversationRoutes} from '../agentConversationRoutes';
 import * as finalization from '../../services/finalizeAnalysisResult';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const previousPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const owner = {tenantId: 'recovery-tenant', workspaceId: 'recovery-workspace', userId: 'recovery-owner'};
@@ -29,14 +32,14 @@ let tmp: string;
 let sequence = 0;
 let descriptor: ConversationSessionDescriptor;
 let factory: jest.SpiedFunction<typeof runtime.createAgentOrchestrator>;
-function app(userId = owner.userId) {
+async function app(userId = owner.userId) {
   const value = express(); value.use(express.json());
   value.use((req, _res, next) => {
     (req as any).requestContext = {...owner, userId, authType: 'dev', requestId: 'recovery-request', roles: ['org_admin'], scopes: ['*']};
     next();
   });
   const router = express.Router(); registerAgentConversationRoutes(router); value.use('/api/agent/v1', router);
-  return value;
+  return loopbackServers.listen(value);
 }
 function storeSnapshot(overrides: Partial<ConversationSessionDescriptor> = {},
   turnOverrides: Partial<ReturnType<typeof toAnalysisHistoryTurn>> = {}) {
@@ -66,7 +69,8 @@ beforeEach(() => {
     return emitter;
   });
 });
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   jest.restoreAllMocks(); resetConversationSessionStoreForTests(); resetAnalysisRunStoreForTests();
   if (previousPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV]; else process.env[ENTERPRISE_DB_PATH_ENV] = previousPath;
   fs.rmSync(tmp, {recursive: true, force: true});
@@ -94,18 +98,18 @@ describe('conversation route deliver first, verify after', () => {
         return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
       } finally {input.context?.dispose();}
     });
-    const started = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    const started = await request(await app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
     expect(started.status).toBe(202);
     await provisional;
-    const cancelled = await request(app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
+    const cancelled = await request(await app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
       .send({runId: started.body.runId});
     expect(cancelled.status).toBe(200);
     expect(cancelled.body).toEqual({success: true, sessionId: started.body.sessionId, runId: started.body.runId,
       status: 'review_stop_requested'});
-    let snapshot = await request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
+    let snapshot = await request(await app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
     for (let attempt = 0; snapshot.body.activeRunId && attempt < 50; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 10));
-      snapshot = await request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
+      snapshot = await request(await app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
     }
     expect(snapshot.body.activeRunId).toBeUndefined();
     expect(snapshot.body.history.map((message: {content: string}) => message.content))
@@ -134,9 +138,9 @@ describe('conversation live-only drafts', () => {
       input.context?.dispose();
       return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
     });
-    const started = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    const started = await request(await app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
     expect(started.status).toBe(202);
-    const stream = request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}/stream`)
+    const stream = request(await app()).get(`/api/agent/v1/conversation/${started.body.sessionId}/stream`)
       .query({runId: started.body.runId}).buffer(true).parse((res, done) => {
         let text = '';
         res.on('data', (chunk: Buffer) => { text += chunk.toString(); });
@@ -169,14 +173,15 @@ describe('conversation routes while providers.json is unreadable', () => {
     resetProviderService();
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     if (previousProviderDir === undefined) delete process.env.PROVIDER_DATA_DIR_OVERRIDE;
     else process.env.PROVIDER_DATA_DIR_OVERRIDE = previousProviderDir;
     resetProviderService();
   });
 
   it('refuses a new conversation that follows the active provider instead of running on env', async () => {
-    const response = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    const response = await request(await app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
     expect(response.status).toBe(409);
     expect(response.body).toMatchObject({success: false, code: 'provider_store_unreadable'});
     expect(factory).not.toHaveBeenCalled();
@@ -185,7 +190,7 @@ describe('conversation routes while providers.json is unreadable', () => {
   it('refuses to recover a conversation that follows the active provider', async () => {
     storeSnapshot({providerFollowsActive: true});
     const historyRead = jest.spyOn(getConversationSessionStore(), 'listTurns');
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(409);
     expect(response.body.code).toBe('provider_store_unreadable');
     expect(historyRead).not.toHaveBeenCalled();
@@ -194,7 +199,7 @@ describe('conversation routes while providers.json is unreadable', () => {
 
   it('recovers a conversation pinned explicitly to env, which does not depend on the file', async () => {
     storeSnapshot();
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(200);
     expect(factory).toHaveBeenCalledWith(expect.objectContaining({providerId: null}));
   });
@@ -203,7 +208,7 @@ describe('conversation routes while providers.json is unreadable', () => {
 describe('conversation routes authorized recovery', () => {
   it('reopens an owner-authorized finalized turn with partial metadata and a pinned fresh adapter', async () => {
     storeSnapshot();
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({sessionId: descriptor.sessionId, status: 'completed', recoveryStatus: 'available',
       history: [expect.objectContaining({content: 'previous question'}), expect.objectContaining({content: 'Final retained answer',
@@ -219,12 +224,12 @@ describe('conversation routes authorized recovery', () => {
     const fullHandoff = {question: 'Compare scheduling before and after the stall', scope: 'Main-thread scheduling',
       assumptions: ['The process selection is unchanged'], evidence: [{id: 'finding-1', label: 'Observed scheduling delay'}]};
     storeSnapshot({lastOutcome: {kind: 'recommend_full', message: 'A full comparison would help.', handoff: fullHandoff}});
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(200);
     expect(response.body.recommendedFullAnalysis).toBe(true);
     expect(response.body.fullHandoff).toEqual(fullHandoff);
     expect(Array.isArray(response.body.fullHandoff.assumptions)).toBe(true);
-    const handoff = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/full-handoff`);
+    const handoff = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/full-handoff`);
     expect(handoff.status).toBe(200);
     expect(handoff.body.handoff).toEqual(response.body.fullHandoff);
   });
@@ -234,7 +239,7 @@ describe('conversation routes authorized recovery', () => {
       message: 'PRIVATE_HANDOFF_ANSWER', handoff: {question: 'PRIVATE_HANDOFF_QUESTION', scope: 'PRIVATE_HANDOFF_SCOPE',
         assumptions: ['PRIVATE_HANDOFF_ASSUMPTION'], evidence: []}}},
     {sourceDerived: true, analysisContextFingerprint: 'previous-source-grant'});
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(200);
     expect(response.body).not.toHaveProperty('recommendedFullAnalysis');
     expect(response.body).not.toHaveProperty('fullHandoff');
@@ -245,7 +250,7 @@ describe('conversation routes authorized recovery', () => {
     const question = 'Why is Foo::bar slow here? api_key="conversation-secret-123456"';
     storeSnapshot({lastRun: {...descriptor.lastRun, query: question, sourceDerived: true}},
       {sourceDerived: true, analysisContextFingerprint: descriptor.analysisContextFingerprint});
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(200);
     // The stored question is the authorized original, read back by its creator
     // with only the credential withheld; source names stay readable.
@@ -258,7 +263,7 @@ describe('conversation routes authorized recovery', () => {
 
   it('does not hydrate or create an adapter for a different user in the same workspace', async () => {
     storeSnapshot();
-    const response = await request(app('other-owner')).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app('other-owner')).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(404);
     expect(JSON.stringify(response.body)).not.toContain('Final retained answer');
     expect(factory).not.toHaveBeenCalled();
@@ -271,7 +276,7 @@ describe('conversation routes authorized recovery', () => {
       const historyRead = jest.spyOn(getConversationSessionStore(), 'listTurns');
       if (failure === 'source-revoked') jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization')
         .mockImplementation(() => {throw new authorization.AnalysisContextAuthorizationChangedError();});
-      const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+      const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
       expect(response.status).toBe(failure === 'provider-missing' ? 404 : 409);
       expect(JSON.stringify(response.body)).not.toContain('Final retained answer');
       expect(historyRead).not.toHaveBeenCalled();
@@ -280,7 +285,7 @@ describe('conversation routes authorized recovery', () => {
 
   it('reopens a crashed running turn as interrupted without resurrecting a pending run', async () => {
     storeSnapshot({status: 'running', lastRun: {...descriptor.lastRun, status: 'running'}, lastOutcome: undefined});
-    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({status: 'failed', recoveryStatus: 'interrupted'});
     expect(response.body).not.toHaveProperty('activeRunId');
@@ -291,16 +296,16 @@ describe('conversation routes authorized recovery', () => {
       storeSnapshot({status: 'awaiting_user', lastRun: {...descriptor.lastRun, sourceDerived: true},
         lastOutcome: {kind: 'needs_user_input', message: 'PRIVATE_SOURCE_ANSWER', question: 'PRIVATE_SOURCE_QUESTION'}},
       {sourceDerived: true, analysisContextFingerprint: originalGrant, query: 'PRIVATE_SOURCE_QUERY', answer: 'PRIVATE_SOURCE_ANSWER'});
-      const view = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+      const view = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
       expect(view.status).toBe(200);
       expect(view.body).toMatchObject({history: [], historyUnavailableMessages: 2});
       expect(view.body).not.toHaveProperty('pendingQuestion');
       expect(JSON.stringify(view.body)).not.toMatch(/PRIVATE_SOURCE/);
-      const streamed = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/stream?runId=${descriptor.lastRun.runId}`);
+      const streamed = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/stream?runId=${descriptor.lastRun.runId}`);
       expect(streamed.status).toBe(409);
       expect(streamed.body.code).toBe('CONVERSATION_HISTORY_SOURCE_UNAVAILABLE');
       expect(JSON.stringify(streamed.body)).not.toMatch(/PRIVATE_SOURCE/);
-      const handoff = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/full-handoff`);
+      const handoff = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/full-handoff`);
       expect(handoff.status).toBe(409);
       expect(JSON.stringify(handoff.body)).not.toMatch(/PRIVATE_SOURCE/);
     });
@@ -323,7 +328,7 @@ describe('conversation route failures', () => {
     const save = jest.spyOn(store, 'save').mockImplementation(() => {
       throw new Error(CANARY);
     });
-    expectFixed(await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'}), 500,
+    expectFixed(await request(await app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'}), 500,
       'CONVERSATION_START_FAILED', errorLog);
 
     save.mockRestore();
@@ -331,15 +336,15 @@ describe('conversation route failures', () => {
     jest.spyOn(store, 'listTurns').mockImplementation(() => {
       throw new Error(CANARY);
     });
-    expectFixed(await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`), 500,
+    expectFixed(await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`), 500,
       'CONVERSATION_READ_FAILED', errorLog);
   });
 
   it('answers a stop for a run that is no longer active with a typed 409', async () => {
-    const started = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    const started = await request(await app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
     expect(started.status).toBe(202);
 
-    const cancelled = await request(app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
+    const cancelled = await request(await app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
       .send({runId: 'some-other-run'});
     expect(cancelled.status).toBe(409);
     expect(cancelled.body).toMatchObject({
@@ -355,7 +360,7 @@ describe('conversation source selection is read after merging the previous turn'
     const previous = {codeAwareMode: 'metadata_only' as const, codebaseIds: ['cb_previous']};
     storeSnapshot({...previous,
       analysisContextFingerprint: authorization.buildAnalysisContextAuthorizationFingerprint(previous, owner)});
-    const response = await request(app()).post('/api/agent/v1/conversation')
+    const response = await request(await app()).post('/api/agent/v1/conversation')
       .send({query: 'no source now', sessionId: descriptor.sessionId, options: {codeAwareMode: 'off'}});
     expect(response.status).toBe(409);
     expect(response.body.code).toBe('ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED');
@@ -378,7 +383,7 @@ describe('conversation source selection is read after merging the previous turn'
       return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
     });
     storeSnapshot();
-    const response = await request(app()).post('/api/agent/v1/conversation').send({query: 'still no source',
+    const response = await request(await app()).post('/api/agent/v1/conversation').send({query: 'still no source',
       sessionId: descriptor.sessionId, options: {codeAwareMode: 'off', codebaseIds: ['cb_hidden']}});
     expect(response.status).toBe(202);
     for (let attempt = 0; !analyzedOptions && attempt < 50; attempt++) await new Promise(resolve => setTimeout(resolve, 10));

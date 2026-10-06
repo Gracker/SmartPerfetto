@@ -20,6 +20,9 @@ import {
   registerPrivateAnalysisQueryForEcho,
 } from '../../services/security/codeAwareOutputRegistry';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -51,12 +54,12 @@ function ssoHeaders(
     .set('X-SmartPerfetto-SSO-Scopes', scopes);
 }
 
-function makeResourceApp(): express.Express {
+async function makeResourceApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/traces', traceRoutes);
   app.use('/api/reports', reportRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 async function writeTraceMetadata(
@@ -91,6 +94,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   reportStore.clear();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
@@ -117,7 +121,7 @@ describe('owner guard for trace and report routes', () => {
       writeTraceMetadata('trace-b'),
       writeTraceMetadata('trace-c'),
     ]);
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const firstPage = await authHeaders(request(app).get('/api/traces?limit=2'));
     expect(firstPage.status).toBe(200);
@@ -152,7 +156,7 @@ describe('owner guard for trace and report routes', () => {
       userId: API_USER_ID,
     });
 
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
     const listRes = await authHeaders(request(app).get('/api/traces'));
     expect(listRes.status).toBe(200);
     expect(listRes.body.traces.map((trace: any) => trace.id)).toEqual(['own-trace']);
@@ -170,7 +174,7 @@ describe('owner guard for trace and report routes', () => {
 
   it('treats legacy trace metadata as dev-only default ownership', async () => {
     await writeTraceMetadata('legacy-trace', null);
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const apiKeyRes = await authHeaders(request(app).get('/api/traces/legacy-trace'));
     expect(apiKeyRes.status).toBe(404);
@@ -183,7 +187,7 @@ describe('owner guard for trace and report routes', () => {
 
   it('hides global trace cleanup from non-privileged analyst requests', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const res = await ssoHeaders(
       request(app).post('/api/traces/cleanup'),
@@ -207,7 +211,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: 'viewer-user',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const readRes = await ssoHeaders(request(app).get('/api/traces/peer-trace'), 'viewer-user', 'viewer');
     expect(readRes.status).toBe(200);
@@ -231,7 +235,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: 'peer-user',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const deleteRes = await ssoHeaders(
       request(app).delete('/api/traces/peer-owned-trace'),
@@ -262,7 +266,7 @@ describe('owner guard for trace and report routes', () => {
       userId: API_USER_ID,
     });
 
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const ownRes = await authHeaders(request(app).get('/api/reports/own-report'));
     expect(ownRes.status).toBe(200);
@@ -287,7 +291,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: API_USER_ID,
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const readRes = await authHeaders(
       request(app).get('/api/reports/..%2f..%2ffrontend%2findex'),
@@ -325,7 +329,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: 'report-owner',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const exportRes = await ssoHeaders(
       request(app).get('/api/reports/report-no-read/export'),
@@ -349,7 +353,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: 'peer-user',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const deleteRes = await ssoHeaders(
       request(app).delete('/api/reports/peer-report'),
@@ -363,7 +367,7 @@ describe('owner guard for trace and report routes', () => {
 });
 
 describe('owner guard for agent session routes', () => {
-  function makeAgentApp() {
+  async function makeAgentApp() {
     const router = express.Router();
     const recoverResultForSessionIfNeeded = jest.fn((sessionId: string) => sessionId === 'private-session'
       ? {
@@ -481,11 +485,11 @@ describe('owner guard for agent session routes', () => {
     app.use(express.json());
     app.use(authenticate);
     app.use('/api/agent/v1', router);
-    return { app, recoverResultForSessionIfNeeded };
+    return { app: await loopbackServers.listen(app), recoverResultForSessionIfNeeded };
   }
 
   it('filters /api/agent/v1/sessions by owner fields', async () => {
-    const { app } = makeAgentApp();
+    const { app } = await makeAgentApp();
 
     const res = await authHeaders(request(app).get('/api/agent/v1/sessions?includeRecoverable=false'));
 
@@ -503,7 +507,7 @@ describe('owner guard for agent session routes', () => {
   });
 
   it('returns 404 for another tenant session report without invoking report recovery', async () => {
-    const { app, recoverResultForSessionIfNeeded } = makeAgentApp();
+    const { app, recoverResultForSessionIfNeeded } = await makeAgentApp();
 
     const res = await authHeaders(request(app).get('/api/agent/v1/other-session/report'));
 
@@ -516,7 +520,7 @@ describe('owner guard for agent session routes', () => {
   });
 
   it('retains owner report commentary and history while filtering protected values and raw state', async () => {
-    const {app} = makeAgentApp();
+    const {app} = await makeAgentApp();
     registerPrivateAnalysisQueryForEcho(
       'private-session',
       'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',

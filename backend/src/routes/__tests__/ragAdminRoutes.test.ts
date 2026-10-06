@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import * as fs from 'fs';
+import type {Server} from 'http';
+import {randomUUID} from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -31,12 +33,17 @@ import {
 import {DocumentCollectionIngester} from '../../services/knowledge/documentCollectionIngester';
 import {DocumentCollectionStore} from '../../services/knowledge/documentCollectionStore';
 import {seedRetiredWikiChunks} from '../../../tests/helpers/retiredRagChunks';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 let tmpDir: string;
 let store: RagStore;
 let registry: CodebaseRegistry;
 let externalKnowledgeRegistry: ExternalKnowledgeSourceRegistry;
 let app: express.Express;
+let server: Server;
+let testInstanceId: string;
 let directoryPicker: NativeDirectoryPicker;
 let codebaseManagementService: CodebaseManagementService;
 let pickerSelectedRoot: string;
@@ -49,7 +56,7 @@ const DEFAULT_SCOPE = {
   userId: 'dev-user-123',
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-admin-test-'));
   process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = tmpDir;
   store = new RagStore(storePath());
@@ -76,7 +83,12 @@ beforeEach(() => {
     runCommand: async () => ({stdout: `${pickerSelectedRoot}\n`, stderr: ''}),
     idGenerator: () => `picker-selection-${++pickerSelectionSequence}`,
   });
+  testInstanceId = randomUUID();
   app = express();
+  app.use((_req, res, next) => {
+    res.setHeader('x-test-instance', testInstanceId);
+    next();
+  });
   app.use(express.json({limit: '5mb'}));
   app.use('/api/rag', createRagAdminRoutes(store, {
     registry,
@@ -89,9 +101,11 @@ beforeEach(() => {
       new DocumentCollectionStore(path.join(tmpDir, 'knowledge-index')),
     ),
   } as any));
+  server = await loopbackServers.listen(app);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   if (originalKnowledgeRoots === undefined) delete process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
   else process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = originalKnowledgeRoots;
   if (fs.existsSync(tmpDir)) {
@@ -153,7 +167,7 @@ describe('GET /api/rag/stats', () => {
     store.addChunk(
       makeChunk({chunkId: 'b', kind: 'aosp', license: 'Apache-2.0'}),
     );
-    const res = await request(app).get('/api/rag/stats');
+    const res = await request(server).get('/api/rag/stats');
     expect(res.status).toBe(200);
     expect(res.body.stats['androidperformance.com'].chunkCount).toBe(1);
     expect(res.body.stats.aosp.chunkCount).toBe(1);
@@ -163,7 +177,7 @@ describe('GET /api/rag/stats', () => {
 describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
   it('returns a known chunk', async () => {
     store.addChunk(makeChunk({chunkId: 'a'}));
-    const res = await request(app).get('/api/rag/chunks/a');
+    const res = await request(server).get('/api/rag/chunks/a');
     expect(res.status).toBe(200);
     expect(res.body.chunk.chunkId).toBe('a');
   });
@@ -188,8 +202,8 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
       language: 'kotlin',
     }), DEFAULT_SCOPE);
 
-    const read = await request(app).get('/api/rag/chunks/source-a');
-    const remove = await request(app).delete('/api/rag/chunks/source-a');
+    const read = await request(server).get('/api/rag/chunks/source-a');
+    const remove = await request(server).delete('/api/rag/chunks/source-a');
 
     expect(read.status).toBe(200);
     expect(read.body.chunk.snippet).toBeUndefined();
@@ -205,8 +219,8 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
       sourceGeneration: 'generation-a', title: 'PRIVATE_WIKI_TITLE', snippet: 'PRIVATE_WIKI_SNIPPET Handler queue',
       filePath: 'src/article.md'}], DEFAULT_SCOPE);
 
-    const chunkResponse = await request(app).get('/api/rag/chunks/wiki-private');
-    const searchResponse = await request(app)
+    const chunkResponse = await request(server).get('/api/rag/chunks/wiki-private');
+    const searchResponse = await request(server)
       .post('/api/rag/search')
       .send({query: 'Handler queue', kinds: ['android_internals_wiki']});
 
@@ -218,19 +232,19 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
   });
 
   it('404 on missing chunkId', async () => {
-    const res = await request(app).get('/api/rag/chunks/missing');
+    const res = await request(server).get('/api/rag/chunks/missing');
     expect(res.status).toBe(404);
   });
 
   it('DELETE removes the chunk', async () => {
     store.addChunk(makeChunk({chunkId: 'a'}));
-    const res = await request(app).delete('/api/rag/chunks/a');
+    const res = await request(server).delete('/api/rag/chunks/a');
     expect(res.status).toBe(200);
     expect(store.getChunk('a')).toBeUndefined();
   });
 
   it('DELETE returns 404 for missing chunk', async () => {
-    const res = await request(app).delete('/api/rag/chunks/missing');
+    const res = await request(server).delete('/api/rag/chunks/missing');
     expect(res.status).toBe(404);
   });
 });
@@ -246,7 +260,7 @@ describe('POST /api/rag/search', () => {
   });
 
   it('runs a search and returns ranked hits', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/rag/search')
       .send({query: 'binder transactions'});
     expect(res.status).toBe(200);
@@ -255,14 +269,14 @@ describe('POST /api/rag/search', () => {
   });
 
   it('respects kinds filter', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/rag/search')
       .send({query: 'binder', kinds: ['aosp']});
     expect(res.body.result.results).toHaveLength(0);
   });
 
   it('400 on missing query', async () => {
-    const res = await request(app).post('/api/rag/search').send({});
+    const res = await request(server).post('/api/rag/search').send({});
     expect(res.status).toBe(400);
   });
 
@@ -272,7 +286,7 @@ describe('POST /api/rag/search', () => {
     [{query: 'binder', kinds: Array.from({length: 101}, () => 'aosp')}, 'kinds'],
     [{query: 'binder', codebaseIds: Array.from({length: 101}, (_, index) => `cb-${index}`)}, 'codebaseIds'],
   ])('400 on bounded search input violations', async (body, field) => {
-    const res = await request(app).post('/api/rag/search').send(body);
+    const res = await request(server).post('/api/rag/search').send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('invalid_rag_search_input');
@@ -291,7 +305,7 @@ describe('retired Android Internals Wiki connector', () => {
     ['get', '/api/rag/android-internals/sources/eks_000000000000000000000000/audit'],
     ['get', '/api/rag/android-internals/anything/else'],
   ] as const)('answers %s %s with 410 and points to /api/rag/knowledge', async (method, url) => {
-    const response = await request(app)[method](url).send({rootPath: tmpDir, rightsAcknowledged: true});
+    const response = await request(server)[method](url).send({rootPath: tmpDir, rightsAcknowledged: true});
     expect(response.status).toBe(410);
     expect(response.headers.deprecation).toBe('true');
     expect(response.body).toEqual(expect.objectContaining({
@@ -308,7 +322,7 @@ describe('retired Android Internals Wiki connector', () => {
       ['delete', `/api/rag/android-internals/sources/${sourceId}/index`],
       ['post', `/api/rag/android-internals/sources/${sourceId}/reindex`],
     ] as const) {
-      expect((await request(app)[method](url).send({sendToProvider: false})).status).toBe(410);
+      expect((await request(server)[method](url).send({sendToProvider: false})).status).toBe(410);
     }
     expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).toEqual(expect.objectContaining({
       sendToProvider: true, activeGeneration: 'wiki-generation-1'}));
@@ -317,7 +331,7 @@ describe('retired Android Internals Wiki connector', () => {
 
   it('lists a stored retired record as retired under /knowledge, lets its consent be revoked, never granted', async () => {
     const {root, sourceId} = await seedRetiredWikiSource('listed-wiki');
-    const listed = await request(app).get('/api/rag/knowledge');
+    const listed = await request(server).get('/api/rag/knowledge');
     expect(listed.status).toBe(200);
     expect(listed.body.sources).toEqual([expect.objectContaining({
       sourceId, kind: 'android_internals_wiki', retired: true, sendToProvider: true, hasActiveIndex: true})]);
@@ -325,12 +339,12 @@ describe('retired Android Internals Wiki connector', () => {
     expect(externalKnowledgeRegistry.evaluateAccess(sourceId, DEFAULT_SCOPE, [sourceId]))
       .toEqual({allowed: false, reason: 'knowledge_kind_retired'});
 
-    const revoked = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: false});
+    const revoked = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: false});
     expect(revoked.status).toBe(200);
     expect(revoked.body.source).toEqual(expect.objectContaining({sourceId, sendToProvider: false, retired: true}));
     expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
     // A consent the kind can never use is refused, and nothing is written.
-    const granted = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
+    const granted = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
     expect(granted.status).toBe(409);
     expect(granted.body.code).toBe('KNOWLEDGE_SOURCE_RETIRED');
     expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
@@ -386,7 +400,7 @@ describe('document collection routes', () => {
       'blank.txt': '  \n',
       'image.png': 'binary',
     });
-    const preview = await request(app).post('/api/rag/knowledge/preview').send({rootPath: root});
+    const preview = await request(server).post('/api/rag/knowledge/preview').send({rootPath: root});
     expect(preview.status).toBe(200);
     expect(preview.body.preview).toEqual(expect.objectContaining({
       documentCount: 1,
@@ -397,18 +411,18 @@ describe('document collection routes', () => {
     expect(JSON.stringify(preview.body)).not.toContain('RenderThread notes');
 
     const empty = collection('docs-empty', {'blank.md': '\n', 'data.json': '{}'});
-    const refused = await request(app).post('/api/rag/knowledge/preview').send({rootPath: empty});
+    const refused = await request(server).post('/api/rag/knowledge/preview').send({rootPath: empty});
     expect(refused.status).toBe(400);
     expect(refused.body).toEqual(expect.objectContaining({
       code: 'KNOWLEDGE_COLLECTION_EMPTY',
       details: {empty_text: 1, extension_not_allowed: 1},
     }));
-    const registerEmpty = await request(app).post('/api/rag/knowledge/register')
+    const registerEmpty = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: empty, rightsAcknowledged: true});
     expect(registerEmpty.status).toBe(400);
     expect(registerEmpty.body.code).toBe('KNOWLEDGE_COLLECTION_EMPTY');
 
-    const outside = await request(app).post('/api/rag/knowledge/preview').send({rootPath: os.tmpdir()});
+    const outside = await request(server).post('/api/rag/knowledge/preview').send({rootPath: os.tmpdir()});
     expect(outside.status).toBe(400);
     expect(outside.body).toEqual(expect.objectContaining({
       code: 'KNOWLEDGE_ROOT_BLOCKED',
@@ -421,15 +435,15 @@ describe('document collection routes', () => {
       'render/compositor.md': '# 渲染线程\nXRenderCompositorWorker 负责合成每一帧。\n',
       'site/index.html': '<h1>Binder</h1><p>binder transactions</p>',
     });
-    const missingRights = await request(app).post('/api/rag/knowledge/register').send({rootPath: root});
+    const missingRights = await request(server).post('/api/rag/knowledge/register').send({rootPath: root});
     expect(missingRights.status).toBe(400);
     expect(missingRights.body.code).toBe('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED');
-    const tooLong = await request(app).post('/api/rag/knowledge/register')
+    const tooLong = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true, description: 'x'.repeat(281)});
     expect(tooLong.status).toBe(400);
     expect(tooLong.body.code).toBe('KNOWLEDGE_SOURCE_METADATA_INVALID');
 
-    const registered = await request(app).post('/api/rag/knowledge/register').send({
+    const registered = await request(server).post('/api/rag/knowledge/register').send({
       rootPath: root,
       displayName: 'Team docs',
       description: 'Internal render framework and trace tags',
@@ -449,12 +463,12 @@ describe('document collection routes', () => {
     expectNoRoot(registered.body, root);
     const sourceId = registered.body.source.sourceId;
 
-    const reindex = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    const reindex = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
     expect(reindex.status).toBe(200);
     expect(reindex.body.result).toEqual(expect.objectContaining({sourceId, documentCount: 2}));
     expectNoRoot(reindex.body, root);
 
-    const search = await request(app).post(`/api/rag/knowledge/${sourceId}/search`)
+    const search = await request(server).post(`/api/rag/knowledge/${sourceId}/search`)
       .send({query: 'XRenderCompositorWorker'});
     expect(search.status).toBe(200);
     expect(search.body).toEqual(expect.objectContaining({
@@ -469,12 +483,12 @@ describe('document collection routes', () => {
       endLine: 2,
       snippet: expect.stringContaining('XRenderCompositorWorker'),
     }));
-    const cjk = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: '合成'});
+    const cjk = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: '合成'});
     expect(cjk.body.hits[0].relativePath).toBe('render/compositor.md');
-    const badQuery = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: ' '});
+    const badQuery = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: ' '});
     expect(badQuery.status).toBe(400);
 
-    const listed = await request(app).get('/api/rag/knowledge');
+    const listed = await request(server).get('/api/rag/knowledge');
     expect(listed.body.sources).toEqual([expect.objectContaining({
       sourceId,
       kind: 'document_collection',
@@ -487,60 +501,60 @@ describe('document collection routes', () => {
 
   it('re-registration keeps consent when omitted and revokes it only when explicit', async () => {
     const root = collection('docs-consent', {'a.md': '# A\nalpha\n'});
-    const first = await request(app).post('/api/rag/knowledge/register')
+    const first = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
     expect(first.body.source.sendToProvider).toBe(true);
-    const omitted = await request(app).post('/api/rag/knowledge/register')
+    const omitted = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true});
     expect(omitted.body.source.sendToProvider).toBe(true);
-    const revoked = await request(app).post('/api/rag/knowledge/register')
+    const revoked = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true, sendToProvider: false});
     expect(revoked.body.source.sendToProvider).toBe(false);
-    const invalid = await request(app).post('/api/rag/knowledge/register')
+    const invalid = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true, sendToProvider: 'yes'});
     expect(invalid.status).toBe(400);
   });
 
   it('keeps every collection route inside the caller workspace', async () => {
     const root = collection('docs-scoped', {'a.md': '# A\nalpha\n'});
-    const registered = await request(app).post('/api/rag/knowledge/register')
+    const registered = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true});
     const sourceId = registered.body.source.sourceId;
-    await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
 
     const other = (req: request.Test) => req.set('X-Workspace-Id', 'workspace-b');
-    expect((await other(request(app).get('/api/rag/knowledge'))).body.sources).toEqual([]);
+    expect((await other(request(server).get('/api/rag/knowledge'))).body.sources).toEqual([]);
     for (const response of [
-      await other(request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'})),
-      await other(request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})),
-      await other(request(app).delete(`/api/rag/knowledge/${sourceId}`)),
+      await other(request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'})),
+      await other(request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})),
+      await other(request(server).delete(`/api/rag/knowledge/${sourceId}`)),
     ]) {
       expect(response.status).toBe(404);
       expect(response.body.code).toBe('KNOWLEDGE_SOURCE_NOT_FOUND');
     }
-    const search = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
+    const search = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
     expect(search.body.hits).toHaveLength(1);
   });
 
   it('deletes a collection with its index files, and deletes a retired Wiki source with its chunks', async () => {
     const root = collection('docs-delete', {'a.md': '# A\nalpha\n'});
-    const registered = await request(app).post('/api/rag/knowledge/register')
+    const registered = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true});
     const sourceId = registered.body.source.sourceId;
-    await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
     const indexRoot = path.join(tmpDir, 'knowledge-index');
     const indexFiles = () => fs.readdirSync(indexRoot, {recursive: true}).filter(entry =>
       String(entry).endsWith('.sqlite'));
     expect(indexFiles()).toHaveLength(1);
 
-    const deleted = await request(app).delete(`/api/rag/knowledge/${sourceId}`);
+    const deleted = await request(server).delete(`/api/rag/knowledge/${sourceId}`);
     expect(deleted.status).toBe(200);
     expect(deleted.body).toEqual(expect.objectContaining({success: true, sourceId, deleted: true}));
     expect(indexFiles()).toHaveLength(0);
-    expect((await request(app).get('/api/rag/knowledge')).body.sources).toEqual([]);
-    const searchAfter = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
+    expect((await request(server).get('/api/rag/knowledge')).body.sources).toEqual([]);
+    const searchAfter = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
     expect(searchAfter.status).toBe(404);
-    const again = await request(app).delete(`/api/rag/knowledge/${sourceId}`);
+    const again = await request(server).delete(`/api/rag/knowledge/${sourceId}`);
     expect(again.status).toBe(404);
 
     const {sourceId: wikiId} = await seedRetiredWikiSource('deleted-wiki');
@@ -548,16 +562,16 @@ describe('document collection routes', () => {
     seedRetiredWikiChunks(storePath(), [{chunkId: 'other-wiki', knowledgeSourceId: `eks_${'9'.repeat(24)}`,
       sourceGeneration: 'other-generation'}], DEFAULT_SCOPE);
     expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(3);
-    const otherWorkspace = await request(app).delete(`/api/rag/knowledge/${wikiId}`).set('X-Workspace-Id', 'workspace-b');
+    const otherWorkspace = await request(server).delete(`/api/rag/knowledge/${wikiId}`).set('X-Workspace-Id', 'workspace-b');
     expect(otherWorkspace.status).toBe(404);
     expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(3);
-    const wikiDeleted = await request(app).delete(`/api/rag/knowledge/${wikiId}`);
+    const wikiDeleted = await request(server).delete(`/api/rag/knowledge/${wikiId}`);
     expect(wikiDeleted.status).toBe(200);
     expect(wikiDeleted.body).toEqual(expect.objectContaining({success: true, sourceId: wikiId, deleted: true}));
     expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE}).map(chunk => chunk.chunkId))
       .toEqual(['other-wiki']);
     expect(externalKnowledgeRegistry.get(wikiId, DEFAULT_SCOPE)).toBeUndefined();
-    expect((await request(app).get('/api/rag/knowledge')).body.sources).toEqual([]);
+    expect((await request(server).get('/api/rag/knowledge')).body.sources).toEqual([]);
   });
 
   describe('directory picker registration', () => {
@@ -573,39 +587,39 @@ describe('document collection routes', () => {
     }
 
     async function pick(): Promise<string> {
-      const selection = await local(request(app).post('/api/rag/codebases/directory-picker')).send({purpose: 'knowledge'});
+      const selection = await local(request(server).post('/api/rag/codebases/directory-picker')).send({purpose: 'knowledge'});
       expect(selection.status).toBe(200);
       return selection.body.directorySelectionId;
     }
 
     it('previews without using the selection up, registers once, and trusts only that source\'s own root', async () => {
       const root = pickedCollection();
-      const badPurpose = await local(request(app).post('/api/rag/codebases/directory-picker')).send({purpose: 'other'});
+      const badPurpose = await local(request(server).post('/api/rag/codebases/directory-picker')).send({purpose: 'other'});
       expect(badPurpose.status).toBe(400);
       const selectionId = await pick();
 
-      const raw = await request(app).post('/api/rag/knowledge/preview').send({rootPath: root});
+      const raw = await request(server).post('/api/rag/knowledge/preview').send({rootPath: root});
       expect(raw.body).toEqual(expect.objectContaining({
         code: 'KNOWLEDGE_ROOT_BLOCKED', details: {blockedReason: 'root_outside_allowlist'}}));
       for (const refused of [
-        await request(app).post('/api/rag/knowledge/preview').send({rootPath: root, directorySelectionId: selectionId}),
-        await request(app).post('/api/rag/knowledge/preview')
+        await request(server).post('/api/rag/knowledge/preview').send({rootPath: root, directorySelectionId: selectionId}),
+        await request(server).post('/api/rag/knowledge/preview')
           .set('Host', 'smartperfetto.example.com').set('Origin', 'https://smartperfetto.example.com')
           .send({rootPath: root, directorySelectionId: selectionId}),
       ]) {
         expect(refused.status).toBe(403);
         expect(refused.body.code).toBe('DIRECTORY_PICKER_UNAVAILABLE');
       }
-      const mismatch = await local(request(app).post('/api/rag/knowledge/preview'))
+      const mismatch = await local(request(server).post('/api/rag/knowledge/preview'))
         .send({rootPath: tmpDir, directorySelectionId: selectionId});
       expect(mismatch.status).toBe(400);
       expect(mismatch.body.code).toBe('DIRECTORY_SELECTION_PATH_MISMATCH');
-      const otherWorkspace = await local(request(app).post('/api/rag/knowledge/preview'))
+      const otherWorkspace = await local(request(server).post('/api/rag/knowledge/preview'))
         .set('X-Workspace-Id', 'workspace-b').send({rootPath: root, directorySelectionId: selectionId});
       expect(otherWorkspace.status).toBe(403);
       expect(otherWorkspace.body.code).toBe('DIRECTORY_SELECTION_SCOPE_MISMATCH');
       for (let attempt = 0; attempt < 2; attempt++) {
-        const preview = await local(request(app).post('/api/rag/knowledge/preview'))
+        const preview = await local(request(server).post('/api/rag/knowledge/preview'))
           .send({rootPath: root, directorySelectionId: selectionId});
         expect(preview.status).toBe(200);
         expect(preview.body.preview.documentCount).toBe(1);
@@ -613,51 +627,51 @@ describe('document collection routes', () => {
       }
 
       // A registration that fails after taking the selection gives it back.
-      const noRights = await local(request(app).post('/api/rag/knowledge/register'))
+      const noRights = await local(request(server).post('/api/rag/knowledge/register'))
         .send({rootPath: root, directorySelectionId: selectionId});
       expect(noRights.body.code).toBe('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED');
-      const registered = await local(request(app).post('/api/rag/knowledge/register'))
+      const registered = await local(request(server).post('/api/rag/knowledge/register'))
         .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
       expect(registered.status).toBe(200);
       expectNoRoot(registered.body, root);
       expect(JSON.stringify(registered.body)).not.toContain('rootAuthorization');
       const sourceId = registered.body.source.sourceId;
       expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
-      const replay = await local(request(app).post('/api/rag/knowledge/register'))
+      const replay = await local(request(server).post('/api/rag/knowledge/register'))
         .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
       expect(replay.status).toBe(400);
       expect(replay.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
 
       // The source's own root is trusted for its reindex, and nothing else is.
-      const reindex = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      const reindex = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
       expect(reindex.status).toBe(200);
       expectNoRoot(reindex.body, root);
-      const search = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'PickedFolderCanary'});
+      const search = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'PickedFolderCanary'});
       expect(search.body.hits).toHaveLength(1);
       for (const rawAgain of [
-        await request(app).post('/api/rag/knowledge/preview').send({rootPath: root}),
-        await request(app).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true}),
-        await request(app).post('/api/rag/knowledge/preview').set('X-Workspace-Id', 'workspace-b').send({rootPath: root}),
+        await request(server).post('/api/rag/knowledge/preview').send({rootPath: root}),
+        await request(server).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true}),
+        await request(server).post('/api/rag/knowledge/preview').set('X-Workspace-Id', 'workspace-b').send({rootPath: root}),
       ]) {
         expect(rawAgain.body.code).toBe('KNOWLEDGE_ROOT_BLOCKED');
       }
       expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
 
       // Deleting the source revokes the channel with it.
-      expect((await request(app).delete(`/api/rag/knowledge/${sourceId}`)).status).toBe(200);
-      const afterDelete = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect((await request(server).delete(`/api/rag/knowledge/${sourceId}`)).status).toBe(200);
+      const afterDelete = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
       expect(afterDelete.status).toBe(404);
       expect(afterDelete.body.code).toBe('KNOWLEDGE_SOURCE_NOT_FOUND');
     });
 
     it('gives a source registered by its raw path no channel: its reindex follows the configured allowlist', async () => {
       const root = collection('docs-allowlisted', {'a.md': '# A\nalpha\n'});
-      const registered = await request(app).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true});
+      const registered = await request(server).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true});
       const sourceId = registered.body.source.sourceId;
       expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorizations');
-      expect((await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})).status).toBe(200);
+      expect((await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})).status).toBe(200);
       process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = path.join(tmpDir, 'elsewhere');
-      const blocked = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      const blocked = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
       expect(blocked.body).toEqual(expect.objectContaining({
         code: 'KNOWLEDGE_ROOT_BLOCKED', details: {blockedReason: 'root_outside_allowlist'}}));
     });
@@ -673,9 +687,9 @@ describe('document collection routes', () => {
       try {
         const responses: request.Response[] = [];
         const logs = await logsDuring(async () => {
-          responses.push(await local(request(app).post('/api/rag/knowledge/preview'))
+          responses.push(await local(request(server).post('/api/rag/knowledge/preview'))
             .send({rootPath: root, directorySelectionId: selectionId}));
-          responses.push(await local(request(app).post('/api/rag/knowledge/register'))
+          responses.push(await local(request(server).post('/api/rag/knowledge/register'))
             .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true}));
         });
         expect(responses.map(response => [response.status, response.body.code])).toEqual([
@@ -693,13 +707,13 @@ describe('document collection routes', () => {
 
         // The failed registration gave the selection back; the reindex of the registered source logs no path either.
         fs.chmodSync(locked, 0o755);
-        const registered = await local(request(app).post('/api/rag/knowledge/register'))
+        const registered = await local(request(server).post('/api/rag/knowledge/register'))
           .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
         expect(registered.status).toBe(200);
         fs.chmodSync(locked, 0o000);
         let reindex!: request.Response;
         const reindexLogs = await logsDuring(async () => {
-          reindex = await request(app).post(`/api/rag/knowledge/${registered.body.source.sourceId}/reindex`).send({});
+          reindex = await request(server).post(`/api/rag/knowledge/${registered.body.source.sourceId}/reindex`).send({});
         });
         expect(reindex.status).toBe(500);
         expect(reindex.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
@@ -721,7 +735,7 @@ describe('document collection routes', () => {
       let response!: request.Response;
       try {
         const logs = await logsDuring(async () => {
-          response = await local(request(app).post('/api/rag/knowledge/preview'))
+          response = await local(request(server).post('/api/rag/knowledge/preview'))
             .send({rootPath: root, directorySelectionId: selectionId});
         });
         expect(response.status).toBe(500);
@@ -739,8 +753,8 @@ describe('document collection routes', () => {
       const selectionId = await pick();
       const body = {rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true};
       const responses = await Promise.all([
-        local(request(app).post('/api/rag/knowledge/register')).send(body),
-        local(request(app).post('/api/rag/knowledge/register')).send(body),
+        local(request(server).post('/api/rag/knowledge/register')).send(body),
+        local(request(server).post('/api/rag/knowledge/register')).send(body),
       ]);
       expect(responses.map(response => response.status).sort()).toEqual([200, 400]);
       expect(responses.find(response => response.status === 400)!.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
@@ -749,21 +763,21 @@ describe('document collection routes', () => {
 
   it('sets a collection\'s provider consent under /knowledge', async () => {
     const root = collection('docs-consent-route', {'a.md': '# A\nalpha\n'});
-    const registered = await request(app).post('/api/rag/knowledge/register')
+    const registered = await request(server).post('/api/rag/knowledge/register')
       .send({rootPath: root, rightsAcknowledged: true});
     const sourceId = registered.body.source.sourceId;
-    const granted = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
+    const granted = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
     expect(granted.status).toBe(200);
     expect(granted.body.source).toEqual(expect.objectContaining({
       sourceId, kind: 'document_collection', sendToProvider: true, documentCount: 0, hasActiveIndex: false}));
     expectNoRoot(granted.body, root);
     expect(externalKnowledgeRegistry.evaluateAccess(sourceId, DEFAULT_SCOPE, [sourceId]).allowed).toBe(true);
-    const revoked = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: false});
+    const revoked = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: false});
     expect(revoked.status).toBe(200);
     expect(revoked.body.source.sendToProvider).toBe(false);
-    expect((await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: 'yes'})).status)
+    expect((await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: 'yes'})).status)
       .toBe(400);
-    const otherWorkspace = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`)
+    const otherWorkspace = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`)
       .set('X-Workspace-Id', 'workspace-b').send({sendToProvider: true});
     expect(otherWorkspace.status).toBe(404);
     expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
@@ -787,7 +801,7 @@ describe('codebase routes', () => {
       rootPath: root,
       kind: 'aosp',
     }, DEFAULT_SCOPE);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: root, kind: 'aosp'});
 
@@ -820,7 +834,7 @@ describe('codebase routes', () => {
         directoryPicker,
         externalKnowledgeRegistry,
       }));
-      return request(previewApp)
+      return request(await loopbackServers.listen(previewApp))
         .post('/api/rag/codebases/preview')
         .send({rootPath: root, kind: 'aosp'});
     };
@@ -855,14 +869,19 @@ describe('codebase routes', () => {
       lastIngestError: tokenCanary,
     }, DEFAULT_SCOPE);
 
-    const list = await request(app).get('/api/rag/codebases');
-    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
-    const audit = await request(app).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
+    const list = await request(server).get('/api/rag/codebases');
+    const detail = await request(server).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const audit = await request(server).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
     const unknown = JSON.stringify({list: list.body, detail: detail.body, audit: audit.body});
 
     expect(list.status).toBe(200);
     expect(detail.status).toBe(200);
-    expect(audit.status).toBe(200);
+    expect({
+      status: audit.status,
+      body: audit.body,
+      instance: audit.headers['x-test-instance'],
+      registered: registry.get(ref.codebaseId, DEFAULT_SCOPE) !== undefined,
+    }).toMatchObject({status: 200, instance: testInstanceId, registered: true});
     expect(unknown).not.toContain(tokenCanary);
     expect(unknown).not.toContain('rootAuthorization');
     expect(unknown).toContain('codebase_operation_failed');
@@ -871,7 +890,7 @@ describe('codebase routes', () => {
       lastIngestStatus: 'blocked_by_security',
       lastIngestError: 'codebase_root_realpath_drift',
     }, DEFAULT_SCOPE);
-    const knownAudit = await request(app).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
+    const knownAudit = await request(server).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
     expect(knownAudit.body.audit.lastIngestError).toBe('codebase_root_realpath_drift');
     expect(JSON.stringify(knownAudit.body)).not.toContain(tokenCanary);
   });
@@ -885,7 +904,7 @@ describe('codebase routes', () => {
       `<manifest>${' '.repeat(4 * 1024 * 1024)}</manifest>`,
     );
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: root, kind: 'aosp'});
 
@@ -900,7 +919,7 @@ describe('codebase routes', () => {
     const root = path.join(tmpDir, 'empty-codebase');
     fs.mkdirSync(root, {recursive: true});
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/rag/codebases/register')
       .send({rootPath: root, kind: 'app_source'});
 
@@ -917,7 +936,7 @@ describe('codebase routes', () => {
     fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class SelectedMain\n');
     pickerSelectedRoot = externalPickerDir;
 
-    const capability = await request(app)
+    const capability = await request(server)
       .get('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000');
     expect(capability.status).toBe(200);
@@ -926,7 +945,7 @@ describe('codebase routes', () => {
       provider: 'zenity',
     });
 
-    const selection = await request(app)
+    const selection = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({});
@@ -937,7 +956,7 @@ describe('codebase routes', () => {
       directorySelectionId: 'picker-selection-1',
     });
 
-    const blockedWithoutSelection = await request(app)
+    const blockedWithoutSelection = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: externalPickerDir});
     expect(blockedWithoutSelection.body.preview).toMatchObject({
@@ -945,7 +964,7 @@ describe('codebase routes', () => {
       blockedReason: 'root_outside_allowlist',
     });
 
-    const preview = await request(app)
+    const preview = await request(server)
       .post('/api/rag/codebases/preview')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({
@@ -958,7 +977,7 @@ describe('codebase routes', () => {
       acceptedFileCount: 1,
     });
 
-    const registered = await request(app)
+    const registered = await request(server)
       .post('/api/rag/codebases/register')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({
@@ -975,7 +994,7 @@ describe('codebase routes', () => {
     expect(registered.body.codebase.rootAuthorization).toBeUndefined();
     expect(registry.get(registered.body.codebase.codebaseId, DEFAULT_SCOPE))
       .toMatchObject({rootAuthorization: 'native_picker'});
-    const listed = await request(app).get('/api/rag/codebases');
+    const listed = await request(server).get('/api/rag/codebases');
     expect(listed.body.codebases).toEqual(expect.arrayContaining([
       expect.objectContaining({
         codebaseId: registered.body.codebase.codebaseId,
@@ -983,14 +1002,14 @@ describe('codebase routes', () => {
     ]));
     expect(listed.body.codebases).toEqual(await codebaseManagementService.list(DEFAULT_SCOPE));
     expect(JSON.stringify(listed.body)).not.toContain('rootAuthorization');
-    const audit = await request(app)
+    const audit = await request(server)
       .get(`/api/rag/codebases/${registered.body.codebase.codebaseId}/audit`);
     expect(audit.body.audit).toEqual(
       codebaseManagementService.audit(registered.body.codebase.codebaseId, DEFAULT_SCOPE),
     );
     expect(JSON.stringify(audit.body)).not.toContain('rootAuthorization');
 
-    const reused = await request(app)
+    const reused = await request(server)
       .post('/api/rag/codebases/register')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({
@@ -1013,11 +1032,11 @@ describe('codebase routes', () => {
     const enumerate = jest.spyOn(SourceEnumerator.prototype, 'enumerate').mockRejectedValue(fsError);
     try {
       for (const route of ['preview', 'register'] as const) {
-        const selection = await request(app).post('/api/rag/codebases/directory-picker')
+        const selection = await request(server).post('/api/rag/codebases/directory-picker')
           .set('Origin', 'http://127.0.0.1:10000').send({});
         let response!: request.Response;
         const logs = await logsDuring(async () => {
-          response = await request(app).post(`/api/rag/codebases/${route}`)
+          response = await request(server).post(`/api/rag/codebases/${route}`)
             .set('Origin', 'http://127.0.0.1:10000')
             .send({rootPath: externalPickerDir, directorySelectionId: selection.body.directorySelectionId});
         });
@@ -1038,8 +1057,9 @@ describe('codebase routes', () => {
     let enumerations: number;
     let releaseEnumeration: (() => void) | undefined;
     let pickerApp: express.Express;
+    let pickerServer: Server;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-codebase-register-'));
       fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
       pickerSelectedRoot = externalPickerDir;
@@ -1077,11 +1097,12 @@ describe('codebase routes', () => {
           },
         } as unknown as SourceEnumerator,
       }));
+      pickerServer = await loopbackServers.listen(pickerApp);
     });
 
-    const pickFolder = async () => (await request(pickerApp).post('/api/rag/codebases/directory-picker')
+    const pickFolder = async () => (await request(pickerServer).post('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000').send({})).body.directorySelectionId as string;
-    const register = (selectionId: string, extra: Record<string, unknown> = {}) => request(pickerApp)
+    const register = (selectionId: string, extra: Record<string, unknown> = {}) => request(pickerServer)
       .post('/api/rag/codebases/register').set('Origin', 'http://127.0.0.1:10000')
       .send({kind: 'app_source', rootPath: externalPickerDir, directorySelectionId: selectionId, ...extra});
 
@@ -1141,11 +1162,11 @@ describe('codebase routes', () => {
     externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-consent-refused-'));
     fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
     pickerSelectedRoot = externalPickerDir;
-    const selection = await request(app).post('/api/rag/codebases/directory-picker')
+    const selection = await request(server).post('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000').send({});
     const body = {kind: 'app_source', rootPath: externalPickerDir, directorySelectionId: selection.body.directorySelectionId};
 
-    const refused = await request(app).post('/api/rag/codebases/register')
+    const refused = await request(server).post('/api/rag/codebases/register')
       .set('Origin', 'http://127.0.0.1:10000').send({...body, sendToProvider: true});
     expect(refused.status).toBe(400);
     expect(refused.body).toEqual(expect.objectContaining({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'}));
@@ -1155,26 +1176,26 @@ describe('codebase routes', () => {
     // The selection is still there: the registration it was meant for goes ahead, without consent.
     expect(() => directoryPicker.validateSelection(selection.body.directorySelectionId, externalPickerDir!, DEFAULT_SCOPE))
       .not.toThrow();
-    const registered = await request(app).post('/api/rag/codebases/register')
+    const registered = await request(server).post('/api/rag/codebases/register')
       .set('Origin', 'http://127.0.0.1:10000').send({...body, sendToProvider: false});
     expect(registered.status).toBe(200);
     const codebaseId = registered.body.codebase.codebaseId;
     expect(registry.get(codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
 
     // Consent comes from the disclosure the registration returned.
-    const granted = await request(app).patch(`/api/rag/codebases/${codebaseId}/consent`)
+    const granted = await request(server).patch(`/api/rag/codebases/${codebaseId}/consent`)
       .send({authorizeContent: true, contentDisclosureToken: registered.body.codebase.contentDisclosure.token});
     expect(granted.status).toBe(200);
     expect(registry.get(codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(true);
   });
 
   it('rejects remote directory-picker requests and cross-workspace selection reuse', async () => {
-    const missingOriginPick = await request(app)
+    const missingOriginPick = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .send({});
     expect(missingOriginPick.status).toBe(403);
 
-    const remoteCapability = await request(app)
+    const remoteCapability = await request(server)
       .get('/api/rag/codebases/directory-picker')
       .set('Host', 'smartperfetto.example.com')
       .set('Origin', 'https://smartperfetto.example.com');
@@ -1184,18 +1205,18 @@ describe('codebase routes', () => {
       reason: 'remote_request',
     });
 
-    const remotePick = await request(app)
+    const remotePick = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .set('Host', 'smartperfetto.example.com')
       .set('Origin', 'https://smartperfetto.example.com')
       .send({});
     expect(remotePick.status).toBe(403);
 
-    const selection = await request(app)
+    const selection = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({});
-    const mismatch = await request(app)
+    const mismatch = await request(server)
       .post('/api/rag/codebases/preview')
       .set('Origin', 'http://127.0.0.1:10000')
       .set('X-Workspace-Id', 'workspace-b')
@@ -1212,7 +1233,7 @@ describe('codebase routes', () => {
     fs.mkdirSync(root);
     fs.writeFileSync(path.join(root, 'Main.c'), 'int main(void) { return 0; }\n');
 
-    const missingKernelVendor = await request(app)
+    const missingKernelVendor = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'kernel_source',
@@ -1222,7 +1243,7 @@ describe('codebase routes', () => {
     expect(missingKernelVendor.status).toBe(400);
     expect(missingKernelVendor.body.error).toContain('`vendor` is required');
 
-    const missingKernelScope = await request(app)
+    const missingKernelScope = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'kernel_source',
@@ -1232,7 +1253,7 @@ describe('codebase routes', () => {
     expect(missingKernelScope.status).toBe(400);
     expect(missingKernelScope.body.error).toContain('`pathFilters` is required');
 
-    const missingAospLicense = await request(app)
+    const missingAospLicense = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'aosp',
@@ -1241,7 +1262,7 @@ describe('codebase routes', () => {
     expect(missingAospLicense.status).toBe(400);
     expect(missingAospLicense.body.error).toContain('`licenseTag` is required');
 
-    const appSource = await request(app)
+    const appSource = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'app_source',
@@ -1289,7 +1310,7 @@ describe('codebase routes', () => {
       snippet: 'class Expired',
     }), DEFAULT_SCOPE);
 
-    const listed = await request(app).get('/api/rag/codebases');
+    const listed = await request(server).get('/api/rag/codebases');
 
     expect(listed.status).toBe(200);
     expect(listed.body.codebases[0]).toMatchObject({
@@ -1341,13 +1362,13 @@ describe('codebase routes', () => {
         throw new Error('simulated_cleanup_failure');
       });
 
-    const first = await request(app).get('/api/rag/codebases');
+    const first = await request(server).get('/api/rag/codebases');
     expect(first.status).toBe(200);
     expect(first.body.codebases.find((entry: any) => entry.codebaseId === ref.codebaseId))
       .toMatchObject({maintenanceWarning: 'inactive_chunk_cleanup_failed'});
     expect(store.getChunk('expired-cleanup-chunk', DEFAULT_SCOPE)).toBeDefined();
 
-    const second = await request(app).get('/api/rag/codebases');
+    const second = await request(server).get('/api/rag/codebases');
     expect(second.status).toBe(200);
     expect(store.getChunk('expired-cleanup-chunk', DEFAULT_SCOPE)).toBeUndefined();
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.maintenanceWarning).toBeUndefined();
@@ -1393,7 +1414,7 @@ describe('codebase routes', () => {
     );
     await leaseHeld;
 
-    const response = await request(app).get('/api/rag/codebases');
+    const response = await request(server).get('/api/rag/codebases');
 
     expect(response.status).toBe(200);
     expect(store.getChunk('in-flight-reindex-chunk', DEFAULT_SCOPE)).toBeDefined();
@@ -1404,6 +1425,8 @@ describe('codebase routes', () => {
   });
 
   it('preserves omitted selection fields and rejects empty, unchanged, or invalid final policies', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'src'));
+    fs.writeFileSync(path.join(tmpDir, 'src', 'Main.kt'), 'class Main\n');
     const appRef = registry.register({
       kind: 'app_source',
       displayName: 'Scoped App',
@@ -1411,7 +1434,7 @@ describe('codebase routes', () => {
       pathFilters: ['src'],
       ...DEFAULT_SCOPE,
     });
-    const updated = await request(app)
+    const updated = await request(server)
       .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
       .send({excludeGlobs: ['**/generated/**']});
 
@@ -1423,10 +1446,10 @@ describe('codebase routes', () => {
       indexGeneration: appRef.indexGeneration + 1,
     });
 
-    const empty = await request(app)
+    const empty = await request(server)
       .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
       .send({});
-    const unchanged = await request(app)
+    const unchanged = await request(server)
       .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
       .send({excludeGlobs: ['**/generated/**', '**/generated/**']});
     expect(empty.status).toBe(400);
@@ -1444,7 +1467,7 @@ describe('codebase routes', () => {
       pathFilters: ['drivers/android'],
       ...DEFAULT_SCOPE,
     });
-    const invalidKernel = await request(app)
+    const invalidKernel = await request(server)
       .patch(`/api/rag/codebases/${kernel.codebaseId}/selection`)
       .send({pathFilters: []});
     expect(invalidKernel.status).toBe(400);
@@ -1491,7 +1514,7 @@ describe('codebase routes', () => {
       filePath: 'Candidate.kt',
     }), DEFAULT_SCOPE);
 
-    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const detail = await request(server).get(`/api/rag/codebases/${ref.codebaseId}`);
     expect(detail.status).toBe(200);
     expect(detail.body.codebase.grantRevision).toBe(1);
     registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
@@ -1510,7 +1533,7 @@ describe('codebase routes', () => {
       sourceGeneration: 'candidate-replacement',
       filePath: 'Replacement.kt',
     }), DEFAULT_SCOPE);
-    const staleAccepted = await request(app)
+    const staleAccepted = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/accept`)
       .send({
         selectionPolicyRevision: 1,
@@ -1520,7 +1543,7 @@ describe('codebase routes', () => {
     expect(staleAccepted.status).toBe(409);
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.pendingGeneration?.candidateGenerationId)
       .toBe('candidate-replacement');
-    const accepted = await request(app)
+    const accepted = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/accept`)
       .send({
         selectionPolicyRevision: 1,
@@ -1557,13 +1580,13 @@ describe('codebase routes', () => {
       chunkCount: 1,
       createdAt: Date.now(),
     });
-    const staleRejected = await request(app)
+    const staleRejected = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/reject`)
       .send({candidateGenerationId: 'candidate-reject-a'});
     expect(staleRejected.status).toBe(409);
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.pendingGeneration?.candidateGenerationId)
       .toBe('candidate-reject-b');
-    const rejected = await request(app)
+    const rejected = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/reject`)
       .send({candidateGenerationId: 'candidate-reject-b'});
     expect(rejected.status).toBe(200);
@@ -1582,7 +1605,7 @@ describe('codebase routes', () => {
       ...DEFAULT_SCOPE,
     });
 
-    const response = await request(app)
+    const response = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeAvailableExtensions: true});
 
@@ -1591,7 +1614,7 @@ describe('codebase routes', () => {
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.consent.sendToProvider).toBe(false);
 
     registry.setProviderConsent(ref.codebaseId, DEFAULT_SCOPE, true, DEFAULT_SCOPE.userId);
-    const ambiguous = await request(app)
+    const ambiguous = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeAvailableExtensions: true, sendToProvider: false});
     expect(ambiguous.status).toBe(400);
@@ -1613,13 +1636,13 @@ describe('codebase routes', () => {
     envelope.codebases[0].consent.grant.includePrefixes = ['app'];
     fs.writeFileSync(registryPath, JSON.stringify(envelope));
 
-    const response = await request(app)
+    const response = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeCurrentSelection: true});
-    const ambiguous = await request(app)
+    const ambiguous = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeCurrentSelection: true, authorizeAvailableExtensions: true});
-    const ambiguousContent = await request(app)
+    const ambiguousContent = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true, sendToProvider: true});
 
@@ -1647,41 +1670,41 @@ describe('codebase routes', () => {
     fs.writeFileSync(registryPath, JSON.stringify(envelope));
 
     // The narrow actions keep their precondition: no consent, no grant.
-    const narrow = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const narrow = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeCurrentSelection: true});
     expect(narrow.status).toBe(409);
     expect(narrow.body.error).toBe('provider_send_consent_required');
 
     // The combined grant needs the token of the scope the caller disclosed.
-    const enabled = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const enabled = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({sendToProvider: true});
     expect(enabled.status).toBe(400);
     expect(enabled.body).toEqual(expect.objectContaining({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'}));
     expect(enabled.body.error).toContain('authorizeContent');
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
-    const untokened = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const untokened = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true});
     expect(untokened.status).toBe(400);
     expect(untokened.body.code).toBe('CODEBASE_CONSENT_DISCLOSURE_REQUIRED');
-    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
-    const listed = await request(app).get('/api/rag/codebases');
+    const detail = await request(server).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const listed = await request(server).get('/api/rag/codebases');
     const token = detail.body.codebase.contentDisclosure.token;
     expect(token).toMatch(/^cd1:/);
     expect(detail.body.codebase).not.toHaveProperty('contentDisclosureToken');
     expect(listed.body.codebases.find((item: {codebaseId: string}) => item.codebaseId === ref.codebaseId)
       .contentDisclosure.token).toBe(token);
 
-    const granted = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const granted = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true, contentDisclosureToken: token});
     expect(granted.status).toBe(200);
     expect(granted.body.codebase).toMatchObject({eligibleForSendToProvider: true, providerGrantScopeCurrent: true,
       availableNotConsentedExtensions: []});
-    const repeated = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const repeated = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true, contentDisclosureToken: token});
     expect(repeated.body.codebase.consent).toEqual(granted.body.codebase.consent);
     expect(JSON.stringify(granted.body)).not.toContain(tmpDir);
     // Revoking with an explicit false is unchanged.
-    const revoked = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const revoked = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({sendToProvider: false});
     expect(revoked.status).toBe(200);
     expect(revoked.body.codebase.eligibleForSendToProvider).toBe(false);
@@ -1689,7 +1712,7 @@ describe('codebase routes', () => {
     // A selection edited after the disclosure refuses the old token and grants nothing.
     registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['app', 'lib', 'tools']});
     const afterEdit = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
-    const stale = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+    const stale = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true, contentDisclosureToken: token});
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({code: 'CODEBASE_CONSENT_DISCLOSURE_STALE', error: 'consent_disclosure_stale'});
@@ -1703,27 +1726,27 @@ describe('codebase routes', () => {
     fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
     const ref = registry.register({kind: 'app_source', displayName: 'Preview', rootPath: root, ...DEFAULT_SCOPE});
 
-    const preview = await request(app).post(`/api/rag/codebases/${ref.codebaseId}/selection/preview`)
+    const preview = await request(server).post(`/api/rag/codebases/${ref.codebaseId}/selection/preview`)
       .send({pathFilters: ['feature']});
     expect(preview.status).toBe(200);
     expect(preview.body.selectionPreview).toMatchObject({status: 'complete', selectionPolicyRevision: 1,
       preview: {acceptedFileCount: 1, acceptedFiles: [{relativePath: 'feature/A.kt'}]}});
     expect(JSON.stringify(preview.body)).not.toContain(root);
 
-    const empty = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+    const empty = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
       .send({excludeGlobs: ['**/*.kt']});
     expect(empty.status).toBe(400);
     expect(empty.body.code).toBe('CODEBASE_SELECTION_EMPTY_MATCH');
 
-    const saved = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+    const saved = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
       .send({pathFilters: ['feature'], expectedSelectionPolicyRevision: 1});
     expect(saved.status).toBe(200);
-    const stale = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+    const stale = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
       .send({pathFilters: [], expectedSelectionPolicyRevision: 1});
     expect(stale.status).toBe(409);
     expect(stale.body.code).toBe('CODEBASE_SELECTION_STALE');
 
-    const missing = await request(app).post('/api/rag/codebases/cb_missing/selection/preview').send({});
+    const missing = await request(server).post('/api/rag/codebases/cb_missing/selection/preview').send({});
     expect(missing.status).toBe(404);
   });
 
@@ -1732,10 +1755,10 @@ describe('codebase routes', () => {
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
 
-    const ambiguousConsent = await request(app)
+    const ambiguousConsent = await request(server)
       .post('/api/rag/codebases/register')
       .send({displayName: 'Repo', rootPath: root, sendToProvider: 'false'});
-    const traversalFilter = await request(app)
+    const traversalFilter = await request(server)
       .post('/api/rag/codebases/register')
       .send({displayName: 'Repo', rootPath: root, pathFilters: ['../private']});
 
@@ -1754,7 +1777,7 @@ describe('codebase routes', () => {
       'package com.example\nclass MainActivity { fun simulateHeavyLaunch() {} }\n',
     );
 
-    const preview = await request(app)
+    const preview = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: root});
     expect(preview.status).toBe(200);
@@ -1766,7 +1789,7 @@ describe('codebase routes', () => {
       bytesSelected: expect.any(Number),
     });
 
-    const registered = await request(app)
+    const registered = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'app_source',
@@ -1777,7 +1800,7 @@ describe('codebase routes', () => {
     const codebaseId = registered.body.codebase.codebaseId;
     expect(registered.body.codebase.rootPath).toBeUndefined();
 
-    const reindex = await request(app)
+    const reindex = await request(server)
       .post(`/api/rag/codebases/${codebaseId}/reindex`)
       .send({});
     expect(reindex.status).toBe(200);
@@ -1791,7 +1814,7 @@ describe('codebase routes', () => {
       }),
     });
 
-    const symbols = await request(app)
+    const symbols = await request(server)
       .get(`/api/rag/codebases/${codebaseId}/symbols`)
       .query({symbol: 'MainActivity'});
     expect(symbols.status).toBe(200);
@@ -1801,7 +1824,7 @@ describe('codebase routes', () => {
       filePath: 'launch-aosp/src/main/java/com/example/MainActivity.kt',
     }));
 
-    const search = await request(app)
+    const search = await request(server)
       .post('/api/rag/search')
       .send({query: 'simulateHeavyLaunch', kinds: ['app_source'], codebaseIds: [codebaseId]});
     expect(search.status).toBe(200);
@@ -1809,7 +1832,7 @@ describe('codebase routes', () => {
     expect(search.body.result.results[0].chunk.snippetHash).toEqual(expect.any(String));
 
     // No route returns an indexed chunk's raw text.
-    const excerpt = await request(app)
+    const excerpt = await request(server)
       .get(`/api/rag/codebases/${codebaseId}/excerpt`)
       .query({chunkId: search.body.result.results[0].chunkId});
     expect(excerpt.status).toBe(404);
@@ -1832,11 +1855,12 @@ describe('codebase routes', () => {
       externalKnowledgeRegistry,
     } as any));
 
-    const registered = await request(isolated)
+    const isolatedServer = await loopbackServers.listen(isolated);
+    const registered = await request(isolatedServer)
       .post('/api/rag/codebases/register')
       .send({kind: 'app_source', rootPath: root, sendToProvider: false});
     expect(registered.status).toBe(200);
-    const reindexed = await request(isolated)
+    const reindexed = await request(isolatedServer)
       .post(`/api/rag/codebases/${registered.body.codebase.codebaseId}/reindex`)
       .send({});
     expect(reindexed.status).toBe(200);
@@ -1854,7 +1878,7 @@ describe('codebase routes', () => {
         ...DEFAULT_SCOPE,
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/rag/codebases/${ref.codebaseId}/reindex`)
         .send({});
 
@@ -1875,7 +1899,7 @@ describe('codebase routes', () => {
     fs.mkdirSync(root);
     fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main {\n' + '  fun next() = Unit\n'.repeat(400) + '}\n');
     const ref = registry.register({kind: 'app_source', displayName: 'Capacity', rootPath: root, ...DEFAULT_SCOPE});
-    const response = await request(app).post(`/api/rag/codebases/${ref.codebaseId}/reindex`).send({maxChunks: 1});
+    const response = await request(server).post(`/api/rag/codebases/${ref.codebaseId}/reindex`).send({maxChunks: 1});
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({
       success: false, code: 'CODEBASE_INDEX_CAPACITY_EXCEEDED', onDemandAvailable: true,
@@ -1928,13 +1952,13 @@ describe('codebase routes', () => {
       sourceGeneration: 'codebase_2_active',
     }), otherScope);
 
-    const forbidden = await request(app).delete(`/api/rag/codebases/${other.codebaseId}`);
+    const forbidden = await request(server).delete(`/api/rag/codebases/${other.codebaseId}`);
     expect(forbidden.status).toBe(200);
     expect(forbidden.body).toMatchObject({success: true, alreadyDeleted: true});
     expect(registry.get(other.codebaseId, otherScope)).toBeDefined();
     expect(store.getChunk('keep-other-tenant', otherScope)).toBeDefined();
 
-    const deleted = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const deleted = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
     expect(deleted.status).toBe(200);
     expect(deleted.body).toEqual({
       success: true,
@@ -1960,7 +1984,7 @@ describe('codebase routes', () => {
     const leaseSpy = jest.spyOn(registry, 'withIngestLease')
       .mockRejectedValueOnce(new CodebaseStateError('codebase_reindex_in_progress'));
 
-    const response = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const response = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
 
     expect(response.status).toBe(409);
     expect(response.body).toMatchObject({success: false, code: 'CODEBASE_BUSY'});
@@ -1991,7 +2015,7 @@ describe('codebase routes', () => {
         throw new Error('simulated_cleanup_failure');
       });
 
-    const interrupted = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const interrupted = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
 
     expect(interrupted.status).toBe(500);
     expect(interrupted.body).toMatchObject({
@@ -2008,14 +2032,14 @@ describe('codebase routes', () => {
     expect(retired?.contentFingerprint).toBeUndefined();
     expect(store.getChunk('retry-delete-chunk', DEFAULT_SCOPE)).toBeDefined();
 
-    const reindex = await request(app)
+    const reindex = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/reindex`)
       .send({});
     expect(reindex.status).toBe(400);
     expect(reindex.body.error).toBe('codebase_deleting');
 
     removeSpy.mockRestore();
-    const retried = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const retried = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
     expect(retried.status).toBe(200);
     expect(retried.body).toMatchObject({
       success: true,
@@ -2024,7 +2048,7 @@ describe('codebase routes', () => {
     });
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)).toBeUndefined();
 
-    const repeated = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const repeated = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
     expect(repeated.status).toBe(200);
     expect(repeated.body).toEqual({
       success: true,

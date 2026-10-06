@@ -2254,9 +2254,11 @@
         "steps": [
           {
             "id": "cluster_load",
-            "sha256": "4279001092a6b65a1c5f0527034858ff8ddbcf3cd3c99b8120ac480a6c66f249",
+            "sha256": "cf95c575c5e25c4cdcf1f939a90d4b3669d6c990c7f936755b6e3a8ec4a46ca0",
             "required_columns": [
               "cluster",
+              "load_status",
+              "clock_basis",
               "core_count",
               "active_core_count",
               "awake_ms",

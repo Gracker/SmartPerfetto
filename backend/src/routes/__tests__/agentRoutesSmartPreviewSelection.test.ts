@@ -15,12 +15,16 @@ import {
   smartPreviewSelectionErrorMessage,
   SmartPreviewSelectionError,
 } from '../agentRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const ROUTE_SESSION_ID = 'smart-stale-route-session';
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   if (originalAiEnabled === undefined) delete process.env.SMARTPERFETTO_AI_ENABLED;
   else process.env.SMARTPERFETTO_AI_ENABLED = originalAiEnabled;
   if (originalApiKey === undefined) delete process.env.SMARTPERFETTO_API_KEY;
@@ -168,8 +172,9 @@ describe('Smart preview selection binding', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/agent/v1', agentRoutes);
+    const server = await loopbackServers.listen(app);
 
-    const res = await request(app).post('/api/agent/v1/analyze').send({
+    const res = await request(server).post('/api/agent/v1/analyze').send({
       traceId: 'trace-does-not-need-to-exist',
       sessionId: ROUTE_SESSION_ID,
       query: 'Analyze selected scenes',

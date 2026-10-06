@@ -5306,7 +5306,7 @@
     },
     "cpu_cluster_load_in_range": {
       "source_file": "backend/skills/atomic/cpu_cluster_load_in_range.skill.yaml",
-      "source_sha256": "aa2f4145af6db47f2b6928a496e665965dc44b69e487030be44ae5115b4d8054",
+      "source_sha256": "a5751409d29cad0c6725683a9f78734180f05324aafb0e6a12a212b00eecdf09",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [],
@@ -5320,9 +5320,11 @@
           "id": "cluster_load",
           "at": "steps[1].sql",
           "top_level_index": 1,
-          "sha256": "4279001092a6b65a1c5f0527034858ff8ddbcf3cd3c99b8120ac480a6c66f249",
+          "sha256": "cf95c575c5e25c4cdcf1f939a90d4b3669d6c990c7f936755b6e3a8ec4a46ca0",
           "required_columns": [
             "cluster",
+            "load_status",
+            "clock_basis",
             "core_count",
             "active_core_count",
             "awake_ms",

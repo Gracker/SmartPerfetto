@@ -11,17 +11,115 @@
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import request from 'supertest';
-import { createTestApp, loadTestTrace, cleanupTrace, wait } from './testApp';
+import type {Server} from 'http';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {createLoopbackServerFixture} from '../helpers/loopbackServer';
+// Import the app only after its import-time scene stores see the owned paths.
+let createTestApp: typeof import('./testApp').createTestApp;
+let loadTestTrace: typeof import('./testApp').loadTestTrace;
+let cleanupTrace: typeof import('./testApp').cleanupTrace;
+let wait: typeof import('./testApp').wait;
+
+const fixtureEnvKeys = [
+  'SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_DATA_DIR', 'SMARTPERFETTO_BACKEND_LOG_DIR',
+  'UPLOAD_DIR', 'SMARTPERFETTO_TRACE_UPLOAD_DIR', 'PROVIDER_DATA_DIR_OVERRIDE',
+  'SCENE_REPORT_DIR', 'SCENE_JOB_ARTIFACT_DIR',
+  'SMARTPERFETTO_ENTERPRISE', 'SMARTPERFETTO_API_KEY',
+  'SMARTPERFETTO_SSO_TRUSTED_HEADERS', 'SMARTPERFETTO_AI_ENABLED',
+  'SMARTPERFETTO_OIDC_ISSUER_URL', 'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_CLIENT_SECRET', 'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  'SMARTPERFETTO_ENTERPRISE_MIGRATION_PHASE', 'SMARTPERFETTO_ENTERPRISE_CUTOVER_CONFIRMED',
+] as const;
+const previousFixtureEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+const ownedListeners: ReturnType<typeof createLoopbackServerFixture>[] = [];
+const closeStores: Array<() => void> = [];
+const cleanupErrors: unknown[] = [];
+const ownedSessionIds = new Set<string>();
+let fixtureRoot: string | undefined;
+
+function createOwnedLoopbackServerFixture() {
+  const fixture = createLoopbackServerFixture();
+  ownedListeners.push(fixture);
+  return fixture;
+}
+
+async function cleanupOwnedResource(cleanup: () => void | Promise<void>): Promise<void> {
+  try {await cleanup();} catch (error) {cleanupErrors.push(error);}
+}
+
+beforeAll(async () => {
+  fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-agent-routes-integration-'));
+  for (const key of fixtureEnvKeys) delete process.env[key];
+  Object.assign(process.env, {
+    SMARTPERFETTO_ENTERPRISE_DB_PATH: path.join(fixtureRoot, 'enterprise.sqlite'),
+    SMARTPERFETTO_DATA_DIR: path.join(fixtureRoot, 'enterprise'),
+    SMARTPERFETTO_BACKEND_DATA_DIR: path.join(fixtureRoot, 'data'),
+    SMARTPERFETTO_BACKEND_LOG_DIR: path.join(fixtureRoot, 'logs'),
+    UPLOAD_DIR: path.join(fixtureRoot, 'uploads'),
+    SMARTPERFETTO_TRACE_UPLOAD_DIR: path.join(fixtureRoot, 'uploads', 'traces'),
+    PROVIDER_DATA_DIR_OVERRIDE: path.join(fixtureRoot, 'providers'),
+    SCENE_REPORT_DIR: path.join(fixtureRoot, 'scene-reports'),
+    SCENE_JOB_ARTIFACT_DIR: path.join(fixtureRoot, 'scene-job-artifacts'),
+    SMARTPERFETTO_ENTERPRISE: 'false', SMARTPERFETTO_SSO_TRUSTED_HEADERS: 'false',
+    SMARTPERFETTO_AI_ENABLED: 'true',
+  });
+  ({createTestApp, loadTestTrace, cleanupTrace, wait} = await import('./testApp'));
+
+  const {SessionPersistenceService} = await import('../../src/services/sessionPersistenceService');
+  const {resetAgentEventStoreForTests} = await import('../../src/services/agentEventStore');
+  const {resetAnalysisRunStoreForTests} = await import('../../src/services/analysisRunStore');
+  const {resetAnalysisHistoryStoreForTests} = await import('../../src/services/analysisHistoryStore');
+  const {resetConversationSessionStoreForTests} = await import('../../src/services/conversationSessionStore');
+  const {clearRunManifestLifecyclesForTests} = await import('../../src/services/selfEvolution/runManifestLifecycle');
+  const {resetRunManifestStoreForTests} = await import('../../src/services/selfEvolution/runManifestStore');
+  const {resetProviderService} = await import('../../src/services/providerManager');
+  closeStores.push(clearRunManifestLifecyclesForTests, resetRunManifestStoreForTests,
+    () => SessionPersistenceService.resetForTests(), resetAgentEventStoreForTests,
+    resetAnalysisRunStoreForTests, resetAnalysisHistoryStoreForTests,
+    resetConversationSessionStoreForTests, resetProviderService);
+
+  const {TraceProcessorService, setTraceProcessorServiceForTests} =
+    await import('../../src/services/traceProcessorService');
+  const service = new TraceProcessorService(process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR);
+  setTraceProcessorServiceForTests(service);
+  closeStores.unshift(() => {
+    service.cleanupProcessorsForTraces(service.getAllTraces().map(trace => trace.id));
+    setTraceProcessorServiceForTests(null);
+  });
+  const {TraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} =
+    await import('../../src/services/traceProcessorLeaseStore');
+  const leaseStore = new TraceProcessorLeaseStore();
+  setTraceProcessorLeaseStoreForTests(leaseStore);
+  closeStores.push(() => {leaseStore.close(); setTraceProcessorLeaseStoreForTests(null);});
+});
+
+afterAll(async () => {
+  try {
+    for (const fixture of ownedListeners) await cleanupOwnedResource(() => fixture.close());
+    for (const close of closeStores) await cleanupOwnedResource(close);
+  } finally {
+    for (const [key, value] of previousFixtureEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  // Never remove a directory while one of its owned resources failed to close.
+  if (cleanupErrors.length) throw cleanupErrors[0];
+  if (fixtureRoot) fs.rmSync(fixtureRoot, {recursive: true, force: true});
+});
 
 // =============================================================================
 // Fast Validation Tests (no trace needed)
 // =============================================================================
 
 describe('Agent Routes - Input Validation', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
 
-  beforeAll(() => {
-    app = createTestApp();
+  beforeAll(async () => {
+    app = await loopbackServers.listen(createTestApp());
   });
 
   describe('Health Check', () => {
@@ -220,10 +318,11 @@ describe('Agent Routes - Input Validation', () => {
 // =============================================================================
 
 describe('Agent Routes - Session Management', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
 
-  beforeAll(() => {
-    app = createTestApp();
+  beforeAll(async () => {
+    app = await loopbackServers.listen(createTestApp());
   });
 
   describe('GET /api/agent/v1/sessions', () => {
@@ -245,10 +344,11 @@ describe('Agent Routes - Session Management', () => {
 // =============================================================================
 
 describe('Agent Routes - Session Logs', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
 
-  beforeAll(() => {
-    app = createTestApp();
+  beforeAll(async () => {
+    app = await loopbackServers.listen(createTestApp());
   });
 
   describe('GET /api/agent/v1/logs', () => {
@@ -320,7 +420,8 @@ describe('Agent Routes - Session Logs', () => {
 // =============================================================================
 
 describe('Agent Routes - Session Lifecycle', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
   let traceId: string | null = null;
 
   // Use a smaller trace for faster tests
@@ -332,18 +433,25 @@ describe('Agent Routes - Session Lifecycle', () => {
 
   beforeAll(async () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
-    app = createTestApp();
+    app = await loopbackServers.listen(createTestApp());
 
     // A trace that does not load fails the suite: these tests must not pass by skipping.
     traceId = await loadTestTrace(TEST_TRACE);
   }, 120000);
 
   afterAll(async () => {
+    for (const sessionId of ownedSessionIds) {
+      await cleanupOwnedResource(async () => {
+        // The production DELETE awaits run abort and session cleanup.
+        const response = await request(app).delete(`/api/agent/v1/${sessionId}`);
+        if (response.status !== 200 && response.status !== 404) {
+          throw new Error(`Failed to clean integration session: HTTP ${response.status}`);
+        }
+      });
+    }
+    if (traceId) await cleanupOwnedResource(() => cleanupTrace(traceId!));
     if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
     else process.env.SMARTPERFETTO_AGENT_RUNTIME = previousRuntime;
-    if (traceId) {
-      await cleanupTrace(traceId);
-    }
   });
 
   it('should create, query status, and delete session', async () => {
@@ -357,6 +465,7 @@ describe('Agent Routes - Session Lifecycle', () => {
         options: { maxIterations: 1 },
       });
 
+    if (typeof createResponse.body.sessionId === 'string') ownedSessionIds.add(createResponse.body.sessionId);
     expect(createResponse.status).toBe(200);
     expect(createResponse.body.success).toBe(true);
     expect(createResponse.body.sessionId).toBeDefined();
@@ -417,6 +526,7 @@ describe('Agent Routes - Session Lifecycle', () => {
         options: { maxIterations: 1 },
       });
 
+    if (typeof createResponse.body.sessionId === 'string') ownedSessionIds.add(createResponse.body.sessionId);
     const sessionId = createResponse.body.sessionId;
 
     // Try to respond with invalid action

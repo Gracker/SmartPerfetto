@@ -97,6 +97,9 @@ jobs:
       - name: Install root and backend dependencies
         run: npm ci && npm --prefix backend ci
 
+      - name: Install source-search test dependency
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Run PR verification gate
         run: npm --prefix backend run verify:pr
 

@@ -472,16 +472,32 @@ describeWithTrace('scrolling_analysis edge cases', TRACE_FILE, () => {
     }, 30000);
 
     it('should react to frame_variance_transition_threshold_ms changes', async () => {
-      const lowThreshold = await evaluator.executeStep('frame_variance_probe', {
-        enable_expert_probes: true,
-        frame_variance_probe_min_janky_frames: 1,
-        frame_variance_transition_threshold_ms: 2,
-      });
-      const highThreshold = await evaluator.executeStep('frame_variance_probe', {
-        enable_expert_probes: true,
-        frame_variance_probe_min_janky_frames: 1,
-        frame_variance_transition_threshold_ms: 20,
-      });
+      // Only these production steps feed the probe's conditions and parameters.
+      // Full scrolling execution has separate coverage; repeating it here also
+      // runs per-frame root-cause analysis unrelated to this threshold.
+      const probeAtThreshold = async (threshold: number) => {
+        const results = await evaluator.executeStepSequence([
+          'frame_timeline_check', 'vsync_config', 'buffer_tx_coverage_probe',
+          'performance_summary', 'expert_analysis_window', 'frame_variance_probe',
+        ], {
+          enable_expert_probes: true,
+          frame_variance_probe_min_janky_frames: 1,
+          frame_variance_transition_threshold_ms: threshold,
+        });
+        for (const result of results) {
+          expect(result.success).toBe(true);
+          expect(result.code).not.toBe('condition_not_met');
+        }
+        const byId = Object.fromEntries(results.map(result => [result.stepId, result]));
+        expect(byId.frame_timeline_check.data[0]?.has_frame_timeline).toBe(1);
+        expect(byId.vsync_config.data[0]?.has_data).toBe(1);
+        expect(byId.performance_summary.data[0]?.janky_frames).toBeGreaterThanOrEqual(1);
+        expect(byId.expert_analysis_window.data).toHaveLength(1);
+        expect(byId.expert_analysis_window.data[0]?.window_source).not.toBe('unavailable');
+        return byId.frame_variance_probe;
+      };
+      const lowThreshold = await probeAtThreshold(2);
+      const highThreshold = await probeAtThreshold(20);
 
       expect(lowThreshold.success).toBe(true);
       expect(highThreshold.success).toBe(true);

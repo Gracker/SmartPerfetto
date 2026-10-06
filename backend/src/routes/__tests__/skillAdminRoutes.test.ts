@@ -9,6 +9,10 @@ import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import skillAdminRoutes from '../skillAdminRoutes';
 import strategyAdminRoutes from '../strategyAdminRoutes';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
   trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
@@ -23,14 +27,14 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/admin', skillAdminRoutes);
   app.use('/api/admin', strategyAdminRoutes);
   // Another router on the same prefix, as index.ts mounts Self-Evolution admin.
   app.get('/api/admin/later-router', (_req, res) => { res.json({reached: true}); });
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function roleHeaders(req: request.Test, role: string): request.Test {
@@ -67,16 +71,17 @@ function adminHeaders(req: request.Test): request.Test {
 }
 
 describe('skill admin enterprise guard', () => {
-  let app: express.Express;
+  let app: Awaited<ReturnType<typeof makeApp>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     delete process.env.SMARTPERFETTO_API_KEY;
-    app = makeApp();
+    app = await makeApp();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
     restoreEnvValue('SMARTPERFETTO_API_KEY', originalEnv.apiKey);
@@ -118,16 +123,17 @@ describe('skill admin enterprise guard', () => {
 });
 
 describe('skill and strategy admin permissions', () => {
-  let app: express.Express;
+  let app: Awaited<ReturnType<typeof makeApp>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     delete process.env.SMARTPERFETTO_API_KEY;
-    app = makeApp();
+    app = await makeApp();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
     restoreEnvValue('SMARTPERFETTO_API_KEY', originalEnv.apiKey);
@@ -198,14 +204,15 @@ describe('skill and strategy admin in keyless local mode', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
     restoreEnvValue('SMARTPERFETTO_API_KEY', originalEnv.apiKey);
   });
 
   it('keeps every operation available to the single local user', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     await request(app).get('/api/admin/skills').expect(200);
     const skill = await request(app).get('/api/admin/skills/startup_analysis').expect(200);
     expect(skill.body.filePath).toBe('composite/startup_analysis.skill.yaml');

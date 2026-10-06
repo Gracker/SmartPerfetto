@@ -8,6 +8,9 @@ import request from 'supertest';
 import {authenticate} from '../../middleware/auth';
 import type {ApplicationUpdateStatus} from '../../services/applicationUpdate/types';
 import {createApplicationUpdateRoutes} from '../applicationUpdateRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
@@ -42,7 +45,8 @@ beforeEach(() => {
   delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   restore(
     'SMARTPERFETTO_SSO_TRUSTED_HEADERS',
     originalEnv.trustedHeaders,
@@ -67,9 +71,10 @@ describe('applicationUpdateRoutes', () => {
       '/api/application-update',
       createApplicationUpdateRoutes({service, identity: status.current}),
     );
+    const server = await loopbackServers.listen(app);
 
-    const getResponse = await request(app).get('/api/application-update/status');
-    const postResponse = await request(app).post('/api/application-update/check');
+    const getResponse = await request(server).get('/api/application-update/status');
+    const postResponse = await request(server).post('/api/application-update/check');
 
     expect(getResponse.status).toBe(200);
     expect(getResponse.body.state).toBe('up_to_date');
@@ -91,8 +96,9 @@ describe('applicationUpdateRoutes', () => {
         identity: status.current,
       }),
     );
+    const server = await loopbackServers.listen(app);
 
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/application-update/status')
       .set('X-SmartPerfetto-SSO-User-Id', 'analyst')
       .set('X-SmartPerfetto-SSO-Roles', 'analyst')

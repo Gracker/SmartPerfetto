@@ -20,6 +20,9 @@ import reportRoutes, { ReportIdTakenError, persistReport, reportStore } from '..
 import { ENTERPRISE_MIGRATION_PHASE_ENV } from '../../services/enterpriseMigration';
 import { backendLogPath } from '../../runtimePaths';
 import {NO_PRIVATE_CONTEXT, type AnalysisPrivateContextMarker} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -165,11 +168,11 @@ async function expectNothingStored(reportId: string): Promise<void> {
   expect(reportStore.has(reportId)).toBe(false);
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/reports', reportRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -256,6 +259,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   jest.restoreAllMocks();
   reportStore.clear();
   restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalEnv.logDir);
@@ -270,7 +274,7 @@ afterEach(async () => {
 
 describe('enterprise report routes', () => {
   it('starts an exported report filename with the current trace name', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const reportId = 'report-trace-filename';
     const generatedAt = 1_700_000_000_000;
     const traceNamePrefix = `应用:trace?-${'a'.repeat(70)}`;
@@ -315,7 +319,7 @@ describe('enterprise report routes', () => {
   });
 
   it('stores reports in report_artifacts and reloads them from scoped data storage', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const reportId = 'report-a';
 
     persistReport(reportId, {
@@ -393,7 +397,7 @@ describe('enterprise report routes', () => {
   });
 
   it('deletes enterprise report_artifacts metadata and scoped report files', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const reportId = 'report-delete';
 
     persistReport(reportId, {
@@ -422,7 +426,7 @@ describe('enterprise report routes', () => {
   });
 
   it('applies report retention policy and hides expired cached reports', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const reportId = 'report-expired';
     writeWorkspacePolicies({
       retentionPolicy: {
@@ -477,7 +481,7 @@ describe.each([
   }
 
   async function statuses(reportId: string, userId: string): Promise<number[]> {
-    const app = makeApp();
+    const app = await makeApp();
     const viewer = {userId, roles: 'viewer', scopes: 'report:read'};
     const read = (await ssoHeaders(request(app).get(`/api/reports/${reportId}`), 'workspace-a', viewer)).status;
     const exported = (await ssoHeaders(request(app).get(`/api/reports/${reportId}/export`), 'workspace-a', viewer))
@@ -558,7 +562,7 @@ describe.each([
       if (String(target) === contentDir) throw Object.assign(new Error('EACCES: permission denied'), {code: 'EACCES'});
       return real(target, ...rest);
     });
-    const app = makeApp();
+    const app = await makeApp();
     expect((await ssoHeaders(request(app).delete(`/api/reports/${reportId}`))).status).toBe(500);
     rmSpy.mockRestore();
     expect(readReportArtifact(reportId)).not.toBeNull();
@@ -570,7 +574,7 @@ describe.each([
   it('keeps the record when its row cannot be removed, so the deletion can be retried', async () => {
     const reportId = `report-row-undeletable-${phase}`;
     persistTestReport(reportId, NO_PRIVATE_CONTEXT);
-    const app = makeApp();
+    const app = await makeApp();
     const restore = failReportRowDeletion();
     expect((await ssoHeaders(request(app).delete(`/api/reports/${reportId}`))).status).toBe(500);
     restore();
@@ -589,7 +593,7 @@ describe.each([
     reportStore.clear();
     expect(await statuses(reportId, 'user-a')).toEqual([404, 404]);
 
-    const deleteRes = await ssoHeaders(request(makeApp()).delete(`/api/reports/${reportId}`));
+    const deleteRes = await ssoHeaders(request(await makeApp()).delete(`/api/reports/${reportId}`));
     expect(deleteRes.status).toBe(200);
     await expectNothingStored(reportId);
   });
@@ -668,7 +672,7 @@ describe.each([
     persistTestReport(reportId);
     await fs.rm(legacyReportFiles(reportId).html);
     reportStore.clear();
-    const app = makeApp();
+    const app = await makeApp();
     expect((await ssoHeaders(request(app).get(`/api/reports/${reportId}`))).status).toBe(404);
 
     const deleteRes = await ssoHeaders(request(app).delete(`/api/reports/${reportId}`));
@@ -694,7 +698,7 @@ describe('local report persistence without accounts', () => {
     // A crash while the metadata was written leaves it truncated.
     await fs.writeFile(legacyReportFiles(reportId).meta, '{"generatedAt":');
     reportStore.clear();
-    const app = makeApp();
+    const app = await makeApp();
     expect((await request(app).get(`/api/reports/${reportId}`)).status).toBe(404);
 
     expect((await request(app).delete(`/api/reports/${reportId}`)).status).toBe(200);
@@ -743,6 +747,6 @@ describe('dual-write report withdrawal', () => {
     expect(readReportArtifact(reportId)).not.toBeNull();
     process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
     reportStore.clear();
-    expect((await ssoHeaders(request(makeApp()).get(`/api/reports/${reportId}`))).status).toBe(404);
+    expect((await ssoHeaders(request(await makeApp()).get(`/api/reports/${reportId}`))).status).toBe(404);
   });
 });

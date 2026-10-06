@@ -15,6 +15,9 @@ import {
 } from '../../services/enterpriseTenantLifecycleService';
 import { ENTERPRISE_DATA_DIR_ENV } from '../../services/traceMetadataStore';
 import tenantRoutes, { resetTenantPurgeJobsForTests } from '../enterpriseTenantRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -28,11 +31,11 @@ let tmpDir: string;
 let dbPath: string;
 let dataDir: string;
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/tenant', tenantRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -136,7 +139,7 @@ function readAuditActions(): string[] {
 }
 
 async function waitForPurgeJob(
-  app: express.Express,
+  app: Awaited<ReturnType<typeof makeApp>>,
   jobId: string,
 ): Promise<request.Response> {
   let last: request.Response | undefined;
@@ -216,6 +219,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   resetTenantPurgeJobsForTests();
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
   restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
@@ -227,7 +231,7 @@ afterEach(async () => {
 
 describe('enterprise tenant lifecycle routes', () => {
   it('manages workspaces, members, and quota policies through the admin control plane', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const createRes = await adminHeaders(request(app).post('/api/tenant/workspaces')).send({
       workspaceId: 'workspace-admin',
@@ -323,7 +327,7 @@ describe('enterprise tenant lifecycle routes', () => {
 
   it('limits admin control plane access by tenant and workspace management permission', async () => {
     await seedTenantData();
-    const app = makeApp();
+    const app = await makeApp();
 
     const tenantListDenied = await analystHeaders(request(app).get('/api/tenant/workspaces'));
     expect(tenantListDenied.status).toBe(403);
@@ -349,7 +353,7 @@ describe('enterprise tenant lifecycle routes', () => {
 
   it('prevents workspace administrators from elevating themselves or peers', async () => {
     await seedTenantData();
-    const app = makeApp();
+    const app = await makeApp();
 
     const selfElevation = await workspaceAdminHeaders(
       request(app).put('/api/tenant/workspaces/workspace-a/members/workspace-admin-a'),
@@ -366,7 +370,7 @@ describe('enterprise tenant lifecycle routes', () => {
 
   it('protects the last organization administrator membership', async () => {
     await seedTenantData();
-    const app = makeApp();
+    const app = await makeApp();
 
     await adminHeaders(
       request(app).put('/api/tenant/workspaces/workspace-a/members/admin-a'),
@@ -380,7 +384,7 @@ describe('enterprise tenant lifecycle routes', () => {
   });
 
   it('creates a tenant tombstone, records audit state, and blocks new work', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const denied = await adminHeaders(request(app).post('/api/tenant/tombstone')).send({});
     expect(denied.status).toBe(400);
@@ -425,7 +429,7 @@ describe('enterprise tenant lifecycle routes', () => {
   });
 
   it('rejects tombstone from non-admin users', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const res = await analystHeaders(request(app).post('/api/tenant/tombstone')).send({
       confirmTenantId: 'tenant-a',
@@ -437,7 +441,7 @@ describe('enterprise tenant lifecycle routes', () => {
 
   it('runs async purge after the seven-day window and keeps a proof hash', async () => {
     await seedTenantData();
-    const app = makeApp();
+    const app = await makeApp();
 
     await adminHeaders(request(app).post('/api/tenant/tombstone')).send({
       confirmTenantId: 'tenant-a',
@@ -498,7 +502,7 @@ describe('enterprise tenant lifecycle routes', () => {
     } finally {
       db.close();
     }
-    const app = makeApp();
+    const app = await makeApp();
     await adminHeaders(request(app).post('/api/tenant/tombstone')).send({
       confirmTenantId: 'tenant-a',
     }).expect(202);

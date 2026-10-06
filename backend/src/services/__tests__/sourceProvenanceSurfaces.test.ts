@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
 import {parseConclusionContractDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
@@ -50,15 +51,17 @@ import {finalizeAnalysisResult} from '../finalizeAnalysisResult';
 import {copyAnalysisDeliveryFields} from '../security/analysisDeliveryProjection';
 import {HTMLReportGenerator} from '../htmlReportGenerator';
 
+const loopbackServers = createLoopbackServerFixture();
+
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const routeOwner = {tenantId: DEFAULT_TENANT_ID, workspaceId: 'workspace-source-surfaces', userId: DEFAULT_DEV_USER_ID};
 const routeEnvKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', ENTERPRISE_FEATURE_FLAG_ENV] as const;
 
-function agentRouteGet(url: string) {
+async function agentRouteGet(url: string) {
   const app = express();
   app.use(express.json());
   app.use('/api/agent/v1', agentRoutes);
-  return request(app).get(`/api/agent/v1${url}`)
+  return request(await loopbackServers.listen(app)).get(`/api/agent/v1${url}`)
     .set('X-SmartPerfetto-SSO-User-Id', routeOwner.userId)
     .set('X-SmartPerfetto-SSO-Email', 'source-surfaces@example.test')
     .set('X-SmartPerfetto-SSO-Tenant-Id', routeOwner.tenantId)
@@ -453,10 +456,10 @@ describe('source provenance output surface matrix', () => {
       expect(snapshot!.claimVerificationResult).toEqual(wireResult.claimVerificationResult);
       expect(snapshot!.summary.completion).toEqual(wireResult.completion);
 
-      const reportResponse = await request(express().use('/api/reports', reportRoutes))
+      const reportResponse = await request(await loopbackServers.listen(express().use('/api/reports', reportRoutes)))
         .get(`/api/reports/${reportId}`)
         .expect(200);
-      const snapshotResponse = await request(analysisResultApp())
+      const snapshotResponse = await request(await loopbackServers.listen(analysisResultApp()))
         .get(`/api/workspaces/workspace-source-surfaces/analysis-results/${snapshot!.id}`)
         .set('x-tenant-id', DEFAULT_TENANT_ID)
         .expect(200);
@@ -577,6 +580,7 @@ describe('source provenance output surface matrix', () => {
       expect(durableArtifacts).not.toContain('SECRET_');
     } finally {
       agentRoutesCancellationTestSeam.deleteSession('session-source-surfaces');
+      await loopbackServers.close();
       if (originalDbPath === undefined) {
         delete process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
       } else {

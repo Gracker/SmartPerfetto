@@ -11,6 +11,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import {ENTERPRISE_DB_PATH_ENV} from '../services/enterpriseDb';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { ResultExportService } from '../services/resultExportService';
 import {
@@ -19,21 +21,24 @@ import {
 } from '../models/sessionSchema';
 
 describe('SessionPersistenceService', () => {
-  const TEST_DB_DIR = path.join(process.cwd(), 'data', 'sessions');
-  const TEST_DB_PATH = path.join(TEST_DB_DIR, 'sessions.db');
+  const previousDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
+  let temporaryRoot: string;
 
   beforeAll(() => {
-    // Clean up any existing test database
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
-    }
+    temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-session-export-'));
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(temporaryRoot, 'sessions.db');
+    SessionPersistenceService.resetForTests();
   });
 
   afterAll(() => {
-    // Clean up test database
-    if (fs.existsSync(TEST_DB_PATH)) {
-      fs.unlinkSync(TEST_DB_PATH);
+    try {
+      SessionPersistenceService.resetForTests();
+    } finally {
+      if (previousDbPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV];
+      else process.env[ENTERPRISE_DB_PATH_ENV] = previousDbPath;
     }
+    // A failed close throws before deletion, preserving the owned fixture.
+    if (temporaryRoot) fs.rmSync(temporaryRoot, {recursive: true, force: true});
   });
 
   beforeEach(() => {

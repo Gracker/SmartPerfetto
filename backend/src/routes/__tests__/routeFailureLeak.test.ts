@@ -25,6 +25,10 @@ import providerRoutes from '../providerRoutes';
 import reportRoutes from '../reportRoutes';
 import simpleTraceRoutes from '../simpleTraceRoutes';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 const CANARY = 'canary-5d81 /Users/someone/.smartperfetto/secret.db SELECT api_key FROM providers';
 
 const mockState: {contextFailure: Error | null; downstream: () => never} = {
@@ -119,7 +123,7 @@ const context: RequestContext = {
   requestId: 'req-route-failure-test',
 };
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -134,12 +138,12 @@ function makeApp(): express.Express {
   app.use('/api/providers', providerRoutes);
   app.use('/api/tenant', enterpriseTenantRoutes);
   app.use('/api/traces', simpleTraceRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 type Case = {
   name: string;
-  send: (app: express.Express) => request.Test;
+  send: (app: Awaited<ReturnType<typeof makeApp>>) => request.Test;
   code: string;
   /** Make requireRequestContext throw inside the route's try block. */
   contextFailure?: boolean;
@@ -176,10 +180,10 @@ const CASES: Case[] = [
 
 describe('route catch blocks never return downstream exception messages', () => {
   let errorLog: jest.SpyInstance;
-  let app: express.Express;
+  let app: Awaited<ReturnType<typeof makeApp>>;
 
-  beforeAll(() => {
-    app = makeApp();
+  beforeEach(async () => {
+    app = await makeApp();
   });
 
   beforeEach(() => {
@@ -189,7 +193,8 @@ describe('route catch blocks never return downstream exception messages', () => 
     for (const fn of Object.values(mockProviderService)) fn.mockReset();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     jest.restoreAllMocks();
   });
 
@@ -220,12 +225,12 @@ describe('route catch blocks never return downstream exception messages', () => 
   });
 
   test.each([
-    ['create', (a: express.Express) => request(a).post('/api/providers').send({}), 'create'],
-    ['update', (a: express.Express) => request(a).patch('/api/providers/p1').send({}), 'update'],
-    ['delete', (a: express.Express) => request(a).delete('/api/providers/p1'), 'delete'],
-    ['activate', (a: express.Express) => request(a).post('/api/providers/p1/activate'), 'activate'],
-    ['runtime', (a: express.Express) => request(a).post('/api/providers/p1/runtime').send({agentRuntime: 'claude-agent-sdk'}), 'switchAgentRuntime'],
-    ['rotate secret', (a: express.Express) => request(a).post('/api/providers/p1/rotate-secret'), 'rotateSecret'],
+    ['create', (a: Awaited<ReturnType<typeof makeApp>>) => request(a).post('/api/providers').send({}), 'create'],
+    ['update', (a: Awaited<ReturnType<typeof makeApp>>) => request(a).patch('/api/providers/p1').send({}), 'update'],
+    ['delete', (a: Awaited<ReturnType<typeof makeApp>>) => request(a).delete('/api/providers/p1'), 'delete'],
+    ['activate', (a: Awaited<ReturnType<typeof makeApp>>) => request(a).post('/api/providers/p1/activate'), 'activate'],
+    ['runtime', (a: Awaited<ReturnType<typeof makeApp>>) => request(a).post('/api/providers/p1/runtime').send({agentRuntime: 'claude-agent-sdk'}), 'switchAgentRuntime'],
+    ['rotate secret', (a: Awaited<ReturnType<typeof makeApp>>) => request(a).post('/api/providers/p1/rotate-secret'), 'rotateSecret'],
   ] as const)('provider %s answers a secret-store failure with fixed text', async (_name, send, method) => {
     mockProviderService[method].mockImplementation(() => mockState.downstream());
 

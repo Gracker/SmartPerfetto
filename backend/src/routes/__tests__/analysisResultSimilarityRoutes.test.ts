@@ -30,6 +30,9 @@ import type { CaseNode, RagChunk } from '../../types/sparkContracts';
 import analysisResultRoutes from '../analysisResultRoutes';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {caseCurationGrantForMarkdownIngest} from '../../services/security/caseCuration';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const curator = caseCurationGrantForMarkdownIngest();
 
@@ -40,7 +43,7 @@ let tmpDir: string;
 let dbPath: string;
 let logDir: string;
 
-function app(): express.Express {
+async function app() {
   const server = express();
   server.use(express.json());
   server.use(
@@ -50,7 +53,7 @@ function app(): express.Express {
     requireWorkspaceRouteContext,
     analysisResultRoutes,
   );
-  return server;
+  return loopbackServers.listen(server);
 }
 
 beforeEach(() => {
@@ -63,7 +66,8 @@ beforeEach(() => {
   seedGraph(['current-trace', 'similar-trace']);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = originalDbPath;
   process.env.SMARTPERFETTO_BACKEND_LOG_DIR = originalLogDir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -209,7 +213,7 @@ describe('analysis result similarity routes', () => {
   it('returns grouped snapshot and case hints for a readable snapshot', async () => {
     addPublishedCase();
 
-    const response = await request(app())
+    const response = await request(await app())
       .post('/api/workspaces/workspace-a/analysis-results/current/similarity')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ includeCases: true, limit: 5 })
@@ -231,13 +235,13 @@ describe('analysis result similarity routes', () => {
   });
 
   it('rejects invalid similarity limits and returns not found for unreadable ids', async () => {
-    await request(app())
+    await request(await app())
       .post('/api/workspaces/workspace-a/analysis-results/current/similarity')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ limit: 21 })
       .expect(400);
 
-    await request(app())
+    await request(await app())
       .post('/api/workspaces/workspace-a/analysis-results/missing/similarity')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(404);

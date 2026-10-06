@@ -2932,8 +2932,8 @@ describe('single-frame exact UPID SQL semantics', () => {
       CREATE TABLE android_garbage_collection_events(tid INTEGER,utid INTEGER,upid INTEGER,gc_type TEXT,gc_ts INTEGER,gc_dur INTEGER);
       INSERT INTO android_garbage_collection_events VALUES (800,8,42,'young',10000000,10000000),
         (800,18,43,'young',10000000,80000000);
-      CREATE TABLE _cpu_topology(cpu_id INTEGER,core_type TEXT);
-      INSERT INTO _cpu_topology VALUES (0,'big'),(1,'little');
+      CREATE TABLE _cpu_topology(cpu_id INTEGER,core_type TEXT,topology_source TEXT);
+      INSERT INTO _cpu_topology VALUES (0,'big','capacity_scale'),(1,'little','capacity_scale');
       CREATE TABLE trace_bounds(start_ts INTEGER,end_ts INTEGER);
       INSERT INTO trace_bounds VALUES (0,100000000);
       CREATE TABLE cpu(id INTEGER,cpu INTEGER,machine_id INTEGER,cluster_id INTEGER,capacity INTEGER);
@@ -3064,6 +3064,11 @@ describe('single-frame exact UPID SQL semantics', () => {
         global_context: ['frame_budget_ms', 'primary_cause', 'secondary_info', 'ramp_to_high_ms', 'freq_ramp_evidence'],
         peer_context: ['deep_reason'],
       });
+      for (const status of ['multi_machine_unresolved', 'ambiguous_cpu_metadata']) {
+        db.prepare('UPDATE _cpu_topology SET topology_source = ?').run(status);
+        expect(db.prepare(`WITH ${clusterFragment}, ${cluster} SELECT * FROM cluster_load`).get())
+          .toEqual({big_load_pct: null, little_load_pct: null});
+      }
     } finally {db.close();}
   });
 

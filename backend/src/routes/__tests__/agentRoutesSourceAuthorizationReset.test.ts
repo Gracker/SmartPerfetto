@@ -60,6 +60,9 @@ import {
   recordRuntimeTurn,
   type ObservedModelInput,
 } from '../../../tests/helpers/sourceAuthorizationGate';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const buildRealSkillRegistryAttribution = skillFingerprint.buildSkillRegistryAttribution;
 const skillRegistryAttributions = new WeakMap<object, ReturnType<typeof buildRealSkillRegistryAttribution>>();
@@ -118,11 +121,11 @@ let probe: {codebase: 'A' | 'B'; filePath: string} | undefined;
 const savedEnv = new Map<string, string | undefined>();
 const sessionsToClean = new Set<string>();
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/agent/v1', agentRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function analyst(req: request.Test): request.Test {
@@ -197,7 +200,7 @@ function selectionOptions(selection: Selection): Record<string, unknown> {
   };
 }
 
-async function analyze(app: express.Express, input: {query: string; sessionId?: string} & Selection,
+async function analyze(app: Awaited<ReturnType<typeof makeApp>>, input: {query: string; sessionId?: string} & Selection,
   plan?: TurnPlan): Promise<request.Response> {
   if (plan) plans.push(plan);
   const response = await analyst(request(app).post('/api/agent/v1/analyze')).send({
@@ -214,7 +217,7 @@ async function analyze(app: express.Express, input: {query: string; sessionId?: 
 }
 
 /** Turn 1: a private run that reads one registered file and quotes it. */
-async function sourceTurn(app: express.Express, selection: Selection, read: TurnPlan['read']) {
+async function sourceTurn(app: Awaited<ReturnType<typeof makeApp>>, selection: Selection, read: TurnPlan['read']) {
   const first = await analyze(app, {query: 'What does the startup hook say?', ...selection}, {read});
   expect(first.status).toBe(200);
   expect(lastTurn().sourceRead).toBeDefined();
@@ -297,13 +300,14 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const sessionId of sessionsToClean) {
     agentRoutesCancellationTestSeam.deleteSession(sessionId);
     sessionContextManager.remove(sessionId);
     clearCodeAwareOutputGuards(sessionId);
   }
   sessionsToClean.clear();
+  await loopbackServers.close();
   jest.restoreAllMocks();
   setTraceProcessorServiceForTests(null);
   setTraceProcessorLeaseStoreForTests(null);
@@ -322,7 +326,7 @@ afterEach(() => {
 
 describe('HTTP: a source authorization change replaces the session (G1)', () => {
   it.each(['off', 'metadata_only'] as const)('provider_send then %s on the same session id', async mode => {
-    const app = makeApp();
+    const app = await makeApp();
     const cleanup = jest.spyOn(ClaudeRuntime.prototype, 'cleanupSession');
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A', 'B']},
       {codebase: 'B', filePath: 'src/Hooks.kt'});
@@ -356,7 +360,7 @@ describe('HTTP: a source authorization change replaces the session (G1)', () => 
 
 describe('HTTP: narrowing a selection replaces the session (G2)', () => {
   it('deselecting a codebase', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A', 'B']},
       {codebase: 'B', filePath: 'src/Hooks.kt'});
     probe = {codebase: 'B', filePath: 'src/Hooks.kt'};
@@ -369,7 +373,7 @@ describe('HTTP: narrowing a selection replaces the session (G2)', () => {
   });
 
   it('narrowing the path filters of the same registration', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A']},
       {codebase: 'A', filePath: 'src/internal/Hidden.kt'});
     // Provably inside the grant: the narrowed selection becomes the grant, consent stays.
@@ -385,7 +389,7 @@ describe('HTTP: narrowing a selection replaces the session (G2)', () => {
   });
 
   it('revoking provider consent', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A', 'B']},
       {codebase: 'B', filePath: 'src/Hooks.kt'});
     const metadataBefore = buildAnalysisContextAuthorizationFingerprint(
@@ -409,7 +413,7 @@ describe('HTTP: narrowing a selection replaces the session (G2)', () => {
   });
 
   it('deleting a selected codebase', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A', 'B']},
       {codebase: 'B', filePath: 'src/Hooks.kt'});
     await registry.withIngestLease(ids.B, scope, lease => {
@@ -435,7 +439,7 @@ describe('HTTP: narrowing a selection replaces the session (G2)', () => {
   });
 
   it('keeps the session and its history for an identical or equivalent resubmission (control)', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const cleanup = jest.spyOn(ClaudeRuntime.prototype, 'cleanupSession');
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A']},
       {codebase: 'A', filePath: 'src/internal/Hidden.kt'});
@@ -500,7 +504,7 @@ describe('HTTP: an earlier indexed lookup grants no patch after narrowing (G2 le
   }
 
   /** Turn 1: a real indexed lookup of App B, written to the session's ledger. */
-  async function lookupTurn(app: express.Express): Promise<string> {
+  async function lookupTurn(app: Awaited<ReturnType<typeof makeApp>>): Promise<string> {
     const first = await analyze(app, {query: 'Where are the hooks installed?', ...mechanism, codebases: ['A', 'B']},
       {lookup: 'Hooks'});
     expect(first.status).toBe(200);
@@ -513,7 +517,7 @@ describe('HTTP: an earlier indexed lookup grants no patch after narrowing (G2 le
 
   it('admits a patch from that context in a later run under the same authorization (control)', async () => {
     indexBothCodebases();
-    const app = makeApp();
+    const app = await makeApp();
     const sessionId = await lookupTurn(app);
     const control = await analyze(app, {query: 'Propose the fix', sessionId, ...mechanism, codebases: ['A', 'B']},
       {patch: true});
@@ -526,7 +530,7 @@ describe('HTTP: an earlier indexed lookup grants no patch after narrowing (G2 le
 
   it('refuses a patch from that context once the selection is narrowed', async () => {
     indexBothCodebases();
-    const app = makeApp();
+    const app = await makeApp();
     const sessionId = await lookupTurn(app);
     const reads = watchPatchReads();
     const narrowed = await analyze(app, {query: 'Propose the fix', sessionId, ...mechanism, codebases: ['A']},
@@ -544,7 +548,7 @@ describe('HTTP: an earlier indexed lookup grants no patch after narrowing (G2 le
 
   it('refuses a deselected target by selection even when the ledger would admit it', async () => {
     indexBothCodebases();
-    const app = makeApp();
+    const app = await makeApp();
     const sessionId = await lookupTurn(app);
     // Defence in depth: the ledger check is bypassed, so only the selection check stands.
     const bypass = jest.spyOn(CodeLookupLedger.prototype, 'hasPriorLookupOf').mockReturnValue(true);
@@ -560,7 +564,7 @@ describe('HTTP: an earlier indexed lookup grants no patch after narrowing (G2 le
 
   it('refuses context a rebuild collected as missing, after narrowing, without echoing it', async () => {
     const ragStore = indexBothCodebases();
-    const app = makeApp();
+    const app = await makeApp();
     const sessionId = await lookupTurn(app);
     // A rebuild of App B collects the chunk turn 1 looked up.
     expect(ragStore.removeChunk(INDEXED_CHUNK_ID, scope)).toBe(true);
@@ -581,7 +585,7 @@ describe('HTTP: an earlier indexed lookup grants no patch after narrowing (G2 le
     indexBothCodebases(['A']);
     jest.spyOn(CodeLookupLedger.prototype, 'hasPriorLookupOf').mockReturnValue(true);
     const reads = watchPatchReads();
-    const app = makeApp();
+    const app = await makeApp();
     const first = await analyze(app, {query: 'Propose the fix', ...mechanism, codebases: ['A', 'B']}, {patch: true});
     expect(first.status).toBe(200);
     expectNothingRead(reads);
@@ -610,7 +614,7 @@ describe('HTTP: knowledge selection is independent of the codebase change (G4)',
     jest.spyOn(documentCollectionStores, 'getDefaultDocumentCollectionStore').mockReturnValue(store);
     knowledge = {registry: knowledgeRegistry, store, sourceId: source.sourceId};
 
-    const app = makeApp();
+    const app = await makeApp();
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A'], knowledge: true},
       {codebase: 'A', filePath: 'src/internal/Hidden.kt'});
     const second = await analyze(app, {query: 'What does the render worker do?', sessionId: firstSessionId,
@@ -630,7 +634,7 @@ describe('HTTP: knowledge selection is independent of the codebase change (G4)',
 
 describe('HTTP: restore paths keep authorization (G5)', () => {
   it.each(['off', 'provider_send'] as const)('never restores a private session after a restart (next turn %s)', async mode => {
-    const app = makeApp();
+    const app = await makeApp();
     const firstSessionId = await sourceTurn(app, {codeAwareMode: 'provider_send', codebases: ['A']},
       {codebase: 'A', filePath: 'src/internal/Hidden.kt'});
     restartBackend(firstSessionId);
@@ -647,7 +651,7 @@ describe('HTTP: restore paths keep authorization (G5)', () => {
   });
 
   it('keeps public history through /resume when only the provider snapshot changed', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const first = await analyze(app, {query: 'Public question'}, {answer: `Public answer ${PUBLIC_MARKER}.`});
     expect(first.status).toBe(200);
     const sessionId = first.body.sessionId as string;
@@ -664,7 +668,7 @@ describe('HTTP: restore paths keep authorization (G5)', () => {
   });
 
   it('restores public history directly through analyze, but not under a new authorization', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const first = await analyze(app, {query: 'Public question'}, {answer: `Public answer ${PUBLIC_MARKER}.`});
     const sessionId = first.body.sessionId as string;
     restartBackend(sessionId);
@@ -682,7 +686,7 @@ describe('HTTP: restore paths keep authorization (G5)', () => {
   });
 
   it('compares a resumed session with the current authorization on its next analysis', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const first = await analyze(app, {query: 'Public question'}, {answer: `Public answer ${PUBLIC_MARKER}.`});
     const sessionId = first.body.sessionId as string;
     restartBackend(sessionId);
@@ -699,7 +703,7 @@ describe('HTTP: restore paths keep authorization (G5)', () => {
   });
 
   it('restores nothing when the trace cannot be reloaded, then falls back by fingerprint', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const first = await analyze(app, {query: 'Public question'}, {answer: `Public answer ${PUBLIC_MARKER}.`});
     const sessionId = first.body.sessionId as string;
     restartBackend(sessionId);

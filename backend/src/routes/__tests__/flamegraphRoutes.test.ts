@@ -24,6 +24,9 @@ import {
 } from '../../services/flamegraphAnalyzer';
 import {readTraceMetadataForContext} from '../../services/traceMetadataStore';
 import {getTraceProcessorService} from '../../services/traceProcessorService';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: jest.fn(),
@@ -92,7 +95,7 @@ const ANALYST_CONTEXT = {
 };
 const VIEWER_CONTEXT = {...ANALYST_CONTEXT, roles: ['viewer']};
 
-function appWithContext(context: object): express.Express {
+async function appWithContext(context: object) {
   const app = express();
   app.use(express.json());
   app.use((req: any, _res, next) => {
@@ -100,18 +103,18 @@ function appWithContext(context: object): express.Express {
     next();
   });
   app.use('/api/flamegraph', flamegraphRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 /** The production chain in local keyless mode: `authenticate`, then the router. */
-function appWithAuthentication(): express.Express {
+async function appWithAuthentication() {
   const app = express();
   app.use(express.json());
   app.use('/api', (req, res, next) => {
     void authenticate(req as any, res, next);
   });
   app.use('/api/flamegraph', flamegraphRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function analysisFixture() {
@@ -164,14 +167,15 @@ beforeEach(() => {
   mockQuery.mockImplementation(() => sdkStream('## model summary'));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   restoreEnv();
 });
 
 describe('flamegraph routes: validation and ownership', () => {
   it('rejects an unsafe trace id with a coded 400 before any lookup', async () => {
-    const analyze = await request(appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/..%2Fsecret/analyze').send({});
-    const availability = await request(appWithContext(ANALYST_CONTEXT)).get('/api/flamegraph/..%2Fsecret/availability');
+    const analyze = await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/..%2Fsecret/analyze').send({});
+    const availability = await request(await appWithContext(ANALYST_CONTEXT)).get('/api/flamegraph/..%2Fsecret/availability');
 
     for (const res of [analyze, availability]) {
       expect(res.status).toBe(400);
@@ -182,7 +186,7 @@ describe('flamegraph routes: validation and ownership', () => {
   });
 
   it('rejects an invalid body with a coded 400 before loading any trace', async () => {
-    const res = await request(appWithContext(ANALYST_CONTEXT))
+    const res = await request(await appWithContext(ANALYST_CONTEXT))
       .post('/api/flamegraph/trace-1/analyze')
       .send({maxNodes: 'lots', startTs: 'yesterday', question: 'x'.repeat(501)});
 
@@ -197,8 +201,8 @@ describe('flamegraph routes: validation and ownership', () => {
   it('answers trace_not_found without loading a processor when the caller cannot read the trace', async () => {
     mockReadMetadata.mockResolvedValue(null);
 
-    const analyze = await request(appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send({});
-    const availability = await request(appWithContext(ANALYST_CONTEXT)).get('/api/flamegraph/trace-1/availability');
+    const analyze = await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send({});
+    const availability = await request(await appWithContext(ANALYST_CONTEXT)).get('/api/flamegraph/trace-1/availability');
 
     for (const res of [analyze, availability]) {
       expect(res.status).toBe(404);
@@ -213,7 +217,7 @@ describe('flamegraph routes: validation and ownership', () => {
     mockAnalyze.mockRejectedValue(new Error('SQL failed near /Users/someone/secret.trace'));
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    const res = await request(appWithContext(ANALYST_CONTEXT))
+    const res = await request(await appWithContext(ANALYST_CONTEXT))
       .post('/api/flamegraph/trace-1/analyze')
       .set('Accept-Language', 'en')
       .send({includeAi: false});
@@ -224,7 +228,7 @@ describe('flamegraph routes: validation and ownership', () => {
   });
 
   it('no longer serves the summarize endpoint that sent client-supplied analysis to a model', async () => {
-    const res = await request(appWithContext(ANALYST_CONTEXT))
+    const res = await request(await appWithContext(ANALYST_CONTEXT))
       .post('/api/flamegraph/trace-1/summarize')
       .send({analysis: analysisFixture()});
 
@@ -233,7 +237,7 @@ describe('flamegraph routes: validation and ownership', () => {
   });
 
   it('passes a disconnect signal to the analyzer', async () => {
-    await request(appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send({includeAi: false});
+    await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send({includeAi: false});
 
     const runOptions = mockAnalyze.mock.calls[0][3] as {signal?: unknown};
     expect(runOptions.signal).toBeInstanceOf(AbortSignal);
@@ -242,7 +246,7 @@ describe('flamegraph routes: validation and ownership', () => {
 
 describe('flamegraph routes: AI summary gate', () => {
   it('gives a viewer the rule summary without any model call', async () => {
-    const res = await request(appWithContext(VIEWER_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
+    const res = await request(await appWithContext(VIEWER_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
 
     expect(res.status).toBe(200);
     expect(res.body.analysis.available).toBe(true);
@@ -257,7 +261,7 @@ describe('flamegraph routes: AI summary gate', () => {
   it('respects the global AI switch before any provider lookup', async () => {
     process.env[AI_CAPABILITY_ENV_KEY] = 'false';
 
-    const res = await request(appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
+    const res = await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
 
     expect(res.body.aiSummary).toMatchObject({generated: false, fallbackReason: 'ai_disabled'});
     expect(mockSelection).not.toHaveBeenCalled();
@@ -267,7 +271,7 @@ describe('flamegraph routes: AI summary gate', () => {
   it('does not send the statistics to a non-Claude runtime', async () => {
     mockSelection.mockReturnValue({kind: 'opencode', source: 'provider'});
 
-    const res = await request(appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
+    const res = await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send(STATIC_ASSET_BODY);
 
     expect(res.body.aiSummary).toMatchObject({generated: false, fallbackReason: 'runtime_not_supported'});
     expect(res.body.aiSummary.warnings[0]).toContain('opencode');
@@ -275,7 +279,7 @@ describe('flamegraph routes: AI summary gate', () => {
   });
 
   it('runs an analyst summary in the isolated one-shot configuration of the caller scope', async () => {
-    const res = await request(appWithContext(ANALYST_CONTEXT))
+    const res = await request(await appWithContext(ANALYST_CONTEXT))
       .post('/api/flamegraph/trace-1/analyze')
       .send({...STATIC_ASSET_BODY, question: '为什么这么热？'});
 
@@ -303,7 +307,7 @@ describe('flamegraph routes: AI summary gate', () => {
   });
 
   it('omits the AI summary when includeAi is false', async () => {
-    const res = await request(appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send({includeAi: false});
+    const res = await request(await appWithContext(ANALYST_CONTEXT)).post('/api/flamegraph/trace-1/analyze').send({includeAi: false});
 
     expect(res.status).toBe(200);
     expect(res.body.aiSummary).toBeUndefined();
@@ -338,6 +342,7 @@ describe('flamegraph routes: the static page request in local keyless mode', () 
   });
 
   afterEach(async () => {
+    await loopbackServers.close();
     await fs.rm(uploadDir, {recursive: true, force: true});
   });
 
@@ -347,7 +352,7 @@ describe('flamegraph routes: the static page request in local keyless mode', () 
       workspaceId: DEFAULT_WORKSPACE_ID,
       userId: DEFAULT_DEV_USER_ID,
     });
-    const app = appWithAuthentication();
+    const app = await appWithAuthentication();
 
     const availability = await request(app).get('/api/flamegraph/trace-local/availability');
     const analyze = await request(app)
@@ -365,7 +370,7 @@ describe('flamegraph routes: the static page request in local keyless mode', () 
 
   it('does not serve a trace owned by another workspace', async () => {
     await writeTraceMetadata('trace-foreign', {tenantId: DEFAULT_TENANT_ID, workspaceId: 'workspace-b', userId: 'someone'});
-    const app = appWithAuthentication();
+    const app = await appWithAuthentication();
 
     const res = await request(app)
       .post('/api/flamegraph/trace-foreign/analyze')

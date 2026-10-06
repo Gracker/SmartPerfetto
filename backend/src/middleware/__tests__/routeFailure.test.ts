@@ -4,12 +4,15 @@
 
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import { pathFreeFailure, sendRouteError, sendRouteFailure } from '../routeFailure';
 import { PublicRequestError, thrownReasonCode } from '../../utils/publicRequestError';
 
+const loopbackServers = createLoopbackServerFixture();
+
 const CANARY = 'canary-91c2 /srv/secret/reports.db SELECT key FROM provider_secrets';
 
-function failingApp(before: (req: express.Request, res: express.Response) => void = () => undefined) {
+async function failingApp(before: (req: express.Request, res: express.Response) => void = () => undefined) {
   const app = express();
   app.get('/fail', (req, res) => {
     before(req, res);
@@ -24,7 +27,7 @@ function failingApp(before: (req: express.Request, res: express.Response) => voi
       }, error);
     }
   });
-  return app;
+  return loopbackServers.listen(app);
 }
 
 describe('sendRouteFailure', () => {
@@ -34,7 +37,8 @@ describe('sendRouteFailure', () => {
     errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     errorLog.mockRestore();
   });
 
@@ -46,7 +50,7 @@ describe('sendRouteFailure', () => {
   }
 
   test('answers fixed text and code; the message stays in the log under the request id', async () => {
-    const res = await request(failingApp()).get('/fail?token=abc');
+    const res = await request(await failingApp()).get('/fail?token=abc');
 
     expect(res.status).toBe(503);
     expect(res.body).toEqual({
@@ -76,7 +80,7 @@ describe('sendRouteFailure', () => {
   });
 
   test('uses the request id resolved for the request', async () => {
-    const res = await request(failingApp()).get('/fail').set('X-Request-Id', 'client-req-42');
+    const res = await request(await failingApp()).get('/fail').set('X-Request-Id', 'client-req-42');
 
     expect(res.body.requestId).toBe('client-req-42');
   });
@@ -90,7 +94,7 @@ describe('sendRouteFailure', () => {
       destroyed = res.destroyed;
     });
 
-    await request(app).get('/stream').catch(() => undefined);
+    await request(await loopbackServers.listen(app)).get('/stream').catch(() => undefined);
 
     expect(destroyed).toBe(true);
     expect(errorLog.mock.calls[0][1]).toMatchObject({headersSent: true, code: 'stream_failed'});
@@ -105,7 +109,7 @@ describe('sendRouteFailure', () => {
       sendRouteFailure(res, {code: 'download_failed', error: 'Download failed', logLabel: '[Test] Download'}, new Error(CANARY));
     });
 
-    const res = await request(app).get('/download');
+    const res = await request(await loopbackServers.listen(app)).get('/download');
 
     expect(res.status).toBe(500);
     expect(res.headers['content-disposition']).toBeUndefined();
@@ -124,12 +128,13 @@ describe('sendRouteFailure', () => {
       sendRouteError(res, error, {code: 'thing_failed', error: 'Thing failed', logLabel: '[Test] Thing'}, [ListedError]);
     });
 
-    const listed = await request(app).get('/listed').set('X-Request-Id', 'req-public');
+    const server = await loopbackServers.listen(app);
+    const listed = await request(server).get('/listed').set('X-Request-Id', 'req-public');
     expect(listed.status).toBe(404);
     expect(listed.body).toEqual({success: false, code: 'thing_not_found', error: 'Thing t1 not found', requestId: 'req-public'});
     expect(listed.headers['x-request-id']).toBe('req-public');
 
-    const other = await request(app).get('/other');
+    const other = await request(server).get('/other');
     expect(other.status).toBe(500);
     expect(other.body.code).toBe('thing_failed');
     expect(other.text).not.toContain('canary-91c2');

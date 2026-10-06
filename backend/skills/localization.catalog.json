@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1370,
-    "explicitColumnCount": 5176
+    "explicitColumnCount": 5178
   },
   "skills": {
     "ams_module": {
@@ -11823,6 +11823,18 @@
               "label": {
                 "zh-CN": "CPU 簇",
                 "en": "Cluster"
+              }
+            },
+            "load_status": {
+              "label": {
+                "zh-CN": "负载测量状态",
+                "en": "Load measurement status"
+              }
+            },
+            "clock_basis": {
+              "label": {
+                "zh-CN": "计时口径",
+                "en": "Clock basis"
               }
             },
             "core_count": {

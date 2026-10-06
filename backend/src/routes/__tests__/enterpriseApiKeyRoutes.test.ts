@@ -14,6 +14,10 @@ import { applyEnterpriseMinimalSchema } from '../../services/enterpriseSchema';
 import { EnterpriseApiKeyService } from '../../services/enterpriseApiKeyService';
 import { listEnterpriseAuditEvents } from '../../services/enterpriseAuditService';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
@@ -45,14 +49,14 @@ function orgAdminHeaders(): Record<string, string> {
   };
 }
 
-function makeApp(service: EnterpriseApiKeyService): express.Express {
+async function makeApp(service: EnterpriseApiKeyService) {
   const app = express();
   app.use(express.json());
   app.use('/api/auth', createEnterpriseApiKeyRouter({ apiKeyService: service }));
   app.get('/protected', authenticate, (req, res) => {
     res.json({ requestContext: (req as AuthenticatedRequest).requestContext });
   });
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function seedIdentity(db: Database.Database): void {
@@ -82,9 +86,9 @@ function seedIdentity(db: Database.Database): void {
 describe('enterprise API key routes', () => {
   let db: Database.Database;
   let service: EnterpriseApiKeyService;
-  let app: express.Express;
+  let app: Awaited<ReturnType<typeof makeApp>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     process.env.SMARTPERFETTO_ENTERPRISE = 'true';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     delete process.env.SMARTPERFETTO_API_KEY;
@@ -94,10 +98,11 @@ describe('enterprise API key routes', () => {
     seedIdentity(db);
     service = new EnterpriseApiKeyService(db);
     EnterpriseApiKeyService.setInstanceForTests(service);
-    app = makeApp(service);
+    app = await makeApp(service);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     db.close();
     EnterpriseApiKeyService.resetForTests();
     if (originalApiKey === undefined) {

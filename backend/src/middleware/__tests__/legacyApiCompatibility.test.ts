@@ -4,6 +4,7 @@
 
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import {
   getLegacyApiUsageSnapshot,
   resetLegacyApiUsageTelemetryForTests,
@@ -11,8 +12,11 @@ import {
 import { LEGACY_AGENT_API_SUNSET, markLegacyApi } from '../legacyAgentApi';
 import { rejectLegacyAgentApi } from '../removedApi';
 
+const loopbackServers = createLoopbackServerFixture();
+
 describe('legacy API compatibility headers', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     resetLegacyApiUsageTelemetryForTests();
   });
 
@@ -27,7 +31,7 @@ describe('legacy API compatibility headers', () => {
       (_req, res) => res.json({ success: true }),
     );
 
-    const res = await request(app)
+    const res = await request(await loopbackServers.listen(app))
       .get('/api/traces')
       .set('Authorization', 'Bearer test-token')
       .expect(200);
@@ -49,7 +53,7 @@ describe('legacy API compatibility headers', () => {
     const app = express();
     app.use('/api/agent', rejectLegacyAgentApi);
 
-    const res = await request(app)
+    const res = await request(await loopbackServers.listen(app))
       .post('/api/agent/llm/completions?debug=1')
       .set('Authorization', 'Bearer legacy-token')
       .send({ prompt: 'hello' })
@@ -83,7 +87,7 @@ describe('legacy API compatibility headers', () => {
     const app = express();
     app.use('/api/agent', rejectLegacyAgentApi);
 
-    const res = await request(app).get(url).expect(410);
+    const res = await request(await loopbackServers.listen(app)).get(url).expect(410);
 
     expect(res.headers.link).toBe('</api/agent/v1>; rel="successor-version"');
     expect(res.body.message).toBe(`Please migrate this request to ${successor}`);
@@ -99,7 +103,7 @@ describe('legacy API compatibility headers', () => {
     app.use('/api/agent', rejectLegacyAgentApi);
     app.get('/api/agent/v1/status', (_req, res) => res.json({ ok: true }));
 
-    const res = await request(app)
+    const res = await request(await loopbackServers.listen(app))
       .get('/api/agent/v1/status')
       .expect(200);
 

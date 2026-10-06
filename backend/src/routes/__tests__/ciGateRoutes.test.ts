@@ -26,6 +26,9 @@ import {
   PerfBaselineKey,
   makeSparkProvenance,
 } from '../../types/sparkContracts';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const ANON_KEY: PerfBaselineKey = {
   appId: 'anon-app-001',
@@ -68,12 +71,13 @@ function makeBaseline(
 
 let tmpDir: string;
 let app: express.Express;
+let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
 let baselineStore: BaselineStore;
 let runStore: CiGateRunStore;
 const baselineId = `${ANON_KEY.appId}/${ANON_KEY.deviceId}/${ANON_KEY.buildId}/${ANON_KEY.cuj}`;
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-gate-route-test-'));
   baselineStore = new BaselineStore(path.join(tmpDir, 'baselines.json'));
   runStore = new CiGateRunStore({dbPath: ':memory:'});
@@ -84,9 +88,11 @@ beforeEach(() => {
     authenticate,
     createCiGateRoutes({baselineStore, runStore}),
   );
+  server = await loopbackServers.listen(app);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   runStore.close();
   if (fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, {recursive: true, force: true});
@@ -125,14 +131,14 @@ describe('POST /api/ci/gate-eval — auth', () => {
   it('returns 401 when SMARTPERFETTO_API_KEY is set and the request lacks a bearer', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
     baselineStore.addBaseline(makeBaseline());
-    const res = await request(app).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).post('/api/ci/gate-eval').send(validBody());
     expect(res.status).toBe(401);
   });
 
   it('returns 401 when the bearer token does not match', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
     baselineStore.addBaseline(makeBaseline());
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/ci/gate-eval')
       .set('Authorization', 'Bearer wrong')
       .send(validBody());
@@ -142,7 +148,7 @@ describe('POST /api/ci/gate-eval — auth', () => {
   it('passes when the bearer matches the configured key', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
     baselineStore.addBaseline(makeBaseline());
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/ci/gate-eval')
       .set('Authorization', 'Bearer test-secret')
       .send(validBody());
@@ -153,7 +159,7 @@ describe('POST /api/ci/gate-eval — auth', () => {
   it('passes in dev fallback (no env configured) so local development is unblocked', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     baselineStore.addBaseline(makeBaseline());
-    const res = await request(app).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).post('/api/ci/gate-eval').send(validBody());
     expect(res.status).toBe(200);
   });
 });
@@ -167,13 +173,13 @@ describe('POST /api/ci/gate-eval — body validation', () => {
   it('rejects missing gateId', async () => {
     const body = validBody();
     delete (body as Record<string, unknown>).gateId;
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(400);
   });
 
   it('rejects empty rules array', async () => {
     const body = {...validBody(), rules: []};
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(400);
   });
 
@@ -182,13 +188,13 @@ describe('POST /api/ci/gate-eval — body validation', () => {
       ...validBody(),
       rules: [{metricId: 'm', threshold: 'high'}],
     };
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(400);
   });
 
   it('rejects ciSource with disallowed characters', async () => {
     const body = {...validBody(), ciSource: 'foo bar'};
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(400);
   });
 
@@ -197,7 +203,7 @@ describe('POST /api/ci/gate-eval — body validation', () => {
       ...validBody(),
       candidate: {kind: 'trace', traceId: 't'},
     };
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(400);
   });
 });
@@ -208,7 +214,7 @@ describe('POST /api/ci/gate-eval — skipped runs are still persisted with runId
   });
 
   it('records a skipped run when the baseline is missing', async () => {
-    const res = await request(app).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).post('/api/ci/gate-eval').send(validBody());
     expect(res.status).toBe(200);
     expect(res.body.skipReason).toBe('baseline_not_found');
     expect(res.body.runId).toBeTruthy();
@@ -219,7 +225,7 @@ describe('POST /api/ci/gate-eval — skipped runs are still persisted with runId
 
   it('records a skipped run when the baseline is not yet published', async () => {
     baselineStore.addBaseline(makeBaseline({status: 'reviewed'}));
-    const res = await request(app).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).post('/api/ci/gate-eval').send(validBody());
     expect(res.status).toBe(200);
     expect(res.body.skipReason).toBe('baseline_status_reviewed');
     const stored = runStore.getRun(res.body.runId);
@@ -234,7 +240,7 @@ describe('POST /api/ci/gate-eval — gate evaluation', () => {
   });
 
   it('passes when all metrics are within threshold', async () => {
-    const res = await request(app).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).post('/api/ci/gate-eval').send(validBody());
     expect(res.status).toBe(200);
     expect(res.body.result.status).toBe('pass');
   });
@@ -252,7 +258,7 @@ describe('POST /api/ci/gate-eval — gate evaluation', () => {
         sampleCount: 10,
       },
     ];
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(200);
     expect(res.body.result.status).toBe('fail');
   });
@@ -262,7 +268,7 @@ describe('POST /api/ci/gate-eval — gate evaluation', () => {
       ...validBody(),
       rules: [{metricId: 'metric.does.not.exist', threshold: 0.1}],
     };
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     expect(res.status).toBe(200);
     expect(res.body.result.status).toBe('flaky');
   });
@@ -270,7 +276,7 @@ describe('POST /api/ci/gate-eval — gate evaluation', () => {
   it('persists the rules snapshot verbatim so the run is replayable', async () => {
     const body = validBody();
     body.rules = [{metricId: 'frames.jank.p95', threshold: 0.07}];
-    const res = await request(app).post('/api/ci/gate-eval').send(body);
+    const res = await request(server).post('/api/ci/gate-eval').send(body);
     const stored = runStore.getRun(res.body.runId);
     expect(stored?.rulesSnapshot).toEqual([
       {metricId: 'frames.jank.p95', threshold: 0.07},
@@ -278,7 +284,7 @@ describe('POST /api/ci/gate-eval — gate evaluation', () => {
   });
 
   it('persists the candidate snapshot for replay', async () => {
-    const res = await request(app).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).post('/api/ci/gate-eval').send(validBody());
     const stored = runStore.getRun(res.body.runId);
     expect(stored?.candidateSnapshot.kind).toBe('trace');
     expect(stored?.candidateSnapshot.metrics.length).toBe(1);
@@ -292,15 +298,15 @@ describe('GET /api/ci/gate-runs/:runId', () => {
   });
 
   it('returns 404 for unknown runId', async () => {
-    const res = await request(app).get('/api/ci/gate-runs/missing');
+    const res = await request(server).get('/api/ci/gate-runs/missing');
     expect(res.status).toBe(404);
   });
 
   it('fetches a previously recorded run', async () => {
-    const post = await request(app)
+    const post = await request(server)
       .post('/api/ci/gate-eval')
       .send(validBody());
-    const get = await request(app).get(`/api/ci/gate-runs/${post.body.runId}`);
+    const get = await request(server).get(`/api/ci/gate-runs/${post.body.runId}`);
     expect(get.status).toBe(200);
     expect(get.body.run.runId).toBe(post.body.runId);
   });
@@ -313,9 +319,9 @@ describe('GET /api/ci/gate-runs (list with filters)', () => {
   });
 
   it('returns runs newest first', async () => {
-    await request(app).post('/api/ci/gate-eval').send(validBody());
-    await request(app).post('/api/ci/gate-eval').send(validBody());
-    const res = await request(app).get('/api/ci/gate-runs');
+    await request(server).post('/api/ci/gate-eval').send(validBody());
+    await request(server).post('/api/ci/gate-eval').send(validBody());
+    const res = await request(server).get('/api/ci/gate-runs');
     expect(res.status).toBe(200);
     expect(res.body.runs.length).toBe(2);
     expect(res.body.runs[0].createdAt).toBeGreaterThanOrEqual(
@@ -326,9 +332,9 @@ describe('GET /api/ci/gate-runs (list with filters)', () => {
   it('filters by gateId', async () => {
     const a = {...validBody(), gateId: 'gate-a'};
     const b = {...validBody(), gateId: 'gate-b'};
-    await request(app).post('/api/ci/gate-eval').send(a);
-    await request(app).post('/api/ci/gate-eval').send(b);
-    const res = await request(app).get(
+    await request(server).post('/api/ci/gate-eval').send(a);
+    await request(server).post('/api/ci/gate-eval').send(b);
+    const res = await request(server).get(
       '/api/ci/gate-runs?gateId=gate-a',
     );
     expect(res.body.runs.map((r: {gateId: string}) => r.gateId)).toEqual([

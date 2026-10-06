@@ -13,26 +13,73 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-10-06
+
 ### Security
 - The backend no longer serves `/uploads/*` as static files. Whenever
-  `NODE_ENV` was `development` (its default, so every `./start.sh` and
-  `./scripts/start-dev.sh` source deployment) it served `backend/uploads`,
+  `NODE_ENV` was `development` (the default for source deployments unless
+  explicitly overridden) it served `backend/uploads`,
   including uploaded traces and their metadata, outside `/api`: without
   authentication, trace ownership checks, or the keyless-mode Host check that
   stops DNS-rebinding pages. Reading a file required knowing its trace id.
-  Docker and portable packages set `NODE_ENV=production` and were not
-  affected. Nothing in the product used the path; download traces through
+  Default Docker and portable configurations set `NODE_ENV=production` and
+  were not affected. Nothing in the product used the path; download traces through
   `GET /api/traces/:id/file` (or its workspace-scoped form), which is
   authenticated and ownership-checked.
 
 ### Added
+- Per-turn analysis context in the composer: independently select source
+  codebases and document knowledge bases, with disclosed scope and explicit
+  provider-send consent. Source lookup works on demand without a prebuilt
+  index; source depth controls the bounded lookup budget, not authorization.
+- Document folders can be registered, indexed, searched and read through the
+  Web UI and CLI. The analysis agent uses selected documents as background
+  knowledge and keeps them distinct from trace execution evidence.
+- Source search ranks declarations and trace sites, supports file discovery
+  and bounded reads around a line, and records source locations and per-finding
+  source bindings. The finalizer checks those bindings against actual reads.
+- CPU, click-response and startup detail Skills support exact process-instance
+  scope. Trace SQL regressions execute every admitted exact SQL unit and probe
+  isolation from same-package processes and restarted instances.
+- Heap-dump class growth, framework process-state residency, application
+  wakelock/standby/freezer state and lock-holder intervals retain explicit
+  availability and observation limits.
 - `smp knowledge consent <id> --enable|--disable` grants or revokes a
   document knowledge base's provider-send consent after registration, through
   the same registry operation as the Web UI's switch, and prints the same
   disclosure when granting. Knowledge consent stays a boolean: a knowledge base
   has no path filters, so the folder is what a grant covers.
 
+### Changed
+- The finalizer owns the final delivery and verification state across all five
+  runtimes. Runtime draft diagnostics only choose a bounded same-run repair;
+  native completion, captured evidence and the semantic assessment remain
+  separate inputs.
+- Web chat streams a revocable answer draft where supported, then displays the
+  finished body while its semantic review runs. The first stop after delivery
+  ends the review; a second stop forces cancellation under a bounded watchdog.
+  In CLI text output, the first Ctrl-C after delivery ends review; the second
+  aborts the turn without saving. JSON/NDJSON abort on the first Ctrl-C and
+  remain terminal-only. Drafts are never saved.
+- Scrolling overviews place present cadence beside frame duration and
+  FrameTimeline jank. Input delivery, monitor copies and speculative frame
+  associations remain distinct; unavailable presentation evidence is explicit.
+- Skill validation, SQL-unit discovery, saved-result reads and the eval runner
+  share the executor's production paths. Every backend suite is reachable from
+  the project gate; orphaned modules and unused production exports are checked.
+- Follow-up turns start a fresh native model context and carry only authorized,
+  typed shared history. Private source and document content is checked against
+  the current run's grant before each model dispatch.
+
 ### Removed
+- Strategy `phase_hints` and `plan_template` frontmatter is removed. Existing
+  Self-Evolution overlays targeting phase hints are recorded as unsupported
+  and never applied; new proposals no longer target them.
+- The old Claude verifier timeout and verification toggle are removed from
+  Provider configuration. Final verification follows the shared run deadline
+  and delivery flow.
+- Packages no longer generate or ship the unread full SQL index. The light
+  SQL index, runtime stdlib symbols and SQL documentation remain available.
 - **Breaking:** the Android Internals Wiki is now an ordinary document
   knowledge base, not a built-in Pack or a connector of its own. Register its
   public `src/` folder as a document knowledge base (`smp knowledge register`,
@@ -118,6 +165,21 @@ Detailed commit-level history is available via `git log`.
   are not measured.
 
 ### Fixed
+- CPU cluster load now subtracts suspend from both the clipped Running spans
+  and the selected window. If any clock conversion is unavailable or invalid,
+  both sides use wall-clock time. A fully suspended window reports zero awake
+  time, zero active cores and no load percentage.
+- CPU cluster metrics are unavailable, with an explicit reason, when local CPU
+  numbers cannot distinguish machines or duplicate metadata. Ordinary
+  single-machine unknown capacity remains measurable; percentages are never
+  clamped to hide an identity or clock mismatch.
+- Linux verification runners install ripgrep for the real source-search
+  backend tests. The source-selection success test now creates the source it
+  selects, while complete empty selections remain rejected.
+- OpenAI and OpenCode delivery calls can finish inside the original run
+  deadline, and a missing answer body can receive one bounded no-tool delivery
+  continuation. GLM declaration repair and classifier request controls retain
+  the actual provider protocol and evidence checks.
 - Registering a document folder again keeps every channel it was registered
   through. A folder the Web directory picker registered and the CLI then
   registered again lost the picker's trust, so the server's next reindex
@@ -160,6 +222,26 @@ Detailed commit-level history is available via `git log`.
 - `scroll_session_analysis` counts frames of the target app only (issued
   process scope, else the exact package or its `name:*` subprocesses) instead
   of every main thread's `doFrame`.
+- Owned HTTP test listeners bind IPv4 before Supertest sends requests to
+  `127.0.0.1`, preventing the reproduced cross-address-family port misrouting
+  on macOS. Tests await listener readiness and closure.
+- Session persistence/export tests, runtime health and Agent route integration
+  fixtures use owned temporary databases instead of the default user database.
+  Route integration also isolates log cleanup and import-time scene stores.
+
+### Known issues
+- Real-provider acceptance is incomplete. Current DeepSeek startup runs on
+  OpenAI and Pi returned answers that did not pass declaration or report
+  checks. The OpenAI scrolling run delivered an answer but did not satisfy the
+  declared-fact acceptance oracle. These results must not be treated as verified
+  reports or as an all-runtime accuracy pass.
+- The current OpenCode startup run returned a declaration without a usable
+  answer body. Finalization rejected it. The saved E2E artifacts do not record
+  whether its bounded body continuation was dispatched and failed or returned
+  another empty body, so a software regression has not been established.
+  Deterministic runtime tests do not replace this missing real-provider
+  acceptance; inspect the terminal delivery status when using OpenCode for
+  long reports.
 
 ## [1.14.0] - 2026-09-24
 

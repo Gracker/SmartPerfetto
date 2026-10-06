@@ -37,6 +37,9 @@ import {SessionPersistenceService} from '../../services/sessionPersistenceServic
 import {registerAgentReportRoutes} from '../agentReportRoutes';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const sessionId = 'private-route-projection';
 
@@ -858,7 +861,8 @@ describe('agent route private projections', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/agent/v1', agentRoutes);
-    const get = (url: string) => request(app).get(`/api/agent/v1${url}`)
+    let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
+    const get = (url: string) => request(server).get(`/api/agent/v1${url}`)
       .set('X-SmartPerfetto-SSO-User-Id', owner.userId)
       .set('X-SmartPerfetto-SSO-Email', 'scene-status@example.test')
       .set('X-SmartPerfetto-SSO-Tenant-Id', owner.tenantId)
@@ -877,7 +881,8 @@ describe('agent route private projections', () => {
         logger: {info: () => {}, warn: () => {}, error: () => {}}, ...fields} as any);
     };
 
-    beforeAll(() => {
+    beforeAll(async () => {
+      server = await loopbackServers.listen(app);
       delete process.env.SMARTPERFETTO_API_KEY;
       process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
       process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
@@ -888,7 +893,8 @@ describe('agent route private projections', () => {
         clearCodeAwareOutputGuards(id);
       }
     });
-    afterAll(() => {
+    afterAll(async () => {
+      await loopbackServers.close();
       for (const [key, value] of originalEnv) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }

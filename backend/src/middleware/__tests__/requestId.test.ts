@@ -6,8 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import type { IncomingMessage } from 'http';
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import { authenticate, getRequestContext } from '../auth';
 import { requestIdMiddleware, requestIdOf } from '../requestId';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const GENERATED_ID = /^req-\d+-[0-9a-f]{8}$/;
 
@@ -58,13 +61,14 @@ describe('requestIdMiddleware', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     if (originalApiKey === undefined) delete process.env.SMARTPERFETTO_API_KEY;
     else process.env.SMARTPERFETTO_API_KEY = originalApiKey;
   });
 
   /** Mirrors index.ts: the id first, authentication at the API mount and again inside a router. */
-  function makeApp(): express.Express {
+  async function makeApp() {
     const app = express();
     app.use(requestIdMiddleware);
     app.use(express.json());
@@ -75,11 +79,11 @@ describe('requestIdMiddleware', () => {
       res.json({ contextId: getRequestContext(req)?.requestId, routeId: requestIdOf(req) });
     });
     app.use('/api/agent', router);
-    return app;
+    return loopbackServers.listen(app);
   }
 
   it('gives the header, the request context and the route one generated id', async () => {
-    const res = await request(makeApp()).post('/api/agent/probe').send({ requestId: 'body-id' });
+    const res = await request(await makeApp()).post('/api/agent/probe').send({ requestId: 'body-id' });
 
     expect(res.status).toBe(200);
     expect(res.headers['x-request-id']).toMatch(GENERATED_ID);
@@ -90,7 +94,7 @@ describe('requestIdMiddleware', () => {
   });
 
   it('echoes the caller id everywhere', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/agent/probe')
       .set('X-Correlation-Id', 'trace 42');
 
@@ -99,7 +103,7 @@ describe('requestIdMiddleware', () => {
   });
 
   it('sets the header on responses no route answers', async () => {
-    const res = await request(makeApp()).get('/missing').set('X-Request-Id', 'lost-1');
+    const res = await request(await makeApp()).get('/missing').set('X-Request-Id', 'lost-1');
 
     expect(res.status).toBe(404);
     expect(res.headers['x-request-id']).toBe('lost-1');

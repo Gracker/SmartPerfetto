@@ -20,6 +20,9 @@ import {
   type SelfEvolutionAdminDependencies,
 } from '../../services/selfEvolution/selfEvolutionAdminService';
 import {createSelfEvolutionAdminRoutes} from '../selfEvolutionAdminRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalTrustedHeaders =
   process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
@@ -30,7 +33,8 @@ beforeEach(() => {
   process.env.SMARTPERFETTO_API_KEY = 'test-api-key';
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
   restoreEnv(
     'SMARTPERFETTO_SSO_TRUSTED_HEADERS',
     originalTrustedHeaders,
@@ -41,7 +45,7 @@ afterEach(() => {
 describe('selfEvolutionAdminRoutes', () => {
   it('requires authentication and grants analysts read-only access', async () => {
     const service = new SelfEvolutionAdminService(fixture());
-    const app = makeApp(service);
+    const app = await makeApp(service);
 
     await request(app)
       .get('/api/admin/self-evolution/overview')
@@ -65,7 +69,7 @@ describe('selfEvolutionAdminRoutes', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     const dependencies = fixture();
     const service = new SelfEvolutionAdminService(dependencies);
-    const app = makeApp(service);
+    const app = await makeApp(service);
 
     const start = await withIdentity(
       request(app).post('/api/admin/self-evolution/operations/curation'),
@@ -88,7 +92,7 @@ describe('selfEvolutionAdminRoutes', () => {
   it('does not expose operation streams across workspaces', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     const service = new SelfEvolutionAdminService(fixture());
-    const app = makeApp(service);
+    const app = await makeApp(service);
 
     const start = await withIdentity(
       request(app).post('/api/admin/self-evolution/operations/curation'),
@@ -118,7 +122,7 @@ describe('selfEvolutionAdminRoutes', () => {
       diagnostics: Array<{code: string}>;
     }>(() => {}));
     const service = new SelfEvolutionAdminService(dependencies);
-    const app = makeApp(service);
+    const app = await makeApp(service);
 
     for (let index = 0; index < 4; index += 1) {
       await withIdentity(
@@ -143,7 +147,7 @@ describe('selfEvolutionAdminRoutes', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     const dependencies = fixture();
     const service = new SelfEvolutionAdminService(dependencies);
-    const app = makeApp(service);
+    const app = await makeApp(service);
 
     const response = await withIdentity(
       request(app)
@@ -185,7 +189,7 @@ describe('selfEvolutionAdminRoutes', () => {
     dependencies.latestReconciliation = jest.fn(scope =>
       registry.latestReport(scope) ?? null);
     const service = new SelfEvolutionAdminService(dependencies);
-    const app = makeApp(service);
+    const app = await makeApp(service);
 
     const reconciliation = await withIdentity(
       request(app).get('/api/admin/self-evolution/reconciliation'),
@@ -221,14 +225,14 @@ describe('selfEvolutionAdminRoutes', () => {
   });
 });
 
-function makeApp(service: SelfEvolutionAdminService): express.Express {
+async function makeApp(service: SelfEvolutionAdminService) {
   const app = express();
   app.use(express.json());
   app.use(
     '/api/admin/self-evolution',
     createSelfEvolutionAdminRoutes(service),
   );
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function withIdentity(

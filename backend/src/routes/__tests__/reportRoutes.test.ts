@@ -2,10 +2,18 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {afterEach} from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 
 import * as reportRoutes from '../reportRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+afterEach(async () => {
+  await loopbackServers.close();
+});
+
+const loopbackServers = createLoopbackServerFixture();
 
 const {upgradeLegacyReportHtml} = reportRoutes;
 
@@ -123,8 +131,9 @@ A[foo] --> B[bar]</pre></div>
     expect((reportRoutes as any).REPORT_DOCUMENT_CSP).toContain("script-src 'self' 'unsafe-inline'");
     const app = express();
     app.use('/api/reports', reportRoutes.default);
+    const server = await loopbackServers.listen(app);
 
-    const response = await request(app).get('/api/reports/assets/mermaid.min.js');
+    const response = await request(server).get('/api/reports/assets/mermaid.min.js');
 
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toContain('application/javascript');
@@ -135,8 +144,9 @@ A[foo] --> B[bar]</pre></div>
   test('preserves static-file byte range semantics for the Mermaid runtime route', async () => {
     const app = express();
     app.use('/api/reports', reportRoutes.default);
+    const server = await loopbackServers.listen(app);
 
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/reports/assets/mermaid.min.js')
       .set('Range', 'bytes=0-15');
 

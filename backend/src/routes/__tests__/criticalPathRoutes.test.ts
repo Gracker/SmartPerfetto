@@ -22,6 +22,10 @@ import {getTraceProcessorService} from '../../services/traceProcessorService';
 import {renderCriticalPathAnalysis} from '../../services/criticalPathLocalization';
 import type {CriticalPathAnalysis} from '../../types/criticalPathContract';
 
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
 jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: jest.fn(),
 }));
@@ -87,7 +91,7 @@ const PROVIDER_SCOPE = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId
 // A viewer may read the trace but not start model work (`agent:run`).
 const VIEWER_CONTEXT = {...REQUEST_CONTEXT, roles: ['viewer'], scopes: []};
 
-function makeApp(context: object = REQUEST_CONTEXT): express.Express {
+async function makeApp(context: object = REQUEST_CONTEXT) {
   const app = express();
   app.use(express.json());
   app.use((req: any, _res, next) => {
@@ -95,7 +99,7 @@ function makeApp(context: object = REQUEST_CONTEXT): express.Express {
     next();
   });
   app.use('/api/critical-path', criticalPathRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function analysisFixture(): CriticalPathAnalysis {
@@ -177,7 +181,8 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
     mockQuery.mockImplementation(() => sdkStream('## model summary'));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     if (savedAiEnabled === undefined) delete process.env[AI_CAPABILITY_ENV_KEY];
     else process.env[AI_CAPABILITY_ENV_KEY] = savedAiEnabled;
   });
@@ -185,7 +190,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('degrades to the deterministic summary with a warning when AI is disabled', async () => {
     process.env[AI_CAPABILITY_ENV_KEY] = 'false';
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -201,10 +206,10 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('describes the counterfactual as a best case with a bounded saving', async () => {
     process.env[AI_CAPABILITY_ENV_KEY] = 'false';
 
-    const en = await request(makeApp())
+    const en = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
-    const zh = await request(makeApp())
+    const zh = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send({threadStateId: 42, outputLanguage: 'zh-CN'});
 
@@ -217,7 +222,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   });
 
   it('rejects an invalid body with a coded 400 before loading any trace', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send({threadStateId: 'not-a-number', maxSegments: 5});
 
@@ -231,7 +236,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   });
 
   it('rejects an unsafe trace id with a coded 400', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/..%2Fsecret/analyze')
       .send(VALID_BODY);
 
@@ -244,7 +249,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('returns trace_not_found when the trace is not readable by the caller', async () => {
     mockReadMetadata.mockResolvedValue(null);
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -257,7 +262,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('maps an unknown thread_state to a coded 404', async () => {
     mockAnalyze.mockRejectedValue(new CriticalPathInputError('thread_state_not_found', 'thread_state 42 not found'));
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -270,7 +275,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   });
 
   it('passes a disconnect signal into the engine so a gone client stops the analysis', async () => {
-    const response = await request(makeApp()).post('/api/critical-path/trace-1/analyze').send(VALID_BODY);
+    const response = await request(await makeApp()).post('/api/critical-path/trace-1/analyze').send(VALID_BODY);
 
     expect(response.status).toBe(200);
     const options = mockAnalyze.mock.calls[0][2] as {signal?: unknown};
@@ -280,7 +285,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('maps an invalid selector name to a coded 400', async () => {
     mockAnalyze.mockRejectedValueOnce(new CriticalPathInputError('invalid_name', 'thread_name must be printable'));
 
-    const response = await request(makeApp()).post('/api/critical-path/trace-1/analyze').send(VALID_BODY);
+    const response = await request(await makeApp()).post('/api/critical-path/trace-1/analyze').send(VALID_BODY);
 
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({success: false, code: 'invalid_name'});
@@ -289,7 +294,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('maps other engine input errors to a coded 400', async () => {
     mockAnalyze.mockRejectedValue(new CriticalPathInputError('missing_selector', 'threadStateId or utid/startTs/dur is required'));
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send({outputLanguage: 'en'});
 
@@ -305,7 +310,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
       mockAnalyze.mockRejectedValueOnce(error);
       const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
-      const res = await request(makeApp())
+      const res = await request(await makeApp())
         .post('/api/critical-path/trace-1/analyze')
         .send(VALID_BODY);
       consoleError.mockRestore();
@@ -320,7 +325,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   });
 
   it('runs the Claude summary in the isolated one-shot SDK configuration', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -386,7 +391,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
     };
     mockAnalyze.mockResolvedValue({...analysis, wakeupChain: [segment]});
 
-    const res = await request(makeApp()).post('/api/critical-path/trace-1/analyze').send(VALID_BODY);
+    const res = await request(await makeApp()).post('/api/critical-path/trace-1/analyze').send(VALID_BODY);
 
     expect(res.status).toBe(200);
     const {prompt} = mockQuery.mock.calls[0][0] as {prompt: string};
@@ -398,7 +403,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   });
 
   it('gives a viewer the deterministic summary without any model call', async () => {
-    const viewer = await request(makeApp(VIEWER_CONTEXT))
+    const viewer = await request(await makeApp(VIEWER_CONTEXT))
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -412,7 +417,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
     expect(mockQuery).not.toHaveBeenCalled();
 
     // The same request from an analyst reaches the model.
-    const analyst = await request(makeApp({...REQUEST_CONTEXT, roles: ['analyst'], scopes: []}))
+    const analyst = await request(await makeApp({...REQUEST_CONTEXT, roles: ['analyst'], scopes: []}))
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -423,7 +428,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('returns the deterministic summary when the active runtime is not Claude', async () => {
     mockSelection.mockReturnValue({kind: 'openai-agents-sdk', source: 'provider'});
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -437,7 +442,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   it('checks credentials in the resolved profile env, not the process env', async () => {
     mockHasClaudeCredentials.mockReturnValue(false);
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send(VALID_BODY);
 
@@ -447,7 +452,7 @@ describe('POST /api/critical-path/:traceId/analyze', () => {
   });
 
   it('omits the AI summary when includeAi is false', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/critical-path/trace-1/analyze')
       .send({...VALID_BODY, includeAi: false});
 
@@ -533,7 +538,7 @@ describe('critical-path route mounts', () => {
   const savedEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
 
   /** The production chain: global auth, the legacy mount behind the enterprise gate, the workspace mount. */
-  function mountedApp(): express.Express {
+  async function mountedApp() {
     const app = express();
     app.use(express.json());
     app.use('/api', (req, res, next) => {
@@ -549,7 +554,7 @@ describe('critical-path route mounts', () => {
       criticalPathRoutes,
     );
     app.use('/api/critical-path', rejectEnterpriseUnscopedApi, criticalPathRoutes);
-    return app;
+    return loopbackServers.listen(app);
   }
 
   function sso(test: request.Test, role: string, scopes: string, workspaceId = 'workspace-a'): request.Test {
@@ -580,7 +585,8 @@ describe('critical-path route mounts', () => {
     mockQuery.mockImplementation(() => sdkStream('## model summary'));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     for (const [key, value] of savedEnv) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -588,7 +594,7 @@ describe('critical-path route mounts', () => {
   });
 
   it('keeps the legacy mount closed in enterprise mode and serves the workspace mount', async () => {
-    const app = mountedApp();
+    const app = await mountedApp();
 
     const legacy = await sso(request(app).post('/api/critical-path/trace-1/analyze'), 'analyst', 'trace:read,agent:run')
       .send(VALID_BODY);
@@ -607,7 +613,7 @@ describe('critical-path route mounts', () => {
 
   it('answers 404 for another workspace\'s path without reading the trace', async () => {
     const res = await sso(
-      request(mountedApp()).post('/api/workspaces/workspace-b/critical-path/trace-1/analyze'), 'analyst', 'trace:read,agent:run',
+      request(await mountedApp()).post('/api/workspaces/workspace-b/critical-path/trace-1/analyze'), 'analyst', 'trace:read,agent:run',
     ).send(VALID_BODY);
 
     expect(res.status).toBe(404);
@@ -617,7 +623,7 @@ describe('critical-path route mounts', () => {
 
   it('gives a workspace viewer the rule summary without a model call', async () => {
     const res = await sso(
-      request(mountedApp()).post('/api/workspaces/workspace-a/critical-path/trace-1/analyze'), 'viewer', 'trace:read',
+      request(await mountedApp()).post('/api/workspaces/workspace-a/critical-path/trace-1/analyze'), 'viewer', 'trace:read',
     ).send(VALID_BODY);
 
     expect(res.status).toBe(200);

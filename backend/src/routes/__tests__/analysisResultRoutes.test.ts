@@ -24,13 +24,16 @@ import { createAnalysisResultSnapshotRepository } from '../../services/analysisR
 import analysisResultRoutes from '../analysisResultRoutes';
 import {getRegisteredScenes} from '../../agentv3/strategyLoader';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 
 let tempDir: string;
 let dbPath: string;
 
-function app(): express.Express {
+async function app() {
   const server = express();
   server.use(express.json());
   server.use(
@@ -40,7 +43,7 @@ function app(): express.Express {
     requireWorkspaceRouteContext,
     analysisResultRoutes,
   );
-  return server;
+  return loopbackServers.listen(server);
 }
 
 function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSnapshot {
@@ -157,13 +160,14 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = originalDbPath;
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
 describe('analysis result routes', () => {
   test('lists readable snapshots in workspace scope', async () => {
-    const response = await request(app())
+    const response = await request(await app())
       .get('/api/workspaces/workspace-a/analysis-results')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -177,7 +181,7 @@ describe('analysis result routes', () => {
   });
 
   test('returns full snapshot detail with conclusion contract on explicit read', async () => {
-    const response = await request(app())
+    const response = await request(await app())
       .get('/api/workspaces/workspace-a/analysis-results/snapshot-a')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -190,7 +194,7 @@ describe('analysis result routes', () => {
   });
 
   test('supports scene and trace filters without leaking other workspaces', async () => {
-    const response = await request(app())
+    const response = await request(await app())
       .get('/api/workspaces/workspace-a/analysis-results?sceneType=scrolling&traceId=trace-b')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -199,7 +203,7 @@ describe('analysis result routes', () => {
   });
 
   test('rejects invalid filters', async () => {
-    await request(app())
+    await request(await app())
       .get('/api/workspaces/workspace-a/analysis-results?sceneType=bad')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(400);
@@ -210,7 +214,7 @@ describe('analysis result routes', () => {
     try {
       for (const sceneType of new Set([...getRegisteredScenes().map(scene => scene.scene), 'cpu'])) {
         db.prepare('UPDATE analysis_result_snapshots SET scene_type = ? WHERE id = ?').run(sceneType, 'snapshot-a');
-        const response = await request(app())
+        const response = await request(await app())
           .get('/api/workspaces/workspace-a/analysis-results')
           .query({sceneType})
           .set('x-tenant-id', DEFAULT_TENANT_ID)
@@ -222,7 +226,7 @@ describe('analysis result routes', () => {
   });
 
   test('updates owned snapshot visibility', async () => {
-    const response = await request(app())
+    const response = await request(await app())
       .patch('/api/workspaces/workspace-a/analysis-results/snapshot-a')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ visibility: 'workspace' })
@@ -243,14 +247,14 @@ describe('analysis result routes', () => {
       db.close();
     }
 
-    const refused = await request(app())
+    const refused = await request(await app())
       .patch('/api/workspaces/workspace-a/analysis-results/snapshot-private')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ visibility: 'workspace' })
       .expect(409);
     expect(refused.body).toMatchObject({success: false, code: 'PRIVATE_CONTEXT_NOT_SHAREABLE'});
 
-    const read = await request(app())
+    const read = await request(await app())
       .get('/api/workspaces/workspace-a/analysis-results/snapshot-private')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -259,7 +263,7 @@ describe('analysis result routes', () => {
   });
 
   test('rejects invalid visibility updates', async () => {
-    await request(app())
+    await request(await app())
       .patch('/api/workspaces/workspace-a/analysis-results/snapshot-a')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({ visibility: 'org' })

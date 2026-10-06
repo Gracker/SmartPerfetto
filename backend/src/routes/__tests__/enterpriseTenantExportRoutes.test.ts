@@ -15,6 +15,9 @@ import { stableStringify } from '../../utils/stableJson';
 import {AnalysisHistoryStore} from '../../services/analysisHistoryStore';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import exportRoutes from '../exportRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -26,11 +29,11 @@ const originalEnv = {
 let tmpDir: string;
 let dbPath: string;
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/export', exportRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -159,6 +162,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
   restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
   restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnv.enterpriseDbPath);
@@ -245,7 +249,7 @@ async function seedRestrictedContentFixture(): Promise<void> {
 describe('enterprise tenant export route', () => {
   it('exports a tenant bundle with reports, manifests, identity proof, and no secrets', async () => {
     await seedTenantExportFixture();
-    const app = makeApp();
+    const app = await makeApp();
 
     const res = await ssoHeaders(request(app).get('/api/export/tenant'));
 
@@ -316,7 +320,7 @@ describe('enterprise tenant export route', () => {
     await seedTenantExportFixture();
     await seedRestrictedContentFixture();
 
-    const res = await ssoHeaders(request(makeApp()).get('/api/export/tenant'));
+    const res = await ssoHeaders(request(await makeApp()).get('/api/export/tenant'));
 
     expect(res.status).toBe(200);
     const bundle = res.body.bundle;
@@ -364,7 +368,7 @@ describe('enterprise tenant export route', () => {
     };
     const exportTraceMetadata = async (build: string) => {
       setTraceMetadata(`{"device":"pixel","__proto__":{"build":"${build}","apiKey":"sk-proto-secret"}}`);
-      const res = await ssoHeaders(request(makeApp()).get('/api/export/tenant'));
+      const res = await ssoHeaders(request(await makeApp()).get('/api/export/tenant'));
       expect(res.status).toBe(200);
       // Re-hash what the client received, as a downstream verifier would.
       expect(res.body.bundleSha256).toBe(
@@ -387,7 +391,7 @@ describe('enterprise tenant export route', () => {
 
   it('requires tenant export privileges', async () => {
     await seedTenantExportFixture();
-    const app = makeApp();
+    const app = await makeApp();
 
     const res = await ssoHeaders(
       request(app).get('/api/export/tenant'),

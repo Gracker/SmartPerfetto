@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it} from '@jest/globals';
+import {afterEach, describe, expect, it} from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 
@@ -14,6 +14,14 @@ import type {
 import type {AnalysisReceiptV2} from '../../types/dataContract';
 import type {RunManifestV1} from '../../types/selfEvolution';
 import {registerAgentExternalIssueRoutes} from '../agentExternalIssueRoutes';
+
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
+afterEach(async () => {
+  await loopbackServers.close();
+});
 
 function source(
   manifestOverrides: Partial<RunManifestV1> = {},
@@ -118,7 +126,7 @@ function source(
   };
 }
 
-function makeApp(options: {
+async function makeApp(options: {
   privateAnalysis?: boolean;
   wrongOwner?: boolean;
   manifestOverrides?: Partial<RunManifestV1>;
@@ -207,7 +215,7 @@ function makeApp(options: {
   app.use(express.json());
   app.use(authenticate);
   app.use('/api/agent/v1', router);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 const refs = {
@@ -217,7 +225,7 @@ const refs = {
 
 describe('Agent external issue routes', () => {
   it('runs Agent triage and creates only a user-confirmed GitHub draft', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const opportunity = await request(app)
       .post('/api/agent/v1/session-1/external-issue/opportunity')
       .send(refs);
@@ -252,7 +260,7 @@ describe('Agent external issue routes', () => {
   });
 
   it('fails closed for private analysis and cross-owner access', async () => {
-    const privateResult = await request(makeApp({privateAnalysis: true}))
+    const privateResult = await request(await makeApp({privateAnalysis: true}))
       .post('/api/agent/v1/session-1/external-issue/opportunity')
       .send(refs);
     expect(privateResult.status).toBe(200);
@@ -261,14 +269,14 @@ describe('Agent external issue routes', () => {
       agentReviewUnavailableReason: 'private_analysis',
     }));
 
-    const wrongOwner = await request(makeApp({wrongOwner: true}))
+    const wrongOwner = await request(await makeApp({wrongOwner: true}))
       .post('/api/agent/v1/session-1/external-issue/opportunity')
       .send(refs);
     expect(wrongOwner.status).toBe(404);
   });
 
   it('routes security-sensitive feedback away from public GitHub issues', async () => {
-    const response = await request(makeApp())
+    const response = await request(await makeApp())
       .post('/api/agent/v1/session-1/external-issue/draft')
       .send({...refs, securitySensitive: true});
     expect(response.status).toBe(409);
@@ -276,7 +284,7 @@ describe('Agent external issue routes', () => {
   });
 
   it('exposes Provider pin mismatch and uses deterministic review fallback', async () => {
-    const app = makeApp({
+    const app = await makeApp({
       pinResolution: {ok: false, reason: 'provider_snapshot_changed'},
       useRealTriage: true,
     });
@@ -303,7 +311,7 @@ describe('Agent external issue routes', () => {
   });
 
   it('fails legacy runs closed when the persisted Provider pin is missing', async () => {
-    const app = makeApp({
+    const app = await makeApp({
       manifestOverrides: {providerSnapshotHash: undefined},
       useRealTriage: true,
     });
@@ -319,7 +327,7 @@ describe('Agent external issue routes', () => {
   });
 
   it('rejects forged or altered reviews and rechecks the Provider pin for drafts', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const review = await request(app)
       .post('/api/agent/v1/session-1/external-issue/review')
       .send(refs);
@@ -343,7 +351,7 @@ describe('Agent external issue routes', () => {
     expect(alteredDraft.body.code)
       .toBe('EXTERNAL_ISSUE_REVIEW_ATTESTATION_INVALID');
 
-    const changedProvider = makeApp({
+    const changedProvider = await makeApp({
       pinResolution: {ok: false, reason: 'provider_snapshot_changed'},
     });
     const staleDraft = await request(changedProvider)

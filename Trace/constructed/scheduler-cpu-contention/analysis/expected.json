@@ -146,6 +146,8 @@
       "semantic_step": "cluster_load",
       "required_columns": [
         "cluster",
+        "load_status",
+        "clock_basis",
         "core_count",
         "active_core_count",
         "awake_ms",

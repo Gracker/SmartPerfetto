@@ -4,9 +4,12 @@
 
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 import { requestIdMiddleware, requestIdOf } from '../requestId';
 import { UNHANDLED_ERROR_CODE, unhandledErrorHandler } from '../unhandledErrorHandler';
 import { PublicRequestError } from '../../utils/publicRequestError';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const CANARY = 'canary-7f3a /srv/secret/path.db SELECT * FROM provider_keys';
 
@@ -37,7 +40,8 @@ describe('unhandledErrorHandler', () => {
     errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await loopbackServers.close();
     errorLog.mockRestore();
   });
 
@@ -49,7 +53,7 @@ describe('unhandledErrorHandler', () => {
   }
 
   test('keeps the message and stack out of the response and in the log', async () => {
-    const res = await request(appThrowing(() => canaryError())).get('/boom?token=abc');
+    const res = await request(await loopbackServers.listen(appThrowing(() => canaryError()))).get('/boom?token=abc');
 
     expect(res.status).toBe(500);
     expect(res.body).toEqual({
@@ -80,7 +84,7 @@ describe('unhandledErrorHandler', () => {
     [{ status: 700 }, 500, 'Internal Server Error'],
     [{ status: '404' }, 500, 'Internal Server Error'],
   ])('maps error fields %j to status %i with fixed text', async (fields, status, text) => {
-    const res = await request(appThrowing(() => canaryError(fields))).get('/boom');
+    const res = await request(await loopbackServers.listen(appThrowing(() => canaryError(fields)))).get('/boom');
 
     expect(res.status).toBe(status);
     expect(res.body.error).toBe(text);
@@ -91,7 +95,7 @@ describe('unhandledErrorHandler', () => {
     ['a string', () => CANARY],
     ['null', () => null],
   ])('answers a thrown %s without echoing it', async (_label, produce) => {
-    const res = await request(appThrowing(produce)).get('/boom');
+    const res = await request(await loopbackServers.listen(appThrowing(produce))).get('/boom');
 
     expect(res.status).toBe(500);
     expect(res.body.code).toBe(UNHANDLED_ERROR_CODE);
@@ -99,7 +103,8 @@ describe('unhandledErrorHandler', () => {
   });
 
   test('a public request error that escapes a route keeps its status but not its text', async () => {
-    const res = await request(appThrowing(() => new PublicRequestError('thing_conflict', CANARY, 409))).get('/boom');
+    const app = appThrowing(() => new PublicRequestError('thing_conflict', CANARY, 409));
+    const res = await request(await loopbackServers.listen(app)).get('/boom');
 
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({success: false, code: UNHANDLED_ERROR_CODE, error: 'Conflict'});
@@ -116,7 +121,7 @@ describe('unhandledErrorHandler', () => {
     });
     app.use(unhandledErrorHandler);
 
-    const res = await request(app).get('/boom');
+    const res = await request(await loopbackServers.listen(app)).get('/boom');
 
     expect(seenByRoute).toMatch(/^req-/);
     expect(res.body.requestId).toBe(seenByRoute);
@@ -125,7 +130,7 @@ describe('unhandledErrorHandler', () => {
   });
 
   test('keeps the raw body of a malformed JSON request out of the response and the log', async () => {
-    const res = await request(appThrowing(() => canaryError()))
+    const res = await request(await loopbackServers.listen(appThrowing(() => canaryError())))
       .post('/json')
       .set('Content-Type', 'application/json')
       .set('X-Request-Id', ' client <id> ')
@@ -154,7 +159,7 @@ describe('unhandledErrorHandler', () => {
       res.end();
     });
 
-    const text = await request(app).get('/boom').then((res) => res.text);
+    const text = await request(await loopbackServers.listen(app)).get('/boom').then((res) => res.text);
 
     expect(forwarded).toHaveLength(1);
     expect(forwarded[0]).toBe(thrown);
