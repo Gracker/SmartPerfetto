@@ -140,7 +140,6 @@ export class SkillEvaluator {
     console.log(`[SkillEvaluator] Loading trace: ${absolutePath}`);
     this.traceId = await this.traceProcessor.loadTraceFromFilePath(absolutePath);
     console.log(`[SkillEvaluator] Trace loaded with ID: ${this.traceId}`);
-    this.availablePrerequisiteModules = null;
 
     await this.selectSkill(this.skillId);
   }
@@ -169,7 +168,6 @@ export class SkillEvaluator {
     const skill = SkillEvaluator.getSkillRegistry(skillsDir).get(this.skillId);
     if (skill) {
       this.skill = skill;
-      this.availablePrerequisiteModules = null;
       console.log(`[SkillEvaluator] Loaded skill: ${skill.name}`);
       return;
     }
@@ -382,13 +380,12 @@ export class SkillEvaluator {
     }
 
     const admitted = await this.admitStepSequence(params);
-    const executor = this.executor as any;
     // Perfetto stdlib tables declared by a Skill do not exist until their
     // modules are included. Match the production execution order before
     // checking required_tables, otherwise valid module-owned tables look
     // absent in the regression harness.
     const moduleIncludes = await this.getAvailablePrerequisiteModules();
-    const prereqCheck = await executor.checkPrerequisites(this.skill, this.traceId);
+    const prereqCheck = await this.executor['checkPrerequisites'](this.skill, this.traceId);
     if (!prereqCheck.success) {
       throw new Error(`Skipped: ${prereqCheck.error}`);
     }
@@ -428,7 +425,7 @@ export class SkillEvaluator {
       const executionStep = shouldForceSql
         ? { ...step, condition: undefined }
         : step;
-      const stepResult = await executor.executeStep(executionStep, context, this.skill.name) as StepResult;
+      const stepResult = await this.executor['executeStep'](executionStep, context, this.skill.name);
       this.recordStepResult(step, stepResult, context);
       const scopeProbe = probes && index <= lastProbed
         ? await this.runScopeProbeStep(executionStep, stepResult, probes, probed.has(stepId)) : undefined;
@@ -532,7 +529,7 @@ export class SkillEvaluator {
       return undefined;
     }
     const run = async (context: SkillExecutionContext): Promise<ScopeProbeOutcome> => {
-      const result = await (this.executor as any).executeStep(step, context, this.skill!.name) as StepResult;
+      const result = await this.executor!['executeStep'](step, context, this.skill!.name);
       this.recordStepResult(step, result, context);
       return {success: result.success, code: result.code, error: result.error, data: this.extractStepData(result)};
     };
@@ -699,16 +696,12 @@ export class SkillEvaluator {
    * 直接执行 SQL 查询（用于调试）
    */
   async executeSQL(sql: string): Promise<{ columns: string[]; rows: any[][]; error?: string }> {
-    if (!this.traceId) {
+    if (!this.traceId || !this.executor) {
       throw new Error('SkillEvaluator not initialized. Call loadTrace() first.');
     }
 
-    const modules = await this.getAvailablePrerequisiteModules();
-    const includePrefix = modules.length > 0
-      ? `${modules.map(module => `INCLUDE PERFETTO MODULE ${module};`).join('\n')}\n`
-      : '';
-
-    const result = await this.traceProcessor.query(this.traceId, `${includePrefix}${sql}`);
+    const query = this.executor['buildSqlWithModuleIncludes'](sql, await this.getAvailablePrerequisiteModules());
+    const result = await this.traceProcessor.query(this.traceId, query);
     return {
       columns: result.columns,
       rows: result.rows,
@@ -716,53 +709,12 @@ export class SkillEvaluator {
     };
   }
 
-  private resolvePrerequisiteModules(modules?: string[]): string[] {
-    if (!Array.isArray(modules) || modules.length === 0) return [];
-
-    const expanded: string[] = [];
-    for (const moduleName of modules) {
-      switch (moduleName) {
-        case 'sched':
-          expanded.push('sched.states', 'sched.runnable');
-          break;
-        case 'stack_profile':
-          expanded.push('callstacks.stack_profile');
-          break;
-        case 'android.frames':
-          expanded.push('android.frames.timeline', 'android.frames.jank_type');
-          break;
-        case 'android.frames.jank':
-          expanded.push('android.frames.jank_type');
-          break;
-        default:
-          expanded.push(moduleName);
-      }
-    }
-
-    return Array.from(new Set(expanded));
-  }
-
+  /** The selected Skill's module includes, resolved by the executor once per selection. */
   private async getAvailablePrerequisiteModules(): Promise<string[]> {
-    if (!this.traceId) return [];
-    if (this.availablePrerequisiteModules !== null) {
-      return this.availablePrerequisiteModules;
-    }
-
-    const resolved = this.resolvePrerequisiteModules(this.skill?.prerequisites?.modules || []);
-    const available: string[] = [];
-
-    for (const moduleName of resolved) {
-      const includeResult = await this.traceProcessor.query(
-        this.traceId,
-        `INCLUDE PERFETTO MODULE ${moduleName};`
-      );
-      if (!includeResult.error) {
-        available.push(moduleName);
-      }
-    }
-
-    this.availablePrerequisiteModules = available;
-    return available;
+    if (!this.traceId || !this.executor || !this.skill) return [];
+    this.availablePrerequisiteModules ??=
+      await this.executor['resolveSkillModuleIncludes'](this.skill, this.traceId);
+    return this.availablePrerequisiteModules;
   }
 
   /**
@@ -831,7 +783,6 @@ export class SkillEvaluator {
         // 忽略清理错误
       }
       this.traceId = null;
-      this.availablePrerequisiteModules = null;
     }
     this.executor = null;
     this.skill = null;

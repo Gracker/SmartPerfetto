@@ -1567,10 +1567,23 @@ export class SkillExecutor {
   }
 
   /**
+   * The Skill's prerequisite modules, aliases expanded, that the trace can
+   * include: what every execution of the Skill prefixes to its SQL.
+   */
+  private async resolveSkillModuleIncludes(
+    skill: SkillDefinition,
+    traceId: string,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const modules = this.resolvePrerequisiteModules(skill.prerequisites?.modules);
+    // 仅注入可用模块，避免未知模块导致整条 SQL 失败
+    return modules.length > 0 ? this.resolveAvailableModules(traceId, modules, signal) : modules;
+  }
+
+  /**
    * Prefix SQL with prerequisite INCLUDE statements.
    */
-  private buildSqlWithModuleIncludes(sql: string, context: SkillExecutionContext): string {
-    const modules = context.moduleIncludes || [];
+  private buildSqlWithModuleIncludes(sql: string, modules: string[] = []): string {
     if (modules.length === 0) return sql;
     const prefix = modules.map(module => `INCLUDE PERFETTO MODULE ${module};`).join('\n');
     return `${prefix}\n${sql}`;
@@ -1620,7 +1633,7 @@ export class SkillExecutor {
     }
     let sql = substituteVariables(source.sql || '', context);
     if (source.sql_fragments?.length) sql = this.injectSqlFragments(sql, source.sql_fragments, context);
-    return this.buildSqlWithModuleIncludes(sql, context);
+    return this.buildSqlWithModuleIncludes(sql, context.moduleIncludes);
   }
 
 
@@ -1761,13 +1774,7 @@ export class SkillExecutor {
       };
     }
 
-    const prerequisiteModules = this.resolvePrerequisiteModules(skill.prerequisites?.modules);
-    let moduleIncludes = prerequisiteModules;
-
-    // 仅注入可用模块，避免未知模块导致整条 SQL 失败
-    if (prerequisiteModules.length > 0) {
-      moduleIncludes = await this.resolveAvailableModules(traceId, prerequisiteModules, signal);
-    }
+    const moduleIncludes = await this.resolveSkillModuleIncludes(skill, traceId, signal);
 
     // 创建执行上下文 (use validated.params with coerced types and defaults)
     const context: SkillExecutionContext = {
@@ -2631,7 +2638,6 @@ export class SkillExecutor {
       throw new Error(gate.error || `Process identity gate blocked skill: ${skill.name}`);
     }
 
-    const prerequisiteModules = this.resolvePrerequisiteModules(skill.prerequisites?.modules);
     const validated = validateSkillInputs(skill.name, skill.inputs, gate.params);
     for (const w of validated.warnings) {
       logger.warn('SkillExecutor', `[${skill.name}] ${w.paramName}: ${w.message}`);
@@ -2653,16 +2659,8 @@ export class SkillExecutor {
       variables: {},
       variableScopes: {},
       variableSteps: {},
-      moduleIncludes: prerequisiteModules,
+      moduleIncludes: await this.resolveSkillModuleIncludes(skill, traceId, signal),
     };
-
-    if (execContext.traceId && prerequisiteModules.length > 0) {
-      execContext.moduleIncludes = await this.resolveAvailableModules(
-        execContext.traceId,
-        prerequisiteModules,
-        signal,
-      );
-    }
 
     // Execute all steps and collect synthesize-marked data
     const stepResults: StepResult[] = [];
