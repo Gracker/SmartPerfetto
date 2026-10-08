@@ -770,17 +770,34 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
     expect(getCapturedAnchorFacts(built.anchors[0])?.row.value).toBe(54);
   });
 
-  it.each([
-    {evidenceRefId: 'data:invented', rowIndex: 0, column: 'value', value: 54},
-    {evidenceRefId: 'data:prepared', rowIndex: 9, column: 'value', value: 54},
-    {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'absent', value: 54},
-  ])('watermarks a live lookup binding failure without changing the failed reference: %j', async reference => {
-    const {output, built} = await preparedFixture({reference, currentRunId: 'run-current', declaredNumber: 54});
+  const unboundLocators: {reason: string; reference: ConclusionContractClaimReference}[] = [
+    {reason: 'evidence_not_retained', reference: {evidenceRefId: 'data:invented', rowIndex: 0, column: 'value', value: 54}},
+    {reason: 'row_index_out_of_range', reference: {evidenceRefId: 'data:prepared', rowIndex: 9, column: 'value', value: 54}},
+    {reason: 'required_column_missing', reference: {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'absent', value: 54}},
+    // The selector forms of the same failures, and a slip in a redundant identifier.
+    {reason: 'row_selector_not_found', reference: {evidenceRefId: 'data:prepared', rowSelector: {value: 99}, column: 'value', value: 54}},
+    {reason: 'invalid_row_selector', reference: {evidenceRefId: 'data:prepared', rowSelector: {absent: 54}, column: 'value', value: 54}},
+    {reason: 'row_index_selector_conflict',
+      reference: {evidenceRefId: 'data:prepared', rowIndex: 1, rowSelector: {value: 54}, column: 'value', value: 54}},
+    {reason: 'identifier_conflict',
+      reference: {evidenceRefId: 'data:prepared', sourceToolCallId: 'wrong-source', rowIndex: 0, column: 'value', value: 54}},
+  ];
+
+  it.each(unboundLocators)('watermarks a live lookup binding failure without changing the failed reference: $reason', async ({reason, reference}) => {
+    const {output, built} = await preparedFixture({reference, currentRunId: 'run-current', declaredNumber: 54,
+      rows: [[54], [55]]});
     expect(output.status).not.toBe('failed');
-    expect(output.claimResults[0].referenceCells[0].status).toBe('missing');
+    expect(output.unsupportedClaimCount).toBe(0);
+    expect(output.claimResults[0].referenceCells[0]).toMatchObject({status: 'missing', message: reason});
     expect(output.claimResults[0].deterministicProof.status).not.toBe('proved');
     expect(output.issues.every(issue => issue.severity === 'warning')).toBe(true);
     expect(runDeterministicClaimVerifier({claimSupport: structuredClone(built.claimSupport)}).status).toBe('failed');
+  });
+
+  it.each(unboundLocators)('keeps an unbound identity locator hard: $reason', async ({reference}) => {
+    const {built} = await preparedFixture({reference, currentRunId: 'run-current', declaredNumber: 54, rows: [[54], [55]]});
+    expect(runDeterministicClaimVerifier({claimSupport: built.claimSupport.map(claim => ({...claim, kind: 'identity' as const}))})
+      .issues.some(issue => issue.severity === 'error' && issue.code === 'claim_reference_missing')).toBe(true);
   });
 
   it('does not grant advisory authority to copied read receipts or readers without a run', async () => {
@@ -843,7 +860,8 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
 
   it.each([
     {denied: true}, {invalidScope: true},
-    {reference: {evidenceRefId: 'data:prepared', sourceToolCallId: 'wrong-source', rowIndex: 0, column: 'value', value: 54}},
+    // No issued identifier names the record: a title match cannot stand in for the cited id.
+    {reference: {evidenceRefId: 'data:invented', sourceRef: 'Count', rowIndex: 0, column: 'value', value: 54}},
     {unavailableTable: 'execution_witness_mismatch'},
   ])('keeps scope, identity-source and integrity failures hard in a current reader: %j', async options => {
     expect((await preparedFixture({...options, currentRunId: 'run-current'})).output.status).toBe('failed');

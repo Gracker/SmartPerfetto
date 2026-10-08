@@ -313,7 +313,15 @@ Keep these boundaries intact:
   unreadable classification is a positive list in `evidenceReadView.ts`
   (`evidence_not_retained` stays an error: it cannot tell eviction from a never
   issued identifier) and must come from an issued mark set by the builder
-  (`markUnreadableEvidenceAnchor`), never from a copied reason string. The CLI
+  (`markUnreadableEvidenceAnchor`), never from a copied reason string. A
+  locator that bound nothing in a read this run issued is a warning, by index
+  or by selector alike (`ADVISORY_LOCATOR_FAILURES`), and so is a redundant
+  identifier that disagrees with a record an issued identifier (`evidenceRefId`,
+  `artifactId`, `sourceArtifactId`) names; the reference stays `missing` and
+  its claim unverified. An identity claim's locator, a conflict no issued
+  identifier resolves, a copied read receipt, and identity, scope or integrity
+  conflicts stay errors. In the GLM four-runtime E2E, selector and identifier
+  slips were the only error in 7 of 25 `!` answers. The CLI
   marker comes from `deriveDeliveryVerdict`: `~` is a delivered but unverified
   answer (including `not_required`, whose uncontradicted claims external issue
   triage does not report as uncertain), `!` an unfinished run or a contradicted

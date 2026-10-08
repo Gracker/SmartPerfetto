@@ -101,15 +101,29 @@ const resolutions = new WeakMap<object, {witness: EvidenceTableWitness; rowIndex
 // session continuity may admit older captures for a fresh run to read.
 const currentReads = new WeakSet<object>();
 const currentAnchorReads = new WeakMap<object, EvidenceReadResolution>();
+// A locator that bound nothing leaves its claim unverified whether it was
+// written by index or by selector.
 const ADVISORY_LOCATOR_FAILURES = new Set([
-  'evidence_not_retained', 'row_index_out_of_range', 'required_column_missing', 'invalid_row_index',
+  'evidence_not_retained',
+  'row_index_out_of_range', 'row_selector_not_found', 'row_index_selector_conflict',
+  'required_column_missing', 'invalid_row_selector', 'invalid_row_index',
 ]);
+// Identifiers the product issued for one record. A redundant field that
+// disagrees with a record one of these names is a slip in the locator; a
+// conflict none of them resolves still names a record that was never cited.
+const ISSUED_RECORD_IDENTIFIERS: readonly string[] = ['evidenceRefId', 'artifactId', 'sourceArtifactId'];
+
+function locatorFailureIsAdvisory(reason: string, detail: EvidenceLocatorDetail | undefined): boolean {
+  if (reason !== 'identifier_conflict') return ADVISORY_LOCATOR_FAILURES.has(reason);
+  return Boolean(detail?.matchedFields?.some(field => ISSUED_RECORD_IDENTIFIERS.includes(field)));
+}
 
 export function referenceBindingFailureIsAdvisory(anchor: object, status: string): boolean {
   const resolution = currentAnchorReads.get(anchor);
   if (!resolution) return false;
   if (status === 'value_mismatch') return resolution.status === 'resolved' && Boolean(getCapturedAnchorFacts(anchor));
-  return status === 'missing' && resolution.status === 'missing' && ADVISORY_LOCATOR_FAILURES.has(resolution.reason);
+  return status === 'missing' && resolution.status === 'missing' &&
+    locatorFailureIsAdvisory(resolution.reason, resolution.locatorDetail);
 }
 
 export function bindReadResolutionToAnchor(anchor: object, resolution: EvidenceReadResolution): void {
