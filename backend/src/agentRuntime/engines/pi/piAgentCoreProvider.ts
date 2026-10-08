@@ -11,6 +11,7 @@ import type {
   DeferredFetchOptions,
   Model,
   Models,
+  ModelThinkingLevel,
   ProviderAuth,
   ProviderEnv,
   ProviderStreams,
@@ -24,6 +25,7 @@ import {
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
+import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -64,6 +66,7 @@ export interface PiAgentCoreProviderRuntime {
   model: Model<Api>;
   models: PiAgentCoreProviderModels;
   streamFn: StreamFunction;
+  streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: {outputOnly?: true}) => StreamFunction;
 }
 
 export type PiAgentCoreProviderRuntimeLoader = (
@@ -395,6 +398,14 @@ export async function createPiAgentCoreProviderRuntime(
     env,
     moduleLoader,
   );
+  const authoredLevel = config.thinkingLevel;
+  const supportedLevels = piAi.getSupportedThinkingLevels(model);
+  const assertSupportedLevel = (level: ModelThinkingLevel | undefined) => {
+    if (level !== undefined && !supportedLevels.includes(level)) {
+      throw new Error('Pi thinkingLevel is not supported by the configured model');
+    }
+  };
+  assertSupportedLevel(authoredLevel);
   const credentials = new piAi.InMemoryCredentialStore();
   const builtinProvider = catalog.builtinProviders().find(candidate => candidate.id === providerId);
   const baseAuth = builtinProvider?.auth ?? {
@@ -439,9 +450,59 @@ export async function createPiAgentCoreProviderRuntime(
     api: withCapturedProviderStreams(providerStreams, streamEnv, api),
   }));
 
-  return {
-    model,
-    models,
-    streamFn: models.streamSimple.bind(models),
+  const nativeStream = models.streamSimple.bind(models);
+  const officialGlm = isOfficialGlmModel(model);
+  const completionsCompat = model.api === 'openai-completions'
+    ? (model as Model<'openai-completions'>).compat : undefined;
+  const canClassifyWithLow = model.reasoning && supportedLevels.includes('low') &&
+    (model.api !== 'openai-completions' || completionsCompat?.supportsReasoningEffort === true);
+  const streamFnForPurpose = (purpose: RuntimeModelCallPurpose, policy?: {outputOnly?: true}): StreamFunction => {
+    // SDK-supported off does not prove server support. Preserve that explicit
+    // bounded classifier/declaration/review policy unless the wire API can express low.
+    // Main analysis and ordinary budget closeout keep authored/provider-default reasoning.
+    const boundedDefault = purpose === 'classification' || authoredLevel === undefined &&
+      (purpose === 'review' || purpose === 'declaration_repair' || purpose === 'continuation' && policy?.outputOnly === true);
+    const level = boundedDefault ? canClassifyWithLow ? 'low' : 'off' : authoredLevel;
+    assertSupportedLevel(level);
+    return (sentModel, context, options) => {
+      const requestedLevel = boundedDefault ? level
+        : (options as SimpleStreamOptions | undefined)?.reasoning ?? level;
+      assertSupportedLevel(requestedLevel);
+      const scopedOptions: SimpleStreamOptions = {...options};
+      if (requestedLevel && requestedLevel !== 'off') scopedOptions.reasoning = requestedLevel;
+      else delete scopedOptions.reasoning;
+      if (officialGlm && requestedLevel === undefined) {
+        const onPayload = options?.onPayload;
+        scopedOptions.onPayload = async (payload, payloadModel) => {
+          // Remove only the SDK-generated default, before the caller's hook.
+          let prepared = payload;
+          if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+            const body = payload as Record<string, unknown>;
+            const thinking = body.thinking as Record<string, unknown> | undefined;
+            if (thinking?.type === 'disabled' && Object.keys(thinking).length === 1) {
+              prepared = {...body};
+              delete (prepared as Record<string, unknown>).thinking;
+            }
+          }
+          const replacement = await onPayload?.(prepared, payloadModel);
+          return replacement === undefined ? prepared : replacement;
+        };
+      }
+      return nativeStream(sentModel, context, scopedOptions);
+    };
   };
+  return {model, models, streamFn: streamFnForPurpose('answer_turn'), streamFnForPurpose};
+}
+
+function isOfficialGlmModel(model: Model<Api>): boolean {
+  if (model.api !== 'openai-completions' || !model.reasoning) return false;
+  const compat = (model as Model<'openai-completions'>).compat;
+  if (compat?.thinkingFormat !== undefined && compat.thinkingFormat !== 'zai') return false;
+  try {
+    const url = new URL(model.baseUrl);
+    return !url.username && !url.password &&
+      (url.origin === 'https://open.bigmodel.cn' || url.origin === 'https://api.z.ai');
+  } catch {
+    return false;
+  }
 }

@@ -72,6 +72,10 @@ Provider connection 支持两套端点字段：
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 | `baseUrl` / `apiKey` | legacy/shared | 作为旧配置兼容或双协议共享 key |
 
+Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high/xhigh/max`）；不支持的设置会在 SDK 调用前拒绝，不会静默换档。主分析和收尾保留主模型推理配置。未显式配置 thinkingLevel 时，声明专用修复、补正文的交付续写和唯一一次无工具语义核验在 wire API 可表达时使用 low，否则使用 off，为完整 JSON 留出输出预算；显式 thinkingLevel 仍约束这些调用。截断的核验响应继续标记 incomplete，不作为核验成功。主分析和收尾对官方 GLM origin，省略该字段时保留 provider 默认，不因 Pi Agent 的默认 `off` 自动发送 `thinking: disabled`。显式 `off` 仍按关闭请求发送，服务端是否允许由 provider 决定。`thinkingLevelMap` 保留 provider 原生映射；GLM 的 `reasoning_effort` 需要在 model 的 `compat` 中显式设置 `supportsReasoningEffort: true`，适用于已确认支持该字段的模型。
+
+分类独立受现有输出和时间预算约束：可表达推理强度时使用 `low`，否则保留显式关闭的快速分类请求；若配置同时禁止这两种设置，分类返回 unavailable，不自动升级。分类设置不会改动主模型配置。任意 gateway 的兼容选项仍须显式配置，不能由运行耗时推断实际推理强度。
+
 ## M10 独立反馈 triage
 
 Agent 辅助 GitHub 反馈不是主分析 session 的 resume。分析完成时，新 RunManifest 可保存
@@ -223,7 +227,9 @@ override 时、在其自身查询完成后，经共享缓存的 `traceVendorReso
 收尾使用本轮固定的模型、Provider、授权与原始截止时间，基于已返回数据和已有正文
 说明有限结论、证据不足及下一轮可追问的问题。它不会继续查询，也不会把调查升级为
 完成；`partial`、`completion.reason=turn_limit` 和 `terminationReason=max_turns` 保留。
-触顶后不再追加模型语义审核，确定性证据检查仍可执行。
+触顶后不再追加模型语义审核，确定性证据检查仍可执行。原生 `length/output_limit` 表示单次输出未写完，可在原始预算和截止时间内使用同一预留额度补齐完整正文与声明；只有新候选获得自身 completed/stop 记录并通过严格协议后才接受。失败、取消、未知、pending tool/deferred 状态不能据此续写，续写失败保留原始未完成凭据。
+
+声明 JSON 本身不算可读交付。Pi 已完成但只有声明的候选使用同一预留交付机会补写正文，保留已有 claim 数量与 ID；已有可读正文不因缺少标题而续写。完整闭合的单个畸形声明可隔离修复，但原文截断或重复 marker 不走声明专用修复。修复后仍须通过严格解析和独立核验。
 
 收尾或声明补交失败时保留原候选；取消、超时、授权失效或已耗尽的显式费用预算不会启动额外调用。
 只有 1 轮的配置没有额外收尾额度。OpenCode 通过观察原生消息停止采集，可能在两次观察

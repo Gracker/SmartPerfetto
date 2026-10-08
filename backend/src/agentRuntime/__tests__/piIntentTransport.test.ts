@@ -65,6 +65,29 @@ describe('Pi intent transport', () => {
     expect(streamFn).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['classification', 'declaration_repair', 'continuation', 'review'] as const)(
+    'selects the pinned %s stream without changing the no-tool budget', async purpose => {
+      const {input, streamFn} = fixture();
+      const streamFnForPurpose = jest.fn<NonNullable<PiAgentCoreProviderRuntime['streamFnForPurpose']>>()
+        .mockReturnValue(streamFn);
+      const result = await runPiIntentTransport({...input, purpose,
+        providerRuntime: {...input.providerRuntime, streamFnForPurpose}});
+      expect(result.status).toBe('ok');
+      expect(streamFnForPurpose).toHaveBeenCalledWith(purpose);
+      expect(streamFn.mock.calls[0][1].tools).toEqual([]);
+      expect(streamFn.mock.calls[0][2]).toMatchObject({maxRetries: 0, maxTokens: 128, timeoutMs: 50});
+    });
+
+  it('does not dispatch when the pinned model cannot represent the classification policy', async () => {
+    const {input, streamFn} = fixture();
+    const result = await runPiIntentTransport({...input, purpose: 'classification',
+      providerRuntime: {...input.providerRuntime, streamFnForPurpose: () => {
+        throw new Error('UNSUPPORTED_PRIVATE_CONFIGURATION');
+      }}});
+    expect(result).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+    expect(streamFn).not.toHaveBeenCalled();
+  });
+
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '8192', null])('rejects an explicitly invalid output-token limit %s before dispatch', async value => {
     const {input, streamFn} = fixture();
     input.maxOutputTokens = value as number;

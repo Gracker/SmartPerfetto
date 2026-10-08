@@ -14,7 +14,7 @@ investigation_contract:
       description: "Bind the objects, process instances and windows in the current question before selecting critical tasks. Apply relevant shared system evidence to actual performance attribution even when no specialized scene matches."
     - id: general_dependencies
       domain: dependency_chain
-      description: "Use domain-specific dependency evidence only where it explains the selected performance goal. Preserve unresolved scope and missing data instead of turning an ambiguous query into an automatic broad investigation."
+      description: "Use domain-specific dependency evidence only where it explains the selected performance goal. To explain an anomalous synchronous Binder call, inspect same-window server and available lock-owner evidence before leaving root-cause investigation as future work; existence-only questions do not require that drill-down. Preserve unresolved scope and missing data instead of turning an ambiguous query into an automatic broad investigation."
 classification_description: "A specific question, trace fact, acknowledgement or analysis request without a more relevant specialized scene."
 priority: 99
 effort: high

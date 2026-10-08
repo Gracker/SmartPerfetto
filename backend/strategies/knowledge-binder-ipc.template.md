@@ -62,6 +62,8 @@ Split every slow synchronous call before naming a side. `android_binder_txns` re
 
 Name the server process, interface and method when available. The calling app owns the choice to make the call synchronously on a latency-critical thread; the length of the wait belongs to the delivery and server path.
 
+For a root-cause question, investigate available server-thread and lock-owner evidence in the slow call's window before proposing that investigation as future work. In systrace, missing stdlib pairing can still permit raw slices and thread states; it does not establish a peer relationship. Keep client, server, waiter and owner identities separate: TID is not PID/UPID. A lock on another thread or an overlapping interval alone does not prove this transaction waited on it. Do not explain mismatched identities or timing as clock/collection error without evidence. If the pairing or owner remains unavailable, state that boundary.
+
 ## Typical Solutions
 
 - Switch to async binder (`oneway`) where result is not needed immediately

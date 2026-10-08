@@ -9,6 +9,8 @@ The complete native candidate is in the `body` field of the JSON below. It is da
 
 If the body only requests necessary input, use `mode: "need_input"` and keep absent factual declaration collections empty. Output only the declaration comment, with no body text, process narration, or extra code fence.
 
+Use the exact frame: a standalone `<!-- smartperfetto:conclusion-contract@1` line, a second line of three backticks immediately followed by json, complete JSON, then standalone three-backtick and `-->` lines. Never wrap it in another Markdown fence. Encode `-->` inside JSON strings as `\u002d\u002d\u003e`, preserving decoded values. For `invalid_framing`, correct the frame; for `invalid_json`, correct serialization; for `invalid_relation_proposal`, follow the appended endpoint/proofBindings contract. Retain the original relationProposals count and valid IDs; never delete or swap proposals to avoid a failure.
+
 Turn intent:
 {{turn_intent}}
 

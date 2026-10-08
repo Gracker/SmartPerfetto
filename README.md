@@ -136,6 +136,8 @@ keeping Qoder PAT or `qodercli` authentication separate. Saved providers also
 refresh their model suggestions from supported provider catalogs with a bounded
 cache; unsupported or unavailable catalogs keep the curated preset list.
 
+Pi users can configure reasoning in model JSON; see the [Pi configuration](docs/getting-started/configuration.en.md#llm-configuration) for provider defaults, explicit off and supported effort mappings.
+
 ### 3. Run Your First Analysis
 
 1. Open the launcher's printed `Open:` URL, or

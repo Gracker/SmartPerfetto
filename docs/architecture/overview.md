@@ -62,7 +62,7 @@ backend 与 frontend。
 | Express backend | `backend/src/index.ts` | 路由注册、健康检查、中间件、进程清理 |
 | OIDC 与请求身份 | `backend/src/routes/enterpriseAuthRoutes.ts`、`enterpriseSsoService.ts`、`middleware/auth.ts` | 登录回调、Session/CSRF、个人工作区所有权、请求级 tenant/workspace/RBAC 绑定 |
 | Runtime contract 与 registry | `backend/src/agentRuntime/runtimeKinds.ts`、`runtimeDescriptors.ts`、`runtimeSelection.ts` | 定义当前 production runtime 集合、capabilities、canonical loader 和每个 session 的 runtime 选择 |
-| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | 五个当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界 |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | 五个当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界；Pi 在实例内区分分类与主分析的推理请求策略 |
 | 共享 Agent 能力 | `backend/src/agentv3/` | MCP server/registry、策略注入、planning、verifier 和记忆；其中个别 runtime 文件仅保留 compatibility re-export |
 | OpenAI compatibility facades | `backend/src/agentOpenAI/` | 向旧 import path 提供 re-export；canonical OpenAI 实现在 `agentRuntime/engines/openai/` |
 | assistant application | `backend/src/assistant/` | session 管理、stream projection、结果 contract |

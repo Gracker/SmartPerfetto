@@ -18,6 +18,7 @@ import {
 import {evidenceReferenceKey, prepareClaimEvidence, preparedReferenceResolution} from '../../evidence/claimEvidencePreparation';
 import {buildEvidenceContract} from '../../evidence/evidenceContractBuilder';
 import {runDeterministicClaimVerifier, SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../deterministicClaimVerifier';
+import anrReferenceTypes from '../../../../tests/fixtures/pifix/anr-reference-types.json';
 
 const literal = (overrides: Partial<CapturedFieldSemantics> = {}): CapturedFieldSemantics => ({
   origin: {kind: 'skill_literal', definitionFingerprint: 'pinned-definition', skillId: 'test_skill', stepId: 'metric'},
@@ -92,6 +93,39 @@ function claim(anchors: EvidenceAnchorV1[], overrides: Partial<ClaimSupportV1> =
 
 const verify = (item: ClaimSupportV1) => runDeterministicClaimVerifier({claimSupport: [item]}).claimResults[0];
 const metric = (overrides: Partial<AnchorInput> = {}) => anchor({row: {value: 1}, fields: {value: literal()}, column: 'value', expected: 1, ...overrides});
+
+describe('pifix actual ANR reference types', () => {
+  it.each(anrReferenceTypes)('resolves $claimId only with original captured JSON types', async sample => {
+    const row = sample.actualRow as unknown as Record<string, EvidenceScalar>;
+    const column = sample.reference.column;
+    const envelope = createDataEnvelope({columns: Object.keys(row), rows: [Object.values(row)]}, {
+      type: 'sql_result', source: 'execute_sql', title: 'Historical ANR query',
+      evidenceRefId: sample.reference.evidenceRefId, sourceToolCallId: sample.reference.sourceToolCallId,
+      traceId: 'trace-current', traceSide: 'current', executionStatus: 'observed',
+    });
+    const store = new ArtifactStore();
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data),
+      {meta: envelope.meta, display: envelope.display})).toBe(true);
+    const inspect = async (ref: ConclusionContractClaimReference) => {
+      const parsed = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+        claims: [{id: sample.claimId, text: 'Observed native numeric cell', kind: 'numeric', references: [ref]}]});
+      const prepared = await prepareClaimEvidence({conclusionContract: parsed.contract, bindingEligibility: 'eligible',
+        evidenceReadView: store.createEvidenceReadView({ownerKey: 'pifix-test', allowedTraces: [{traceId: 'trace-current', traceSide: 'current'}]})});
+      const built = buildEvidenceContract({conclusionContract: parsed.contract, preparedEvidence: prepared,
+        bindingEligibility: 'eligible', dataEnvelopes: [envelope]});
+      return runDeterministicClaimVerifier({claimSupport: built.claimSupport}).claimResults[0];
+    };
+    const wrong = sample.reference as unknown as ConclusionContractClaimReference;
+    const failed = await inspect(wrong);
+    expect(failed.referenceCells.some(cell => cell.status === 'matched')).toBe(false);
+    const typed = {...wrong, rowSelector: Object.fromEntries(Object.keys(wrong.rowSelector!).map(key => [key, row[key]])),
+      value: row[column]} as ConclusionContractClaimReference;
+    const corrected = await inspect(typed);
+    expect(corrected.referenceCells).toEqual(expect.arrayContaining([expect.objectContaining({status: 'matched'})]));
+    expect(sample.reference.value).toEqual(wrong.value); // Never normalize model declarations inside the verifier.
+  });
+});
 
 describe('captured.cell finite proof', () => {
   function captured(value: EvidenceScalar, declared: EvidenceScalar = value): ClaimSupportV1 {
@@ -292,6 +326,10 @@ describe('finite numeric.cell proof', () => {
     {nanoseconds: 8_040_000, milliseconds: 804, status: 'rejected'},
     {nanoseconds: 16_700_000, milliseconds: 16.7, status: 'proved'},
     {nanoseconds: 16_700_000, milliseconds: 167, status: 'rejected'},
+    {nanoseconds: 50_000_000, milliseconds: 50, status: 'proved'},
+    {nanoseconds: 50_000_000, milliseconds: 50_000, status: 'rejected'},
+    {nanoseconds: 195_000_000, milliseconds: 195, status: 'proved'},
+    {nanoseconds: 195_000_000, milliseconds: 195_000_000, status: 'rejected'},
   ])('checks the declared conversion $nanoseconds ns to $milliseconds ms', ({nanoseconds, milliseconds, status}) => {
     const evidence = metric({row: {value: nanoseconds}, expected: nanoseconds, fields: {value: literal({unit: 'ns'})}});
     const result = verify(claim([evidence], {semantics: semantics(evidence, {
@@ -412,6 +450,22 @@ describe('finite numeric.cell proof', () => {
       const declaration = semantics(evidence, {scope: {population: 'cited_rows', subjectRefs: [invalid]}});
       expect(verify(claim([evidence], {semantics: declaration})).deterministicProof.reason).toBe('semantic_reference_missing');
     }
+  });
+
+  it('requires an actual typed and unique heap-dump row selector', () => {
+    const first = anchor({id: 'heap', row: {dump_id: 1, c: 83}, column: 'c', expected: 83,
+      fields: {c: literal({unit: 'count'})}});
+    const second = anchor({id: 'heap', row: {dump_id: 2, c: 83}, column: 'c', expected: 83,
+      fields: {c: literal({unit: 'count'})}});
+    const inspect = (rowSelector: ConclusionContractClaimReference['rowSelector']) => verify(claim([first, second], {
+      semantics: semantics(first, {scope: {population: 'cited_rows', subjectRefs: [{
+        evidenceRefId: first.evidenceRefId, column: 'c', rowSelector,
+      }]}, numeric: {operator: 'eq', value: 83, unit: 'count'}}),
+    }));
+    expect(inspect({dump_id: 1, c: 83}).deterministicProof.status).toBe('proved');
+    expect(inspect({c: 83}).deterministicProof.reason).toBe('semantic_reference_ambiguous');
+    expect(inspect({dump_id: 1, c: '83'}).deterministicProof.status).not.toBe('proved');
+    expect(inspect({returnedColumn: 'c', value: '83'}).deterministicProof.status).not.toBe('proved');
   });
 
   it('rejects ambiguous capture bindings and permits two anchors of the same captured row', () => {

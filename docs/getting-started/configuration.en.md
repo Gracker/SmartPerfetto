@@ -356,14 +356,18 @@ SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model
 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` should use the
 `@earendil-works/pi-ai` Model object shape. SmartPerfetto creates private Pi
 `Models`, provider, and credential-store state for each runtime instance and
-passes `models.streamSimple.bind(models)` explicitly to `Agent`; it does not set
+passes an instance-private stream function with a per-purpose policy to `Agent`; it does not set
 a process-global default stream function. `apiKey`, `apiKeyEnv`, `credential`, `transport`,
 `thinkingLevel`, `thinkingBudgets`, and `maxRetryDelayMs` may live in the same
 JSON as SmartPerfetto runtime options; `apiKey` and `credential` are stripped
 before the model is passed into Pi Agent Core state so they do not enter
 snapshots or reports. Authentication precedence is JSON `credential` or
 `apiKey`, JSON `apiKeyEnv`, the current Provider Manager runtime's isolated
-environment, then the Pi provider's conventional environment variables. OAuth
+environment, then the Pi provider's conventional environment variables.
+
+Omitting `thinkingLevel` keeps official GLM main calls on provider defaults; explicit `off` requests disabled thinking. Unsupported levels are rejected rather than silently remapped. For GLM models confirmed to support `reasoning_effort`, set model `compat:{"supportsReasoningEffort":true}` and use provider-supported `thinkingLevelMap` mappings. Classification uses its own low or off request without changing main settings; an unsupported combination is unavailable. See [runtime architecture](../architecture/agent-runtime.en.md) for the complete boundary.
+
+OAuth
 uses `credential:{"type":"oauth","refresh":"...","access":"...","expires":...}`
 and is accepted only for a Pi built-in provider that declares OAuth support.
 SmartPerfetto does not start an interactive login during an analysis request;

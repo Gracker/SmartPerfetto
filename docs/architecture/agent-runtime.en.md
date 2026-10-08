@@ -74,6 +74,10 @@ Provider connection fields map to runtime-specific env:
 | `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 
+Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`). Unsupported settings are rejected before SDK dispatch instead of silently clamping to another level. Main analysis and closeout preserve the main reasoning configuration. With no explicit thinkingLevel, declaration-only repair, no-tool body delivery continuation and the single semantic review use low if the configured wire API supports it, otherwise off, reserving output for the complete JSON. Explicit thinkingLevel remains binding for those calls. Truncated review output remains incomplete; it is never accepted as verification. For main analysis and closeout on official GLM origins, an omitted level preserves the provider default rather than sending `thinking: disabled` solely because Pi Agent defaults to off. Explicit off remains a disable request; provider support is authoritative. `thinkingLevelMap` retains native mappings. To send GLM `reasoning_effort`, explicitly set model `compat.supportsReasoningEffort: true` for models confirmed to support that field.
+
+Classification has its own existing output/time limits: use low where the wire API can express it, otherwise retain an explicitly disabled fast classification request. If configuration disallows both, classification is unavailable rather than upgraded. Classification does not mutate main-model settings. Arbitrary gateways still require explicit compatibility settings; elapsed time does not establish actual reasoning strength.
+
 ## M10 Independent Feedback Triage
 
 Agent-assisted GitHub feedback does not resume the main analysis session. New
@@ -336,7 +340,7 @@ they neither trigger automatic continuation nor determine answer completeness al
 ## Turn Budgets And Closeout
 
 Full mode defaults to 100 turns and quick mode to 50; the five-turn quick target
-is advisory. A budget above one reserves one no-tool delivery call. Early normal
+is advisory. A budget above one reserves one no-tool delivery call. Native length/output_limit may use that same reserved call within the original deadline to complete its body and declaration. A new candidate needs its own completed/stop receipt and valid protocol; failed, cancelled, unknown or pending tool/deferred states cannot use this recovery. Failure retains the first incomplete receipt. Early normal
 completion adds no call when it carries the required valid declaration, or when
 typed intent is an acknowledgement. A completed non-acknowledgement candidate
 without a declaration may use that reserved call so the same author can attach
@@ -346,6 +350,8 @@ retain the original candidate. Tools and duplicate visible-body streaming stay
 disabled during this completion. At investigation exhaustion, closeout uses the selected
 model, pinned provider, current authorization and original deadline to explain
 the supported findings, missing evidence and useful follow-up questions.
+Declaration JSON alone is not readable delivery. A completed Pi declaration-only candidate uses the same reserved delivery call to add a body, retaining existing claim count and IDs. Readable unheaded answers need no rewrite. A single completely closed malformed declaration may be isolated for repair; interrupted frames and duplicate markers cannot use declaration-only repair. Repaired output still requires strict parsing and independent verification.
+
 It cannot query again or certify completion: `partial`, `turn_limit` completion
 and `max_turns` termination remain. No model semantic review follows this closeout;
 deterministic evidence checks can still run.

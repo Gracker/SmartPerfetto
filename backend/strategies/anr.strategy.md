@@ -11,7 +11,7 @@ investigation_contract:
   requirements:
     - id: anr_critical_path
       domain: critical_path
-      description: "Check recorded ANR type, target UPID and timeout window when available. If no ANR is recorded but the user asks about unresponsiveness, discover long main-thread waits with anr_main_thread_blocking without process_name/anr_ts, then correlate candidate UPID and exact wait window with target input dispatch and FINISHED acknowledgements; absence of an ANR anchor must not stop this investigation. Identify blocked task, main-thread work and relevant owner/peer tasks rather than equating the longest wait with the full timeout."
+      description: "Check recorded ANR type, target UPID and timeout window when available. Keep timer_delay (expiry-to-record delay, ns) separate from the ANR timeout/duration: 50000000 ns is 50 ms, not 50 s. If no ANR is recorded but the user asks about unresponsiveness, discover long main-thread waits with anr_main_thread_blocking without process_name/anr_ts, then correlate candidate UPID and exact wait window with target input dispatch and FINISHED acknowledgements; absence of an ANR anchor must not stop this investigation. Identify blocked task, main-thread work and relevant owner/peer tasks rather than equating the longest wait with the full timeout."
     - id: anr_dependencies
       domain: dependency_chain
       description: "Trace Binder transactions, lock ownership, IO and wakeup dependencies where available; distinguish observed waiting from an established blocking chain and from ANR trigger attribution."

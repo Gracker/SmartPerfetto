@@ -66,7 +66,7 @@ and frontend readiness.
 | Express backend | `backend/src/index.ts` | Route registration, health checks, middleware, process cleanup |
 | OIDC and request identity | `backend/src/routes/enterpriseAuthRoutes.ts`, `enterpriseSsoService.ts`, `middleware/auth.ts` | Login callback, session/CSRF, personal-workspace ownership, and request-scoped tenant/workspace/RBAC binding |
 | Runtime contract and registry | `backend/src/agentRuntime/runtimeKinds.ts`, `runtimeDescriptors.ts`, `runtimeSelection.ts` | Defines the current production runtime set, capabilities, canonical loaders, and per-session selection |
-| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations of the five currently registered runtimes behind shared orchestrator, result, and safety contracts |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations behind shared orchestrator, result and safety contracts; Pi keeps classification and main reasoning request policies within each provider instance |
 | Shared agent capabilities | `backend/src/agentv3/` | MCP server/registry, strategy injection, planning, verification, and memory; individual runtime files may remain as compatibility re-exports |
 | OpenAI compatibility facades | `backend/src/agentOpenAI/` | Re-exports old import paths; the canonical OpenAI implementation lives under `agentRuntime/engines/openai/` |
 | Assistant application | `backend/src/assistant/` | Session management, stream projection, result contracts |

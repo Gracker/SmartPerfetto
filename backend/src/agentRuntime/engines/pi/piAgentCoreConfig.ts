@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {Credential} from '@earendil-works/pi-ai';
+import type {Credential, ModelThinkingLevel} from '@earendil-works/pi-ai';
 import {parseStoredJson} from '../../../utils/storedData';
 
 export type PiAgentCoreEnv = Record<string, string | undefined>;
@@ -14,7 +14,7 @@ export interface PiAgentCoreModelConfig {
   credential?: Credential;
   maxRetryDelayMs?: number;
   transport?: string;
-  thinkingLevel?: string;
+  thinkingLevel?: ModelThinkingLevel;
   thinkingBudgets?: Record<string, number>;
 }
 
@@ -170,6 +170,14 @@ function thinkingBudgets(value: unknown): Record<string, number> | undefined {
   return Object.keys(budgets).length > 0 ? budgets : undefined;
 }
 
+function thinkingLevel(value: unknown): ModelThinkingLevel | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^(off|minimal|low|medium|high|xhigh|max)$/.test(value.trim())) {
+    throw new Error('Pi thinkingLevel must be a supported thinking level');
+  }
+  return value.trim() as ModelThinkingLevel;
+}
+
 export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelConfig {
   // The model JSON can hold an API key; its author gets the position instead.
   const parsed = parseStoredJson(rawModel, 'Pi model JSON', {authored: true});
@@ -182,7 +190,7 @@ export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelC
     credential,
     maxRetryDelayMs,
     transport,
-    thinkingLevel,
+    thinkingLevel: rawThinkingLevel,
     thinkingBudgets: rawThinkingBudgets,
     ...model
   } = parsed as Record<string, unknown>;
@@ -193,7 +201,7 @@ export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelC
     credential: credential as Credential | undefined,
     maxRetryDelayMs: optionalNumber(maxRetryDelayMs),
     transport: optionalString(transport),
-    thinkingLevel: optionalString(thinkingLevel),
+    thinkingLevel: thinkingLevel(rawThinkingLevel),
     thinkingBudgets: thinkingBudgets(rawThinkingBudgets),
   };
 }

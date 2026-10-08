@@ -8,12 +8,16 @@ import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import {
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
+  buildNativeOutputCompletionPrompt,
   buildRelationProposalRecoveryPromptFragment,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  recoverNativeDeclarationPayload,
   INVALID_NATIVE_DECLARATION,
 } from '../runtimeConclusionProtocol';
 import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
+import failures from '../../../tests/fixtures/pifix/declaration-failure-variants.json';
+import anrExtended from '../../../tests/fixtures/pifix/anr-extended.json';
 
 const intent = (taskKind: AnalysisTurnIntent['taskKind']): AnalysisTurnIntent => ({
   schemaVersion: 1,
@@ -52,6 +56,121 @@ describe('runtime native declaration completion', () => {
   const rejected = contract([claim('a'), claim('b', {semantics: {...semantics, scope: {population: 'everywhere'}}})]);
   const repair = (candidate: string, repairInvalid = true) => requestNativeDeclarationCompletion({
     intent: intent('investigation'), completion: {status: 'completed'}, candidate, remainingDeliveryTurns: 1, repairInvalid});
+
+  it.each(['en', 'zh-CN'] as const)('quotes an unclosed native candidate losslessly and checks the complete output schema in %s', outputLanguage => {
+    const candidate = `${body}\n<!-- smartperfetto:conclusion-contract@1\n\`\`\`json\n{"claims":[{"text":"< & >"}`;
+    const prompt = buildNativeOutputCompletionPrompt({candidate,
+      diagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(candidate), 'native', 1),
+      intent: intent('investigation'), issues: [{type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
+        message: 'Native output_limit'}], outputLanguage});
+    const line = prompt.split('\n').find(item => item.startsWith('{"schemaVersion":1,"kind":"original_native_candidate"'))!;
+    expect(JSON.parse(line).body).toBe(candidate);
+    expect(line).not.toMatch(/[<>&]/);
+    expect(prompt).toContain('continue_output');
+    expect(prompt).toContain('statement');
+    expect(prompt).toContain('claim.kind');
+    expect(prompt).toContain('proofBindings');
+    expect(prompt).toContain('endpointColumn');
+    expect(prompt).toContain('proofColumn');
+    expect(prompt).toContain(outputLanguage === 'en' ? 'compactly' : '紧凑序列化');
+  });
+
+  it.each(failures)('repairs the $runtime $reconstructedVariant failure class without admitting malformed bytes', sample => {
+    const good = contract([claim('a'), claim('b')]);
+    let malformed = good;
+    let corrected = good;
+    switch (sample.reconstructedVariant) {
+      case 'json-fence-space': malformed = good.replace('```json', '```json '); break;
+      case 'closing-fence-space': malformed = good.replace('\n```\n', '\n``` \n'); break;
+      case 'four-backtick-pair': malformed = good.replace('```json', '````json').replace('\n```\n', '\n````\n'); break;
+      case 'no-fences': malformed = good.replace('```json\n', '').replace('\n```\n', '\n'); break;
+      case 'blank-before-fence': malformed = good.replace('```json', '\n```json'); break;
+      case 'closing-comment-space': malformed = good + '   '; break;
+      case 'uppercase-json': malformed = good.replace('```json', '```JSON'); break;
+      case 'payload-comment-close':
+        corrected = contract([claim('a', {text: 'Literal --> data.'}), claim('b')]);
+        malformed = corrected.replace(/\\u002d\\u002d\\u003e|--\\u003e/g, '-->');
+        // The renderer may escape all HTML-significant characters instead.
+        malformed = malformed.replace(/--\\u003E/g, '-->').replace(/\\u003e/g, '>');
+        break;
+      case 'json-trailing-comma': malformed = good.replace('"schemaVersion":', ',"schemaVersion":'); break;
+      case 'invalid-subject':
+      case 'invalid-proof-bindings': {
+        const proposal = {schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:lock', kind: 'lock_owner',
+          direction: 'subject_to_object', subject: {evidenceRefId: 'evidence:subject'},
+          object: {evidenceRefId: 'evidence:object'}, proof: {evidenceRefId: 'evidence:proof'}};
+        const base = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
+          clusters: [], evidenceChain: [], claims: [claim('a'), claim('b')], uncertainties: [], nextSteps: []};
+        malformed = renderConclusionContractSidecar({...base, relationProposals: [{...proposal,
+          ...(sample.reconstructedVariant === 'invalid-subject' ? {subject: {rowIndex: 0}} : {
+            proofBindings: {subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'}}})}]} as any);
+        corrected = renderConclusionContractSidecar({...base, relationProposals: [{...proposal,
+          proofBindings: {subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'},
+            object: {endpointColumn: 'tid', proofColumn: 'waiter_tid'}}}]} as any);
+        break;
+      }
+    }
+    const rejectedCandidate = `${body}\n\n${malformed}`;
+    expect(inspectCandidateProtocol(rejectedCandidate)).toMatchObject({status: 'invalid',
+      sidecar: {bindingEligibility: 'ineligible', issues: expect.arrayContaining([{code: sample.observedIssue, path: expect.any(String),
+        ...(sample.observedIssue === 'invalid_relation_proposal'
+          ? {relationProposalDiagnostic: {scope: 'item', ordinal: 1, reason: sample.reconstructedVariant === 'invalid-subject' ? 'invalid_subject' : 'invalid_proof_bindings'}} : {})}])}});
+    const request = repair(rejectedCandidate)!;
+    expect(request).toBeDefined();
+    if (sample.observedIssue !== 'invalid_json') {
+      expect(request.declaredClaimIds).toEqual(['a', 'b']);
+      expect(request.diagnostic.claimCount).toBe(2);
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate: contract([claim('a')])}))
+        .toBeUndefined();
+    }
+    const accepted = acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate: corrected})!;
+    expect(inspectCandidateProtocol(accepted)).toMatchObject({status: 'valid', sidecar: {bindingEligibility: 'eligible'}});
+    expect(inspectCandidateProtocol(accepted).canonicalBody.trim()).toBe(body);
+    const prompt = buildNativeDeclarationCompletionPrompt({request, intent: intent('investigation'), outputLanguage: 'en'});
+    expect(prompt).toContain('conclusion-contract@1');
+    expect(prompt).toContain(sample.observedIssue);
+    if (sample.observedIssue === 'invalid_relation_proposal') {
+      const declaration = inspectCandidateProtocol(corrected).sidecar.rawPayload as any;
+      for (const relationProposals of [[], [{...declaration.relationProposals[0], id: 'proposal:replacement'}]]) {
+        expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+          candidate: renderConclusionContractSidecar({...declaration, relationProposals})})).toBeUndefined();
+      }
+    }
+  });
+
+  it('does not mistake the actual unheaded pifix ANR answer for claims-only delivery', () => {
+    const actual = `${anrExtended.body}\n\n${contract(anrExtended.claims)}`;
+    expect(inspectCandidateProtocol(actual)).toMatchObject({status: 'valid'});
+    expect(inspectCandidateProtocol(actual).canonicalBody.trim()).toContain('3 个 ANR 事件');
+    expect(repair(actual)).toBeUndefined();
+  });
+
+  it('rejects a repaired declaration when the immutable body plus sidecar exceeds the output cap', () => {
+    const request = repair(`${body}\n\n${rejected}`)!;
+    const corrected = contract([claim('a'), claim('b')]);
+    expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate: corrected,
+      outputByteLimit: Buffer.byteLength(corrected, 'utf8')})).toBeUndefined();
+  });
+
+  it.each(['label', 'unmatched-fence', 'lone-fence', 'trailing-prose', 'two-objects', 'unclosed-json', 'unclosed-comment',
+    'duplicate', 'code-example', 'quotation'] as const)('does not recover ambiguous declaration data: %s', variant => {
+    const good = contract([claim('a')]);
+    const malformedFrame = good.replace('```json', '```json ');
+    const candidates = {
+      label: malformedFrame.replace('```json', '```javascript'),
+      'unmatched-fence': malformedFrame.replace('```json', '````json'),
+      'lone-fence': malformedFrame.replace('\n```\n', '\n'),
+      'trailing-prose': malformedFrame.replace('\n```\n', '\nExtra prose\n```\n'),
+      'two-objects': malformedFrame.replace('\n```\n', '\n{}\n```\n'),
+      'unclosed-json': malformedFrame.replace(/\n}\n```/, '\n```'),
+      'unclosed-comment': malformedFrame.slice(0, malformedFrame.lastIndexOf('-->')),
+      duplicate: `${good}\n${good}`,
+      'code-example': `\`\`\`\`text\n${good}\n\`\`\`\``,
+      quotation: good.split('\n').map(line => `> ${line}`).join('\n'),
+    };
+    expect(recoverNativeDeclarationPayload(candidates[variant])).toBeUndefined();
+    if (variant !== 'code-example' && variant !== 'quotation') expect(repair(`${body}\n${candidates[variant]}`)).toBeUndefined();
+  });
 
   it('offers one repair for a well-framed rejected declaration, with the body and the declaration kept apart', () => {
     const request = repair(`${body}\n\n${rejected}`)!;

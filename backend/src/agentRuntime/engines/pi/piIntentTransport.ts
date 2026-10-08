@@ -4,19 +4,28 @@
 
 import type {PiAgentCoreProviderRuntime} from './piAgentCoreProvider';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
+import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 
 export interface PiIntentTransportInput extends IntentTransportInput {
-  providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn'>;
+  providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
+  purpose?: RuntimeModelCallPurpose;
   maxOutputTokens?: number;
 }
 
 /** Reuses the resolved Pi provider and its captured auth without creating an Agent. */
 export function runPiIntentTransport(input: PiIntentTransportInput) {
   return runIntentTransport(input, async scope => {
-    const {model, streamFn} = input.providerRuntime;
+    const {model} = input.providerRuntime;
     if ((input.maxOutputTokens !== undefined
       && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens <= 0))
       || !Number.isFinite(model.maxTokens) || model.maxTokens <= 0) {
+      return {status: 'unavailable', reason: 'invalid_configuration'};
+    }
+    let streamFn: PiAgentCoreProviderRuntime['streamFn'];
+    try {
+      streamFn = input.providerRuntime.streamFnForPurpose?.(input.purpose ?? 'review')
+        ?? input.providerRuntime.streamFn;
+    } catch {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
     const result = await streamFn(model, {

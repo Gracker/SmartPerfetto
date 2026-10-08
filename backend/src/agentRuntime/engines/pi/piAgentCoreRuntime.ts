@@ -19,9 +19,10 @@ import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../run
 import {
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
-  appendRelationProposalRecoveryFragment,
+  buildNativeOutputCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  recoverNativeDeclarationPayload,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
@@ -89,7 +90,6 @@ import {
   resetPrePlanToolCallsForNewRun,
   readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
-import {generateCorrectionPrompt} from '../claude/claudeVerifier';
 import {assessRuntimeDraft, chooseRuntimeDraftRecovery} from '../../runtimeDraftDiagnostics';
 import type { ClaimVerificationResult } from '../../../types/claimVerification';
 import type {
@@ -1503,12 +1503,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const modelConfig = resolvePiAgentCoreModel(this.env, false);
     // Pi accepts one complete configured model, not an ID-only light-model override.
     // The same pinned native provider is reused by classification and the main Agent.
+    const fencedStream = (stream: PiAgentCoreProviderRuntime['streamFn']): PiAgentCoreProviderRuntime['streamFn'] =>
+      (...args) => {
+        authorization.assertCurrent();
+        return stream(...args);
+      };
     const providerPromise = this.getProviderRuntime(modelConfig).then(runtime => ({
       ...runtime,
-      streamFn: ((...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
-        authorization.assertCurrent();
-        return runtime.streamFn(...args);
-      }) as PiAgentCoreProviderRuntime['streamFn'],
+      streamFn: fencedStream(runtime.streamFn),
+      ...(runtime.streamFnForPurpose ? {streamFnForPurpose: (...args: Parameters<NonNullable<PiAgentCoreProviderRuntime['streamFnForPurpose']>>) =>
+        fencedStream(runtime.streamFnForPurpose!(...args))} : {}),
     }));
     const classifierTimeoutMs = positiveIntegerEnv(this.env, ['AGENT_CLASSIFIER_TIMEOUT_MS'], 30_000);
     const intentResolver = createAnalysisTurnIntentResolver({
@@ -1522,6 +1526,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       deadlineMs: Date.now() + classifierTimeoutMs,
       dispatch: input => runIntentTransport(input, async scope => runPiIntentTransport({
         ...input, signal: scope.signal, providerRuntime: await providerPromise, maxOutputTokens: 1024,
+        purpose: 'classification',
       })),
     });
     const turnIntent = await intentResolver.resolve();
@@ -1558,6 +1563,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let rounds = 0;
     let turnLimitReached = false;
     let correctionInProgress = false;
+    let providerTurnLimit = turnBudget.acquisitionTurns;
     let attempt = 0;
     let acceptedAssistant: Record<string, unknown> | undefined;
     let acceptedAttemptId = 'main';
@@ -1576,14 +1582,20 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         thinkingLevel: modelConfig.thinkingLevel ?? 'off',
       },
       sessionId,
-      streamFn: providerRuntime.streamFn,
+      streamFn: (...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
+        const stream = correctionInProgress
+          ? providerRuntime.streamFnForPurpose?.(declarationCompletionInProgress ? 'declaration_repair' : 'continuation',
+            {outputOnly: true}) ?? providerRuntime.streamFn
+          : providerRuntime.streamFn;
+        return stream(...args);
+      },
       toolExecution: resolvePiAgentCoreNativeToolExecutionMode({quickMode: prep.quickMode, tools: prep.tools, env: this.env}),
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
       thinkingBudgets: modelConfig.thinkingBudgets,
       // Pi calls this after the real assistant/tool turn, before dispatching another.
       shouldStopAfterTurn: ({message}: {message: Record<string, unknown>}) => {
-        if (rounds < turnBudget.acquisitionTurns) return false;
+        if (rounds < providerTurnLimit) return false;
         const toolCall = Array.isArray(message.content) && message.content.some(part => part?.type === 'toolCall');
         const finished = message.stopReason === 'stop' && !message.errorMessage
           && message.deferred === undefined && !toolCall;
@@ -1594,7 +1606,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       beforeToolCall: async ({toolCall}: {toolCall?: {name?: string}}) => {
         executionLease.throwIfAborted();
-        if (turnLimitReached || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
+        if (!toolAdmissionsOpen || turnLimitReached || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
           return {block: true, reason: 'Tool is not in the SmartPerfetto request-scoped allowlist.'};
         }
         return undefined;
@@ -1614,6 +1626,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const runProviderPrompt = async (prompt: string, turnLimit = turnBudget.acquisitionTurns) => {
       executionLease.throwIfAborted();
       if (rounds >= turnLimit) { turnLimitReached = true; return undefined; }
+      providerTurnLimit = turnLimit;
       const boundary = agent.state.messages?.length ?? 0;
       const attemptId = `${++attempt}`;
       const beforeRounds = rounds;
@@ -1663,10 +1676,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         if (assistant) this.emit('update', {type: 'progress', content: {phase: 'candidate_protocol',
           candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(nativeProtocol, 'native', attemptId === '1' ? 1 : 2)}, timestamp: Date.now()});
         // Pi repairs a framing failure or an empty body with a full-answer correction.
-        const framingIssue: VerificationIssue | undefined = completion.status === 'completed' &&
-          (nativeProtocol.status === 'invalid' || !nativeProtocol.canonicalBody.trim()) ? {
+        const nativeOutputLimited = completion.status === 'incomplete' && completion.reason === 'output_limit';
+        const framingIssue: VerificationIssue | undefined = (nativeOutputLimited || completion.status === 'completed' &&
+          (nativeProtocol.status === 'invalid' || !nativeProtocol.canonicalBody.trim())) ? {
             type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
-            message: nativeProtocol.status === 'invalid'
+            message: nativeOutputLimited
+              ? localize(outputLanguage, '原生候选达到输出上限，交付未完成。',
+                'The native candidate reached its output limit and delivery is incomplete.')
+              : nativeProtocol.status === 'invalid'
               ? localize(outputLanguage, '当前候选的结论声明格式无效，需要按本轮协议重新输出。',
                 'The candidate has invalid conclusion declarations and needs to follow this turn\'s protocol.')
               : localize(outputLanguage, '当前候选没有可交付的正文，需要补全完整答案。',
@@ -1710,6 +1727,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             const closeoutAttemptId = `closeout-${++attempt}`;
             rounds++;
             const closeout = await runPiIntentTransport({
+              purpose: 'continuation',
               prompt: closeoutPrompt, systemPrompt: prep.systemPrompt,
               signal: executionLease.signal, deadlineMs: getRunDeadlineMs(),
               outputByteLimit: 64 * 1024, providerRuntime,
@@ -1739,9 +1757,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const declarationRequest = declarationNeed && nativeDeclarationBodyCanFitOutput(acceptedText, 64 * 1024)
         ? declarationNeed : undefined;
       const recovery = chooseRuntimeDraftRecovery({declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues});
+      const outputLimitDelivery = acceptedCompletion.status === 'incomplete' && acceptedCompletion.reason === 'output_limit' &&
+        acceptedAssistant?.deferred === undefined && !acceptedAssistant?.errorMessage &&
+        !(Array.isArray(acceptedAssistant?.content) && acceptedAssistant.content.some(part => part?.type === 'toolCall'));
       if (recovery &&
-        rounds < (declarationRequest ? turnBudget.totalTurns : turnBudget.acquisitionTurns)
-        && acceptedCompletion.status === 'completed') {
+        rounds < turnBudget.totalTurns
+        && Date.now() < getRunDeadlineMs()
+        && (acceptedCompletion.status === 'completed' || outputLimitDelivery)) {
         const originalTools = agent.state.tools;
         const originalSystemPrompt = agent.state.systemPrompt;
         const originalError = agent.state.errorMessage;
@@ -1757,13 +1779,15 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           const correctionDiagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1);
           const correctionPrompt = recovery.kind === 'declaration'
             ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
-            : appendRelationProposalRecoveryFragment(
-              `${generateCorrectionPrompt(recovery.issues, acceptedText, outputLanguage)}\n\n${JSON.stringify({candidateProtocolDiagnostic: correctionDiagnostic})}`,
-              correctionDiagnostic, outputLanguage);
+            : buildNativeOutputCompletionPrompt({candidate: acceptedText, diagnostic: correctionDiagnostic,
+              intent: turnIntent, issues: recovery.issues, outputLanguage});
           const candidate = await runProviderPrompt(correctionPrompt,
-            declarationRequest ? turnBudget.totalTurns : turnBudget.acquisitionTurns);
+            Math.min(turnBudget.totalTurns, rounds + 1));
           authorization.assertCurrent();
-          if (candidate && completionFor(candidate.assistant, candidate.text, candidate.attemptId, candidate.turnLimitReached).status === 'completed') {
+          const correctionCompletion = candidate && completionFor(candidate.assistant, candidate.text, candidate.attemptId, candidate.turnLimitReached);
+          console.log(`[DeclarationRepair] Pi correction result: kind=${recovery.kind} ` +
+            `status=${correctionCompletion?.status ?? 'not_dispatched'} reason=${correctionCompletion?.reason ?? 'none'}`);
+          if (candidate && correctionCompletion?.status === 'completed') {
             const checked = await verifyCandidate(candidate.text, candidate.assistant, candidate.attemptId, candidate.turnLimitReached);
             const originalProtocol = inspectCandidateProtocol(acceptedText);
             const correctedProtocol = inspectCandidateProtocol(candidate.text);
@@ -1773,8 +1797,21 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               candidate: candidate.text,
               outputByteLimit: 64 * 1024,
             }) : undefined;
-            const ordinaryCorrectionAccepted = !declarationRequest && correctedProtocol.canonicalBody.trim() &&
+            const originalPayload = recoverNativeDeclarationPayload(acceptedText) as {claims?: unknown; relationProposals?: unknown} | undefined;
+            const retained = [
+              {original: originalPayload?.claims, corrected: correctedProtocol.sidecar.contract?.claims ?? [],
+                validId: (id: string) => Boolean(id.trim())},
+              {original: originalPayload?.relationProposals, corrected: correctedProtocol.sidecar.contract?.relationProposals ?? [],
+                validId: (id: string) => /^proposal:[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(id)},
+            ].every(({original, corrected, validId}) => {
+              if (!Array.isArray(original)) return true;
+              const ids = new Set(corrected.map(item => item.id));
+              return corrected.length >= original.length && original.every(item => !item || typeof item !== 'object' ||
+                typeof item.id !== 'string' || !validId(item.id) || ids.has(item.id));
+            });
+            const ordinaryCorrectionAccepted = !declarationRequest && retained && correctedProtocol.canonicalBody.trim() &&
               correctedProtocol.status !== 'invalid' &&
+              (!outputLimitDelivery || turnIntent.taskKind === 'acknowledgement' || correctedProtocol.sidecar.status === 'valid') &&
               !(originalProtocol.status !== 'absent' && correctedProtocol.status === 'absent') &&
               checked.deliveryErrors.length === 0 && checked.recoverableIssues.length === 0;
             if (acceptedDeclaration || ordinaryCorrectionAccepted) {
@@ -1787,6 +1824,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           }
         } catch {
           executionLease.throwIfAborted();
+          console.log(`[DeclarationRepair] Pi correction result: kind=${recovery.kind} status=exception`);
           // A failed correction does not certify or replace the accepted candidate.
         } finally {
           if (declarationRequest && !acceptedDeclaration) {
@@ -1869,6 +1907,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             providerQuery: {text: prep.analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
             dispatchText: (input: IntentTransportInput) => runPiIntentTransport({
               ...input, deadlineMs: Math.min(deadlineMs, input.deadlineMs), providerRuntime,
+              purpose: 'review',
             }),
           } : {}),
       });

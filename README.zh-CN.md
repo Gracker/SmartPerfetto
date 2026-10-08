@@ -117,6 +117,8 @@ Web UI 启动后，打开 **AI Assistant 设置 → Providers**，添加一个 P
 配置 BYOK 模型路由；Qoder PAT 或 `qodercli` 认证仍是独立且必需的。已保存 Provider
 会通过受控缓存刷新供应商支持的模型建议；目录不支持或不可用时继续使用内置预置。
 
+Pi 用户可在 model JSON 中配置推理设置；provider 默认、显式关闭和强度映射见 [Pi 配置说明](docs/getting-started/configuration.md#llm-配置)。
+
 ### 3. 完成第一次分析
 
 1. 打开启动器打印的 `Open:` 地址；Docker 或源码默认地址为

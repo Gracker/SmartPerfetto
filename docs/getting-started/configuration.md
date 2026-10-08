@@ -311,12 +311,14 @@ SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model
 
 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` 应是 `@earendil-works/pi-ai` 的 Model
 对象形状。SmartPerfetto 会为每个 runtime 实例创建私有的 Pi `Models` / provider /
-credential store，并把 `models.streamSimple.bind(models)` 显式传给 `Agent`，不会设置
+credential store，并把实例私有、按调用用途配置的 stream function 显式传给 `Agent`，不会设置
 进程级默认 stream function。`apiKey` / `apiKeyEnv` / `credential` / `transport` / `thinkingLevel` /
 `thinkingBudgets` / `maxRetryDelayMs` 可以放在同一个 JSON 里作为 SmartPerfetto
 runtime 选项；`apiKey` 和 `credential` 会在传给 Pi Agent Core 的 model state 前剥离，
 避免进入 snapshot 或 report。认证优先级为 JSON `credential` 或 `apiKey`、JSON
 `apiKeyEnv`、当前 Provider Manager runtime 的隔离环境、Pi provider 的常规环境变量。
+
+省略 `thinkingLevel` 时，官方 GLM 主分析请求保留 provider 默认；显式 `off` 请求关闭思考。设置的级别必须受配置模型支持，不能静默换档。已确认支持 `reasoning_effort` 的 GLM 模型可在 model 内配置 `compat:{"supportsReasoningEffort":true}`，并按 provider 支持配置 `thinkingLevelMap`。分类使用独立的低强度或关闭请求，不改变主配置；不支持的组合会明确报告 unavailable。完整边界见 [runtime 架构](../architecture/agent-runtime.md)。
 OAuth 使用 `credential:{"type":"oauth","refresh":"...","access":"...","expires":...}`，
 只对 Pi 内建且声明 OAuth 的 provider 生效；SmartPerfetto 不在分析请求中启动交互式登录，
 临近过期时由该 provider 的 Pi OAuth refresh 契约在实例私有 credential store 中串行刷新。

@@ -9,6 +9,8 @@
 
 若正文只是在请求必要输入，使用 `mode: "need_input"`，并让未出现的事实声明集合保持为空。只输出这一个声明注释，不输出正文、过程说明或额外代码块。
 
+严格使用以下框架：独立的 `<!-- smartperfetto:conclusion-contract@1` 起始行，第二行是三个反引号紧接 json，完整 JSON 后是独立的三个反引号行和 `-->` 行。不要再包一层 Markdown fence；JSON 字符串中的 `-->` 要编码为 `\u002d\u002d\u003e`，解码值保持不变。`invalid_framing` 修复边界与字段格式，`invalid_json` 修复序列化，`invalid_relation_proposal` 按附加的端点和 proofBindings 合同修复；保留原有 relationProposals 数量及有效 ID，不得删除或替换提案来避错。
+
 本轮意图：
 {{turn_intent}}
 

@@ -1787,6 +1787,12 @@ strategies:
   backend/strategies/prompt-native-declaration-completion-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto native conclusion declaration delivery orchestration
+  backend/strategies/prompt-native-output-completion-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto native output-limit delivery recovery orchestration
+  backend/strategies/prompt-native-output-completion-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto native output-limit delivery recovery orchestration
   backend/strategies/prompt-propose-patch-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto provider-consented codebase patch proposal tool contract

@@ -13,6 +13,7 @@ import {
 import {MAX_CLAIM_DIAGNOSTICS} from '../agent/core/conclusionContract';
 import type {AnalysisCompletion} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
+import type {VerificationIssue} from '../agentv3/types';
 
 export const MISSING_NATIVE_DECLARATION = 'missing_declaration' as const;
 export const INVALID_NATIVE_DECLARATION = 'invalid_declaration' as const;
@@ -41,15 +42,52 @@ export interface NativeDeclarationCompletionRequest {
   readonly reason: typeof MISSING_NATIVE_DECLARATION | typeof INVALID_NATIVE_DECLARATION;
   /** The visible answer, free of machine protocol segments; the accepted candidate is this body plus the new declaration. */
   readonly originalBody: string;
-  /** The well-framed declaration segment the parser rejected; invalid_declaration only. */
+  /** The complete isolated declaration segment the parser rejected; invalid_declaration only. */
   readonly rejectedDeclaration?: string;
   /** String claim ids the rejected declaration declared; a repair must keep every one. */
   readonly declaredClaimIds?: readonly string[];
+  /** Complete recovered proposals cannot disappear to bypass a schema failure. */
+  readonly declaredRelationCount?: number;
+  readonly declaredRelationIds?: readonly string[];
   readonly diagnostic: CandidateProtocolDiagnostic;
 }
 
-/** Framing failures can truncate or blur the body, so only a well-framed rejected declaration is repaired. */
-const UNREPAIRABLE_DECLARATION_ISSUES = new Set(['invalid_framing', 'duplicate_marker']);
+/** Recover data only from a unique, closed machine segment already located by the strict scanner.
+ * This does not admit its declaration: the replacement must pass the unchanged parser.
+ */
+function recoverClosedDeclarationPayload(segment: string): unknown {
+  const reject = (reason: string) => {
+    console.log(`[DeclarationRepair] framing not recoverable: reason=${reason}`);
+    return undefined;
+  };
+  const lines = segment.trimEnd().split(/\r?\n/);
+  if (lines.length < 3 || lines[lines.length - 1].trim() !== '-->') return reject('comment_not_closed');
+  const interior = lines.slice(1, -1).join('\n').trim().split('\n');
+  const first = interior[0].trim();
+  const last = interior[interior.length - 1].trim();
+  let payload = interior.join('\n');
+  if (first.startsWith('`') || last.startsWith('`')) {
+    const opening = /^(`{3,})([A-Za-z]*)[ \t]*$/.exec(first);
+    const closing = /^(`{3,})[ \t]*$/.exec(last);
+    if (!opening || !closing || opening[1] !== closing[1]) return reject('fence_pair_invalid');
+    if (opening[2] && opening[2].toLowerCase() !== 'json') return reject('fence_label_invalid');
+    payload = interior.slice(1, -1).join('\n');
+  }
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : reject('payload_not_object');
+  } catch { return reject('payload_not_json'); }
+}
+
+/** Read original declaration data solely to preserve it during a repair, never to admit evidence. */
+export function recoverNativeDeclarationPayload(candidate: string): unknown {
+  const inspected = inspectCandidateProtocol(candidate);
+  if (inspected.sidecar.rawPayload !== undefined) return inspected.sidecar.rawPayload;
+  const [segment, ...others] = inspected.sidecar.machineSegments;
+  if (!segment || others.length || inspected.sidecar.issues.some(issue => issue.code === 'duplicate_marker') ||
+      !inspected.sidecar.issues.some(issue => issue.code === 'invalid_framing')) return undefined;
+  return recoverClosedDeclarationPayload(candidate.slice(segment.start, segment.end));
+}
 
 /** Parse issue codes, a closed vocabulary. */
 function formatIssueCodes(issues: readonly {code: string}[]): string {
@@ -74,11 +112,43 @@ function projectTurnIntentForDeclarationCompletion(intent: AnalysisTurnIntent) {
   };
 }
 
+/** Shared structured delivery issue projection; model prose never changes controller decisions. */
+export function projectRuntimeCorrectionContext(issues: readonly VerificationIssue[]) {
+  const errors = issues.filter(issue => issue.severity === 'error');
+  const missingSections = new Map(errors.filter(issue => issue.recoveryKind === 'complete_report_content')
+    .flatMap(issue => issue.missingSections ?? []).map(section => [section.id, section]));
+  return {
+    recoveryKinds: [...new Set(errors.flatMap(issue => issue.recoveryKind ? [issue.recoveryKind] : []))],
+    missingSections: [...missingSections.values()],
+    issues: issues.map(({type, severity, message, recoveryKind}) => ({type, severity, message, recoveryKind})),
+  };
+}
+
+/** Full-answer delivery, distinct from immutable-body declaration-only completion. */
+export function buildNativeOutputCompletionPrompt(input: {
+  candidate: string;
+  diagnostic: CandidateProtocolDiagnostic;
+  intent: AnalysisTurnIntent;
+  issues: readonly VerificationIssue[];
+  outputLanguage: OutputLanguage;
+}): string {
+  const data = JSON.stringify({schemaVersion: 1, kind: 'original_native_candidate', body: input.candidate})
+    .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+  const prompt = renderRequiredLocalizedStrategyTemplate('prompt-native-output-completion', input.outputLanguage, {
+    original_candidate_json: data,
+    candidate_protocol_diagnostic: JSON.stringify({candidateProtocolDiagnostic: sanitizeCandidateProtocolDiagnostic(input.diagnostic)}),
+    correction_context: JSON.stringify(projectRuntimeCorrectionContext(input.issues)),
+    turn_intent: JSON.stringify(projectTurnIntentForDeclarationCompletion(input.intent)),
+  });
+  // Partial declarations hide relation diagnostics; the full delivery uses the existing exact schema.
+  return `${prompt}\n\n${renderRequiredLocalizedStrategyTemplate('prompt-relation-proposal-recovery', input.outputLanguage, {})}`;
+}
+
 /**
  * Typed intent decides whether a declaration is required. Prose shape and
  * wording never make that decision; a non-acknowledgement clarification uses
  * a `need_input` declaration with empty claims. With `repairInvalid`, a
- * well-framed declaration the parser rejected gets the same one delivery call
+ * complete isolated declaration the parser rejected gets the same one delivery call
  * to be corrected: one invalid claim otherwise leaves every claim unverified.
  */
 export function requestNativeDeclarationCompletion(input: {
@@ -92,13 +162,13 @@ export function requestNativeDeclarationCompletion(input: {
       !Number.isSafeInteger(input.remainingDeliveryTurns) || input.remainingDeliveryTurns <= 0) return undefined;
   const inspected = inspectCandidateProtocol(input.candidate);
   if (!inspected.canonicalBody.trim()) return undefined;
-  const diagnostic = Object.freeze(buildCandidateProtocolDiagnostic(inspected, 'native', 1));
+  let diagnostic = Object.freeze(buildCandidateProtocolDiagnostic(inspected, 'native', 1));
   if (inspected.status === 'absent') {
     return Object.freeze({reason: MISSING_NATIVE_DECLARATION, originalBody: input.candidate, diagnostic});
   }
   const [segment, ...others] = inspected.sidecar.machineSegments;
   if (!input.repairInvalid || inspected.status !== 'invalid' || inspected.sidecar.status !== 'invalid' || !segment ||
-      others.length || inspected.sidecar.issues.some(issue => UNREPAIRABLE_DECLARATION_ISSUES.has(issue.code))) {
+      others.length || inspected.sidecar.issues.some(issue => issue.code === 'duplicate_marker')) {
     // The rejected declaration is private and reaches no log, report or snapshot,
     // so a skipped repair is otherwise invisible: name the deciding facts in the
     // protocol's own closed vocabulary, never the model's values.
@@ -110,18 +180,33 @@ export function requestNativeDeclarationCompletion(input: {
     }
     return undefined;
   }
-  const payload = inspected.sidecar.rawPayload as {claims?: unknown} | undefined;
+  const rejectedDeclaration = input.candidate.slice(segment.start, segment.end);
+  const framingRejected = inspected.sidecar.issues.some(issue => issue.code === 'invalid_framing');
+  const recoveredPayload = recoverNativeDeclarationPayload(input.candidate);
+  if (framingRejected && (!recoveredPayload || typeof recoveredPayload !== 'object' || Array.isArray(recoveredPayload))) {
+    return undefined; // Interrupted or ambiguous framing keeps the existing full-answer path.
+  }
+  const payload = recoveredPayload as {claims?: unknown; relationProposals?: unknown} | undefined;
+  if (framingRejected && Array.isArray(payload?.claims)) {
+    diagnostic = Object.freeze({...diagnostic, claimCount: payload.claims.length});
+  }
   // Only ids the parser accepts: a blank id is itself a failure the repair has to fix.
   const declaredClaimIds = Array.isArray(payload?.claims) ? [...new Set(payload.claims.flatMap(item => {
     const id = item && typeof item === 'object' ? (item as {id?: unknown}).id : undefined;
     return typeof id === 'string' && id.trim() ? [id] : [];
   }))] : [];
+  const relations = Array.isArray(payload?.relationProposals) ? payload.relationProposals : [];
+  const declaredRelationIds = [...new Set(relations.flatMap(item => {
+    const id = item && typeof item === 'object' ? (item as {id?: unknown}).id : undefined;
+    return typeof id === 'string' && /^proposal:[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(id) ? [id] : [];
+  }))];
   console.log(`[DeclarationRepair] requested: reason=${INVALID_NATIVE_DECLARATION} ` +
     `issues=${formatIssueCodes(inspected.sidecar.issues)} ` +
     `claims=${diagnostic.claimCount ?? 0} claimDiagnostics=${formatClaimDiagnostics(diagnostic)}`);
   // Edge whitespace left at the removed segment's seam is not part of the answer.
   return Object.freeze({reason: INVALID_NATIVE_DECLARATION, originalBody: inspected.canonicalBody.trim(),
-    rejectedDeclaration: input.candidate.slice(segment.start, segment.end), declaredClaimIds: Object.freeze(declaredClaimIds),
+    rejectedDeclaration, declaredClaimIds: Object.freeze(declaredClaimIds),
+    declaredRelationCount: relations.length, declaredRelationIds: Object.freeze(declaredRelationIds),
     diagnostic});
 }
 
@@ -234,6 +319,13 @@ export function acceptNativeDeclarationCompletion(input: {
       return reject('claims_dropped', {expectedClaims: input.request.diagnostic.claimCount ?? 0,
         repairedClaims: claims.length, droppedIds});
     }
+    const relations = repaired.sidecar.contract?.relationProposals ?? [];
+    const relationIds = new Set(relations.map(proposal => proposal.id));
+    const droppedRelations = input.request.declaredRelationIds?.filter(id => !relationIds.has(id)).length ?? 0;
+    if (relations.length < (input.request.declaredRelationCount ?? 0) || droppedRelations) {
+      return reject('relation_proposals_dropped', {expectedRelations: input.request.declaredRelationCount ?? 0,
+        repairedRelations: relations.length, droppedRelations});
+    }
   }
   const originalBody = original.canonicalBody.trim();
   const completionProse = repaired.canonicalBody.trim();
@@ -243,5 +335,6 @@ export function acceptNativeDeclarationCompletion(input: {
     console.log(`[DeclarationRepair] completion prose discarded: request=${input.request.reason} ` +
       `proseChars=${completionProse.length} originalChars=${originalBody.length}`);
   }
-  return `${originalBody}\n\n${input.candidate.slice(segment.start, segment.end)}`;
+  const joined = `${originalBody}\n\n${input.candidate.slice(segment.start, segment.end)}`;
+  return nativeDeclarationCandidateFitsOutput(joined, input.outputByteLimit) ? joined : reject('output_limit');
 }

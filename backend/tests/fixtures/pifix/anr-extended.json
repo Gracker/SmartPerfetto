@@ -1,0 +1,256 @@
+{
+  "source": "TraceDemo/e2e/e2e4-pifix/pi/anr_extended__fault.out",
+  "provenance": "Actual projected body and claims; native diagnostic valid/canonicalChars1125. Not raw sidecar bytes.",
+  "body": "**有。** 该 trace 的 `android_anrs` 表中记录了 **3 个 ANR 事件**，全部发生在同一进程 `com.tracedemo.anrx`（pid 9100 / upid 6），类型分别为 broadcast、provider、input：\n\n| # | trace 时间 | 进程 (pid) | 类型 `anr_type` | 记录的触发原因 `subject` | `anr_dur_ms` | `default_anr_dur_ms` |\n|---|---|---|---|---|---|---|\n| 1 | 1012.05 s | com.tracedemo.anrx (9100) | `broadcast` | Broadcast of Intent { act=com.tracedemo.anrx.SLOW_BROADCAST } | 10000 | null |\n| 2 | 1034.05 s | com.tracedemo.anrx (9100) | `provider` | executing provider com.tracedemo.anrx/.SlowProvider | 20000 | null |\n| 3 | 1041.05 s | com.tracedemo.anrx (9100) | `input` | Input dispatching timed out (cross-process deadlock: com.tracedemo.anrx main → com.tracedemo.anrx:service handler → com.tracedemo.anrx callback) | 5000 | null |\n\n补充说明：\n\n- 三个事件在约 29 s 内接连发生（第 1→第 2 个间隔 22 s，第 2→第 3 个间隔 7 s），且集中于同一进程，说明该进程存在持续性的响应性问题。\n- 第 3 个（input 类型）ANR 的 `subject` 是 trace 中记录的原始描述，提到了一条跨进程死锁链：主进程 main → `:service` handler → 回调，这仅是 trace 记录的原因文本，本回合只确认 ANR 的存在性，未对其根因做验证。\n- `timer_delay` 三个事件均为原始值 50000000，其单位未经 `columnUnits` 确认，故不做换算解读。\n\n如需进一步定位，可对这 3 个 ANR 的时间窗逐个做主线程等待链（`analyze_wait_chain`）与 Binder/锁竞争分析来验证根因。",
+  "claims": [
+    {
+      "id": "cl:count",
+      "conclusionId": "C1",
+      "text": "该 trace 中共有 3 个 ANR 事件。",
+      "kind": "numeric",
+      "references": [
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "ts"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "ts"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "ts"
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "sql_result.row_count",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "all",
+        "modality": "certain",
+        "scope": {
+          "population": "cited_rows"
+        },
+        "numeric": {
+          "operator": "eq",
+          "value": 3,
+          "unit": "events"
+        }
+      }
+    },
+    {
+      "id": "cl:row0",
+      "text": "ANR #1：进程 com.tracedemo.anrx（pid 9100）于 trace 时间 1012.05 s 发生 broadcast 类型 ANR，记录原因为 “Broadcast of Intent { act=com.tracedemo.anrx.SLOW_BROADCAST }”，anr_dur_ms 字段为 10000 ms。",
+      "kind": "time_range",
+      "references": [
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "process_name",
+          "value": "com.tracedemo.anrx"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "pid",
+          "value": "9100"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "ts",
+          "value": 1012050000000
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "anr_type",
+          "value": "broadcast"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "subject",
+          "value": "Broadcast of Intent { act=com.tracedemo.anrx.SLOW_BROADCAST }"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "anr_dur_ms",
+          "value": 10000
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "captured.row",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "population": "cited_rows",
+          "timeRangeNs": {
+            "start": "1012050000000",
+            "end": "1012050000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "cl:row1",
+      "text": "ANR #2：进程 com.tracedemo.anrx（pid 9100）于 trace 时间 1034.05 s 发生 provider 类型 ANR，记录原因为 “executing provider com.tracedemo.anrx/.SlowProvider”，anr_dur_ms 字段为 20000 ms。",
+      "kind": "time_range",
+      "references": [
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "process_name",
+          "value": "com.tracedemo.anrx"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "pid",
+          "value": "9100"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "ts",
+          "value": 1034050000000
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "anr_type",
+          "value": "provider"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "subject",
+          "value": "executing provider com.tracedemo.anrx/.SlowProvider"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "anr_dur_ms",
+          "value": 20000
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "captured.row",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "population": "cited_rows",
+          "timeRangeNs": {
+            "start": "1034050000000",
+            "end": "1034050000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "cl:row2",
+      "text": "ANR #3：进程 com.tracedemo.anrx（pid 9100）于 trace 时间 1041.05 s 发生 input 类型 ANR，记录的 subject 文本为 “Input dispatching timed out (cross-process deadlock: com.tracedemo.anrx main → com.tracedemo.anrx:service handler → com.tracedemo.anrx callback)”，anr_dur_ms 字段为 5000 ms。",
+      "kind": "time_range",
+      "references": [
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "process_name",
+          "value": "com.tracedemo.anrx"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "pid",
+          "value": "9100"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "ts",
+          "value": 1041050000000
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "anr_type",
+          "value": "input"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "subject",
+          "value": "Input dispatching timed out (cross-process deadlock: com.tracedemo.anrx main → com.tracedemo.anrx:service handler → com.tracedemo.anrx callback)"
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "anr_dur_ms",
+          "value": 5000
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "captured.row",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "population": "cited_rows",
+          "timeRangeNs": {
+            "start": "1041050000000",
+            "end": "1041050000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "cl:spacing",
+      "text": "第 2 个 ANR 比第 1 个晚 22 s 发生，第 3 个比第 2 个晚 7 s 发生。",
+      "kind": "comparison",
+      "references": [
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 0,
+          "column": "ts",
+          "value": 1012050000000
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 1,
+          "column": "ts",
+          "value": 1034050000000
+        },
+        {
+          "evidenceRefId": "data:sql_table:current:8d64d59ae16b:ebc2f7b73d2d:d005eeb6",
+          "rowIndex": 2,
+          "column": "ts",
+          "value": 1041050000000
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "comparison.delta",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "population": "cited_rows"
+        }
+      }
+    }
+  ]
+}

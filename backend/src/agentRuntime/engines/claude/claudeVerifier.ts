@@ -20,7 +20,7 @@ import {assessFinalReportContract} from '../../../services/finalReportContractGa
 import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {isProductionAgentRuntimeKind} from '../../runtimeKinds';
-import {candidateHasAnswerBody} from '../../runtimeConclusionProtocol';
+import {candidateHasAnswerBody, projectRuntimeCorrectionContext} from '../../runtimeConclusionProtocol';
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -124,17 +124,8 @@ export function generateCorrectionPrompt(
   originalConclusion: string,
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): string {
-  const errors = issues.filter(issue => issue.severity === 'error');
-  const missingSections = new Map(errors
-    .filter(issue => issue.recoveryKind === 'complete_report_content')
-    .flatMap(issue => issue.missingSections ?? [])
-    .map(section => [section.id, section]));
   return renderRequiredLocalizedStrategyTemplate('prompt-analysis-correction', outputLanguage, {
-    correction_context: JSON.stringify({
-      recoveryKinds: [...new Set(errors.flatMap(issue => issue.recoveryKind ? [issue.recoveryKind] : []))],
-      missingSections: [...missingSections.values()],
-      issues: issues.map(({type, severity, message, recoveryKind}) => ({type, severity, message, recoveryKind})),
-    }, null, 2),
+    correction_context: JSON.stringify(projectRuntimeCorrectionContext(issues), null, 2),
     original_conclusion: originalConclusion,
   });
 }

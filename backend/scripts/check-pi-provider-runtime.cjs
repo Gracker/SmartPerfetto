@@ -133,6 +133,86 @@ const model = {
   maxTokens: 1024,
 };
 
+// Keep official model URLs while intercepting fetch: loopback URLs would
+// bypass the SDK's GLM compatibility branch and hide its default-off request.
+async function reasoningRequest(config, options = {}, purpose = 'answer_turn', policy) {
+  const runtime = await createPiAgentCoreProviderRuntime({
+    apiKey: 'isolated-wire-key', ...config,
+    model: {...model, id: 'wire-model', provider: 'openai', reasoning: true,
+      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', ...config.model},
+  }, {});
+  let payload;
+  const stream = runtime.streamFnForPurpose(purpose, policy);
+  const reply = await stream(runtime.model, {messages: [], tools: []}, {
+    ...options, maxRetries: 0,
+    fetch: async (_url, init) => {
+      payload = JSON.parse(init.body);
+      return new Response('data: ' + JSON.stringify({id: 'wire', model: 'wire-model',
+        choices: [{index: 0, delta: {role: 'assistant', content: 'ok'}, finish_reason: 'stop'}],
+        usage: {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2},
+      }) + '\n\ndata: [DONE]\n\n', {headers: {'Content-Type': 'text/event-stream'}});
+    },
+  }).result();
+  assert.equal(reply.stopReason, 'stop');
+  assert.ok(payload);
+  return payload;
+}
+
+const defaultGlmRequest = await reasoningRequest({});
+assert.equal(defaultGlmRequest.thinking, undefined);
+assert.equal(defaultGlmRequest.reasoning_effort, undefined);
+assert.equal((await reasoningRequest({}, {}, 'continuation')).thinking, undefined);
+for (const purpose of ['declaration_repair', 'review']) {
+  assert.deepEqual((await reasoningRequest({}, {}, purpose)).thinking, {type: 'disabled'});
+  const low = await reasoningRequest({model: {compat: {supportsReasoningEffort: true}}}, {}, purpose);
+  assert.equal(low.reasoning_effort, 'low');
+  assert.equal(low.thinking.type, 'enabled');
+}
+assert.deepEqual((await reasoningRequest({thinkingLevel: 'off'})).thinking, {type: 'disabled'});
+assert.deepEqual((await reasoningRequest({}, {}, 'classification')).thinking, {type: 'disabled'});
+const authoredReasoning = {thinkingLevel: 'high', model: {
+  compat: {supportsReasoningEffort: true}, thinkingLevelMap: {high: 'max', low: 'low'},
+}};
+for (const purpose of ['answer_turn', 'declaration_repair', 'continuation', 'review']) {
+  const request = await reasoningRequest(authoredReasoning, {}, purpose);
+  assert.equal(request.thinking.type, 'enabled');
+  assert.equal(request.reasoning_effort, 'max');
+}
+const outputDelivery = await reasoningRequest({}, {}, 'continuation', {outputOnly: true});
+assert.deepEqual(outputDelivery.thinking, {type: 'disabled'});
+const explicitDelivery = await reasoningRequest(authoredReasoning, {}, 'continuation', {outputOnly: true});
+assert.equal(explicitDelivery.reasoning_effort, 'max');
+assert.equal((await reasoningRequest({}, {}, 'answer_turn', {outputOnly: true})).thinking, undefined);
+const lowDelivery = await reasoningRequest({model: {compat: {supportsReasoningEffort: true}}}, {}, 'continuation', {outputOnly: true});
+assert.equal(lowDelivery.reasoning_effort, 'low');
+const classifierRequest = await reasoningRequest(authoredReasoning, {}, 'classification');
+assert.equal(classifierRequest.thinking.type, 'enabled');
+assert.equal(classifierRequest.reasoning_effort, 'low');
+assert.equal((await reasoningRequest({model: {provider: 'zai',
+  baseUrl: 'https://api.z.ai/api/paas/v4'}})).thinking, undefined);
+assert.deepEqual((await reasoningRequest({model: {baseUrl: 'https://gateway.invalid/v1',
+  compat: {thinkingFormat: 'zai'}}})).thinking, {type: 'disabled'});
+assert.equal((await reasoningRequest({model: {baseUrl: 'https://ordinary.invalid/v1'}})).thinking, undefined);
+assert.deepEqual((await reasoningRequest({model: {baseUrl: 'https://open.bigmodel.cn.evil.invalid/v1'}})).thinking, {type: 'disabled'});
+let hookCalls = 0;
+const hookedRequest = await reasoningRequest({}, {onPayload: payload => {
+  hookCalls++;
+  assert.equal(payload.thinking, undefined);
+  payload.thinking = {type: 'disabled'};
+}});
+assert.equal(hookCalls, 1);
+assert.deepEqual(hookedRequest.thinking, {type: 'disabled'});
+const replacedRequest = await reasoningRequest({}, {onPayload: payload => ({...payload,
+  thinking: {type: 'enabled'}, reasoning_effort: 'low'})});
+assert.equal(replacedRequest.reasoning_effort, 'low');
+assert.equal(replacedRequest.thinking.type, 'enabled');
+await assert.rejects(reasoningRequest({thinkingLevel: 'off', model: {
+  thinkingLevelMap: {off: null},
+}}), /thinkingLevel is not supported/);
+await assert.rejects(reasoningRequest({model: {
+  compat: {supportsReasoningEffort: true}, thinkingLevelMap: {low: null, off: null},
+}}, {}, 'classification'), /thinkingLevel is not supported/);
+
 function createTraceProcessorService() {
   return {
     query: async () => ({columns: [], rows: [], durationMs: 1}),

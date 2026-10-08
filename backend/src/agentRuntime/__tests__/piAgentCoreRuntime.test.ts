@@ -3399,6 +3399,152 @@ describe('experimental Pi agent-core runtime contract', () => {
     conclusions: [{rank: 1, statement: 'The marker is present.'}], clusters: [], evidenceChain: [],
     claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
 
+  it.each(['complete', 'length', 'invalid', 'no-declaration', 'no-reserve', 'deferred', 'tool-call', 'error', 'expired'] as const)(
+    'gives native output_limit one bounded delivery opportunity only when eligible: %s', async outcome => {
+      passVerification();
+      const first = `Observed ten 195 ms lock waits.\n${protocolSidecar.slice(0, -4)}`;
+      const complete = `Observed ten 195 ms lock waits. The owner chain is supported by existing rows.\n${protocolSidecar}`;
+      let clock: jest.SpiedFunction<typeof Date.now> | undefined;
+      FakePiAgent.promptHandler = async (agent, prompt, index) => {
+        if (index === 2) {
+          expect(agent.state.tools).toEqual([]);
+          expect(prompt).toContain('continue_output');
+          expect(prompt).toContain('Observed ten 195 ms lock waits.');
+          expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
+        }
+        if (outcome === 'expired' && index === 1) clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+        return [{role: 'assistant', stopReason: index === 1 || outcome === 'length' ? 'length' : 'stop',
+          ...(index === 1 && outcome === 'deferred' ? {deferred: {pending: true}} : {}),
+          ...(index === 1 && outcome === 'error' ? {errorMessage: 'private provider failure'} : {}),
+          content: [{type: 'text', text: index === 1 ? (outcome === 'no-declaration' ? 'Observed ten 195 ms lock waits.' : first)
+            : outcome === 'invalid' ? first : outcome === 'no-declaration' ? 'Observed ten 195 ms lock waits.' : complete},
+            ...(index === 1 && outcome === 'tool-call' ? [{type: 'toolCall', name: 'execute_sql', arguments: {}}] : [])]}];
+      };
+      const eligible = ['complete', 'length', 'invalid', 'no-declaration'].includes(outcome);
+      try {
+        const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: outcome === 'no-reserve' ? '1' : '2',
+          AGENT_QUICK_TIMEOUT_SECONDS: '1'}}).analyze('query', `pi-output-limit-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
+        expect(FakePiAgent.instances[0].promptCount).toBe(eligible ? 2 : 1);
+        if (outcome === 'complete') {
+          expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop', attemptId: '2',
+            conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
+          expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+        } else {
+          expect(result.completion).toMatchObject({status: outcome === 'error' ? 'failed' : 'incomplete', attemptId: '1'});
+          expect(result.completion?.reason).toBe(outcome === 'error' ? 'provider_error' : 'output_limit');
+        }
+      } finally {clock?.mockRestore();}
+    });
+
+  it('forwards the no-tool delivery policy through the pinned authorization fence', async () => {
+    passVerification();
+    const purposes: Array<{purpose: string; outputOnly?: boolean}> = [];
+    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON}, moduleLoader: async () => ({Agent: FakePiAgent}),
+      providerRuntimeLoader: async config => {
+        const base = await loadFakePiProviderRuntime(config);
+        return {...base, streamFnForPurpose: (purpose, policy) => {
+          purposes.push({purpose, outputOnly: policy?.outputOnly}); return base.streamFn;
+        }};
+      },
+    });
+    FakePiAgent.promptHandler = async (agent, _prompt, index) => {
+      if (index === 2) await (agent.options!.streamFn as any)(agent.state.model, {messages: [], tools: []}, {}).result();
+      return [{role: 'assistant', stopReason: index === 1 ? 'length' : 'stop', content: [{type: 'text',
+        text: index === 1 ? `Observed lock waits.\n${protocolSidecar.slice(0, -4)}` : `Observed lock waits.\n${protocolSidecar}`}]}];
+    };
+    const result = await runtime.analyze('query', 'pi-delivery-policy-fence', 'trace-pi');
+    expect(result.completion?.status).toBe('completed');
+    expect(purposes).toContainEqual({purpose: 'continuation', outputOnly: true});
+  });
+
+  it('stops native delivery after its one turn even with unused acquisition budget and a rogue tool call', async () => {
+    passVerification();
+    FakePiAgent.promptHandler = async (agent, _prompt, index) => {
+      const message = {role: 'assistant', stopReason: index === 1 ? 'length' : 'toolUse', content: index === 1
+        ? [{type: 'text', text: `Observed waits.\n${protocolSidecar.slice(0, -4)}`}]
+        : [{type: 'toolCall', name: 'execute_sql', arguments: {}}]};
+      if (index === 2) {
+        expect(agent.state.tools).toEqual([]);
+        expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
+      }
+      agent.emitForTest({type: 'turn_end', message});
+      expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(index === 2);
+      return [message];
+    };
+    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}})
+      .analyze('query', 'pi-single-delivery-turn', 'trace-pi', {analysisMode: 'fast'});
+    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit', attemptId: '1'});
+  });
+
+  it.each(['accepted', 'incomplete', 'claims-dropped', 'relations-dropped', 'relations-swapped'] as const)(
+    'uses one reserved no-tool turn for a bodyless 35-claim invalid relation: %s', async outcome => {
+      passVerification();
+      const claims = Array.from({length: 35}, (_, i) => declaredClaim(`claim:${i}`));
+      const base = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+        evidenceChain: [], claims, uncertainties: [], nextSteps: []};
+      const proposal = {schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:lock', kind: 'lock_owner',
+        direction: 'subject_to_object', subject: {evidenceRefId: 'evidence:subject'},
+        object: {evidenceRefId: 'evidence:object'}, proof: {evidenceRefId: 'evidence:proof'}};
+      const first = renderConclusionContractSidecar({...base, relationProposals: [{...proposal,
+        proofBindings: {subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'}}}]} as any);
+      const second = `Ten waits lasted 195 ms each; the captured owner is identified.\n` +
+        renderConclusionContractSidecar({...base, claims: outcome === 'claims-dropped' ? claims.slice(1) : claims,
+          relationProposals: outcome === 'relations-dropped' ? [] : [{...proposal,
+            ...(outcome === 'relations-swapped' ? {id: 'proposal:replacement'} : {}), proofBindings: {
+            subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'},
+            object: {endpointColumn: 'tid', proofColumn: 'waiter_tid'}}}]} as any);
+      FakePiAgent.promptHandler = async (agent, prompt, index) => {
+        if (index === 2) {
+          expect(agent.state.tools).toEqual([]);
+          expect(prompt).toContain('proofBindings');
+          expect(prompt).toContain('invalid_proof_bindings');
+          expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}}))
+            .toMatchObject({block: true});
+        }
+        const message = {role: 'assistant', stopReason: index === 2 && outcome === 'incomplete' ? 'length' : 'stop',
+          content: [{type: 'text', text: index === 1 ? first : second}]};
+        agent.emitForTest({type: 'turn_end', message});
+        expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(true);
+        return [message];
+      };
+      const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
+        .analyze('query', `pi-pifix-relation-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
+      expect(FakePiAgent.instances[0].promptCount).toBe(2);
+      expect(result.rounds).toBe(2);
+      if (outcome === 'accepted') {
+        expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid', sidecar: {bindingEligibility: 'eligible'}});
+        expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims).toHaveLength(35);
+        const context = takeFinalizationContext(result)!;
+        try {expect(inspectCandidateProtocol(context.getNativeDeclaration(result, new AbortController().signal)?.raw ?? '').status).toBe('valid');}
+        finally {context.dispose();}
+      } else {
+        expect(result.completion?.attemptId).toBe('1');
+        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('ineligible');
+      }
+    });
+
+  it('repairs closed invalid framing at the acquisition limit without changing its body or claim IDs', async () => {
+    passVerification();
+    const body = 'The one slow Binder transaction is blocked in WMS relayoutWindow.';
+    const good = declaredCandidateWithClaims(body, [declaredClaim('binder:slow'), declaredClaim('wms:lock')]);
+    const first = good.replace('```json', '```json ');
+    FakePiAgent.promptHandler = async (agent, prompt, index) => {
+      if (index === 2) {expect(agent.state.tools).toEqual([]); expect(prompt).toContain('invalid_framing');}
+      const message = {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? first : good}]};
+      agent.emitForTest({type: 'turn_end', message});
+      expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(true);
+      return [message];
+    };
+    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
+      .analyze('query', 'pi-pifix-framing', 'trace-pi', {analysisMode: 'fast'});
+    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(result.rounds).toBe(2);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims?.map(claim => claim.id)).toEqual(['binder:slow', 'wms:lock']);
+  });
+
   it('uses the reserved delivery turn to repair a rejected declaration around the unchanged body', async () => {
     passVerification();
     const body = 'Frame 12 missed its deadline.';
