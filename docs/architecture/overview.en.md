@@ -173,6 +173,8 @@ Jank investigation starts with continuous execution on the target process's main
 
 Strategy frontmatter `investigation_requirements` is separate from report formatting. The shared typed-intent prompt builder reads these evidence obligations from the run's pinned strategy snapshot for investigation answers and reports. Bounded questions apply only relevant obligations; facts and acknowledgements gain no investigation recipe, and `existing_only` gains no retrieval authority. Older snapshots may omit the optional field; declared requirements participate in the fingerprint.
 
+Strategy frontmatter `entry_skill` declares a scene's entry Skill: for a resolved `scene_wide` `read_new` investigation the product runs it before the model's first turn (only once its identity gate reports `verified`) and hands the result to the model in the bounded `scene_evidence` prompt segment, which is never dropped whole. It shares `skillRunCore` with `invoke_skill` but is not a model tool call; only `RuntimePerformance` records its phase and receipt. The body of the strategy detail marked `default` reaches the first turn as the most expendable prompt segment, its title still listed with the other details. See [Agent Runtime Architecture](agent-runtime.en.md).
+
 All runtimes use this pinned-context builder. Missing intent or registry fails explicitly, with no legacy quick/full template fallback. The final conclusion is the primary deliverable; budgets and intermediate table previews do not cap its findings, claims or prose. The input discipline budget is 16,000 estimated tokens, with identity and evidence obligations protected from trimming. Actual output or review capacity limits must remain explicit incomplete states.
 
 In OIDC mode, the static entry point gates startup through `/api/auth/session`
@@ -195,6 +197,7 @@ metadata-only visibility.
       -> selected runtime analyze()
       -> native typed intent -> scope / evidence access / budget / deliverable
       -> eligible automatic prefetch or on-demand context
+      -> product-owned scene entry evidence (strategy entry_skill)
          -> shared TraceCompleteness probe when requested
          -> shadow capability_manifest@1 probe-time snapshot
 
