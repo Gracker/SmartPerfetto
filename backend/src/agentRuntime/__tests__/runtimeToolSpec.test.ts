@@ -21,6 +21,7 @@ import {
   type SharedToolSpec,
 } from '../runtimeToolSpec';
 import {createRuntimeToolConcurrencyCoordinator} from '../runtimeToolConcurrency';
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../runtimeCandidateAdmission';
 import {
@@ -780,5 +781,63 @@ describe('SharedToolSpec', () => {
       factory.mockRestore();
       lifecycle.dispose();
     }
+  });
+});
+
+describe('run authorization wrappers', () => {
+  const revoked = new Error('analysis_context_changed_restart_required');
+  const fence = (failAt: Array<'pre' | 'post'>) => {
+    const events: string[] = [];
+    let checks = 0;
+    return {
+      events,
+      authorization: {
+        assertCurrentInTurn: () => {
+          const at = checks++ === 0 ? 'pre' : 'post';
+          events.push(`check:${at}`);
+          if (failAt.includes(at)) throw revoked;
+        },
+        settled: async () => { events.push('settled'); },
+      },
+    };
+  };
+  const timedExtra = () => {
+    const recorder = createRuntimePerformanceRecorder();
+    return {recorder, extra: {toolCallId: 'call-1', runManifestAttributionSink: {runtimePerformanceRecorder: recorder} as any}};
+  };
+  const spec = (body: () => Promise<any>): SharedToolSpec => ({name: 'probe', description: 'probe', exposure: 'public',
+    inputSchema: {}, handler: async () => body()});
+
+  it.each([
+    ['pre-check', ['pre'] as Array<'pre' | 'post'>, async () => createRuntimeToolResult({success: true}), ['check:pre', 'settled'], 0],
+    ['body error', [] as Array<'pre' | 'post'>, async () => { throw new Error('body'); }, ['check:pre', 'settled'], 1],
+    ['post-check', ['post'] as Array<'pre' | 'post'>, async () => createRuntimeToolResult({success: true}), ['check:pre', 'check:post', 'settled'], 1],
+  ])('waits for the revoke to settle on a failing %s and keeps one timing receipt per executed body', async (_label, failAt, body, expected, timedCalls) => {
+    for (const wrap of ['composite', 'auth_only'] as const) {
+      const {events, authorization} = fence(failAt);
+      const {recorder, extra} = timedExtra();
+      const wrapped = wrap === 'composite'
+        ? runtimeToolSpec.withRuntimeToolAuthorization(spec(body), authorization)
+        : runtimeToolSpec.withRunAuthorizationOnly(withRuntimeToolTiming(spec(body)), authorization);
+      await expect(wrapped.handler({}, extra)).rejects.toThrow();
+      expect(events).toEqual(expected);
+      expect(recorder.seal().tools).toHaveLength(timedCalls);
+    }
+  });
+
+  it('is the composition auth-only ∘ timing, and auth-only alone records no tool timing', async () => {
+    const composite = timedExtra();
+    const authOnly = timedExtra();
+    const body = async () => createRuntimeToolResult({success: true});
+    const allow = {assertCurrentInTurn: () => undefined, settled: async () => undefined};
+    await runtimeToolSpec.withRuntimeToolAuthorization(spec(body), allow).handler({}, composite.extra);
+    await runtimeToolSpec.withRunAuthorizationOnly(spec(body), allow).handler({}, authOnly.extra);
+    expect(composite.recorder.seal().tools).toHaveLength(1);
+    expect(authOnly.recorder.seal().tools).toEqual([]);
+    // The composite stays marked as timed, so outer wrappers do not time it again.
+    const outer = withRuntimeToolTiming(runtimeToolSpec.withRuntimeToolAuthorization(spec(body), allow));
+    const again = timedExtra();
+    await outer.handler({}, again.extra);
+    expect(again.recorder.seal().tools).toHaveLength(1);
   });
 });

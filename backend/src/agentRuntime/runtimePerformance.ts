@@ -8,6 +8,7 @@ import {performance as nodePerformance} from 'perf_hooks';
 import {immutableCanonicalSnapshot} from '../services/selfEvolution/canonicalJson';
 import {isPlainObject} from '../utils/llmJson';
 import type {RuntimeToolConcurrencyFallbackReason} from './runtimeToolConcurrency';
+import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
 
 export type RuntimePhaseName =
   | 'classification'
@@ -18,6 +19,7 @@ export type RuntimePhaseName =
   | 'comparison'
   | 'skill_registry'
   | 'knowledge'
+  | 'scene_evidence'
   | 'sdk_start'
   | 'provider'
   | 'verification'
@@ -120,6 +122,8 @@ export interface RuntimePerformanceReceiptV1 {
   /** Absent in receipts recorded before per-call records existed. */
   modelCalls?: RuntimePerformanceModelCallReceiptV1[];
   finalReview?: RuntimePerformanceFinalReviewReceiptV1;
+  /** The run's product-owned scene entry evidence attempt; never a model tool call. */
+  sceneEvidence?: RuntimePerformanceSceneEvidenceReceiptV1;
   truncated?: {
     phases: number;
     tools: number;
@@ -263,6 +267,7 @@ export class RuntimePerformanceRecorder {
   private readonly sql: RuntimePerformanceSqlReceiptV1[] = [];
   private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
   private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
+  private sceneEvidence: RuntimePerformanceSceneEvidenceReceiptV1 | undefined;
   private nextToolSequence = 0;
   private readonly truncated = {
     phases: 0,
@@ -294,6 +299,7 @@ export class RuntimePerformanceRecorder {
       || this.sql.length > 0
       || this.modelCalls.length > 0
       || this.finalReview !== undefined
+      || this.sceneEvidence !== undefined
       || this.truncated.phases > 0
       || this.truncated.tools > 0
       || this.truncated.sql > 0
@@ -462,6 +468,31 @@ export class RuntimePerformanceRecorder {
     };
   }
 
+  /** At most one entry Skill per run: the first record wins. Closed fields only. */
+  recordSceneEvidence(input: RuntimePerformanceSceneEvidenceReceiptV1): void {
+    this.assertCollecting('record_scene_evidence');
+    assertKnownFields(input as unknown as Record<string, unknown>,
+      ['skillId', 'status', 'reason', 'durationMs', 'artifactCount', 'captureCount']);
+    if (this.sceneEvidence) return;
+    if (!/^[a-z][a-z0-9_]{0,127}$/.test(input.skillId)) throw new Error('runtime_performance_invalid_scene_skill');
+    if (input.status !== 'ran' && input.status !== 'not_run') throw new Error('runtime_performance_invalid_scene_status');
+    if (input.status === 'not_run' ? !isSceneEntryNotRunReason(input.reason) : input.reason !== undefined) {
+      throw new Error('runtime_performance_invalid_scene_reason');
+    }
+    const count = (value: number, label: string) => {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error(`runtime_performance_invalid_scene_count:${label}`);
+      return value;
+    };
+    this.sceneEvidence = {
+      skillId: input.skillId,
+      status: input.status,
+      ...(input.reason ? {reason: input.reason} : {}),
+      durationMs: boundedMs(input.durationMs, 'scene_evidence_duration'),
+      artifactCount: count(input.artifactCount, 'artifacts'),
+      captureCount: count(input.captureCount, 'captures'),
+    };
+  }
+
   seal(): RuntimePerformanceReceiptV1 {
     if (this.sealedReceipt) return this.sealedReceipt;
     const receipt: RuntimePerformanceReceiptV1 = {
@@ -474,6 +505,7 @@ export class RuntimePerformanceRecorder {
       sql: [...this.sql],
       ...(this.modelCalls.length > 0 ? {modelCalls: [...this.modelCalls]} : {}),
       ...(this.finalReview ? {finalReview: this.finalReview} : {}),
+      ...(this.sceneEvidence ? {sceneEvidence: this.sceneEvidence} : {}),
       ...(this.truncated.phases > 0
         || this.truncated.tools > 0
         || this.truncated.sql > 0
@@ -576,6 +608,8 @@ export interface RuntimePerformanceRun {
   finishClassification(outcome?: RuntimePerformanceOutcome): void;
   startPhase(name: RuntimePhaseName): RuntimePerformanceSpan;
   startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan;
+  /** The run's scene entry evidence receipt; never throws. */
+  recordSceneEvidence(input: RuntimePerformanceSceneEvidenceReceiptV1): void;
   recordFirstOutput(): void;
   finalize(outcome?: RuntimePerformanceOutcome): void;
 }
@@ -663,6 +697,9 @@ export function createRuntimePerformanceRun(
     finishClassification,
     startPhase,
     startModelCall: input => startRuntimeModelCall(recorder, input),
+    recordSceneEvidence: input => {
+      try { recorder?.recordSceneEvidence(input); } catch { /* Internal observability only. */ }
+    },
     recordFirstOutput: () => {
       try {
         recorder?.recordFirstOutput();
