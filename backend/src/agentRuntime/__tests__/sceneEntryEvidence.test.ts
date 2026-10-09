@@ -65,6 +65,7 @@ function harness(options: {
   intent?: Partial<AnalysisTurnIntent>;
   focusTarget?: FocusAppTarget;
   skill?: SkillDefinition;
+  row?: unknown[];
   overrides?: Partial<SceneEntryEvidenceInput>;
 } = {}): Harness {
   const entry = options.entry === null ? undefined : options.entry ?? {id: 'entry_fixture', params: {start_ts: 'trace_start'}};
@@ -75,7 +76,7 @@ function harness(options: {
   });
   const strategyRegistry = buildStrategyRegistrySnapshotFromDefinitions({definitions, overlayGeneration: 'scene-entry-test'});
   const skill = options.skill ?? entrySkillDefinition();
-  const executor = new SkillExecutor({query: async () => ({columns: COLUMNS, rows: [ROW], durationMs: 1})} as any);
+  const executor = new SkillExecutor({query: async () => ({columns: COLUMNS, rows: [options.row ?? ROW], durationMs: 1})} as any);
   executor.registerSkill(skill);
   const store = new ArtifactStore();
   const lease = new AbortController();
@@ -125,6 +126,16 @@ describe('product-owned scene entry evidence', () => {
     expect(receipt.tools).toEqual([]);
     expect(h.lifecycle.builder.toolResultAuditRecorder.hasRecordedData).toBe(false);
     expect(JSON.stringify(h.lifecycle.builder.toolResultAuditRecorder)).not.toContain('scene-entry:');
+  });
+
+  it('offers no shortened string as an exact cell value', async () => {
+    const skill = entrySkillDefinition({output: {display: {layer: 'overview', level: 'key', format: 'table',
+      columns: [{name: 'freq', type: 'number'}, {name: 'status', type: 'string'}]}}} as Partial<SkillDefinition>);
+    const shortened = await harness({skill, row: [10, 110, 42, 43, 1234, 'x'.repeat(5000), 100, 100]}).run();
+    expect(shortened.status).toBe('ran');
+    expect(shortened.keyCells.map(cell => cell.column)).toEqual(['freq']);
+    expect((await harness({skill}).run()).keyCells.map(cell => [cell.column, cell.value]))
+      .toEqual([['freq', 1234], ['status', 'observed']]);
   });
 
   it('uses invoke_skill\'s registered access for the request-scope guard', () => {

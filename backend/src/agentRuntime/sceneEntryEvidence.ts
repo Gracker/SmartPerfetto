@@ -254,9 +254,16 @@ function collectOverview(outcome: Extract<SkillRunOutcome, {status: 'committed'}
     const rows = Array.isArray(data?.rows) && (data!.rows as unknown[]).every(Array.isArray) ? data!.rows as unknown[][] : [];
     artifacts.push({artifactId, evidenceRefId, stepId: display.stepId, rowCount: rows.length});
     const target = display.level === 'key' ? keyCells : display.level === 'summary' ? summaryCells : undefined;
-    if (!target || projection?.modelProjection.status === 'unavailable') return;
+    const status = projection?.modelProjection;
+    if (!target || !status || status.status === 'unavailable') return;
+    // A cell is offered as an exact value; a string the projection shortened is not one.
+    const shortened = status.status === 'truncated'
+      ? new Set((status.truncatedCells ?? []).map(cell => `${cell.rowIndex}\u0000${cell.column}`)) : undefined;
+    const shortenedUnlisted = status.status === 'truncated' && (!status.truncatedCells || Boolean(status.truncatedCellsOmitted));
     rows.forEach((row, rowIndex) => columns.forEach((column, columnIndex) => {
       if (typeof column !== 'string') return;
+      if (typeof row[columnIndex] === 'string'
+        && (shortenedUnlisted || shortened?.has(`${rowIndex}\u0000${column}`))) return;
       const unit = projection?.columnUnits?.[column];
       target.push({artifactId, rowIndex, column, value: row[columnIndex] ?? null, ...(unit ? {unit} : {})});
     }));
