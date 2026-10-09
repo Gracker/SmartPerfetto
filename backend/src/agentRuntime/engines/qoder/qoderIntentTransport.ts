@@ -9,6 +9,7 @@ import {
   INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS,
   intentTransportTextResult,
   runIntentTransport,
+  sdkResultFailureReason,
   type IntentTransportInput,
 } from '../../intentTransport';
 
@@ -133,7 +134,7 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
       }
       if (message.type !== 'result') continue;
       if (message.subtype !== 'success' || message.is_error !== false) {
-        return {status: 'unavailable', reason: 'invalid_response'};
+        return {status: 'unavailable', reason: sdkResultFailureReason(message)};
       }
       if (message.stop_reason === 'tool_use') return {status: 'unavailable', reason: 'tool_use'};
       if (message.stop_reason === 'max_tokens') return {status: 'unavailable', reason: 'incomplete_output'};

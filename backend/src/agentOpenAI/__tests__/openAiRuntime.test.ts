@@ -1402,6 +1402,18 @@ describe('OpenAI bounded output-limit recovery', () => {
   });
 });
 
+describe('OpenAI declaration repair provider controls', () => {
+  it.each([
+    ['https://api.deepseek.com/v1', 'chat_completions', {thinking: {type: 'disabled'}}],
+    ['https://api.deepseek.com/v1', 'responses', {reasoning: {effort: 'none'}}],
+    ['https://open.bigmodel.cn/api/paas/v4', 'chat_completions', {thinking: {type: 'disabled'}}],
+    ['https://gateway.example/v1', 'chat_completions', undefined],
+    ['', 'chat_completions', undefined],
+  ] as const)('maps %s %s to the declaration_repair controls', (baseURL, protocol, expected) => {
+    expect(__testing.declarationRepairProviderData({baseURL, protocol})).toEqual(expected);
+  });
+});
+
 describe('OpenAI shared tool receipt and private projection', () => {
   it.each([false, true])('retains private source outcomes before transport truncation (body=%s)', includeBody => {
     const {runtime, updates} = createRuntimeWithUpdates();

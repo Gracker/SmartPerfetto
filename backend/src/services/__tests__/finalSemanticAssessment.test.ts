@@ -1149,6 +1149,13 @@ describe('semantic dispatch failure and cancellation', () => {
     expect(JSON.stringify(result)).not.toContain('do-not-echo');
   });
 
+  it('reports a thrown headers timeout as a timeout', async () => {
+    const run = fixture({dispatch: async () => {
+      throw Object.assign(new TypeError('fetch failed'), {cause: {code: 'UND_ERR_HEADERS_TIMEOUT'}});
+    }});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'timeout'});
+  });
+
   it('honors pre-dispatch cancellation and an already-expired original deadline', async () => {
     const cancelled = fixture();
     cancelled.controller.abort();

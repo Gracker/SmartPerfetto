@@ -18,7 +18,7 @@ import {
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
-import {runClaudeIntentTransport} from './claudeIntentTransport';
+import {claudeEffortForPurpose, runClaudeIntentTransport} from './claudeIntentTransport';
 import {
   attachFinalizationContext,
   attachRunDeliveryRecord,
@@ -738,14 +738,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }),
         signal: executionLease.signal,
         deadlineMs: Date.now() + resolvedConfig.classifierTimeoutMs,
-        // Classification needs no deliberation. The CLI drops `thinking: disabled`, and a
-        // thinking-by-default gateway (GLM) then spent 30-40 s on this prompt, past the 30 s
-        // classifier budget; low effort is what the CLI forwards (~7-12 s there). The review
-        // and closeout calls on this transport keep the SDK default.
+        // Classification needs no deliberation (claudeEffortForPurpose).
         dispatch: input => runClaudeIntentTransport({
           ...input, config: resolvedConfig, sdkEnv,
           sdkBinaryOptions: getSdkBinaryOption(sdkEnv),
-          loadSdk: authorizedSdk, effort: 'low',
+          loadSdk: authorizedSdk, purpose: 'classification',
         }),
       });
       turnIntent = await intentResolver.resolve();
@@ -811,7 +808,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             try {
               return await runClaudeIntentTransport({...input,
                 config: {lightModel: finalizationModel, cwd: directory}, sdkEnv: finalizationEnv,
-                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk});
+                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk, purpose: 'review'});
             } finally {
               await fs.promises.rm(directory, {recursive: true, force: true});
             }
@@ -1742,7 +1739,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               mcpServers: {}, strictMcpConfig: true, persistSession: false,
               ...resolveClaudeSdkPermissionOptions(), cwd: runtimeConfig.cwd,
               ...(declarationRequest && remainingBudgetUsd !== undefined ? {maxBudgetUsd: remainingBudgetUsd} : {}),
-              effort: ctx.effectiveEffort, env: sdkEnv,
+              effort: recovery.kind === 'declaration' ? claudeEffortForPurpose('declaration_repair') : ctx.effectiveEffort,
+              env: sdkEnv,
             }),
           }, {maxRetries: 0, signal: executionLease.signal, runtimePerformance});
           const unregister = this.registerAbortHandle(sessionId, {abort: close});

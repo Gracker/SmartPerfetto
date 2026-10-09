@@ -3,7 +3,12 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
-import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
+import {
+  intentTransportTextResult,
+  runIntentTransport,
+  type IntentTransportInput,
+  type IntentTransportUnavailableReason,
+} from '../../intentTransport';
 import {getOpenCodeAssistantMessageId, getOpenCodeAssistantMessages} from './openCodeMessages';
 
 export interface OpenCodeIntentModel {
@@ -44,7 +49,7 @@ export interface OpenCodeClassifierHost {
 
 export interface OpenCodeIntentTransportInput extends IntentTransportInput {
   model: OpenCodeIntentModel;
-  /** Selects this call's provider controls; closeout, repair and review pass none. */
+  /** Selects this call's provider controls; the closeout and empty-body continuation pass none. */
   purpose?: OpenAITextRequestPurpose;
   /**
    * Reuse the runtime's explicit-env launcher and hardened config. The fresh
@@ -63,6 +68,18 @@ export interface OpenCodeIntentTransportInput extends IntentTransportInput {
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
+}
+
+/**
+ * OpenCode names a failed assistant message by its error type: an output cap
+ * is an incomplete reply, a provider, auth or unknown error is the provider's.
+ * Anything else stays an invalid response.
+ */
+function messageErrorReason(error: unknown): IntentTransportUnavailableReason {
+  const name = object(error)?.name;
+  if (name === 'MessageOutputLengthError') return 'incomplete_output';
+  if (name === 'APIError' || name === 'ProviderAuthError' || name === 'UnknownError') return 'provider_error';
+  return 'invalid_response';
 }
 
 function responseData(value: unknown): Record<string, unknown> | undefined {
@@ -123,7 +140,10 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
     scope.throwIfInactive();
     const info = object(message?.info);
     const completedAt = object(info?.time)?.completed;
-    if (info?.role !== 'assistant' || info.error != null
+    if (info?.role === 'assistant' && info.error != null) {
+      return {status: 'unavailable', reason: messageErrorReason(info.error)};
+    }
+    if (info?.role !== 'assistant'
       || typeof completedAt !== 'number' || !Number.isFinite(completedAt) || !Array.isArray(message?.parts)) {
       return {status: 'unavailable', reason: 'invalid_response'};
     }

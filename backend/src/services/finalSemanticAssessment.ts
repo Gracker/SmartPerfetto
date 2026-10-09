@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {conclusionParseIssueTriageCodes, parseClaimSemanticsDeclaration, type ConclusionContract,
   type ConclusionBindingEligibility} from '../agent/core/conclusionContract';
 import type {RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
+import {intentTransportErrorReason} from '../agentRuntime/intentTransport';
 import type {AnalysisRunSelection} from '../agentRuntime/analysisRunSpec';
 import {loadPromptTemplate} from '../agentv3/strategyLoader';
 import {
@@ -858,7 +859,8 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
       signal.throwIfAborted();
       // A review that finished before the stop is kept; a stopped call is not a provider failure.
       if (response.status !== 'ok' && stopSignal?.aborted) return stopped();
-      if (Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
+      // A failed call keeps the reason its transport reported; only a reply that arrived late is a timeout.
+      if (response.status === 'ok' && Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
       if (response.status !== 'ok') {
         const transportDetail = transportFailureDetail(response);
         if (response.status !== 'unavailable' || !member(response.reason, [
@@ -872,10 +874,10 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
       return parsed.assessment ? freezeJson({...parsed.assessment, promptFingerprint}) :
         emptyAssessment('unavailable', 'invalid_response', binding, parsed.diagnostic,
           undefined, parsed.diagnostic && `resp_${parsed.diagnostic.stage}_${parsed.diagnostic.code}`);
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
       if (stopSignal?.aborted) return stopped();
-      return fail('unavailable', Date.now() >= deadlineMs ? 'timeout' : 'provider_error');
+      return fail('unavailable', intentTransportErrorReason(error));
     }
   });
   slots.set(context, {fingerprint: snapshotFingerprint, promise});

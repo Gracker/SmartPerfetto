@@ -82,7 +82,7 @@ import {
 } from '../../runtimeConclusionProtocol';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
-import {dispatchWithModelCallRecord} from '../../intentTransport';
+import {dispatchWithModelCallRecord, openAiTextRequestPurposeFor} from '../../intentTransport';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
@@ -2901,16 +2901,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       try {
         assertActive();
         actualTurns++;
-        const repaired = await runOpenCodeIntentTransport({
-          prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
-          systemPrompt: prep.systemPrompt,
-          signal: executionLease.signal,
-          deadlineMs,
-          outputByteLimit: declarationOutputLimit,
-          model: modelConfig.model,
-          createClassifierHost: createNoToolsHost,
-          beforeDispatch,
-        });
+        const repaired = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
+          {purpose: 'declaration_repair', trigger: declarationRequest.reason},
+          {prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
+            systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
+            outputByteLimit: declarationOutputLimit},
+          input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
+            purpose: openAiTextRequestPurposeFor('declaration_repair'),
+            createClassifierHost: createNoToolsHost, beforeDispatch}));
         assertActive();
         // The accepted candidate is the original body with the completion's declaration.
         const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
@@ -3034,7 +3032,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         && result.completion?.reason !== 'turn_limit' ? {
         providerQuery: {text: prep.analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
         dispatchText: input => runOpenCodeIntentTransport({
-          ...input, model: modelConfig.model, createClassifierHost: createNoToolsHost,
+          ...input, model: modelConfig.model, purpose: openAiTextRequestPurposeFor('review'),
+          createClassifierHost: createNoToolsHost,
         }),
       } : {}),
     });

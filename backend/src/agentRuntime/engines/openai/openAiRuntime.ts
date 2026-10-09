@@ -51,7 +51,11 @@ import {
 import {isPlainObject} from '../../../utils/llmJson';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
 import {loadOpenAIConfig, type OpenAIAgentConfig} from './openAiConfig';
-import {buildOpenAIChatCompletionsTokenLimit} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {
+  buildOpenAIChatCompletionsTokenLimit,
+  buildOpenAITextRequestPurposeOptions,
+} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {openAiTextRequestPurposeFor} from '../../intentTransport';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
 import {createOpenAIToolsFromMcpDefinitions, openAiToolCallKey} from './openAiToolAdapter';
 import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
@@ -454,6 +458,22 @@ function buildOpenAIModelSettings(
   };
 }
 
+/**
+ * Provider controls of a declaration repair, which runs on the main client:
+ * the same purpose mapping as the no-tool transports, merged into the request
+ * body through `providerData`. Other recoveries keep the run's own settings.
+ */
+function declarationRepairProviderData(
+  config: Pick<OpenAIAgentConfig, 'baseURL' | 'protocol'>,
+): Record<string, unknown> | undefined {
+  if (!config.baseURL) return undefined;
+  try {
+    const options = buildOpenAITextRequestPurposeOptions({requestUrl: new URL(config.baseURL),
+      protocol: config.protocol, purpose: openAiTextRequestPurposeFor('declaration_repair')});
+    return Object.keys(options).length > 0 ? options : undefined;
+  } catch { return undefined; }
+}
+
 /** Keep the complete current-run transcript or decline recovery; never trim evidence. */
 function buildOpenAiOutputLimitRecoveryInput(
   history: AgentInputItem[],
@@ -524,6 +544,7 @@ export const __testing = {
   compactProviderErrorMessage,
   commitAfterProviderClose,
   buildOpenAIModelSettings,
+  declarationRepairProviderData,
   createOpenAiTerminalFetch,
   resolveOpenAiNativeCompletion,
   finalizeOpenAiCandidate,
@@ -742,7 +763,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         declarationRequest?: NativeDeclarationCompletionRequest;
       } | undefined;
       // Internal performance receipt: why the next attempt's model calls are made.
-      let attemptCall: {purpose: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger} = {purpose: 'answer_turn'};
+      let attemptCall: {purpose: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger;
+        reasoning?: 'provider_default' | 'disabled'} = {purpose: 'answer_turn'};
       const restoreRecoveryCandidate = () => {
         if (!recoveryCandidate) return;
         ({conclusion, attemptId, outputOrigin, finish, terminationMessage} = recoveryCandidate);
@@ -774,8 +796,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         let lastResponse: unknown;
         let streamCompleted = false;
         // One record per native model response; the first starts at dispatch so it includes connection setup.
-        const startAttemptModelCall = () => runtimePerformance.startModelCall({...attemptCall, model: selectedModel,
-          reasoning: 'provider_default'});
+        const startAttemptModelCall = () => runtimePerformance.startModelCall({reasoning: 'provider_default',
+          ...attemptCall, model: selectedModel});
         let modelCall: RuntimeModelCallSpan | undefined;
         let modelCallResponded = false;
         const answerStreamFilter = createOpenAiReasoningFilterState();
@@ -921,11 +943,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               declarationRequest);
             if (recoveryInput) {
               acceptsToolUpdates = false;
-              attemptCall = {purpose: recoveryReason === MISSING_NATIVE_DECLARATION || recoveryReason === INVALID_NATIVE_DECLARATION
-                ? 'declaration_repair' : 'continuation', trigger: recoveryReason};
+              const repairsDeclaration = recoveryReason === MISSING_NATIVE_DECLARATION || recoveryReason === INVALID_NATIVE_DECLARATION;
+              const repairProviderData = repairsDeclaration ? declarationRepairProviderData(config) : undefined;
+              attemptCall = {purpose: repairsDeclaration ? 'declaration_repair' : 'continuation', trigger: recoveryReason,
+                ...(repairProviderData ? {reasoning: 'thinking' in repairProviderData || 'reasoning' in repairProviderData
+                  ? 'disabled' : 'provider_default'} : {})};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
                 hadDeclarations: nativeProtocol.status !== 'absent', ...(declarationRequest ? {declarationRequest} : {})};
-              agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
+              agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none',
+                ...(repairProviderData ? {providerData: {...agent.modelSettings.providerData, ...repairProviderData}} : {})}});
               runInput = recoveryInput;
               continue;
             }
@@ -1072,7 +1098,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           // the finalization caller's signal and clamps the original absolute deadline.
           dispatchText: !semanticCall
             ? undefined : input => runOpenAiIntentTransport({...input,
-            config: finalizationConfig, purpose: 'final_semantic',
+            config: finalizationConfig, purpose: openAiTextRequestPurposeFor('review'),
             ...(finalizationConfig.maxOutputTokens !== undefined
               ? {maxOutputTokens: finalizationConfig.maxOutputTokens} : {})}),
         });

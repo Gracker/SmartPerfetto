@@ -6,7 +6,15 @@ export type OpenAIChatCompletionsTokenLimit =
   | { max_tokens: number }
   | { max_completion_tokens: number };
 
-export type OpenAITextRequestPurpose = 'classification' | 'final_semantic';
+/** Closed set of no-tool request purposes that may carry provider controls. */
+export type OpenAITextRequestPurpose = 'classification' | 'final_semantic' | 'declaration_repair' | 'continuation';
+
+export const OPENAI_TEXT_REQUEST_PURPOSES: readonly OpenAITextRequestPurpose[] =
+  Object.freeze(['classification', 'final_semantic', 'declaration_repair', 'continuation']);
+
+export function isOpenAITextRequestPurpose(value: unknown): value is OpenAITextRequestPurpose {
+  return typeof value === 'string' && (OPENAI_TEXT_REQUEST_PURPOSES as readonly string[]).includes(value);
+}
 
 export type OpenAITextRequestPurposeOptions = {
   thinking?: {type: 'disabled'};
@@ -24,8 +32,11 @@ export type OpenAITextRequestPurposeOptions = {
 const GLM_ORIGINS = new Set(['https://open.bigmodel.cn', 'https://api.z.ai']);
 
 /** Apply purpose-specific controls only to the exact official origin.
- * Classification disables default thinking; final semantic review requests JSON
- * syntax without changing its thinking policy. Gateways own their protocol semantics.
+ * Every no-tool delivery purpose (classification, final semantic review,
+ * declaration repair, continuation) disables default thinking: a GLM or
+ * DeepSeek review that reasoned first took minutes (median ~400 s) and often
+ * outlasted its budget. Final semantic review also requests JSON syntax.
+ * Gateways own their protocol semantics.
  * https://api-docs.deepseek.com/guides/thinking_mode/
  * https://api-docs.deepseek.com/guides/json_mode/
  */
@@ -34,21 +45,18 @@ export function buildOpenAITextRequestPurposeOptions(input: {
   protocol: 'chat_completions' | 'responses';
   purpose?: OpenAITextRequestPurpose;
 }): OpenAITextRequestPurposeOptions {
+  if (!isOpenAITextRequestPurpose(input.purpose)) return {};
   if (GLM_ORIGINS.has(input.requestUrl.origin)) {
     // GLM serves chat completions only; its JSON mode is not relied on here.
-    return input.purpose === 'classification' && input.protocol === 'chat_completions'
-      ? {thinking: {type: 'disabled'}} : {};
+    return input.protocol === 'chat_completions' ? {thinking: {type: 'disabled'}} : {};
   }
   if (input.requestUrl.origin !== 'https://api.deepseek.com') return {};
-  if (input.purpose === 'classification') {
-    return input.protocol === 'responses' ? {reasoning: {effort: 'none'}} : {thinking: {type: 'disabled'}};
-  }
-  if (input.purpose === 'final_semantic') {
-    return input.protocol === 'responses'
-      ? {text: {format: {type: 'json_object'}}}
-      : {response_format: {type: 'json_object'}};
-  }
-  return {};
+  const reasoning: OpenAITextRequestPurposeOptions = input.protocol === 'responses'
+    ? {reasoning: {effort: 'none'}} : {thinking: {type: 'disabled'}};
+  if (input.purpose !== 'final_semantic') return reasoning;
+  return input.protocol === 'responses'
+    ? {...reasoning, text: {format: {type: 'json_object'}}}
+    : {...reasoning, response_format: {type: 'json_object'}};
 }
 
 const MAX_COMPLETION_TOKENS_MODEL_PATTERNS = [

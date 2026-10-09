@@ -4135,7 +4135,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(piClassifierCalls[1].model).toBe(FakePiAgent.instances[0].state.model);
         expect(piClassifierCalls[1].context.tools).toEqual([]);
         expect(piClassifierCalls[1].context.messages).toHaveLength(1);
-        expect(piClassifierCalls[1].options).not.toHaveProperty('maxTokens');
+        // The review's output cap follows its byte limit (8 KiB -> 2048 tokens * 1.25), under the model cap.
+        expect(piClassifierCalls[1].options.maxTokens).toBe(2560);
         expect(piClassifierCalls[1].model).toMatchObject({maxTokens: 4096});
         expect(piClassifierCalls[0].options.maxTokens).toBe(1024);
         expect(trace.query.mock.calls.length).toBe(queriesBefore);

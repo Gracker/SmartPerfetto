@@ -1020,7 +1020,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(fs.existsSync(path.dirname(harness.directories[0]))).toBe(false);
   }));
 
-  it('disables GLM default thinking on the classifier host only', async () => withBackendDataDir(async () => {
+  it('disables GLM default thinking on the classifier and declaration-repair hosts, not the answer host', async () => withBackendDataDir(async () => {
     // glm-5.3-flash spent its whole 30 s classifier budget reasoning in the E2E matrix.
     const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
       providerID: 'smartperfetto', modelID: 'main-model', smallModel: 'light-model',
@@ -1028,9 +1028,10 @@ describe('OpenCode native turn intent and delivery', () => {
     await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'full'});
     expect(harness.configs[0].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
     expect(harness.configs[0].provider.smartperfetto.models['light-model'].options).toBeUndefined();
-    // The answer host and the no-tool declaration repair keep the provider default.
     expect(harness.configs).toHaveLength(3);
-    for (const config of harness.configs.slice(1)) expect(config.agent.smartperfetto.options).toBeUndefined();
+    // The answer host keeps the provider default; the no-tool declaration repair is a delivery purpose.
+    expect(harness.configs[1].agent.smartperfetto.options).toBeUndefined();
+    expect(harness.configs[2].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
   }));
 
   it('registers the native classifier model and keeps fast comparison tools', async () => withBackendDataDir(async () => {

@@ -1307,13 +1307,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         await retireAcquisition();
         sessionState.rounds += 1;
         try {
-          const repaired = await dispatchQoderText({
-            prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
-            systemPrompt: finalSystemPrompt,
-            signal: executionLease.signal,
-            deadlineMs: sessionState.deadlineMs,
-            outputByteLimit: declarationOutputLimit,
-          }, {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
+          const repaired = await dispatchWithModelCallRecord(options?.runManifestAttributionSink?.runtimePerformanceRecorder,
+            {purpose: 'declaration_repair', trigger: declarationRequest.reason},
+            {prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
+              systemPrompt: finalSystemPrompt, signal: executionLease.signal,
+              deadlineMs: sessionState.deadlineMs, outputByteLimit: declarationOutputLimit},
+            input => dispatchQoderText(input, {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
+              beforeDispatch));
           assertAuthorized();
           // The accepted candidate is the original body with the completion's declaration.
           const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
