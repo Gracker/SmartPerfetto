@@ -50,6 +50,7 @@ import * as traceCompletenessProber from '../../agentv3/traceCompletenessProber'
 import * as runtimePromptContext from '../runtimePromptContext';
 import * as providerManager from '../../services/providerManager';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import * as finalizationContext from '../analysisFinalizationContext';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
@@ -103,7 +104,12 @@ type FakeTraceProcessorService = TraceProcessorService & {
   getTrace: jest.MockedFunction<(traceId: string) => TraceInfo>;
 };
 
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   mockOpenCodeIntentTransport.mockReset();
   useIntent(BOUNDED_INTENT);
 });
@@ -700,6 +706,15 @@ describe('OpenCode native turn intent and delivery', () => {
       finalizationContext.takeFinalizationContext(result)?.dispose();
     }));
 
+    it('writes the missing body whatever the delivery-call estimate', async () => withBackendDataDir(async () => {
+      jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+        realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+      const {harness} = await run({closeoutAnswer: 'Three ANRs are recorded for com.example.app.'});
+      expect(harness.prompts).toHaveLength(3);
+      expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(undefined, expect.objectContaining({
+        purpose: 'continuation', failOpen: true}));
+    }));
+
     it('does not continue without returned data to answer from', async () => withBackendDataDir(async () => {
       const {harness} = await run({closeoutAnswer: 'An answer with nothing behind it.'}, false);
       expect(harness.prompts).toHaveLength(2);
@@ -721,6 +736,25 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.prompts[2].body.parts[0].text).toContain('invalid_declaration');
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    finalizationContext.takeFinalizationContext(result)?.dispose();
+  }));
+
+  it('does not send a declaration repair that cannot finish in the time left', async () => withBackendDataDir(async () => {
+    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
+    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+    const body = 'Frame 12 missed its deadline.';
+    const harness = createNativeIntentHarness({answer: candidateWithPopulation(body, 'everywhere'),
+      closeoutAnswer: candidateWithPopulation(body, 'cited_rows')});
+    const result = await harness.runtime.analyze('same scope', 'opencode-repair-budget', 'trace-opencode', {
+      analysisMode: 'full', runId: 'opencode-repair-budget',
+    });
+    expect(harness.prompts).toHaveLength(2);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledTimes(1);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      purpose: 'declaration_repair', failOpen: false, inputBytes: expect.any(Number)}));
+    expect(jest.mocked(runtimeCallStats.admitDeliveryCall).mock.results[0]?.value).toBe(false);
     finalizationContext.takeFinalizationContext(result)?.dispose();
   }));
 
@@ -814,6 +848,7 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(JSON.stringify(result)).not.toContain('"providerQuery"');
       expect(finalizationContext.takeFinalizationContext(result)).toBeUndefined();
       expect(context?.traceIdentity).toEqual({currentTraceId: 'trace-opencode', referenceTraceId: 'trace-reference'});
+      expect(context?.deliveryCall).toEqual({providerOrigin: 'http://127.0.0.1:9999', model: 'main-model'});
       expect(context?.deliveryContext).toMatchObject({acceptedCandidate: result.completion});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -1020,7 +1055,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(fs.existsSync(path.dirname(harness.directories[0]))).toBe(false);
   }));
 
-  it('disables GLM default thinking on the classifier host only', async () => withBackendDataDir(async () => {
+  it('disables GLM default thinking on the classifier and declaration-repair hosts, not the answer host', async () => withBackendDataDir(async () => {
     // glm-5.3-flash spent its whole 30 s classifier budget reasoning in the E2E matrix.
     const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
       providerID: 'smartperfetto', modelID: 'main-model', smallModel: 'light-model',
@@ -1028,9 +1063,10 @@ describe('OpenCode native turn intent and delivery', () => {
     await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'full'});
     expect(harness.configs[0].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
     expect(harness.configs[0].provider.smartperfetto.models['light-model'].options).toBeUndefined();
-    // The answer host and the no-tool declaration repair keep the provider default.
     expect(harness.configs).toHaveLength(3);
-    for (const config of harness.configs.slice(1)) expect(config.agent.smartperfetto.options).toBeUndefined();
+    // The answer host keeps the provider default; the no-tool declaration repair is a delivery purpose.
+    expect(harness.configs[1].agent.smartperfetto.options).toBeUndefined();
+    expect(harness.configs[2].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
   }));
 
   it('registers the native classifier model and keeps fast comparison tools', async () => withBackendDataDir(async () => {

@@ -28,6 +28,7 @@ import type {
 import {parseConclusionContractSidecar, parseTypedConclusionContractJson,
   hasConclusionContractDeclarations,
   parseDeclaredConclusionClaims, parseDeclaredRelationProposals,
+  isConclusionRootParseIssue,
 } from './conclusionContract';
 import {
   buildTriadStatement,
@@ -1065,7 +1066,7 @@ function parseMarkdownToConclusionContract(
 function parseJsonToConclusionContract(
   rawText: string,
   mode: ConclusionOutputMode,
-): {status: 'absent' | 'valid' | 'invalid'; contract?: ConclusionContract} {
+): {status: 'absent' | 'valid' | 'partially_valid' | 'invalid'; contract?: ConclusionContract} {
   const typed = parseTypedConclusionContractJson(rawText);
   if (typed.status !== 'absent') return typed;
   const cleaned = stripJsonCodeFence(rawText);
@@ -1218,7 +1219,8 @@ function parseJsonToConclusionContract(
     claims,
     ...(declarations || relations ? {
       parseIssues: declarationIssues,
-      bindingEligibility: declarationIssues.length ? 'ineligible' as const : 'eligible' as const,
+      // Per-item issues invalidate only their own entry; the root layer decides eligibility.
+      bindingEligibility: declarationIssues.some(isConclusionRootParseIssue) ? 'ineligible' as const : 'eligible' as const,
       ...(declarations && Object.prototype.hasOwnProperty.call(declarations, 'rawClaims') ? {rawClaims: declarations.rawClaims} : {}),
       ...(relations ? {relationProposals: relations.relationProposals,
         ...(Object.prototype.hasOwnProperty.call(relations, 'rawRelationProposals')

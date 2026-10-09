@@ -1107,6 +1107,8 @@ export interface AnalysisReceiptBase {
     referencesMatchedClaims?: number;
     /** Claims whose typed proposition a finite proof established. Absent in older receipts and before verifier@2. */
     propositionProvedClaims?: number;
+    /** Claims whose own declaration entry failed item validation; never verified, never contradicted. Absent in older receipts. */
+    invalidDeclarationClaims?: number;
   };
   qualityGates: {
     finalReportContract: AnalysisReceiptGateStatus;

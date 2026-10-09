@@ -1209,6 +1209,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context!.deliveryContext).toMatchObject({completion: result.completion});
       expect(context!.runId).toBe('actual-run');
+      expect(context!.deliveryCall?.model).toBe('pinned-primary-review');
       expect(context!.traceIdentity).toEqual({currentTraceId: 'current-trace', referenceTraceId: 'reference-trace'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -1228,7 +1229,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const sdkCalls = claudeSdkMock.__getQueryCalls();
       expect(sdkCalls).toHaveLength(3);
       expect(sdkCalls[2].options).toMatchObject({model: 'pinned-primary-review', maxTurns: 1,
-        tools: [], allowedTools: [], mcpServers: {}, persistSession: false});
+        tools: [], allowedTools: [], mcpServers: {}, persistSession: false, effort: 'low'});
       expect(sdkCalls[2].options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe(outputLimit);
       expect(sdkCalls[2].options.resume).toBeUndefined();
       expect(sdkCalls[2].options.cwd).not.toBe(sdkCalls[0].options.cwd);
@@ -3188,10 +3189,12 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
 
     expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    // Only classification asks for low effort; the answer and its repair keep the run's own.
+    // Classification and the declaration repair ask for low effort; the answer keeps the run's own.
     const classifierCalls = rawClaudeSdkMock.__getQueryCalls().filter(isClassifierCall);
     expect(classifierCalls.map((call: any) => call.options.effort)).toEqual(['low']);
-    expect(claudeSdkMock.__getQueryCalls().every((call: any) => call.options.effort !== 'low')).toBe(true);
+    const [answerCall, repairCall] = claudeSdkMock.__getQueryCalls();
+    expect((answerCall as any).options.effort).not.toBe('low');
+    expect((repairCall as any).options.effort).toBe('low');
   });
 
   it('keeps the original Claude body and takes the declaration when a completion changes the body', async () => {

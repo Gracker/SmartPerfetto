@@ -307,6 +307,8 @@ function buildClaimAudit(
       referencesMatchedClaims: summary.referencesMatchedClaimCount ?? 0,
       ...(summary.propositionProvedClaimCount !== undefined
         ? {propositionProvedClaims: summary.propositionProvedClaimCount} : {}),
+      ...(summary.invalidDeclarationClaimCount !== undefined
+        ? {invalidDeclarationClaims: summary.invalidDeclarationClaimCount} : {}),
     };
   }
   const byLevel = new Map<EvidenceSupportLevel, number>();

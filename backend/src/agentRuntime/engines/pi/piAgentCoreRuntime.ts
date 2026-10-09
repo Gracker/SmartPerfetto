@@ -17,6 +17,7 @@ import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
+  candidateHasAnswerBody,
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
   buildNativeOutputCompletionPrompt,
@@ -29,6 +30,7 @@ import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnal
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import { pathToFileURL } from 'url';
@@ -1760,10 +1762,21 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const outputLimitDelivery = acceptedCompletion.status === 'incomplete' && acceptedCompletion.reason === 'output_limit' &&
         acceptedAssistant?.deferred === undefined && !acceptedAssistant?.errorMessage &&
         !(Array.isArray(acceptedAssistant?.content) && acceptedAssistant.content.some(part => part?.type === 'toolCall'));
-      if (recovery &&
+      const correctionPrompt = recovery && (recovery.kind === 'declaration'
+        ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
+        : buildNativeOutputCompletionPrompt({candidate: acceptedText,
+          diagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1),
+          intent: turnIntent, issues: recovery.issues, outputLanguage}));
+      if (recovery && correctionPrompt &&
         rounds < turnBudget.totalTurns
         && Date.now() < getRunDeadlineMs()
-        && (acceptedCompletion.status === 'completed' || outputLimitDelivery)) {
+        && (acceptedCompletion.status === 'completed' || outputLimitDelivery)
+        && admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+          providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id,
+          purpose: declarationRequest ? 'declaration_repair' : 'continuation',
+          inputBytes: Buffer.byteLength(correctionPrompt) + Buffer.byteLength(prep.systemPrompt),
+          remainingMs: getRunDeadlineMs() - Date.now(),
+          failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: !declarationRequest && !candidateHasAnswerBody(acceptedText)})})) {
         const originalTools = agent.state.tools;
         const originalSystemPrompt = agent.state.systemPrompt;
         const originalError = agent.state.errorMessage;
@@ -1776,11 +1789,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           agent.state.systemPrompt = declarationRequest
             ? originalSystemPrompt
             : `${originalSystemPrompt}\n\n${loadPiFinalReportCorrectionSystemPrompt(outputLanguage)}`;
-          const correctionDiagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1);
-          const correctionPrompt = recovery.kind === 'declaration'
-            ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
-            : buildNativeOutputCompletionPrompt({candidate: acceptedText, diagnostic: correctionDiagnostic,
-              intent: turnIntent, issues: recovery.issues, outputLanguage});
           const candidate = await runProviderPrompt(correctionPrompt,
             Math.min(turnBudget.totalTurns, rounds + 1));
           authorization.assertCurrent();
@@ -1909,6 +1917,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               ...input, deadlineMs: Math.min(deadlineMs, input.deadlineMs), providerRuntime,
               purpose: 'review',
             }),
+            deliveryCall: {providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id},
           } : {}),
       });
     }

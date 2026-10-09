@@ -3,11 +3,14 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {
+  runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   startRuntimeModelCall,
+  type RuntimeModelCallPurpose,
   type RuntimeModelCallStart,
   type RuntimePerformanceRecorder,
 } from './runtimePerformance';
+import type {OpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
 
 export interface IntentTransportInput {
   prompt: string;
@@ -41,6 +44,61 @@ export type IntentTransportUnavailableReason =
 export type IntentTransportResult =
   | {status: 'ok'; text: string; actualModel?: string; finishReason?: string; attempts?: number}
   | {status: 'unavailable'; reason: IntentTransportUnavailableReason; httpStatus?: number; attempts?: number};
+
+/**
+ * The one closed mapping from a run's model-call purpose to the provider
+ * controls a no-tool text request may carry. An answer turn has none: it keeps
+ * the provider's own reasoning policy.
+ */
+const OPENAI_TEXT_REQUEST_PURPOSES: Readonly<Record<RuntimeModelCallPurpose, OpenAITextRequestPurpose | undefined>> =
+  Object.freeze({
+    classification: 'classification',
+    review: 'final_semantic',
+    declaration_repair: 'declaration_repair',
+    continuation: 'continuation',
+    answer_turn: undefined,
+  });
+
+export function openAiTextRequestPurposeFor(purpose: RuntimeModelCallPurpose): OpenAITextRequestPurpose | undefined {
+  return OPENAI_TEXT_REQUEST_PURPOSES[purpose];
+}
+
+/** Error codes Node and undici give a request that ran out of time rather than failed. */
+const TIMEOUT_ERROR_CODES = new Set([
+  'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'ETIMEDOUT',
+]);
+
+/**
+ * Whether a thrown transport error says the request timed out. Reads only the
+ * error's structured name and code along its bounded cause chain, never its
+ * message: a fetch that waited past undici's headers timeout (a long
+ * non-streamed reply, ~300 s) is a timeout, not a provider failure.
+ */
+export function intentTransportErrorReason(error: unknown): 'timeout' | 'provider_error' {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth++) {
+    const candidate = current as {name?: unknown; code?: unknown; cause?: unknown};
+    if (candidate.name === 'TimeoutError') return 'timeout';
+    if (typeof candidate.code === 'string' && TIMEOUT_ERROR_CODES.has(candidate.code)) return 'timeout';
+    current = candidate.cause;
+  }
+  return 'provider_error';
+}
+
+/**
+ * Why a Claude-protocol SDK `result` message (Claude Agent SDK, Qoder) is not
+ * a usable success. The CLI reports a provider API error as a result with
+ * `is_error: true`, and an execution failure as `error_during_execution`:
+ * both are provider failures, read from the structured fields only. A refusal
+ * or any other shape stays an invalid response.
+ */
+export function sdkResultFailureReason(message: {subtype?: unknown; is_error?: unknown; stop_reason?: unknown}):
+  IntentTransportUnavailableReason {
+  if (message.stop_reason === 'refusal') return 'invalid_response';
+  if (message.subtype === 'error_during_execution') return 'provider_error';
+  if (message.subtype === 'success' && message.is_error === true) return 'provider_error';
+  return 'invalid_response';
+}
 
 type Cleanup = (signal: AbortSignal) => unknown | Promise<unknown>;
 export interface IntentTransportScope {
@@ -141,9 +199,9 @@ export async function runIntentTransport(
     if (timedOut || Date.now() >= input.deadlineMs) {
       result = {status: 'unavailable', reason: 'timeout'};
     }
-  } catch {
+  } catch (error) {
     result = {status: 'unavailable', reason: timedOut || Date.now() >= input.deadlineMs
-      ? 'timeout' : 'provider_error'};
+      ? 'timeout' : intentTransportErrorReason(error)};
   } finally {
     finished = true;
     clearTimeout(timer);
@@ -168,6 +226,11 @@ export function intentTransportTextResult(
   return {status: 'ok', text, ...receipt};
 }
 
+/** UTF-8 bytes of the text one transport request sends. */
+export function intentTransportInputBytes(input: Pick<IntentTransportInput, 'prompt' | 'systemPrompt'>): number {
+  return Buffer.byteLength(input.prompt, 'utf8') + Buffer.byteLength(input.systemPrompt, 'utf8');
+}
+
 /**
  * Dispatch one transport request inside an internal model-call record. Without
  * a recorder the request is passed through unchanged; with one, the only
@@ -180,7 +243,9 @@ export async function dispatchWithModelCallRecord(
   dispatch: (input: IntentTransportInput) => Promise<IntentTransportResult>,
 ): Promise<IntentTransportResult> {
   if (!recorder) return dispatch(input);
-  const span = startRuntimeModelCall(recorder, call);
+  const span = startRuntimeModelCall(recorder, {
+    inputBytesBucket: runtimeModelCallInputBytesBucket(intentTransportInputBytes(input)), ...call,
+  });
   let reasoning: 'provider_default' | 'disabled' | undefined;
   let usage: unknown;
   const observer: IntentTransportObserver = {

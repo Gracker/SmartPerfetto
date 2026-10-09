@@ -11,6 +11,7 @@ import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
+  candidateHasAnswerBody,
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
@@ -18,7 +19,8 @@ import {
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
-import {runClaudeIntentTransport} from './claudeIntentTransport';
+import {claudeEffortForPurpose, runClaudeIntentTransport} from './claudeIntentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {
   attachFinalizationContext,
   attachRunDeliveryRecord,
@@ -195,6 +197,7 @@ import {
 import type { RuntimeSelection } from '../../runtimeSelection';
 import {
   createRuntimePerformanceRun,
+  runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
@@ -738,14 +741,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }),
         signal: executionLease.signal,
         deadlineMs: Date.now() + resolvedConfig.classifierTimeoutMs,
-        // Classification needs no deliberation. The CLI drops `thinking: disabled`, and a
-        // thinking-by-default gateway (GLM) then spent 30-40 s on this prompt, past the 30 s
-        // classifier budget; low effort is what the CLI forwards (~7-12 s there). The review
-        // and closeout calls on this transport keep the SDK default.
+        // Classification needs no deliberation (claudeEffortForPurpose).
         dispatch: input => runClaudeIntentTransport({
           ...input, config: resolvedConfig, sdkEnv,
           sdkBinaryOptions: getSdkBinaryOption(sdkEnv),
-          loadSdk: authorizedSdk, effort: 'low',
+          loadSdk: authorizedSdk, purpose: 'classification',
         }),
       });
       turnIntent = await intentResolver.resolve();
@@ -806,12 +806,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
           traceIdentity: runTraceIdentity(traceId, options),
+          deliveryCall: {providerOrigin: finalizationEnv.ANTHROPIC_BASE_URL, model: finalizationModel},
           dispatchText: async input => {
             const directory = await fs.promises.mkdtemp(path.join(tmpdir(), 'smartperfetto-claude-review-'));
             try {
               return await runClaudeIntentTransport({...input,
                 config: {lightModel: finalizationModel, cwd: directory}, sdkEnv: finalizationEnv,
-                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk});
+                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk, purpose: 'review'});
             } finally {
               await fs.promises.rm(directory, {recursive: true, force: true});
             }
@@ -1720,29 +1721,39 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         const recovery = chooseRuntimeDraftRecovery({
           declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues,
         });
-        if (recovery &&
+        const correctionPrompt = recovery && (recovery.kind === 'declaration'
+          ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
+          : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage));
+        const correctionPurpose = recovery?.kind === 'declaration' ? 'declaration_repair' : 'continuation';
+        const correctionInputBytes = Buffer.byteLength(correctionPrompt || '') + Buffer.byteLength(ctx.systemPrompt);
+        if (recovery && correctionPrompt &&
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
-            remainingTurns > 0 && Date.now() < requestDeadline) {
+            remainingTurns > 0 && Date.now() < requestDeadline &&
+            admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+              providerOrigin: sdkEnv.ANTHROPIC_BASE_URL, model: runtimeConfig.model, purpose: correctionPurpose,
+              inputBytes: correctionInputBytes, remainingMs: requestDeadline - Date.now(),
+              failOpen: deliveryCallFailsOpen(turnIntent,
+                {bodyMissing: correctionPurpose === 'continuation' && !candidateHasAnswerBody(nativeCandidate)})})) {
           assertAuthorized();
           answerDraft?.reset();
           const correctionAttemptId = `${runId}:correction:1`;
           const correctionCall = runtimePerformance.startModelCall({
-            purpose: recovery.kind === 'declaration' ? 'declaration_repair' : 'continuation',
+            purpose: correctionPurpose,
             ...(recovery.kind === 'declaration' ? {trigger: recovery.request.reason} : {}),
-            model: runtimeConfig.model,
+            model: runtimeConfig.model, providerOrigin: sdkEnv.ANTHROPIC_BASE_URL,
+            inputBytesBucket: runtimeModelCallInputBytesBucket(correctionInputBytes),
           });
           let correctionTerminal = 'none' as 'none' | 'completed' | 'failed';
           const {stream, close} = sdkQueryWithRetry({
-            prompt: recovery.kind === 'declaration'
-              ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
-              : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage),
+            prompt: correctionPrompt,
             options: withAuthorizationHooks({
               model: runtimeConfig.model, maxTurns: 1, systemPrompt: ctx.sdkSystemPrompt,
               includePartialMessages: true, settingSources: [], tools: [], allowedTools: [],
               mcpServers: {}, strictMcpConfig: true, persistSession: false,
               ...resolveClaudeSdkPermissionOptions(), cwd: runtimeConfig.cwd,
               ...(declarationRequest && remainingBudgetUsd !== undefined ? {maxBudgetUsd: remainingBudgetUsd} : {}),
-              effort: ctx.effectiveEffort, env: sdkEnv,
+              effort: recovery.kind === 'declaration' ? claudeEffortForPurpose('declaration_repair') : ctx.effectiveEffort,
+              env: sdkEnv,
             }),
           }, {maxRetries: 0, signal: executionLease.signal, runtimePerformance});
           const unregister = this.registerAbortHandle(sessionId, {abort: close});

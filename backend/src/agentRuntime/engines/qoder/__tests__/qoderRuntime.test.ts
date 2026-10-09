@@ -1332,6 +1332,7 @@ describe('QoderRuntime', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context).toMatchObject({runId: 'final-context-run', sessionId: 'final-context',
         traceIdentity: {currentTraceId: 'trace-1', referenceTraceId: 'trace-2'}, hasSemanticTransport: true});
+      expect(context.deliveryCall?.model).toEqual(expect.any(String));
       expect(context.deliveryContext).toMatchObject({completion: result.completion,
         acceptedCandidate: {conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
       expect(context.deadlineMs).toBeGreaterThanOrEqual(startedAt + 2000);
@@ -1693,6 +1694,27 @@ describe('QoderRuntime', () => {
       const context = takeFinalizationContext(result)!;
       try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(repaired);}
       finally {context.dispose();}
+    });
+
+    it('records the declaration completion as a declaration_repair model call', async () => {
+      const body = 'Native body remains unchanged.';
+      const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'The authored body is preserved.'}], clusters: [], evidenceChain: [],
+        claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
+      mockIntentTransport
+        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+        .mockResolvedValueOnce({status: 'ok', text: `${body}\n${sidecar}`, finishReason: 'end_turn'});
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
+      ]));
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      await createRuntime().analyze('test', 'qoder-repair-record', 'trace-1', {
+        runId: 'qoder-repair-record', runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      });
+      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+      const calls = runtimePerformanceRecorder.seal().modelCalls ?? [];
+      expect(calls.filter(call => call.purpose === 'declaration_repair'))
+        .toEqual([expect.objectContaining({trigger: 'missing_declaration', outcome: 'ok'})]);
     });
 
     it('does not dispatch declaration completion when the original body cannot fit the Qoder output cap', async () => {

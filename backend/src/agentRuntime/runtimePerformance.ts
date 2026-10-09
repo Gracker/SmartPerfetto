@@ -85,11 +85,32 @@ export interface RuntimeModelCallUsageV1 {
   cachedInputTokens?: number;
 }
 
+/** Closed request-size bucket of a model call's prompt and system text. */
+export const RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS = ['le32k', 'le128k', 'gt128k'] as const;
+export type RuntimeModelCallInputBytesBucket = typeof RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS[number];
+
+export function runtimeModelCallInputBytesBucket(bytes: number): RuntimeModelCallInputBytesBucket | undefined {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return undefined;
+  return bytes <= 32 * 1024 ? 'le32k' : bytes <= 128 * 1024 ? 'le128k' : 'gt128k';
+}
+
+/** The URL origin of a configured provider base URL; never its path, query or credentials. */
+export function runtimeProviderOrigin(baseUrl: unknown): string | undefined {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) return undefined;
+  try {
+    const url = new URL(baseUrl.trim());
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.origin.length <= 256 ? url.origin : undefined;
+  } catch { return undefined; }
+}
+
 export interface RuntimePerformanceModelCallReceiptV1 {
   purpose: RuntimeModelCallPurpose;
   trigger?: RuntimeModelCallTrigger;
   /** Model the provider reported, else the one requested. Internal receipt only. */
   model?: string;
+  /** Origin of the configured provider base URL (`runtimeProviderOrigin`). Internal receipt only. */
+  providerOrigin?: string;
+  inputBytesBucket?: RuntimeModelCallInputBytesBucket;
   reasoning?: RuntimeModelCallReasoning;
   startOffsetMs: number;
   durationMs: number;
@@ -99,6 +120,20 @@ export interface RuntimePerformanceModelCallReceiptV1 {
   /** Visible body vs machine declaration characters of the text this call produced. */
   output?: {bodyChars: number; sidecarChars: number};
   usage?: RuntimeModelCallUsageV1;
+}
+
+/**
+ * A delivery call's budget decision made before dispatch
+ * (`assessDeliveryCallBudget`): the estimate it compared and where it came from.
+ */
+export interface RuntimePerformanceDeliveryBudgetReceiptV1 {
+  purpose: RuntimeModelCallPurpose;
+  decision: 'dispatch' | 'skip';
+  source: 'stats' | 'default';
+  estimateMs: number;
+  remainingMs: number;
+  /** Why the estimate is a fixed default. */
+  diagnostic?: 'stats_not_configured' | 'stats_unreadable' | 'no_samples';
 }
 
 /**
@@ -120,6 +155,7 @@ export interface RuntimePerformanceReceiptV1 {
   /** Absent in receipts recorded before per-call records existed. */
   modelCalls?: RuntimePerformanceModelCallReceiptV1[];
   finalReview?: RuntimePerformanceFinalReviewReceiptV1;
+  deliveryBudgets?: RuntimePerformanceDeliveryBudgetReceiptV1[];
   truncated?: {
     phases: number;
     tools: number;
@@ -139,6 +175,8 @@ export interface RuntimeModelCallStart {
   trigger?: RuntimeModelCallTrigger;
   model?: string;
   reasoning?: RuntimeModelCallReasoning;
+  providerOrigin?: string;
+  inputBytesBucket?: RuntimeModelCallInputBytesBucket;
 }
 
 export interface RuntimeModelCallEnd {
@@ -263,6 +301,7 @@ export class RuntimePerformanceRecorder {
   private readonly sql: RuntimePerformanceSqlReceiptV1[] = [];
   private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
   private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
+  private readonly deliveryBudgets: RuntimePerformanceDeliveryBudgetReceiptV1[] = [];
   private nextToolSequence = 0;
   private readonly truncated = {
     phases: 0,
@@ -294,6 +333,7 @@ export class RuntimePerformanceRecorder {
       || this.sql.length > 0
       || this.modelCalls.length > 0
       || this.finalReview !== undefined
+      || this.deliveryBudgets.length > 0
       || this.truncated.phases > 0
       || this.truncated.tools > 0
       || this.truncated.sql > 0
@@ -435,6 +475,9 @@ export class RuntimePerformanceRecorder {
           purpose: input.purpose,
           ...(input.trigger ? {trigger: input.trigger} : {}),
           ...(model ? {model} : {}),
+          ...(runtimeProviderOrigin(input.providerOrigin) ? {providerOrigin: runtimeProviderOrigin(input.providerOrigin)} : {}),
+          ...(input.inputBytesBucket && RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS.includes(input.inputBytesBucket)
+            ? {inputBytesBucket: input.inputBytesBucket} : {}),
           ...(end.reasoning ?? input.reasoning ? {reasoning: end.reasoning ?? input.reasoning} : {}),
           startOffsetMs,
           durationMs: boundedMs((doneOffsetMs ?? this.offsetMs()) - startOffsetMs, 'model_call_duration'),
@@ -462,6 +505,15 @@ export class RuntimePerformanceRecorder {
     };
   }
 
+  recordDeliveryBudget(input: RuntimePerformanceDeliveryBudgetReceiptV1): void {
+    this.assertCollecting('record_delivery_budget');
+    if (this.deliveryBudgets.length >= DEFAULT_MAX_RECEIPT_ITEMS) return;
+    this.deliveryBudgets.push({purpose: input.purpose, decision: input.decision, source: input.source,
+      estimateMs: boundedMs(input.estimateMs, 'delivery_budget_estimate'),
+      remainingMs: boundedMs(input.remainingMs, 'delivery_budget_remaining'),
+      ...(input.diagnostic ? {diagnostic: input.diagnostic} : {})});
+  }
+
   seal(): RuntimePerformanceReceiptV1 {
     if (this.sealedReceipt) return this.sealedReceipt;
     const receipt: RuntimePerformanceReceiptV1 = {
@@ -474,6 +526,7 @@ export class RuntimePerformanceRecorder {
       sql: [...this.sql],
       ...(this.modelCalls.length > 0 ? {modelCalls: [...this.modelCalls]} : {}),
       ...(this.finalReview ? {finalReview: this.finalReview} : {}),
+      ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
       ...(this.truncated.phases > 0
         || this.truncated.tools > 0
         || this.truncated.sql > 0
@@ -615,6 +668,14 @@ export function recordRuntimeFinalReview(
   input: RuntimePerformanceFinalReviewReceiptV1,
 ): void {
   try { recorder?.recordFinalReview(input); } catch { /* Internal observability only. */ }
+}
+
+/** Record a delivery call's pre-dispatch budget decision on an optional recorder; never throws. */
+export function recordRuntimeDeliveryBudget(
+  recorder: RuntimePerformanceRecorder | undefined,
+  input: RuntimePerformanceDeliveryBudgetReceiptV1,
+): void {
+  try { recorder?.recordDeliveryBudget(input); } catch { /* Internal observability only. */ }
 }
 
 export function createRuntimePerformanceRun(

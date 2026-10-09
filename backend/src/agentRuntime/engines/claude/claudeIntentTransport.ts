@@ -4,7 +4,13 @@
 
 import type {Options} from '@anthropic-ai/claude-agent-sdk';
 import type {ClaudeAgentConfig} from './claudeConfig';
-import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
+import {
+  intentTransportTextResult,
+  runIntentTransport,
+  sdkResultFailureReason,
+  type IntentTransportInput,
+} from '../../intentTransport';
+import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 import {isPlainObject} from '../../../utils/llmJson';
 import {claudeMessageHasToolUse} from './claudeSdkMessageGuards';
 
@@ -23,8 +29,19 @@ export interface ClaudeIntentTransportInput extends IntentTransportInput {
   /** Already resolved by getSdkBinaryOption using that same scoped environment. */
   sdkBinaryOptions: Pick<Options, 'pathToClaudeCodeExecutable'>;
   loadSdk(): Promise<ClaudeIntentSdk>;
-  /** Only the caller knows how much deliberation its request needs; omitted, the SDK default. */
-  effort?: Options['effort'];
+  /** Selects the call's deliberation (`claudeEffortForPurpose`); omitted, the SDK default. */
+  purpose?: RuntimeModelCallPurpose;
+}
+
+/**
+ * Classification, the final semantic review and a declaration repair need no
+ * deliberation. The CLI drops `thinking: disabled`, and a thinking-by-default
+ * gateway (GLM) then spent 30-40 s on a classification prompt and minutes on
+ * a review; low effort is what the CLI forwards. Answer turns and closeout or
+ * continuation calls keep the run's own effort.
+ */
+export function claudeEffortForPurpose(purpose: RuntimeModelCallPurpose | undefined): Options['effort'] | undefined {
+  return purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ? 'low' : undefined;
 }
 
 /** Uses the caller's pinned Claude environment for one isolated classification query. */
@@ -43,6 +60,7 @@ export function runClaudeIntentTransport(input: ClaudeIntentTransportInput) {
       if (!queryHasClose) scope.signal.removeEventListener('abort', onAbort);
     });
     if (scope.signal.aborted) onAbort();
+    const effort = claudeEffortForPurpose(input.purpose);
     const query = sdk.query({
       prompt: input.prompt,
       options: {
@@ -51,7 +69,7 @@ export function runClaudeIntentTransport(input: ClaudeIntentTransportInput) {
         cwd: input.config.cwd,
         env: input.sdkEnv,
         systemPrompt: input.systemPrompt,
-        ...(input.effort ? {effort: input.effort} : {}),
+        ...(effort ? {effort} : {}),
         maxTurns: 1,
         tools: [], allowedTools: [], mcpServers: {}, strictMcpConfig: true,
         settingSources: [], skills: [], plugins: [], persistSession: false,
@@ -79,7 +97,7 @@ export function runClaudeIntentTransport(input: ClaudeIntentTransportInput) {
       }
       if (message.type !== 'result') continue;
       if (message.subtype !== 'success' || message.is_error !== false || message.stop_reason === 'refusal') {
-        return {status: 'unavailable', reason: 'invalid_response'};
+        return {status: 'unavailable', reason: sdkResultFailureReason(message)};
       }
       if (message.stop_reason === 'tool_use') return {status: 'unavailable', reason: 'tool_use'};
       if (message.stop_reason === 'max_tokens') return {status: 'unavailable', reason: 'incomplete_output'};

@@ -1266,7 +1266,10 @@ function buildClaimSupport(
   bindingEligibility?: import('../../agent/core/conclusionContract').ConclusionBindingEligibility,
 ): ClaimSupportV1 {
   const claimId = claim.id || `claim-${index + 1}`;
-  const references = [
+  // An invalid claim keeps its row for display and fingerprints but is never
+  // anchored: no captured cell may be cited for it (plan A.5).
+  const invalid = claim.valid === false;
+  const references = invalid ? [] : [
     ...(claim.references || []),
     ...artifactRefsToClaimReferences(claim),
     ...(claim.semantics?.scope.subjectRefs || []),
@@ -1274,7 +1277,7 @@ function buildClaimSupport(
   ];
   const unique = [...new Map(references.map(ref => [evidenceReferenceKey(ref), ref])).values()];
   const anchors = unique.map(ref => buildAnchor(claimId, ref, findEnvelopeForRef(envelopes, ref, prepared,
-    bindingEligibility === 'ineligible' ? 'binding_ineligible' : undefined)));
+    invalid || bindingEligibility === 'ineligible' ? 'binding_ineligible' : undefined)));
   const kind = inferClaimKind(claim, references);
   const supportLevel = supportLevelForClaim(kind, anchors);
   return {
@@ -1282,7 +1285,9 @@ function buildClaimSupport(
     kind,
     text: claim.text,
     semantics: claim.semantics,
-    bindingEligibility,
+    // Per-claim standing: an invalid entry is unbindable on its own, distinct
+    // from a root-level rejection that marks every claim ineligible.
+    bindingEligibility: invalid ? 'ineligible' : bindingEligibility,
     anchors,
     supportLevel,
     ...(supportLevel === 'inference' && claim.kind === 'causal'

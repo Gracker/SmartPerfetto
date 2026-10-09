@@ -5,7 +5,7 @@
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import type {AssistantMessage} from '@earendil-works/pi-ai';
 import type {PiAgentCoreProviderRuntime} from '../engines/pi/piAgentCoreProvider';
-import {runPiIntentTransport, type PiIntentTransportInput} from '../engines/pi/piIntentTransport';
+import {piOutputTokensForByteLimit, runPiIntentTransport, type PiIntentTransportInput} from '../engines/pi/piIntentTransport';
 
 function fixture() {
   const model: PiAgentCoreProviderRuntime['model'] = {
@@ -54,15 +54,21 @@ describe('Pi intent transport', () => {
     expect(options).not.toHaveProperty('sessionId');
   });
 
-  it('leaves the same configured model capability to the native SDK when no explicit output cap is supplied', async () => {
+  it('derives the output cap from the byte limit when no explicit cap is supplied', async () => {
     const {input, model, streamFn} = fixture();
     delete (input as Partial<PiIntentTransportInput>).maxOutputTokens;
     model.maxTokens = 65_536;
-    expect(await runPiIntentTransport(input)).toMatchObject({status: 'ok'});
+    // A provider default cap ended GLM reviews at `length`: 64 KiB -> 16384 tokens * 1.25.
+    expect(await runPiIntentTransport({...input, outputByteLimit: 64 * 1024})).toMatchObject({status: 'ok'});
     expect(streamFn.mock.calls[0][0]).toBe(model);
-    expect(streamFn.mock.calls[0][0].maxTokens).toBe(65_536);
-    expect(streamFn.mock.calls[0][2]).not.toHaveProperty('maxTokens');
+    expect(streamFn.mock.calls[0][2]).toMatchObject({maxTokens: 20_480});
     expect(streamFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps the derived output limit at the model cap', () => {
+    expect(piOutputTokensForByteLimit(64 * 1024, 8192)).toBe(8192);
+    expect(piOutputTokensForByteLimit(1, 8192)).toBe(2);
+    expect(piOutputTokensForByteLimit(1024, 65_536)).toBe(320);
   });
 
   it.each(['classification', 'declaration_repair', 'continuation', 'review'] as const)(

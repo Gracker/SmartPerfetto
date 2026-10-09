@@ -11,6 +11,7 @@ import {parseConclusionContractSidecar, parseTypedConclusionContractJson,
   MAX_CONCLUSION_STRUCTURE_DETAILS, isConclusionContractStructureDetail,
   MAX_RELATION_PROPOSAL_DIAGNOSTICS, isConclusionRelationProposalDiagnostic, CONCLUSION_PARSE_ISSUE_CODES,
   MAX_CLAIM_DIAGNOSTICS, isConclusionClaimDiagnostic, copyConclusionClaimDiagnostic,
+  isConclusionRootParseIssue,
   type ConclusionContractStructureDetail, type ConclusionContractParseIssue,
   type ConclusionRelationProposalDiagnostic, type ConclusionClaimDiagnostic} from '../agent/core/conclusionContract';
 import {parseConversationResponseWithProjection, type ConversationEvidenceRef,
@@ -62,8 +63,11 @@ export function inspectCandidateProtocol(raw: string, conversationInput?: {
   ) : undefined;
   const canonicalBody = removeMachineSegments(raw, [...sidecar.machineSegments, ...(conversation?.machineSegments ?? [])]);
   const typedJson = sidecar.status === 'absent' ? parseTypedConclusionContractJson(canonicalBody) : undefined;
-  const status = sidecar.status === 'invalid' || typedJson?.status === 'invalid' ? 'invalid'
-    : sidecar.status === 'valid' || typedJson?.status === 'valid' ? 'valid' : 'absent';
+  const invalid = sidecar.status === 'invalid' || typedJson?.status === 'invalid';
+  const valid = sidecar.status === 'valid' || typedJson?.status === 'valid';
+  const partiallyValid = !invalid && !valid &&
+    (sidecar.status === 'partially_valid' || typedJson?.status === 'partially_valid');
+  const status = invalid ? 'invalid' : valid ? 'valid' : partiallyValid ? 'partially_valid' : 'absent';
   return {rawChars: raw.length, canonicalBody, sidecar, typedJson, conversation, status} as const;
 }
 
@@ -71,9 +75,9 @@ export interface CandidateProtocolDiagnostic {
   schemaVersion: 'candidate_protocol_diagnostic@1';
   stage: 'native' | 'runtime_projected';
   candidateIndex: 1 | 2;
-  status: 'absent' | 'valid' | 'invalid';
-  sidecarStatus: 'absent' | 'valid' | 'invalid';
-  typedJsonStatus: 'not_checked' | 'absent' | 'valid' | 'invalid';
+  status: 'absent' | 'valid' | 'partially_valid' | 'invalid';
+  sidecarStatus: 'absent' | 'valid' | 'partially_valid' | 'invalid';
+  typedJsonStatus: 'not_checked' | 'absent' | 'valid' | 'partially_valid' | 'invalid';
   issueCodes: ConclusionContractParseIssue['code'][];
   /** Schema-owned fields/types only, never arbitrary parser paths or model values. */
   details?: ConclusionContractStructureDetail[];
@@ -90,22 +94,35 @@ export interface CandidateProtocolDiagnostic {
   claimCount?: number;
   semanticClaimCount?: number;
   sourceBindingCount?: number;
+  /**
+   * Entries that failed their own item validation (claim ordinals and proposal
+   * positions), and those a repair cannot target because they carry neither a
+   * usable claim id nor resolvable proposal identity. Absent in older artifacts.
+   */
+  invalidClaimCount?: number;
+  invalidProposalCount?: number;
+  unrepairableCount?: number;
 }
 
 const CANDIDATE_PROTOCOL_DIAGNOSTIC_KEYS = [
   'schemaVersion', 'stage', 'candidateIndex', 'status', 'sidecarStatus', 'typedJsonStatus',
   'issueCodes', 'issueCount', 'rawChars', 'canonicalChars', 'projectionKind',
-  'claimCount', 'semanticClaimCount', 'sourceBindingCount', 'details', 'relationProposalDiagnostics', 'claimDiagnostics',
+  'claimCount', 'semanticClaimCount', 'sourceBindingCount', 'invalidClaimCount',
+  'invalidProposalCount', 'unrepairableCount', 'details', 'relationProposalDiagnostics', 'claimDiagnostics',
 ] as const;
 
 const claimDiagnosticKey = (detail: ConclusionClaimDiagnostic) => `${detail.ordinal}:${detail.code}:${detail.field}`;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 /** Diagnostics carry only fixed schema locations, never source paths, model text or admission authority. */
 export function sanitizeCandidateProtocolDiagnostic(value: unknown): CandidateProtocolDiagnostic | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
       Object.keys(value).some(key => !(CANDIDATE_PROTOCOL_DIAGNOSTIC_KEYS as readonly string[]).includes(key))) return undefined;
   const data = declaredFields(value as CandidateProtocolDiagnostic, CANDIDATE_PROTOCOL_DIAGNOSTIC_KEYS);
-  const statuses = ['absent', 'valid', 'invalid'];
+  const statuses = ['absent', 'valid', 'partially_valid', 'invalid'];
   if (data.schemaVersion !== 'candidate_protocol_diagnostic@1' ||
       !['native', 'runtime_projected'].includes(data.stage) || ![1, 2].includes(data.candidateIndex) ||
       !statuses.includes(data.status) || !statuses.includes(data.sidecarStatus) ||
@@ -118,10 +135,15 @@ export function sanitizeCandidateProtocolDiagnostic(value: unknown): CandidatePr
   const counts = [data.claimCount, data.semanticClaimCount, data.sourceBindingCount];
   if (counts.some(count => count !== undefined) &&
       (!counts.every(count => Number.isSafeInteger(count) && count! >= 0) || data.semanticClaimCount! > data.claimCount!)) return undefined;
+  const invalidCounts = [data.invalidClaimCount, data.invalidProposalCount, data.unrepairableCount];
+  if (invalidCounts.some(count => count !== undefined) &&
+      (!invalidCounts.every(count => count === undefined || Number.isSafeInteger(count) && count >= 0) ||
+        (data.unrepairableCount ?? 0) > (data.invalidClaimCount ?? 0) + (data.invalidProposalCount ?? 0))) return undefined;
   const bounded = <T>(value: unknown, max: number, guard: (detail: unknown) => detail is T,
     key: (detail: T) => string, admits: (details: T[]) => boolean): value is T[] | undefined =>
     value === undefined || Array.isArray(value) && value.length > 0 && value.length <= max &&
-      data.status === 'invalid' && value.every(guard) && new Set(value.map(key)).size === value.length && admits(value);
+      ['invalid', 'partially_valid'].includes(data.status) && value.every(guard) &&
+      new Set(value.map(key)).size === value.length && admits(value);
   // `details` predates the issueCount bound the two diagnostic collections carry.
   if (!bounded(data.details, MAX_CONCLUSION_STRUCTURE_DETAILS, isConclusionContractStructureDetail,
     detail => `${detail.field}:${detail.actual}`, () => data.issueCodes.includes('invalid_contract'))) return undefined;
@@ -158,6 +180,8 @@ export function buildCandidateProtocolDiagnostic(
   const seenRelationProposalDiagnostics = new Set<string>();
   const claimDiagnostics: ConclusionClaimDiagnostic[] = [];
   const seenClaimDiagnostics = new Set<string>();
+  const invalidClaimOrdinals = new Set<number>();
+  const invalidProposalOrdinals = new Set<number>();
   for (const issue of issues) {
     if (issue.code === 'invalid_contract') {
       for (const detail of issue.details ?? []) {
@@ -177,12 +201,38 @@ export function buildCandidateProtocolDiagnostic(
         seenRelationProposalDiagnostics.add(key);
         relationProposalDiagnostics.push({...relationDetail});
       }
+      if (relationDetail.scope === 'item') invalidProposalOrdinals.add(relationDetail.ordinal);
     }
     const claimDetail = issue.claimDiagnostic;
+    if (claimDetail && claimDetail.code === issue.code && !isConclusionRootParseIssue(issue)) {
+      invalidClaimOrdinals.add(claimDetail.ordinal);
+    }
     if (isConclusionClaimDiagnostic(claimDetail) && claimDetail.code === issue.code &&
         !seenClaimDiagnostics.has(claimDiagnosticKey(claimDetail)) && claimDiagnostics.length < MAX_CLAIM_DIAGNOSTICS) {
       seenClaimDiagnostics.add(claimDiagnosticKey(claimDetail));
       claimDiagnostics.push(copyConclusionClaimDiagnostic(claimDetail));
+    }
+  }
+  // Unrepairable entries carry neither a usable claim id nor resolvable proposal
+  // identity, so a repair cannot preserve what it would change (plan A.3).
+  let unrepairableCount = 0;
+  const rawClaims = Array.isArray(payload?.claims) ? payload.claims : undefined;
+  for (const ordinal of invalidClaimOrdinals) {
+    const item = rawClaims?.[ordinal - 1];
+    const id = item && typeof item === 'object' ? (item as {id?: unknown}).id : undefined;
+    if (!(typeof id === 'string' && id.trim())) unrepairableCount += 1;
+  }
+  const rawProposals = parsed?.rawPayload !== undefined && record(parsed.rawPayload) &&
+    Array.isArray((parsed.rawPayload as {relationProposals?: unknown}).relationProposals)
+    ? (parsed.rawPayload as {relationProposals: unknown[]}).relationProposals : undefined;
+  for (const ordinal of invalidProposalOrdinals) {
+    const item = rawProposals?.[ordinal - 1];
+    if (!record(item)) {unrepairableCount += 1; continue;}
+    const id = item.id;
+    if (typeof id === 'string' && /^proposal:[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(id)) continue;
+    const subject = item.subject;
+    if (!(typeof item.kind === 'string' && item.kind.trim() && subject && typeof subject === 'object')) {
+      unrepairableCount += 1;
     }
   }
   return {
@@ -197,6 +247,10 @@ export function buildCandidateProtocolDiagnostic(
       semanticClaimCount: claims.filter(claim => claim && typeof claim === 'object' &&
         Object.prototype.hasOwnProperty.call(claim, 'semantics')).length,
       sourceBindingCount: sourceBindings.length} : {}),
+    ...(invalidClaimOrdinals.size || invalidProposalOrdinals.size ? {
+      invalidClaimCount: invalidClaimOrdinals.size, invalidProposalCount: invalidProposalOrdinals.size,
+      ...(unrepairableCount ? {unrepairableCount} : {}),
+    } : {}),
     projectionKind: privacyProjection && privacyProjection !== 'preserved' ? privacyProjection
       : inspected.rawChars !== inspected.canonicalBody.length ? 'protocol_projection' : 'preserved',
   };

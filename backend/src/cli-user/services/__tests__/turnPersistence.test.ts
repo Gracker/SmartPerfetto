@@ -222,7 +222,7 @@ describe('commitTurnOutputs', () => {
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.investigation-assessment.json'), 'utf-8'))).toBeNull();
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.delivery-assurance.json'), 'utf-8'))).toBeNull();
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.runtime-performance.json'), 'utf-8')))
-        .toEqual(runtimePerformance);
+        .toEqual({...runtimePerformance, budgetEstimate: {source: 'default', note: 'stats NOT CONFIGURED for CLI'}});
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.tool-results.json'), 'utf-8')))
         .toEqual(toolResultAudit);
       const latest = JSON.parse(fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'));

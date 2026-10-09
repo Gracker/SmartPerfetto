@@ -93,7 +93,7 @@ async function finalizeWithConsistentSemanticFixture(target: AnalysisResult, env
   const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: runId});
   const candidate = {runId, attemptId: 'attempt', candidateRef: 'candidate',
     conclusionFingerprint: analysisDeliveryFingerprint(target.conclusion)};
-  attachFinalizationContext(target, {runId, sessionId: target.sessionId, deadlineMs: Date.now() + 10_000,
+  attachFinalizationContext(target, {runId, sessionId: target.sessionId, deadlineMs: Date.now() + 600_000,
     strategyRegistry: registry, traceIdentity: {currentTraceId: 'trace-a'},
     turnIntent: resolvedIntent({registryFingerprint: registry.registryFingerprint, taskKind: 'fact', evidenceAccess: 'existing_only'}),
     deliveryContext: {entry: 'runtime_draft', acceptedCandidate: candidate, outputOrigin: 'sdk_final',

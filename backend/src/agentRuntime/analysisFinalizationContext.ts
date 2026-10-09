@@ -12,6 +12,7 @@ import type {EvidenceReadRequest, EvidenceReadResolution, EvidenceReadView} from
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import {validateAnalysisRunSelection, type AnalysisRunSelection} from './analysisRunSpec';
 import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTransportResult} from './intentTransport';
+import {runtimeProviderOrigin} from './runtimePerformance';
 import {currentRuntimePerformanceRecorder} from '../services/selfEvolution/runManifestLifecycle';
 import {readConclusionProtocolProjection, releaseConclusionProtocolProjection,
   claimConclusionProtocolProjection,
@@ -49,6 +50,22 @@ export interface RuntimeFinalizationContextInput {
   evidenceReadView?: EvidenceReadView;
   /** Same pinned provider/auth, with a new no-tools request and its own cleanup. */
   dispatchText?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
+  /** Which provider and model `dispatchText` reaches, for its duration estimate and receipt. */
+  deliveryCall?: FinalizationDeliveryCall;
+}
+
+/** Closed identity of the review transport; an origin only, never a path or credential. */
+export interface FinalizationDeliveryCall {
+  providerOrigin?: string;
+  model?: string;
+}
+
+function closedDeliveryCall(value: FinalizationDeliveryCall | undefined): FinalizationDeliveryCall | undefined {
+  if (!value) return undefined;
+  const providerOrigin = runtimeProviderOrigin(value.providerOrigin);
+  const model = typeof value.model === 'string' && value.model.trim() ? value.model.trim().slice(0, 128) : undefined;
+  return providerOrigin || model ? Object.freeze({...(providerOrigin ? {providerOrigin} : {}), ...(model ? {model} : {})})
+    : undefined;
 }
 
 interface ContextState {
@@ -70,6 +87,7 @@ export interface RuntimeFinalizationContext {
   readonly capabilityEvidence?: readonly DataEnvelope[];
   readonly investigationEvidence?: InvestigationEvidenceSnapshot;
   readonly hasSemanticTransport: boolean;
+  readonly deliveryCall?: FinalizationDeliveryCall;
   /** Input-role selection view; never evidence or a serializable result field. */
   getSelection(signal: AbortSignal): AnalysisRunSelection | undefined;
   /** Input-role view, never a general exemption from output privacy projection. */
@@ -254,6 +272,7 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
     sourceScope: input.sourceScope ? freezeSnapshot(input.sourceScope) : undefined,
     knowledgeUse: input.knowledgeUse ? freezeSnapshot(input.knowledgeUse) : undefined,
     capabilityEvidence: input.capabilityEvidence ? freezeSnapshot(input.capabilityEvidence) : undefined,
+    deliveryCall: closedDeliveryCall(input.deliveryCall),
   }});
 }
 
@@ -285,6 +304,7 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
     get capabilityEvidence() { return current().capabilityEvidence; },
     get investigationEvidence() { return current().investigationEvidence; },
     get hasSemanticTransport() { return Boolean(current().dispatchText); },
+    get deliveryCall() { return current().deliveryCall; },
     getSelection(signal: AbortSignal) { return active(signal).selection; },
     getProviderQuery(signal: AbortSignal) { return active(signal).providerQuery; },
     getNativeDeclaration(result: AnalysisResult, signal: AbortSignal) {
@@ -318,7 +338,7 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
         // The finalizer runs inside the run's manifest scope; its one review is a model call of that run.
         const recorder = currentRuntimePerformanceRecorder();
         return await boundedOperation({signal: input.signal, lifetimeSignal: state.controller.signal,
-          deadlineMs, execute: signal => dispatchWithModelCallRecord(recorder, {purpose: 'review'},
+          deadlineMs, execute: signal => dispatchWithModelCallRecord(recorder, {purpose: 'review', ...value.deliveryCall},
             {...input, signal, deadlineMs}, dispatch)});
       } catch (error) {
         if (!(error instanceof FinalizationDeadlineError)) throw error;

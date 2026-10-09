@@ -117,6 +117,28 @@ describe('OpenCode intent transport', () => {
     expect(result).not.toHaveProperty('text');
   });
 
+  it.each([
+    ['MessageOutputLengthError', 'incomplete_output'],
+    ['APIError', 'provider_error'],
+    ['ProviderAuthError', 'provider_error'],
+    ['UnknownError', 'provider_error'],
+    ['MessageAbortedError', 'invalid_response'],
+    [undefined, 'invalid_response'],
+  ] as const)('reports a failed reply of error type %s as %s without its text', async (name, reason) => {
+    const {input, session, message} = fixture();
+    session.prompt.mockResolvedValue({data: {...message,
+      info: {...message.info, error: {...(name ? {name} : {}), data: {message: 'SECRET_ERROR_CANARY'}}}}});
+    const result = await runOpenCodeIntentTransport(input);
+    expect(result).toEqual({status: 'unavailable', reason});
+  });
+
+  it('reports a prompt that outlived the local headers timeout as a timeout', async () => {
+    const {input, session} = fixture();
+    session.prompt.mockRejectedValue(Object.assign(new TypeError('fetch failed'),
+      {cause: {name: 'HeadersTimeoutError', code: 'UND_ERR_HEADERS_TIMEOUT'}}));
+    expect(await runOpenCodeIntentTransport(input)).toEqual({status: 'unavailable', reason: 'timeout'});
+  });
+
   it('rejects an enabled tool before creating a session and still closes the host', async () => {
     const {input, session, host} = fixture();
     host.disabledTools.bash = true;

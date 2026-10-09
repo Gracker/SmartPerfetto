@@ -100,7 +100,7 @@ async function verifiedFact(options: {declaredValue?: number; source?: boolean;
   const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [strategy], overlayGeneration: 'delivery-fixture'});
   const {acceptedCandidate, completion} = current(draft);
   attachFinalizationContext(draft, {runId: acceptedCandidate.runId, sessionId: draft.sessionId,
-    deadlineMs: Date.now() + 10_000, strategyRegistry: registry, traceIdentity: {currentTraceId: 'trace-a'}, sourceUse,
+    deadlineMs: Date.now() + 600_000, strategyRegistry: registry, traceIdentity: {currentTraceId: 'trace-a'}, sourceUse,
     sourceScope: options.omitSourceScope ? undefined : {codeAwareMode: sourceUse?.codeAwareMode ?? 'off',
       selectedCodebaseIds: sourceUse?.selectedCodebaseIds ?? [], hasCodebaseAccess: Boolean(sourceUse),
       analysisContextFingerprint: 'source-scope-a', ...options.sourceScope},

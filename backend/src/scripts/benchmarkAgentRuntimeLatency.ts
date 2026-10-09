@@ -763,9 +763,10 @@ const PHASE_NAMES = new Set<string>(CANDIDATE_TARGET_PHASES.task4
 function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefined {
   if (value === undefined) return undefined;
   const record = asRecord(value, 'benchmark_runtime_performance_invalid');
-  // Per-call model records and the review decision are diagnostic receipt fields;
-  // the latency scorer does not read them, so they are accepted and dropped.
-  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'finalReview', 'truncated'],
+  // Per-call model records, the review decision and delivery budget decisions are diagnostic
+  // receipt fields; the latency scorer does not read them, so they are accepted and dropped.
+  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'finalReview',
+    'deliveryBudgets', 'truncated'],
     'benchmark_runtime_performance_unknown_field');
   if (record.modelCalls !== undefined && !Array.isArray(record.modelCalls)) {
     throw new Error('benchmark_runtime_performance_arrays_invalid');
