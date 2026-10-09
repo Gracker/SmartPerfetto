@@ -121,7 +121,7 @@ import type {EffectiveProcessScope} from '../services/processIdentity/effectiveP
 import {exactProcessScopeSupportCatalog} from '../services/skillEngine/processScopeSql';
 import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
   projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
-  type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
+  type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceScalar, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
 import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import {
@@ -3832,6 +3832,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           traceProvenance,
           producer,
         });
+        // Every anomaly the engine raised, not the projection's bounded list;
+        // an empty table is the citable form of "none raised".
+        const anomalyColumns = [...WAIT_CHAIN_ANOMALY_COLUMNS];
+        const anomalyRows = analysis.anomalies.map(anomaly => [anomaly.id, anomaly.severity]);
+        const storedAnomalies = analysis.available ? storeToolTableArtifact(artifactStore, {
+          toolName: 'analyze_wait_chain',
+          stepId: 'wait_anomalies',
+          title: `Wait chain anomalies (${anomalyRows.length})`,
+          layer: 'overview',
+          columns: anomalyColumns,
+          rows: anomalyRows,
+          executionWitness: captureEvidenceTable({columns: anomalyColumns, rows: anomalyRows}, WAIT_CHAIN_ANOMALY_FIELDS),
+          traceProvenance,
+          producer,
+        }) : undefined;
 
         // A Running selection, a window with no waiting time and a trace
         // without sched_wakeup all answer `available: false` with an empty
@@ -3863,9 +3878,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           // actually holds, so a fetch of it is not read as the whole chain.
           ...(stored ? {artifactId: stored.artifactId, evidenceRefId: stored.evidenceRefId,
             storedSegmentRows: rows.length} : {}),
-          // The one-row table the headline numbers come from; cite its ns cells.
+          // The one-row table `summaryRow` is read from.
           ...(storedSummary ? {summaryArtifactId: storedSummary.artifactId,
             summaryEvidenceRefId: storedSummary.evidenceRefId} : {}),
+          // One row per anomaly (`id`, `severity`).
+          ...(storedAnomalies ? {anomaliesEvidenceRefId: storedAnomalies.evidenceRefId} : {}),
           sourceToolCallId: producer.sourceToolCallId,
           paramsHash: producer.paramsHash,
           planPhaseId: producer.planPhaseId,
@@ -8139,7 +8156,9 @@ const WAIT_CHAIN_SEGMENT_COLUMNS = [
  * The one-row summary the tool's headline numbers are read from. `*_ns` cells
  * are the engine's exact integers; `*_ms`, the shares and the count are the
  * rounded display values and carry no semantics, so citing them never proves
- * or contradicts a claim. `attributable_*` is the headline (other threads'
+ * or contradicts a claim. The `root_wait_*` and `direct_waker_*` cells are the
+ * engine's reading of where the wait sat and what ended it: the facts an
+ * answer states in words, as cells it can cite. `attributable_*` is the headline (other threads'
  * work, runnable and uninterruptible time); `blocking_*` is path coverage and
  * includes the `event_wait_*` leaves.
  */
@@ -8147,12 +8166,20 @@ const WAIT_CHAIN_SUMMARY_COLUMNS = [
   'utid', 'window_start_ts', 'window_end_ts', 'window_dur_ns',
   'attributable_ns', 'event_wait_ns',
   'blocking_ns', 'self_ns', 'waiting_ns', 'chain_wait_ns', 'best_case_ns', 'max_saving_ns',
+  'sleeping_ns', 'uninterruptible_ns', 'runnable_ns', 'running_ns',
+  'root_wait_context', 'root_wait_state', 'root_wait_ns', 'root_wait_slice',
+  'direct_waker_kind', 'direct_waker_thread', 'direct_waker_process', 'direct_waker_irq_context',
   'window_ms', 'attributable_ms', 'attributable_pct', 'event_wait_ms', 'event_wait_pct',
   'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
   'best_case_ms', 'max_saving_ms', 'chain_segment_count',
 ] as const;
 type WaitChainSummaryColumn = typeof WAIT_CHAIN_SUMMARY_COLUMNS[number];
-type WaitChainSummaryRow = Record<WaitChainSummaryColumn, number | null>;
+type WaitChainSummaryRow = Record<WaitChainSummaryColumn, EvidenceScalar>;
+/** The cells an answer can cite: everything but the rounded display values. */
+const WAIT_CHAIN_CITABLE_SUMMARY_COLUMNS = WAIT_CHAIN_SUMMARY_COLUMNS.filter(column =>
+  !/_(ms|pct)$/.test(column) && column !== 'chain_segment_count');
+/** One row per anomaly, under the keys the projection lists them with. */
+const WAIT_CHAIN_ANOMALY_COLUMNS = ['id', 'severity'] as const;
 
 const NS_START: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'start', clock: 'trace_monotonic'};
 const NS_END: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'end', clock: 'trace_monotonic'};
@@ -8191,7 +8218,14 @@ const WAIT_CHAIN_SUMMARY_FIELDS = waitChainFields('wait_summary', WAIT_CHAIN_SUM
   chain_wait_ns: NS_TOTAL,
   best_case_ns: NS_TOTAL,
   max_saving_ns: NS_TOTAL,
+  sleeping_ns: NS_TOTAL,
+  uninterruptible_ns: NS_TOTAL,
+  runnable_ns: NS_TOTAL,
+  running_ns: NS_TOTAL,
+  root_wait_ns: NS_DURATION,
 });
+
+const WAIT_CHAIN_ANOMALY_FIELDS = waitChainFields('wait_anomalies', WAIT_CHAIN_ANOMALY_COLUMNS, {});
 
 const WAIT_CHAIN_SEGMENT_COLUMN_DEFS: ColumnDefinition[] = [
   {name: 'segment_index', type: 'number'},
@@ -8284,6 +8318,10 @@ function waitChainSegmentRows(segments: readonly CriticalPathSegment[]): unknown
 function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: number): WaitChainSummaryRow {
   const totals = analysis.totalsNs;
   const counterfactual = analysis.quantification?.counterfactual ?? null;
+  // No slices means the split was not measured, which is not zero time.
+  const states = analysis.slices ? sliceKindNs(analysis) : null;
+  const rootWait = analysis.rootWait ?? null;
+  const waker = analysis.directWaker ?? null;
   return {
     utid: analysis.task.utid,
     window_start_ts: analysis.task.startTs,
@@ -8297,6 +8335,18 @@ function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: numbe
     chain_wait_ns: totals?.chainWait ?? null,
     best_case_ns: counterfactual?.bestCaseDurationNs ?? null,
     max_saving_ns: counterfactual?.maxSavingNs ?? null,
+    sleeping_ns: states?.sleeping ?? null,
+    uninterruptible_ns: states?.uninterruptible ?? null,
+    runnable_ns: states?.runnable ?? null,
+    running_ns: states?.running ?? null,
+    root_wait_context: rootWait?.context ?? null,
+    root_wait_state: rootWait?.state ?? null,
+    root_wait_ns: rootWait ? rootWait.endTs - rootWait.startTs : null,
+    root_wait_slice: rootWait?.enclosingSlice?.name ?? null,
+    direct_waker_kind: waker?.kind ?? null,
+    direct_waker_thread: waker?.threadName ?? null,
+    direct_waker_process: waker?.processName ?? null,
+    direct_waker_irq_context: waker ? waker.irqContext : null,
     window_ms: analysis.totalMs,
     attributable_ms: analysis.attributableMs ?? null,
     attributable_pct: analysis.attributablePercentage ?? null,
@@ -8476,18 +8526,10 @@ function projectWaitChainForModel(
     // holds the waker tasks' waits, which belong to other threads.
     waitingMs: summary.waiting_ms,
     chainWaitMs: summary.chain_wait_ms,
-    // The exact values behind the ms figures, as captured in the summary row.
-    exactNs: {
-      window: summary.window_dur_ns,
-      attributable: summary.attributable_ns,
-      eventWait: summary.event_wait_ns,
-      blocking: summary.blocking_ns,
-      self: summary.self_ns,
-      waiting: summary.waiting_ns,
-      chainWait: summary.chain_wait_ns,
-      bestCase: summary.best_case_ns,
-      maxSaving: summary.max_saving_ns,
-    },
+    // The captured summary row under its own column names: cite these cells
+    // (`column` = the key) for the exact values and for where the wait sat.
+    summaryRow: Object.fromEntries(WAIT_CHAIN_CITABLE_SUMMARY_COLUMNS
+      .filter(column => summary[column] !== null).map(column => [column, summary[column]])),
     stateBreakdown,
     waitClassSummary,
     topWaits,

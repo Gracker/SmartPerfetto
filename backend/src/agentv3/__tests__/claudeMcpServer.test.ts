@@ -10370,11 +10370,16 @@ describe('analyze_wait_chain', () => {
       level: 1, processName: 'com.example.app', threadName: 'OkHttp Dispatch',
       childSegments: 1, dominantWaitClass: 'binder_reply', dominantWaitMs: 1,
     })]);
-    // The ms figures come with the exact ns they were rounded from.
-    expect(payload.exactNs).toEqual({
-      window: 10_000_000, attributable: 0, eventWait: 4_000_000, blocking: 4_000_000, self: 6_000_000,
-      waiting: 4_000_000, chainWait: 5_000_000, bestCase: 6_000_000, maxSaving: 4_000_000,
+    // The ms figures come with the exact ns they were rounded from, and the
+    // engine's reading of the wait with them, under the captured column names.
+    expect(payload.summaryRow).toMatchObject({
+      window_dur_ns: 10_000_000, attributable_ns: 0, event_wait_ns: 4_000_000, blocking_ns: 4_000_000,
+      self_ns: 6_000_000, waiting_ns: 4_000_000, chain_wait_ns: 5_000_000, best_case_ns: 6_000_000,
+      max_saving_ns: 4_000_000, sleeping_ns: 4_000_000, running_ns: 6_000_000,
+      root_wait_context: 'in_slice', root_wait_state: 'S', root_wait_slice: 'Choreographer#doFrame',
+      direct_waker_kind: 'irq', direct_waker_irq_context: true,
     });
+    expect(Object.keys(payload.summaryRow).filter(key => /_(ms|pct)$/.test(key))).toEqual([]);
     // The headline is attributable time; coverage and the chain-end leaf follow it.
     const keys = Object.keys(payload);
     expect(keys.indexOf('attributableMs')).toBeLessThan(keys.indexOf('blockingMs'));
@@ -10407,12 +10412,11 @@ describe('analyze_wait_chain', () => {
     expect(summary.stepId).toBe('wait_summary');
     const cell = (column: string) => summary.data.rows[0][summary.data.columns.indexOf(column)];
     expect(cell('blocking_ms')).toBe(payload.blockingMs);
-    expect(cell('attributable_ns')).toBe(payload.exactNs.attributable);
-    expect(cell('event_wait_ns')).toBe(payload.exactNs.eventWait);
+    // Every key of the projected row is a column of the captured one, with its cell.
+    for (const [column, value] of Object.entries(payload.summaryRow)) expect(cell(column)).toBe(value);
     expect(cell('attributable_pct')).toBe(payload.attributablePercentage);
     expect(stored.data.columns).toContain('path_role');
     expect(cell('waiting_ms')).toBe(payload.waitingMs);
-    expect(cell('chain_wait_ns')).toBe(payload.exactNs.chainWait);
     expect(cell('best_case_ms')).toBe(payload.counterfactualBestCaseMs);
     expect(cell('chain_segment_count')).toBe(payload.segmentCount);
 
@@ -10475,6 +10479,39 @@ describe('analyze_wait_chain', () => {
       expect(result.deterministicProof?.status).toBe('candidate');
       expect(result.deterministicProof?.reason).toBe('unit_authority_unknown');
     }
+
+    // What the answer says in words about the wait is a cell too: where it
+    // sat, what ended it, and each anomaly, cited under the projection's keys.
+    const cite = async (reference: import('../../agent/core/conclusionContract').ConclusionContractClaimReference) => {
+      const conclusionContract: import('../../agent/core/conclusionContract').ConclusionContract = {
+        schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', bindingEligibility: 'eligible',
+        conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+        claims: [{id: 'c1', kind: 'categorical', text: 'The wait is as cited.', references: [reference]}],
+      };
+      const preparedEvidence = await prepareClaimEvidence({conclusionContract, evidenceReadView: view});
+      return runClaimVerification({conclusionContract, preparedEvidence}).claimVerificationResult
+        .claimResults[0].referenceCells?.map(cell => cell.status);
+    };
+    for (const [column, value] of Object.entries(payload.summaryRow)) {
+      expect(await cite({evidenceRefId: payload.summaryEvidenceRefId, column, value: value as string | number | boolean}))
+        .toEqual(['matched']);
+    }
+    expect(await cite({evidenceRefId: payload.anomaliesEvidenceRefId, rowSelector: {id: 'network_receive_wait'},
+      column: 'severity', value: 'warning'})).toEqual(['matched']);
+    // The projection's own key for the same fact is not a column.
+    expect(await cite({evidenceRefId: payload.summaryEvidenceRefId, column: 'rootWait', value: 'in_slice'}))
+      .toEqual(['missing']);
+  });
+
+  it('stores an empty anomaly table when none was raised, and no state split it did not measure', async () => {
+    const {slices: _slices, ...unmeasured} = fakeAnalysis();
+    spyAnalyzer({...unmeasured, anomalies: []});
+    const server = createTestServer();
+    const payload = await callTool(server.tools, 'analyze_wait_chain', {utid: 42, start_ts: 1_000, end_ts: 10_001_000});
+    const anomalies = [...server.artifactStore._artifacts.values()].find((artifact: any) => artifact.stepId === 'wait_anomalies');
+    expect(payload.anomaliesEvidenceRefId).toContain('wait_anomalies');
+    expect(anomalies.data).toEqual({columns: ['id', 'severity'], rows: []});
+    expect(Object.keys(payload.summaryRow).filter(key => /^(sleeping|uninterruptible|runnable|running)_ns$/.test(key))).toEqual([]);
   });
 
   it('names the unavailable reason instead of an empty wait chain', async () => {
