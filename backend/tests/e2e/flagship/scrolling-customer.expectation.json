@@ -12,7 +12,8 @@
       "kind": "numeric",
       "columns": [
         "total_frames",
-        "distinct_frame_key"
+        "distinct_frame_key",
+        "total_rows"
       ],
       "verification": "proved",
       "unit": "frames",
@@ -27,7 +28,8 @@
       "kind": "numeric",
       "columns": [
         "jank_frames",
-        "distinct_jank_frame_key"
+        "distinct_jank_frame_key",
+        "jank_rows"
       ],
       "verification": "proved",
       "unit": "frames",
