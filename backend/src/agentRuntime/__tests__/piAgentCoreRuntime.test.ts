@@ -45,6 +45,7 @@ import type {AnalysisTurnIntentDecision} from '../analysisTurnIntent';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as sceneEntryEvidence from '../sceneEntryEvidence';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
@@ -1069,6 +1070,32 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-pi-mcp');
     await expectRuntimeVendorHintParity({
       createMcpServer: createClaudeMcpServer, runtimeOptions});
+  });
+
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const runtime = typedRuntime();
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'startup_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpModule.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    try {
+      await runtime.analyze('分析启动性能', 'session-pi-scene-entry', 'trace-pi', {analysisMode: 'full', runId: 'run-pi-scene'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-pi', turnIntent: expect.any(Object)});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence === evidence)).toBe(true);
+    } finally {
+      scene.mockRestore(); mcp.mockRestore(); prompt.mockRestore();
+    }
   });
 
   it('builds a real Pi analysis context from shared SmartPerfetto prompt and tools', async () => {

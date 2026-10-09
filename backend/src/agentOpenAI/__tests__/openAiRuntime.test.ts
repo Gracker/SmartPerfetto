@@ -34,6 +34,7 @@ import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIn
 import * as systemPrompt from '../../agentv3/claudeSystemPrompt';
 import * as focusDetector from '../../agentv3/focusAppDetector';
 import * as mcpModule from '../../agentv3/claudeMcpServer';
+import * as sceneEntryEvidence from '../../agentRuntime/sceneEntryEvidence';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import * as localizedStrategyTemplate from '../../agentv3/localizedStrategyTemplate';
@@ -278,6 +279,31 @@ describe('OpenAI typed intent integration', () => {
       createMcpServer: jest.requireActual<typeof mcpModule>('../../agentv3/claudeMcpServer').createClaudeMcpServer,
       runtimeOptions,
     });
+  });
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
+    const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);
+    classify(decision);
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'scrolling_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = jest.requireActual<typeof mcpModule>('../../agentv3/claudeMcpServer').createClaudeMcpServer;
+    jest.spyOn(mcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
+    mockRun();
+    await runtime.analyze('分析滑动卡顿', 'scene-entry', 'trace', {analysisMode: 'full', providerId: null, runId: 'run-scene-entry'});
+    expect(order).toEqual(['scene_evidence', 'mcp_server']);
+    expect(scene.mock.calls[0][0]).toMatchObject({runId: 'run-scene-entry', traceId: 'trace',
+      turnIntent: expect.objectContaining({sceneId: decision.sceneId}), policy: expect.objectContaining({allowNewEvidence: true})});
+    expect(prompt.mock.calls[0][0].sceneEvidence).toEqual(evidence);
   });
   // SP-CP-11: the effective package carries its provenance into the prompt
   // and the tools; an ambiguous detection puts no package in effect at all.

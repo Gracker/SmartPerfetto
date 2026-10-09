@@ -54,7 +54,7 @@ import {
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {FocusAppTarget} from './focusAppTarget';
 import type {RunAuthorizationCheck} from './runAuthorizationFence';
-import type {RuntimePerformanceRun} from './runtimePerformance';
+import type {RuntimePerformanceRecorder, RuntimePerformanceRun} from './runtimePerformance';
 import {runWithinRuntimeToolInvocation} from './runtimeToolInvocationContext';
 import {createRuntimeToolResult} from './runtimeToolResult';
 import {withRunAuthorizationOnly, type RuntimeToolResult, type SharedToolSpec} from './runtimeToolSpec';
@@ -155,7 +155,8 @@ export const SCENE_EVIDENCE_CELL_FIELDS = ['artifactId', 'rowIndex', 'column', '
 export type SceneEvidenceCellTuple = [string, number, string, unknown, string | null];
 
 /** Reasons the model never needs to hear about: nothing was declared or asked for. */
-const SILENT_REASONS: ReadonlySet<SceneEntryNotRunReason> = new Set(['no_entry_skill', 'not_scene_wide', 'existing_only']);
+const SILENT_REASONS: ReadonlySet<SceneEntryNotRunReason> =
+  new Set(['no_entry_skill', 'not_scene_wide', 'comparison_turn', 'existing_only']);
 
 function emptyOutcome(status: 'ran' | 'not_run', extra: Partial<SceneEntryEvidenceOutcome> = {}): SceneEntryEvidenceOutcome {
   return {status, artifacts: [], keyCells: [], summaryCells: [], artifactCount: 0,
@@ -275,6 +276,9 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
 
   // 1. Request scope, decided as the registry decides it for invoke_skill.
   if (intent.scope !== 'scene_wide') return notRun('not_scene_wide');
+  // The entry Skill reads the current trace only; a comparison reads both sides
+  // through its own tools, and its prompt has no budget for one-sided overview cells.
+  if (intent.taskKind === 'comparison') return notRun('comparison_turn');
   if (intent.evidenceAccess !== 'read_new' || !isToolAllowedForScope(ENTRY_SKILL_TOOL_ACCESS,
     {sessionId: '', hasCodebaseAccess: false, allowNewEvidence: input.policy.allowNewEvidence})) {
     return notRun('existing_only');
@@ -287,7 +291,8 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
     try { open = input.canInvokeTool?.() !== false; } catch { open = false; }
     if (!open) return notRun('acquisition_closed');
     // 3. The run's lease and deadline.
-    const remainingMs = input.deadlineMs === undefined ? Infinity : input.deadlineMs - Date.now();
+    // A runtime without a run deadline passes none (or 0); only a real epoch time bounds it.
+    const remainingMs = input.deadlineMs && input.deadlineMs > 0 ? input.deadlineMs - Date.now() : Infinity;
     if (input.executionLease?.signal.aborted || remainingMs <= 0) {
       phaseOutcome = 'cancelled';
       return notRun('cancelled');
@@ -472,4 +477,36 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
   while (key.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) key = key.slice(0, -1);
   while (artifacts.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) artifacts = artifacts.slice(0, -1);
   return build();
+}
+
+/** The run's scene evidence, as each runtime's preflight hands it to its prompt. */
+export async function collectSceneEvidenceForPrompt(
+  input: SceneEntryEvidenceInput,
+): Promise<SceneEvidencePromptData | undefined> {
+  return buildSceneEvidencePromptData(await acquireSceneEntryEvidence(input));
+}
+
+/**
+ * Phase and receipt recording straight on the run's recorder, for a runtime
+ * whose preparation holds the attribution sink but not its RuntimePerformanceRun.
+ * Observability never throws into the run.
+ */
+export function scenePerformanceFromSink(
+  sink: {readonly runtimePerformanceRecorder?: RuntimePerformanceRecorder} | undefined,
+): SceneEntryEvidenceInput['runtimePerformance'] {
+  const recorder = sink?.runtimePerformanceRecorder;
+  if (!recorder) return undefined;
+  return {
+    startPhase: name => {
+      try {
+        const span = recorder.startPhase(name);
+        return {end: outcome => { try { span.end(outcome); } catch { /* Internal observability only. */ } }};
+      } catch {
+        return {end: () => undefined};
+      }
+    },
+    recordSceneEvidence: receipt => {
+      try { recorder.recordSceneEvidence(receipt); } catch { /* Internal observability only. */ }
+    },
+  };
 }

@@ -105,6 +105,8 @@ export interface ClaudeAnalysisContext {
   strategyRegistry?: ReadonlyStrategyRegistrySnapshot;
   turnIntent?: AnalysisTurnIntent;
   onDemandContext?: boolean;
+  /** Product-run scene entry evidence for this turn (`buildSceneEvidencePromptData`). */
+  sceneEvidence?: import('../agentRuntime/sceneEntryEvidence').SceneEvidencePromptData;
   /**
    * The preflight the run actually performed. A runtime may narrow what the
    * intent alone implies — a conversation turn with no attached trace gathers

@@ -25,6 +25,7 @@ import type {EvidenceAnchorV1} from '../../types/evidenceContract';
 import fs from 'fs';
 import path from 'path';
 import {loadSourceUsePrompt} from '../../services/codebase/sourceUseDecision';
+import {buildSceneEvidencePromptData, SCENE_EVIDENCE_MAX_BYTES, SCENE_EVIDENCE_MAX_CELLS} from '../../agentRuntime/sceneEntryEvidence';
 import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 
 describe('typed prompt with real strategy assets', () => {
@@ -32,7 +33,8 @@ describe('typed prompt with real strategy assets', () => {
     const parts = buildSystemPromptParts(makeWorstCaseContext(sceneType));
     expect(MAX_PROMPT_TOKENS).toBe(16_000);
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
-    expect(parts.droppedLabels).toEqual([]);
+    // The default detail body is the most expendable segment; its title stays listed.
+    expect(parts.droppedLabels).toEqual(['scene_default_detail']);
     expect(parts.truncatedLabels).toEqual([]);
     for (const label of ['turn_protocol', 'comparison_identity', 'selection_context', 'investigation_requirements',
       'investigation_findings', 'report_requirements', 'conclusion_declaration', 'sql_discovery_guidance']) {
@@ -73,7 +75,56 @@ describe('typed prompt with real strategy assets', () => {
     // of bases, so comparison and evidence context survive; the tools still
     // search every selected base without an id. A change that evicts anything
     // more fails here.
-    expect(parts.droppedLabels).toEqual(['knowledge_use', 'knowledge_authorization']);
+    expect(parts.droppedLabels).toEqual(['scene_default_detail', 'knowledge_use', 'knowledge_authorization']);
+  });
+
+  it.each(['startup', 'scrolling'] as const)('fits a %s scene-wide investigation report with bound-sized scene evidence', sceneType => {
+    const base = makeWorstCaseContext(sceneType);
+    const evidence = buildSceneEvidencePromptData({status: 'ran', skillId: `${sceneType}_analysis`,
+      identity: {packageName: 'com.example.smartperfetto.demo', processName: 'com.example.smartperfetto.demo', upid: 100},
+      artifacts: Array.from({length: 4}, (_, index) => ({artifactId: `art-${index + 1}`,
+        evidenceRefId: `data:skill:${sceneType}_analysis:overview_${index}:current:0123456789ab:0123456789ab:01234567`,
+        stepId: `overview_${index}`, rowCount: 1})),
+      artifactIdRange: {first: 'art-1', last: 'art-40'},
+      keyCells: Array.from({length: 40}, (_, index) => ({artifactId: 'art-1', rowIndex: 0,
+        column: `overview_metric_${index}`, value: 12345.678, unit: 'ms'})),
+      summaryCells: [], artifactCount: 40, captureCount: 40, durationMs: 4000})!;
+    const context: ClaudeAnalysisContext = {...base, comparison: undefined, sceneEvidence: evidence,
+      turnIntent: {...base.turnIntent!, taskKind: 'investigation'}};
+    const parts = buildSystemPromptParts(context);
+    console.info('[TypedPromptTokenGate:scene_evidence]', JSON.stringify({sceneType, budget: MAX_PROMPT_TOKENS,
+      tokens: estimatePromptTokens(parts.fullPrompt), droppedLabels: parts.droppedLabels}));
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    expect(parts.droppedLabels).toEqual(['scene_default_detail']);
+    expect(parts.truncatedLabels).toEqual([]);
+    const segment = parts.segments.find(candidate => candidate.label === 'scene_evidence')!;
+    expect(segment).toMatchObject({tier: 2, droppable: false});
+    const json = segment.content.slice(segment.content.indexOf('{"context":"scene_evidence"'));
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    expect(JSON.parse(json).data.cells.key.length).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_CELLS);
+    expect(segment.content).toContain('fetch_artifact');
+  });
+
+  it('renders the default detail body of a resolved investigation when the budget allows', () => {
+    const registry = buildStrategyRegistrySnapshotFromDefinitions({
+      definitions: getRegisteredScenes(), overlayGeneration: 'default-detail-test',
+    });
+    const intent = {schemaVersion: 1 as const, status: 'resolved' as const, source: 'semantic' as const,
+      taskKind: 'investigation' as const, sceneId: 'scrolling', scope: 'scene_wide' as const,
+      recommendedComplexity: 'full' as const, deliverable: 'answer' as const, evidenceAccess: 'read_new' as const,
+      registryFingerprint: registry.registryFingerprint};
+    const parts = buildSystemPromptParts({query: '分析滑动卡顿', strategyRegistry: registry, turnIntent: intent});
+    const detail = registry.getStrategy('scrolling')!.detailSections.find(section => section.default)!;
+    const segment = parts.segments.find(candidate => candidate.label === 'scene_default_detail');
+    expect(segment).toMatchObject({tier: 3, droppable: true});
+    expect(segment!.content).toContain(`"detailRef":"${detail.ref}"`);
+    expect(segment!.content).toContain(stripTemplateComments(detail.content).slice(0, 200));
+    expect(parts.droppedLabels).toEqual([]);
+    // Not for a fact question, and never without a resolved scene.
+    for (const changed of [{taskKind: 'fact' as const}, {status: 'unavailable' as const}]) {
+      expect(buildSystemPromptParts({query: 'q', strategyRegistry: registry, turnIntent: {...intent, ...changed}})
+        .segments.some(candidate => candidate.label === 'scene_default_detail')).toBe(false);
+    }
   });
 
   it('keeps both knowledge segments when the budget allows', () => {
@@ -105,7 +156,7 @@ describe('typed prompt with real strategy assets', () => {
     const withManifest = buildSystemPromptParts(context);
     expect(withManifest.fullPrompt).toBe(plain.fullPrompt);
     expect(estimatePromptTokens(withManifest.fullPrompt)).toBe(estimatePromptTokens(plain.fullPrompt));
-    expect(withManifest.droppedLabels).toEqual([]);
+    expect(withManifest.droppedLabels).toEqual(plain.droppedLabels);
   });
 
   it.each(['zh-CN', 'en'] as const)('allows authorized source quotations in the actual %s source guidance', outputLanguage => {
@@ -411,7 +462,8 @@ describe('typed prompt with real strategy assets', () => {
         selectionContext: {kind: 'area', startNs: 10, endNs: 20, tracks: [{uri: 'main', upid: 42}]},
         comparison: {referenceTraceId: 'reference', commonCapabilities: [], capabilityProbeStatus: 'not_checked'}});
       expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
-      expect(parts.droppedLabels).toEqual([]);
+      // Only the default detail body may give way; its title stays in scene_strategy_details.
+      expect(parts.droppedLabels.filter(label => label !== 'scene_default_detail')).toEqual([]);
       for (const label of ['investigation_requirements', 'investigation_findings', 'scene_strategy_details',
         'selection_context', 'comparison_identity', 'source_use', 'source_recipe']) {
         expect(parts.segments.some(segment => segment.label === label)).toBe(true);

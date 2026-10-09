@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
-import {getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
+import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
 import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
 import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
 import {knowledgeUsePrompt} from '../services/knowledge/knowledgePrompt';
@@ -228,6 +228,11 @@ function buildTypedTurnSystemPromptParts(
         ({detailRef: ref, title})));
     }
   }
+  // The author-designated default detail is the scene's methodology for a first
+  // turn. It is the most expendable segment: pushed last, it is the first to go
+  // under budget pressure, leaving the detail list above to look it up.
+  const defaultDetail = (intent.taskKind === 'investigation' || intent.taskKind === 'comparison')
+    && intent.status === 'resolved' ? defaultStrategyDetail(strategy) : undefined;
   if (intent.status === 'resolved' && policy.requiresReport) {
     const contract = getFinalReportContract(intent.sceneId, registry);
     data(3, 'report_requirements', {
@@ -260,6 +265,12 @@ function buildTypedTurnSystemPromptParts(
   // The package carries its provenance: only `user` binds the target; an
   // auto-detected package is a ranked hypothesis, and an ambiguous detection
   // renders candidates without any package in effect.
+  // Product-run evidence for this turn: never dropped whole, and bounded at its
+  // source (buildSceneEvidencePromptData) so it cannot evict other context.
+  if (context.sceneEvidence) {
+    push(2, 'scene_evidence', `${requiredAsset('prompt-scene-evidence')}\n\n${JSON.stringify({
+      context: 'scene_evidence', data: context.sceneEvidence})}`);
+  }
   const focusApp = buildFocusAppPromptData(context.focusTarget);
   const currentPackage = packageProvenance(context.packageName, context.focusTarget);
   data(2, 'trace_context', {
@@ -328,6 +339,10 @@ function buildTypedTurnSystemPromptParts(
   if (knowledge) {
     data(4, 'knowledge_authorization', knowledge.authorization, true);
     push(4, 'knowledge_use', knowledge.guidance, true);
+  }
+  if (defaultDetail) {
+    push(3, 'scene_default_detail', `${JSON.stringify({context: 'scene_default_detail', detailRef: defaultDetail.ref,
+      title: defaultDetail.title})}\n${stripTemplateComments(defaultDetail.content)}`, true);
   }
 
   const droppedLabels: string[] = [];

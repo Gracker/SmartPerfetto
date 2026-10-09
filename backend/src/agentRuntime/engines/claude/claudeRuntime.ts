@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
@@ -2501,6 +2502,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const notesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
     const canInvokeTool = () => precomputed.acquisition?.open !== false &&
       precomputed.runActivity?.active !== false && !executionLease?.signal.aborted;
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: precomputed.runId, traceId, turnIntent,
+      policy: turnPolicy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
+      selectionContext: options.selectionContext, outputLanguage: runtimeConfig.outputLanguage, canInvokeTool,
+      executionLease, runAuthorization: precomputed.runAuthorization, runtimePerformance});
+    executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
@@ -2593,6 +2601,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       availableAgents: agents ? Object.keys(agents) : undefined,

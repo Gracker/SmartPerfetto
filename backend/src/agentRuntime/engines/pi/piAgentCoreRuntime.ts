@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import { createHash, randomUUID } from 'crypto';
@@ -2084,6 +2085,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId)!;
     uncertaintyFlags.splice(0);
 
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
+      selectionContext: options.selectionContext, outputLanguage, canInvokeTool, executionLease, runAuthorization,
+      deadlineMs: sceneDeadlineMs, runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
+    executionLease.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
@@ -2159,6 +2167,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors
