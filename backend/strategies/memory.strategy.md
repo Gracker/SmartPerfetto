@@ -15,6 +15,13 @@ investigation_contract:
     - id: memory_dependencies
       domain: dependency_chain
       description: "Keep memory growth, leakage, OOM/LMK, reclaim and GC evidence distinct. A high allocation count or concurrent pressure alone does not establish a latency or failure cause. When the trace holds Java heap dumps (heap_graph_object) and no counters, read the dumps rather than reporting memory data missing. Across two or more dumps a leak needs reachable instances or retained size to grow; growth only in unreachable objects with a stable reachable set is allocation churn awaiting GC, not a leak."
+# Run by the product for a scene-wide investigation before the model's first turn.
+entry_skill:
+  id: memory_analysis
+  params:
+    package: focus_app
+    start_ts: trace_start
+    end_ts: trace_end
 classification_description: "Memory usage, allocation, garbage collection, pressure, leaks and memory-related process termination."
 priority: 4
 effort: medium

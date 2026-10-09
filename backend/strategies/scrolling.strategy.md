@@ -35,6 +35,13 @@ investigation_contract:
       condition:
         kind: semantic
         description: "Applies when citing input-frame association, input backlog or input-to-present latency."
+# Run by the product for a scene-wide investigation before the model's first turn.
+entry_skill:
+  id: scrolling_analysis
+  params:
+    package: focus_app
+    start_ts: trace_start
+    end_ts: trace_end
 classification_description: "Scroll and window-animation smoothness, frame pacing, and main-thread work during continuous visual updates, including concurrent content loading."
 priority: 3
 effort: medium
