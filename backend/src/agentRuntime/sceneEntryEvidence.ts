@@ -174,9 +174,14 @@ function candidatesOf(resolution: ProcessIdentityResolution | undefined): SceneE
   return candidates.length ? candidates : undefined;
 }
 
-/** The gate's decision as one of the closed reasons, or undefined when the run may proceed. */
-function identityRefusal(identity: IdentityResolutionV1 | undefined): SceneEntryNotRunReason | undefined {
-  if (!identity || identity.status === 'verified') return undefined;
+/**
+ * The gate's decision as one of the closed reasons, or undefined when the run
+ * may proceed. A bound process runs only once the gate verified it; an unbound
+ * Skill the gate had nothing to check runs as the model's call would.
+ */
+function identityRefusal(identity: IdentityResolutionV1 | undefined, processBound: boolean): SceneEntryNotRunReason | undefined {
+  if (identity?.status === 'verified') return undefined;
+  if (!identity || identity.status === 'not_required') return processBound ? 'target_unresolved' : undefined;
   return identity.status === 'ambiguous' || identity.status === 'weak' ? 'identity_ambiguous' : 'target_unresolved';
 }
 
@@ -210,7 +215,7 @@ function boundParams(entry: StrategyEntrySkill, input: SceneEntryEvidenceInput):
 function refusalReason(refusal: SkillRunRefusal): SceneEntryNotRunReason {
   switch (refusal.kind) {
     case 'process_selector_required': return 'target_unresolved';
-    case 'identity_gate': return identityRefusal(refusal.identityResolution) ?? 'capability_missing';
+    case 'identity_gate': return identityRefusal(refusal.identityResolution, false) ?? 'capability_missing';
     default: return 'capability_missing';
   }
 }
@@ -350,7 +355,7 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
             return {kind: 'not_run', reason: refusalReason(preparation.refusal), candidates: candidatesOf(gate?.resolution)};
           }
           const {prepared} = preparation;
-          const identityReason = identityRefusal(prepared.identityResolution);
+          const identityReason = identityRefusal(prepared.identityResolution, bound.processBound);
           if (identityReason) return {kind: 'not_run', reason: identityReason, candidates: candidatesOf(prepared.gate.resolution)};
           if (controller.signal.aborted) return {kind: 'not_run', reason: timedOut ? 'timeout' : 'cancelled'};
           const paramsHash = summarizeToolCallInput('invoke_skill', {skillId: entry.id, params: prepared.effectiveParams,

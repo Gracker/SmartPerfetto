@@ -201,6 +201,15 @@ describe('product-owned scene entry evidence', () => {
         reason: 'identity_ambiguous', candidates: outcome.candidates});
     });
 
+    it('does not run a bound process the gate never checked', async () => {
+      const h = harness({entry, focusTarget: focused('high')});
+      jest.spyOn(h.executor, 'prepareInvocation').mockResolvedValue({allowed: true, params: {package: 'com.example.app'},
+        inherited: {}, config: {policy: 'none'}} as any);
+      const execute = jest.spyOn(h.executor, 'execute');
+      expect(await h.run()).toMatchObject({status: 'not_run', reason: 'target_unresolved'});
+      expect(execute).not.toHaveBeenCalled();
+    });
+
     it('does not run without a confident focus app or a user target', async () => {
       for (const [binding, focusTarget] of [['focus_app', focused('ambiguous')], ['focus_app', resolveFocusAppTarget({})],
         ['user_target', focused('high')]] as const) {
