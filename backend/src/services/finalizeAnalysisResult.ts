@@ -11,6 +11,7 @@ import {
   type RuntimeFinalizationContext,
 } from '../agentRuntime/analysisFinalizationContext';
 import type {ComparisonReportSection} from '../agentv3/sessionStateSnapshot';
+import type {ClaimSupportV1} from '../types/evidenceContract';
 import {getFinalReportContract} from '../agentv3/strategyLoader';
 import type {DataEnvelope} from '../types/dataContract';
 import {analysisDeliveryFingerprint, reportRequirementsFingerprint, sameAnalysisCandidate,
@@ -28,12 +29,13 @@ import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYT
   semanticReviewNotRequired, type FinalSemanticAssessment, type FinalSemanticSnapshot,
   type SemanticClaimAssessment} from './finalSemanticAssessment';
 import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
-import {locatedNumbersShowDeclaredRounding} from './finalSemanticNumericDisplay';
+import {countLocatedNumbersShowingRounding, locatedNumbersShowDeclaredRounding} from './finalSemanticNumericDisplay';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
   type FinalResultQualityIssue} from './finalResultQualityGate';
 import {withOwnerCodeAwareProjection} from './security/codeAwareOutputRegistry';
 import {projectConclusionSemanticInput} from './security/conclusionProtocolProjection';
 import {projectStoredConclusionSourceMetadata} from './security/analysisDeliveryProjection';
+import {getCapturedAnchorFacts} from './evidence/evidenceCapture';
 import {compactSemanticEvidenceSnapshot} from './evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot} from './evidence/semanticSourceSnapshot';
 import {compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets} from './evidence/investigationEvidenceLedger';
@@ -188,10 +190,63 @@ function semanticReviewTrace(review: SemanticClaimAssessment, body: string): Cla
     textHash: createHash('sha256').update(body.slice(start, end)).digest('hex').slice(0, 16)}))};
 }
 
+/**
+ * The one protocol-legal path from a review `numeric_mismatch` to the
+ * display-rounding warning (plan 2 D), fail-closed on every condition: the
+ * claim is a `captured.cell` proposition with exactly one subjectRef; exactly
+ * one anchor cell of that claim matches the subjectRef's evidenceRefId,
+ * rowIndex and column and carries a numeric actual value with a unit; every
+ * issue location lies inside the claim-level contentLocations the review
+ * returned for this claim; and no second number of the cell value's unit
+ * family inside those claim-level locations equals it. The anchor proves which
+ * cell was cited, never what the body shows; the body proves the shown number
+ * and its uniqueness. Anything unresolved keeps the mismatch an error.
+ */
+function sameCapturedCell(
+  claim: NonNullable<ConclusionContract['claims']>[number],
+  support: ClaimSupportV1 | undefined,
+  review: SemanticClaimAssessment,
+  issue: SemanticClaimAssessment['issues'][number],
+  body: string,
+): {value: number | string; unit: string} | undefined {
+  const semantics = claim.semantics;
+  if (semantics?.predicate !== 'captured.cell' || !support) return undefined;
+  const subject = semantics.scope.subjectRefs?.length === 1 &&
+    (semantics.scope.objectRefs?.length || 0) === 0 ? semantics.scope.subjectRefs[0] : undefined;
+  if (!subject?.evidenceRefId || subject.rowIndex === undefined || !subject.column) return undefined;
+  const {rowIndex, column} = subject;
+  // The unit is producer authority: the captured field semantics the anchor
+  // carries, never a display string on the cell.
+  const matches = (support.anchors ?? []).flatMap(anchor => {
+    const unit = getCapturedAnchorFacts(anchor)?.fields[column]?.unit;
+    if (!unit || !unit.trim()) return [];
+    return (anchor.cells ?? [])
+      .filter(cell => cell.rowIndex === rowIndex && cell.column === column)
+      .map(cell => ({cell, unit}));
+  }).filter(match => match.cell.actualValue !== undefined);
+  if (matches.length !== 1) return undefined;
+  const {cell, unit} = matches[0];
+  const value = cell.actualValue;
+  if (!(typeof value === 'number' && Number.isFinite(value) ||
+    typeof value === 'string' && /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value))) return undefined;
+  if (rowIndex < 0) return undefined;
+  // Every issue location must belong to this claim's located body text.
+  const inside = (location: {start: number; end: number}) =>
+    review.contentLocations.some(({start, end}) => location.start >= start && location.end <= end);
+  if (!issue.contentLocations.length || !issue.contentLocations.every(inside)) return undefined;
+  // A second same-value candidate anywhere the claim's locations reach makes
+  // the located number ambiguous: which cell it renders cannot be known.
+  const cellNumeric = {operator: 'eq', value, unit};
+  return countLocatedNumbersShowingRounding(body, review.contentLocations, cellNumeric) === 1 &&
+    countLocatedNumbersShowingRounding(body, issue.contentLocations, cellNumeric) === 1
+    ? {value, unit} : undefined;
+}
+
 /** Finite proof never promotes itself; the full current proposition must agree with the body. */
 function joinClaimVerification(input: {
   contract?: ConclusionContract;
   draft: ClaimVerificationResult;
+  claimSupport?: readonly ClaimSupportV1[];
   semantic?: FinalSemanticAssessment;
   candidate: AnalysisCandidateIdentity;
   body: string;
@@ -210,6 +265,7 @@ function joinClaimVerification(input: {
     const reviews = semantic?.claims.filter(item => item.claimId === id) ?? [];
     return reviews.length === 1 ? reviews[0] : undefined;
   };
+  const supportById = new Map((input.claimSupport ?? []).map(support => [support.claimId, support]));
   const claimResults: ClaimVerificationClaimResult[] = declarations.map((claim): ClaimVerificationClaimResult => {
     const id = claim.id ?? '';
     const drafts = draft.claimResults.filter(item => item.claimId === id);
@@ -224,10 +280,15 @@ function joinClaimVerification(input: {
     }
     if (bound && review?.consistency === 'inconsistent') {
       // Only the issue's own located text: a contradiction whose location could
-      // not be resolved stays a contradiction.
-      const displayRounding = (issue: typeof review.issues[number]): boolean =>
-        issue.code === 'numeric_mismatch' &&
-        locatedNumbersShowDeclaredRounding(body, issue.contentLocations, claim.semantics?.numeric);
+      // not be resolved stays a contradiction. A downgrade to display rounding
+      // additionally needs the captured-cell identity of plan 2 D: the same
+      // shown value in another cell's place is a real mismatch.
+      const displayRounding = (issue: typeof review.issues[number]): boolean => {
+        if (issue.code !== 'numeric_mismatch') return false;
+        const cell = sameCapturedCell(claim, supportById.get(id), review, issue, body);
+        return cell ? locatedNumbersShowDeclaredRounding(body, issue.contentLocations,
+          {operator: 'eq', value: cell.value, unit: cell.unit}) : false;
+      };
       const contradictions = review.issues.filter(issue => !displayRounding(issue));
       for (const issue of review.issues) issues.push(contradictions.includes(issue)
         ? {claimId: id, severity: 'error', code: semanticClaimIssueCode(issue.code), message: `Claim ${id}: ${issue.code}`}
@@ -652,7 +713,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       }
     }
     result.claimVerificationResult = joinClaimVerification({contract: validationContract, draft: draft.claimVerificationResult,
-      semantic, candidate, body: result.conclusion, bindingEligibility: canonical.bindingEligibility});
+      claimSupport: draft.claimSupport, semantic, candidate, body: result.conclusion,
+      bindingEligibility: canonical.bindingEligibility});
     const statusByClaim = new Map(result.claimVerificationResult.claimResults.map(claim => [claim.claimId, claim.status]));
     result.claimSupport = draft.claimSupport.map(support => {
       const status = statusByClaim.get(support.claimId);

@@ -74,30 +74,41 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   knowledgeUse?: KnowledgeUseRecord;
   /** The runtime's native terminal record for the candidate (default completed). */
   nativeCompletion?: {status: 'incomplete'; reason: 'output_limit'};
+  /** A captured.cell proposition whose one cell holds this exact value and unit. */
+  capturedCell?: {value: number | string; unit: string; displayed: string};
+  /** A second reference naming the same cell: two matching anchor cells. */
+  duplicateSubjectCellRef?: boolean;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
-  const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
+  const capturedCell = options.capturedCell;
+  const body = options.body ?? (capturedCell ? `The captured value is ${capturedCell.displayed}.`
+    : options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
   const ref = {evidenceRefId: 'data:count', rowIndex: 0, column: options.source ? 'name' : 'count',
-    value: options.source ? options.source.declaredMarker ?? options.source.marker : options.wrongReferenceValue ?? 49};
+    value: options.source ? options.source.declaredMarker ?? options.source.marker
+      // A captured.cell proposition declares its expected primitive as a string.
+      : capturedCell ? String(capturedCell.value) : options.wrongReferenceValue ?? 49};
   const declared: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
     conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
     claims: options.claim === false ? [] : [{id: 'count', kind: options.source?.hypothetical || options.claimKind === 'inference'
-      ? 'inference' : options.source ? 'identity' : 'numeric', text: body, references: [ref],
-      semantics: {schemaVersion: 'claim_semantics@1', predicate: options.source ? 'identity.marker' : 'numeric.cell', polarity: 'affirmed',
+      ? 'inference' : options.source || capturedCell ? 'identity' : 'numeric', text: body, references: options.duplicateSubjectCellRef
+      ? [ref, {...ref, value: capturedCell ? `${capturedCell.value}0` : 490}] : [ref],
+      semantics: {schemaVersion: 'claim_semantics@1', predicate: capturedCell ? 'captured.cell'
+        : options.source ? 'identity.marker' : 'numeric.cell', polarity: 'affirmed',
         discourse: options.source?.hypothetical ? 'hypothetical' : 'asserted', quantifier: 'one',
         modality: options.source?.hypothetical ? 'possible' : 'certain',
         scope: {population: 'cited_rows', subjectRefs: [ref]},
-        ...(options.source ? {} : {numeric: {operator: 'eq' as const, value: 49, unit: 'count'}})}}]};
+        ...(options.source || capturedCell ? {} : {numeric: {operator: 'eq' as const, value: 49, unit: 'count'}})}}]};
   const result: AnalysisResult = {sessionId: 'final-result-test', conclusion: body, success: true,
     confidence: 0.8, findings: [], hypotheses: [], rounds: 1, totalDurationMs: 1,
     conclusionContract: parseConclusionContractDeclaration(declared).contract};
-  const envelope = createDataEnvelope({columns: [ref.column], rows: [[options.source?.marker ?? 49]]}, {
+  const envelope = createDataEnvelope({columns: [ref.column],
+    rows: [[options.source?.marker ?? (capturedCell ? String(capturedCell.value) : 49)]]}, {
     type: 'sql_result', source: 'execute_sql', title: 'Count', evidenceRefId: 'data:count',
     traceId: 'trace', traceSide: 'current', executionStatus: 'observed', identityResolution: options.identity,
     scopeProvenance: options.scope});
   const store = new ArtifactStore();
   if (options.capture !== false) store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data, {
-    count: {unit: 'count', origin: {kind: 'native_producer', definitionFingerprint: 'count-v1'}},
+    count: {unit: capturedCell?.unit ?? 'count', origin: {kind: 'native_producer', definitionFingerprint: 'count-v1'}},
   }), {meta: envelope.meta, display: envelope.display});
   let sourceUse: SourceUseDecisionV1 | undefined;
   if (options.source) {
@@ -1011,8 +1022,22 @@ describe('shared final analysis boundary', () => {
     expect(target.dispatch).toHaveBeenCalledTimes(1);
   });
 
-  it('records a numeric mismatch that only shows the declared value at display precision as a warning', async () => {
+  // Plan 2 D: the downgrade needs captured-cell identity. A numeric proposition
+  // whose located text merely repeats its declared value stays a contradiction:
+  // which cell the body rendered cannot be known from a declared number.
+  it('keeps a rounding-shaped mismatch on a numeric proposition an error', async () => {
     const target = fixture({inconsistent: true});
+    const final = await target.run();
+    const verification = final.result.claimVerificationResult;
+    expect(verification).toMatchObject({status: 'failed', passed: false, unsupportedClaimCount: 1,
+      claimResults: [{status: 'unsupported'}]});
+    expect(verification?.issues.some(issue => issue.severity === 'error' && issue.code === 'semantic_numeric_mismatch'))
+      .toBe(true);
+    expect(verification?.issues.some(issue => issue.code === 'semantic_numeric_display_rounding')).toBe(false);
+  });
+
+  it('records a captured-cell mismatch that only shows the cell value at display precision as a warning', async () => {
+    const target = fixture({inconsistent: true, capturedCell: {value: 61.25, unit: 'ms', displayed: '61.3 ms'}});
     const final = await target.run();
     const verification = final.result.claimVerificationResult;
     expect(verification).toMatchObject({status: 'partial', passed: false, unsupportedClaimCount: 0,
@@ -1020,6 +1045,36 @@ describe('shared final analysis boundary', () => {
     expect(verification?.issues).toContainEqual(expect.objectContaining({claimId: 'count', severity: 'warning',
       code: 'semantic_numeric_display_rounding'}));
     expect(verification?.issues.some(issue => issue.severity === 'error')).toBe(false);
+  });
+
+  it.each([
+    ['a second same-value candidate in the claim text', {capturedCell: {value: 61.25, unit: 'ms', displayed: '61.3 ms'},
+      body: 'The captured value is 61.3 ms; another 61.3 ms frame follows.'}],
+    ['two anchor cells matching the subject reference', {capturedCell: {value: 61.25, unit: 'ms', displayed: '61.3 ms'},
+      duplicateSubjectCellRef: true}],
+  ])('keeps the mismatch an error with %s', async (_label, options) => {
+    const target = fixture({inconsistent: true, ...options} as Parameters<typeof fixture>[0]);
+    const final = await target.run();
+    expect(final.result.claimVerificationResult).toMatchObject({status: 'failed',
+      claimResults: [{status: 'unsupported'}]});
+    expect(final.result.claimVerificationResult?.issues.some(issue => issue.severity === 'error')).toBe(true);
+    expect(final.result.claimVerificationResult?.issues.some(issue => issue.code === 'semantic_numeric_display_rounding'))
+      .toBe(false);
+  });
+
+  it('keeps the mismatch an error when the issue location lies outside the claim locations', async () => {
+    const target = fixture({inconsistent: true, capturedCell: {value: 61.25, unit: 'ms', displayed: '61.3 ms'},
+      dispatch: async (): Promise<IntentTransportResult> => ({status: 'ok', text: JSON.stringify({
+        schemaVersion: 'final_semantic_response@1',
+        bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: target.result.conclusion.length}]},
+        claims: [{claimId: 'count', consistency: 'inconsistent',
+          contentLocations: [{start: 0, end: 12, text: 'The captured'}],
+          issues: [{code: 'numeric_mismatch', contentLocations: [{start: 21, end: 27, text: '61.3 ms'}]}]}],
+        omissions: [], requirements: []})})});
+    const final = await target.run();
+    expect(final.result.claimVerificationResult).toMatchObject({status: 'failed',
+      claimResults: [{status: 'unsupported'}]});
+    expect(final.result.claimVerificationResult?.issues.some(issue => issue.severity === 'error')).toBe(true);
   });
 
   it.each([

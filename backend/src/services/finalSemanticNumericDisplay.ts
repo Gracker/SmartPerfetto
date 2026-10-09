@@ -172,6 +172,75 @@ function clauseAround(line: string, start: number, end: number): string {
 const overlaps = (start: number, end: number, from: number, to: number): boolean => start < to && from < end;
 
 /**
+ * Distinct number tokens inside the locations that faithfully show
+ * `numeric.value` at their own displayed precision (the same closed grammar,
+ * unit mapping and rounding rule as the downgrade itself). The captured-cell
+ * rounding gate uses it to fail closed when a second display candidate exists
+ * anywhere the claim's own locations reach (plan 2 D).
+ */
+export function countLocatedNumbersShowingRounding(
+  body: string,
+  locations: readonly {start: number; end: number}[],
+  numeric: {operator: string; value: number | string; unit: string},
+): number {
+  if (numeric.operator !== 'eq' || locations.length === 0) return 0;
+  const declared = exactNumber(numeric.value);
+  const declaredScale = UNIT_SCALES[numeric.unit.trim()];
+  if (!declared || !declaredScale) return 0;
+  const countFamily = UNITLESS_FAMILIES.has(declaredScale.family);
+  // One tokenized entry per physical line; candidates dedupe by line and offset.
+  const lines = new Map<string, ReturnType<typeof tokenizeLine>>();
+  const candidates = new Set<string>();
+  const showsDeclared = (token: Token, tokens: Token[], line: string): boolean => {
+    if (token.unknownUnit || !token.rational) return false;
+    // A bare decimal is almost never a count: it is a value whose unit was left out.
+    if (!token.unit && !countFamily && token.decimals > 0) return false;
+    const scale = token.unit ? UNIT_SCALES[token.unit] : countFamily ? declaredScale : undefined;
+    if (!scale || scale.family !== declaredScale.family) return false;
+    const index = tokens.indexOf(token);
+    const previous = tokens[index - 1];
+    const next = tokens[index + 1];
+    if (previous && notOneValue(line, previous, token)) return false;
+    if (next && notOneValue(line, token, next)) return false;
+    if (QUALIFIER.test(clauseAround(line, token.start, token.end))) return false;
+    if (token.start > 0 && DASH.test(line[token.start - 1])) return false;
+    // The declared value expressed in the displayed unit.
+    const shown: Rational = {
+      numerator: declared.numerator * declaredScale.factor,
+      denominator: declared.denominator * scale.factor,
+    };
+    const displayed = roundedScaled(token.rational, token.decimals);
+    // A non-zero value displayed as 0 asserts absence, not a rounding.
+    if (displayed === 0n && declared.numerator !== 0n) return false;
+    return roundedScaled(shown, token.decimals) === displayed ||
+      truncatedScaled(shown, token.decimals) === displayed;
+  };
+  for (const location of locations) {
+    if (!(location.start >= 0 && location.end > location.start && location.end <= body.length)) return 0;
+    const lineStart = body.lastIndexOf('\n', location.start - 1) + 1;
+    const lineBreak = body.indexOf('\n', location.end);
+    const lineEnd = lineBreak < 0 ? body.length : lineBreak;
+    const key = `${lineStart}:${lineEnd}`;
+    let entry = lines.get(key);
+    if (!entry) {
+      const line = body.slice(lineStart, lineEnd).replace(EMPHASIS, ' ');
+      entry = tokenizeLine(line);
+      lines.set(key, entry);
+    }
+    const from = location.start - lineStart;
+    const to = location.end - lineStart;
+    if (entry.malformed.some(([start, end]) => overlaps(start, end, from, to))) return 0;
+    for (const token of entry.tokens) {
+      if (!overlaps(token.start, token.end, from, to)) continue;
+      if (showsDeclared(token, entry.tokens, body.slice(lineStart, lineEnd).replace(EMPHASIS, ' '))) {
+        candidates.add(`${key}:${token.start}`);
+      }
+    }
+  }
+  return candidates.size;
+}
+
+/**
  * True when every number the locations select that belongs to the declared
  * unit's family is the declared exact `eq` value rounded half-up or truncated
  * toward zero at its displayed decimal places, at least one such number

@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it} from '@jest/globals';
-import {locatedNumbersShowDeclaredRounding} from '../finalSemanticNumericDisplay';
+import {countLocatedNumbersShowingRounding, locatedNumbersShowDeclaredRounding} from '../finalSemanticNumericDisplay';
 
 const eq = (value: number | string, unit: string) => ({operator: 'eq', value, unit});
 /** A catalog-style location: the whole line. */
@@ -177,5 +177,36 @@ describe('locatedNumbersShowDeclaredRounding', () => {
     expect(locatedNumbersShowDeclaredRounding('5 ms', [], eq(5, 'ms'))).toBe(false);
     expect(line('5,844.24 ms', {operator: 'gt', value: 5844240564, unit: 'ns'})).toBe(false);
     expect(line('5,844.24 ms', undefined)).toBe(false);
+  });
+});
+
+describe('countLocatedNumbersShowingRounding', () => {
+  const eq = (value: number | string, unit: string) => ({operator: 'eq', value, unit});
+  const count = (body: string, locations: readonly {start: number; end: number}[], numeric: {operator: string; value: number | string; unit: string}) =>
+    countLocatedNumbersShowingRounding(body, locations, numeric);
+
+  it('counts each faithful display candidate once, across overlapping locations', () => {
+    const body = 'The value is 45 ms here and 45 ms there.';
+    const first = {start: body.indexOf('45'), end: body.indexOf('45') + 2};
+    const second = {start: body.lastIndexOf('45'), end: body.lastIndexOf('45') + 2};
+    const whole = {start: 0, end: body.length};
+    expect(count(body, [first], eq(45, 'ms'))).toBe(1);
+    expect(count(body, [first, second], eq(45, 'ms'))).toBe(2);
+    expect(count(body, [whole], eq(45, 'ms'))).toBe(2);
+    // Overlapping locations selecting the same token count once.
+    expect(count(body, [whole, first], eq(45, 'ms'))).toBe(2);
+    expect(count(body, [{start: 0, end: 3}, first], eq(45, 'ms'))).toBe(1);
+  });
+
+  it('ignores other-family numbers and fails closed on malformed or hostile input', () => {
+    const body = '45 ms，另有 45 Hz';
+    expect(count(body, [{start: 0, end: body.length}], eq(45, 'ms'))).toBe(1);
+    expect(count('1,2345 ms（45 ms）', [{start: 0, end: 14}], eq(45, 'ms'))).toBe(0);
+    expect(count('45 ms', [{start: 9, end: 99}], eq(45, 'ms'))).toBe(0);
+    expect(count('45 ms', [{start: 0, end: 5}], {operator: 'gt', value: 45, unit: 'ms'})).toBe(0);
+    expect(count('45 ms', [{start: 0, end: 5}], eq(45, 'sec'))).toBe(0);
+    // A rounded display at another precision is still one candidate of the same value.
+    const both = '61.3 ms，与 61.25 ms';
+    expect(count(both, [{start: 0, end: both.length}], eq(61.25, 'ms'))).toBe(2);
   });
 });
