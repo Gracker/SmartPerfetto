@@ -11,6 +11,7 @@ import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
+  candidateHasAnswerBody,
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
@@ -19,6 +20,7 @@ import {
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {claudeEffortForPurpose, runClaudeIntentTransport} from './claudeIntentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {
   attachFinalizationContext,
   attachRunDeliveryRecord,
@@ -195,6 +197,7 @@ import {
 import type { RuntimeSelection } from '../../runtimeSelection';
 import {
   createRuntimePerformanceRun,
+  runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
@@ -803,6 +806,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
           traceIdentity: runTraceIdentity(traceId, options),
+          deliveryCall: {providerOrigin: finalizationEnv.ANTHROPIC_BASE_URL, model: finalizationModel},
           dispatchText: async input => {
             const directory = await fs.promises.mkdtemp(path.join(tmpdir(), 'smartperfetto-claude-review-'));
             try {
@@ -1717,22 +1721,31 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         const recovery = chooseRuntimeDraftRecovery({
           declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues,
         });
-        if (recovery &&
+        const correctionPrompt = recovery && (recovery.kind === 'declaration'
+          ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
+          : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage));
+        const correctionPurpose = recovery?.kind === 'declaration' ? 'declaration_repair' : 'continuation';
+        const correctionInputBytes = Buffer.byteLength(correctionPrompt || '') + Buffer.byteLength(ctx.systemPrompt);
+        if (recovery && correctionPrompt &&
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
-            remainingTurns > 0 && Date.now() < requestDeadline) {
+            remainingTurns > 0 && Date.now() < requestDeadline &&
+            admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+              providerOrigin: sdkEnv.ANTHROPIC_BASE_URL, model: runtimeConfig.model, purpose: correctionPurpose,
+              inputBytes: correctionInputBytes, remainingMs: requestDeadline - Date.now(),
+              failOpen: deliveryCallFailsOpen(turnIntent,
+                {bodyMissing: correctionPurpose === 'continuation' && !candidateHasAnswerBody(nativeCandidate)})})) {
           assertAuthorized();
           answerDraft?.reset();
           const correctionAttemptId = `${runId}:correction:1`;
           const correctionCall = runtimePerformance.startModelCall({
-            purpose: recovery.kind === 'declaration' ? 'declaration_repair' : 'continuation',
+            purpose: correctionPurpose,
             ...(recovery.kind === 'declaration' ? {trigger: recovery.request.reason} : {}),
-            model: runtimeConfig.model,
+            model: runtimeConfig.model, providerOrigin: sdkEnv.ANTHROPIC_BASE_URL,
+            inputBytesBucket: runtimeModelCallInputBytesBucket(correctionInputBytes),
           });
           let correctionTerminal = 'none' as 'none' | 'completed' | 'failed';
           const {stream, close} = sdkQueryWithRetry({
-            prompt: recovery.kind === 'declaration'
-              ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
-              : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage),
+            prompt: correctionPrompt,
             options: withAuthorizationHooks({
               model: runtimeConfig.model, maxTurns: 1, systemPrompt: ctx.sdkSystemPrompt,
               includePartialMessages: true, settingSources: [], tools: [], allowedTools: [],

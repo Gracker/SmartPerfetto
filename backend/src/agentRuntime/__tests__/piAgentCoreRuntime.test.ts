@@ -56,6 +56,7 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import * as finalizationModule from '../analysisFinalizationContext';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import {takeFinalizationContext} from '../analysisFinalizationContext';
 import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} from '../../../tests/helpers/runtimeDraftTerminalState';
 import {ArtifactStore} from '../../agentv3/artifactStore';
@@ -191,7 +192,13 @@ class FakePiAgent {
   }
 }
 
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   piClassifierDecision = {schemaVersion: 1, taskKind: 'fact', sceneId: 'general',
     scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new'};
   piClassifierResponses = [];
@@ -3561,6 +3568,27 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
   });
 
+  it('does not send a declaration repair that cannot finish in the time left, and records why', async () => {
+    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
+    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+    passVerification();
+    const body = 'Frame 12 missed its deadline.';
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
+      text: candidateWithPopulation(body, 'everywhere')}]}];
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () =>
+      typedRuntime().analyze('query', 'pi-repair-budget', 'trace-pi',
+        {runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder)}));
+    expect(FakePiAgent.instances[0].promptCount).toBe(1);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      model: 'pi-test-model', purpose: 'declaration_repair', inputBytes: expect.any(Number),
+      remainingMs: expect.any(Number), failOpen: false}));
+    expect(runtimePerformanceRecorder.seal().deliveryBudgets).toEqual([{purpose: 'declaration_repair', decision: 'skip',
+      source: 'default', estimateMs: 90_000, remainingMs: 1_000, diagnostic: 'stats_not_configured'}]);
+  });
+
   it('uses the reserved no-tools delivery turn to attach declarations to a full multilingual body', async () => {
     passVerification();
     const body = `${'启动阶段保持原始正文。'.repeat(700)}\n${'Full body remains byte-for-byte stable. '.repeat(140)}`.trimEnd();
@@ -4117,6 +4145,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(takeFinalizationContext(result)).toBeUndefined();
       expect(context.deliveryContext).toEqual(projected.deliveryContext);
       expect(context.traceIdentity).toEqual({currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'});
+      expect(context.deliveryCall).toEqual({model: 'pi-test-model'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context.runId);
       expect(readView.mock.calls[0][0].allowedTraces).toEqual([

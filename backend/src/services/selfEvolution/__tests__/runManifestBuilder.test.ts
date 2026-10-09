@@ -308,4 +308,17 @@ describe('RunManifestBuilder', () => {
       {operation: 'record_sql_statement'},
     );
   });
+
+  it('notifies seal observers once with the sealed manifest and ignores a throwing observer', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+    const seen: unknown[] = [];
+    builder.addSealObserver(() => { throw new Error('observer failure'); });
+    builder.addSealObserver(manifest => seen.push(manifest));
+    const manifest = builder.seal();
+    expect(builder.seal()).toBe(manifest);
+    expect(seen).toEqual([manifest]);
+    builder.addSealObserver(other => seen.push(other));
+    expect(seen).toHaveLength(1);
+  });
 });

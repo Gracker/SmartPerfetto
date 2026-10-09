@@ -179,7 +179,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     }]}};
   const pinnedRegistry = pinnedRegistryForIntent ?? (options.report
     ? buildStrategyRegistrySnapshotFromDefinitions({definitions: [reportStrategy], overlayGeneration: 'report-test'}) : registry);
-  attachFinalizationContext(result, {runId, sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 10_000,
+  attachFinalizationContext(result, {runId, sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 600_000,
     strategyRegistry: pinnedRegistry, traceIdentity: {currentTraceId: 'trace'},
     selection: options.selection,
     providerQuery: options.providerQuery,

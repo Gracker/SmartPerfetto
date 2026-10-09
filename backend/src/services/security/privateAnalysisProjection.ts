@@ -470,6 +470,14 @@ export function projectPrivateClaimVerification(
     claimResults: (verification.claimResults ?? []).map((claim, index) => ({
       claimId: text(claim.claimId), status: privateControl(claim.status,
         ['verified', 'partial', 'inference', 'unsupported', 'not_checked'], 'not_checked'),
+      // Offsets and text hashes of the owner's own body; strict surfaces keep none.
+      ...(claim.semanticReview && isOwnerCodeAwareProjection() ? {semanticReview: {
+        consistency: privateControl(claim.semanticReview.consistency, ['consistent', 'inconsistent', 'unknown'], 'unknown'),
+        contentLocations: claim.semanticReview.contentLocations.filter(location =>
+          Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) &&
+          typeof location.textHash === 'string' && /^[0-9a-f]{16}$/.test(location.textHash))
+          .map(({start, end, textHash}) => ({start, end, textHash})),
+      }} : {}),
       ...(claim.referenceResults ? {referenceResults: references(claim.referenceResults)} : {}),
       ...(claim.referenceCells ? {referenceCells: references(claim.referenceCells)} : {}),
       ...(claim.deterministicProof ? {deterministicProof: {

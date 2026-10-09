@@ -56,13 +56,14 @@ import {
   buildOpenAITextRequestPurposeOptions,
 } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {openAiTextRequestPurposeFor} from '../../intentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
 import {createOpenAIToolsFromMcpDefinitions, openAiToolCallKey} from './openAiToolAdapter';
 import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
 import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeExecutionGuard';
-import {createRuntimePerformanceRun, runtimeOutcomeFromError, type RuntimeModelCallPurpose, type RuntimeModelCallSpan,
+import {createRuntimePerformanceRun, runtimeModelCallInputBytesBucket, runtimeOutcomeFromError, type RuntimeModelCallPurpose, type RuntimeModelCallSpan,
   type RuntimeModelCallTrigger, type RuntimePerformanceOutcome, type RuntimePerformanceRun} from '../../runtimePerformance';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -796,8 +797,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         let lastResponse: unknown;
         let streamCompleted = false;
         // One record per native model response; the first starts at dispatch so it includes connection setup.
+        const attemptInputBucket = runtimeModelCallInputBytesBucket(serializedByteLength(runInput) +
+          Buffer.byteLength(context.systemPrompt));
         const startAttemptModelCall = () => runtimePerformance.startModelCall({reasoning: 'provider_default',
-          ...attemptCall, model: selectedModel});
+          ...attemptCall, model: selectedModel, providerOrigin: config.baseURL, inputBytesBucket: attemptInputBucket});
         let modelCall: RuntimeModelCallSpan | undefined;
         let modelCallResponded = false;
         const answerStreamFilter = createOpenAiReasoningFilterState();
@@ -941,7 +944,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             const recoveryInput = buildOpenAiOutputLimitRecoveryInput(stream.history, config.maxHistoryBytes,
               observedToolCalls, turnIntent, config.outputLanguage, recoveryReason, candidateProtocolDiagnostic,
               declarationRequest);
-            if (recoveryInput) {
+            if (recoveryInput && admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+              providerOrigin: config.baseURL, model: selectedModel,
+              purpose: declarationRequest && recoveryReason === declarationRequest.reason ? 'declaration_repair' : 'continuation',
+              inputBytes: serializedByteLength(recoveryInput) + Buffer.byteLength(context.systemPrompt),
+              remainingMs: runDeadline.current() - Date.now(),
+              failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: recoveryReason === 'empty_body'})})) {
               acceptsToolUpdates = false;
               const repairsDeclaration = recoveryReason === MISSING_NATIVE_DECLARATION || recoveryReason === INVALID_NATIVE_DECLARATION;
               const repairProviderData = repairsDeclaration ? declarationRepairProviderData(config) : undefined;
@@ -1086,6 +1094,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         this.emitUpdate({type: 'answer_token', content: {done: true, totalChars: result.conclusion.length}, timestamp: Date.now()});
         attachFinalizationContext(result, {
           runId, sessionId, deadlineMs: finalizationDeadlineAt, turnIntent: resolvedTurnIntent,
+          deliveryCall: {providerOrigin: finalizationConfig.baseURL, model: finalizationConfig.lightModel},
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
           selection: analysisRunSpec.selection,

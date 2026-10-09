@@ -182,6 +182,8 @@ export function claimVerificationNotCheckedExplanation(
       case 'review_not_finished': return localize(language, '停止后语义复核未能按时结束，回答按未核验保存',
         'the semantic review did not end in time after the stop, so the answer was saved unverified');
       case 'complete_proposition_review_unavailable': return localize(language, '完整命题复核不可用', 'complete proposition review was unavailable');
+      case 'budget_insufficient': return localize(language, '剩余时间不足以完成语义复核，未发起复核',
+        'too little time remained to finish a semantic review, so none was sent');
       case 'not_required': return localize(language, '本轮回答无需语义复核，仅保留确定性核验结果',
         'no semantic review was needed for this answer; only deterministic checks apply');
       default: return notCheckedReason;

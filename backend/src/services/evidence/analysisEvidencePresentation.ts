@@ -188,6 +188,9 @@ function schemas(strict: boolean) {
     }).optional(),
     propositionCoverage: object({status: z.enum(['complete', 'partial', 'none']), covered: z.array(z.string()),
       uncovered: z.array(z.string()), reason: z.string()}).optional(),
+    semanticReview: object({consistency: z.enum(['consistent', 'inconsistent', 'unknown']),
+      contentLocations: z.array(object({start: z.number().int().nonnegative(), end: z.number().int().nonnegative(),
+        textHash: z.string()}))}).optional(),
   });
   // Keyed by the result type: a field missing here would be stripped on write and rejected on read.
   const claimVerification = object({

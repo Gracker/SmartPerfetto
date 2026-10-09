@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {
+  runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   startRuntimeModelCall,
   type RuntimeModelCallPurpose,
@@ -225,6 +226,11 @@ export function intentTransportTextResult(
   return {status: 'ok', text, ...receipt};
 }
 
+/** UTF-8 bytes of the text one transport request sends. */
+export function intentTransportInputBytes(input: Pick<IntentTransportInput, 'prompt' | 'systemPrompt'>): number {
+  return Buffer.byteLength(input.prompt, 'utf8') + Buffer.byteLength(input.systemPrompt, 'utf8');
+}
+
 /**
  * Dispatch one transport request inside an internal model-call record. Without
  * a recorder the request is passed through unchanged; with one, the only
@@ -237,7 +243,9 @@ export async function dispatchWithModelCallRecord(
   dispatch: (input: IntentTransportInput) => Promise<IntentTransportResult>,
 ): Promise<IntentTransportResult> {
   if (!recorder) return dispatch(input);
-  const span = startRuntimeModelCall(recorder, call);
+  const span = startRuntimeModelCall(recorder, {
+    inputBytesBucket: runtimeModelCallInputBytesBucket(intentTransportInputBytes(input)), ...call,
+  });
   let reasoning: 'provider_default' | 'disabled' | undefined;
   let usage: unknown;
   const observer: IntentTransportObserver = {

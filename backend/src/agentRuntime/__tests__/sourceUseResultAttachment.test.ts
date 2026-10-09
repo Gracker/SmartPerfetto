@@ -104,7 +104,7 @@ describe('written source locations at shared finalization', () => {
       const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'source-location-optional'});
       const sourceScope = fixture.sourceUse.getSourceExecutionScope?.();
       const traceId = `trace-${fixture.sessionId}`;
-      attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + 10_000,
+      attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + 600_000,
         strategyRegistry: registry, traceIdentity: {currentTraceId: traceId}, sourceUse: decision, sourceScope,
         protocolProjection: projection.protocolProjection, deliveryContext: projection.deliveryContext!,
         turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: registry.registryFingerprint,

@@ -38,6 +38,7 @@ function fixture(options: {
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
   investigationRequirements?: AnalysisInvestigationRequirement[];
   selection?: AnalysisRunSelection;
+  deliveryCall?: {providerOrigin?: string; model?: string};
 } = {}) {
   const body = options.body ?? 'Frame A took 9 ms.';
   const contract: ConclusionContract = {
@@ -76,7 +77,7 @@ function fixture(options: {
     ({status: 'ok', text: JSON.stringify(reply)})));
   const reads = jest.fn(async () => []);
   attachFinalizationContext(result, {
-    runId: 'run', sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 10_000,
+    runId: 'run', sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 600_000,
     strategyRegistry: registry,
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: registry.registryFingerprint,
       taskKind: options.investigationRequirements ? 'investigation' : 'fact', sceneId: 'general', scope: options.scope ?? 'bounded_question', recommendedComplexity: 'full',
@@ -85,6 +86,7 @@ function fixture(options: {
     selection: options.selection,
     deliveryContext: {entry: 'new_finalization', acceptedCandidate: candidate},
     evidenceReadView: {resolveReferences: reads}, dispatchText: dispatch,
+    ...(options.deliveryCall ? {deliveryCall: options.deliveryCall} : {}),
   });
   const context = takeFinalizationContext(result)!;
   contexts.push(context);
@@ -1129,6 +1131,33 @@ describe('semantic report applicability and coverage', () => {
   });
 });
 
+describe('semantic review delivery budget', () => {
+  it('does not send a non-report review that cannot finish in the time left', async () => {
+    const run = fixture({deadlineMs: Date.now() + 60_000});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'not_checked', reason: 'budget_insufficient',
+      notCheckedDetail: 'estimate_default', consistency: 'unknown'});
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('uses the provider family default: a GLM review needs more time than an unknown provider', async () => {
+    const glm = fixture({deadlineMs: Date.now() + 120_000,
+      deliveryCall: {providerOrigin: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3'}});
+    expect(await assessFinalSemantics(glm.input)).toMatchObject({reason: 'budget_insufficient'});
+    expect(glm.dispatch).not.toHaveBeenCalled();
+    expect(glm.input.context.deliveryCall).toEqual({providerOrigin: 'https://open.bigmodel.cn', model: 'glm-5.3'});
+    const other = fixture({deadlineMs: Date.now() + 120_000, deliveryCall: {providerOrigin: 'https://gateway.example/v1'}});
+    expect(await assessFinalSemantics(other.input)).toMatchObject({status: 'checked'});
+    expect(other.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('still sends a report deliverable review whatever the estimate, bounded by the deadline', async () => {
+    const run = fixture({deadlineMs: Date.now() + 60_000, deliverable: 'report'});
+    const result = await assessFinalSemantics(run.input);
+    expect(result.reason).not.toBe('budget_insufficient');
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('semantic dispatch failure and cancellation', () => {
   it.each(['provider_error', 'timeout', 'tool_use', 'incomplete_output', 'output_limit'] as const)(
     'does not turn native %s into a semantic pass', async reason => {
@@ -1168,12 +1197,12 @@ describe('semantic dispatch failure and cancellation', () => {
 
   it('uses the context deadline to stop an unresponsive native callback', async () => {
     jest.useFakeTimers({now: 1_000});
-    const run = fixture({deadlineMs: 1_100, dispatch: async () => new Promise<IntentTransportResult>(() => undefined)});
+    const run = fixture({deadlineMs: 101_000, dispatch: async () => new Promise<IntentTransportResult>(() => undefined)});
     const pending = assessFinalSemantics(run.input);
-    await jest.advanceTimersByTimeAsync(101);
+    await jest.advanceTimersByTimeAsync(100_001);
     expect(await pending).toMatchObject({reason: 'timeout', consistency: 'unknown'});
     expect(run.dispatch).toHaveBeenCalledTimes(1);
-    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(1_100);
+    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(101_000);
     expect(run.dispatch.mock.calls[0][0].signal?.aborted).toBe(true);
   });
 
@@ -1216,15 +1245,15 @@ describe('semantic dispatch failure and cancellation', () => {
   it('preserves the original absolute deadline across dispatch delay and ignores success after the cached timeout', async () => {
     jest.useFakeTimers({now: 1_000});
     let resolve!: (response: IntentTransportResult) => void;
-    const run = fixture({deadlineMs: 91_000, dispatch: async () => new Promise<IntentTransportResult>(done => {resolve = done;})});
+    const run = fixture({deadlineMs: 151_000, dispatch: async () => new Promise<IntentTransportResult>(done => {resolve = done;})});
     const pending = assessFinalSemantics(run.input);
     // Synchronous work before the dispatch microtask consumes the original run budget.
     jest.setSystemTime(31_000);
     expect(assessFinalSemantics(run.input)).toBe(pending);
-    await jest.advanceTimersByTimeAsync(60_000);
+    await jest.advanceTimersByTimeAsync(120_000);
     const timeout = await pending;
     expect(timeout).toMatchObject({status: 'unavailable', reason: 'timeout'});
-    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(91_000);
+    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(151_000);
     resolve({status: 'ok', text: JSON.stringify(run.reply)});
     await jest.advanceTimersByTimeAsync(0);
     expect(assessFinalSemantics(run.input)).toBe(pending);

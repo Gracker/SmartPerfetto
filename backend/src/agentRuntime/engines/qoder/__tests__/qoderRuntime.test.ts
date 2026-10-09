@@ -1332,6 +1332,7 @@ describe('QoderRuntime', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context).toMatchObject({runId: 'final-context-run', sessionId: 'final-context',
         traceIdentity: {currentTraceId: 'trace-1', referenceTraceId: 'trace-2'}, hasSemanticTransport: true});
+      expect(context.deliveryCall?.model).toEqual(expect.any(String));
       expect(context.deliveryContext).toMatchObject({completion: result.completion,
         acceptedCandidate: {conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
       expect(context.deadlineMs).toBeGreaterThanOrEqual(startedAt + 2000);

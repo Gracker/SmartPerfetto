@@ -18,6 +18,7 @@ import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import {chatCompletionResponse, createOpenAiConfigForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import * as finalization from '../../agentRuntime/analysisFinalizationContext';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {projectPrivateAnalysisResult, projectPrivateTerminationMessage} from '../../services/security/privateAnalysisProjection';
@@ -72,7 +73,12 @@ function classify(value: AnalysisTurnIntentDecision = decision) {
     status: 'ok', text: JSON.stringify(value), actualModel: 'pinned-light', finishReason: 'stop',
   });
 }
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   jest.spyOn(configModule, 'loadOpenAIConfig').mockReturnValue(createOpenAiConfigForTest());
   jest.spyOn(intentTransport, 'runOpenAiIntentTransport');
   classify();
@@ -379,6 +385,8 @@ describe('OpenAI typed intent integration', () => {
     if (context) finalizationContexts.push(context);
     expect(context?.deliveryContext.entry).toBe('runtime_draft');
     expect(context?.hasSemanticTransport).toBe(true);
+    // The review runs on the main model of the same provider; only its origin is kept.
+    expect(context?.deliveryCall).toEqual({providerOrigin: 'https://provider.invalid', model: 'pinned-primary'});
     // Actual evidence and semantic assurance belong to the shared finalization suite.
   });
   it('binds each accepted turn to its own attempt and current content', async () => {

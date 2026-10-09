@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import type {ConclusionBindingEligibility, ConclusionContract} from '../agent/core/conclusionContract';
 import {
@@ -17,7 +17,7 @@ import {analysisDeliveryFingerprint, reportRequirementsFingerprint, sameAnalysis
   type AnalysisCandidateIdentity, type AnalysisDeliveryContext,
   type FinalReportAssessment, type PinnedAnalysisReportRequirements} from '../types/analysisDelivery';
 import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
-import type {ClaimVerificationResult, ClaimVerificationClaimResult, ClaimVerificationIssue} from '../types/claimVerification';
+import type {ClaimSemanticReviewTrace, ClaimVerificationResult, ClaimVerificationClaimResult, ClaimVerificationIssue} from '../types/claimVerification';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection} from './canonicalAnalysisResult';
 import {attachSourceUseToAnalysisResult, verifySourceClaimBindings} from './codebase/sourceClaimVerifier';
 import {buildKnowledgeUse} from './knowledge/knowledgeUse';
@@ -25,7 +25,8 @@ import {prepareAnalysisRelations} from './evidence/analysisRelationPreparation';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedIdentityResolutions} from './evidence/claimEvidencePreparation';
 import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
 import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_RULE_VERSION,
-  semanticReviewNotRequired, type FinalSemanticAssessment, type FinalSemanticSnapshot} from './finalSemanticAssessment';
+  semanticReviewNotRequired, type FinalSemanticAssessment, type FinalSemanticSnapshot,
+  type SemanticClaimAssessment} from './finalSemanticAssessment';
 import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
 import {locatedNumbersShowDeclaredRounding} from './finalSemanticNumericDisplay';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
@@ -181,6 +182,12 @@ function pinnedRequirements(context: RuntimeFinalizationContext): PinnedAnalysis
     }))};
 }
 
+/** Located body offsets of one claim's review, each with a short hash of the text it covers. */
+function semanticReviewTrace(review: SemanticClaimAssessment, body: string): ClaimSemanticReviewTrace {
+  return {consistency: review.consistency, contentLocations: review.contentLocations.map(({start, end}) => ({start, end,
+    textHash: createHash('sha256').update(body.slice(start, end)).digest('hex').slice(0, 16)}))};
+}
+
 /** Finite proof never promotes itself; the full current proposition must agree with the body. */
 function joinClaimVerification(input: {
   contract?: ConclusionContract;
@@ -199,12 +206,15 @@ function joinClaimVerification(input: {
     semantic.coverage.body === 'complete' && semantic.coverage.claims === 'complete' &&
     sameAnalysisCandidate(semantic.binding?.canonicalCandidate, candidate, body));
   const issues: ClaimVerificationIssue[] = [...draft.issues];
-  const claimResults: ClaimVerificationClaimResult[] = declarations.map(claim => {
+  const reviewOf = (id: string) => {
+    const reviews = semantic?.claims.filter(item => item.claimId === id) ?? [];
+    return reviews.length === 1 ? reviews[0] : undefined;
+  };
+  const claimResults: ClaimVerificationClaimResult[] = declarations.map((claim): ClaimVerificationClaimResult => {
     const id = claim.id ?? '';
     const drafts = draft.claimResults.filter(item => item.claimId === id);
-    const reviews = semantic?.claims.filter(item => item.claimId === id) ?? [];
     const prior = drafts.length === 1 ? drafts[0] : undefined;
-    const review = reviews.length === 1 ? reviews[0] : undefined;
+    const review = reviewOf(id);
     const unique = id.length > 0 && declarations.filter(item => item.id === id).length === 1;
     if (!unique || !prior || !eligible) return {...prior, claimId: id, status: 'not_checked'};
     if (prior.status === 'unsupported' || prior.deterministicProof?.status === 'rejected') {
@@ -232,6 +242,9 @@ function joinClaimVerification(input: {
     }
     return {...prior, status: prior.deterministicProof?.status === 'proved' &&
       prior.propositionCoverage?.status === 'complete' ? 'verified' : 'partial'};
+  }).map(result => {
+    const review = bound ? reviewOf(result.claimId) : undefined;
+    return review ? {...result, semanticReview: semanticReviewTrace(review, body)} : result;
   });
   // An undeclared assertion was never checked: the answer cannot pass, but it
   // contradicts nothing, so it leaves the result unverified rather than failed.

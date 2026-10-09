@@ -7,6 +7,9 @@ import {conclusionParseIssueTriageCodes, parseClaimSemanticsDeclaration, type Co
   type ConclusionBindingEligibility} from '../agent/core/conclusionContract';
 import type {RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
 import {intentTransportErrorReason} from '../agentRuntime/intentTransport';
+import {recordRuntimeDeliveryBudget} from '../agentRuntime/runtimePerformance';
+import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
+import {assessDeliveryCallBudget, deliveryCallFailsOpen} from './runtimeCallStats';
 import type {AnalysisRunSelection} from '../agentRuntime/analysisRunSpec';
 import {loadPromptTemplate} from '../agentv3/strategyLoader';
 import {
@@ -116,7 +119,8 @@ export interface FinalSemanticAssessment {
   readonly reason?: 'invalid_snapshot' | 'snapshot_changed' | 'input_projection_incomplete' | 'input_projection_limit' |
     'input_limit' | 'output_limit' | 'invalid_response' | 'missing_template' |
     'missing_transport' | 'timeout' | 'provider_error' | 'incomplete_output' |
-    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user' | 'not_required';
+    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user' | 'not_required' |
+    'budget_insufficient';
   /**
    * Closed-vocabulary triage detail for the reason above: declaration parse
    * issue codes, or transport facts (`http_429`, `attempts_2`). Never raw
@@ -852,6 +856,13 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
     const stopSignal = input.stopSignal;
     const stopped = () => fail('not_checked', 'cancelled_by_user');
     if (stopSignal?.aborted) return stopped();
+    // A review that cannot finish in the time left changes nothing the user sees; a report's
+    // quality gate fails without it, so a report deliverable is sent whatever the estimate.
+    const budget = assessDeliveryCallBudget({...context.deliveryCall, purpose: 'review', inputBytes: promptBytes,
+      remainingMs: deadlineMs - Date.now(),
+      failOpen: deliveryCallFailsOpen(context.turnIntent)});
+    recordRuntimeDeliveryBudget(currentRuntimePerformanceRecorder(), budget);
+    if (budget.decision === 'skip') return fail('not_checked', 'budget_insufficient', `estimate_${budget.source}`);
     try { input.onDispatch?.({deadlineMs}); } catch { /* Observers never change the review. */ }
     try {
       const response = await context.dispatchText({prompt, systemPrompt: '', deadlineMs, outputByteLimit: outputBytes,

@@ -1209,6 +1209,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context!.deliveryContext).toMatchObject({completion: result.completion});
       expect(context!.runId).toBe('actual-run');
+      expect(context!.deliveryCall?.model).toBe('pinned-primary-review');
       expect(context!.traceIdentity).toEqual({currentTraceId: 'current-trace', referenceTraceId: 'reference-trace'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);

@@ -24,6 +24,7 @@ import {privateAnalysisFailureMessage} from '../../services/security/privateAnal
 import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import {withRunManifestLifecycle, type RunManifestLifecycle} from '../../services/selfEvolution/runManifestLifecycle';
+import {recordRuntimeCallStatsFromManifest} from '../../services/runtimeCallStats';
 import type {RequestContext} from '../../middleware/auth';
 import type {AnalyzeManagedSession, AnalyzeSessionRunContext} from './agentAnalyzeSessionService';
 import type {AssistantApplicationService} from './assistantApplicationService';
@@ -636,6 +637,8 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         },
       );
       executionRunManifestLifecycle = runManifestLifecycle;
+      // Durable runs feed the delivery-call duration estimates (runtimeCallStats.ts).
+      runManifestLifecycle.builder.addSealObserver(manifest => recordRuntimeCallStatsFromManifest(manifest));
 
       const leaseController = new AbortController();
       const leaseControllers = httpAnalysisRunLeaseControllers.get(sessionForRun) ?? new Map<string, AbortController>();

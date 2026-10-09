@@ -83,6 +83,7 @@ import {
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {dispatchWithModelCallRecord, openAiTextRequestPurposeFor} from '../../intentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
@@ -1655,14 +1656,18 @@ export function validateOpenCodeModelConfiguration(
  * classification) for one no-tool host. OpenCode forwards an agent's `options`
  * into the provider request body; a model entry's `options` never reach it.
  */
+function openCodeProviderBaseUrl(config: OpenCodeModelConfig): string | undefined {
+  const provider = config.providerConfig?.[config.model.providerID];
+  const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
+  return typeof providerOptions?.baseURL === 'string' ? providerOptions.baseURL : undefined;
+}
+
 function openCodePurposeAgentOptions(
   config: OpenCodeModelConfig,
   purpose: OpenAITextRequestPurpose | undefined,
 ): Record<string, unknown> | undefined {
   if (!purpose) return undefined;
-  const provider = config.providerConfig?.[config.model.providerID];
-  const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
-  const baseURL = typeof providerOptions?.baseURL === 'string' ? providerOptions.baseURL : undefined;
+  const baseURL = openCodeProviderBaseUrl(config);
   if (!baseURL) return undefined;
   try {
     const options = buildOpenAITextRequestPurposeOptions({requestUrl: buildChatCompletionsUrl(baseURL),
@@ -2865,13 +2870,20 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
       candidate: conclusion, remainingDeliveryTurns: remainingDeliveryTurns()})
       ? closeoutTape.buildEmptyBodyPrompt({query, priorConclusion: conclusion, outputLanguage}) : undefined;
-    if (continuationPrompt) {
+    const deliveryCall = {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID};
+    const admitDelivery = (purpose: 'continuation' | 'declaration_repair', prompt: string) =>
+      admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {...deliveryCall, purpose,
+        inputBytes: Buffer.byteLength(prompt) + Buffer.byteLength(prep.systemPrompt),
+        remainingMs: deadlineMs - Date.now(),
+        // Its continuation exists only for a candidate without an answer body.
+        failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: purpose === 'continuation'})});
+    if (continuationPrompt && admitDelivery('continuation', continuationPrompt)) {
       deliveryCallSpent = true;
       try {
         assertActive();
         actualTurns++;
         const continued = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
-          {purpose: 'continuation', trigger: 'empty_body'},
+          {purpose: 'continuation', trigger: 'empty_body', ...deliveryCall},
           {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
             outputByteLimit: 64 * 1024},
           input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
@@ -2896,14 +2908,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       repairInvalid: true,
     });
     const declarationOutputLimit = 64 * 1024;
-    if (declarationRequest && nativeDeclarationBodyCanFitOutput(conclusion, declarationOutputLimit) &&
-        Date.now() < deadlineMs) {
+    const declarationPrompt = declarationRequest &&
+      buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage});
+    if (declarationRequest && declarationPrompt && nativeDeclarationBodyCanFitOutput(conclusion, declarationOutputLimit) &&
+        Date.now() < deadlineMs && admitDelivery('declaration_repair', declarationPrompt)) {
       try {
         assertActive();
         actualTurns++;
         const repaired = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
-          {purpose: 'declaration_repair', trigger: declarationRequest.reason},
-          {prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
+          {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
+          {prompt: declarationPrompt,
             systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
             outputByteLimit: declarationOutputLimit},
           input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
@@ -3035,6 +3049,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           ...input, model: modelConfig.model, purpose: openAiTextRequestPurposeFor('review'),
           createClassifierHost: createNoToolsHost,
         }),
+        deliveryCall: {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID},
       } : {}),
     });
     return result;

@@ -113,6 +113,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
   private sqlErrorCount = 0;
   private turns = 0;
   private sealedManifest: RunManifestV1 | undefined;
+  private readonly sealObservers: Array<(manifest: RunManifestV1) => void> = [];
 
   constructor(input: CreateRunManifestBuilderInput) {
     this.identity = immutableCanonicalSnapshot({
@@ -521,7 +522,16 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       wallclockMs: Math.max(0, sealedAt - this.startedAt),
     };
     this.sealedManifest = immutableCanonicalSnapshot(manifest);
+    for (const observer of this.sealObservers.splice(0)) {
+      try { observer(this.sealedManifest); } catch { /* Seal observers are observability only. */ }
+    }
     return this.sealedManifest;
+  }
+
+  /** Called once with the sealed manifest; a throwing observer never affects the seal. */
+  addSealObserver(observer: (manifest: RunManifestV1) => void): void {
+    if (this.sealedManifest) return;
+    this.sealObservers.push(observer);
   }
 
   private assertCollecting(operation: string): void {
