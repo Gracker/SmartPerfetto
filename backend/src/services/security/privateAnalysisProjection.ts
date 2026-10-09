@@ -661,7 +661,14 @@ export function projectPrivateDataEnvelopes(
   return envelopes.map(envelope => projectPrivateDataEnvelope(sessionId, envelope));
 }
 
-/** Durable/user-visible result projection shared by CLI and snapshot surfaces. */
+/**
+ * Strict-audience result projection building block: no owner audience is set,
+ * so owner-only diagnostic fields (for example the per-claim review trace) are
+ * dropped, which counts as a material change and invalidates verification.
+ * Caller-facing durable surfaces use `projectOwnerAnalysisResult` (restricted
+ * runs) or `copyAnalysisResultForSnapshot` (plain runs) instead —
+ * see `projectStoredAnalysisResultForOwner`.
+ */
 export function projectPrivateAnalysisResult(
   sessionId: string,
   result: AnalysisResult,

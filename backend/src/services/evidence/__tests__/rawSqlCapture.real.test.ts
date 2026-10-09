@@ -31,10 +31,11 @@ import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
 import {attachFinalizationContext, takeFinalizationContext} from '../../../agentRuntime/analysisFinalizationContext';
 import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/strategyLoader';
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
+import {defaultDeliveryCallEstimateMs} from '../../runtimeCallStats';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../../codebase/sourceClaimVerifier';
 import {finalizeAnalysisResult} from '../../finalizeAnalysisResult';
 import {canonicalizeAnalysisResult} from '../../canonicalAnalysisResult';
-import {projectPrivateAnalysisResult, copyAnalysisResultForSnapshot} from '../../security/privateAnalysisProjection';
+import {projectOwnerAnalysisResult, copyAnalysisResultForSnapshot} from '../../security/privateAnalysisProjection';
 import {prepareClaimEvidence} from '../claimEvidencePreparation';
 import {getCapturedAnchorFacts} from '../evidenceCapture';
 import {readRawSqlCaptureMetadata} from '../rawSqlNativeProvenance';
@@ -61,7 +62,11 @@ async function finalizeCapturedNativeResult(contract: ConclusionContract, eviden
   const semanticBody = canonicalizeAnalysisResult(result).result.conclusion;
   const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'native-final'});
   const controller = new AbortController();
-  attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + 10_000,
+  // The semantic review is budget-gated: a bounded-answer review is dispatched
+  // only when the remaining deadline covers its estimate, so keep a budget
+  // derived from the same default the gate falls back to without samples.
+  const reviewBudgetMs = defaultDeliveryCallEstimateMs(undefined) + 30_000;
+  attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + reviewBudgetMs,
     strategyRegistry: registry, traceIdentity: {currentTraceId: traceSide === 'current' ? traceId : 'unused-current-trace',
       ...(traceSide === 'reference' ? {referenceTraceId: traceId} : {})}, protocolProjection: projection.protocolProjection,
     deliveryContext: projection.deliveryContext!, evidenceReadView,
@@ -79,8 +84,10 @@ async function finalizeCapturedNativeResult(contract: ConclusionContract, eviden
     query: 'What is the captured duration?', dataEnvelopes});
   expect(finalized.result.claimVerificationResult?.passed).toBe(true);
   expect(finalized.result.deliveryAssurance?.claims).toBe('passed');
-  const projected = projectPrivateAnalysisResult(result.sessionId, finalized.result, 'en');
-  expect(projectPrivateAnalysisResult(result.sessionId, projected, 'en')).toEqual(projected);
+  // The durable owner surface keeps the review trace and the verification it
+  // produced; the raw projector without an owner audience is strict-only.
+  const projected = projectOwnerAnalysisResult(result.sessionId, finalized.result, 'en');
+  expect(projectOwnerAnalysisResult(result.sessionId, projected, 'en')).toEqual(projected);
   const exported = JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(projected))) as AnalysisResult;
   expect(exported.claimVerificationResult).toEqual(finalized.result.claimVerificationResult);
   expect(exported.deliveryAssurance?.claims).toBe('passed');
