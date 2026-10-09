@@ -111,10 +111,23 @@ describe('runtime native declaration completion', () => {
       }
     }
     const rejectedCandidate = `${body}\n\n${malformed}`;
+    if (sample.observedIssue === 'invalid_relation_proposal') {
+      // A single invalid proposal is item-scoped (plan A.1): the declaration
+      // delivers as partially valid with the proposal dropped, and no repair is
+      // spent on it (a repair must fix at least one claim, plan A.3).
+      const inspected = inspectCandidateProtocol(rejectedCandidate);
+      expect(inspected).toMatchObject({status: 'partially_valid',
+        sidecar: {bindingEligibility: 'eligible', issues: expect.arrayContaining([{code: 'invalid_relation_proposal',
+          path: expect.any(String), relationProposalDiagnostic: {scope: 'item', ordinal: 1,
+            reason: sample.reconstructedVariant === 'invalid-subject' ? 'invalid_subject' : 'invalid_proof_bindings'}}])}});
+      expect(inspected.sidecar.contract?.relationProposals).toEqual([]);
+      expect(inspected.sidecar.contract?.claims?.map(claim => claim.id)).toEqual(['a', 'b']);
+      expect(inspected.canonicalBody.trim()).toBe(body);
+      expect(repair(rejectedCandidate)).toBeUndefined();
+      return;
+    }
     expect(inspectCandidateProtocol(rejectedCandidate)).toMatchObject({status: 'invalid',
-      sidecar: {bindingEligibility: 'ineligible', issues: expect.arrayContaining([{code: sample.observedIssue, path: expect.any(String),
-        ...(sample.observedIssue === 'invalid_relation_proposal'
-          ? {relationProposalDiagnostic: {scope: 'item', ordinal: 1, reason: sample.reconstructedVariant === 'invalid-subject' ? 'invalid_subject' : 'invalid_proof_bindings'}} : {})}])}});
+      sidecar: {bindingEligibility: 'ineligible', issues: expect.arrayContaining([{code: sample.observedIssue, path: expect.any(String)}])}});
     const request = repair(rejectedCandidate)!;
     expect(request).toBeDefined();
     if (sample.observedIssue !== 'invalid_json') {
@@ -129,13 +142,6 @@ describe('runtime native declaration completion', () => {
     const prompt = buildNativeDeclarationCompletionPrompt({request, intent: intent('investigation'), outputLanguage: 'en'});
     expect(prompt).toContain('conclusion-contract@1');
     expect(prompt).toContain(sample.observedIssue);
-    if (sample.observedIssue === 'invalid_relation_proposal') {
-      const declaration = inspectCandidateProtocol(corrected).sidecar.rawPayload as any;
-      for (const relationProposals of [[], [{...declaration.relationProposals[0], id: 'proposal:replacement'}]]) {
-        expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
-          candidate: renderConclusionContractSidecar({...declaration, relationProposals})})).toBeUndefined();
-      }
-    }
   });
 
   it('does not mistake the actual unheaded pifix ANR answer for claims-only delivery', () => {
@@ -220,7 +226,7 @@ describe('runtime native declaration completion', () => {
       candidate: original, remainingDeliveryTurns: 1})!;
     const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     try {
-      const invalid = contract([claim('a', {semantics: {...semantics, polarity: 'HWC_CANARY'}})]);
+      const invalid = contract([claim('a')]).replace('"schemaVersion"', '"schemaVersion" HWC_CANARY_OOPS');
       expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
         candidate: `${original}\n\n${invalid}`})).toBeUndefined();
       expect(acceptNativeDeclarationCompletion({request, completion: {status: 'unknown'},
@@ -228,7 +234,7 @@ describe('runtime native declaration completion', () => {
       const lines = log.mock.calls.map(call => String(call[0]));
       expect(lines).toEqual([
         '[DeclarationRepair] completion rejected: request=missing_declaration reason=declaration_not_valid ' +
-          'repaired=invalid sidecar=invalid issues=invalid_semantics claimDiagnostics=1:invalid_semantics:semantics.polarity',
+          'repaired=invalid sidecar=invalid issues=invalid_json claimDiagnostics=none',
         '[DeclarationRepair] completion rejected: request=missing_declaration reason=completion_not_completed completion=unknown',
       ]);
       expect(lines.join('\n')).not.toContain('HWC');
@@ -264,12 +270,14 @@ describe('runtime native declaration completion', () => {
       candidate: `${body}\n\n${contract([claim('a'), claim('c')])}`})).toBeUndefined();
   });
 
-  it('does not bind a repair to a blank id the parser itself rejects', () => {
-    const request = repair(`${body}\n\n${contract([claim('a'), claim('', {semantics})])}`)!;
-    expect(request.declaredClaimIds).toEqual(['a']);
-    expect(request.diagnostic.claimDiagnostics).toEqual([{ordinal: 2, code: 'invalid_claim', field: 'id'}]);
-    expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
-      candidate: `${body}\n\n${contract([claim('a'), claim('b')])}`})).toBeDefined();
+  it('treats a blank id as an unrepairable invalid entry and still delivers the valid claim', () => {
+    const candidate = `${body}\n\n${contract([claim('a'), claim('', {semantics})])}`;
+    // A no-id invalid claim is not a repair target (plan A.3): nothing repairable remains.
+    expect(repair(candidate)).toBeUndefined();
+    const inspected = inspectCandidateProtocol(candidate);
+    expect(inspected.status).toBe('partially_valid');
+    expect(inspected.sidecar.contract?.claims?.map(claim => [claim.id, claim.valid]))
+      .toEqual([['a', undefined], ['', false]]);
   });
 
   it('repairs a well-framed declaration whose JSON does not parse, without a claim baseline', () => {
@@ -291,7 +299,8 @@ describe('runtime native declaration completion', () => {
 
   it('adds exact relation guidance to a rejected declaration repair', () => {
     const invalidRelation = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('a')], uncertainties: [], nextSteps: [],
+      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('b', {semantics: {...semantics,
+        scope: {population: 'everywhere'}}})], uncertainties: [], nextSteps: [],
       relationProposals: [{kind: 'overlap'}]} as any);
     const request = repair(`${body}\n\n${invalidRelation}`)!;
     expect(request.reason).toBe(INVALID_NATIVE_DECLARATION);
@@ -437,5 +446,153 @@ describe('runtime native declaration completion', () => {
     expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate,
       outputByteLimit: candidateBytes - 1}))
       .toBeUndefined();
+  });
+
+  // Plan 2 A.3: the per-item acceptance matrix for repairing a partially valid
+  // declaration. `rejected` carries one invalid claim (b, id-bearing) and one
+  // valid claim (a), so a repair is requested and must satisfy every condition.
+  describe('partial repair acceptance matrix', () => {
+    const repairRequest = () => repair(`${body}\n\n${rejected}`)!;
+    const accept = (request: ReturnType<typeof repairRequest>, candidate: string) => {
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        return acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate});
+      } finally {
+        log.mockRestore();
+      }
+    };
+    const rejectionReason = (candidate: string, original: string = `${body}\n\n${rejected}`): string | undefined => {
+      const request = repair(original)!;
+      const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate});
+        const line = log.mock.calls.map(call => String(call[0])).find(item => item.includes('completion rejected'));
+        return line?.match(/reason=(\S+)/)?.[1];
+      } finally {
+        log.mockRestore();
+      }
+    };
+
+    it('requests the repair listing only id-bearing invalid claims', () => {
+      const request = repair(`${body}\n\n${contract([claim('a'), claim('b', {semantics: {...semantics, scope: {population: 'everywhere'}}}),
+        claim('c', {id: '', semantics: {...semantics, scope: {population: 'nowhere'}}})])}`)!;
+      expect(request.diagnostic.claimDiagnostics?.map(detail => detail.ordinal)).toEqual([2]);
+      expect(request.originalRootInvalid).toBe(false);
+    });
+
+    it('accepts a repair that fixes the invalid claim and keeps the valid one byte-for-byte', () => {
+      const request = repairRequest();
+      const fixed = contract([claim('a'), claim('b')]);
+      const accepted = accept(request, fixed);
+      expect(accepted).toBe(`${body}\n\n${fixed}`);
+      expect(inspectCandidateProtocol(accepted!).status).toBe('valid');
+    });
+
+    it('accepts a repair that fixes one claim while another stays invalid', () => {
+      const twoInvalid = contract([claim('a'), claim('b', {semantics: {...semantics, scope: {population: 'elsewhere'}}}),
+        claim('c', {semantics: {...semantics, scope: {population: 'nowhere'}}})]);
+      const request = repair(`${body}\n\n${twoInvalid}`)!;
+      const partiallyFixed = contract([claim('a'), claim('b'), claim('c', {semantics: {...semantics,
+        scope: {population: 'nowhere'}}})]);
+      const accepted = accept(request, partiallyFixed);
+      expect(accepted).toBe(`${body}\n\n${partiallyFixed}`);
+      // The merged candidate is itself partially valid: claim c stays unverified, never hidden.
+      const inspected = inspectCandidateProtocol(accepted!);
+      expect(inspected.status).toBe('partially_valid');
+      expect(inspected.sidecar.contract?.claims?.map(claim => [claim.id, claim.valid]))
+        .toEqual([['a', undefined], ['b', undefined], ['c', false]]);
+    });
+
+    it('rejects a repair that fixes no invalid claim', () => {
+      const stillBroken = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
+        claims: [claim('a'), claim('b', {semantics: {...semantics, scope: {population: 'elsewhere'}}})],
+        uncertainties: [], nextSteps: []} as any);
+      // Still one invalid claim — no fewer than the original — so the matrix
+      // rejects it: a repair must fix at least one claim (plan A.3 condition 4).
+      expect(rejectionReason(stillBroken)).toBe('invalid_claims_not_reduced');
+    });
+
+    it('rejects a repair that drops a valid claim', () => {
+      expect(rejectionReason(contract([claim('b')]))).toBe('claim_ids_changed');
+    });
+
+    it('rejects a repair that adds a new claim id', () => {
+      expect(rejectionReason(contract([claim('a'), claim('b'), claim('c')]))).toBe('claim_ids_changed');
+    });
+
+    it('rejects a repair that changes a valid claim\'s semantics', () => {
+      expect(rejectionReason(contract([claim('a', {text: 'a holds. Edited.'}), claim('b')])))
+        .toBe('valid_claim_changed');
+      expect(rejectionReason(contract([claim('a', {kind: 'categorical'}), claim('b')])))
+        .toBe('valid_claim_changed');
+    });
+
+    it('rejects a repair with duplicate normalized claim content', () => {
+      expect(rejectionReason(contract([claim('a'), claim('b', {id: 'a', text: 'a holds.'})])))
+        .toBe('declaration_not_valid');
+      expect(rejectionReason(contract([claim('a'), claim('b', {text: 'a holds.'})])))
+        .toBe('duplicate_claim_content');
+    });
+
+    it('rejects a repair whose own root is invalid', () => {
+      expect(rejectionReason(rejected)).toBe('invalid_claims_not_reduced');
+      const brokenRoot = contract([claim('a'), claim('b')]).replace('"mode": "focused_answer"', '"mode": "broken"');
+      // A root-invalid sidecar never reaches the matrix: the outer gate rejects it.
+      expect(rejectionReason(brokenRoot)).toBe('declaration_not_valid');
+    });
+
+    it('matches relation proposals by raw position with preserved identity', () => {
+      const proposal = {schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:lock', kind: 'lock_owner',
+        direction: 'subject_to_object', subject: {evidenceRefId: 'evidence:subject'},
+        object: {evidenceRefId: 'evidence:object'}, proof: {evidenceRefId: 'evidence:proof'}};
+      const base = (relations: unknown[], claims: unknown[]) => renderConclusionContractSidecar({
+        schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+        evidenceChain: [], claims, uncertainties: [], nextSteps: [], relationProposals: relations} as any);
+      const original = `${body}\n\n${base([proposal],
+        [claim('a'), claim('b', {semantics: {...semantics, scope: {population: 'everywhere'}}})])}`;
+      const request = repair(original)!;
+      // Fixing the claim while keeping the valid proposal in place is accepted.
+      const fixed = base([proposal], [claim('a'), claim('b')]);
+      expect(accept(request, fixed)).toBe(`${body}\n\n${fixed}`);
+      // Changing the originally-valid proposal's semantics is rejected.
+      expect(rejectionReason(base([{...proposal, kind: 'wakeup'}], [claim('a'), claim('b')]), original))
+        .toBe('valid_proposal_changed');
+      // Dropping the proposal (fewer positions) is rejected.
+      expect(rejectionReason(base([], [claim('a'), claim('b')]), original)).toBe('relation_positions_changed');
+    });
+
+    it('lets an invalid proposal be fixed only under its preserved id or resolvable identity', () => {
+      const withId = {id: 'proposal:lock', kind: 'lock_owner', direction: 'subject_to_object',
+        subject: {evidenceRefId: 'evidence:subject'}, object: {evidenceRefId: 'evidence:object'}};
+      const base = (relations: unknown[], claims: unknown[]) => renderConclusionContractSidecar({
+        schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+        evidenceChain: [], claims, uncertainties: [], nextSteps: [], relationProposals: relations} as any);
+      const brokenClaims = [claim('a'), claim('b', {semantics: {...semantics, scope: {population: 'everywhere'}}})];
+      const original = `${body}\n\n${base([{...withId, id: 'not-a-proposal-id'}], brokenClaims)}`;
+      const request = repair(original)!;
+      // The unresolvable id may be fixed: identity is the resolvable semantic subset.
+      const fixedId = base([{...withId}], [claim('a'), claim('b')]);
+      expect(accept(request, fixedId)).toBe(`${body}\n\n${fixedId}`);
+      expect(accept(request, base([{...withId, id: 'proposal:other'}], [claim('a'), claim('b')])))
+        .toBe(`${body}\n\n${base([{...withId, id: 'proposal:other'}], [claim('a'), claim('b')])}`);
+      // A usable id on the invalid entry must survive the repair unchanged.
+      const idOriginal = `${body}\n\n${base([{...withId, direction: 'sideways'}], brokenClaims)}`;
+      expect(rejectionReason(base([{...withId, id: 'proposal:other', direction: 'subject_to_object'}],
+        [claim('a'), claim('b')]), idOriginal)).toBe('proposal_id_changed');
+      // A resolvable semantic field the repair changed is rejected.
+      expect(rejectionReason(base([{...withId, id: 'proposal:lock', kind: 'wakeup'}], [claim('a'), claim('b')]), original))
+        .toBe('proposal_identity_changed');
+      // An entry with no resolvable kind/subject is not a repair target: fixing
+      // the claim is still accepted, but "repairing" that entry is rejected.
+      const unrepairableOriginal = `${body}\n\n${base([{PRIVATE_KEY: 1}], brokenClaims)}`;
+      expect(repair(unrepairableOriginal)).toBeDefined();
+      expect(accept(repair(unrepairableOriginal)!, base([{...withId}], [claim('a'), claim('b')])))
+        .toBeUndefined();
+      expect(rejectionReason(base([{...withId}], [claim('a'), claim('b')]), unrepairableOriginal))
+        .toBe('unrepairable_proposal_changed');
+      const proposalOnlyUnrepairable = `${body}\n\n${base([{PRIVATE_KEY: 1}], [claim('a'), claim('b')])}`;
+      expect(repair(proposalOnlyUnrepairable)).toBeUndefined();
+    });
   });
 });

@@ -61,6 +61,13 @@ export interface ClaimVerificationStatusSummary {
   notCheckedClaimCount?: number;
   /** Claims whose body shows the declared value rounded without an approximation marker. */
   unmarkedRoundingClaimCount?: number;
+  /**
+   * Claims whose own declaration entry failed item validation: unverified
+   * because the declaration is invalid at that entry, not contradicted. Absent
+   * in older summaries. Bounded id list for footer display.
+   */
+  invalidDeclarationClaimCount?: number;
+  invalidDeclarationClaimIds?: string[];
   /** Whole-answer issue codes that belong to no declared claim: errors and undeclared assertions. */
   globalErrorCodes?: string[];
   notCheckedReason?: string;
@@ -125,6 +132,14 @@ export function claimVerificationStatusLine(
     }
     const notChecked = summary.notCheckedClaimCount ?? 0;
     if (notChecked > 0) parts.push(localize(language, `未进入核验 ${notChecked}`, `not admitted ${notChecked}`));
+    // Declaration-invalid entries are named apart from contradictions (plan A.4):
+    // an invalid entry was never checked, never contradicted.
+    const invalidDeclared = summary.invalidDeclarationClaimCount ?? 0;
+    if (invalidDeclared > 0) {
+      const ids = (summary.invalidDeclarationClaimIds ?? []).slice(0, 4).join(', ');
+      parts.push(localize(language, `声明无效 ${invalidDeclared}${ids ? `（${ids}）` : ''}`,
+        `invalid declaration entries ${invalidDeclared}${ids ? ` (${ids})` : ''}`));
+    }
     const rounded = summary.unmarkedRoundingClaimCount ?? 0;
     if (rounded > 0) {
       parts.push(localize(language, `未标注近似的数值 ${rounded}`, `rounded without an approximation marker ${rounded}`));
@@ -199,7 +214,7 @@ interface SummarizableClaimResult {
   status: string;
   referenceCells?: readonly {status: string}[];
   referenceResults?: readonly {status: string}[];
-  deterministicProof?: {status: string};
+  deterministicProof?: {status: string; reason: string};
 }
 
 /**
@@ -257,6 +272,9 @@ export function summarizeClaimVerification(verification: {
       ? [issue.claimId] : [])).size;
   // Finite proof exists only in verifier@2 results; older results never claim a proof count.
   const hasProofs = claims.some(claim => claim.deterministicProof !== undefined);
+  // Declaration-invalid entries carry the closed proof reason `invalid_claim`.
+  const invalidDeclared = claims.filter(claim => claim.status === 'not_checked' &&
+    claim.deterministicProof?.reason === 'invalid_claim');
   return {
     status: verification.status,
     totalClaimCount: claims.length,
@@ -272,6 +290,11 @@ export function summarizeClaimVerification(verification: {
     }).length,
     ...(hasProofs ? {propositionProvedClaimCount: claims.filter(claim => claim.deterministicProof?.status === 'proved').length} : {}),
     notCheckedClaimCount: claims.filter(claim => claim.status === 'not_checked').length,
+    ...(invalidDeclared.length ? {
+      invalidDeclarationClaimCount: invalidDeclared.length,
+      invalidDeclarationClaimIds: invalidDeclared.flatMap(claim =>
+        claim.claimId && !claim.claimId.startsWith('claim-') ? [claim.claimId] : []).slice(0, 8),
+    } : {}),
     ...(unmarkedRoundingClaimCount ? {unmarkedRoundingClaimCount} : {}),
     ...(globalErrorCodes.length ? {globalErrorCodes} : {}),
     ...(verification.notCheckedReason ? {notCheckedReason: verification.notCheckedReason} : {}),
@@ -287,17 +310,19 @@ export type DeliveryVerdict = 'completed' | 'unverified' | 'partial' | 'failed';
  *
  * The Web panel (analysisCompletedResultStatus) shows `partial` for everything
  * that is not a clean completion: an unfinished run, a failed quality gate,
- * incomplete delivery assurance, or an ineligible declaration. The CLI splits
- * that set in two so its marker says which one happened — `partial` for an
- * unfinished run or claims that contradict the evidence, `unverified` for a
- * delivered answer whose checks did not complete. Round 60 printed the same
- * `!` for both, and a green tick for answers with zero verified claims.
+ * incomplete delivery assurance, or an ineligible or partially invalid
+ * declaration. The CLI splits that set in two so its marker says which one
+ * happened — `partial` for an unfinished run or claims that contradict the
+ * evidence, `unverified` for a delivered answer whose checks did not complete.
+ * Round 60 printed the same `!` for both, and a green tick for answers with
+ * zero verified claims. A `partially_valid` declaration is `unverified`, not
+ * ineligible (plan A.4): its valid claims were still judged.
  */
 export function deriveDeliveryVerdict(result: {
   success?: boolean;
   partial?: boolean;
   deliveryAssurance?: Partial<Pick<AnalysisDeliveryAssurance, 'completion' | 'claims' | 'source' | 'identity' | 'report'>>;
-  conclusionContract?: {bindingEligibility?: string} | null;
+  conclusionContract?: {bindingEligibility?: string; claims?: readonly {valid?: boolean}[]} | null;
   claimSupport?: readonly {bindingEligibility?: string}[];
 }): DeliveryVerdict {
   if (result.success === false) return 'failed';
@@ -306,6 +331,7 @@ export function deriveDeliveryVerdict(result: {
   const incomplete = Boolean(assurance && (['completion', 'claims', 'source', 'identity', 'report'] as const)
     .some(key => assurance[key] === 'failed' || assurance[key] === 'coverage_incomplete'));
   const ineligible = result.conclusionContract?.bindingEligibility === 'ineligible' ||
-    Boolean(result.claimSupport?.some(claim => claim.bindingEligibility === 'ineligible'));
+    Boolean(result.claimSupport?.some(claim => claim.bindingEligibility === 'ineligible')) ||
+    Boolean(result.conclusionContract?.claims?.some(claim => claim.valid === false));
   return incomplete || ineligible ? 'unverified' : 'completed';
 }

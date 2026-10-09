@@ -120,6 +120,23 @@ export function projectConclusionContractForDisplay(sessionId: string | undefine
   return preserveProjectedFieldOrder(contract, projected);
 }
 
+/**
+ * The owner's live protocol projection of a `partially_valid` declaration shows
+ * its valid claims plus one closed marker per invalid entry `{id, status:
+ * 'invalid', codes}` (plan A.4): nothing from the invalid entry's raw payload
+ * is echoed, and the marker cannot be mistaken for a verified claim. The
+ * durable stored contract keeps the typed invalid entries with `valid: false`.
+ */
+function markInvalidClaimsForDisplay(contract: ConclusionContract | undefined): ConclusionContract | undefined {
+  const claims = contract?.claims;
+  if (!contract || !claims?.some(claim => claim.valid === false)) return contract;
+  const {rawClaims: _rawClaims, ...withoutRaw} = contract;
+  const marked = claims.map(claim => claim.valid === false
+    ? {id: claim.id, status: 'invalid' as const, codes: claim.invalidCodes ?? []}
+    : claim);
+  return {...withoutRaw, claims: marked} as unknown as ConclusionContract;
+}
+
 /** Parse the native declaration before applying any output echo replacement. */
 export function projectConclusionProtocol(sessionId: string | undefined, raw: string): CodeAwareTextProjectionReceipt {
   // Keep the established size/eviction/revocation limits before parsing untrusted JSON.
@@ -129,7 +146,7 @@ export function projectConclusionProtocol(sessionId: string | undefined, raw: st
   const typed = sidecar.status === 'absent' ? parseTypedConclusionContractJson(raw) : undefined;
   const parsed = sidecar.status !== 'absent' ? sidecar : typed;
   if (!parsed || parsed.status === 'absent') return fallback;
-  if (parsed.status !== 'valid' || !parsed.contract) {
+  if ((parsed.status !== 'valid' && parsed.status !== 'partially_valid') || !parsed.contract) {
     // Preserve failure qualification without persisting arbitrary fields from malformed JSON.
     // The original parse remains in the run-bound private declaration, never in this marker.
     const narrative = sidecar.status !== 'absent'
@@ -137,7 +154,9 @@ export function projectConclusionProtocol(sessionId: string | undefined, raw: st
     const invalid = `${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\nnull\n\`\`\`\n-->`;
     return issueCodeAwareStructuredProjectionReceipt(raw, `${invalid}${/^[\r\n]/.test(narrative) ? '' : '\n'}${narrative}`);
   }
-  const contract = projectConclusionContractForDisplay(sessionId, parsed.contract);
+  const contract = parsed.status === 'partially_valid'
+    ? markInvalidClaimsForDisplay(projectConclusionContractForDisplay(sessionId, parsed.contract))
+    : projectConclusionContractForDisplay(sessionId, parsed.contract);
   if (!contract) return issueCodeAwareStructuredProjectionReceipt(raw, '', true);
   let text: string;
   if (sidecar.status !== 'absent') {

@@ -53,7 +53,7 @@ import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutp
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import * as finalizationModule from '../analysisFinalizationContext';
 import * as runtimeCallStats from '../../services/runtimeCallStats';
@@ -3528,7 +3528,9 @@ describe('experimental Pi agent-core runtime contract', () => {
         finally {context.dispose();}
       } else {
         expect(result.completion?.attemptId).toBe('1');
-        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('ineligible');
+        // The rejected correction leaves the first candidate delivered; its one
+        // invalid proposal is item-scoped now (plan A.1), so the 35 claims stay eligible.
+        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('eligible');
       }
     });
 
@@ -3691,14 +3693,22 @@ describe('experimental Pi agent-core runtime contract', () => {
 
   it('gives the existing Pi relation correction the shared closed schema without a third call', async () => {
     passVerification();
+    const semantics = {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+      discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}};
+    const claim = (id: string, claimSemantics: unknown = semantics): ConclusionContractClaimItem =>
+      ({id, kind: 'numeric', text: `${id} holds.`, references: [],
+        semantics: claimSemantics as ConclusionContractClaimItem['semantics']});
     const base: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
+      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('claim-1')], uncertainties: [], nextSteps: [],
       relationProposals: [{schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:relation_1',
         kind: 'overlap', direction: 'symmetric', subject: {evidenceRefId: 'evidence-subject'}}]};
-    const first = `The marker is present.\n${renderConclusionContractSidecar({...base, relationProposals: [{
-      ...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY',
-    }]} as any)}`;
-    const complete = `The marker is present.\n${renderConclusionContractSidecar(base)}`;
+    // The repair needs a repairable invalid claim (plan A.3); the invalid proposal
+    // rides the same correction and gets the exact relation schema.
+    const first = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2', {...semantics, polarity: 'sometimes'})],
+      relationProposals: [{...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY'}]} as any)}`;
+    const complete = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2')]})}`;
     let recoveryPrompt = '';
     FakePiAgent.promptHandler = async (_agent, input, index) => {
       if (index === 2) recoveryPrompt = input;

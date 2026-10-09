@@ -447,6 +447,42 @@ describe('versioned conclusion declaration sidecar', () => {
     ]);
   });
 
+  // Plan 2 A.1 tri-state: root issues reject the whole declaration; item issues
+  // invalidate only their own entry and leave the declaration eligible.
+  it('layers per-item parse failures apart from root failures', () => {
+    const base = contract();
+    // Only an invalid proposal: claims stay eligible and unmarked.
+    const proposalOnly = parseConclusionContractSidecar(rawSidecar({...base,
+      relationProposals: [{...structuredClone(base.relationProposals![0]), kind: 'nope'}]}));
+    expect(proposalOnly.status).toBe('partially_valid');
+    expect(proposalOnly.bindingEligibility).toBe('eligible');
+    expect(proposalOnly.contract?.claims?.every(claim => claim.valid === undefined)).toBe(true);
+    expect(proposalOnly.contract?.relationProposals).toEqual([]);
+    // One invalid claim: only that claim is marked, the rest verify normally.
+    const claimOnly = parseConclusionContractSidecar(rawSidecar({...base,
+      claims: [structuredClone(base.claims![0]), {...structuredClone(base.claims![0]), id: 'claim:broken',
+        semantics: {...semantics(), polarity: 'sometimes'}}]}));
+    expect(claimOnly.status).toBe('partially_valid');
+    expect(claimOnly.bindingEligibility).toBe('eligible');
+    expect(claimOnly.contract?.claims?.map(claim => claim.valid)).toEqual([undefined, false]);
+    expect(claimOnly.contract?.claims?.[1].invalidCodes).toEqual(['invalid_semantics']);
+    // Root failures still reject the whole declaration: a duplicate claim id, a
+    // non-array proposal collection, a broken root field, and framing.
+    const duplicateId = parseConclusionContractSidecar(rawSidecar({...base,
+      claims: [...base.claims!, structuredClone(base.claims![0])]}));
+    expect(duplicateId.status).toBe('invalid');
+    expect(duplicateId.bindingEligibility).toBe('ineligible');
+    const collection = parseConclusionContractSidecar(rawSidecar({...base, relationProposals: 'nope'}));
+    expect(collection.status).toBe('invalid');
+    expect(collection.bindingEligibility).toBe('ineligible');
+    const rootField = parseConclusionContractSidecar(rawSidecar({...base, uncertainties: 'nope'}));
+    expect(rootField.status).toBe('invalid');
+    expect(rootField.bindingEligibility).toBe('ineligible');
+    const framing = parseConclusionContractSidecar(rawSidecar(base).replace('```json\n', '```json \n'));
+    expect(framing.status).toBe('invalid');
+    expect(framing.bindingEligibility).toBe('ineligible');
+  });
+
   it('projects parse issues into closed triage codes with one slot per base code', () => {
     const proposals = Array.from({length: 26}, (_, index) => ({...structuredClone(contract().relationProposals![0]),
       id: `proposal:item_${index + 1}`})) as any[];
@@ -488,8 +524,9 @@ describe('versioned conclusion declaration sidecar', () => {
       if (target === 'numeric') invalid.claims[0].semantics.numeric.value = null;
       if (target === 'proposal_value') invalid.relationProposals[0].value = null;
       const parsed = parseConclusionContractSidecar(rawSidecar(invalid));
-      expect(parsed.status).toBe('invalid');
-      expect(parsed.bindingEligibility).toBe('ineligible');
+      // Per-item failures stay item-scoped (plan A.1): partially valid, never widened to valid.
+      expect(parsed.status).toBe('partially_valid');
+      expect(parsed.bindingEligibility).toBe('eligible');
       expect(parsed.issues.length).toBeGreaterThan(0);
     },
   );
@@ -675,16 +712,18 @@ describe('versioned conclusion declaration sidecar', () => {
     const original = contract();
     const invalid = {...original, claims: [{...original.claims![0], semantics: {...semantics(), polarity: ['affirmed']}}]};
     const parsed = parseConclusionContractSidecar(rawSidecar(invalid));
-    expect(parsed.status).toBe('invalid');
+    // Claim-scoped: partially valid with the claim kept but marked invalid (plan A.1).
+    expect(parsed.status).toBe('partially_valid');
     expect(parsed.contract?.claims?.[0].semantics).toBeUndefined();
+    expect(parsed.contract?.claims?.[0].valid).toBe(false);
     expect(parsed.contract?.claims?.[0].rawSemantics).toEqual(invalid.claims[0].semantics);
     expect(parsed.issues).toContainEqual({code: 'invalid_semantics', path: 'claims[0].semantics',
       claimDiagnostic: {ordinal: 1, code: 'invalid_semantics', field: 'semantics.polarity'}});
     const derived = deriveConclusionContract(rawSidecar(invalid));
-    expect(derived?.bindingEligibility).toBe('ineligible');
+    expect(derived?.bindingEligibility).toBe('eligible');
     expect(derived?.claims?.[0].text).toBe(invalid.claims[0].text);
     const roundTrip = parseConclusionContractSidecar(renderConclusionContractSidecar(derived!));
-    expect(roundTrip.status).toBe('invalid');
+    expect(roundTrip.status).toBe('partially_valid');
     expect(roundTrip.contract?.claims?.[0].rawSemantics).toEqual(invalid.claims[0].semantics);
   });
 
@@ -706,8 +745,10 @@ describe('versioned conclusion declaration sidecar', () => {
     const invalid = {...original, claims: [{...original.claims![0], references: [{column: 'value', value: '999'}]}],
       relationProposals: [{...original.relationProposals![0], id: 'backend-proof-id'}]};
     const result = parseConclusionContractSidecar(rawSidecar(invalid));
-    expect(result.status).toBe('invalid');
+    // Item-scoped citation and proposal failures leave the declaration partially valid.
+    expect(result.status).toBe('partially_valid');
     expect(result.contract?.claims?.[0].text).toBe('Original claim');
+    expect(result.contract?.claims?.[0].valid).toBe(false);
     expect(result.contract?.claims?.[0].rawReferences).toEqual(invalid.claims[0].references);
     expect(result.contract?.rawRelationProposals).toEqual(invalid.relationProposals);
     expect(result.contract?.relationProposals).toEqual([]);
@@ -752,14 +793,15 @@ describe('versioned conclusion declaration sidecar', () => {
       const original = contract();
       const input = {...original, claims: [{...original.claims![0], [key]: []}]};
       const first = parseConclusionContractSidecar(rawSidecar(input));
-      expect(first.status).toBe('invalid');
+      // Claim-scoped parser metadata rejects only that claim (plan A.1).
+      expect(first.status).toBe('partially_valid');
       expect(first.issues).toEqual([{code: 'untrusted_parser_metadata', path: 'claims[0]',
         claimDiagnostic: {ordinal: 1, code: 'untrusted_parser_metadata', field: 'parser_metadata'}}]);
       expect(first.contract?.claims?.[0].semantics).toEqual(original.claims![0].semantics);
       expect(first.contract?.rawClaims).toEqual(input.claims);
       const second = parseConclusionContractSidecar(renderConclusionContractSidecar(first.contract!));
-      expect(second.status).toBe('invalid');
-      expect(second.bindingEligibility).toBe('ineligible');
+      expect(second.status).toBe('partially_valid');
+      expect(second.bindingEligibility).toBe('eligible');
       expect(second.issues).toEqual(first.issues);
       expect(second.rawPayload).toEqual(input);
     },
@@ -778,15 +820,18 @@ describe('versioned conclusion declaration sidecar', () => {
     const json = JSON.stringify(input);
     for (const text of [json, '```json\n' + json + '\n```']) {
       const parsed = parseTypedConclusionContractJson(text);
-      expect(parsed.status).toBe('invalid');
+      // Root parser metadata rejects the declaration; claim parser metadata
+      // rejects only that claim (plan A.1 layering).
+      expect(parsed.status).toBe(level === 'root' ? 'invalid' : 'partially_valid');
+      expect(parsed.bindingEligibility).toBe(level === 'root' ? 'ineligible' : 'eligible');
       expect(parsed.issues).toEqual([level === 'root' ? {code: 'untrusted_parser_metadata', path: '$'}
         : {code: 'untrusted_parser_metadata', path: 'claims[0]',
           claimDiagnostic: {ordinal: 1, code: 'untrusted_parser_metadata', field: 'parser_metadata'}}]);
       const derived = deriveConclusionContract(text);
-      expect(derived?.bindingEligibility).toBe('ineligible');
+      expect(derived?.bindingEligibility).toBe(level === 'root' ? 'ineligible' : 'eligible');
       expect(derived?.parseIssues).toEqual(parsed.issues);
       const roundTrip = parseConclusionContractSidecar(renderConclusionContractSidecar(derived!));
-      expect(roundTrip.status).toBe('invalid');
+      expect(roundTrip.status).toBe(level === 'root' ? 'invalid' : 'partially_valid');
       expect(roundTrip.rawPayload).toEqual(input);
     }
   });

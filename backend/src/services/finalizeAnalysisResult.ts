@@ -216,7 +216,9 @@ function joinClaimVerification(input: {
     const prior = drafts.length === 1 ? drafts[0] : undefined;
     const review = reviewOf(id);
     const unique = id.length > 0 && declarations.filter(item => item.id === id).length === 1;
-    if (!unique || !prior || !eligible) return {...prior, claimId: id, status: 'not_checked'};
+    // A claim that failed its own item validation is outside verification and
+    // the review's scope: it stays not_checked whatever a review row says.
+    if (!unique || !prior || !eligible || claim.valid === false) return {...prior, claimId: id, status: 'not_checked'};
     if (prior.status === 'unsupported' || prior.deterministicProof?.status === 'rejected') {
       return {...prior, status: 'unsupported'};
     }
@@ -309,7 +311,9 @@ function semanticReviewTriggers(input: {
   const investigation = input.investigationRequirements;
   if (investigation?.status === 'resolved' && investigation.requirements.some(requirement =>
     investigationRequirementNeedsReview(requirement, context.investigationEvidence))) triggers.push('investigation');
-  const declarations = contract?.claims ?? [];
+  // Only claims that passed their own item validation can ever reach `✓`; the
+  // hypothetical perfect review judges exactly the valid declared set.
+  const declarations = (contract?.claims ?? []).filter(claim => claim.valid !== false);
   if (declarations.length > 0) {
     const perfectReview: FinalSemanticAssessment = {schemaVersion: 'final_semantic_assessment@1',
       ruleVersion: FINAL_SEMANTIC_RULE_VERSION, binding: {snapshotFingerprint: 'hypothetical_review', canonicalCandidate: candidate},
@@ -330,6 +334,23 @@ function semanticReviewTriggers(input: {
 }
 
 const CASE_PROJECTION_ROUNDS = 3;
+
+/**
+ * The one semantic review judges only claims that passed their own item
+ * validation (plan A.2): the snapshot's contract carries the valid claims and
+ * none of the raw invalid entries, so the review cannot spend its budget on
+ * rows outside its scope. Diagnostics keep naming the dropped entries.
+ */
+function contractForSemanticReview(contract: ConclusionContract | undefined): ConclusionContract | undefined {
+  if (!contract) return undefined;
+  const claims = contract.claims;
+  const invalid = claims?.some(claim => claim.valid === false) === true;
+  const hasRaw = (['rawClaims', 'rawRelationProposals', 'rawDeclaration'] as const)
+    .some(key => Object.prototype.hasOwnProperty.call(contract, key));
+  if (!invalid && !hasRaw) return contract;
+  const {rawClaims: _rawClaims, rawRelationProposals: _rawRelations, rawDeclaration: _rawDeclaration, ...rest} = contract;
+  return {...rest, ...(claims ? {claims: claims.filter(claim => claim.valid !== false)} : {})};
+}
 
 /**
  * Project the hits inside the contract they join, as every later owner surface
@@ -538,7 +559,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       const diagnostics = canonical.protocolDiagnostics;
       const snapshot: FinalSemanticSnapshot = {inputCoverage: 'complete', declarationBindingEligibility: canonical.bindingEligibility,
         query: providerQuery?.text ?? query,
-        body: result.conclusion, conclusionContract: validationContract, evidenceSnapshot, sourceUse,
+        body: result.conclusion, conclusionContract: contractForSemanticReview(validationContract), evidenceSnapshot, sourceUse,
         capabilitySnapshot: context.capabilityEvidence, reportRequirements: requirements,
         investigationRequirements,
         ...(selectionScope ? {selectionScope} : {}),

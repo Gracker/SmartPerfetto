@@ -120,6 +120,23 @@ function useV4(run: ReturnType<typeof fixture>): any[] {
 }
 
 describe('versioned investigation semantic coverage', () => {
+  // Plan 2 A.2: the review's denominator is the valid claims; an item-invalid
+  // entry is outside its scope, so a partially valid declaration can still be
+  // completely covered on the claims that count.
+  it('covers claims completely when an item-invalid entry stays outside the review', async () => {
+    const run = fixture();
+    run.contract.claims!.push({id: 'claim-b', text: 'Broken entry.', kind: 'numeric', references: [],
+      valid: false, invalidCodes: ['invalid_semantics'], rawSemantics: {polarity: 'sometimes'},
+      semanticsParseIssues: [{code: 'invalid_semantics', path: 'claims[1].semantics'}]});
+    run.contract.parseIssues = [{code: 'invalid_semantics', path: 'claims[1].semantics',
+      claimDiagnostic: {ordinal: 2, code: 'invalid_semantics', field: 'semantics.polarity'}}];
+    run.contract.rawClaims = structuredClone(run.contract.claims);
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'checked', coverage: {claims: 'complete', body: 'complete'},
+      claims: [{claimId: 'claim-a', consistency: 'consistent'}]});
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+  });
+
   function investigationFixture() {
     const run = fixture({scope: 'scene_wide', investigationRequirements: [{id: 'system-frequency', domain: 'cpu_frequency',
       description: 'Explain observed frequency or the precise missing evidence.', required: true,

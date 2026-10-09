@@ -312,7 +312,8 @@ describe('canonical analysis result projection', () => {
       PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY',
     }]} as any);
     const diagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(raw), 'native', 1);
-    expect(diagnostic).toMatchObject({status: 'invalid', issueCodes: ['invalid_relation_proposal'], issueCount: 1,
+    // A single invalid proposal item is item-scoped (plan A.1): partially valid.
+    expect(diagnostic).toMatchObject({status: 'partially_valid', issueCodes: ['invalid_relation_proposal'], issueCount: 1,
       relationProposalDiagnostics: [{scope: 'item', ordinal: 1, reason: 'unknown_field'}]});
     expect(sanitizeCandidateProtocolDiagnostic(diagnostic)).toEqual(diagnostic);
     expect(JSON.stringify(diagnostic)).not.toContain('PRIVATE_RELATION_');
@@ -472,12 +473,14 @@ describe('canonical analysis result projection', () => {
     expect(JSON.stringify(canonical.result)).not.toContain('RAW_DIAGNOSTIC_CANARY');
   });
 
-  it('keeps malformed original declarations private while retaining ineligible typed claims', () => {
+  it('keeps malformed original declarations private while retaining the marked-invalid typed claim', () => {
     const malformed = {...declaration(), claims: [{...declaration().claims![0], semantics: 'RAW_SEMANTICS_CANARY'}]};
     const marker = `<!-- smartperfetto:conclusion-contract@1\n\`\`\`json\n${JSON.stringify(malformed)}\n\`\`\`\n-->`;
     const canonical = canonicalizeAnalysisResult(result(`Actual answer\n${marker}`));
-    expect(canonical.result.conclusionContract?.bindingEligibility).toBe('ineligible');
+    // Item-scoped invalid semantics: the declaration root stays eligible (plan A.1).
+    expect(canonical.result.conclusionContract?.bindingEligibility).toBe('eligible');
     expect(canonical.result.conclusionContract?.claims?.[0].text).toBe('Measured duration is 999 ms.');
+    expect(canonical.result.conclusionContract?.claims?.[0]).toHaveProperty('valid', false);
     expect(canonical.protocolDiagnostics?.sidecar.contract?.claims?.[0].rawSemantics).toBe('RAW_SEMANTICS_CANARY');
     expect(JSON.stringify(canonical.result)).not.toContain('RAW_SEMANTICS_CANARY');
     expect(canonical.result.completion).toBeUndefined();

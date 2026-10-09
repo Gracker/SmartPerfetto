@@ -1048,4 +1048,26 @@ describe('runClaimVerification', () => {
       'claim-main-thread-blocked': ['data:skill:test'],
     });
   });
+
+  // Plan 2 A.2: a claim whose own declaration entry failed item validation is
+  // `not_checked` with the closed reason `invalid_claim`, distinct from a
+  // root-level `binding_ineligible` rejection, and never anchored.
+  it('records an item-invalid claim as not_checked with the invalid_claim reason', () => {
+    const invalid = contract(120);
+    invalid.bindingEligibility = 'eligible';
+    invalid.claims![0].valid = false;
+    invalid.claims![0].invalidCodes = ['invalid_semantics'];
+    const result = runClaimVerification({conclusionContract: invalid, bindingEligibility: 'eligible'});
+    const row = result.claimVerificationResult.claimResults
+      .find(claim => claim.claimId === 'claim-main-thread-blocked')!;
+    expect(row.status).toBe('not_checked');
+    expect(row.deterministicProof).toMatchObject({status: 'not_checked', reason: 'invalid_claim',
+      anchorIds: [], evidenceRefIds: []});
+    expect(result.claimVerificationResult.issues).toContainEqual(expect.objectContaining({
+      claimId: 'claim-main-thread-blocked', code: 'invalid_claim'}));
+    const support = result.claimSupport.find(claim => claim.claimId === 'claim-main-thread-blocked')!;
+    expect(support.bindingEligibility).toBe('ineligible');
+    expect(support.anchors).toEqual([]);
+    expect(result.evidenceContract.anchors).toEqual([]);
+  });
 });
