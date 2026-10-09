@@ -1525,6 +1525,9 @@ strategies:
   backend/strategies/prompt-scene-reconstruction-query-en.template.md:
     disposition: product-only
     reason: SmartPerfetto scene button task input
+  backend/strategies/prompt-scene-evidence.template.md:
+    disposition: product-only
+    reason: SmartPerfetto product-owned scene entry evidence prompt segment
   backend/strategies/prompt-analysis-correction-en.template.md:
     disposition: product-only
     reason: SmartPerfetto structured candidate recovery protocol
