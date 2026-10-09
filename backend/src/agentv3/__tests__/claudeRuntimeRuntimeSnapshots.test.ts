@@ -52,6 +52,7 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {ArtifactStore} from '../artifactStore';
 import * as claudeMcpServer from '../claudeMcpServer';
 import * as claudeSystemPrompt from '../claudeSystemPrompt';
+import * as sceneEntryEvidence from '../../agentRuntime/sceneEntryEvidence';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as analysisPatternMemory from '../analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
@@ -780,6 +781,37 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       String((call as unknown[])[1]).includes(TRACE_VENDOR_METADATA_SQL))).toBe(false);
     await expectRuntimeVendorHintParity({
       createMcpServer: claudeMcpServer.createClaudeMcpServer, runtimeOptions});
+  });
+
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'startup_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpServer.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(claudeSystemPrompt, 'buildSystemPromptParts');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: '启动分析完成'};
+    });
+    try {
+      await runtime.analyze('分析启动性能', 'claude-scene-entry', 'trace', {analysisMode: 'full', runId: 'run-claude-scene'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({runId: 'run-claude-scene', traceId: 'trace',
+        turnIntent: expect.objectContaining({sceneId: defaultIntent.sceneId})});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence === evidence)).toBe(true);
+    } finally {
+      scene.mockRestore(); mcp.mockRestore(); prompt.mockRestore();
+    }
   });
 
   // A failed classifier is the turn that knows least about the trace, so it

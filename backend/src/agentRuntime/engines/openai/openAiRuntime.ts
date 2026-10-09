@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import {EventEmitter} from 'events';
 import {Agent, MaxTurnsExceededError, OpenAIProvider, Runner, setTracingDisabled, type AgentInputItem, type RunStreamEvent} from '@openai/agents';
@@ -1357,10 +1358,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     executionLease?.throwIfAborted();
     const traceCompleteness = policy.preflight !== 'none'
       ? await preflight('completeness', () => this.detectCompleteness(traceId, architecture)) : undefined;
-    const comparisonContext = options.referenceTraceId && policy.allowAutomaticPrefetch
+    const comparisonContext = options.referenceTraceId && policy.allowMemoryPrefetch
       ? await preflight('comparison', () => this.buildComparisonContext(traceId, options.referenceTraceId!, config.outputLanguage, options.tracePairContext))
       : buildRuntimeTracePairIdentityContext(options);
-    const knowledgeBaseContext = policy.allowAutomaticPrefetch
+    const knowledgeBaseContext = policy.allowMemoryPrefetch
       ? await preflight('knowledge', async () => {
           try {return (await getExtendedKnowledgeBase()).getContextForAI(query, 8);} catch {return undefined;}
         }) : undefined;
@@ -1375,7 +1376,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.sessionSqlErrors.delete(sessionId);
       this.sessionSqlErrorPartitions.set(sessionId, sqlErrorPartition);
     }
-    const sqlErrors = this.sessionSqlErrors.get(sessionId) ?? (policy.allowAutomaticPrefetch
+    const sqlErrors = this.sessionSqlErrors.get(sessionId) ?? (policy.allowMemoryPrefetch
       ? loadLearnedSqlFixPairs(5, knowledgeScope) : []);
     this.sessionSqlErrors.set(sessionId, sqlErrors);
     const entityStore = sessionContext.getEntityStore();
@@ -1386,6 +1387,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
     skillExecutor.setFragmentRegistry(sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache());
     const canInvokeTool = () => runtime.isActive?.() !== false && !executionLease?.signal.aborted;
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: runtime.runId, traceId,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      turnIntent: runtime.turnIntent, policy, strategyRegistry: runtime.strategyRegistry,
+      skillRegistry: effectiveSkillRegistry, skillExecutor, traceProcessorService: this.traceProcessorService,
+      artifactStore, focusTarget, userPackageName: options.packageName, selectionContext: options.selectionContext,
+      outputLanguage: config.outputLanguage, canInvokeTool, executionLease, runAuthorization: runtime.runAuthorization,
+      deadlineMs: runtime.sceneDeadlineMs, runtimePerformance: runtime.runtimePerformance});
+    executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: runtime.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: runtime.scenePacing});
@@ -1428,6 +1438,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // prompt must not advertise them.
       preflight: policy.preflight,
       architecture, packageName: effectivePackageName, focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext, sceneType,
       selectionContext: options.selectionContext, comparison: comparisonContext, traceCompleteness,
       traceOs: traceInfo?.traceOs, traceFormat: traceInfo?.traceFormat,

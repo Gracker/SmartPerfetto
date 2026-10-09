@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
@@ -763,7 +764,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     let comparisonContext = buildRuntimeTracePairIdentityContext({
       referenceTraceId, tracePairContext: options.tracePairContext,
     });
-    if (referenceTraceId && policy.allowAutomaticPrefetch) {
+    if (referenceTraceId && policy.allowMemoryPrefetch) {
       const comparisonPhase = runtimePerformance.startPhase('comparison');
       try {
         const detectedComparisonContext = await buildRuntimeTracePairComparisonContext({
@@ -824,7 +825,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     );
 
     const skillNotesBudget = createRuntimeSkillNotesBudget(isQuickMode);
-    const recentSqlErrors = policy.allowAutomaticPrefetch
+    const recentSqlErrors = policy.allowMemoryPrefetch
       ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
 
     // Shared mutable session state (same reference pattern as Claude runtime)
@@ -945,6 +946,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     };
 
     const canInvokeTool = () => acquisitionOpen && isRunDeliverable();
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options ?? {}),
+      policy, strategyRegistry: intentResolver.strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService, artifactStore, focusTarget, userPackageName: options?.packageName,
+      selectionContext: options?.selectionContext, outputLanguage, canInvokeTool, executionLease,
+      runAuthorization: authorization, deadlineMs: sessionState.deadlineMs, runtimePerformance});
+    executionLease.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(normalizedOptions, {sessionId, traceId,
       runId: executionLease.key.runId!, deadlineMs: sessionState.deadlineMs ?? 0,
       traceProcessorService, artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
@@ -1007,13 +1016,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       onDemandContext: policy.onDemandContext,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       sceneType,
       architecture,
       selectionContext: options?.selectionContext,
       outputLanguage,
       traceCompleteness,
       ...buildRuntimeMemoryContext({
-        allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+        allowMemoryPrefetch: policy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
         packageName: effectivePackageName, knowledgeScope, outputLanguage,
       }),
       comparison: comparisonContext,

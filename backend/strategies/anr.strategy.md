@@ -15,6 +15,11 @@ investigation_contract:
     - id: anr_dependencies
       domain: dependency_chain
       description: "Trace Binder transactions, lock ownership, IO and wakeup dependencies where available; distinguish observed waiting from an established blocking chain and from ANR trigger attribution."
+# Run by the product for a scene-wide investigation before the model's first turn.
+entry_skill:
+  id: anr_analysis
+  params:
+    package: focus_app
 classification_description: "Application unresponsiveness, ANR triggers, deadlocks and timeout-related blocking."
 priority: 1
 effort: medium

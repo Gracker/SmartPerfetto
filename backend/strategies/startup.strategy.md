@@ -15,6 +15,13 @@ investigation_contract:
     - id: startup_dependencies
       domain: dependency_chain
       description: "Use launch phase, Binder, lock, GC, IO and render dependencies when supported. Explain each relevant phase's App work, system contribution and observed anomaly with adjacent evidence; identify the actual critical task beyond the main thread when needed. Distinguish trace facts from source mechanisms and unresolved alternatives. Preserve full root-cause details and unavailable fields; startup duration and hotspot names alone do not explain the launch."
+# Run by the product for a scene-wide investigation before the model's first turn.
+entry_skill:
+  id: startup_analysis
+  params:
+    package: focus_app
+    start_ts: trace_start
+    end_ts: trace_end
 classification_description: "Application launch behavior and performance, including launch type and time to initial or full display."
 priority: 2
 effort: medium

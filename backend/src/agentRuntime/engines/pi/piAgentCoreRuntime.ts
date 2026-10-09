@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import { createHash, randomUUID } from 'crypto';
@@ -2041,12 +2042,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(options.referenceTraceId ? { referenceTraceId: options.referenceTraceId } : {}),
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     };
-    const comparisonContext = policy.allowAutomaticPrefetch
+    const comparisonContext = policy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext(pairInput)
       : buildRuntimeTracePairIdentityContext(pairInput);
     executionLease.throwIfAborted();
     let knowledgeBaseContext: string | undefined;
-    if (policy.allowAutomaticPrefetch) {
+    if (policy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
         executionLease.throwIfAborted();
@@ -2093,6 +2094,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId)!;
     uncertaintyFlags.splice(0);
 
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
+      selectionContext: options.selectionContext, outputLanguage, canInvokeTool, executionLease, runAuthorization,
+      deadlineMs: sceneDeadlineMs, runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
+    executionLease.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
@@ -2158,7 +2167,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
     const memoryContext = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: policy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);
@@ -2168,6 +2177,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

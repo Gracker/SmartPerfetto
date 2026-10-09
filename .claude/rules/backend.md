@@ -737,8 +737,20 @@ Important whitelisted examples:
   five runtimes resolve their policy and trace identity there. The device vendor is not
   a preflight step: `services/traceVendor/traceVendorResolver.ts` reads it from
   trace `metadata` (never slice names) only when an `invoke_skill` target has a
-  vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
-  now means the memory tier only. Planning is on demand; an explicitly submitted
+  vendor override, after that Skill's own queries. `allowMemoryPrefetch`
+  gates the memory tier only. Product-owned scene entry evidence
+  (`agentRuntime/sceneEntryEvidence.ts`) is a separate preflight step: a
+  resolved `scene_wide` `read_new` investigation of a mounted trace (no comparison
+  turn, no reference trace) whose
+  strategy declares `entry_skill` has that Skill run before the
+  acquisition-capable MCP server exists, through the shared core
+  (`agentv3/skillRunCore.ts`) and only under a `verified` identity gate. It is
+  not a model tool call (no `toolResults`, tool observer, pacing, tool timing
+  or plan record); its guards are the request scope, `canInvokeTool`, the lease
+  and deadline, `withRunAuthorizationOnly`, and the core's pre-write re-check;
+  captures join the ledger through `scene-entry:<skill>:<hash>` observations;
+  the prompt gets the bounded tier-2 `scene_evidence` segment and
+  `RuntimePerformance` the `scene_evidence` phase and `sceneEvidence` receipt. Planning is on demand; an explicitly submitted
   plan remains binding. When the request selects source, the intent also
   judges `sourceNeed` (`none` | `locate` | `mechanism`, `types/sourceNeed.ts`);
   without a selection the field is not in its schema. An omitted value keeps

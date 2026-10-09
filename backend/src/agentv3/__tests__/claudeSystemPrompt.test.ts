@@ -29,12 +29,15 @@ jest.mock('../strategyLoader', () => ({
   }),
   getFinalReportContract: jest.fn((scene: string, registry?: ReadonlyStrategyRegistrySnapshot) =>
     registry?.getStrategy(scene)?.finalReportContract ?? null),
+  defaultStrategyDetail: jest.fn((strategy?: {detailSections: Array<{default: boolean}>}) =>
+    strategy?.detailSections.find(detail => detail.default)),
   loadPromptTemplate: jest.fn((name: string) => {
     if (name === 'prompt-investigation-findings') return 'Investigation finding coverage fixture.';
     if (name === 'prompt-source-recipe-mechanism') return 'Source mechanism recipe fixture.';
     if (name === 'prompt-source-recipe-locate') return 'Source locate recipe fixture.';
     if (name === 'knowledge-perfetto-sql') return 'SQL discovery and units fixture.';
     if (name === 'knowledge-focus-app-context') return 'Focus-app context fixture: inferred focus is a hypothesis.';
+    if (name === 'prompt-scene-evidence') return 'Scene entry evidence fixture: cite cells, fetch_artifact the rest.';
     if (name === 'prompt-turn-policy') return 'Typed turn protocol; scope, deliverable, and evidence access are server data.';
     if (name === 'prompt-conclusion-contract-schema') return '<!-- authoring note -->\n{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->\n{{supportedProofRules}}';
     if (name === 'prompt-language-zh') return '## 输出语言\n\n所有面向用户的回答必须使用简体中文。';
@@ -178,6 +181,21 @@ describe('typed turn prompt assembly', () => {
     };
     return context;
   }
+
+  it('renders product-run scene evidence as a non-droppable tier-2 segment only when the run supplies it', () => {
+    const sceneEvidence = {status: 'ran' as const, skillId: 'scrolling_analysis',
+      artifactIdRange: {first: 'art-1', last: 'art-3'},
+      artifacts: [{artifactId: 'art-1', evidenceRefId: 'data:skill:scrolling_analysis:overview', stepId: 'overview', rowCount: 1}],
+      cells: {fields: ['artifactId', 'rowIndex', 'column', 'value', 'unit'] as const,
+        key: [['art-1', 0, 'jank_rate', 4.2, '%'] as ['art-1', number, string, unknown, string | null]], summary: []}};
+    const parts = buildSystemPromptParts({...investigationFixture({scope: 'scene_wide'}), sceneEvidence});
+    const segment = parts.segments.find(candidate => candidate.label === 'scene_evidence')!;
+    expect(segment).toMatchObject({tier: 2, droppable: false});
+    expect(segment.content).toContain('Scene entry evidence fixture');
+    expect(JSON.parse(segment.content.slice(segment.content.indexOf('{'))).data).toEqual(sceneEvidence);
+    expect(buildSystemPromptParts(investigationFixture({scope: 'scene_wide'})).segments
+      .some(candidate => candidate.label === 'scene_evidence')).toBe(false);
+  });
 
   it.each([
     ['bounded_question', 'answer', 'quick'], ['bounded_question', 'answer', 'full'],

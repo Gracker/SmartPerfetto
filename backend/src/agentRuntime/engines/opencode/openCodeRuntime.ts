@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
@@ -3169,9 +3170,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const recentSqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
+    const recentSqlErrors = turnPolicy.allowMemoryPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
-    const comparisonContext = turnPolicy.allowAutomaticPrefetch
+    const comparisonContext = turnPolicy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext({
       traceProcessorService: this.input.traceProcessorService,
       currentTraceId: traceId,
@@ -3184,6 +3185,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     ) || normalizeOptionalString(this.env[OPENCODE_SYSTEM_PROMPT_ENV]);
     const withConfiguredSystemPrompt = (prompt: string): string => extraSystemPrompt
       ? `${prompt}\n\n${extraSystemPrompt}` : prompt;
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId, traceId, turnIntent, policy: turnPolicy,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.input.traceProcessorService, artifactStore, focusTarget,
+      userPackageName: options.packageName, selectionContext: options.selectionContext, outputLanguage, canInvokeTool,
+      ...(sceneSignal ? {executionLease: {signal: sceneSignal}} : {}), runAuthorization, deadlineMs: sceneDeadlineMs,
+      runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.input.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: sceneSignal, canInvokeTool});
@@ -3237,7 +3246,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
     let knowledgeBaseContext: string | undefined;
-    if (turnPolicy.allowAutomaticPrefetch) {
+    if (turnPolicy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
         knowledgeBaseContext = kb.getContextForAI(query, 8);
@@ -3247,7 +3256,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     const memoryContext = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     if (turnPolicy.onDemandContext) {
@@ -3264,6 +3273,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           architecture,
           packageName: effectivePackageName,
           focusTarget: citedFocusTarget,
+          ...(sceneEvidence ? {sceneEvidence} : {}),
           selectionContext: options.selectionContext,
           quickMemoryContext,
           knowledgeBaseContext,
@@ -3300,6 +3310,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

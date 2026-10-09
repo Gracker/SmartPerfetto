@@ -386,7 +386,22 @@ export function withRuntimeToolAuthorization(
   spec: SharedToolSpec,
   authorization: Pick<RunAuthorizationCheck, 'assertCurrentInTurn' | 'settled'>,
 ): SharedToolSpec {
-  const timed = withRuntimeToolTiming(spec).handler;
+  // The pre-check produces no timing; the post-check runs after timing ended.
+  const authorized = withRunAuthorizationOnly(withRuntimeToolTiming(spec), authorization);
+  return {...spec, handler: authorized.handler};
+}
+
+/**
+ * The run authorization fence alone: the pre-check, waiting for the revoke's
+ * cancel to settle when the body fails, and the post-check. No timing receipt
+ * and no performance sink, so product-owned work that is not a model tool call
+ * (scene entry evidence) shares the fence without appearing as a tool.
+ */
+export function withRunAuthorizationOnly(
+  spec: SharedToolSpec,
+  authorization: Pick<RunAuthorizationCheck, 'assertCurrentInTurn' | 'settled'>,
+): SharedToolSpec {
+  const inner = spec.handler;
   const check = async () => {
     try {
       authorization.assertCurrentInTurn();
@@ -397,9 +412,9 @@ export function withRuntimeToolAuthorization(
   };
   const handler: TimedRuntimeToolHandler = async (args, extra) => {
     await check();
-    let result: Awaited<ReturnType<typeof timed>>;
+    let result: Awaited<ReturnType<typeof inner>>;
     try {
-      result = await timed(args, extra);
+      result = await inner(args, extra);
     } catch (error) {
       await authorization.settled();
       throw error;
@@ -407,7 +422,8 @@ export function withRuntimeToolAuthorization(
     await check();
     return result;
   };
-  handler[TIMED_SHARED_TOOL_HANDLER] = true;
+  // Timed exactly when the wrapped body is: outer wrappers must neither re-time nor skip it.
+  if ((inner as TimedRuntimeToolHandler)[TIMED_SHARED_TOOL_HANDLER]) handler[TIMED_SHARED_TOOL_HANDLER] = true;
   return {...spec, handler};
 }
 

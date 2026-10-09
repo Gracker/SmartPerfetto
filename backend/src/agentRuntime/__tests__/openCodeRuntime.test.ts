@@ -42,6 +42,7 @@ import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as sceneEntryEvidence from '../sceneEntryEvidence';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
@@ -1136,6 +1137,32 @@ describe('OpenCode native turn intent and delivery', () => {
         expect(prompts[1].body.system).toContain('"context":"turn_policy"');
       }
     } finally { quick.mockRestore(); full.mockRestore(); }
+  }));
+
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => withBackendDataDir(async () => {
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'scrolling_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpModule.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const full = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    try {
+      const wide = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}});
+      await wide.runtime.analyze('the whole scene', 'scene-entry-opencode', 'trace-opencode', {analysisMode: 'full'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-opencode',
+        turnIntent: expect.objectContaining({scope: 'scene_wide'})});
+      expect(full.mock.calls[0][0]).toMatchObject({sceneEvidence: evidence});
+      expect(wide.prompts[1].body.system).toContain('"context":"scene_evidence"');
+    } finally { scene.mockRestore(); mcp.mockRestore(); full.mockRestore(); }
   }));
 
   it.each(['full', 'fast'] as const)(

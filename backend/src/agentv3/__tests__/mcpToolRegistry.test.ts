@@ -19,6 +19,7 @@ import {
   filterByExposure,
   type McpToolDefinition,
   type McpToolRegistration,
+  isToolAllowedForScope,
 } from '../mcpToolRegistry';
 
 /** Stub SDK tool object with the shape returned by Claude SDK `tool(...)`. */
@@ -625,5 +626,22 @@ describe('McpToolRegistry — invocation observation', () => {
     expect(events.map(event => [event.phase, event.toolCallId])).toEqual([
       ['started', 'first'], ['completed', 'first'],
     ]);
+  });
+});
+
+describe('isToolAllowedForScope', () => {
+  const scope = (allowNewEvidence?: boolean) => ({sessionId: 's', hasCodebaseAccess: false,
+    ...(allowNewEvidence === undefined ? {} : {allowNewEvidence})});
+  it('admits acquisition only when the request admits new evidence; reads stay admitted', () => {
+    const acquire = {exposure: 'public' as const, evidenceEffect: 'acquire' as const};
+    expect(isToolAllowedForScope(acquire, undefined)).toBe(true);
+    expect(isToolAllowedForScope(acquire, scope())).toBe(true);
+    expect(isToolAllowedForScope(acquire, scope(true))).toBe(true);
+    expect(isToolAllowedForScope(acquire, scope(false))).toBe(false);
+    for (const evidenceEffect of ['none', 'read_existing', 'background'] as const) {
+      expect(isToolAllowedForScope({exposure: 'public', evidenceEffect}, scope(false))).toBe(true);
+    }
+    expect(isToolAllowedForScope({exposure: 'deprecated', evidenceEffect: 'none'}, scope(true))).toBe(false);
+    expect(isToolAllowedForScope({exposure: 'requires_codebase_permission', evidenceEffect: 'none'}, scope(true))).toBe(false);
   });
 });

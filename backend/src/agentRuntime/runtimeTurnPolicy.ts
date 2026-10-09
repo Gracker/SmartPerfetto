@@ -32,8 +32,11 @@ export interface RuntimeTurnPolicy {
    * and a full budget never turns `trace_facts` into `full`.
    */
   readonly preflight: 'full' | 'trace_facts' | 'none';
-  /** Memory-type prefetch only: knowledge base, patterns, cases, SQL fix pairs. */
-  readonly allowAutomaticPrefetch: boolean;
+  /**
+   * Memory-type prefetch only: knowledge base, patterns, cases, SQL fix pairs.
+   * Product scene entry evidence follows the intent itself, never this flag.
+   */
+  readonly allowMemoryPrefetch: boolean;
   readonly requiresReport: boolean;
   /** What the resolved intent says the answer needs from selected source; absent when it did not say. */
   readonly sourceNeed?: SourceNeed;
@@ -69,7 +72,7 @@ export function resolveRuntimeTurnPolicy(
     onDemandContext,
     allowNewEvidence,
     preflight,
-    allowAutomaticPrefetch: preflight === 'full',
+    allowMemoryPrefetch: preflight === 'full',
     requiresReport: intent.deliverable === 'report',
     ...(intent.status === 'resolved' && intent.sourceNeed ? {sourceNeed: intent.sourceNeed}
       : {sourceNeedMissing: intent.status !== 'resolved' ? 'intent_unavailable' as const
@@ -88,5 +91,5 @@ export function resolveRunTurnPolicy(
 ): RuntimeTurnPolicy {
   const policy = resolveRuntimeTurnPolicy(intent, options.analysisMode ?? 'auto');
   return runAttachesTrace(options) ? policy
-    : Object.freeze({...policy, allowAutomaticPrefetch: false, preflight: 'none' as const});
+    : Object.freeze({...policy, allowMemoryPrefetch: false, preflight: 'none' as const});
 }

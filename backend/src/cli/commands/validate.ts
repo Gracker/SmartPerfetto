@@ -54,7 +54,8 @@ import {
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
 import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
 import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
-import {parseInvestigationContract, parseInvestigationProfiles, REMOVED_STRATEGY_FRONTMATTER_KEYS, type InvestigationProfiles} from '../../agentv3/strategyLoader';
+import {parseEntrySkill, parseInvestigationContract, parseInvestigationProfiles, REMOVED_STRATEGY_FRONTMATTER_KEYS, type InvestigationProfiles} from '../../agentv3/strategyLoader';
+import {entrySkillExecutabilityErrors} from '../../agentv3/entrySkillPolicy';
 
 // ANSI color codes (fallback for chalk ESM issues)
 const colors = {
@@ -120,6 +121,8 @@ const VERIFIER_MISDIAGNOSIS_SEVERITIES = new Set(['warning', 'info']);
 
 export interface StrategyFrontmatterValidationContext {
   knownScenes?: Set<string>;
+  /** Skill definitions by id; when present, an `entry_skill` must be executable against it. */
+  skillDefinitions?: ReadonlyMap<string, SkillDefinition>;
   seenVerifierMisdiagnosisIds?: Map<string, string>;
   investigationProfiles?: InvestigationProfiles;
   requireInvestigationContract?: boolean;
@@ -1051,6 +1054,18 @@ export function validateStrategyFrontmatter(
     investigationErrors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
   const frontmatter = parsed.frontmatter;
+  const entrySkillErrors: string[] = [];
+  try {
+    const entrySkill = parseEntrySkill(frontmatter.entry_skill);
+    if (entrySkill && frontmatter.strategy_kind === 'contract_only') {
+      entrySkillErrors.push(`${file}: entry_skill is not allowed on a contract_only strategy`);
+    } else if (entrySkill && context.skillDefinitions) {
+      entrySkillErrors.push(...entrySkillExecutabilityErrors(entrySkill, context.skillDefinitions.get(entrySkill.id))
+        .map(error => `${file}: ${error}`));
+    }
+  } catch (error) {
+    entrySkillErrors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
   // Loading only warns about these so a stray one cannot stop sessions; a
   // strategy file must not bring them back.
   const removedFieldErrors = REMOVED_STRATEGY_FRONTMATTER_KEYS
@@ -1059,6 +1074,7 @@ export function validateStrategyFrontmatter(
   return [
     ...removedFieldErrors,
     ...investigationErrors,
+    ...entrySkillErrors,
     ...validateFinalReportContractFrontmatter(parsed.frontmatter, file),
     ...validateVerifierMisdiagnosisFrontmatter(parsed.frontmatter, file, context),
   ];
@@ -1115,6 +1131,7 @@ function validateStrategySkillReferences(): number {
   }
   const frontmatterValidationContext: StrategyFrontmatterValidationContext = {
     knownScenes,
+    skillDefinitions: loadSkillDefinitionsById(),
     seenVerifierMisdiagnosisIds: new Map(),
     investigationProfiles: parseInvestigationProfiles(yaml.load(fs.readFileSync(
       path.join(STRATEGIES_DIR, 'investigation-profiles.yaml'), 'utf8',

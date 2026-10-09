@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
@@ -2276,7 +2277,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const skillRegistryReady = runPreflightPhase('skill_registry', async () => {
       await ensureSkillRegistryInitialized();
     });
-    const knowledgeBaseContextPromise = turnPolicy.allowAutomaticPrefetch ? runPreflightPhase('knowledge', async () => {
+    const knowledgeBaseContextPromise = turnPolicy.allowMemoryPrefetch ? runPreflightPhase('knowledge', async () => {
       try {
         const kb = await getExtendedKnowledgeBase();
         return kb.getContextForAI(query, 8);
@@ -2316,7 +2317,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     // Phase 2.8: Comparison context (dual-trace mode)
     const referenceTraceId = options.referenceTraceId;
-    const comparisonContextPromise = referenceTraceId && turnPolicy.allowAutomaticPrefetch
+    const comparisonContextPromise = referenceTraceId && turnPolicy.allowMemoryPrefetch
       ? runPreflightPhase('comparison', async () => {
       console.log(`[ClaudeRuntime] Comparison mode: current=${traceId}, reference=${referenceTraceId}`);
       this.emitUpdate({
@@ -2437,7 +2438,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     // Phase 5.5: Pattern memory — match similar historical traces (P2-2)
     const {patternContext, negativePatternContext, caseBackgroundContext} = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage: runtimeConfig.outputLanguage,
     });
 
@@ -2494,7 +2495,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
     let sqlErrors = this.sessionSqlErrors.get(sessionId);
     if (!sqlErrors) {
-      sqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
+      sqlErrors = turnPolicy.allowMemoryPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
       this.sessionSqlErrors.set(sessionId, sqlErrors);
     }
 
@@ -2512,6 +2513,15 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const notesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
     const canInvokeTool = () => precomputed.acquisition?.open !== false &&
       precomputed.runActivity?.active !== false && !executionLease?.signal.aborted;
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: precomputed.runId, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      policy: turnPolicy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
+      selectionContext: options.selectionContext, outputLanguage: runtimeConfig.outputLanguage, canInvokeTool,
+      executionLease, runAuthorization: precomputed.runAuthorization, deadlineMs: precomputed.sceneDeadlineMs,
+      runtimePerformance});
+    executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
@@ -2604,6 +2614,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       availableAgents: agents ? Object.keys(agents) : undefined,

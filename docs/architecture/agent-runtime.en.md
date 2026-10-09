@@ -337,6 +337,30 @@ demand; completed phases require real successful evidence or an explicit valid
 disposition. Unfinished exploration plans and hypotheses retain their state;
 they neither trigger automatic continuation nor determine answer completeness alone.
 
+**Scene entry evidence (product-owned).** Strategy frontmatter may declare
+`entry_skill` (a Skill id plus closed parameter bindings: `focus_app`,
+`user_target`, `trace_start`, `trace_end`, `selection_start`, `selection_end`).
+For a resolved `scene_wide` `read_new` investigation of a mounted trace (no
+comparison turn and no reference trace), every
+runtime's preflight runs that Skill (`agentRuntime/sceneEntryEvidence.ts`)
+before it builds the acquisition-capable MCP server. A package binding takes only
+a user-named package or a high/medium focus app, and the Skill's own identity
+gate (`prepareInvocation`) must report `verified`; an `ambiguous` gate puts only
+its candidates into the prompt. It shares the core layer `agentv3/skillRunCore.ts`
+with the model's `invoke_skill`, so the same parameters produce the same
+evidenceRefId, artifact, capture and queryReview, yet it is not a model tool
+call: it never enters RunManifest `toolResults`, the registry tool observer,
+acquisition pacing, tool timing or plan tool-call records. Its guards run in
+order: request scope, `canInvokeTool`, lease and deadline, the auth-only
+`withRunAuthorizationOnly`, and the core's re-check after the Skill returns and
+before anything is written; one attempt is capped at 20 s. Captures join the
+investigation ledger through the product call id `scene-entry:<skill>:<hash>`
+observed as started then completed or failed. The model reads the result in the
+tier-2 `scene_evidence` segment, never dropped whole (at most 24 cells and 2 KiB;
+summary cells go before key cells), and `RuntimePerformance` records a
+`scene_evidence` phase and the closed `sceneEvidence` receipt.
+`allowMemoryPrefetch` gates only the memory tier and has nothing to do with it.
+
 ## Turn Budgets And Closeout
 
 Full mode defaults to 100 turns and quick mode to 50; the five-turn quick target
