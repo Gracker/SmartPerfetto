@@ -47,7 +47,6 @@ import type {ArtifactStore} from './artifactStore';
 import {skillRequiresProcessSelector} from './entrySkillPolicy';
 import type {OutputLanguage} from './outputLanguage';
 
-export {skillRequiresProcessSelector} from './entrySkillPolicy';
 
 /** Who produced a piece of evidence: the call, its parameters and its plan attribution. */
 export interface EvidenceProducerContext {
