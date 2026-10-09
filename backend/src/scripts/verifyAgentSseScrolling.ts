@@ -45,7 +45,8 @@ import {sanitizeCandidateProtocolDiagnostic, type CandidateProtocolDiagnostic} f
 import {TraceProcessorFactory, WorkingTraceProcessor} from '../services/workingTraceProcessor';
 import {analyzeRawSqlDirectProjection} from '../services/evidence/rawSqlDirectProjection';
 import {readRawSqlCaptureFields, resolveRawSqlNativeRowSchema, type RawSqlNativeRowSchema} from '../services/evidence/rawSqlNativeProvenance';
-import {resolveCapabilityTraceProcessorIdentity} from '../services/capabilityManifestRuntimeIdentity';
+import {resolveCapabilityTraceIdentity, resolveCapabilityTraceProcessorIdentity} from '../services/capabilityManifestRuntimeIdentity';
+import type {CapabilityManifestTraceProcessorIdentityV1} from '../types/capabilityManifest';
 import {loadPerfettoSqlDocsAsset} from '../services/perfettoSqlDocs';
 import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorLeases,
   type AnalysisRunTraceProcessorLeaseEntry} from '../services/analysisRunTraceProcessorLease';
@@ -70,6 +71,8 @@ export interface VerifyOptions {
   sceneOracles?: SceneOracleSpec[];
   /** Optional task facts; literal text checks are transport diagnostics only. */
   expectation?: AgentSseExpectation;
+  /** Complete acceptance: value, delivery and proof groups and every hard flag must pass. */
+  strict?: boolean;
   tracePath: string;
   referenceTracePath?: string;
   query: string;
@@ -641,12 +644,36 @@ export async function resolveVerificationSliceSelection(input: {
     identity: {traceId: input.traceId, table: 'slice', eventId, ts, trackId, utid, upid}};
 }
 
+/** `value`: the declared claim binds the oracle value; `proved`: value plus the finite proof. */
+export type AgentSseFactTier = 'proved' | 'value' | 'none';
+
 interface AgentSseFactVerification {
+  /** Matched at least the value tier; `proposition` says whether it is proved. */
   matched: boolean;
+  tier: AgentSseFactTier;
   proposition: 'proved' | 'unknown';
+  /** Claims and anchors of the achieved tier only. */
   matchedClaimIds: string[];
   matchedAnchorIds: string[];
 }
+
+/**
+ * Checks split by what a failure means: `value` = the answer is wrong or was not delivered as
+ * a completed answer, `delivery` = the run or report did not finish, `proof` = the answer may be
+ * right but the verification chain did not prove it. Only value and delivery fail an observed run.
+ */
+export interface AgentSseCheckGroups {
+  value: Record<string, boolean>;
+  proof: Record<string, boolean>;
+  delivery: Record<string, boolean>;
+}
+
+export type AgentSseSemanticAcceptance = 'PASSED' | 'FAILED' | 'INCONCLUSIVE';
+
+/** Version of the grouped gate below; part of the delta-baseline fingerprint. */
+export const AGENT_SSE_GATE_SCHEMA_VERSION = 'agent_sse_gate@2';
+/** The claim verifier version this gate reads (`originalClaimsVerified`). */
+export const AGENT_SSE_VERIFICATION_SCHEMA_VERSION = 'claim_verifier@2';
 
 /** A returned trace ID is not a successful processor readiness probe. */
 export function assertVerificationTraceReady(traceId: string, trace: Pick<TraceInfo, 'status' | 'error'> | undefined): void {
@@ -777,7 +804,9 @@ function factValueEquals(actual: unknown, actualUnit: string | undefined, expect
   if (left === undefined || right === undefined || !actualUnit || !expectedUnit) return false;
   if (actualUnit === expectedUnit) return left === right;
   const timeScale: Record<string, number> = {ns: 1, us: 1_000, ms: 1_000_000, s: 1_000_000_000};
-  if (['frame', 'frames'].includes(actualUnit) && ['frame', 'frames'].includes(expectedUnit)) return left === right;
+  // A frame count may be declared in frames or as a plain count; the fact's columns say what is counted.
+  const frameCount = ['frame', 'frames', 'count'];
+  if (frameCount.includes(actualUnit) && frameCount.includes(expectedUnit)) return left === right;
   return Boolean(actualUnit && expectedUnit && timeScale[actualUnit] && timeScale[expectedUnit] &&
     left * timeScale[actualUnit] === right * timeScale[expectedUnit]);
 }
@@ -863,103 +892,269 @@ export function evaluateAgentSseExpectation(input: {
   terminal?: TerminalAnalysisEvidence; expectation: AgentSseExpectation; traceId: string; oracleRows?: AgentSseOracleRows;
   oracleNativeSchemas?: AgentSseOracleNativeSchemas;
   referenceTraceId?: string;
-}): {checks: Record<string, boolean>; facts: Record<string, AgentSseFactVerification>; uncoveredFacets: string[]} {
+}): {
+  /** Flat union of the groups plus the legacy compatibility keys below. */
+  checks: Record<string, boolean>;
+  checkGroups: AgentSseCheckGroups;
+  facts: Record<string, AgentSseFactVerification>;
+  /** Facets this expectation never measures; per-run unproved facts are added by the acceptance. */
+  uncoveredFacets: string[];
+} {
   const {terminal, expectation, traceId} = input;
   const claims = terminal?.conclusionContract?.claims ?? [];
   const verifier = terminal?.claimVerificationResult;
   const assurance = terminal?.deliveryAssurance;
   const completion = terminal?.completion;
-  const checks: Record<string, boolean> = {
+  // Only this run's own finalization can say a delivered claim was not contradicted.
+  const finalized = assurance?.entry === 'new_finalization';
+  const reportDeliverable = expectation.intent.deliverable === 'report';
+  const value: Record<string, boolean> = {
     taskCompleted: terminal?.success === true && completion?.status === 'completed' &&
       completion.conclusionFingerprint === analysisDeliveryFingerprint(terminal?.conclusion ?? '') &&
       Boolean(completion.runId && completion.attemptId && completion.candidateRef),
-    deliveryCompletionPassed: assurance?.entry === 'new_finalization' && assurance.completion === 'passed',
-    deliveryClaimsPassed: assurance?.claims === 'passed',
+    deliveryCompletionPassed: finalized && assurance.completion === 'passed',
     deliveryIdentityPassed: assurance?.identity === 'passed' || assurance?.identity === 'not_applicable',
-    deliverySourcePassed: assurance?.source === 'passed' || assurance?.source === 'not_applicable',
-    deliveryReportPassed: expectation.intent.deliverable === 'report'
-      ? assurance?.report === 'passed' : assurance?.report === 'passed' || assurance?.report === 'not_applicable',
+    deliveryClaimsNotContradicted: finalized && assurance.claims !== 'failed',
+    deliverySourceNotContradicted: finalized && assurance.source !== 'failed',
     intentResolved: terminal?.turnIntent?.status === 'resolved',
-    originalClaimsVerified: verifier?.schemaVersion === 'claim_verifier@2' && verifier.passed === true &&
+  };
+  const proof: Record<string, boolean> = {
+    originalClaimsVerified: verifier?.schemaVersion === AGENT_SSE_VERIFICATION_SCHEMA_VERSION && verifier.passed === true &&
       verifier.status === 'passed' && verifier.unsupportedClaimCount === 0 && claims.length > 0 &&
       verifier.claimResults.length === claims.length && new Set(claims.map(claim => claim.id)).size === claims.length &&
       claims.every(claim => Boolean(claim.id) && verifier.claimResults.filter(result => result.claimId === claim.id &&
         (result.status === 'verified' || result.status === 'inference')).length === 1),
+    deliveryClaimsVerified: assurance?.claims === 'passed',
+    deliverySourceVerified: assurance?.source === 'passed' || assurance?.source === 'not_applicable',
   };
-  for (const [key, value] of Object.entries(expectation.intent)) checks[`intent:${key}`] = terminal?.turnIntent?.[key as keyof AnalysisTurnIntent] === value;
-  if (expectation.investigation) Object.assign(checks, evaluateAgentSseInvestigationExpectation({
+  const delivery: Record<string, boolean> = {
+    deliveryReportNotFailed: assurance?.report !== 'failed',
+    ...(reportDeliverable ? {deliveryReportPassed: assurance?.report === 'passed'} : {}),
+  };
+  // Earlier key names stay in the flat union so existing readers keep their meaning.
+  const legacy: Record<string, boolean> = {
+    deliveryClaimsPassed: proof.deliveryClaimsVerified,
+    deliverySourcePassed: proof.deliverySourceVerified,
+    deliveryReportPassed: reportDeliverable
+      ? assurance?.report === 'passed' : assurance?.report === 'passed' || assurance?.report === 'not_applicable',
+  };
+  for (const [key, expected] of Object.entries(expectation.intent)) {
+    value[`intent:${key}`] = terminal?.turnIntent?.[key as keyof AnalysisTurnIntent] === expected;
+  }
+  if (expectation.investigation) Object.assign(value, evaluateAgentSseInvestigationExpectation({
     ...input, expectation: expectation.investigation,
   }));
   const facts: Record<string, AgentSseFactVerification> = Object.create(null);
   for (const fact of expectation.facts) {
     const traceSide = fact.oracle?.traceSide ?? 'current';
     const factTraceId = traceSide === 'reference' ? input.referenceTraceId : traceId;
-    const matchedAnchorIds = new Set<string>();
-    const matchedClaims = claims.filter(claim => {
-      const semantics = claim.semantics;
-      if (claim.kind !== fact.kind || !semantics || semantics.polarity !== 'affirmed' || semantics.discourse !== 'asserted' ||
-          semantics.modality !== 'certain' || (fact.population && semantics.scope.population !== fact.population)) return false;
-      const proof = verifier?.claimResults.find(result => result.claimId === claim.id);
-      const support = terminal?.claimSupport?.filter(item => item.claimId === claim.id);
-      if (support?.length !== 1 || support[0].text !== claim.text || support[0].kind !== claim.kind ||
-          !isDeepStrictEqual(support[0].semantics, semantics)) return false;
-      if (fact.verification === 'proved' && (proof?.status !== 'verified' || proof.deterministicProof?.status !== 'proved' ||
-          proof.deterministicProof.kind !== 'numeric_cell' ||
-          proof.propositionCoverage?.status !== 'complete' || proof.propositionCoverage.uncovered.length > 0)) return false;
-      return support[0].anchors.some(anchor => {
-        if (anchor.missing || !factTraceId || anchor.context.traceId !== factTraceId || anchor.context.traceSide !== traceSide) return false;
-        if (fact.verification === 'proved' && (!proof?.deterministicProof?.anchorIds.includes(anchor.anchorId) ||
-            !proof.deterministicProof.evidenceRefIds.includes(anchor.evidenceRefId))) return false;
-        return anchor.cells?.some(cell => {
-          if (!fact.columns.includes(cell.column) || cell.actualValue === undefined || cell.actualValue === null ||
-              (cell.value !== undefined && cell.value !== cell.actualValue)) return false;
-          const originalRefs = fact.kind === 'numeric' ? semantics.scope.subjectRefs ?? [] : claim.references;
-          if (!originalRefs.some(ref => {
-            const identifiers = [[ref.evidenceRefId, anchor.evidenceRefId], [ref.artifactId, anchor.context.artifactId],
-              [ref.sourceArtifactId, anchor.context.artifactId], [ref.sourceToolCallId, anchor.context.sourceToolCallId],
-              [ref.sourceRef, cell.sourceRef]].filter(([id]) => id !== undefined);
-            return ref.column === cell.column && identifiers.length > 0 && identifiers.every(([id, actual]) => id === actual) &&
-              (ref.rowIndex === undefined || ref.rowIndex === cell.rowIndex) &&
-              (ref.rowSelector === undefined || isDeepStrictEqual(ref.rowSelector, cell.rowSelector)) &&
-              (ref.value === undefined || ref.value === cell.actualValue);
-          })) return false;
-          if (!proof?.referenceCells?.some(ref => ref.anchorId === anchor.anchorId && ref.column === cell.column && ref.status === 'matched')) return false;
-          if (fact.kind === 'numeric' && (semantics.predicate !== 'numeric.cell' || semantics.numeric?.operator !== 'eq')) return false;
-          const values = fact.oracle ? input.oracleRows?.[fact.id] ?? [] : [{value: fact.value}];
-          return values.some(row => {
-            const expected = fact.oracle ? row[fact.oracle.column] : row.value;
-            const unit = fact.oracle?.unit ?? fact.unit;
-            if (fact.value !== undefined && !factValueEquals(expected, unit, fact.value, fact.unit)) return false;
-            const nativeMatch = nativeOracleAnchorMatches({fact, proof, anchor, oracleRow: row,
-              schema: input.oracleNativeSchemas?.[fact.id], traceId: factTraceId});
-            if (nativeMatch === false) return false;
-            const match = fact.oracle?.anchorMatch;
-            if (nativeMatch === true) {
-              if (match?.startTs && anchor.timeRange?.startTs !== undefined && String(anchor.timeRange.startTs) !== String(row[match.startTs])) return false;
-              if (match?.upid && anchor.identity?.upid !== undefined && anchor.identity.upid !== row[match.upid]) return false;
-            } else {
-              if (match?.nativeRow && (!match.startTs || !match.upid)) return false;
-              if (match?.startTs && String(anchor.timeRange?.startTs) !== String(row[match.startTs])) return false;
-              if (match?.upid && anchor.identity?.upid !== row[match.upid]) return false;
-            }
-            const matches = fact.kind === 'numeric'
-              ? factValueEquals(semantics.numeric?.value, semantics.numeric?.unit, expected, unit) &&
-                factValueEquals(cell.actualValue, cell.unit ?? fact.unit, expected, unit)
-              : cell.actualValue === expected;
-            if (matches) matchedAnchorIds.add(anchor.anchorId);
-            return matches;
+    // `requireProof` adds today's finite-proof conditions to the value binding.
+    const matchTier = (requireProof: boolean) => {
+      const matchedAnchorIds = new Set<string>();
+      const matchedClaims = claims.filter(claim => {
+        const semantics = claim.semantics;
+        if (claim.kind !== fact.kind || !semantics || semantics.polarity !== 'affirmed' || semantics.discourse !== 'asserted' ||
+            semantics.modality !== 'certain' || (fact.population && semantics.scope.population !== fact.population)) return false;
+        const claimProof = verifier?.claimResults.find(result => result.claimId === claim.id);
+        const support = terminal?.claimSupport?.filter(item => item.claimId === claim.id);
+        if (support?.length !== 1 || support[0].text !== claim.text || support[0].kind !== claim.kind ||
+            !isDeepStrictEqual(support[0].semantics, semantics)) return false;
+        if (requireProof && (claimProof?.status !== 'verified' || claimProof.deterministicProof?.status !== 'proved' ||
+            claimProof.deterministicProof.kind !== 'numeric_cell' ||
+            claimProof.propositionCoverage?.status !== 'complete' || claimProof.propositionCoverage.uncovered.length > 0)) return false;
+        return support[0].anchors.some(anchor => {
+          if (anchor.missing || !factTraceId || anchor.context.traceId !== factTraceId || anchor.context.traceSide !== traceSide) return false;
+          if (requireProof && (!claimProof?.deterministicProof?.anchorIds.includes(anchor.anchorId) ||
+              !claimProof.deterministicProof.evidenceRefIds.includes(anchor.evidenceRefId))) return false;
+          return anchor.cells?.some(cell => {
+            if (!fact.columns.includes(cell.column) || cell.actualValue === undefined || cell.actualValue === null ||
+                (cell.value !== undefined && cell.value !== cell.actualValue)) return false;
+            const originalRefs = fact.kind === 'numeric' ? semantics.scope.subjectRefs ?? [] : claim.references;
+            if (!originalRefs.some(ref => {
+              const identifiers = [[ref.evidenceRefId, anchor.evidenceRefId], [ref.artifactId, anchor.context.artifactId],
+                [ref.sourceArtifactId, anchor.context.artifactId], [ref.sourceToolCallId, anchor.context.sourceToolCallId],
+                [ref.sourceRef, cell.sourceRef]].filter(([id]) => id !== undefined);
+              return ref.column === cell.column && identifiers.length > 0 && identifiers.every(([id, actual]) => id === actual) &&
+                (ref.rowIndex === undefined || ref.rowIndex === cell.rowIndex) &&
+                (ref.rowSelector === undefined || isDeepStrictEqual(ref.rowSelector, cell.rowSelector)) &&
+                (ref.value === undefined || ref.value === cell.actualValue);
+            })) return false;
+            if (requireProof && !claimProof?.referenceCells?.some(ref => ref.anchorId === anchor.anchorId &&
+              ref.column === cell.column && ref.status === 'matched')) return false;
+            if (fact.kind === 'numeric' && (semantics.predicate !== 'numeric.cell' || semantics.numeric?.operator !== 'eq')) return false;
+            const values = fact.oracle ? input.oracleRows?.[fact.id] ?? [] : [{value: fact.value}];
+            return values.some(row => {
+              const expected = fact.oracle ? row[fact.oracle.column] : row.value;
+              const unit = fact.oracle?.unit ?? fact.unit;
+              if (fact.value !== undefined && !factValueEquals(expected, unit, fact.value, fact.unit)) return false;
+              // Native row identity is proof data; the value tier binds the anchor's own time and process.
+              const nativeMatch = requireProof ? nativeOracleAnchorMatches({fact, proof: claimProof, anchor, oracleRow: row,
+                schema: input.oracleNativeSchemas?.[fact.id], traceId: factTraceId}) : undefined;
+              if (nativeMatch === false) return false;
+              const match = fact.oracle?.anchorMatch;
+              if (nativeMatch === true) {
+                if (match?.startTs && anchor.timeRange?.startTs !== undefined && String(anchor.timeRange.startTs) !== String(row[match.startTs])) return false;
+                if (match?.upid && anchor.identity?.upid !== undefined && anchor.identity.upid !== row[match.upid]) return false;
+              } else {
+                if (match?.nativeRow && (!match.startTs || !match.upid)) return false;
+                if (match?.startTs && String(anchor.timeRange?.startTs) !== String(row[match.startTs])) return false;
+                if (match?.upid && anchor.identity?.upid !== row[match.upid]) return false;
+              }
+              const matches = fact.kind === 'numeric'
+                ? factValueEquals(semantics.numeric?.value, semantics.numeric?.unit, expected, unit) &&
+                  factValueEquals(cell.actualValue, cell.unit ?? fact.unit, expected, unit)
+                : cell.actualValue === expected;
+              if (matches) matchedAnchorIds.add(anchor.anchorId);
+              return matches;
+            });
           });
         });
       });
-    });
-    const matches = matchedClaims.length > 0;
-    facts[fact.id] = {matched: matches, proposition: matches && fact.verification === 'proved' ? 'proved' : 'unknown',
-      matchedClaimIds: matchedClaims.flatMap(claim => typeof claim.id === 'string' ? [claim.id] : []),
-      matchedAnchorIds: [...matchedAnchorIds]};
-    checks[`fact:${fact.id}`] = matches;
+      return {matchedClaimIds: matchedClaims.flatMap(claim => typeof claim.id === 'string' ? [claim.id] : []),
+        matchedAnchorIds: [...matchedAnchorIds]};
+    };
+    // A reference-only fact has no finite proof to reach; it is measured at the value tier only.
+    const proved = fact.verification === 'proved' ? matchTier(true) : undefined;
+    const valueMatch = proved?.matchedClaimIds.length ? undefined : matchTier(false);
+    const tier: AgentSseFactTier = proved?.matchedClaimIds.length ? 'proved' : valueMatch?.matchedClaimIds.length ? 'value' : 'none';
+    facts[fact.id] = {matched: tier !== 'none', tier, proposition: tier === 'proved' ? 'proved' : 'unknown',
+      ...(tier === 'proved' ? proved! : valueMatch!)};
+    value[`fact:${fact.id}`] = tier !== 'none';
+    if (fact.verification === 'proved') proof[`fact:${fact.id}:proved`] = tier === 'proved';
   }
-  return {checks, facts, uncoveredFacets: [...(expectation.uncoveredFacets ?? []),
-    ...expectation.facts.filter(fact => fact.verification === 'reference_only').map(fact => `${fact.id}: proposition proof unavailable`)]};
+  return {checks: {...value, ...proof, ...delivery, ...legacy}, checkGroups: {value, proof, delivery}, facts,
+    uncoveredFacets: [...(expectation.uncoveredFacets ?? []),
+      ...expectation.facts.filter(fact => fact.verification === 'reference_only').map(fact => `${fact.id}: proposition proof unavailable`)]};
+}
+
+/** Observed (non-task) checks that belong to a group; any other observed check is ungrouped but still gates. */
+const OBSERVED_CHECK_GROUPS: Readonly<Record<string, keyof AgentSseCheckGroups>> = {
+  hasTerminalConclusionPayload: 'value',
+  hasNoSseErrors: 'value',
+  hasAnalysisCompletedEvent: 'delivery',
+  analysisCompletedNotPartial: 'delivery',
+  hasClaimVerifierResult: 'proof',
+  claimVerifierPassed: 'proof',
+  claimVerifierHasNoUnsupportedClaims: 'proof',
+};
+
+function observedCheckGroup(key: string): keyof AgentSseCheckGroups | undefined {
+  return key.startsWith('forbidsDegradedFallback:') ? 'value' : OBSERVED_CHECK_GROUPS[key];
+}
+
+/**
+ * The run's verdict. Value or delivery failures FAIL the run; proof gaps leave it INCONCLUSIVE.
+ * Hard flags (`--require-claim-verifier-ok`, `--require-non-partial`) still decide the exit code
+ * whatever group they belong to, and `--strict` additionally requires a PASSED semantic acceptance.
+ */
+export function evaluateAgentSseAcceptance(input: {
+  task?: Pick<ReturnType<typeof evaluateAgentSseExpectation>, 'checkGroups' | 'facts' | 'uncoveredFacets'>;
+  /** Every non-task check the run computed, including the hard-flag checks. */
+  observedChecks: Record<string, boolean>;
+  /** The checks requested by hard flags; they are also members of `observedChecks`. */
+  hardChecks: Record<string, boolean>;
+  /** Gates outside the check map (full-mode shape, follow-up turn). */
+  additionalGatesPassed?: boolean;
+  strict?: boolean;
+}): {
+  checkGroups: AgentSseCheckGroups;
+  ungroupedChecks: Record<string, boolean>;
+  observedChecksPassed: boolean;
+  hardGatesPassed: boolean;
+  semanticAcceptance: AgentSseSemanticAcceptance;
+  proofAcceptance: 'PASSED' | 'INCOMPLETE';
+  uncoveredFacets: string[];
+  completeAcceptance: boolean;
+  strict: boolean;
+  passed: boolean;
+} {
+  const groups: AgentSseCheckGroups = {
+    value: {...input.task?.checkGroups.value}, proof: {...input.task?.checkGroups.proof},
+    delivery: {...input.task?.checkGroups.delivery},
+  };
+  const ungroupedChecks: Record<string, boolean> = {};
+  for (const [key, passed] of Object.entries(input.observedChecks)) {
+    const group = observedCheckGroup(key);
+    if (group) groups[group][key] = passed;
+    else ungroupedChecks[key] = passed;
+  }
+  const all = (checks: Record<string, boolean>) => Object.values(checks).every(Boolean);
+  const hardGatesPassed = all(input.hardChecks);
+  const observedChecksPassed = all(groups.value) && all(groups.delivery) && hardGatesPassed && all(ungroupedChecks) &&
+    input.additionalGatesPassed !== false;
+  const uncoveredFacets = [...(input.task?.uncoveredFacets ?? ['task semantics not evaluated'])];
+  for (const [key, passed] of Object.entries(groups.proof)) {
+    if (passed) continue;
+    const factId = /^fact:(.+):proved$/.exec(key)?.[1];
+    uncoveredFacets.push(factId
+      ? `${factId}: proposition not proved (tier=${input.task?.facts[factId]?.tier ?? 'none'})`
+      : `proof check not passed: ${key}`);
+  }
+  const semanticAcceptance: AgentSseSemanticAcceptance = !(all(groups.value) && all(groups.delivery)) ? 'FAILED'
+    : uncoveredFacets.length ? 'INCONCLUSIVE' : 'PASSED';
+  const completeAcceptance = observedChecksPassed && semanticAcceptance === 'PASSED';
+  const strict = input.strict === true;
+  return {checkGroups: groups, ungroupedChecks, observedChecksPassed, hardGatesPassed, semanticAcceptance,
+    proofAcceptance: all(groups.proof) ? 'PASSED' : 'INCOMPLETE', uncoveredFacets, completeAcceptance, strict,
+    passed: strict ? completeAcceptance : observedChecksPassed};
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().filter(key => (value as Record<string, unknown>)[key] !== undefined)
+      .map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Content hash of the parsed expectation; the same facts give the same hash wherever the file lives. */
+export function agentSseExpectationHash(expectation: AgentSseExpectation): string {
+  return createHash('sha256').update(canonicalJson(expectation)).digest('hex');
+}
+
+/** Bundled binaries are keyed by their pinned revision, custom ones by their bytes; `--version` text is not a key. */
+export function traceProcessorVersionKey(identity: CapabilityManifestTraceProcessorIdentityV1): string {
+  if (identity.source === 'bundled') return `bundled:${identity.gitRevision}`;
+  if (identity.source === 'custom') return `custom:${identity.binarySha256}`;
+  return `unknown:${identity.unavailableReason}`;
+}
+
+/** The verifier-owned half of a delta-baseline fingerprint; the wrapper adds suite, provider and commit. */
+export interface AgentSseRunIdentity {
+  schemaVersion: 1;
+  gateSchemaVersion: typeof AGENT_SSE_GATE_SCHEMA_VERSION;
+  verificationSchemaVersion: typeof AGENT_SSE_VERIFICATION_SCHEMA_VERSION;
+  runtime: string;
+  query: string;
+  traceSha256: string | null;
+  expectationHash: string | null;
+  traceProcessorVersion: string;
+  stdlibRevision: string | null;
+  reportedVersion?: string;
+}
+
+export async function resolveAgentSseRunIdentity(input: {
+  tracePath: string;
+  processorInput?: Parameters<typeof resolveCapabilityTraceProcessorIdentity>[0];
+  runtime: string;
+  query: string;
+  expectation?: AgentSseExpectation;
+}, dependencies: {
+  resolveTrace?: typeof resolveCapabilityTraceIdentity;
+  resolveProcessor?: typeof resolveCapabilityTraceProcessorIdentity;
+} = {}): Promise<AgentSseRunIdentity> {
+  const trace = await (dependencies.resolveTrace ?? resolveCapabilityTraceIdentity)({
+    source: 'local_file', filePath: input.tracePath, traceSide: 'current'});
+  const processor: CapabilityManifestTraceProcessorIdentityV1 = await (dependencies.resolveProcessor ??
+    resolveCapabilityTraceProcessorIdentity)(input.processorInput ?? {source: 'external_rpc'})
+    .catch(() => ({source: 'unknown' as const, unavailableReason: 'identity_resolution_failed' as const}));
+  return {schemaVersion: 1, gateSchemaVersion: AGENT_SSE_GATE_SCHEMA_VERSION,
+    verificationSchemaVersion: AGENT_SSE_VERIFICATION_SCHEMA_VERSION, runtime: input.runtime, query: input.query,
+    traceSha256: trace.status === 'ready' ? trace.identity.fingerprintSha256 : null,
+    expectationHash: input.expectation ? agentSseExpectationHash(input.expectation) : null,
+    traceProcessorVersion: traceProcessorVersionKey(processor), stdlibRevision: processor.stdlibRevision ?? null,
+    ...(processor.reportedVersion ? {reportedVersion: processor.reportedVersion} : {})};
 }
 
 export async function collectAgentSseOracleRows(expectation: AgentSseExpectation, query: (sql: string, traceSide: 'current' | 'reference') => Promise<{
@@ -1097,6 +1292,7 @@ function printUsage(): void {
   console.log('  --require-code-ref                 Require source-level code refs in conclusion/analysis_completed text');
   console.log('  --require-claim-verifier-ok        Require analysis_completed claim verifier to pass with no unsupported claims');
   console.log('  --require-non-partial              Fail if analysis_completed is marked partial');
+  console.log('  --strict                           Complete acceptance: value, delivery and proof check groups and every hard flag must pass');
   console.log('  --require-final-report-heading     Require a final-report heading in analysis_completed text');
   console.log('  --forbid-process-narration         Fail if final text contains process narration like entering phases');
   console.log('  --max-analysis-completed-conclusion-chars <number>');
@@ -1292,6 +1488,10 @@ export function parseArgs(argv: string[]): VerifyOptions {
 
     if (arg === '--require-non-partial') {
       options.requireNonPartial = true;
+      continue;
+    }
+    if (arg === '--strict') {
+      options.strict = true;
       continue;
     }
 
@@ -1783,7 +1983,7 @@ export function parseArgs(argv: string[]): VerifyOptions {
     throw new Error('Scene flags require --entry scene-reconstruction');
   }
   if (options.entry === 'scene-reconstruction' && (options.preset || options.followUpQuery || options.referenceTracePath ||
-      options.requireNonPartial || options.requireQuickRun || options.requireExternalIssueTriage || options.expectation)) {
+      options.requireNonPartial || options.requireQuickRun || options.requireExternalIssueTriage || options.expectation || options.strict)) {
     throw new Error('Scene entry cannot borrow ordinary analysis, quick, non-partial or fact-claim gates');
   }
   return options;
@@ -3226,6 +3426,10 @@ async function main(): Promise<void> {
       scope: {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID, userId: DEFAULT_DEV_USER_ID},
     }) : undefined;
     const oracleRows = oracleEvidence?.rows;
+    // Comparable-run identity for regression deltas; never used to judge this run.
+    const runIdentity = options.entry === 'scene-reconstruction' ? undefined : await resolveAgentSseRunIdentity({
+      tracePath: options.tracePath, processorInput: traceProcessorService.getRunningCapabilityTraceProcessorInput(traceId),
+      runtime: runtimeSelection.kind, query: options.query, expectation: options.expectation});
     await writeTraceMetadata({
       id: traceId,
       filename: path.basename(options.tracePath),
@@ -3374,7 +3578,7 @@ async function main(): Promise<void> {
 
     const smartMode = options.preset === 'smart';
     const capabilityLimitedRuntime = options.allowCapabilityLimitedRuntime;
-    const requiredChecks = {
+    const requiredChecks: Record<string, boolean> = {
       hasProgressEvents: sse.progressCount > 0,
       ...(smartMode || capabilityLimitedRuntime || isQuickMode || options.expectation ? {} : { hasAgentResponses: sse.agentResponseCount > 0 }),
       hasTerminalConclusionPayload: sse.conclusionCount > 0 || sse.analysisCompletedConclusionChars > 0,
@@ -3389,7 +3593,7 @@ async function main(): Promise<void> {
         hasPlanSubmitted: sse.planSubmittedCount > 0,
         hasArchitectureDetected: sse.architectureDetectedCount > 0,
       };
-    const dualTraceChecks = options.referenceTracePath
+    const dualTraceChecks: Record<string, boolean> = options.referenceTracePath
       ? {
         hasReferenceTraceId: referenceTraceId.length > 0,
         hasTracePairContext: Boolean(tracePairContext),
@@ -3404,41 +3608,41 @@ async function main(): Promise<void> {
     } else if (!capabilityLimitedRuntime && options.analysisMode === 'full' && !options.expectation) {
       modeExpectationChecks.fullModeHonored = !isQuickMode;
     }
-    const conclusionEvidenceChecks = options.requireConclusionEvidence
+    const conclusionEvidenceChecks: Record<string, boolean> = options.requireConclusionEvidence
       ? {
         hasAnalysisCompletedConclusion: sse.analysisCompletedConclusionChars > 0,
         hasAnalysisCompletedConclusionEvidence: sse.analysisCompletedHasConcreteEvidenceRefs,
       }
       : {};
-    const codeReferenceChecks = options.requireCodeRef
+    const codeReferenceChecks: Record<string, boolean> = options.requireCodeRef
       ? {
         hasConcreteCodeReferences:
           sse.conclusionHasConcreteCodeRefs || sse.analysisCompletedHasConcreteCodeRefs,
       }
       : {};
-    const claimVerifierChecks = options.requireClaimVerifierOk
+    const claimVerifierChecks: Record<string, boolean> = options.requireClaimVerifierOk
       ? {
         hasClaimVerifierResult: Boolean(sse.claimVerifierStatus),
         claimVerifierPassed: sse.claimVerifierStatus === 'passed' && sse.claimVerifierPassed !== false,
         claimVerifierHasNoUnsupportedClaims: (sse.claimVerifierUnsupportedClaimCount ?? 0) === 0,
       }
       : {};
-    const partialChecks = options.requireNonPartial
+    const partialChecks: Record<string, boolean> = options.requireNonPartial
       ? {
         analysisCompletedNotPartial: sse.analysisCompletedPartial !== true,
       }
       : {};
-    const finalReportHeadingChecks = options.requireFinalReportHeading
+    const finalReportHeadingChecks: Record<string, boolean> = options.requireFinalReportHeading
       ? {
         analysisCompletedHasFinalReportHeading: sse.analysisCompletedHasFinalReportHeading,
       }
       : {};
-    const processNarrationChecks = options.forbidProcessNarration
+    const processNarrationChecks: Record<string, boolean> = options.forbidProcessNarration
       ? {
         analysisCompletedHasNoProcessNarration: !sse.analysisCompletedHasProcessNarration,
       }
       : {};
-    const conclusionLengthChecks = options.maxAnalysisCompletedConclusionChars !== undefined
+    const conclusionLengthChecks: Record<string, boolean> = options.maxAnalysisCompletedConclusionChars !== undefined
       ? {
         analysisCompletedConclusionWithinMaxChars:
           sse.analysisCompletedConclusionChars <= options.maxAnalysisCompletedConclusionChars,
@@ -3468,10 +3672,10 @@ async function main(): Promise<void> {
         (sse.degradedFallbackCounts[fallback] ?? 0) === 0,
       ]),
     );
-    const dataEnvelopeChecks = options.requireDataEnvelope
+    const dataEnvelopeChecks: Record<string, boolean> = options.requireDataEnvelope
       ? { hasRequiredDataEnvelope: sse.dataEnvelopeCount > 0 }
       : {};
-    const quickRunChecks = options.requireQuickRun
+    const quickRunChecks: Record<string, boolean> = options.requireQuickRun
       ? {
         hasQuickRunReceipt: Boolean(sse.quickRun),
         quickRunResolvedQuick: sse.quickRun?.resolvedMode === 'quick',
@@ -3512,27 +3716,30 @@ async function main(): Promise<void> {
       ...quickRunChecks,
       ...externalIssueChecks,
     };
-    let passed = Object.values(taskVerification?.checks ?? {}).every(Boolean)
-      && Object.values(requiredChecks).every(Boolean)
-      && Object.values(modeExpectationChecks).every(Boolean)
-      && Object.values(dualTraceChecks).every(Boolean)
-      && Object.values(conclusionEvidenceChecks).every(Boolean)
-      && Object.values(codeReferenceChecks).every(Boolean)
-      && Object.values(claimVerifierChecks).every(Boolean)
-      && Object.values(partialChecks).every(Boolean)
-      && Object.values(finalReportHeadingChecks).every(Boolean)
-      && Object.values(processNarrationChecks).every(Boolean)
-      && Object.values(conclusionLengthChecks).every(Boolean)
-      && Object.values(requiredTextChecks).every(Boolean)
-      && Object.values(forbiddenTextChecks).every(Boolean)
-      && Object.values(requiredToolChecks).every(Boolean)
-      && Object.values(requiredSuccessfulLookupChecks).every(Boolean)
-      && Object.values(requiredSkillChecks).every(Boolean)
-      && Object.values(degradedFallbackChecks).every(Boolean)
-      && Object.values(dataEnvelopeChecks).every(Boolean)
-      && Object.values(quickRunChecks).every(Boolean)
-      && Object.values(externalIssueChecks).every(Boolean)
-      && (isQuickMode || Object.values(fullModeChecks).every(Boolean));
+    // Task proof checks no longer fail an observed run by themselves; evaluateAgentSseAcceptance groups them.
+    const observedChecks: Record<string, boolean> = {
+      ...requiredChecks,
+      ...dualTraceChecks,
+      ...modeExpectationChecks,
+      ...conclusionEvidenceChecks,
+      ...codeReferenceChecks,
+      ...claimVerifierChecks,
+      ...partialChecks,
+      ...finalReportHeadingChecks,
+      ...processNarrationChecks,
+      ...conclusionLengthChecks,
+      ...requiredTextChecks,
+      ...forbiddenTextChecks,
+      ...requiredToolChecks,
+      ...requiredSuccessfulLookupChecks,
+      ...requiredSkillChecks,
+      ...degradedFallbackChecks,
+      ...dataEnvelopeChecks,
+      ...quickRunChecks,
+      ...externalIssueChecks,
+    };
+    const fullModePassed = isQuickMode || Object.values(fullModeChecks).every(Boolean);
+    let followUpPassed = true;
     let followUpOutput: Record<string, unknown> | undefined;
     if (options.followUpQuery) {
       phase = 'follow_up_start';
@@ -3579,8 +3786,7 @@ async function main(): Promise<void> {
       );
       phase = 'follow_up_verification';
       const followUpChecks = buildFollowUpVerificationChecks(followUpSse, options);
-      const followUpPassed = Object.values(followUpChecks).every(Boolean);
-      passed = passed && followUpPassed;
+      followUpPassed = Object.values(followUpChecks).every(Boolean);
       followUpOutput = {
         query: options.followUpQuery,
         requestedAnalysisMode: options.followUpAnalysisMode,
@@ -3591,6 +3797,10 @@ async function main(): Promise<void> {
         summary: followUpSse,
       };
     }
+    const acceptance = evaluateAgentSseAcceptance({task: taskVerification, observedChecks,
+      hardChecks: {...claimVerifierChecks, ...partialChecks}, additionalGatesPassed: fullModePassed && followUpPassed,
+      strict: options.strict});
+    const passed = acceptance.passed;
     const preservedSessionLog = preserveVerificationSessionLog(outputPath, sessionId);
 
     const output = {
@@ -3615,8 +3825,18 @@ async function main(): Promise<void> {
       passed,
       taskVerification,
       oracleNativeSchemas: oracleEvidence?.schemas,
-      passedMeaning: 'observed_transport_and_task_checks_only',
-      ...taskAcceptanceStatus(passed, taskVerification?.uncoveredFacets ?? ['task semantics not evaluated']),
+      passedMeaning: acceptance.strict ? 'complete_acceptance_value_delivery_proof_and_hard_flags'
+        : 'observed_value_delivery_and_hard_flag_checks_only',
+      checkGroups: acceptance.checkGroups,
+      ungroupedChecks: acceptance.ungroupedChecks,
+      strict: acceptance.strict,
+      observedChecksPassed: acceptance.observedChecksPassed,
+      hardGatesPassed: acceptance.hardGatesPassed,
+      semanticAcceptance: acceptance.semanticAcceptance,
+      proofAcceptance: acceptance.proofAcceptance,
+      completeAcceptance: acceptance.completeAcceptance,
+      uncoveredFacets: acceptance.uncoveredFacets,
+      runIdentity,
       exactTextChecksPurpose: 'transport_or_canary_only_not_semantic_correctness',
       summary: sse,
       externalIssue: externalIssueVerification?.summary,
