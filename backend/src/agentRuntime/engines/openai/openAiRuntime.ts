@@ -1323,10 +1323,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     executionLease?.throwIfAborted();
     const traceCompleteness = policy.preflight !== 'none'
       ? await preflight('completeness', () => this.detectCompleteness(traceId, architecture)) : undefined;
-    const comparisonContext = options.referenceTraceId && policy.allowAutomaticPrefetch
+    const comparisonContext = options.referenceTraceId && policy.allowMemoryPrefetch
       ? await preflight('comparison', () => this.buildComparisonContext(traceId, options.referenceTraceId!, config.outputLanguage, options.tracePairContext))
       : buildRuntimeTracePairIdentityContext(options);
-    const knowledgeBaseContext = policy.allowAutomaticPrefetch
+    const knowledgeBaseContext = policy.allowMemoryPrefetch
       ? await preflight('knowledge', async () => {
           try {return (await getExtendedKnowledgeBase()).getContextForAI(query, 8);} catch {return undefined;}
         }) : undefined;
@@ -1341,7 +1341,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.sessionSqlErrors.delete(sessionId);
       this.sessionSqlErrorPartitions.set(sessionId, sqlErrorPartition);
     }
-    const sqlErrors = this.sessionSqlErrors.get(sessionId) ?? (policy.allowAutomaticPrefetch
+    const sqlErrors = this.sessionSqlErrors.get(sessionId) ?? (policy.allowMemoryPrefetch
       ? loadLearnedSqlFixPairs(5, knowledgeScope) : []);
     this.sessionSqlErrors.set(sessionId, sqlErrors);
     const entityStore = sessionContext.getEntityStore();

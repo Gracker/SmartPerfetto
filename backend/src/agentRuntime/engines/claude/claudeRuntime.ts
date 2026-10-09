@@ -2266,7 +2266,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const skillRegistryReady = runPreflightPhase('skill_registry', async () => {
       await ensureSkillRegistryInitialized();
     });
-    const knowledgeBaseContextPromise = turnPolicy.allowAutomaticPrefetch ? runPreflightPhase('knowledge', async () => {
+    const knowledgeBaseContextPromise = turnPolicy.allowMemoryPrefetch ? runPreflightPhase('knowledge', async () => {
       try {
         const kb = await getExtendedKnowledgeBase();
         return kb.getContextForAI(query, 8);
@@ -2306,7 +2306,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     // Phase 2.8: Comparison context (dual-trace mode)
     const referenceTraceId = options.referenceTraceId;
-    const comparisonContextPromise = referenceTraceId && turnPolicy.allowAutomaticPrefetch
+    const comparisonContextPromise = referenceTraceId && turnPolicy.allowMemoryPrefetch
       ? runPreflightPhase('comparison', async () => {
       console.log(`[ClaudeRuntime] Comparison mode: current=${traceId}, reference=${referenceTraceId}`);
       this.emitUpdate({
@@ -2427,7 +2427,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     // Phase 5.5: Pattern memory — match similar historical traces (P2-2)
     const {patternContext, negativePatternContext, caseBackgroundContext} = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage: runtimeConfig.outputLanguage,
     });
 
@@ -2484,7 +2484,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
     let sqlErrors = this.sessionSqlErrors.get(sessionId);
     if (!sqlErrors) {
-      sqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
+      sqlErrors = turnPolicy.allowMemoryPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
       this.sessionSqlErrors.set(sessionId, sqlErrors);
     }
 

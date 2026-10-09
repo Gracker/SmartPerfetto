@@ -240,18 +240,18 @@ export interface RuntimeMemoryContext {
 
 /**
  * The cross-session memory an automatic prefetch puts into a prompt, the tier
- * `allowAutomaticPrefetch` gates. Every run reads the same admitted memory, a
+ * `allowMemoryPrefetch` gates. Every run reads the same admitted memory, a
  * private one included (`security/durableLearning.ts`, `security/caseCuration.ts`).
  */
 export function buildRuntimeMemoryContext(input: {
-  allowAutomaticPrefetch: boolean;
+  allowMemoryPrefetch: boolean;
   sceneType: string;
   architectureType?: string;
   packageName?: string;
   knowledgeScope?: KnowledgeScope;
   outputLanguage: OutputLanguage;
 }): RuntimeMemoryContext {
-  if (!input.allowAutomaticPrefetch) return {};
+  if (!input.allowMemoryPrefetch) return {};
   const {sceneType, architectureType, knowledgeScope, outputLanguage} = input;
   const features = extractTraceFeatures({architectureType, sceneType, packageName: input.packageName});
   return {

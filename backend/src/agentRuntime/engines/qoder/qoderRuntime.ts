@@ -762,7 +762,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     let comparisonContext = buildRuntimeTracePairIdentityContext({
       referenceTraceId, tracePairContext: options.tracePairContext,
     });
-    if (referenceTraceId && policy.allowAutomaticPrefetch) {
+    if (referenceTraceId && policy.allowMemoryPrefetch) {
       const comparisonPhase = runtimePerformance.startPhase('comparison');
       try {
         const detectedComparisonContext = await buildRuntimeTracePairComparisonContext({
@@ -823,7 +823,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     );
 
     const skillNotesBudget = createRuntimeSkillNotesBudget(isQuickMode);
-    const recentSqlErrors = policy.allowAutomaticPrefetch
+    const recentSqlErrors = policy.allowMemoryPrefetch
       ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
 
     // Shared mutable session state (same reference pattern as Claude runtime)
@@ -1020,7 +1020,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage,
       traceCompleteness,
       ...buildRuntimeMemoryContext({
-        allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+        allowMemoryPrefetch: policy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
         packageName: effectivePackageName, knowledgeScope, outputLanguage,
       }),
       comparison: comparisonContext,

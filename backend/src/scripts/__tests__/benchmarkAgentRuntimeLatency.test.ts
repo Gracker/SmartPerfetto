@@ -434,6 +434,21 @@ describe('agent runtime latency benchmark contracts', () => {
     expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
       modelCalls: [{purpose: 'answer_turn', startOffsetMs: 0, durationMs: 10, outcome: 'ok'}],
       finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}}})).toEqual(cell());
+    // The scene entry evidence phase and its closed receipt are accepted and kept.
+    const sceneEvidence = {skillId: 'scrolling_analysis', status: 'ran', durationMs: 4, artifactCount: 24, captureCount: 23};
+    const scenePhase = {name: 'scene_evidence', startOffsetMs: 1, durationMs: 4, outcome: 'ok'};
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      phases: [...basePerformance.phases, scenePhase], sceneEvidence}}).performance)
+      .toEqual({...basePerformance, phases: [...basePerformance.phases, scenePhase], sceneEvidence});
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, sceneEvidence:
+      {skillId: 'anr_analysis', status: 'not_run', reason: 'identity_ambiguous', durationMs: 900, artifactCount: 0, captureCount: 0}}})
+      .performance?.sceneEvidence).toMatchObject({status: 'not_run', reason: 'identity_ambiguous'});
+    for (const invalid of [{...sceneEvidence, status: 'not_run'}, {...sceneEvidence, reason: 'timeout'},
+      {...sceneEvidence, status: 'not_run', reason: 'free text'}, {...sceneEvidence, artifactCount: -1}]) {
+      expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, sceneEvidence: invalid}})).toThrow();
+    }
+    expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      sceneEvidence: {...sceneEvidence, sql: 'SELECT 1'}}})).toThrow('benchmark_runtime_scene_evidence_unknown_field');
     expect(() => parseRuntimeBenchmarkCell({
       ...cell(),
       performance: {

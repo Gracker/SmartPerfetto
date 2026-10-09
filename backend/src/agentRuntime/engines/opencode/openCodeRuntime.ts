@@ -3156,9 +3156,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const recentSqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
+    const recentSqlErrors = turnPolicy.allowMemoryPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
-    const comparisonContext = turnPolicy.allowAutomaticPrefetch
+    const comparisonContext = turnPolicy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext({
       traceProcessorService: this.input.traceProcessorService,
       currentTraceId: traceId,
@@ -3231,7 +3231,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
     let knowledgeBaseContext: string | undefined;
-    if (turnPolicy.allowAutomaticPrefetch) {
+    if (turnPolicy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
         knowledgeBaseContext = kb.getContextForAI(query, 8);
@@ -3241,7 +3241,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     const memoryContext = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     if (turnPolicy.onDemandContext) {

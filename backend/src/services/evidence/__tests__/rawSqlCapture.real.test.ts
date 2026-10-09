@@ -273,7 +273,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
         registryFingerprint: 'personal-native-test', taskKind: 'investigation' as const, sceneId: 'general',
         scope: 'bounded_question' as const, recommendedComplexity: 'full' as const,
         deliverable: 'answer' as const, evidenceAccess: 'read_new' as const};
-      expect(resolveRuntimeTurnPolicy(boundedIntent, 'full').allowAutomaticPrefetch).toBe(false);
+      expect(resolveRuntimeTurnPolicy(boundedIntent, 'full').allowMemoryPrefetch).toBe(false);
       await leases.run(async () => {
         for (const phase of ['before_stats', 'after_stats']) {
           const proof = await execute(`SELECT id, dur FROM slice ${filter}`, 'dur', 42_000_000);
@@ -299,7 +299,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
 
         // Actual full-scene preparation starts with focus detection, whose
         // ordinary stdlib INCLUDE cannot preserve native-only provenance.
-        expect(resolveRuntimeTurnPolicy({...boundedIntent, scope: 'scene_wide'}, 'full').allowAutomaticPrefetch).toBe(true);
+        expect(resolveRuntimeTurnPolicy({...boundedIntent, scope: 'scene_wide'}, 'full').allowMemoryPrefetch).toBe(true);
         await detectFocusApps(service!, traceId);
         expect(privateProcessor.getNativeProvenanceSnapshot().status).toBe('tainted');
         await probeTraceCompleteness(service!, traceId);

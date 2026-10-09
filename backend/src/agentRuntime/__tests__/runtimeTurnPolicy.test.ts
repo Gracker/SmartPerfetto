@@ -17,7 +17,7 @@ describe('runtime turn policy', () => {
   it('uses Full for budget without imposing memory prefetch or a report on a bounded answer', () => {
     expect(resolveRuntimeTurnPolicy(intent, 'full')).toEqual({
       budgetMode: 'full', onDemandContext: true, allowNewEvidence: true,
-      preflight: 'trace_facts', allowAutomaticPrefetch: false, requiresReport: false,
+      preflight: 'trace_facts', allowMemoryPrefetch: false, requiresReport: false,
       sourceNeedMissing: 'source_need_missing',
     });
   });
@@ -36,7 +36,7 @@ describe('runtime turn policy', () => {
     const fast = resolveRuntimeTurnPolicy(report, 'fast');
     const full = resolveRuntimeTurnPolicy(report, 'full');
     expect(fast).toEqual({...full, budgetMode: 'quick'});
-    expect(fast).toMatchObject({allowNewEvidence: true, preflight: 'full', allowAutomaticPrefetch: true, requiresReport: true});
+    expect(fast).toMatchObject({allowNewEvidence: true, preflight: 'full', allowMemoryPrefetch: true, requiresReport: true});
     expect(Object.isFrozen(fast)).toBe(true);
   });
 
@@ -44,7 +44,7 @@ describe('runtime turn policy', () => {
     const policy = resolveRuntimeTurnPolicy({...intent, scope: 'scene_wide', evidenceAccess: 'existing_only'}, mode);
     expect(policy.allowNewEvidence).toBe(false);
     expect(policy.preflight).toBe('none');
-    expect(policy.allowAutomaticPrefetch).toBe(false);
+    expect(policy.allowMemoryPrefetch).toBe(false);
   });
 
   // A narrow question is a reason to skip scene-wide memory lookups, not a
@@ -58,7 +58,7 @@ describe('runtime turn policy', () => {
   ])('resolves %s to preflight %s', (_label, overrides, expected) => {
     const policy = resolveRuntimeTurnPolicy({...intent, ...overrides});
     expect(policy.preflight).toBe(expected);
-    expect(policy.allowAutomaticPrefetch).toBe(expected === 'full');
+    expect(policy.allowMemoryPrefetch).toBe(expected === 'full');
   });
 
   it.each([
@@ -79,7 +79,7 @@ describe('runtime turn policy', () => {
   it('keeps unavailable classification on demand even with explicit Full', () => {
     const policy = resolveRuntimeTurnPolicy({...intent, status: 'unavailable', source: 'fallback'}, 'full');
     expect(policy).toMatchObject({budgetMode: 'full', onDemandContext: true,
-      preflight: 'trace_facts', allowAutomaticPrefetch: false, requiresReport: false});
+      preflight: 'trace_facts', allowMemoryPrefetch: false, requiresReport: false});
   });
 
   it('does not let explanatory text change policy', () => {
@@ -95,9 +95,9 @@ describe('run trace attachment', () => {
   const noTrace = {assistantSurface: 'conversation' as const, conversationTraceAttached: false};
 
   it('gathers nothing before the first turn when a conversation has no mounted trace', () => {
-    expect(resolveRunTurnPolicy(sceneWide, {analysisMode: 'full'})).toMatchObject({preflight: 'full', allowAutomaticPrefetch: true});
+    expect(resolveRunTurnPolicy(sceneWide, {analysisMode: 'full'})).toMatchObject({preflight: 'full', allowMemoryPrefetch: true});
     expect(resolveRunTurnPolicy(sceneWide, {analysisMode: 'full', ...noTrace}))
-      .toEqual({...resolveRuntimeTurnPolicy(sceneWide, 'full'), preflight: 'none', allowAutomaticPrefetch: false});
+      .toEqual({...resolveRuntimeTurnPolicy(sceneWide, 'full'), preflight: 'none', allowMemoryPrefetch: false});
     expect(resolveRunTurnPolicy(sceneWide, {assistantSurface: 'conversation', conversationTraceAttached: true}))
       .toEqual(resolveRuntimeTurnPolicy(sceneWide, 'auto'));
     expect(Object.isFrozen(resolveRunTurnPolicy(sceneWide, noTrace))).toBe(true);

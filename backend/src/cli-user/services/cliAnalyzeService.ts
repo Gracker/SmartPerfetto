@@ -689,9 +689,9 @@ export class CliAnalyzeService {
           assertActive();
           if (context && context.runId !== run.runId) throw new Error('finalization_run_identity_mismatch');
           const runtimeDeadlineMs = context?.deadlineMs ?? 0;
-          const allowAutomaticPrefetch = context
-            ? resolveRuntimeTurnPolicy(context.turnIntent, requestedAnalysisMode).allowAutomaticPrefetch : false;
-          if (allowAutomaticPrefetch && Date.now() < runtimeDeadlineMs) {
+          const allowMemoryPrefetch = context
+            ? resolveRuntimeTurnPolicy(context.turnIntent, requestedAnalysisMode).allowMemoryPrefetch : false;
+          if (allowMemoryPrefetch && Date.now() < runtimeDeadlineMs) {
             try {
               const summary = await awaitCliFinalizationOperation(
                 executeManagedTraceSummaryV1(getTraceProcessorService(), traceId, 'current'), run.controller.signal, runtimeDeadlineMs);

@@ -180,8 +180,11 @@ describe('commitTurnOutputs', () => {
       },
     };
 
-    const runtimePerformance = {schemaVersion: 1 as const, phases: [], tools: [], sql: [],
-      modelCalls: [{purpose: 'answer_turn' as const, startOffsetMs: 1, durationMs: 2, outcome: 'ok' as const}]};
+    // The scene entry evidence phase and receipt travel with the sealed receipt.
+    const runtimePerformance = {schemaVersion: 1 as const,
+      phases: [{name: 'scene_evidence' as const, startOffsetMs: 0, durationMs: 1, outcome: 'ok' as const}], tools: [], sql: [],
+      modelCalls: [{purpose: 'answer_turn' as const, startOffsetMs: 1, durationMs: 2, outcome: 'ok' as const}],
+      sceneEvidence: {skillId: 'startup_analysis', status: 'ran' as const, durationMs: 1, artifactCount: 3, captureCount: 3}};
     result.runtimePerformance = runtimePerformance;
     const toolResultAudit = {schemaVersion: 1 as const, results: [{
       toolName: 'invoke_skill', skillId: 'startup_analysis', outcome: 'returned' as const,

@@ -2033,12 +2033,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(options.referenceTraceId ? { referenceTraceId: options.referenceTraceId } : {}),
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     };
-    const comparisonContext = policy.allowAutomaticPrefetch
+    const comparisonContext = policy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext(pairInput)
       : buildRuntimeTracePairIdentityContext(pairInput);
     executionLease.throwIfAborted();
     let knowledgeBaseContext: string | undefined;
-    if (policy.allowAutomaticPrefetch) {
+    if (policy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
         executionLease.throwIfAborted();
@@ -2157,7 +2157,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
     const memoryContext = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: policy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);

@@ -204,7 +204,7 @@ describe('OpenAI typed intent integration', () => {
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledWith(expect.objectContaining({purpose: 'classification', maxOutputTokens: 1024}));
     expect(prepare.mock.calls[0][4]).toMatchObject({policy: {onDemandContext: true, preflight: 'trace_facts',
-      allowAutomaticPrefetch: false, requiresReport: false}, turnIntent: decision});
+      allowMemoryPrefetch: false, requiresReport: false}, turnIntent: decision});
     expect(run).toHaveBeenCalledTimes(1);
     expect((run.mock.calls[0][0] as any).model).toBe(analysisMode === 'full' ? 'pinned-primary' : 'pinned-light');
     expect(run.mock.calls[0][2]).toMatchObject({maxTurns: analysisMode === 'full' ? 2 : 1});
@@ -219,7 +219,7 @@ describe('OpenAI typed intent integration', () => {
     const result = await runtime.analyze('query', 'malformed', 'trace', {analysisMode: 'auto', providerId: null});
     expect(result.turnIntent).toMatchObject({status: 'unavailable', unavailableReason: 'invalid_response'});
     expect(prepare.mock.calls[0][4]).toMatchObject({policy: {budgetMode: 'quick', onDemandContext: true,
-      preflight: 'trace_facts', allowAutomaticPrefetch: false}});
+      preflight: 'trace_facts', allowMemoryPrefetch: false}});
     expect((run.mock.calls[0][0] as any).model).toBe('pinned-primary');
     expect(run.mock.calls[0][2]).toMatchObject({maxTurns: 1});
     expect(result.quickRun.modeDecision).toBe('ai_unavailable');
