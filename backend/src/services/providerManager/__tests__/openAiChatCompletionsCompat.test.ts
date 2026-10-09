@@ -9,7 +9,7 @@ import {
   readOpenAIChatCompletionsOutput,
 } from '../openAiChatCompletionsCompat';
 
-describe('official DeepSeek classification protocol options', () => {
+describe('official DeepSeek delivery protocol options', () => {
   it.each(['https://api.deepseek.com/v1/chat/completions', 'https://API.DEEPSEEK.COM:443/responses'])(
     'uses only the parsed official origin for %s', url => {
       const requestUrl = new URL(url);
@@ -18,9 +18,15 @@ describe('official DeepSeek classification protocol options', () => {
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose: 'classification'}))
         .toEqual({reasoning: {effort: 'none'}});
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'final_semantic'}))
-        .toEqual({response_format: {type: 'json_object'}});
+        .toEqual({thinking: {type: 'disabled'}, response_format: {type: 'json_object'}});
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose: 'final_semantic'}))
-        .toEqual({text: {format: {type: 'json_object'}}});
+        .toEqual({reasoning: {effort: 'none'}, text: {format: {type: 'json_object'}}});
+      for (const purpose of ['declaration_repair', 'continuation'] as const) {
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose}))
+          .toEqual({thinking: {type: 'disabled'}});
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose}))
+          .toEqual({reasoning: {effort: 'none'}});
+      }
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions'})).toEqual({});
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses'})).toEqual({});
     },
@@ -30,7 +36,7 @@ describe('official DeepSeek classification protocol options', () => {
     'https://gateway.example/v1/chat/completions', 'https://api.deepseek.com@evil.test/chat/completions'])(
     'leaves other endpoints unchanged: %s', url => {
       for (const protocol of ['chat_completions', 'responses'] as const) {
-        for (const purpose of ['classification', 'final_semantic'] as const) expect(buildOpenAITextRequestPurposeOptions({
+        for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) expect(buildOpenAITextRequestPurposeOptions({
           requestUrl: new URL(url), protocol, purpose,
         })).toEqual({});
       }
@@ -38,14 +44,15 @@ describe('official DeepSeek classification protocol options', () => {
   );
 });
 
-describe('official GLM classification protocol options', () => {
+describe('official GLM delivery protocol options', () => {
   it.each(['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'https://api.z.ai/api/paas/v4/chat/completions'])(
-    'disables default thinking for classification only on %s', url => {
+    'disables default thinking for every delivery purpose on chat completions only on %s', url => {
       const requestUrl = new URL(url);
-      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'classification'}))
-        .toEqual({thinking: {type: 'disabled'}});
-      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose: 'classification'})).toEqual({});
-      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'final_semantic'})).toEqual({});
+      for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose}))
+          .toEqual({thinking: {type: 'disabled'}});
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose})).toEqual({});
+      }
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions'})).toEqual({});
     },
   );

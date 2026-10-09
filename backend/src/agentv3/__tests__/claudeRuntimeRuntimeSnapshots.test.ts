@@ -52,6 +52,7 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {ArtifactStore} from '../artifactStore';
 import * as claudeMcpServer from '../claudeMcpServer';
 import * as claudeSystemPrompt from '../claudeSystemPrompt';
+import * as sceneEntryEvidence from '../../agentRuntime/sceneEntryEvidence';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as analysisPatternMemory from '../analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
@@ -782,6 +783,37 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       createMcpServer: claudeMcpServer.createClaudeMcpServer, runtimeOptions});
   });
 
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'startup_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpServer.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(claudeSystemPrompt, 'buildSystemPromptParts');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: '启动分析完成'};
+    });
+    try {
+      await runtime.analyze('分析启动性能', 'claude-scene-entry', 'trace', {analysisMode: 'full', runId: 'run-claude-scene'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({runId: 'run-claude-scene', traceId: 'trace',
+        turnIntent: expect.objectContaining({sceneId: defaultIntent.sceneId})});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence === evidence)).toBe(true);
+    } finally {
+      scene.mockRestore(); mcp.mockRestore(); prompt.mockRestore();
+    }
+  });
+
   // A failed classifier is the turn that knows least about the trace, so it
   // keeps the trace-fact preflight; what it loses is the scene, and with it
   // the scene-wide memory tier.
@@ -1209,6 +1241,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context!.deliveryContext).toMatchObject({completion: result.completion});
       expect(context!.runId).toBe('actual-run');
+      expect(context!.deliveryCall?.model).toBe('pinned-primary-review');
       expect(context!.traceIdentity).toEqual({currentTraceId: 'current-trace', referenceTraceId: 'reference-trace'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -1228,7 +1261,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const sdkCalls = claudeSdkMock.__getQueryCalls();
       expect(sdkCalls).toHaveLength(3);
       expect(sdkCalls[2].options).toMatchObject({model: 'pinned-primary-review', maxTurns: 1,
-        tools: [], allowedTools: [], mcpServers: {}, persistSession: false});
+        tools: [], allowedTools: [], mcpServers: {}, persistSession: false, effort: 'low'});
       expect(sdkCalls[2].options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe(outputLimit);
       expect(sdkCalls[2].options.resume).toBeUndefined();
       expect(sdkCalls[2].options.cwd).not.toBe(sdkCalls[0].options.cwd);
@@ -3188,10 +3221,12 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
 
     expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
-    // Only classification asks for low effort; the answer and its repair keep the run's own.
+    // Classification and the declaration repair ask for low effort; the answer keeps the run's own.
     const classifierCalls = rawClaudeSdkMock.__getQueryCalls().filter(isClassifierCall);
     expect(classifierCalls.map((call: any) => call.options.effort)).toEqual(['low']);
-    expect(claudeSdkMock.__getQueryCalls().every((call: any) => call.options.effort !== 'low')).toBe(true);
+    const [answerCall, repairCall] = claudeSdkMock.__getQueryCalls();
+    expect((answerCall as any).options.effort).not.toBe('low');
+    expect((repairCall as any).options.effort).toBe('low');
   });
 
   it('keeps the original Claude body and takes the declaration when a completion changes the body', async () => {

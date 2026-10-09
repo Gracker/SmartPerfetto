@@ -198,6 +198,8 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
   });
 }
 
+const CLI_DELIVERY_BUDGET_ESTIMATE = Object.freeze({source: 'default', note: 'stats NOT CONFIGURED for CLI'});
+
 function writeAnalysisQualitySidecars(
   sp: SessionPaths,
   turn: number,
@@ -218,9 +220,11 @@ function writeAnalysisQualitySidecars(
   writeJsonFile(sp, `${turnPrefix}.analysis-receipt.json`, result.result.analysisReceipt || null);
   writeJsonFile(sp, path.join(sp.dir, 'ui-action-proposals.json'), result.result.uiActionProposals || []);
   writeJsonFile(sp, `${turnPrefix}.ui-action-proposals.json`, result.result.uiActionProposals || []);
-  // Internal timing receipt only (no content): the CLI manifest store is not durable.
+  // Internal timing receipt only (no content): the CLI manifest store is not durable, so
+  // its delivery calls were budgeted with the fixed defaults (runtimeCallStats.ts).
   if (result.runtimePerformance) {
-    writeJsonFile(sp, `${turnPrefix}.runtime-performance.json`, result.runtimePerformance);
+    writeJsonFile(sp, `${turnPrefix}.runtime-performance.json`, {...result.runtimePerformance,
+      budgetEstimate: CLI_DELIVERY_BUDGET_ESTIMATE});
   }
   // Handoff facts only (no payload values); the stream copy is transport-truncated.
   if (result.toolResultAudit) {

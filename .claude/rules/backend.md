@@ -407,11 +407,17 @@ Keep these boundaries intact:
   `peer_event_wait` warning (a lock holder waiting on the network). Summing leaves
   as blocking once reported 95% "external critical path" for a thread idly
   waiting for input.
-- A semantic `numeric_mismatch` whose located text shows the declared exact
-  value rounded at its displayed precision (closed unit mapping, exact rational
-  arithmetic, every same-family number in the span must agree) is recorded as
-  the warning `semantic_numeric_display_rounding`: the claim stays unverified,
-  never contradicted. An undeclared assertion (`semantic_undeclared_claim`) is
+- A semantic `numeric_mismatch` is recorded as the warning
+  `semantic_numeric_display_rounding` only under captured-cell identity: the
+  claim is a `captured.cell` proposition with exactly one subject reference and
+  exactly one matching anchor cell (unit from the captured producer semantics),
+  every issue location lies inside the claim-level `contentLocations` the review
+  returned, and exactly one number in those claim locations faithfully shows the
+  cell's actual value (closed unit mapping, exact rational arithmetic, display
+  precision, no ranges or comparisons). The same shown value in another cell's
+  place is a real mismatch, so any other proposition shape — a `numeric.cell`
+  declaration included — keeps the error. The claim stays unverified, never
+  contradicted. An undeclared assertion (`semantic_undeclared_claim`) is
   likewise a warning that blocks passing and stays named in the claim line. Once
   the review stopped failing to parse, these two produced `!` on 7 of 8 E2E runs
   in which no value was actually contradicted (34 of 34 mismatches were faithful
@@ -419,23 +425,38 @@ Keep these boundaries intact:
   it, and its whole line decides (ranges, signs, comparisons, units). A review
   that quotes the wrong, correct-looking number is its own error; the check
   cannot recover which value the claim meant.
-- One invalid claim makes the whole declaration ineligible, which skips the
-  semantic review and fails a report's quality gate. The shared native
-  declaration completion therefore also repairs a well-framed rejected
-  declaration (`repairInvalid`, all five runtimes) in the same single
-  delivery turn: the model receives the sidecar-free body and the rejected
-  declaration separately, with `claimDiagnostics` naming each failing claim's
-  position and schema field (the first failing field per claim, at most 24
-  entries, so the prompt asks for a declaration that passes the full
-  protocol; a `semantics.numeric` failure adds the closed `subreason`
-  `shape|operator|value|unit`). The completion supplies only the
+- Declaration validity is judged per entry, not all-or-nothing. Root failures
+  (framing, root schema, duplicate claim or proposal ids, a non-array proposal
+  collection, `sourceClaimBindings` reference failures, root parser metadata)
+  make the whole declaration `ineligible` as before. A claim- or proposal-scoped
+  failure invalidates only its own entry: the sidecar status is
+  `partially_valid`, the root stays `eligible`, the invalid claim keeps its
+  place with `valid: false` plus closed `invalidCodes`, and verification,
+  anchoring and the review's scope skip it (its runner row is `not_checked`
+  with the closed reason `invalid_claim`; the verdict reads `unverified`, not
+  ineligible). The semantic review judges only valid claims and can cover them
+  completely. A repair is requested only when at least one id-bearing invalid
+  claim can be fixed; a proposal-only invalid declaration delivers as
+  `partially_valid` without spending a delivery call, and a no-id invalid entry
+  is not a repair target. The shared native declaration completion
+  (`repairInvalid`, all five runtimes) sends the sidecar-free body and the
+  rejected declaration separately, with `claimDiagnostics` naming each failing
+  id-bearing claim's position and schema field (the first failing field per
+  claim, at most 24 entries; a `semantics.numeric` failure adds the closed
+  `subreason` `shape|operator|value|unit`). The completion supplies only the
   declaration: `acceptNativeDeclarationCompletion` returns the original body
-  plus the completion's one valid sidecar (an unchanged echo as written), and
-  discards any prose the completion adds, so the delivered answer cannot change
-  in a repair. Re-copying a long body verbatim failed most glm-5.3 repairs on
-  one changed character. A repair must keep every declared claim id and at
-  least as many claims; for Pi it replaces the former full-answer correction of such a
-  declaration, and for OpenAI its
+  plus the completion's sidecar and discards any prose the completion adds, so
+  the delivered answer cannot change in a repair. The per-item acceptance
+  matrix requires the repaired root to be valid, the raw claim id set to be
+  exactly the original's, every originally-valid claim fingerprint-equal at its
+  position, the invalid claim count to strictly decrease (or the root itself to
+  have been the failure), relation proposals to match the original raw array
+  position by position under their id or resolvable semantic identity, and no
+  normalized duplicate content; an unrecoverable payload keeps the pre-matrix
+  guarantee that no declared entry disappears. The accepted replacement may
+  itself stay `partially_valid`. Re-copying a long body verbatim failed most
+  glm-5.3 repairs on one changed character. For Pi this replaces the former
+  full-answer correction of such a declaration, and for OpenAI its
   `invalid_protocol` continuation. Framing failures keep the existing
   full-answer path.
 - Declaration wire forms are canonicalized, never interpreted. The prompt keeps
@@ -716,8 +737,20 @@ Important whitelisted examples:
   five runtimes resolve their policy and trace identity there. The device vendor is not
   a preflight step: `services/traceVendor/traceVendorResolver.ts` reads it from
   trace `metadata` (never slice names) only when an `invoke_skill` target has a
-  vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
-  now means the memory tier only. Planning is on demand; an explicitly submitted
+  vendor override, after that Skill's own queries. `allowMemoryPrefetch`
+  gates the memory tier only. Product-owned scene entry evidence
+  (`agentRuntime/sceneEntryEvidence.ts`) is a separate preflight step: a
+  resolved `scene_wide` `read_new` investigation of a mounted trace (no comparison
+  turn, no reference trace) whose
+  strategy declares `entry_skill` has that Skill run before the
+  acquisition-capable MCP server exists, through the shared core
+  (`agentv3/skillRunCore.ts`) and only under a `verified` identity gate. It is
+  not a model tool call (no `toolResults`, tool observer, pacing, tool timing
+  or plan record); its guards are the request scope, `canInvokeTool`, the lease
+  and deadline, `withRunAuthorizationOnly`, and the core's pre-write re-check;
+  captures join the ledger through `scene-entry:<skill>:<hash>` observations;
+  the prompt gets the bounded tier-2 `scene_evidence` segment and
+  `RuntimePerformance` the `scene_evidence` phase and `sceneEvidence` receipt. Planning is on demand; an explicitly submitted
   plan remains binding. When the request selects source, the intent also
   judges `sourceNeed` (`none` | `locate` | `mechanism`, `types/sourceNeed.ts`);
   without a selection the field is not in its schema. An omitted value keeps

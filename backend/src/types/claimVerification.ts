@@ -77,9 +77,20 @@ export interface ClaimPropositionCoverage {
   reason: string;
 }
 
+/**
+ * What the one semantic review located for a claim: body offsets with a hash
+ * of the located text, never the text. Lets repeated reviews of a body be
+ * compared (`verdict:stability`) without storing answer content again.
+ */
+export interface ClaimSemanticReviewTrace {
+  consistency: 'consistent' | 'inconsistent' | 'unknown';
+  contentLocations: Array<{start: number; end: number; textHash: string}>;
+}
+
 export interface ClaimVerificationClaimResult {
   claimId: string;
   status: ClaimVerificationClaimStatus;
+  semanticReview?: ClaimSemanticReviewTrace;
   /** Compatibility alias. A matched cell alone never verifies a proposition in v2. */
   referenceResults?: ClaimReferenceVerificationResult[];
   referenceCells?: ClaimReferenceVerificationResult[];

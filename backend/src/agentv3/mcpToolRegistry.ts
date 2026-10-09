@@ -103,7 +103,12 @@ export interface ToolRequestScope {
   readonly allowNewEvidence?: boolean;
 }
 
-function isToolAllowedForScope(
+/**
+ * Whether a request scope admits a tool with this access. The registry gates
+ * every registered tool with it; product-owned acquisition outside the
+ * registry (scene entry evidence) asks it about `invoke_skill`'s access.
+ */
+export function isToolAllowedForScope(
   tool: Pick<McpToolDefinition, 'exposure' | 'evidenceEffect'>,
   scope: ToolRequestScope | undefined,
 ): boolean {

@@ -4537,7 +4537,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   const startupDeadlineMs = Number.isFinite(options.taskTimeoutMs) && options.taskTimeoutMs > 0
     ? startedAt + options.taskTimeoutMs : Number.POSITIVE_INFINITY;
   let runtimeDeadlineMs = startupDeadlineMs;
-  let allowAutomaticPrefetch = false;
+  let allowMemoryPrefetch = false;
   let finalizationContext: RuntimeFinalizationContext | undefined;
   let contextTransferred = false;
   let sceneSeal: SceneRuntimeSeal | undefined;
@@ -4557,7 +4557,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   const rawDataEnvelopes: DataEnvelope[] = [...(session.dataEnvelopes ?? [])];
   const canPrefetch = () => {
     finalizationRun.assertCurrent();
-    return !options.sceneRunBinding && allowAutomaticPrefetch && Date.now() < runtimeDeadlineMs;
+    return !options.sceneRunBinding && allowMemoryPrefetch && Date.now() < runtimeDeadlineMs;
   };
 
   // Track generation is a lightweight derivation step from DataEnvelopes.
@@ -4772,8 +4772,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
               throw new Error('finalization_run_identity_mismatch');
             }
             runtimeDeadlineMs = Math.min(startupDeadlineMs, finalizationContext?.deadlineMs ?? 0);
-            allowAutomaticPrefetch = finalizationContext !== undefined &&
-              resolveRuntimeTurnPolicy(finalizationContext.turnIntent, options.analysisMode).allowAutomaticPrefetch;
+            allowMemoryPrefetch = finalizationContext !== undefined &&
+              resolveRuntimeTurnPolicy(finalizationContext.turnIntent, options.analysisMode).allowMemoryPrefetch;
             return nativeResult;
           });
         return runWithTraceProcessorLease(analyze);

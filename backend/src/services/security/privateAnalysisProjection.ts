@@ -470,6 +470,14 @@ export function projectPrivateClaimVerification(
     claimResults: (verification.claimResults ?? []).map((claim, index) => ({
       claimId: text(claim.claimId), status: privateControl(claim.status,
         ['verified', 'partial', 'inference', 'unsupported', 'not_checked'], 'not_checked'),
+      // Offsets and text hashes of the owner's own body; strict surfaces keep none.
+      ...(claim.semanticReview && isOwnerCodeAwareProjection() ? {semanticReview: {
+        consistency: privateControl(claim.semanticReview.consistency, ['consistent', 'inconsistent', 'unknown'], 'unknown'),
+        contentLocations: claim.semanticReview.contentLocations.filter(location =>
+          Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) &&
+          typeof location.textHash === 'string' && /^[0-9a-f]{16}$/.test(location.textHash))
+          .map(({start, end, textHash}) => ({start, end, textHash})),
+      }} : {}),
       ...(claim.referenceResults ? {referenceResults: references(claim.referenceResults)} : {}),
       ...(claim.referenceCells ? {referenceCells: references(claim.referenceCells)} : {}),
       ...(claim.deterministicProof ? {deterministicProof: {
@@ -653,7 +661,14 @@ export function projectPrivateDataEnvelopes(
   return envelopes.map(envelope => projectPrivateDataEnvelope(sessionId, envelope));
 }
 
-/** Durable/user-visible result projection shared by CLI and snapshot surfaces. */
+/**
+ * Strict-audience result projection building block: no owner audience is set,
+ * so owner-only diagnostic fields (for example the per-claim review trace) are
+ * dropped, which counts as a material change and invalidates verification.
+ * Caller-facing durable surfaces use `projectOwnerAnalysisResult` (restricted
+ * runs) or `copyAnalysisResultForSnapshot` (plain runs) instead —
+ * see `projectStoredAnalysisResultForOwner`.
+ */
 export function projectPrivateAnalysisResult(
   sessionId: string,
   result: AnalysisResult,

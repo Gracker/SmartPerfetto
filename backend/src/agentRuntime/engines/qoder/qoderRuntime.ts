@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
@@ -88,6 +89,7 @@ import {
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
 import {dispatchWithModelCallRecord, INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS, runIntentTransport} from '../../intentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {runQoderIntentTransport} from './qoderIntentTransport';
 import type {IntentTransportInput, IntentTransportResult} from '../../intentTransport';
 import {
@@ -513,6 +515,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
               && result.completion.reason !== 'turn_limit' && !executionLease.signal.aborted ? {
                 providerQuery: {text: query, analysisContextFingerprint: normalizedOptions.analysisContextFingerprint},
                 dispatchText: sessionState.dispatchText,
+                deliveryCall: {providerOrigin: this.config.byok.baseUrl, model: this.config.model},
               } : {}),
           });
         }
@@ -761,7 +764,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     let comparisonContext = buildRuntimeTracePairIdentityContext({
       referenceTraceId, tracePairContext: options.tracePairContext,
     });
-    if (referenceTraceId && policy.allowAutomaticPrefetch) {
+    if (referenceTraceId && policy.allowMemoryPrefetch) {
       const comparisonPhase = runtimePerformance.startPhase('comparison');
       try {
         const detectedComparisonContext = await buildRuntimeTracePairComparisonContext({
@@ -822,7 +825,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     );
 
     const skillNotesBudget = createRuntimeSkillNotesBudget(isQuickMode);
-    const recentSqlErrors = policy.allowAutomaticPrefetch
+    const recentSqlErrors = policy.allowMemoryPrefetch
       ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
 
     // Shared mutable session state (same reference pattern as Claude runtime)
@@ -943,6 +946,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     };
 
     const canInvokeTool = () => acquisitionOpen && isRunDeliverable();
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options ?? {}),
+      policy, strategyRegistry: intentResolver.strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService, artifactStore, focusTarget, userPackageName: options?.packageName,
+      selectionContext: options?.selectionContext, outputLanguage, canInvokeTool, executionLease,
+      runAuthorization: authorization, deadlineMs: sessionState.deadlineMs, runtimePerformance});
+    executionLease.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(normalizedOptions, {sessionId, traceId,
       runId: executionLease.key.runId!, deadlineMs: sessionState.deadlineMs ?? 0,
       traceProcessorService, artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
@@ -1005,13 +1016,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       onDemandContext: policy.onDemandContext,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       sceneType,
       architecture,
       selectionContext: options?.selectionContext,
       outputLanguage,
       traceCompleteness,
       ...buildRuntimeMemoryContext({
-        allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+        allowMemoryPrefetch: policy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
         packageName: effectivePackageName, knowledgeScope, outputLanguage,
       }),
       comparison: comparisonContext,
@@ -1270,13 +1282,21 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           candidate: originalAnswer, remainingDeliveryTurns: remainingDeliveryTurns()})
         ? closeoutTape.buildEmptyBodyPrompt({query, outputLanguage,
           priorConclusion: sanitizeOwnerCodeAwareText(sessionId, originalAnswer)}) : undefined;
-      if (continuationPrompt && sessionState.deadlineMs !== undefined) {
+      const deliveryCall = {providerOrigin: this.config.byok.baseUrl, model: this.config.model};
+      const admitDelivery = (purpose: 'continuation' | 'declaration_repair', prompt: string, deadlineMs: number) =>
+        admitDeliveryCall(options?.runManifestAttributionSink?.runtimePerformanceRecorder, {...deliveryCall, purpose,
+          inputBytes: Buffer.byteLength(prompt) + Buffer.byteLength(finalSystemPrompt),
+          remainingMs: deadlineMs - Date.now(),
+          // Its continuation exists only for a candidate without an answer body.
+          failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: purpose === 'continuation'})});
+      if (continuationPrompt && sessionState.deadlineMs !== undefined &&
+          admitDelivery('continuation', continuationPrompt, sessionState.deadlineMs)) {
         deliveryCallSpent = true;
         await retireAcquisition();
         sessionState.rounds += 1;
         try {
           const continued = await dispatchWithModelCallRecord(options?.runManifestAttributionSink?.runtimePerformanceRecorder,
-            {purpose: 'continuation', trigger: 'empty_body'},
+            {purpose: 'continuation', trigger: 'empty_body', ...deliveryCall},
             {prompt: continuationPrompt, systemPrompt: finalSystemPrompt, signal: executionLease.signal,
               deadlineMs: sessionState.deadlineMs, outputByteLimit: 128 * 1024},
             input => dispatchQoderText(input, {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
@@ -1302,18 +1322,21 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         remainingDeliveryTurns: remainingDeliveryTurns(),
         repairInvalid: true,
       });
-      if (declarationRequest && nativeDeclarationBodyCanFitOutput(originalAnswer, declarationOutputLimit) &&
-          sessionState.deadlineMs !== undefined && Date.now() < sessionState.deadlineMs) {
+      const declarationPrompt = declarationRequest &&
+        buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage});
+      if (declarationRequest && declarationPrompt && nativeDeclarationBodyCanFitOutput(originalAnswer, declarationOutputLimit) &&
+          sessionState.deadlineMs !== undefined && Date.now() < sessionState.deadlineMs &&
+          admitDelivery('declaration_repair', declarationPrompt, sessionState.deadlineMs)) {
         await retireAcquisition();
         sessionState.rounds += 1;
         try {
-          const repaired = await dispatchQoderText({
-            prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
-            systemPrompt: finalSystemPrompt,
-            signal: executionLease.signal,
-            deadlineMs: sessionState.deadlineMs,
-            outputByteLimit: declarationOutputLimit,
-          }, {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
+          const repaired = await dispatchWithModelCallRecord(options?.runManifestAttributionSink?.runtimePerformanceRecorder,
+            {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
+            {prompt: declarationPrompt,
+              systemPrompt: finalSystemPrompt, signal: executionLease.signal,
+              deadlineMs: sessionState.deadlineMs, outputByteLimit: declarationOutputLimit},
+            input => dispatchQoderText(input, {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
+              beforeDispatch));
           assertAuthorized();
           // The accepted candidate is the original body with the completion's declaration.
           const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({

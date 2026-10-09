@@ -170,4 +170,25 @@ describe('Claude intent transport', () => {
     await expect(runClaudeIntentTransport({...input, outputByteLimit: 5}))
       .resolves.toEqual({status: 'unavailable', reason: 'output_limit'});
   });
+
+  it.each([
+    ['classification', 'low'], ['review', 'low'], ['declaration_repair', 'low'],
+    ['continuation', undefined], ['answer_turn', undefined], [undefined, undefined],
+  ] as const)('sends effort for purpose %s as %s', async (purpose, effort) => {
+    const {input, sdk} = fixture([{type: 'result', subtype: 'success', is_error: false, result: '{}', stop_reason: 'end_turn'}]);
+    expect(await runClaudeIntentTransport({...input, ...(purpose ? {purpose} : {})})).toMatchObject({status: 'ok'});
+    const sent = sdk.query.mock.calls[0][0] as {options: Record<string, unknown>};
+    if (effort) expect(sent.options.effort).toBe(effort);
+    else expect(sent.options).not.toHaveProperty('effort');
+  });
+
+  it.each([
+    [{type: 'result', subtype: 'success', is_error: true, result: 'API Error: 529'}, 'provider_error'],
+    [{type: 'result', subtype: 'error_during_execution', is_error: true}, 'provider_error'],
+    [{type: 'result', subtype: 'success', is_error: false, result: '{}', stop_reason: 'refusal'}, 'invalid_response'],
+    [{type: 'result', subtype: 'error_max_turns', is_error: true}, 'invalid_response'],
+  ] as const)('reports SDK result %# as its own failure reason', async (message, reason) => {
+    const {input} = fixture([message]);
+    expect(await runClaudeIntentTransport(input)).toEqual({status: 'unavailable', reason});
+  });
 });

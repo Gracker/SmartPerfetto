@@ -3,9 +3,13 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'node:crypto';
-import {conclusionParseIssueTriageCodes, parseClaimSemanticsDeclaration, type ConclusionContract,
-  type ConclusionBindingEligibility} from '../agent/core/conclusionContract';
+import {conclusionParseIssueTriageCodes, isConclusionRootParseIssue, parseClaimSemanticsDeclaration,
+  type ConclusionContract, type ConclusionBindingEligibility} from '../agent/core/conclusionContract';
 import type {RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
+import {intentTransportErrorReason} from '../agentRuntime/intentTransport';
+import {recordRuntimeDeliveryBudget} from '../agentRuntime/runtimePerformance';
+import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
+import {assessDeliveryCallBudget, deliveryCallFailsOpen} from './runtimeCallStats';
 import type {AnalysisRunSelection} from '../agentRuntime/analysisRunSpec';
 import {loadPromptTemplate} from '../agentv3/strategyLoader';
 import {
@@ -115,7 +119,8 @@ export interface FinalSemanticAssessment {
   readonly reason?: 'invalid_snapshot' | 'snapshot_changed' | 'input_projection_incomplete' | 'input_projection_limit' |
     'input_limit' | 'output_limit' | 'invalid_response' | 'missing_template' |
     'missing_transport' | 'timeout' | 'provider_error' | 'incomplete_output' |
-    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user' | 'not_required';
+    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user' | 'not_required' |
+    'budget_insufficient';
   /**
    * Closed-vocabulary triage detail for the reason above: declaration parse
    * issue codes, or transport facts (`http_429`, `attempts_2`). Never raw
@@ -611,7 +616,10 @@ function parseResponseStrict(
     (value.bodyCoverage.status === 'complete' && !wholeBodyCovered(reviewedSpans, body.length))) {
     return invalidResponse('body_coverage', 'invalid_location');
   }
-  const declarations = new Map((contract?.claims ?? []).map(claim => [claim.id!, claim]));
+  // Only claims that passed their own item validation enter the review; the
+  // declaration's invalid entries are excluded from its scope by design.
+  const declarations = new Map((contract?.claims ?? [])
+    .filter(claim => claim.valid !== false && typeof claim.id === 'string').map(claim => [claim.id!, claim]));
   const eligibility = captured.snapshot.declarationBindingEligibility;
   const typedSemantics = new Map([...declarations].map(([id, claim]) =>
     [id, declarationHasTypedSemantics(claim, eligibility)]));
@@ -694,8 +702,11 @@ function parseResponseStrict(
     expectedCount: requirementMap.size, actualCount: seenRequirements.size,
   });
   const investigation = parseInvestigationResponse(value, captured, locationFormat, locationCatalog);
+  // Coverage of the claims the review owns: the declaration's valid claims. A
+  // partially valid declaration (per-item failures only) can still cover them
+  // completely; a root-level failure keeps its own ineligible reason.
   const declarationCoverage = (captured.snapshot.declarationBindingEligibility === 'eligible' || declarations.size === 0) &&
-    !hasOwn(contract ?? {}, 'rawClaims') && !contract?.parseIssues?.length &&
+    !(contract?.parseIssues ?? []).some(issue => isConclusionRootParseIssue(issue)) &&
     contract?.bindingEligibility !== 'ineligible' && claims.every(claim => claim.consistency !== 'unknown');
   const coverage: FinalSemanticAssessment['coverage'] = {
     body: omissionUnlocated ? 'incomplete' : value.bodyCoverage.status,
@@ -824,7 +835,9 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
     }
     try { if (!inputIsBound(captured, context)) return fail('not_checked', 'invalid_snapshot'); }
     catch { return fail('not_checked', 'invalid_snapshot'); }
-    const declarations = captured.snapshot.conclusionContract?.claims ?? [];
+    // Invalid per-item entries are outside the review's scope by design; only
+    // the valid declared claims must be well-formed and uniquely identified.
+    const declarations = (captured.snapshot.conclusionContract?.claims ?? []).filter(claim => claim.valid !== false);
     if (!Array.isArray(declarations) || declarations.some(claim => !record(claim) || !nonempty(claim.id) || !nonempty(claim.text)) ||
       new Set(declarations.map(claim => claim.id)).size !== declarations.length) {
       return fail('not_checked', 'invalid_declarations', 'claims_invalid');
@@ -851,6 +864,13 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
     const stopSignal = input.stopSignal;
     const stopped = () => fail('not_checked', 'cancelled_by_user');
     if (stopSignal?.aborted) return stopped();
+    // A review that cannot finish in the time left changes nothing the user sees; a report's
+    // quality gate fails without it, so a report deliverable is sent whatever the estimate.
+    const budget = assessDeliveryCallBudget({...context.deliveryCall, purpose: 'review', inputBytes: promptBytes,
+      remainingMs: deadlineMs - Date.now(),
+      failOpen: deliveryCallFailsOpen(context.turnIntent)});
+    recordRuntimeDeliveryBudget(currentRuntimePerformanceRecorder(), budget);
+    if (budget.decision === 'skip') return fail('not_checked', 'budget_insufficient', `estimate_${budget.source}`);
     try { input.onDispatch?.({deadlineMs}); } catch { /* Observers never change the review. */ }
     try {
       const response = await context.dispatchText({prompt, systemPrompt: '', deadlineMs, outputByteLimit: outputBytes,
@@ -858,7 +878,8 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
       signal.throwIfAborted();
       // A review that finished before the stop is kept; a stopped call is not a provider failure.
       if (response.status !== 'ok' && stopSignal?.aborted) return stopped();
-      if (Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
+      // A failed call keeps the reason its transport reported; only a reply that arrived late is a timeout.
+      if (response.status === 'ok' && Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
       if (response.status !== 'ok') {
         const transportDetail = transportFailureDetail(response);
         if (response.status !== 'unavailable' || !member(response.reason, [
@@ -872,10 +893,10 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
       return parsed.assessment ? freezeJson({...parsed.assessment, promptFingerprint}) :
         emptyAssessment('unavailable', 'invalid_response', binding, parsed.diagnostic,
           undefined, parsed.diagnostic && `resp_${parsed.diagnostic.stage}_${parsed.diagnostic.code}`);
-    } catch {
+    } catch (error) {
       signal.throwIfAborted();
       if (stopSignal?.aborted) return stopped();
-      return fail('unavailable', Date.now() >= deadlineMs ? 'timeout' : 'provider_error');
+      return fail('unavailable', intentTransportErrorReason(error));
     }
   });
   slots.set(context, {fingerprint: snapshotFingerprint, promise});

@@ -18,6 +18,7 @@ import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import {chatCompletionResponse, createOpenAiConfigForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import * as finalization from '../../agentRuntime/analysisFinalizationContext';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {projectPrivateAnalysisResult, projectPrivateTerminationMessage} from '../../services/security/privateAnalysisProjection';
@@ -34,11 +35,12 @@ import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIn
 import * as systemPrompt from '../../agentv3/claudeSystemPrompt';
 import * as focusDetector from '../../agentv3/focusAppDetector';
 import * as mcpModule from '../../agentv3/claudeMcpServer';
+import * as sceneEntryEvidence from '../../agentRuntime/sceneEntryEvidence';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import * as localizedStrategyTemplate from '../../agentv3/localizedStrategyTemplate';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
@@ -72,7 +74,12 @@ function classify(value: AnalysisTurnIntentDecision = decision) {
     status: 'ok', text: JSON.stringify(value), actualModel: 'pinned-light', finishReason: 'stop',
   });
 }
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   jest.spyOn(configModule, 'loadOpenAIConfig').mockReturnValue(createOpenAiConfigForTest());
   jest.spyOn(intentTransport, 'runOpenAiIntentTransport');
   classify();
@@ -203,7 +210,7 @@ describe('OpenAI typed intent integration', () => {
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledWith(expect.objectContaining({purpose: 'classification', maxOutputTokens: 1024}));
     expect(prepare.mock.calls[0][4]).toMatchObject({policy: {onDemandContext: true, preflight: 'trace_facts',
-      allowAutomaticPrefetch: false, requiresReport: false}, turnIntent: decision});
+      allowMemoryPrefetch: false, requiresReport: false}, turnIntent: decision});
     expect(run).toHaveBeenCalledTimes(1);
     expect((run.mock.calls[0][0] as any).model).toBe(analysisMode === 'full' ? 'pinned-primary' : 'pinned-light');
     expect(run.mock.calls[0][2]).toMatchObject({maxTurns: analysisMode === 'full' ? 2 : 1});
@@ -218,7 +225,7 @@ describe('OpenAI typed intent integration', () => {
     const result = await runtime.analyze('query', 'malformed', 'trace', {analysisMode: 'auto', providerId: null});
     expect(result.turnIntent).toMatchObject({status: 'unavailable', unavailableReason: 'invalid_response'});
     expect(prepare.mock.calls[0][4]).toMatchObject({policy: {budgetMode: 'quick', onDemandContext: true,
-      preflight: 'trace_facts', allowAutomaticPrefetch: false}});
+      preflight: 'trace_facts', allowMemoryPrefetch: false}});
     expect((run.mock.calls[0][0] as any).model).toBe('pinned-primary');
     expect(run.mock.calls[0][2]).toMatchObject({maxTurns: 1});
     expect(result.quickRun.modeDecision).toBe('ai_unavailable');
@@ -278,6 +285,31 @@ describe('OpenAI typed intent integration', () => {
       createMcpServer: jest.requireActual<typeof mcpModule>('../../agentv3/claudeMcpServer').createClaudeMcpServer,
       runtimeOptions,
     });
+  });
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
+    const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);
+    classify(decision);
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'scrolling_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = jest.requireActual<typeof mcpModule>('../../agentv3/claudeMcpServer').createClaudeMcpServer;
+    jest.spyOn(mcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
+    mockRun();
+    await runtime.analyze('分析滑动卡顿', 'scene-entry', 'trace', {analysisMode: 'full', providerId: null, runId: 'run-scene-entry'});
+    expect(order).toEqual(['scene_evidence', 'mcp_server']);
+    expect(scene.mock.calls[0][0]).toMatchObject({runId: 'run-scene-entry', traceId: 'trace',
+      turnIntent: expect.objectContaining({sceneId: decision.sceneId}), policy: expect.objectContaining({allowNewEvidence: true})});
+    expect(prompt.mock.calls[0][0].sceneEvidence).toEqual(evidence);
   });
   // SP-CP-11: the effective package carries its provenance into the prompt
   // and the tools; an ambiguous detection puts no package in effect at all.
@@ -379,6 +411,8 @@ describe('OpenAI typed intent integration', () => {
     if (context) finalizationContexts.push(context);
     expect(context?.deliveryContext.entry).toBe('runtime_draft');
     expect(context?.hasSemanticTransport).toBe(true);
+    // The review runs on the main model of the same provider; only its origin is kept.
+    expect(context?.deliveryCall).toEqual({providerOrigin: 'https://provider.invalid', model: 'pinned-primary'});
     // Actual evidence and semantic assurance belong to the shared finalization suite.
   });
   it('binds each accepted turn to its own attempt and current content', async () => {
@@ -975,14 +1009,22 @@ describe('OpenAI bounded output-limit recovery', () => {
   });
 
   it('gives the existing relation correction a closed diagnostic and exact external schema', async () => {
+    const semantics = {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+      discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}};
+    const claim = (id: string, claimSemantics: unknown = semantics): ConclusionContractClaimItem =>
+      ({id, kind: 'numeric', text: `${id} holds.`, references: [],
+        semantics: claimSemantics as ConclusionContractClaimItem['semantics']});
     const base: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
+      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('claim-1')], uncertainties: [], nextSteps: [],
       relationProposals: [{schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:relation_1',
         kind: 'overlap', direction: 'symmetric', subject: {evidenceRefId: 'evidence-subject'}}]};
-    const first = `The marker is present.\n${renderConclusionContractSidecar({...base, relationProposals: [{
-      ...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY',
-    }]} as any)}`;
-    const complete = `The marker is present.\n${renderConclusionContractSidecar(base)}`;
+    // A repair needs a repairable invalid claim (plan A.3); the invalid proposal
+    // rides along and gets the exact relation schema in the correction prompt.
+    const first = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2', {...semantics, polarity: 'sometimes'})],
+      relationProposals: [{...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY'}]} as any)}`;
+    const complete = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2')]})}`;
     const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime);
     const run = mockRun().mockResolvedValueOnce(recoverableStream(first, 'completed'))
       .mockResolvedValueOnce(recoverableStream(complete, 'completed'));
@@ -990,7 +1032,8 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(run).toHaveBeenCalledTimes(2);
     const diagnostic = updates.find(update => update.content?.phase === 'candidate_protocol')!
       .content.candidateProtocolDiagnostic;
-    expect(diagnostic).toMatchObject({status: 'invalid', issueCodes: ['invalid_relation_proposal'],
+    expect(diagnostic).toMatchObject({status: 'partially_valid',
+      issueCodes: expect.arrayContaining(['invalid_relation_proposal']),
       relationProposalDiagnostics: [{scope: 'item', ordinal: 1, reason: 'unknown_field'}]});
     const recoveryHistory = run.mock.calls[1][1] as Array<{role?: string; content?: unknown}>;
     const recoveryPrompt = String(recoveryHistory[recoveryHistory.length - 1].content);
@@ -1399,6 +1442,18 @@ describe('OpenAI bounded output-limit recovery', () => {
         output: {bodyChars, sidecarChars: rejected.length - bodyChars}});
       expect(calls[2].output?.bodyChars).toBe(inspectCandidateProtocol(declared()).canonicalBody.length);
     });
+  });
+});
+
+describe('OpenAI declaration repair provider controls', () => {
+  it.each([
+    ['https://api.deepseek.com/v1', 'chat_completions', {thinking: {type: 'disabled'}}],
+    ['https://api.deepseek.com/v1', 'responses', {reasoning: {effort: 'none'}}],
+    ['https://open.bigmodel.cn/api/paas/v4', 'chat_completions', {thinking: {type: 'disabled'}}],
+    ['https://gateway.example/v1', 'chat_completions', undefined],
+    ['', 'chat_completions', undefined],
+  ] as const)('maps %s %s to the declaration_repair controls', (baseURL, protocol, expected) => {
+    expect(__testing.declarationRepairProviderData({baseURL, protocol})).toEqual(expected);
   });
 });
 

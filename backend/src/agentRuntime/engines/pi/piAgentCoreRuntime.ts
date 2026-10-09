@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import { createHash, randomUUID } from 'crypto';
@@ -17,6 +18,7 @@ import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy
 import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
+  candidateHasAnswerBody,
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
   buildNativeOutputCompletionPrompt,
@@ -29,6 +31,7 @@ import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnal
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import {runPiIntentTransport} from './piIntentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import { pathToFileURL } from 'url';
@@ -1760,10 +1763,21 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const outputLimitDelivery = acceptedCompletion.status === 'incomplete' && acceptedCompletion.reason === 'output_limit' &&
         acceptedAssistant?.deferred === undefined && !acceptedAssistant?.errorMessage &&
         !(Array.isArray(acceptedAssistant?.content) && acceptedAssistant.content.some(part => part?.type === 'toolCall'));
-      if (recovery &&
+      const correctionPrompt = recovery && (recovery.kind === 'declaration'
+        ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
+        : buildNativeOutputCompletionPrompt({candidate: acceptedText,
+          diagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1),
+          intent: turnIntent, issues: recovery.issues, outputLanguage}));
+      if (recovery && correctionPrompt &&
         rounds < turnBudget.totalTurns
         && Date.now() < getRunDeadlineMs()
-        && (acceptedCompletion.status === 'completed' || outputLimitDelivery)) {
+        && (acceptedCompletion.status === 'completed' || outputLimitDelivery)
+        && admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+          providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id,
+          purpose: declarationRequest ? 'declaration_repair' : 'continuation',
+          inputBytes: Buffer.byteLength(correctionPrompt) + Buffer.byteLength(prep.systemPrompt),
+          remainingMs: getRunDeadlineMs() - Date.now(),
+          failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: !declarationRequest && !candidateHasAnswerBody(acceptedText)})})) {
         const originalTools = agent.state.tools;
         const originalSystemPrompt = agent.state.systemPrompt;
         const originalError = agent.state.errorMessage;
@@ -1776,11 +1790,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           agent.state.systemPrompt = declarationRequest
             ? originalSystemPrompt
             : `${originalSystemPrompt}\n\n${loadPiFinalReportCorrectionSystemPrompt(outputLanguage)}`;
-          const correctionDiagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1);
-          const correctionPrompt = recovery.kind === 'declaration'
-            ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
-            : buildNativeOutputCompletionPrompt({candidate: acceptedText, diagnostic: correctionDiagnostic,
-              intent: turnIntent, issues: recovery.issues, outputLanguage});
           const candidate = await runProviderPrompt(correctionPrompt,
             Math.min(turnBudget.totalTurns, rounds + 1));
           authorization.assertCurrent();
@@ -1909,6 +1918,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               ...input, deadlineMs: Math.min(deadlineMs, input.deadlineMs), providerRuntime,
               purpose: 'review',
             }),
+            deliveryCall: {providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id},
           } : {}),
       });
     }
@@ -2032,12 +2042,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(options.referenceTraceId ? { referenceTraceId: options.referenceTraceId } : {}),
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     };
-    const comparisonContext = policy.allowAutomaticPrefetch
+    const comparisonContext = policy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext(pairInput)
       : buildRuntimeTracePairIdentityContext(pairInput);
     executionLease.throwIfAborted();
     let knowledgeBaseContext: string | undefined;
-    if (policy.allowAutomaticPrefetch) {
+    if (policy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
         executionLease.throwIfAborted();
@@ -2084,6 +2094,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId)!;
     uncertaintyFlags.splice(0);
 
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
+      selectionContext: options.selectionContext, outputLanguage, canInvokeTool, executionLease, runAuthorization,
+      deadlineMs: sceneDeadlineMs, runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
+    executionLease.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
@@ -2149,7 +2167,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
     const memoryContext = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: policy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);
@@ -2159,6 +2177,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

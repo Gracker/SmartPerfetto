@@ -210,7 +210,7 @@ describe('lighter declaration wire forms keep the valid canonical contract byte-
     expect(JSON.stringify(light)).toBe(JSON.stringify(explicit));
   });
 
-  it('keeps the model\'s own text on the invalid path, with the same issues and eligibility', () => {
+  it('keeps the model\'s own text on the per-item invalid path, with the same issues and eligibility', () => {
     const [claim] = withIntegerTimeRanges([REAL.interval]);
     const broken = (semantics: Json) => ({...claim, semantics: {...semantics, polarity: 'sometimes'}});
     const brokenRelation = {...RELATION_PROPOSAL, kind: 'caused_by'};
@@ -219,7 +219,11 @@ describe('lighter declaration wire forms keep the valid canonical contract byte-
     const omittedClaim = withoutSemanticsSchemaVersion([broken(claim.semantics)])[0];
     const [omittedRelation] = withoutRelationSchemaVersion([brokenRelation]);
     const omitted = parseConclusionContractSidecar(sidecar(JSON.stringify(verboseDeclaration([omittedClaim], [omittedRelation]))));
-    expect(omitted.status).toBe('invalid');
+    // Per-item failures no longer reject the whole declaration (plan A.1): both
+    // stay partially_valid with an eligible root.
+    expect(omitted.status).toBe('partially_valid');
+    expect(explicit.status).toBe('partially_valid');
+    expect(omitted.bindingEligibility).toBe('eligible');
     expect(omitted.bindingEligibility).toBe(explicit.bindingEligibility);
     expect(JSON.stringify(omitted.issues)).toBe(JSON.stringify(explicit.issues));
     // Invalid semantics and proposals are what the model wrote: no inserted version, no normalized integers.
@@ -257,16 +261,19 @@ describe('an invalid declaration that omits a nested schema version stays the mo
       expect(prompt).not.toContain('evidence_relation_candidate@1');
     }
 
-    // Private display re-render: an invalid declaration becomes the null marker, not a rendered contract.
+    // Private display re-render: a partially_valid declaration renders its valid
+    // claims plus one closed marker per invalid entry, never the invalid raw text.
     const projected = projectConclusionProtocol(undefined, raw).text;
-    expect(projected.startsWith(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\nnull\n\`\`\`\n-->`)).toBe(true);
-    expect(projected).not.toContain('claim_semantics@1');
+    expect(projected.startsWith(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\n`)).toBe(true);
+    expect(projected).not.toContain('```json\nnull\n');
     expect(projected).not.toContain('sometimes');
+    expect(projected).toContain('"status": "invalid"');
+    expect(projected).toContain('"invalid_semantics"');
 
     // Canonical/report raw fallback: the invalid claim keeps the model's semantics, integers included.
     const canonical = canonicalizeAnalysisResult({sessionId: 'session-invalid', success: true, findings: [], hypotheses: [],
       conclusion: raw, confidence: 0.5, rounds: 1, totalDurationMs: 1} as unknown as AnalysisResult);
-    expect(canonical.bindingEligibility).toBe('ineligible');
+    expect(canonical.bindingEligibility).toBe('eligible');
     const stored = canonical.validationContract!.claims![1];
     expect(stored.rawSemantics).toEqual(invalidClaim.semantics);
     expect(stored.rawSemantics).not.toHaveProperty('schemaVersion');
@@ -310,7 +317,11 @@ describe('lighter declaration forms accept nothing else', () => {
   it('still requires claim references when schema versions are omitted', () => {
     const {references: _references, ...unreferenced} = withoutSemanticsSchemaVersion([claim])[0];
     const parsed = parse(verboseDeclaration([unreferenced]));
-    expect(parsed.status).toBe('invalid');
+    // A claim-scoped failure invalidates only that claim: the declaration is partially valid.
+    expect(parsed.status).toBe('partially_valid');
+    expect(parsed.bindingEligibility).toBe('eligible');
+    expect(parsed.contract!.claims![0].valid).toBe(false);
+    expect(parsed.contract!.claims![0].invalidCodes).toEqual(['invalid_reference']);
     expect(parsed.issues).toEqual(expect.arrayContaining([{code: 'invalid_reference', path: 'claims[0].references',
       claimDiagnostic: {ordinal: 1, code: 'invalid_reference', field: 'references'}}]));
   });

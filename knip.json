@@ -46,6 +46,7 @@
         "src/scripts/materializeRenderingPipelineDetectionSkill.ts!",
         "src/scripts/runScrollingTest.ts!",
         "src/scripts/runScrollingTestRealData.ts!",
+        "src/scripts/verdictStability.ts!",
         "src/scripts/verifyAgentSseScrolling.ts!",
         "src/scripts/verifyAgentSseStopSemantics.ts!",
         "src/scripts/verifyCodeAwareSemanticDelta.ts!",

@@ -31,6 +31,8 @@ import {currentRunManifestAttributionSink} from '../services/selfEvolution/runMa
 import type {RunManifestScope} from '../types/selfEvolution';
 import {INVESTIGATION_CONDITION_OPERATORS, type AnalysisInvestigationContract,
   type AnalysisInvestigationRequirement} from '../types/analysisInvestigation';
+import {ENTRY_SKILL_BINDINGS, ENTRY_SKILL_END_BINDINGS, ENTRY_SKILL_PROCESS_BINDINGS, ENTRY_SKILL_START_BINDINGS,
+  type EntrySkillBinding, type StrategyEntrySkill} from '../types/sceneEntryEvidence';
 
 /** On-demand strategy detail section parsed from Markdown comment blocks. */
 export interface StrategyDetailSection {
@@ -103,6 +105,12 @@ export interface StrategyDefinition {
   investigationRequirements?: string[];
   /** Expanded profile contents travel with the same immutable registry pin. */
   investigationContract?: AnalysisInvestigationContract;
+  /**
+   * The Skill a scene-wide investigation of this scene runs before the model's
+   * first turn (product-owned scene evidence). Its parameters are closed
+   * bindings, resolved per run; executability is checked by `validate:strategies`.
+   */
+  entrySkill?: StrategyEntrySkill;
   /**
    * Data-only contract for final answer completeness. Runtime code must
    * execute this contract generically instead of hardcoding scene checks.
@@ -467,6 +475,44 @@ export function parseInvestigationContract(value: unknown, profiles: Investigati
   return {schemaVersion: 1, profileRefs, requirements: [...requirements.values()]};
 }
 
+const ENTRY_SKILL_NAME_RE = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Strict parser for frontmatter `entry_skill`, shared by runtime loading and
+ * strategy validation. Each parameter takes one closed binding, and a Skill
+ * gets at most one process, one start and one end binding. Whether the Skill
+ * exists and may run unattended is a registry question (`entrySkillPolicy.ts`).
+ */
+export function parseEntrySkill(value: unknown): StrategyEntrySkill | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'params']) || !nonEmptyString(value.id)
+    || !ENTRY_SKILL_NAME_RE.test(value.id.trim())) {
+    throw new Error('strategy_invalid_entry_skill');
+  }
+  const rawParams = value.params ?? {};
+  if (!isRecord(rawParams)) throw new Error('strategy_invalid_entry_skill');
+  const params: Record<string, EntrySkillBinding> = {};
+  for (const [name, binding] of Object.entries(rawParams)) {
+    if (!ENTRY_SKILL_NAME_RE.test(name) || typeof binding !== 'string'
+      || !(ENTRY_SKILL_BINDINGS as readonly string[]).includes(binding)) {
+      throw new Error('strategy_invalid_entry_skill');
+    }
+    params[name] = binding as EntrySkillBinding;
+  }
+  const bound = Object.values(params);
+  for (const kind of [ENTRY_SKILL_PROCESS_BINDINGS, ENTRY_SKILL_START_BINDINGS, ENTRY_SKILL_END_BINDINGS]) {
+    if (bound.filter(binding => kind.includes(binding)).length > 1) throw new Error('strategy_invalid_entry_skill');
+  }
+  return {id: value.id.trim(), params};
+}
+
+/** The author-designated default detail section, if any (the first one marked `default`). */
+export function defaultStrategyDetail(
+  strategy: Pick<StrategyDefinition, 'detailSections'> | undefined,
+): StrategyDetailSection | undefined {
+  return strategy?.detailSections.find(detail => detail.default);
+}
+
 function parseStrategyFile(filePath: string, investigationProfiles: InvestigationProfiles): StrategyDefinition | null {
   const raw = fs.readFileSync(filePath, 'utf-8');
   const match = raw.match(FRONTMATTER_RE);
@@ -495,6 +541,7 @@ function parseStrategyFile(filePath: string, investigationProfiles: Investigatio
     filePath);
 
   const finalReportContract = parseFinalReportContract(frontmatter.final_report_contract);
+  const entrySkill = withStrategyParseContext(() => parseEntrySkill(frontmatter.entry_skill), filePath);
 
   const rawVerifierMisdiagnosisPatterns =
     frontmatter.verifier_misdiagnosis_patterns as Array<Record<string, unknown>> | undefined;
@@ -533,6 +580,7 @@ function parseStrategyFile(filePath: string, investigationProfiles: Investigatio
     optionalCapabilities: (frontmatter.optional_capabilities as string[]) || [],
     ...(investigationRequirements ? {investigationRequirements} : {}),
     ...(investigationContract ? {investigationContract} : {}),
+    ...(entrySkill ? {entrySkill} : {}),
     finalReportContract,
     verifierMisdiagnosisPatterns,
     content: parsedContent.coreContent,
@@ -568,6 +616,8 @@ function cloneStrategyDefinition(definition: StrategyDefinition): StrategyDefini
         ...(requirement.evidenceMetrics ? {evidenceMetrics: [...requirement.evidenceMetrics]} : {}),
       })),
     }} : {}),
+    ...(definition.entrySkill
+      ? {entrySkill: {id: definition.entrySkill.id, params: {...definition.entrySkill.params}}} : {}),
     finalReportContract: definition.finalReportContract
       ? {
           requiredSections:

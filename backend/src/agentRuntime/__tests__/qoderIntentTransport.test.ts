@@ -165,6 +165,15 @@ describe('Qoder intent transport', () => {
     expect(query.close).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    [{type: 'result', subtype: 'success', is_error: true, result: 'API Error'}, 'provider_error'],
+    [{type: 'result', subtype: 'error_during_execution', is_error: true}, 'provider_error'],
+    [{type: 'result', subtype: 'error_max_turns', is_error: true}, 'invalid_response'],
+  ] as const)('reports SDK result %# as its own failure reason', async (message, reason) => {
+    const {input} = fixture([message]);
+    await expect(runQoderIntentTransport(input)).resolves.toEqual({status: 'unavailable', reason});
+  });
+
   it.each(['pause_turn', 'refusal', 'model_context_window_exceeded', 'future_reason', ''])('rejects incomplete or unknown explicit stop reason %s', async stopReason => {
     const {input, query} = fixture([{type: 'result', subtype: 'success', is_error: false, result: '{}', stop_reason: stopReason}]);
     await expect(runQoderIntentTransport(input)).resolves.toEqual({status: 'unavailable', reason: 'invalid_response'});

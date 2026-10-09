@@ -103,6 +103,20 @@ entering the native prompt path. Missing or evicted data remains unavailable.
   catalog, so put the words a user actually types first. `compound_patterns`
   is not a frontmatter field; scene routing is semantic and no runtime path
   evaluates regular expressions against the query.
+- `entry_skill` (`id` plus closed `params` bindings: `focus_app`,
+  `user_target`, `trace_start`, `trace_end`, `selection_start`,
+  `selection_end`) names the Skill the product runs for a scene-wide
+  investigation before the model's first turn (`sceneEntryEvidence.ts`).
+  `parseEntrySkill` is its strict schema; `validate:strategies` also checks it
+  against the Skill registry (`entrySkillPolicy.ts`: executable single-trace
+  Skill, declared inputs, process bindings on identity selectors, time
+  bindings on timestamp inputs, no writing SQL unit). Its guidance lives in
+  `prompt-scene-evidence.template.md`, not in TypeScript.
+- A `strategy-detail` block marked `default="true"` is rendered in full into a
+  resolved investigation's first prompt as `scene_default_detail`, the most
+  expendable segment (dropped first under budget pressure; its title stays in
+  `scene_strategy_details`). Measure a larger default detail with the token
+  regression test below.
 - `phase_hints` and `plan_template` (with `critical_tools`,
   `mandatory_aspects` and its expected calls) are removed: no runtime path
   ever injected them into an analysis. `validate:strategies` rejects a

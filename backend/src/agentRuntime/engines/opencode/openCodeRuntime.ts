@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
@@ -82,7 +83,8 @@ import {
 } from '../../runtimeConclusionProtocol';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
-import {dispatchWithModelCallRecord} from '../../intentTransport';
+import {dispatchWithModelCallRecord, openAiTextRequestPurposeFor} from '../../intentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
@@ -1655,14 +1657,18 @@ export function validateOpenCodeModelConfiguration(
  * classification) for one no-tool host. OpenCode forwards an agent's `options`
  * into the provider request body; a model entry's `options` never reach it.
  */
+function openCodeProviderBaseUrl(config: OpenCodeModelConfig): string | undefined {
+  const provider = config.providerConfig?.[config.model.providerID];
+  const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
+  return typeof providerOptions?.baseURL === 'string' ? providerOptions.baseURL : undefined;
+}
+
 function openCodePurposeAgentOptions(
   config: OpenCodeModelConfig,
   purpose: OpenAITextRequestPurpose | undefined,
 ): Record<string, unknown> | undefined {
   if (!purpose) return undefined;
-  const provider = config.providerConfig?.[config.model.providerID];
-  const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
-  const baseURL = typeof providerOptions?.baseURL === 'string' ? providerOptions.baseURL : undefined;
+  const baseURL = openCodeProviderBaseUrl(config);
   if (!baseURL) return undefined;
   try {
     const options = buildOpenAITextRequestPurposeOptions({requestUrl: buildChatCompletionsUrl(baseURL),
@@ -2865,13 +2871,20 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
       candidate: conclusion, remainingDeliveryTurns: remainingDeliveryTurns()})
       ? closeoutTape.buildEmptyBodyPrompt({query, priorConclusion: conclusion, outputLanguage}) : undefined;
-    if (continuationPrompt) {
+    const deliveryCall = {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID};
+    const admitDelivery = (purpose: 'continuation' | 'declaration_repair', prompt: string) =>
+      admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {...deliveryCall, purpose,
+        inputBytes: Buffer.byteLength(prompt) + Buffer.byteLength(prep.systemPrompt),
+        remainingMs: deadlineMs - Date.now(),
+        // Its continuation exists only for a candidate without an answer body.
+        failOpen: deliveryCallFailsOpen(turnIntent, {bodyMissing: purpose === 'continuation'})});
+    if (continuationPrompt && admitDelivery('continuation', continuationPrompt)) {
       deliveryCallSpent = true;
       try {
         assertActive();
         actualTurns++;
         const continued = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
-          {purpose: 'continuation', trigger: 'empty_body'},
+          {purpose: 'continuation', trigger: 'empty_body', ...deliveryCall},
           {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
             outputByteLimit: 64 * 1024},
           input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
@@ -2896,21 +2909,21 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       repairInvalid: true,
     });
     const declarationOutputLimit = 64 * 1024;
-    if (declarationRequest && nativeDeclarationBodyCanFitOutput(conclusion, declarationOutputLimit) &&
-        Date.now() < deadlineMs) {
+    const declarationPrompt = declarationRequest &&
+      buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage});
+    if (declarationRequest && declarationPrompt && nativeDeclarationBodyCanFitOutput(conclusion, declarationOutputLimit) &&
+        Date.now() < deadlineMs && admitDelivery('declaration_repair', declarationPrompt)) {
       try {
         assertActive();
         actualTurns++;
-        const repaired = await runOpenCodeIntentTransport({
-          prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
-          systemPrompt: prep.systemPrompt,
-          signal: executionLease.signal,
-          deadlineMs,
-          outputByteLimit: declarationOutputLimit,
-          model: modelConfig.model,
-          createClassifierHost: createNoToolsHost,
-          beforeDispatch,
-        });
+        const repaired = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
+          {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
+          {prompt: declarationPrompt,
+            systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
+            outputByteLimit: declarationOutputLimit},
+          input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
+            purpose: openAiTextRequestPurposeFor('declaration_repair'),
+            createClassifierHost: createNoToolsHost, beforeDispatch}));
         assertActive();
         // The accepted candidate is the original body with the completion's declaration.
         const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
@@ -3034,8 +3047,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         && result.completion?.reason !== 'turn_limit' ? {
         providerQuery: {text: prep.analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
         dispatchText: input => runOpenCodeIntentTransport({
-          ...input, model: modelConfig.model, createClassifierHost: createNoToolsHost,
+          ...input, model: modelConfig.model, purpose: openAiTextRequestPurposeFor('review'),
+          createClassifierHost: createNoToolsHost,
         }),
+        deliveryCall: {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID},
       } : {}),
     });
     return result;
@@ -3155,9 +3170,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const recentSqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
+    const recentSqlErrors = turnPolicy.allowMemoryPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
-    const comparisonContext = turnPolicy.allowAutomaticPrefetch
+    const comparisonContext = turnPolicy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext({
       traceProcessorService: this.input.traceProcessorService,
       currentTraceId: traceId,
@@ -3170,6 +3185,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     ) || normalizeOptionalString(this.env[OPENCODE_SYSTEM_PROMPT_ENV]);
     const withConfiguredSystemPrompt = (prompt: string): string => extraSystemPrompt
       ? `${prompt}\n\n${extraSystemPrompt}` : prompt;
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId, traceId, turnIntent, policy: turnPolicy,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.input.traceProcessorService, artifactStore, focusTarget,
+      userPackageName: options.packageName, selectionContext: options.selectionContext, outputLanguage, canInvokeTool,
+      ...(sceneSignal ? {executionLease: {signal: sceneSignal}} : {}), runAuthorization, deadlineMs: sceneDeadlineMs,
+      runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.input.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: sceneSignal, canInvokeTool});
@@ -3223,7 +3246,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
     let knowledgeBaseContext: string | undefined;
-    if (turnPolicy.allowAutomaticPrefetch) {
+    if (turnPolicy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
         knowledgeBaseContext = kb.getContextForAI(query, 8);
@@ -3233,7 +3256,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     const memoryContext = buildRuntimeMemoryContext({
-      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     if (turnPolicy.onDemandContext) {
@@ -3250,6 +3273,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           architecture,
           packageName: effectivePackageName,
           focusTarget: citedFocusTarget,
+          ...(sceneEvidence ? {sceneEvidence} : {}),
           selectionContext: options.selectionContext,
           quickMemoryContext,
           knowledgeBaseContext,
@@ -3286,6 +3310,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       architecture,
       packageName: effectivePackageName,
       focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

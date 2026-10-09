@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "intent": {
+    "sceneId": "scrolling",
+    "taskKind": "investigation",
+    "scope": "scene_wide",
+    "deliverable": "report"
+  },
+  "facts": [
+    {
+      "id": "total_frames",
+      "kind": "numeric",
+      "columns": [
+        "total_frames",
+        "distinct_frame_key",
+        "total_rows"
+      ],
+      "verification": "proved",
+      "unit": "frames",
+      "oracle": {
+        "sql": "INCLUDE PERFETTO MODULE android.frames.timeline;\nWITH per_frame AS (\n  SELECT upid, COALESCE(NULLIF(name, ''), CAST(surface_frame_token AS TEXT),\n    CAST(display_frame_token AS TEXT), 'slice:' || id) AS frame_id,\n    MAX(CASE WHEN jank_type IS NOT NULL AND jank_type != 'None' THEN 1 ELSE 0 END) AS is_jank\n  FROM actual_frame_timeline_slice WHERE ts IS NOT NULL AND dur IS NOT NULL AND dur >= 0\n  GROUP BY upid, frame_id\n)\nSELECT COUNT(*) AS total_frames, COALESCE(SUM(is_jank), 0) AS jank_frames FROM per_frame",
+        "column": "total_frames",
+        "unit": "frames"
+      }
+    },
+    {
+      "id": "jank_frames",
+      "kind": "numeric",
+      "columns": [
+        "jank_frames",
+        "distinct_jank_frame_key",
+        "jank_rows"
+      ],
+      "verification": "proved",
+      "unit": "frames",
+      "oracle": {
+        "sql": "INCLUDE PERFETTO MODULE android.frames.timeline;\nWITH per_frame AS (\n  SELECT upid, COALESCE(NULLIF(name, ''), CAST(surface_frame_token AS TEXT),\n    CAST(display_frame_token AS TEXT), 'slice:' || id) AS frame_id,\n    MAX(CASE WHEN jank_type IS NOT NULL AND jank_type != 'None' THEN 1 ELSE 0 END) AS is_jank\n  FROM actual_frame_timeline_slice WHERE ts IS NOT NULL AND dur IS NOT NULL AND dur >= 0\n  GROUP BY upid, frame_id\n)\nSELECT COUNT(*) AS total_frames, COALESCE(SUM(is_jank), 0) AS jank_frames FROM per_frame",
+        "column": "jank_frames",
+        "unit": "frames"
+      }
+    }
+  ]
+}

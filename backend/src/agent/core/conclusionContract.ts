@@ -80,6 +80,15 @@ export interface ConclusionContractClaimItem {
   /** Model-produced hint only; visible verdicts come from verifier output. */
   supportLevel?: ConclusionClaimSupportLevel;
   semantics?: ClaimSemanticsV1;
+  /**
+   * Parser-owned per-claim validity: present only when this claim failed its own
+   * item validation while the declaration root stayed valid. Verification,
+   * proof and anchoring consumers skip such a claim; display and fingerprint
+   * consumers keep it.
+   */
+  valid?: false;
+  /** Closed per-claim parse issue codes when `valid` is false; parser-owned. */
+  invalidCodes?: ConclusionContractParseIssue['code'][];
   /** Original invalid model declaration; never a verified interpretation. */
   rawSemantics?: unknown;
   /** Malformed references remain available for diagnosis and lossless reparse. */
@@ -259,8 +268,44 @@ export function isConclusionRelationProposalDiagnostic(value: unknown): value is
 
 export type ConclusionBindingEligibility = 'eligible' | 'ineligible' | 'legacy_unchecked';
 
+/**
+ * Root-level parse issues reject the whole declaration (`ineligible`, framing
+ * aside): framing failures, root schema failures, duplicate claim or proposal
+ * ids (an ambiguous id poisons every id-keyed join), a non-array relation
+ * proposal collection, `sourceClaimBindings` reference failures, and root
+ * parser metadata. Every other issue invalidates only its own claim or
+ * proposal entry: those declarations are `partially_valid` and stay `eligible`.
+ */
+export function isConclusionRootParseIssue(issue: ConclusionContractParseIssue): boolean {
+  switch (issue.code) {
+    case 'invalid_framing':
+    case 'duplicate_marker':
+    case 'invalid_json':
+    case 'invalid_contract':
+    case 'duplicate_claim_id':
+    case 'duplicate_proposal_id':
+      return true;
+    case 'invalid_reference':
+      return !issue.path.startsWith('claims[');
+    case 'untrusted_parser_metadata':
+      return issue.path === '$';
+    case 'invalid_relation_proposal':
+      return issue.path === 'relationProposals';
+    default:
+      return false;
+  }
+}
+
+/** Closed per-claim issue codes a claim item can carry as `invalidCodes`. */
+const CLAIM_INVALID_CODES: readonly ConclusionContractParseIssue['code'][] =
+  ['invalid_claim', 'invalid_reference', 'invalid_semantics', 'untrusted_parser_metadata'];
+
+export function isConclusionClaimInvalidCode(code: string): code is ConclusionContractParseIssue['code'] {
+  return (CLAIM_INVALID_CODES as readonly string[]).includes(code);
+}
+
 export interface ConclusionContractDeclarationParseResult {
-  status: 'absent' | 'valid' | 'invalid';
+  status: 'absent' | 'valid' | 'partially_valid' | 'invalid';
   raw: string;
   rawPayload?: unknown;
   contract?: ConclusionContract;
@@ -330,6 +375,7 @@ const ROOT_PARSER_FIELDS = [
 ] as const;
 const CLAIM_PARSER_FIELDS = [
   'parseIssues', 'bindingEligibility', 'verified', 'rawSemantics', 'semanticsParseIssues', 'rawReferences', 'rawDeclaration',
+  'valid', 'invalidCodes',
 ] as const;
 
 function hasOwn(value: object, key: string): boolean {
@@ -570,7 +616,12 @@ export function parseClaimSemanticsDeclaration(raw: unknown, path = 'semantics')
   return claimSemanticsResult(raw, path, claimSemanticsFailure(raw));
 }
 
-/** Preserve array order and duplicate IDs so binding validation can reject ambiguity. */
+/**
+ * Preserve array order and duplicate IDs so binding validation can reject ambiguity.
+ * A claim whose own item validation failed keeps its place with `valid: false`
+ * and the closed issue codes, provided the item still parsed into a claim
+ * (an item that is not a record or lacks string text cannot).
+ */
 export function parseDeclaredConclusionClaims(raw: unknown): {
   claims: ConclusionContractClaimItem[];
   rawClaims?: unknown;
@@ -582,6 +633,7 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
   const ids = new Set<string>();
   raw.forEach((item, index) => {
     const path = `claims[${index}]`;
+    const issuesBefore = issues.length;
     // A new issue object per claim location: claim items keep their own semantics issues untouched.
     const fail = (code: ConclusionClaimDiagnosticCode, field: ConclusionClaimDiagnosticField, issuePath = path,
       subreason?: ConclusionClaimNumericSubreason) =>
@@ -615,6 +667,7 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
     if (!validArtifactRefs || (item.relationRefs !== undefined && !stringList(item.relationRefs))) {
       fail('invalid_reference', validArtifactRefs ? 'relationRefs' : 'artifactRefs');
     }
+    const itemIssues = issues.slice(issuesBefore).filter(issue => !isConclusionRootParseIssue(issue));
     claims.push({
       ...(typeof item.id === 'string' ? {id: item.id} : {}),
       ...(typeof item.conclusionId === 'string' ? {conclusionId: item.conclusionId} : {}),
@@ -627,13 +680,13 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
       ...(oneOf(item.supportLevel, CONCLUSION_PROTOCOL_VALUES.supportLevel)
         ? {supportLevel: item.supportLevel as ConclusionClaimSupportLevel} : {}),
       ...semantics,
+      ...(itemIssues.length ? {valid: false as const, invalidCodes: [...new Set(itemIssues.map(issue => issue.code))]} : {}),
     });
   });
-  return {claims, ...(issues.some(issue => issue.code === 'invalid_claim' || issue.code === 'untrusted_parser_metadata' ||
-    (issue.code === 'invalid_reference' && !issue.path.endsWith('.references'))) ? {rawClaims: structuredClone(raw)} : {}), issues};
+  return {claims, ...(issues.length ? {rawClaims: structuredClone(raw)} : {}), issues};
 }
 
-function relationProposalFailure(value: unknown): ConclusionRelationProposalItemReason | undefined {
+export function relationProposalFailure(value: unknown): ConclusionRelationProposalItemReason | undefined {
   if (!record(value)) return 'item_not_object';
   if (!keysWithin(value, ['schemaVersion', 'id', 'kind', 'direction', 'subject', 'object',
     'proof', 'proofBindings', 'metricColumn', 'value', 'unit', 'deltaDirection'])) return 'unknown_field';
@@ -718,9 +771,10 @@ export function parseTypedConclusionContractJson(raw: string): ConclusionContrac
   if (!record(rawPayload) || rawPayload.schemaVersion !== 'conclusion_contract_v1' ||
     !hasConclusionContractDeclarations(rawPayload)) return absent;
   const projected = parseConclusionContractDeclaration(rawPayload);
-  const status = projected.issues.length ? 'invalid' : 'valid';
+  const status: ConclusionContractDeclarationParseResult['status'] = projected.issues.some(isConclusionRootParseIssue)
+    ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
   return {raw, rawPayload, ...projected, status,
-    bindingEligibility: status === 'valid' ? 'eligible' : 'ineligible'};
+    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible'};
 }
 
 /** Sidecar JSON uses canonical v1 field names. Legacy aliases stay in the legacy parser. */
@@ -814,7 +868,8 @@ export function parseConclusionContractDeclaration(raw: unknown): {contract?: Co
       ? {sourceClaimBindings: canonicalSourceClaimBindingDeclarations(raw.sourceClaimBindings as SourceClaimBindingV1[])} : {}),
     ...(rejectedRootMetadata || !sourceBindingsValid || !sourceBindingLinksValid ? {rawDeclaration: structuredClone(raw)} : {}),
     parseIssues: issues,
-    bindingEligibility: issues.length ? 'ineligible' : 'eligible',
+    // Per-item issues invalidate only their own entry; the declaration root decides eligibility.
+    bindingEligibility: issues.some(isConclusionRootParseIssue) ? 'ineligible' : 'eligible',
   };
   return {contract, issues};
 }
@@ -1012,9 +1067,10 @@ export function parseConclusionContractSidecar(raw: string): ConclusionContractS
   try { rawPayload = JSON.parse(payload); }
   catch { return {...base, status: 'invalid', bindingEligibility: 'ineligible', issues: [{code: 'invalid_json', path: '$'}]}; }
   const projected = parseConclusionContractDeclaration(rawPayload);
-  const status = projected.issues.length ? 'invalid' : 'valid';
+  const status: ConclusionContractSidecarParseResult['status'] = projected.issues.some(isConclusionRootParseIssue)
+    ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
   return {...base, rawPayload, ...projected, status,
-    bindingEligibility: status === 'valid' ? 'eligible' : 'ineligible',
+    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible',
   };
 }
 
@@ -1109,14 +1165,36 @@ export function declaredContractForResult(contract: ConclusionContract | undefin
     item && typeof item.conclusionId === 'string' && typeof item.text === 'string'
       ? [{conclusionId: item.conclusionId, text: item.text}] : []);
   if (Array.isArray(typed.claims)) {
-    const declarations = typed.claims.map(claim => declaredFields(claim,
+    const originalClaims = typed.claims;
+    const declarations = originalClaims.map(claim => declaredFields(claim,
       ['id', 'conclusionId', 'text', 'kind', 'references', 'artifactRefs', 'relationRefs', 'supportLevel', 'semantics']));
-    typed.claims = parseDeclaredConclusionClaims(declarations).claims.map(claim => {
+    const parsedClaims = parseDeclaredConclusionClaims(declarations).claims;
+    // Only a malformed input can shift positions between the typed claims and
+    // their re-parse; unique ids still re-attach per-claim validity then.
+    const invalidById = new Map<string, ConclusionContractClaimItem>();
+    if (parsedClaims.length !== originalClaims.length) {
+      const ids = originalClaims.flatMap(claim => typeof claim.id === 'string' ? [claim.id] : []);
+      for (const claim of originalClaims) {
+        if (claim.valid === false && typeof claim.id === 'string' && ids.filter(id => id === claim.id).length === 1) {
+          invalidById.set(claim.id, claim);
+        }
+      }
+    }
+    typed.claims = parsedClaims.map((claim, index) => {
       const {rawReferences: _references, rawSemantics: _semantics, semanticsParseIssues: _issues, ...projected} = claim;
       if (projected.artifactRefs) projected.artifactRefs = projected.artifactRefs.map(reference => ({
         ...reference, ...(reference.rowSelector ? {rowSelector: Object.fromEntries(Object.entries(reference.rowSelector)
           .filter(([, item]) => typeof item === 'string' || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)))} : {}),
       }));
+      // Parser-owned per-claim validity survives this re-projection: the re-parse
+      // above re-validates fields, not the claim's standing in its own declaration.
+      const source = parsedClaims.length === originalClaims.length
+        ? originalClaims[index] : claim.id !== undefined ? invalidById.get(claim.id) : undefined;
+      if (source?.valid === false) {
+        projected.valid = false;
+        const codes = (source.invalidCodes ?? []).filter(isConclusionClaimInvalidCode);
+        if (codes.length) projected.invalidCodes = [...new Set(codes)];
+      }
       return projected;
     });
   } else delete typed.claims;

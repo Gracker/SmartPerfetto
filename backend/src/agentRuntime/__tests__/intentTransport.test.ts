@@ -3,7 +3,14 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
-import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../intentTransport';
+import {
+  intentTransportErrorReason,
+  intentTransportTextResult,
+  openAiTextRequestPurposeFor,
+  runIntentTransport,
+  sdkResultFailureReason,
+  type IntentTransportInput,
+} from '../intentTransport';
 
 function input(): IntentTransportInput {
   return {prompt: 'classify', systemPrompt: 'system', deadlineMs: Date.now() + 50, outputByteLimit: 100};
@@ -88,5 +95,44 @@ describe('intent transport deadline and cleanup', () => {
       .toEqual({status: 'unavailable', reason: 'output_limit'});
     expect(intentTransportTextResult('中文', {outputByteLimit: 6}))
       .toEqual({status: 'ok', text: '中文'});
+  });
+});
+
+describe('intent transport purpose mapping and failure reasons', () => {
+  it('maps every model-call purpose to one closed request purpose; an answer turn has none', () => {
+    expect(openAiTextRequestPurposeFor('classification')).toBe('classification');
+    expect(openAiTextRequestPurposeFor('review')).toBe('final_semantic');
+    expect(openAiTextRequestPurposeFor('declaration_repair')).toBe('declaration_repair');
+    expect(openAiTextRequestPurposeFor('continuation')).toBe('continuation');
+    expect(openAiTextRequestPurposeFor('answer_turn')).toBeUndefined();
+  });
+
+  it('reads a timeout only from structured error names and codes along the cause chain', () => {
+    expect(intentTransportErrorReason(Object.assign(new TypeError('fetch failed'),
+      {cause: {code: 'UND_ERR_HEADERS_TIMEOUT'}}))).toBe('timeout');
+    expect(intentTransportErrorReason({cause: {cause: {code: 'UND_ERR_BODY_TIMEOUT'}}})).toBe('timeout');
+    expect(intentTransportErrorReason(new DOMException('late', 'TimeoutError'))).toBe('timeout');
+    expect(intentTransportErrorReason(Object.assign(new Error('x'), {code: 'ETIMEDOUT'}))).toBe('timeout');
+    // Message wording never decides it.
+    expect(intentTransportErrorReason(new Error('request timed out'))).toBe('provider_error');
+    expect(intentTransportErrorReason(Object.assign(new Error('x'), {code: 'ECONNRESET'}))).toBe('provider_error');
+    expect(intentTransportErrorReason(undefined)).toBe('provider_error');
+  });
+
+  it('classifies a thrown timeout inside the deadline as a timeout', async () => {
+    jest.useFakeTimers({now: 1000});
+    try {
+      await expect(runIntentTransport(input(), async () => {
+        throw Object.assign(new TypeError('fetch failed'), {cause: {code: 'UND_ERR_HEADERS_TIMEOUT'}});
+      })).resolves.toEqual({status: 'unavailable', reason: 'timeout'});
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('reads SDK result failures from structured fields only', () => {
+    expect(sdkResultFailureReason({subtype: 'success', is_error: true})).toBe('provider_error');
+    expect(sdkResultFailureReason({subtype: 'error_during_execution', is_error: true})).toBe('provider_error');
+    expect(sdkResultFailureReason({subtype: 'success', is_error: false, stop_reason: 'refusal'})).toBe('invalid_response');
+    expect(sdkResultFailureReason({subtype: 'error_max_turns', is_error: true})).toBe('invalid_response');
+    expect(sdkResultFailureReason({})).toBe('invalid_response');
   });
 });

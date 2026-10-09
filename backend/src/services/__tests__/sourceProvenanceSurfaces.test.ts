@@ -124,7 +124,7 @@ async function finalizeCurrentSurfaceFixture(draft: AnalysisResult, envelope: Da
   const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: getRegisteredScenes(), overlayGeneration: runId});
   const candidate = {runId, attemptId: 'attempt-1', candidateRef: 'source-surfaces:1',
     conclusionFingerprint: analysisDeliveryFingerprint(draft.conclusion)};
-  attachFinalizationContext(draft, {runId, sessionId: draft.sessionId, deadlineMs: Date.now() + 10_000,
+  attachFinalizationContext(draft, {runId, sessionId: draft.sessionId, deadlineMs: Date.now() + 600_000,
     strategyRegistry: registry, traceIdentity: {currentTraceId: traceId}, sourceUse,
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', taskKind: 'fact', sceneId: 'general',
       scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'existing_only',

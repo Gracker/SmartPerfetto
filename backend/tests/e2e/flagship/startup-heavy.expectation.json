@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "intent": {
+    "sceneId": "startup",
+    "scope": "scene_wide",
+    "deliverable": "report"
+  },
+  "facts": [
+    {
+      "id": "startup_duration",
+      "kind": "numeric",
+      "columns": [
+        "dur_ms",
+        "duration_ms",
+        "ttid_ms"
+      ],
+      "verification": "proved",
+      "unit": "ms",
+      "oracle": {
+        "sql": "INCLUDE PERFETTO MODULE android.startup.startups; SELECT dur / 1e6 AS duration_ms, ts AS start_ts FROM android_startups",
+        "column": "duration_ms",
+        "unit": "ms",
+        "anchorMatch": {
+          "startTs": "start_ts"
+        }
+      }
+    },
+    {
+      "id": "startup_type",
+      "kind": "categorical",
+      "columns": [
+        "startup_type"
+      ],
+      "verification": "reference_only",
+      "oracle": {
+        "sql": "INCLUDE PERFETTO MODULE android.startup.startups; SELECT s.startup_type, s.ts AS start_ts, sp.upid FROM android_startups s JOIN android_startup_processes sp USING (startup_id)",
+        "column": "startup_type",
+        "anchorMatch": {
+          "startTs": "start_ts",
+          "upid": "upid"
+        }
+      }
+    }
+  ]
+}

@@ -9,7 +9,10 @@ import {
   createRuntimePerformanceRecorder,
   createRuntimePerformanceRun,
   normalizeModelCallUsage,
+  recordRuntimeDeliveryBudget,
   recordRuntimeFinalReview,
+  runtimeModelCallInputBytesBucket,
+  runtimeProviderOrigin,
   startRuntimeModelCall,
 } from '../runtimePerformance';
 import {dispatchWithModelCallRecord} from '../intentTransport';
@@ -460,5 +463,72 @@ describe('runtime performance receipt', () => {
     await dispatchWithModelCallRecord(recorder, {purpose: 'review'}, input, dispatch);
     expect(recorder.seal().modelCalls).toEqual([expect.objectContaining({purpose: 'review', model: 'light-reported',
       reasoning: 'disabled', outcome: 'ok', firstOutputMs: expect.any(Number), usage: {inputTokens: 4, outputTokens: 2}})]);
+  });
+  it('keeps only a closed provider origin and input-size bucket on a model call receipt', async () => {
+    expect(runtimeProviderOrigin('https://user:secret@api.deepseek.com/v1?key=x')).toBe('https://api.deepseek.com');
+    expect(runtimeProviderOrigin('file:///etc/passwd')).toBeUndefined();
+    expect(runtimeProviderOrigin('not a url')).toBeUndefined();
+    expect([0, 32 * 1024, 32 * 1024 + 1, 128 * 1024, 128 * 1024 + 1, -1, 1.5].map(runtimeModelCallInputBytesBucket))
+      .toEqual(['le32k', 'le32k', 'le128k', 'le128k', 'gt128k', undefined, undefined]);
+
+    const recorder = createRuntimePerformanceRecorder();
+    startRuntimeModelCall(recorder, {purpose: 'continuation', providerOrigin: 'https://open.bigmodel.cn/api/paas/v4',
+      inputBytesBucket: 'le128k'}).end();
+    startRuntimeModelCall(recorder, {purpose: 'continuation', providerOrigin: 'ftp://host',
+      inputBytesBucket: 'huge' as never}).end();
+    const input = {prompt: 'x'.repeat(40 * 1024), systemPrompt: 'y', deadlineMs: Date.now() + 1_000, outputByteLimit: 10};
+    await dispatchWithModelCallRecord(recorder, {purpose: 'review', providerOrigin: 'https://api.z.ai/api/paas/v4'}, input,
+      async () => ({status: 'ok' as const, text: '{}'}));
+    const calls = recorder.seal().modelCalls!;
+    expect(calls[0]).toMatchObject({providerOrigin: 'https://open.bigmodel.cn', inputBytesBucket: 'le128k'});
+    expect(calls[1]).not.toHaveProperty('providerOrigin');
+    expect(calls[1]).not.toHaveProperty('inputBytesBucket');
+    expect(calls[2]).toMatchObject({purpose: 'review', providerOrigin: 'https://api.z.ai', inputBytesBucket: 'le128k'});
+  });
+
+  it('records delivery budget decisions and never throws once sealed', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    recordRuntimeDeliveryBudget(recorder, {purpose: 'review', decision: 'skip', source: 'default', estimateMs: 90_000,
+      remainingMs: 1_000, diagnostic: 'no_samples'});
+    expect(recorder.seal().deliveryBudgets).toEqual([{purpose: 'review', decision: 'skip', source: 'default',
+      estimateMs: 90_000, remainingMs: 1_000, diagnostic: 'no_samples'}]);
+    expect(() => recordRuntimeDeliveryBudget(recorder, {purpose: 'review', decision: 'dispatch', source: 'stats',
+      estimateMs: 1, remainingMs: 2})).not.toThrow();
+    expect(recorder.seal().deliveryBudgets).toHaveLength(1);
+  });
+});
+
+describe('scene entry evidence receipt', () => {
+  it('records one closed receipt and the scene_evidence phase, first record wins', () => {
+    let now = 0;
+    const recorder = createRuntimePerformanceRecorder({now: () => now});
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    const phase = run.startPhase('scene_evidence');
+    now = 40;
+    phase.end('ok');
+    run.recordSceneEvidence({skillId: 'scrolling_analysis', status: 'ran', durationMs: 40, artifactCount: 12, captureCount: 11});
+    run.recordSceneEvidence({skillId: 'startup_analysis', status: 'not_run', reason: 'timeout', durationMs: 1,
+      artifactCount: 0, captureCount: 0});
+    const receipt = recorder.seal();
+    expect(receipt.sceneEvidence).toEqual({skillId: 'scrolling_analysis', status: 'ran', durationMs: 40,
+      artifactCount: 12, captureCount: 11});
+    expect(receipt.phases).toEqual([{name: 'scene_evidence', startOffsetMs: 0, durationMs: 40, outcome: 'ok'}]);
+    expect(receipt.tools).toEqual([]);
+  });
+
+  it.each([
+    [{skillId: 'Scrolling Analysis', status: 'ran'}],
+    [{skillId: 'scrolling_analysis', status: 'ran', reason: 'timeout'}],
+    [{skillId: 'scrolling_analysis', status: 'not_run'}],
+    [{skillId: 'scrolling_analysis', status: 'not_run', reason: 'free_text'}],
+    [{skillId: 'scrolling_analysis', status: 'ran', artifactCount: -1}],
+    [{skillId: 'scrolling_analysis', status: 'ran', sql: 'SELECT 1'}],
+  ])('refuses an open or private field %#', partial => {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(() => recorder.recordSceneEvidence({durationMs: 1, artifactCount: 0, captureCount: 0, ...partial} as any)).toThrow();
+    // The run wrapper never throws into the run it observes.
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    expect(() => run.recordSceneEvidence({durationMs: 1, artifactCount: 0, captureCount: 0, ...partial} as any)).not.toThrow();
+    expect(recorder.seal().sceneEvidence).toBeUndefined();
   });
 });

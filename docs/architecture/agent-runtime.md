@@ -212,6 +212,20 @@ override 时、在其自身查询完成后，经共享缓存的 `traceVendorReso
 用户指定为 `user`，high/medium 推断为 `auto_detected`，ambiguous 不设包名，只给候选。只有 `user` 包名和选区
 约束分析目标；推断包名只作为 Skill 的默认范围（结果中的 `appliedDefaultProcess` 会注明），不作为对比身份门禁的
 期望值；答案说明理由后可以改看有证据的候选。
+
+**场景入口证据（产品采集）。** 策略 frontmatter 可声明 `entry_skill`（Skill id + 闭合参数绑定：
+`focus_app`/`user_target`/`trace_start`/`trace_end`/`selection_start`/`selection_end`）。已解析的
+`scene_wide`、`read_new` investigation（须挂载 trace；不含 comparison 回合或带参考 trace 的运行）在五个 runtime 的预检中、构造带取证工具的
+MCP server 之前，由产品运行该 Skill（`agentRuntime/sceneEntryEvidence.ts`）：包名绑定只接受用户包名或
+high/medium 焦点，并须经 Skill 自身的身份门（`prepareInvocation`）`verified` 才运行，`ambiguous` 时只把候选
+写进提示。它与模型的 `invoke_skill` 共用核心层 `agentv3/skillRunCore.ts`，同参数产生同样的 evidenceRefId、
+artifact、capture 与 queryReview；但它不是模型工具调用：不进 RunManifest `toolResults`、registry 工具观察、
+取证节奏、工具计时或计划调用记录。守卫按序为请求 scope、`canInvokeTool`、lease/截止时间、只做授权检查的
+`withRunAuthorizationOnly`、以及核心层在 Skill 返回后、写入前的复查；单次 20 s 上限。capture 经产品 call id
+`scene-entry:<skill>:<hash>` 与 started/completed|failed 观察进入调查账本。结果以 tier 2 不可整体丢弃的
+`scene_evidence` 段给模型（≤24 单元格、≤2 KiB，超限先丢 summary 再丢 key 单元格），并记入
+`RuntimePerformance` 的 `scene_evidence` 阶段与闭合回执 `sceneEvidence`。`allowMemoryPrefetch` 只控制记忆层预取，
+与入口证据无关。
 完整性探测在检查 stdlib 视图前先加载其定义模块（能力定义静态声明 `requiredModules`，并由测试守住）；
 模块加载失败或查询未完成的能力带 `reasonCode`，表示“未探测”，不是“缺失”。计划按需产生，阶段完成标记必须有真实成功证据或明确处置。
 未结束的探索计划和假设保留原状态，不自动触发续跑，也不单独决定回答是否完整。

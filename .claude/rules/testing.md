@@ -675,6 +675,56 @@ cd backend
 OPENAI_API_KEY=... npm run verify:e2e:deepseek-scrolling
 ```
 
+Flagship startup + scrolling gate:
+
+```bash
+cd backend
+OPENAI_API_KEY=... npm run verify:e2e:deepseek-flagship          # diagnostic, writes summaries
+OPENAI_API_KEY=... npm run verify:e2e:deepseek-flagship:strict   # complete acceptance
+```
+
+Their expectations live in `backend/tests/e2e/flagship/*.expectation.json`
+(passed as `--expectation-json @<path>`, never inline in the wrapper); facts
+compare against independent trace oracles, `startup_type` included.
+The verifier separates three questions, so a report never reads "wrong" when
+it means "unproved":
+
+- `checkGroups.value`: is the answer right and delivered as a completed
+  answer (intent, fact value bound to its cited cell and the oracle, claims
+  and source not contradicted by this run's own finalization).
+- `checkGroups.delivery`: did the run and report finish (completed event,
+  non-partial, report not failed; a passed report only for report
+  deliverables).
+- `checkGroups.proof`: did the verification chain prove it
+  (`originalClaimsVerified`, verified claims/source, `fact:<id>:proved`,
+  claim-verifier checks).
+
+Each fact records `tier: proved | value | none`. `semanticAcceptance` is
+`FAILED` on any value or delivery failure, `INCONCLUSIVE` when only proof is
+missing (`uncoveredFacets` names each unproved fact and proof check), and
+`PASSED` only when all three hold. Without `--strict` the exit code follows
+value, delivery, the hard flags (`--require-claim-verifier-ok`,
+`--require-non-partial`) and the other observed checks; a proof gap alone
+does not fail it. `--strict` requires `semanticAcceptance: PASSED` and every
+hard flag; only `--strict` (or the original gate flags) counts as PR or
+release acceptance. The flat `checks` map stays the union of the groups plus
+the earlier key names, so existing readers keep their meaning. A run with no
+judged report (stream timeout, lifecycle failure, or a verifier whose loop
+drained before a verdict, which exits 1 with `verification_unsettled`) is
+undelivered: its flagship summary is `FAILED`, with the failure artifact's
+`phase` and `errorCode` as `verificationFailure`.
+
+Each flagship run writes `backend/test-output/e2e-baselines/<suite>[-<runtime>].json`
+with a fingerprint (suite, runtime, trace SHA-256, query, expectation hash,
+provider origin, model, commit, gate and claim-verifier schema versions,
+trace-processor revision or binary hash, stdlib revision). `--delta-baseline
+<summary.json|dir>` compares a new run against such a summary: every key but
+the commit must match, and a missing, corrupt, incomplete or mismatched
+baseline refuses the comparison and exits non-zero. A compared delta lists new
+failures, fixes and unchanged checks, fact tier changes and the acceptance
+change, marks a baseline older than 14 days as stale, and fails only on new
+failures. It is regression evidence, never acceptance.
+
 M10 Agent-assisted external issue triage:
 
 ```bash

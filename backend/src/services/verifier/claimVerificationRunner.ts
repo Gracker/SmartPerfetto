@@ -137,6 +137,52 @@ function applyVerifierSupportLevels(
   });
 }
 
+/**
+ * A claim that failed its own item validation is never verified: the runner
+ * records it as `not_checked` with the closed proof reason `invalid_claim`
+ * (plan A.2), distinct from a root-level `binding_ineligible` rejection.
+ */
+function applyInvalidClaimStanding(
+  conclusionContract: ConclusionContract | null | undefined,
+  verification: ClaimVerificationResult,
+): ClaimVerificationResult {
+  const claims = conclusionContract?.claims ?? [];
+  const invalidById = new Map<string, boolean>();
+  for (const [index, claim] of claims.entries()) {
+    if (claim.valid !== false) continue;
+    const claimId = claim.id || `claim-${index + 1}`;
+    if (!invalidById.has(claimId)) invalidById.set(claimId, true);
+  }
+  if (!invalidById.size) return verification;
+  const claimResults = verification.claimResults.map(result => {
+    if (!invalidById.has(result.claimId) || result.status === 'not_checked' &&
+      result.deterministicProof?.reason === 'invalid_claim') return result;
+    return {
+      ...result,
+      status: 'not_checked' as const,
+      ...(result.deterministicProof ? {deterministicProof: {
+        ...result.deterministicProof,
+        status: 'not_checked' as const,
+        reason: 'invalid_claim',
+        anchorIds: [],
+        evidenceRefIds: [],
+      }} : {deterministicProof: {kind: 'none' as const, status: 'not_checked' as const, reason: 'invalid_claim',
+        anchorIds: [], evidenceRefIds: []}}),
+      ...(result.propositionCoverage ? {propositionCoverage: {...result.propositionCoverage,
+        status: 'none' as const, covered: [], reason: 'invalid_claim'}} : {}),
+    };
+  });
+  const issues = verification.issues.map(issue => invalidById.has(issue.claimId) && issue.code === 'binding_ineligible'
+    ? {...issue, code: 'invalid_claim', message: 'the claim declaration failed its own item validation'}
+    : issue);
+  return {
+    ...verification,
+    claimResults,
+    issues,
+    checkedClaimCount: claimResults.filter(claim => claim.status !== 'not_checked').length,
+  };
+}
+
 export function runClaimVerification(input: ClaimVerificationRunnerInput): ClaimVerificationRunnerResult {
   const evidenceContract = buildEvidenceContract({
     conclusionContract: input.conclusionContract,
@@ -147,10 +193,11 @@ export function runClaimVerification(input: ClaimVerificationRunnerInput): Claim
     preparedEvidence: input.preparedEvidence,
     bindingEligibility: input.bindingEligibility,
   });
-  const claimVerificationResult = runDeterministicClaimVerifier({
-    claimSupport: evidenceContract.claimSupport,
-    policy: input.policy || 'record_only',
-  });
+  const claimVerificationResult = applyInvalidClaimStanding(input.conclusionContract,
+    runDeterministicClaimVerifier({
+      claimSupport: evidenceContract.claimSupport,
+      policy: input.policy || 'record_only',
+    }));
   const claimSupport = applyVerifierSupportLevels(evidenceContract.claimSupport, claimVerificationResult);
   evidenceContract.claimSupport = claimSupport;
   return {

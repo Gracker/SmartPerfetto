@@ -231,6 +231,7 @@ import type {ClaudeMcpServerOptions} from '../../../../agentv3/claudeMcpServer';
 import {NO_PRIVATE_CONTEXT} from '../../../../services/security/analysisPrivateContext';
 import * as contextAuthorization from '../../../../services/resolvedAnalysisContext';
 import * as analysisHistory from '../../../analysisHistory';
+import * as sceneEntryEvidence from '../../../sceneEntryEvidence';
 import {admitted} from '../../../../../tests/helpers/admittedAnalysisOptions';
 
 function createRuntime(
@@ -1332,6 +1333,7 @@ describe('QoderRuntime', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context).toMatchObject({runId: 'final-context-run', sessionId: 'final-context',
         traceIdentity: {currentTraceId: 'trace-1', referenceTraceId: 'trace-2'}, hasSemanticTransport: true});
+      expect(context.deliveryCall?.model).toEqual(expect.any(String));
       expect(context.deliveryContext).toMatchObject({completion: result.completion,
         acceptedCandidate: {conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
       expect(context.deadlineMs).toBeGreaterThanOrEqual(startedAt + 2000);
@@ -1450,6 +1452,34 @@ describe('QoderRuntime', () => {
       const resolution = await resolveFocusPackageCell((mockCreateClaudeMcpServer.mock.calls[0][0] as any).artifactStore,
         systemPrompt, 'trace-1');
       expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.qoder'}});
+    });
+
+    // Product-owned scene entry evidence settles before the run's MCP server is
+    // built, and its segment data reaches the shared prompt.
+    it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+      const order: string[] = [];
+      const evidence = {status: 'not_run' as const, skillId: 'scrolling_analysis', reason: 'timeout' as const};
+      const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+        order.push('scene_evidence');
+        return evidence;
+      });
+      const mcpCallsBefore = mockCreateClaudeMcpServer.mock.calls.length;
+      mockCreateClaudeMcpServer.mockImplementationOnce((options: any) => {
+        order.push('mcp_server');
+        return jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>(
+          '../../../../agentv3/claudeMcpServer').createClaudeMcpServer(options);
+      });
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: 'done'},
+      ]));
+      try {
+        await createRuntime().analyze('分析滑动卡顿', 'session-scene-entry', 'trace-1', {analysisMode: 'full'});
+        expect(order).toEqual(['scene_evidence', 'mcp_server']);
+        expect(mockCreateClaudeMcpServer.mock.calls.length).toBe(mcpCallsBefore + 1);
+        expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-1', turnIntent: expect.any(Object)});
+        const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
+        expect(readPromptContext(systemPrompt, 'scene_evidence')).toEqual(evidence);
+      } finally { scene.mockRestore(); }
     });
 
     it('passes full context in full mode', async () => {
@@ -1693,6 +1723,27 @@ describe('QoderRuntime', () => {
       const context = takeFinalizationContext(result)!;
       try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(repaired);}
       finally {context.dispose();}
+    });
+
+    it('records the declaration completion as a declaration_repair model call', async () => {
+      const body = 'Native body remains unchanged.';
+      const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'The authored body is preserved.'}], clusters: [], evidenceChain: [],
+        claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
+      mockIntentTransport
+        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+        .mockResolvedValueOnce({status: 'ok', text: `${body}\n${sidecar}`, finishReason: 'end_turn'});
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
+      ]));
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      await createRuntime().analyze('test', 'qoder-repair-record', 'trace-1', {
+        runId: 'qoder-repair-record', runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      });
+      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+      const calls = runtimePerformanceRecorder.seal().modelCalls ?? [];
+      expect(calls.filter(call => call.purpose === 'declaration_repair'))
+        .toEqual([expect.objectContaining({trigger: 'missing_declaration', outcome: 'ok'})]);
     });
 
     it('does not dispatch declaration completion when the original body cannot fit the Qoder output cap', async () => {

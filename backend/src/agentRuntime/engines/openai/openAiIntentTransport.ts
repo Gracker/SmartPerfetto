@@ -6,10 +6,12 @@ import type {OpenAIAgentConfig} from './openAiConfig';
 import {
   buildOpenAIChatCompletionsTokenLimit,
   buildOpenAITextRequestPurposeOptions,
+  isOpenAITextRequestPurpose,
   readOpenAIChatCompletionsOutput,
   type OpenAITextRequestPurpose,
 } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {
+  intentTransportErrorReason,
   intentTransportTextResult,
   runIntentTransport,
   type IntentTransportInput,
@@ -141,7 +143,7 @@ export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
   return runIntentTransport(input, async scope => {
     const {config} = input;
     if (!config.baseURL || !config.lightModel?.trim()
-      || (input.purpose !== undefined && input.purpose !== 'classification' && input.purpose !== 'final_semantic')
+      || (input.purpose !== undefined && !isOpenAITextRequestPurpose(input.purpose))
       || (input.maxOutputTokens !== undefined
         && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens <= 0))
       || (config.protocol !== 'chat_completions' && config.protocol !== 'responses')) {
@@ -165,8 +167,10 @@ export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
           && isTransientHttpStatus(result.httpStatus);
       } catch (error) {
         if (scope.signal.aborted || input.signal?.aborted) throw error;
-        result = {status: 'unavailable', reason: 'provider_error'};
-        transient = true;
+        // A request that ran out of time is reported as such and never repeated.
+        const reason = intentTransportErrorReason(error);
+        result = {status: 'unavailable', reason};
+        transient = reason === 'provider_error';
       }
       if (!transient || attempt > 1 || scope.remainingMs() < PROVIDER_ERROR_RETRY_MIN_REMAINING_MS) {
         // `attempts` is diagnostic only; attach it when a retry actually ran.

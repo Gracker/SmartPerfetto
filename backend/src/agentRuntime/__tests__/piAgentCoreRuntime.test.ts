@@ -45,6 +45,7 @@ import type {AnalysisTurnIntentDecision} from '../analysisTurnIntent';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as sceneEntryEvidence from '../sceneEntryEvidence';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
@@ -53,9 +54,10 @@ import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutp
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import * as finalizationModule from '../analysisFinalizationContext';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import {takeFinalizationContext} from '../analysisFinalizationContext';
 import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} from '../../../tests/helpers/runtimeDraftTerminalState';
 import {ArtifactStore} from '../../agentv3/artifactStore';
@@ -191,7 +193,13 @@ class FakePiAgent {
   }
 }
 
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   piClassifierDecision = {schemaVersion: 1, taskKind: 'fact', sceneId: 'general',
     scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new'};
   piClassifierResponses = [];
@@ -1069,6 +1077,32 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-pi-mcp');
     await expectRuntimeVendorHintParity({
       createMcpServer: createClaudeMcpServer, runtimeOptions});
+  });
+
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const runtime = typedRuntime();
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'startup_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpModule.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    try {
+      await runtime.analyze('分析启动性能', 'session-pi-scene-entry', 'trace-pi', {analysisMode: 'full', runId: 'run-pi-scene'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-pi', turnIntent: expect.any(Object)});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence === evidence)).toBe(true);
+    } finally {
+      scene.mockRestore(); mcp.mockRestore(); prompt.mockRestore();
+    }
   });
 
   it('builds a real Pi analysis context from shared SmartPerfetto prompt and tools', async () => {
@@ -3521,7 +3555,9 @@ describe('experimental Pi agent-core runtime contract', () => {
         finally {context.dispose();}
       } else {
         expect(result.completion?.attemptId).toBe('1');
-        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('ineligible');
+        // The rejected correction leaves the first candidate delivered; its one
+        // invalid proposal is item-scoped now (plan A.1), so the 35 claims stay eligible.
+        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('eligible');
       }
     });
 
@@ -3559,6 +3595,27 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(completionPrompt).toContain('invalid_declaration');
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+  });
+
+  it('does not send a declaration repair that cannot finish in the time left, and records why', async () => {
+    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
+    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+    passVerification();
+    const body = 'Frame 12 missed its deadline.';
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
+      text: candidateWithPopulation(body, 'everywhere')}]}];
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () =>
+      typedRuntime().analyze('query', 'pi-repair-budget', 'trace-pi',
+        {runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder)}));
+    expect(FakePiAgent.instances[0].promptCount).toBe(1);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      model: 'pi-test-model', purpose: 'declaration_repair', inputBytes: expect.any(Number),
+      remainingMs: expect.any(Number), failOpen: false}));
+    expect(runtimePerformanceRecorder.seal().deliveryBudgets).toEqual([{purpose: 'declaration_repair', decision: 'skip',
+      source: 'default', estimateMs: 90_000, remainingMs: 1_000, diagnostic: 'stats_not_configured'}]);
   });
 
   it('uses the reserved no-tools delivery turn to attach declarations to a full multilingual body', async () => {
@@ -3663,14 +3720,22 @@ describe('experimental Pi agent-core runtime contract', () => {
 
   it('gives the existing Pi relation correction the shared closed schema without a third call', async () => {
     passVerification();
+    const semantics = {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+      discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}};
+    const claim = (id: string, claimSemantics: unknown = semantics): ConclusionContractClaimItem =>
+      ({id, kind: 'numeric', text: `${id} holds.`, references: [],
+        semantics: claimSemantics as ConclusionContractClaimItem['semantics']});
     const base: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
+      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('claim-1')], uncertainties: [], nextSteps: [],
       relationProposals: [{schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:relation_1',
         kind: 'overlap', direction: 'symmetric', subject: {evidenceRefId: 'evidence-subject'}}]};
-    const first = `The marker is present.\n${renderConclusionContractSidecar({...base, relationProposals: [{
-      ...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY',
-    }]} as any)}`;
-    const complete = `The marker is present.\n${renderConclusionContractSidecar(base)}`;
+    // The repair needs a repairable invalid claim (plan A.3); the invalid proposal
+    // rides the same correction and gets the exact relation schema.
+    const first = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2', {...semantics, polarity: 'sometimes'})],
+      relationProposals: [{...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY'}]} as any)}`;
+    const complete = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2')]})}`;
     let recoveryPrompt = '';
     FakePiAgent.promptHandler = async (_agent, input, index) => {
       if (index === 2) recoveryPrompt = input;
@@ -4117,6 +4182,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(takeFinalizationContext(result)).toBeUndefined();
       expect(context.deliveryContext).toEqual(projected.deliveryContext);
       expect(context.traceIdentity).toEqual({currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'});
+      expect(context.deliveryCall).toEqual({model: 'pi-test-model'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context.runId);
       expect(readView.mock.calls[0][0].allowedTraces).toEqual([
@@ -4135,7 +4201,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(piClassifierCalls[1].model).toBe(FakePiAgent.instances[0].state.model);
         expect(piClassifierCalls[1].context.tools).toEqual([]);
         expect(piClassifierCalls[1].context.messages).toHaveLength(1);
-        expect(piClassifierCalls[1].options).not.toHaveProperty('maxTokens');
+        // The review's output cap follows its byte limit (8 KiB -> 2048 tokens * 1.25), under the model cap.
+        expect(piClassifierCalls[1].options.maxTokens).toBe(2560);
         expect(piClassifierCalls[1].model).toMatchObject({maxTokens: 4096});
         expect(piClassifierCalls[0].options.maxTokens).toBe(1024);
         expect(trace.query.mock.calls.length).toBe(queriesBefore);

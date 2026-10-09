@@ -28,6 +28,20 @@ const ALL_RUNTIME_KINDS = [
 const CONTEXT_SUITE_NAMES = ['context-source', 'context-rag', 'context-combined'];
 const SEMANTIC_DELTA_SUITE = 'code-aware-semantic-delta';
 const SYSTEM_ANALYSIS_SUITE = 'system-analysis';
+// Flagship scene gates: expectations live in files, never inline in this wrapper.
+const FLAGSHIP_SUITE = 'flagship';
+const FLAGSHIP_SUITE_NAMES = ['startup', 'scrolling'];
+const FLAGSHIP_EXPECTATIONS = {
+  startup: 'tests/e2e/flagship/startup-heavy.expectation.json',
+  scrolling: 'tests/e2e/flagship/scrolling-customer.expectation.json',
+};
+const FLAGSHIP_SUMMARY_SCHEMA = 'agent_sse_flagship_summary@1';
+const FLAGSHIP_SUMMARY_DIR = 'test-output/e2e-baselines';
+// A baseline older than this is still compared, but only as visibly stale local diagnosis.
+const FLAGSHIP_BASELINE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
+const FLAGSHIP_CHECK_GROUPS = ['value', 'proof', 'delivery'];
+const FLAGSHIP_FINGERPRINT_KEYS = ['suite', 'runtime', 'traceSha256', 'query', 'expectationHash', 'providerOrigin', 'model',
+  'commit', 'gateSchemaVersion', 'verificationSchemaVersion', 'traceProcessorVersion', 'stdlibRevision'];
 const SEMANTIC_DELTA_QUERIES = [
   {
     id: 'autonomous-diagnosis',
@@ -124,11 +138,7 @@ const suites = {
       '--require-claim-verifier-ok',
       '--require-non-partial',
       '--expectation-json',
-      JSON.stringify({schemaVersion: 1, intent: {sceneId: 'startup', deliverable: 'report'}, facts: [{
-        id: 'startup_duration', kind: 'numeric', columns: ['dur_ms', 'duration_ms', 'ttid_ms'], verification: 'proved', unit: 'ms',
-        oracle: {sql: 'INCLUDE PERFETTO MODULE android.startup.startups; SELECT dur / 1e6 AS duration_ms, ts AS start_ts FROM android_startups',
-          column: 'duration_ms', unit: 'ms', anchorMatch: {startTs: 'start_ts'}},
-      }, {id: 'startup_type', kind: 'categorical', columns: ['startup_type'], verification: 'reference_only', value: 'cold'}]}),
+      `@${FLAGSHIP_EXPECTATIONS.startup}`,
       '--forbid-degraded-fallback',
       'completed_plan_summary_fallback',
     ],
@@ -150,7 +160,7 @@ const suites = {
       '--keep-session',
       '--require-non-partial',
       '--expectation-json',
-      JSON.stringify(frameFactExpectation({taskKind: 'investigation', deliverable: 'report', scope: 'scene_wide', withJank: true})),
+      `@${FLAGSHIP_EXPECTATIONS.scrolling}`,
       '--forbid-degraded-fallback',
       'verification_failed',
     ],
@@ -345,8 +355,15 @@ function main() {
     ? ['startup', 'scrolling', 'external-issue', 'dual-trace', ...CONTEXT_SUITE_NAMES]
     : options.suite === 'context'
       ? CONTEXT_SUITE_NAMES
-      : [options.suite];
+      : options.suite === FLAGSHIP_SUITE
+        ? FLAGSHIP_SUITE_NAMES
+        : [options.suite];
   const runtimeKinds = resolveRuntimeKinds(options.runtime);
+
+  if (options.suite === FLAGSHIP_SUITE || options.strict || options.deltaBaseline !== undefined) {
+    runFlagshipSuites(options, suiteNames, runtimeKinds);
+    return;
+  }
 
   for (const runtimeKind of runtimeKinds) {
     const availability = realProviderAvailability(runtimeKind);
@@ -381,6 +398,8 @@ function parseArgs(argv) {
   let queryId;
   let condition;
   let systemScenario;
+  let strict = false;
+  let deltaBaseline;
   let outputDir = path.resolve(
     backendRoot,
     'test-output/code-aware-semantic-delta/real-provider',
@@ -434,6 +453,16 @@ function parseArgs(argv) {
       preflight = true;
       continue;
     }
+    if (arg === '--strict') {
+      strict = true;
+      continue;
+    }
+    if (arg === '--delta-baseline') {
+      const value = argv[++i];
+      if (!value) throw new Error('--delta-baseline requires a flagship summary JSON file or a directory of them');
+      deltaBaseline = path.resolve(backendRoot, value);
+      continue;
+    }
     if (arg === '--query-id' || arg === '--condition') {
       const value = argv[++i];
       if (!value) throw new Error(`${arg} requires a value`);
@@ -469,12 +498,16 @@ function parseArgs(argv) {
   if (systemScenario && (suite !== SYSTEM_ANALYSIS_SUITE || !systemAnalysisScenarios().some(item => item.id === systemScenario))) {
     throw new Error('--system-scenario requires the system-analysis suite and an existing manifest ID');
   }
-  return { suite, runtime, timeoutMs, repeat, outputDir, preflight, queryId, condition, systemScenario, help: false };
+  if ((strict || deltaBaseline !== undefined) && suite !== FLAGSHIP_SUITE && !FLAGSHIP_SUITE_NAMES.includes(suite)) {
+    throw new Error(`--strict and --delta-baseline require the ${FLAGSHIP_SUITE}, ${FLAGSHIP_SUITE_NAMES.join(' or ')} suite`);
+  }
+  return { suite, runtime, timeoutMs, repeat, outputDir, preflight, queryId, condition, systemScenario, strict, deltaBaseline,
+    help: false };
 }
 
 function parseSuite(value) {
-  if (value === 'all' || value === 'context' || Object.hasOwn(suites, value)) return value;
-  throw new Error(`Invalid suite: ${value}. Expected all, context, or one of: ${Object.keys(suites).join(', ')}.`);
+  if (value === 'all' || value === 'context' || value === FLAGSHIP_SUITE || Object.hasOwn(suites, value)) return value;
+  throw new Error(`Invalid suite: ${value}. Expected all, context, ${FLAGSHIP_SUITE}, or one of: ${Object.keys(suites).join(', ')}.`);
 }
 
 function parseRuntime(value) {
@@ -508,7 +541,7 @@ function resolveRuntimeKinds(value) {
 }
 
 function printUsage() {
-  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|scene-reconstruction|scene-cancel|external-issue|dual-trace|context-source|context-rag|context-combined|code-aware-semantic-delta|system-analysis] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|opencode|qoder-agent-sdk|all|all-deepseek] [--timeout-ms <number>] [--repeat 5] [--output-dir <path>]');
+  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|flagship|startup|scrolling|scene-reconstruction|scene-cancel|external-issue|dual-trace|context-source|context-rag|context-combined|code-aware-semantic-delta|system-analysis] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|opencode|qoder-agent-sdk|all|all-deepseek] [--timeout-ms <number>] [--repeat 5] [--output-dir <path>] [--strict] [--delta-baseline <summary.json|dir>]');
   console.log('');
   console.log('Runs SmartPerfetto Agent SSE E2E with Deepseek-backed SmartPerfetto runtimes.');
   console.log('');
@@ -520,6 +553,10 @@ function printUsage() {
   console.log('The code-aware semantic-delta suite requires --repeat 5 and writes paired-run plus aggregate JSON artifacts.');
   console.log('The system-analysis suite uses declarative real startup/scrolling and explicitly constructed system/input/ANR scenarios. all/all-deepseek selects OpenAI, Pi and OpenCode; run Claude and Qoder explicitly for their independent evidence.');
   console.log('Use --suite system-analysis --system-scenario <manifest ID> for one bounded Provider run; a selected scenario never represents full matrix acceptance.');
+  console.log('The flagship suite runs startup and scrolling from tests/e2e/flagship expectation files and writes a fingerprinted summary per suite/runtime to test-output/e2e-baselines/.');
+  console.log('Without --strict a flagship run exits non-zero only for wrong or undelivered answers and hard flags; proof gaps leave it INCONCLUSIVE.');
+  console.log('--strict is complete acceptance: value, delivery and proof groups and every hard flag must pass (semanticAcceptance PASSED).');
+  console.log('--delta-baseline compares against an earlier summary (file, or directory of summaries) with the same fingerprint except commit; it is regression evidence only, never acceptance, and exits non-zero on new failures or a refused comparison.');
   console.log('For one diagnostic scenario, use --preflight --query-id autonomous-diagnosis|quantitative-only|explicit-source-location --condition A0|A2|A3 with one runtime. Preflight never counts as complete acceptance.');
 }
 
@@ -1172,6 +1209,245 @@ function runCodeAwareSemanticDeltaSuite(options) {
   return aggregate;
 }
 
+function originOf(value, fallback) {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return 'invalid-base-url';
+  }
+}
+
+function parseModelJson(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Provider endpoint origin and model name only: never a path, query or credential. Pi and
+// OpenCode take their model from the model JSON this wrapper (or the caller) supplies.
+function providerFingerprint(runtimeKind, env) {
+  if (runtimeKind === 'claude-agent-sdk') {
+    return {providerOrigin: originOf(env.ANTHROPIC_BASE_URL, 'anthropic-default'), model: env.CLAUDE_MODEL || 'claude-runtime-default'};
+  }
+  if (runtimeKind === 'qoder-agent-sdk') {
+    return {providerOrigin: originOf(env.QODER_BYOK_BASE_URL, 'qoder-default'), model: env.QODER_MODEL || 'qoder-runtime-default'};
+  }
+  if (runtimeKind === 'pi-agent-core' && env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON) {
+    const model = parseModelJson(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+    return {providerOrigin: originOf(model.baseUrl, 'pi-default'), model: model.id || 'pi-runtime-default'};
+  }
+  if (runtimeKind === 'opencode' && env.SMARTPERFETTO_OPENCODE_MODEL_JSON) {
+    const model = parseModelJson(env.SMARTPERFETTO_OPENCODE_MODEL_JSON);
+    return {providerOrigin: originOf(model.baseURL, 'opencode-default'), model: model.modelID || 'opencode-runtime-default'};
+  }
+  return {providerOrigin: originOf(env.OPENAI_BASE_URL, 'openai-default'), model: env.OPENAI_MODEL || 'openai-runtime-default'};
+}
+
+function posixRelative(filePath) {
+  return path.relative(backendRoot, path.resolve(backendRoot, filePath)).split(path.sep).join('/');
+}
+
+/** One read for baselines and reports: missing and unparsable stay distinct. */
+function readJsonFile(filePath) {
+  let text;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return {status: 'missing', path: filePath};
+  }
+  try {
+    return {status: 'ok', path: filePath, value: JSON.parse(text)};
+  } catch {
+    return {status: 'corrupt', path: filePath};
+  }
+}
+
+function gitIdentity() {
+  const run = args => spawnSync('git', args, {cwd: backendRoot, encoding: 'utf8', timeout: 10_000});
+  const head = run(['rev-parse', 'HEAD']);
+  const status = run(['status', '--porcelain', '--untracked-files=no']);
+  const commit = head.status === 0 ? head.stdout.trim() : '';
+  return {commit: /^[0-9a-f]{40}$/.test(commit) ? commit : 'unknown',
+    worktreeDirty: status.status === 0 ? status.stdout.trim().length > 0 : null};
+}
+
+function flagshipSummaryFileName(suiteName, runtimeKind, runtimeSpecificOutput) {
+  return `${suiteName}${runtimeSpecificOutput ? `-${runtimeKind}` : ''}.json`;
+}
+
+function readFlagshipBaseline(baselinePath, fileName) {
+  const directory = fs.statSync(baselinePath, {throwIfNoEntry: false})?.isDirectory();
+  const {value, ...result} = readJsonFile(directory ? path.join(baselinePath, fileName) : baselinePath);
+  return result.status === 'ok' ? {...result, summary: value} : result;
+}
+
+function buildFlagshipSummary({suiteName, runtimeKind, report, reportPath, exitCode, provider, git, strict, now = Date.now()}) {
+  const identity = report?.runIdentity;
+  const groups = report?.checkGroups;
+  const fingerprint = {
+    suite: suiteName,
+    runtime: runtimeKind,
+    traceSha256: identity?.traceSha256 ?? null,
+    query: identity?.query ?? null,
+    expectationHash: identity?.expectationHash ?? null,
+    providerOrigin: provider?.providerOrigin ?? null,
+    model: provider?.model ?? null,
+    commit: git.commit,
+    gateSchemaVersion: identity?.gateSchemaVersion ?? null,
+    verificationSchemaVersion: identity?.verificationSchemaVersion ?? null,
+    traceProcessorVersion: identity?.traceProcessorVersion ?? null,
+    stdlibRevision: identity?.stdlibRevision ?? null,
+  };
+  const reportAvailable = Boolean(report && groups && typeof groups === 'object');
+  // A failure artifact (timeout, lifecycle error) still says INCONCLUSIVE for its older readers;
+  // here a run without judged groups never delivered, which is a failure, not a proof gap.
+  const failure = report?.schemaVersion === 'agent_sse_verification_failure@1'
+    ? {phase: String(report.phase ?? 'unknown'), errorCode: String(report.errorCode ?? 'unknown')} : undefined;
+  return {
+    schemaVersion: FLAGSHIP_SUMMARY_SCHEMA,
+    generatedAt: new Date(now).toISOString(),
+    fingerprint,
+    worktreeDirty: git.worktreeDirty,
+    ...(identity?.reportedVersion ? {traceProcessorReportedVersion: identity.reportedVersion} : {}),
+    report: reportPath ? posixRelative(reportPath) : null,
+    reportAvailable,
+    ...(failure ? {verificationFailure: failure} : {}),
+    exitCode,
+    strict,
+    semanticAcceptance: reportAvailable ? report.semanticAcceptance ?? 'FAILED' : 'FAILED',
+    proofAcceptance: reportAvailable ? report.proofAcceptance ?? 'INCOMPLETE' : 'INCOMPLETE',
+    observedChecksPassed: report?.observedChecksPassed === true,
+    hardGatesPassed: report?.hardGatesPassed === true,
+    completeAcceptance: report?.completeAcceptance === true,
+    checkGroups: reportAvailable ? groups : null,
+    facts: Object.fromEntries(Object.entries(report?.taskVerification?.facts ?? {}).map(([id, fact]) => [id, fact?.tier ?? 'none'])),
+    uncoveredFacets: Array.isArray(report?.uncoveredFacets) ? report.uncoveredFacets : [],
+  };
+}
+
+function validFlagshipSummary(summary) {
+  const object = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  return object(summary) && summary.schemaVersion === FLAGSHIP_SUMMARY_SCHEMA && summary.reportAvailable === true &&
+    object(summary.fingerprint) && Number.isFinite(Date.parse(summary.generatedAt)) && object(summary.facts) &&
+    object(summary.checkGroups) && FLAGSHIP_CHECK_GROUPS.every(group => object(summary.checkGroups[group]) &&
+      Object.values(summary.checkGroups[group]).every(value => typeof value === 'boolean'));
+}
+
+function incompleteFingerprintKeys(fingerprint) {
+  return FLAGSHIP_FINGERPRINT_KEYS.filter(key => typeof fingerprint?.[key] !== 'string' || !fingerprint[key] ||
+    fingerprint[key] === 'unknown' || fingerprint[key].startsWith('unknown:'));
+}
+
+/**
+ * Regression-delta evidence between two comparable flagship runs. A refused comparison is never
+ * read as "no change": a missing, corrupt, incomplete or differently fingerprinted baseline says so.
+ */
+function compareFlagshipSummaries(baseline, current, {now = Date.now()} = {}) {
+  if (!baseline || baseline.status === 'missing') return {status: 'refused', reason: 'baseline_missing'};
+  if (baseline.status === 'corrupt' || !validFlagshipSummary(baseline.summary)) return {status: 'refused', reason: 'baseline_corrupt'};
+  if (!validFlagshipSummary(current)) return {status: 'refused', reason: 'current_report_unavailable'};
+  const base = baseline.summary;
+  const incomplete = {baseline: incompleteFingerprintKeys(base.fingerprint), current: incompleteFingerprintKeys(current.fingerprint)};
+  if (incomplete.baseline.length || incomplete.current.length) {
+    return {status: 'refused', reason: 'fingerprint_incomplete', incompleteKeys: incomplete};
+  }
+  const mismatchedKeys = FLAGSHIP_FINGERPRINT_KEYS.filter(key => key !== 'commit' && base.fingerprint[key] !== current.fingerprint[key]);
+  if (mismatchedKeys.length) return {status: 'refused', reason: 'fingerprint_mismatch', mismatchedKeys};
+  const flatten = summary => Object.fromEntries(FLAGSHIP_CHECK_GROUPS.flatMap(group =>
+    Object.entries(summary.checkGroups[group]).map(([key, value]) => [`${group}:${key}`, value])));
+  const before = flatten(base);
+  const after = flatten(current);
+  const newFailures = [];
+  const fixed = [];
+  const unchanged = [];
+  const added = [];
+  for (const [key, value] of Object.entries(after)) {
+    if (!(key in before)) {
+      (value ? added : newFailures).push(key);
+    } else if (before[key] === value) {
+      unchanged.push(key);
+    } else {
+      (value ? fixed : newFailures).push(key);
+    }
+  }
+  const removed = Object.keys(before).filter(key => !(key in after));
+  const factTierChanges = Object.fromEntries([...new Set([...Object.keys(base.facts), ...Object.keys(current.facts)])]
+    .filter(id => base.facts[id] !== current.facts[id])
+    .map(id => [id, {from: base.facts[id] ?? null, to: current.facts[id] ?? null}]));
+  const ageMs = now - Date.parse(base.generatedAt);
+  return {
+    status: 'compared',
+    evidence: 'regression_delta_only_not_acceptance',
+    baselinePath: posixRelative(baseline.path),
+    baselineGeneratedAt: base.generatedAt,
+    stale: ageMs > FLAGSHIP_BASELINE_STALE_MS,
+    commits: {baseline: base.fingerprint.commit, current: current.fingerprint.commit},
+    newFailures, fixed, unchanged, added, removed, factTierChanges,
+    acceptance: {semantic: {from: base.semanticAcceptance, to: current.semanticAcceptance},
+      proof: {from: base.proofAcceptance, to: current.proofAcceptance}},
+  };
+}
+
+/** Diagnostic runs follow the verifier exit code; --strict and --delta-baseline add their own requirements. */
+function flagshipRunVerdict(summary) {
+  const strict = summary.strict === true;
+  const delta = summary.delta !== undefined;
+  const reasons = [];
+  if (!summary.reportAvailable) reasons.push('report_unavailable');
+  if (strict && (summary.exitCode !== 0 || !summary.completeAcceptance)) reasons.push(`strict_acceptance_${summary.semanticAcceptance}`);
+  if (delta) {
+    if (summary.delta?.status !== 'compared') reasons.push(`delta_refused:${summary.delta?.reason ?? 'unknown'}`);
+    else if (summary.delta.newFailures.length) reasons.push(`delta_new_failures:${summary.delta.newFailures.length}`);
+  }
+  if (!strict && !delta && summary.exitCode !== 0) reasons.push(`verifier_exit_${summary.exitCode}`);
+  return {passed: reasons.length === 0, reasons};
+}
+
+function runFlagshipSuites(options, suiteNames, runtimeKinds) {
+  const git = gitIdentity();
+  const runtimeSpecificOutput = runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME;
+  const failures = [];
+  for (const runtimeKind of runtimeKinds) {
+    const availability = realProviderAvailability(runtimeKind);
+    if (!availability.available) {
+      throw new Error(`REAL PROVIDER NOT AVAILABLE: ${runtimeKind}: ${availability.reason}`);
+    }
+    for (const suiteName of suiteNames) {
+      const fileName = flagshipSummaryFileName(suiteName, runtimeKind, runtimeSpecificOutput);
+      // Read before running: the new summary may replace the very file used as the baseline.
+      const baseline = options.deltaBaseline !== undefined ? readFlagshipBaseline(options.deltaBaseline, fileName) : undefined;
+      const run = runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, options.timeoutMs, undefined,
+        {throwOnFailure: false, extraArgs: options.strict ? ['--strict'] : []});
+      const report = run.outputPath ? readJsonFile(path.resolve(backendRoot, run.outputPath)).value : undefined;
+      const summary = buildFlagshipSummary({suiteName, runtimeKind, report, reportPath: run.outputPath, exitCode: run.status,
+        provider: run.provider, git, strict: options.strict});
+      if (baseline) summary.delta = compareFlagshipSummaries(baseline, summary);
+      const verdict = flagshipRunVerdict(summary);
+      summary.verdict = verdict;
+      const summaryPath = path.join(backendRoot, FLAGSHIP_SUMMARY_DIR, fileName);
+      writeJson(summaryPath, summary);
+      console.log(`[deepseek-e2e] flagship ${suiteName}/${runtimeKind}: semantic=${summary.semanticAcceptance} ` +
+        `proof=${summary.proofAcceptance} exit=${summary.exitCode}` +
+        `${summary.delta ? ` delta=${summary.delta.status}${summary.delta.status === 'compared'
+          ? ` new=${summary.delta.newFailures.length} fixed=${summary.delta.fixed.length}${summary.delta.stale ? ' STALE_BASELINE' : ''}`
+          : `:${summary.delta.reason}`}` : ''} summary=${path.relative(backendRoot, summaryPath)}`);
+      if (!verdict.passed) failures.push(`${suiteName}/${runtimeKind}: ${verdict.reasons.join(', ')}`);
+    }
+  }
+  if (failures.length) {
+    process.exitCode = 1;
+    console.error(`\nFlagship gate failed:\n${failures.map(line => `  ${line}`).join('\n')}`);
+    return;
+  }
+  console.log(`\nFlagship gate ${options.strict ? 'complete acceptance passed' : 'observed checks passed'}: ` +
+    `${runtimeKinds.join(', ')} / ${suiteNames.join(', ')}${options.deltaBaseline !== undefined
+      ? '; the delta is regression evidence, not acceptance' : ''}.`);
+}
+
 function loadBackendEnv() {
   const envPath = path.join(backendRoot, '.env');
   if (!fs.existsSync(envPath)) return;
@@ -1179,12 +1455,13 @@ function loadBackendEnv() {
   require('dotenv').config({ path: envPath, quiet: true });
 }
 
-function runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, timeoutMs, scenario) {
+function runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, timeoutMs, scenario,
+  {throwOnFailure = true, extraArgs = []} = {}) {
   const suite = scenario ?? suites[suiteName];
   const suiteArgs = runtimeSpecificOutput
     ? withRuntimeOutputPath(suite.args, suite.output, runtimeKind)
     : suite.args;
-  const args = [...suiteArgs, '--timeout-ms', String(timeoutMs)];
+  const args = [...suiteArgs, ...extraArgs, '--timeout-ms', String(timeoutMs)];
   console.log(`\n[deepseek-e2e] suite=${suiteName} (${suite.label})`);
   console.log(`[deepseek-e2e] runtime=${runtimeKind}`);
   console.log(`[deepseek-e2e] output=${getOutputPathFromArgs(args) || suite.output}`);
@@ -1192,19 +1469,21 @@ function runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, t
 
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-deepseek-e2e-'));
   try {
+    const env = buildSemanticChildEnv(runtimeKind, availability, isolatedRoot);
     const result = spawnSync(process.execPath, [tsxCliPath, verifierPath, ...args], {
       cwd: backendRoot,
-      env: buildSemanticChildEnv(runtimeKind, availability, isolatedRoot),
+      env,
       stdio: 'inherit',
     });
 
     if (result.error) {
       throw result.error;
     }
-    if (result.status !== 0) {
+    if (result.status !== 0 && throwOnFailure) {
       process.exitCode = result.status ?? 1;
       throw new Error(`Agent SSE verification exited with status ${result.status ?? 1}; inspect ${getOutputPathFromArgs(args)}`);
     }
+    return {status: result.status ?? 1, outputPath: getOutputPathFromArgs(args), provider: providerFingerprint(runtimeKind, env)};
   } finally {
     // A killed verifier cannot execute its own finally. Preserve its task-owned
     // logs here as well; failed copying keeps the recoverable isolated root.
@@ -1378,6 +1657,13 @@ function assertFile(filePath, label) {
 }
 
 module.exports = {
+  FLAGSHIP_EXPECTATIONS,
+  FLAGSHIP_FINGERPRINT_KEYS,
+  buildFlagshipSummary,
+  compareFlagshipSummaries,
+  flagshipRunVerdict,
+  providerFingerprint,
+  readFlagshipBaseline,
   summarizeSemanticRuntimeRecords,
   frameFactExpectation,
   suites,
