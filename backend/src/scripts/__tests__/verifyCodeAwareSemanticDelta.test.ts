@@ -8,6 +8,8 @@ import path from 'node:path';
 
 import {
   buildFollowUpVerificationChecks,
+  evaluateAgentSseExpectation,
+  parseAgentSseExpectation,
   parseArgs as parseAgentSseArgs,
   setupAnalysisContext,
 } from '../verifyAgentSseScrolling';
@@ -19,6 +21,7 @@ import {
 
 const repoRoot = path.resolve(__dirname, '../../../..');
 const sourceRoot = path.join(repoRoot, 'backend/tests/e2e/context-fixtures/app');
+const backendRoot = path.join(repoRoot, 'backend');
 
 describe('register-only Agent SSE setup', () => {
   it('applies non-partial, verifier, and degraded checks to follow-up runs', () => {
@@ -781,6 +784,43 @@ describe('real-provider task fact configuration', () => {
     expect(wrapper.suites.startup.args).not.toContain('--forbid-text');
     const expectation = parseAgentSseArgs(wrapper.suites.startup.args).expectation;
     expect(expectation?.facts.find(fact => fact.id === 'startup_type')?.verification).toBe('reference_only');
+  });
+
+  it('reads both flagship expectations from files and judges startup_type against android_startups, not a literal', () => {
+    for (const [suite, file] of [['startup', 'startup-heavy'], ['scrolling', 'scrolling-customer']]) {
+      const args: string[] = wrapper.suites[suite].args;
+      const value = args[args.indexOf('--expectation-json') + 1];
+      expect(value).toBe(`@tests/e2e/flagship/${file}.expectation.json`);
+      expect(args.filter(arg => arg.includes('"schemaVersion"'))).toEqual([]);
+      expect(parseAgentSseArgs(args).expectation).toEqual(parseAgentSseExpectation(
+        JSON.parse(fs.readFileSync(path.join(backendRoot, value.slice(1)), 'utf8'))));
+      expect(parseAgentSseArgs(args).expectation?.intent).toMatchObject({sceneId: suite, scope: 'scene_wide', deliverable: 'report'});
+    }
+    const startupType = parseAgentSseArgs(wrapper.suites.startup.args).expectation?.facts.find(fact => fact.id === 'startup_type');
+    expect(startupType).not.toHaveProperty('value');
+    expect(startupType?.oracle).toMatchObject({column: 'startup_type', anchorMatch: {startTs: 'start_ts', upid: 'upid'}});
+    expect(startupType?.oracle?.sql).toMatch(/SELECT s\.startup_type, s\.ts AS start_ts, sp\.upid FROM android_startups s JOIN android_startup_processes sp USING \(startup_id\)/);
+    // Same population oracle as the quick frame gate; only the declared cell columns differ.
+    const scrolling = parseAgentSseArgs(wrapper.suites.scrolling.args).expectation!;
+    for (const fact of wrapper.frameFactExpectation({withJank: true}).facts) {
+      expect(scrolling.facts.find(item => item.id === fact.id)?.oracle).toEqual(fact.oracle);
+    }
+  });
+
+  it('keeps overallTaskChecksPassed on the flat union: a value-only fact match stays a hard failure', () => {
+    const query = wrapper.semanticDeltaQueries().find((item: any) => item.kind === 'quantitative-only');
+    const expectation = parseAgentSseArgs(wrapper.semanticConditionArgs(query, 'A0', 'a0.json', 1000)).expectation!;
+    const report = (proved: boolean) => {
+      const facts = {source_marker_duration: {matched: true, tier: proved ? 'proved' : 'value',
+        proposition: proved ? 'proved' : 'unknown', matchedClaimIds: ['duration'], matchedAnchorIds: ['anchor-duration']}};
+      const task = evaluateAgentSseExpectation({expectation, traceId: 'trace'});
+      const checks = Object.fromEntries(Object.keys(task.checks).map(key => [key, key !== 'fact:source_marker_duration:proved' || proved]));
+      return {traceId: 'trace', taskVerification: {checks, facts, uncoveredFacets: []}, summary: {}};
+    };
+    const unproved = wrapper.evaluateSemanticConditionReport({query, report: report(false), condition: 'A0', sourceRoot});
+    expect(unproved).toMatchObject({overallTaskChecksPassed: false, traceFactPassed: false});
+    expect(wrapper.evaluateSemanticConditionReport({query, report: report(true), condition: 'A0', sourceRoot}).overallTaskChecksPassed)
+      .toBe(true);
   });
 
   it('reports source action semantics as uncovered instead of requiring an English sentence', () => {

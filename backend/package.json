@@ -130,6 +130,8 @@
     "verify:e2e:deepseek": "node scripts/run-deepseek-agent-e2e.cjs --suite all --runtime all-deepseek",
     "verify:e2e:deepseek-startup": "node scripts/run-deepseek-agent-e2e.cjs --suite startup --runtime all-deepseek",
     "verify:e2e:deepseek-scrolling": "node scripts/run-deepseek-agent-e2e.cjs --suite scrolling --runtime all-deepseek",
+    "verify:e2e:deepseek-flagship": "node scripts/run-deepseek-agent-e2e.cjs --suite flagship --runtime all-deepseek",
+    "verify:e2e:deepseek-flagship:strict": "node scripts/run-deepseek-agent-e2e.cjs --suite flagship --runtime all-deepseek --strict",
     "verify:e2e:deepseek-external-issue": "node scripts/run-deepseek-agent-e2e.cjs --suite external-issue --runtime all-deepseek",
     "verify:e2e:deepseek-dual-trace": "node scripts/run-deepseek-agent-e2e.cjs --suite dual-trace --runtime all-deepseek",
     "verify:e2e:deepseek-context": "node scripts/run-deepseek-agent-e2e.cjs --suite context --runtime all-deepseek",

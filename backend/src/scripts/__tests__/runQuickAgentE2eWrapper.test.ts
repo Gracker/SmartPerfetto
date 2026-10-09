@@ -9,6 +9,7 @@ import path from 'path';
 import { promisify } from 'util';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
 import { resolveTraceCase } from '../../../tests/helpers/traceCorpus';
+import { evaluateAgentSseExpectation, parseAgentSseExpectation } from '../verifyAgentSseScrolling';
 
 const backendRoot = path.resolve(__dirname, '../../..');
 const wrapperPath = path.join(backendRoot, 'scripts/run-quick-agent-e2e.cjs');
@@ -560,5 +561,149 @@ describe('DeepSeek E2E explicit output limit', () => {
     process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON = '{"id":"unlisted-model","custom":true}';
     expect(buildChildEnv('test-key', 'pi-agent-core', '/tmp/wrapper-test').SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON)
       .toBe('{"id":"unlisted-model","custom":true}');
+  });
+});
+
+describe('flagship gate wrapper: file expectations, strict acceptance and regression deltas', () => {
+  const wrapper = require(path.join(backendRoot, 'scripts/run-deepseek-agent-e2e.cjs'));
+  const fingerprint = {suite: 'scrolling', runtime: 'openai-agents-sdk', traceSha256: 'a'.repeat(64), query: 'q',
+    expectationHash: 'b'.repeat(64), providerOrigin: 'https://api.deepseek.com', model: 'deepseek-v4-pro', commit: 'c'.repeat(40),
+    gateSchemaVersion: 'agent_sse_gate@2', verificationSchemaVersion: 'claim_verifier@2',
+    traceProcessorVersion: `bundled:${'d'.repeat(40)}`, stdlibRevision: 'stdlib'};
+  const report = (overrides: Record<string, unknown> = {}) => ({
+    runIdentity: {schemaVersion: 1, gateSchemaVersion: 'agent_sse_gate@2', verificationSchemaVersion: 'claim_verifier@2',
+      runtime: 'openai-agents-sdk', query: 'q', traceSha256: 'a'.repeat(64), expectationHash: 'b'.repeat(64),
+      traceProcessorVersion: `bundled:${'d'.repeat(40)}`, stdlibRevision: 'stdlib', reportedVersion: 'v59'},
+    semanticAcceptance: 'INCONCLUSIVE', proofAcceptance: 'INCOMPLETE', observedChecksPassed: true, hardGatesPassed: true,
+    completeAcceptance: false, uncoveredFacets: ['total_frames: proposition not proved (tier=value)'],
+    checkGroups: {value: {'fact:total_frames': true, taskCompleted: true}, proof: {'fact:total_frames:proved': false},
+      delivery: {hasAnalysisCompletedEvent: true}},
+    taskVerification: {facts: {total_frames: {tier: 'value'}}},
+    ...overrides,
+  });
+  const summary = (overrides: Record<string, unknown> = {}, at = Date.parse('2026-10-09T00:00:00Z')) =>
+    wrapper.buildFlagshipSummary({suiteName: 'scrolling', runtimeKind: 'openai-agents-sdk', report: report(overrides),
+      reportPath: 'test-output/e2e-deepseek-scrolling-real.json', exitCode: 0,
+      provider: {providerOrigin: 'https://api.deepseek.com', model: 'deepseek-v4-pro'},
+      git: {commit: 'c'.repeat(40), worktreeDirty: false}, strict: false, now: at});
+  const baseline = (value: unknown) => ({status: 'ok', path: path.join(backendRoot, 'test-output/e2e-baselines/scrolling.json'),
+    summary: value});
+
+  it('runs startup and scrolling from files and keeps --strict/--delta-baseline on flagship suites only', () => {
+    expect(wrapper.FLAGSHIP_EXPECTATIONS).toEqual({startup: 'tests/e2e/flagship/startup-heavy.expectation.json',
+      scrolling: 'tests/e2e/flagship/scrolling-customer.expectation.json'});
+    for (const suite of ['startup', 'scrolling']) {
+      const args: string[] = wrapper.suites[suite].args;
+      const value = args[args.indexOf('--expectation-json') + 1];
+      expect(value).toBe(`@${wrapper.FLAGSHIP_EXPECTATIONS[suite]}`);
+      expect(() => parseAgentSseExpectation(JSON.parse(fs.readFileSync(path.join(backendRoot, value.slice(1)), 'utf8'))))
+        .not.toThrow();
+      expect(args).not.toContain('--strict');
+    }
+    expect(wrapper.parseArgs(['--suite', 'flagship'])).toMatchObject({suite: 'flagship', strict: false});
+    expect(wrapper.parseArgs(['--suite', 'flagship', '--strict', '--delta-baseline', 'test-output/e2e-baselines']))
+      .toMatchObject({strict: true, deltaBaseline: path.join(backendRoot, 'test-output/e2e-baselines')});
+    expect(() => wrapper.parseArgs(['--suite', 'context', '--strict'])).toThrow('--strict and --delta-baseline');
+    expect(() => wrapper.parseArgs(['--suite', 'scrolling', '--delta-baseline'])).toThrow('--delta-baseline requires');
+    const scripts = JSON.parse(fs.readFileSync(path.join(backendRoot, 'package.json'), 'utf8')).scripts;
+    expect(scripts['verify:e2e:deepseek-flagship']).toBe('node scripts/run-deepseek-agent-e2e.cjs --suite flagship --runtime all-deepseek');
+    expect(scripts['verify:e2e:deepseek-flagship:strict']).toBe(`${scripts['verify:e2e:deepseek-flagship']} --strict`);
+    for (const name of ['verify:e2e:deepseek-startup', 'verify:e2e:deepseek-scrolling', 'verify:e2e:deepseek']) {
+      expect(scripts[name]).not.toContain('--strict');
+    }
+  });
+
+  it('leaves the quick frame expectation and every earlier flat check key in place', () => {
+    const expectation = wrapper.frameFactExpectation({taskKind: 'investigation', withJank: true});
+    expect(expectation.intent).toEqual({sceneId: 'scrolling', taskKind: 'investigation', scope: 'bounded_question', deliverable: 'answer'});
+    expect(expectation.facts.map((fact: any) => [fact.id, fact.columns, fact.verification, fact.unit]))
+      .toEqual([['total_frames', ['total_frames'], 'proved', 'frames'], ['jank_frames', ['jank_frames'], 'proved', 'frames']]);
+    const keys = Object.keys(evaluateAgentSseExpectation({expectation: parseAgentSseExpectation(expectation), traceId: 'trace'}).checks);
+    expect(keys).toEqual(expect.arrayContaining(['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed',
+      'deliveryIdentityPassed', 'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified',
+      'intent:sceneId', 'intent:taskKind', 'intent:scope', 'intent:deliverable', 'fact:total_frames', 'fact:jank_frames']));
+  });
+
+  it('records the provider by origin and model only', () => {
+    expect(wrapper.providerFingerprint('openai-agents-sdk', {OPENAI_BASE_URL: 'https://user:secret@api.deepseek.com/v1?key=x',
+      OPENAI_MODEL: 'deepseek-v4-pro'})).toEqual({providerOrigin: 'https://api.deepseek.com', model: 'deepseek-v4-pro'});
+    expect(wrapper.providerFingerprint('claude-agent-sdk', {})).toEqual({providerOrigin: 'anthropic-default', model: 'claude-runtime-default'});
+    expect(wrapper.providerFingerprint('qoder-agent-sdk', {QODER_BYOK_BASE_URL: 'not a url', QODER_MODEL: 'm'}))
+      .toEqual({providerOrigin: 'invalid-base-url', model: 'm'});
+  });
+
+  it('summarizes a run with its full fingerprint and per-fact tiers', () => {
+    const current = summary();
+    expect(current).toMatchObject({schemaVersion: 'agent_sse_flagship_summary@1', fingerprint, reportAvailable: true,
+      semanticAcceptance: 'INCONCLUSIVE', facts: {total_frames: 'value'}, traceProcessorReportedVersion: 'v59',
+      report: 'test-output/e2e-deepseek-scrolling-real.json'});
+    expect(Object.keys(current.fingerprint)).toEqual(wrapper.FLAGSHIP_FINGERPRINT_KEYS);
+  });
+
+  it('refuses a missing, corrupt, incomplete or differently fingerprinted baseline instead of reporting no change', () => {
+    const current = summary();
+    expect(wrapper.compareFlagshipSummaries({status: 'missing'}, current)).toEqual({status: 'refused', reason: 'baseline_missing'});
+    expect(wrapper.compareFlagshipSummaries({status: 'corrupt'}, current)).toEqual({status: 'refused', reason: 'baseline_corrupt'});
+    expect(wrapper.compareFlagshipSummaries(baseline({...current, checkGroups: null}), current).reason).toBe('baseline_corrupt');
+    for (const [key, value] of [['model', 'deepseek-flash'], ['traceSha256', 'e'.repeat(64)], ['expectationHash', 'f'.repeat(64)],
+      ['stdlibRevision', 'other'], ['traceProcessorVersion', `custom:${'0'.repeat(64)}`], ['gateSchemaVersion', 'agent_sse_gate@1']]) {
+      const changed = {...current, fingerprint: {...current.fingerprint, [key]: value}};
+      expect(wrapper.compareFlagshipSummaries(baseline(changed), current)).toEqual({status: 'refused', reason: 'fingerprint_mismatch',
+        mismatchedKeys: [key]});
+    }
+    const unknownProcessor = summary({runIdentity: {...report().runIdentity, traceProcessorVersion: 'unknown:external_rpc_binary_unavailable'}});
+    expect(wrapper.compareFlagshipSummaries(baseline(unknownProcessor), unknownProcessor)).toMatchObject({status: 'refused',
+      reason: 'fingerprint_incomplete', incompleteKeys: {baseline: ['traceProcessorVersion'], current: ['traceProcessorVersion']}});
+    expect(wrapper.flagshipRunVerdict({...current, delta: {status: 'refused', reason: 'baseline_missing'}}, {delta: true}))
+      .toEqual({passed: false, reasons: ['delta_refused:baseline_missing']});
+  });
+
+  it('reports new failures, fixes and unchanged checks across commits and fails only on new failures', () => {
+    const before = summary({checkGroups: {value: {'fact:total_frames': true, taskCompleted: false}, proof: {'fact:total_frames:proved': false},
+      delivery: {hasAnalysisCompletedEvent: true}}, taskVerification: {facts: {total_frames: {tier: 'proved'}}}},
+    Date.parse('2026-10-01T00:00:00Z'));
+    const current = {...summary({checkGroups: {value: {'fact:total_frames': false, taskCompleted: true, 'fact:jank_frames': true},
+      proof: {'fact:total_frames:proved': false}, delivery: {}}, taskVerification: {facts: {total_frames: {tier: 'none'}}}}),
+    fingerprint: {...fingerprint, commit: '9'.repeat(40)}};
+    const delta = wrapper.compareFlagshipSummaries(baseline(before), current, {now: Date.parse('2026-10-09T00:00:00Z')});
+    expect(delta).toMatchObject({status: 'compared', evidence: 'regression_delta_only_not_acceptance', stale: false,
+      commits: {baseline: 'c'.repeat(40), current: '9'.repeat(40)},
+      newFailures: ['value:fact:total_frames'], fixed: ['value:taskCompleted'], unchanged: ['proof:fact:total_frames:proved'],
+      added: ['value:fact:jank_frames'], removed: ['delivery:hasAnalysisCompletedEvent'],
+      factTierChanges: {total_frames: {from: 'proved', to: 'none'}}});
+    expect(wrapper.flagshipRunVerdict({...current, exitCode: 1, delta}, {delta: true}))
+      .toEqual({passed: false, reasons: ['delta_new_failures:1']});
+    const steady = wrapper.compareFlagshipSummaries(baseline(before), before, {now: Date.parse('2026-11-01T00:00:00Z')});
+    expect(steady).toMatchObject({status: 'compared', newFailures: [], stale: true});
+    // A known failure that did not regress is not a delta failure; it is still not acceptance.
+    expect(wrapper.flagshipRunVerdict({...before, exitCode: 1, delta: steady}, {delta: true})).toEqual({passed: true, reasons: []});
+  });
+
+  it('fails --strict on anything short of complete acceptance and diagnostic runs on the verifier exit', () => {
+    const inconclusive = summary();
+    expect(wrapper.flagshipRunVerdict(inconclusive, {strict: true})).toEqual({passed: false,
+      reasons: ['strict_acceptance_INCONCLUSIVE']});
+    expect(wrapper.flagshipRunVerdict({...inconclusive, completeAcceptance: true, semanticAcceptance: 'PASSED'}, {strict: true}))
+      .toEqual({passed: true, reasons: []});
+    expect(wrapper.flagshipRunVerdict(inconclusive)).toEqual({passed: true, reasons: []});
+    expect(wrapper.flagshipRunVerdict({...inconclusive, exitCode: 1})).toEqual({passed: false, reasons: ['verifier_exit_1']});
+    const missing = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'opencode', report: undefined, exitCode: 1,
+      git: {commit: 'unknown', worktreeDirty: null}, strict: false});
+    expect(missing).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED', checkGroups: null});
+    expect(wrapper.flagshipRunVerdict(missing).reasons).toEqual(['report_unavailable', 'verifier_exit_1']);
+  });
+
+  it('reads a baseline file or the matching file in a baseline directory', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'flagship-baseline-'));
+    try {
+      fs.writeFileSync(path.join(directory, 'scrolling-pi-agent-core.json'), JSON.stringify({schemaVersion: 'x'}));
+      fs.writeFileSync(path.join(directory, 'broken.json'), '{');
+      expect(wrapper.readFlagshipBaseline(directory, 'scrolling-pi-agent-core.json')).toMatchObject({status: 'ok', summary: {schemaVersion: 'x'}});
+      expect(wrapper.readFlagshipBaseline(directory, 'startup.json').status).toBe('missing');
+      expect(wrapper.readFlagshipBaseline(path.join(directory, 'broken.json'), 'ignored.json').status).toBe('corrupt');
+      expect(wrapper.readFlagshipBaseline(path.join(directory, 'absent.json'), 'x.json').status).toBe('missing');
+    } finally {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
   });
 });
