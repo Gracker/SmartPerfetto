@@ -16,7 +16,6 @@ import {renderRequiredLocalizedStrategyTemplate} from './localizedStrategyTempla
 import {findArtifactSqlReference} from './artifactSqlReference';
 import { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -54,9 +53,8 @@ import {
 } from '../services/selfEvolution/evaluationTelemetry';
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
 import {resolveRegisteredDrillDownSkillParams} from '../agent/core/drillDownEntityResolver';
-import {findDrillDownSkillConfig} from '../agent/config/drillDownRegistry';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
-import type { ColumnDefinition, DataEnvelopeMeta } from '../types/dataContract';
+import type { ColumnDefinition } from '../types/dataContract';
 import {nsToMs} from '../utils/traceProcessorRowUtils';
 import {
   analyzeCriticalPath,
@@ -114,15 +112,15 @@ import {
   type TraceProcessorQueryProvenance,
   type TraceProcessorTraceSide,
 } from '../services/traceProcessorConnectionModel';
-import {getConsumableProcessIdentitySelectors, getEffectiveIdentityConfig, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
 import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
-import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
+import {hasProcessIdentitySelector} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {exactProcessScopeSupportCatalog} from '../services/skillEngine/processScopeSql';
 import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
-  projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
+  projectEvidenceColumnUnitsForModel,
   type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceScalar, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
-import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
+import {scopeMetadata, identityForScopeEvidence} from '../types/identityContract';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import {
   buildSqlSchemaDiagnostic,
@@ -150,6 +148,18 @@ import {getAnalysisPlanCompletionStatus} from './planCompletionStatus';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
 import { planPhaseUpdatedContent } from './planPhaseEvents';
 import { ArtifactStore, type CompactArtifactSummary } from './artifactStore';
+import {
+  evidenceHash,
+  evidencePart,
+  evidenceTracePart,
+  executePreparedSkillRun,
+  normalizeSkillRunParams,
+  prepareSkillRun,
+  stableSkillEvidenceRefId,
+  undeclaredSkillRunParams,
+  type EvidenceProducerContext,
+  type SkillRunDeps,
+} from './skillRunCore';
 import {resolveArtifactAccessPolicy} from './artifactAccessPolicy';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import {
@@ -1020,31 +1030,6 @@ function collectPlanPhaseShapeErrors(phases: Pick<PlanPhase, 'id' | 'name' | 'go
   return errors;
 }
 
-const TIMESTAMP_EXPRESSION_PARAM_KEYS = new Set([
-  'ts',
-  'start_ts',
-  'end_ts',
-  'frame_ts',
-  'startTs',
-  'endTs',
-  'frameTs',
-]);
-
-function normalizeTimestampExpression(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  const match = trimmed.match(/^(\d{6,})([+-])(\d{1,15})$/);
-  if (!match) return value;
-  try {
-    const left = BigInt(match[1]);
-    const right = BigInt(match[3]);
-    const result = match[2] === '+' ? left + right : left - right;
-    return result.toString();
-  } catch {
-    return value;
-  }
-}
-
 /** Process-wide ProjectMemory singleton (Plan 44). Independent of the
  * existing `analysisPatternMemory.ts` session-scope store. */
 let cachedProjectMemory: ProjectMemory | null = null;
@@ -1248,80 +1233,6 @@ function compactLegacySqlSchemaEntry(entry: SqlSchemaEntry): Record<string, unkn
   if (entry.params?.length) out.params = entry.params;
   if (entry.returnType) out.returnType = entry.returnType;
   return out;
-}
-
-/**
- * Normalize synthesizeData entry's `data` field into { columns, rows } format.
- * synthesizeData entries can be:
- *   - Array of objects: [{ col1: val1, col2: val2 }, ...]
- *   - Already columnar: { columns: [...], rows: [[...], ...] }
- *   - Iterator results: [{ itemIndex, item, result: { ... } }]
- *   - Single object: { key: value, ... }
- * All are normalized to { columns: string[], rows: any[][] } for ArtifactStore.
- */
-function normalizeSynthesizeDataForStorage(data: any): { columns: string[]; rows: any[][] } {
-  if (!data) return { columns: [], rows: [] };
-
-  // Already columnar format
-  if (data.columns && Array.isArray(data.rows)) {
-    return { columns: data.columns, rows: data.rows };
-  }
-
-  // An empty array is zero rows, not a single empty object row.
-  if (Array.isArray(data) && data.length === 0) return { columns: [], rows: [] };
-
-  // Array of objects
-  if (Array.isArray(data)) {
-    const first = data[0];
-    // Iterator format: flatten item + result
-    if (first && typeof first === 'object' && 'itemIndex' in first && 'result' in first) {
-      const allKeys = new Set<string>();
-      const flatRows = data.map((entry: any) => {
-        const flat: Record<string, any> = { itemIndex: entry.itemIndex };
-        // Merge item fields
-        if (entry.item && typeof entry.item === 'object') {
-          for (const [k, v] of Object.entries(entry.item)) {
-            flat[k] = v;
-            allKeys.add(k);
-          }
-        }
-        // Merge result fields (top-level scalars only, skip nested objects)
-        if (entry.result && typeof entry.result === 'object') {
-          for (const [k, v] of Object.entries(entry.result)) {
-            if (typeof v !== 'object' || v === null) {
-              flat[`result_${k}`] = v;
-              allKeys.add(`result_${k}`);
-            }
-          }
-        }
-        allKeys.add('itemIndex');
-        return flat;
-      });
-      const columns = ['itemIndex', ...Array.from(allKeys).filter(k => k !== 'itemIndex')];
-      const rows = flatRows.map((row: Record<string, any>) => columns.map(c => row[c] ?? null));
-      return { columns, rows };
-    }
-
-    // Plain array of objects
-    if (typeof first === 'object' && first !== null) {
-      const columns = Object.keys(first);
-      const rows = data.map((row: Record<string, any>) => columns.map(c => row[c] ?? null));
-      return { columns, rows };
-    }
-
-    // Array of primitives — single column
-    return { columns: ['value'], rows: data.map((v: any) => [v]) };
-  }
-
-  // Single object → single row
-  if (typeof data === 'object' && data !== null) {
-    const columns = Object.keys(data);
-    const rows = [columns.map(c => data[c] ?? null)];
-    return { columns, rows };
-  }
-
-  // Scalar
-  return { columns: ['value'], rows: [[data]] };
 }
 
 function previewFromColumnarData(data: any): Record<string, any> | undefined {
@@ -2231,53 +2142,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       : skillExecutor.execute(skillId, selectedTraceId, params, inherited);
   }
 
-  function skillAcceptsProcessIdentity(skill?: SkillDefinition): boolean {
-    return !skill || [...getConsumableProcessIdentitySelectors(skill)]
-      .some(key => key === 'process_name' || key === 'package');
-  }
-
-  /** A Skill that cannot run without naming its process. */
-  function skillRequiresProcessSelector(skill: SkillDefinition): boolean {
-    return getEffectiveIdentityConfig(skill).policy === 'required' ||
-      (skill.inputs ?? []).some(input => input.required === true &&
-        (input.name === 'package' || input.name === 'process_name'));
-  }
-
-  /**
-   * How the process scope of a Skill call was chosen, reported with its result
-   * so an unscoped or default-scoped run is never read as user-targeted:
-   * the injected effective package with its provenance, or null when the Skill
-   * accepts a process but runs unscoped. A model-supplied selector needs no note.
-   */
-  function appliedDefaultProcessField(
-    params: Record<string, any> | undefined,
-    normalized: Record<string, any>,
-    skill?: SkillDefinition,
-  ): {appliedDefaultProcess?: {packageName: string; source: string; confidence?: string} | null} {
-    if (!skillAcceptsProcessIdentity(skill) || hasProcessIdentitySelector(params)) return {};
-    if (!hasProcessIdentitySelector(normalized) || !packageName) return {appliedDefaultProcess: null};
-    const {source = 'user', confidence} = packageProvenance(packageName, options.focusTarget);
-    return {appliedDefaultProcess: {packageName, source, ...(confidence ? {confidence} : {})}};
-  }
-
   /** Normalize skill params while respecting the target Skill's declared inputs. */
   function normalizeSkillParams(
     params: Record<string, any> | undefined,
     defaultPackage?: string,
     skill?: SkillDefinition,
   ): Record<string, any> {
-    const p = { ...params };
-    for (const key of Object.keys(p)) {
-      if (TIMESTAMP_EXPRESSION_PARAM_KEYS.has(key)) {
-        p[key] = normalizeTimestampExpression(p[key]);
-      }
-    }
-    const declaredNames = new Set((skill?.inputs ?? []).map(input => input.name));
-    const acceptsProcessIdentity = skillAcceptsProcessIdentity(skill);
-    if (acceptsProcessIdentity && defaultPackage && !hasProcessIdentitySelector(p)) {
-      p[declaredNames.has('process_name') && !declaredNames.has('package') ? 'process_name' : 'package'] = defaultPackage;
-    }
-    return p;
+    return normalizeSkillRunParams(params, defaultPackage, skill);
   }
 
   function undeclaredModelSkillParams(
@@ -2285,22 +2156,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     params: Record<string, any> | undefined,
     beforeEnrichment = false,
   ): string[] {
-    if (!params) return [];
-    const reserved = Object.keys(params).filter(key => key === '__process_scope' || key.startsWith('__process_scope.'));
-    const selectors = getConsumableProcessIdentitySelectors(skill);
-    const allowed = new Set([...(skill.inputs || []).map(input => input.name), ...selectors]);
-    if (beforeEnrichment) {
-      const registered = findDrillDownSkillConfig(skill.name);
-      if (registered?.dropEntityParamAfterResolution) {
-        for (const [key, source] of Object.entries(registered.paramMapping)) {
-          if (source === `${registered.entityType}Id`) allowed.add(key);
-        }
-      }
-    }
-    // Legacy definitions without input schemas remain open for ordinary params,
-    // but identity selectors still need a declared consumer.
-    return [...new Set([...reserved, ...Object.keys(params).filter(key =>
-      !allowed.has(key) && (Boolean(skill.inputs) || PROCESS_IDENTITY_SELECTORS.includes(key)))])].sort();
+    return undeclaredSkillRunParams(skill, params, beforeEnrichment);
+  }
+
+  /** What `invoke_skill` hands the shared Skill-run core for the current trace. */
+  function currentSkillRunDeps(): SkillRunDeps {
+    const paneSide = paneSideForTraceSide('current');
+    return {
+      traceId, traceProcessorService, skillExecutor, artifactStore, outputLanguage,
+      packageName, focusTarget: options.focusTarget, ...(paneSide ? {paneSide} : {}),
+    };
   }
 
   function referenceSharedParamsForComparison(
@@ -2975,70 +2840,60 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
       try {
         const effectiveSkillRegistry = await bindSkillRuntimeRegistry();
-        const skillDef = effectiveSkillRegistry.getSkill(skillId);
-        if (!skillDef) return unavailableSkillResult(skillId);
-        if (skillDef?.type === 'pipeline_definition' || skillDef?.type === 'comparison') {
-          const useHint = skillDef.type === 'comparison'
-            ? 'It describes analysis result comparison. Use the multi-trace comparison API/tools instead.'
-            : 'Use `detect_architecture` to detect the rendering pipeline, or call a composite analysis skill like `scrolling_analysis`, `gpu_analysis`, etc.';
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                error: `Skill "${skillId}" is metadata-only and cannot be used for single-trace analysis. ${useHint}`,
-              }),
-            }],
-          };
+        const skillRunDeps = currentSkillRunDeps();
+        const preparation = await prepareSkillRun(skillRunDeps,
+          {skillId, params, registry: effectiveSkillRegistry, signal});
+        if (preparation.status === 'refused') {
+          const refusal = preparation.refusal;
+          switch (refusal.kind) {
+            case 'unavailable':
+              return unavailableSkillResult(skillId);
+            case 'metadata_only': {
+              const useHint = refusal.skillType === 'comparison'
+                ? 'It describes analysis result comparison. Use the multi-trace comparison API/tools instead.'
+                : 'Use `detect_architecture` to detect the rendering pipeline, or call a composite analysis skill like `scrolling_analysis`, `gpu_analysis`, etc.';
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    success: false,
+                    error: `Skill "${skillId}" is metadata-only and cannot be used for single-trace analysis. ${useHint}`,
+                  }),
+                }],
+              };
+            }
+            case 'undeclared_params':
+              return createRuntimeToolResult({ success: false, skillId,
+                invalidParams: refusal.invalidParams, error: `Undeclared Skill parameters: ${refusal.invalidParams.join(', ')}`,
+                action_required: 'retry_invoke_skill_with_declared_params' });
+            case 'process_selector_required':
+              return createRuntimeToolResult({ success: false, skillId, reason: 'process_selector_required',
+                error: localize(outputLanguage,
+                  `Skill ${skillId} 需要指定目标进程（package / process_name / upid），当前没有确定的目标应用。`,
+                  `Skill ${skillId} needs a target process (package / process_name / upid); no target app is in effect.`),
+                candidates: focusAppSelectorCandidates(options.focusTarget),
+                action_required: 'retry_invoke_skill_with_process_selector' });
+            case 'identity_gate':
+              return createRuntimeToolResult({ success: false, skillId,
+                error: refusal.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector' });
+            case 'undeclared_params_after_resolution':
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    success: false,
+                    partial: false,
+                    skillId,
+                    invalidParams: refusal.invalidParams,
+                    error: `Undeclared Skill parameters: ${refusal.invalidParams.join(', ')}`,
+                    action_required: 'retry_invoke_skill_with_declared_params',
+                  }),
+                }],
+                isError: true,
+              };
+          }
         }
-
-        const normalizedParams = normalizeSkillParams(params, packageName, skillDef);
-        const explicitInvalidParams = undeclaredModelSkillParams(skillDef, params, true);
-        if (explicitInvalidParams.length) return createRuntimeToolResult({ success: false, skillId,
-          invalidParams: explicitInvalidParams, error: `Undeclared Skill parameters: ${explicitInvalidParams.join(', ')}`,
-          action_required: 'retry_invoke_skill_with_declared_params' });
-        // No package is in effect (none named, focus ambiguous or undetected):
-        // a Skill that must name its process gets the ranked candidates instead
-        // of a guess.
-        if (skillRequiresProcessSelector(skillDef) && !hasProcessIdentitySelector(normalizedParams)) {
-          return createRuntimeToolResult({ success: false, skillId, reason: 'process_selector_required',
-            error: localize(outputLanguage,
-              `Skill ${skillId} 需要指定目标进程（package / process_name / upid），当前没有确定的目标应用。`,
-              `Skill ${skillId} needs a target process (package / process_name / upid); no target app is in effect.`),
-            candidates: focusAppSelectorCandidates(options.focusTarget),
-            action_required: 'retry_invoke_skill_with_process_selector' });
-        }
-        const defaultProcessField = appliedDefaultProcessField(params, normalizedParams, skillDef);
-        const prepared = await skillExecutor.prepareInvocation(skillId, traceId, normalizedParams,
-          { __traceSide: 'current', __outputLanguage: outputLanguage, signal });
-        if (!prepared.allowed) return createRuntimeToolResult({ success: false, skillId,
-          error: prepared.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector' });
-        const paramResolution = await resolveRegisteredDrillDownSkillParams({
-          skillId,
-          params: prepared.params,
-          processScope: prepared.processScope,
-          traceId,
-          traceProcessorService,
-          signal,
-        });
-        const effectiveParams = paramResolution.params;
-        const invalidParams = undeclaredModelSkillParams(skillDef, effectiveParams);
-        if (invalidParams.length > 0) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                partial: false,
-                skillId,
-                invalidParams,
-                error: `Undeclared Skill parameters: ${invalidParams.join(', ')}`,
-                action_required: 'retry_invoke_skill_with_declared_params',
-              }),
-            }],
-            isError: true,
-          };
-        }
+        const {skillDef, effectiveParams, paramResolution, defaultProcessField} = preparation.prepared;
         const producer = createEvidenceProducerContext(
           'invoke_skill',
           {
@@ -3048,7 +2903,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           },
           localize(outputLanguage, `调用 Skill ${skillId}，收集本阶段结构化证据。`, `Run Skill ${skillId} to collect structured evidence for this phase.`),
         );
-        const skillTraceProvenance = buildScopedTraceProvenance(traceId, 'current');
 
         emitUpdate?.({
           type: 'progress',
@@ -3063,32 +2917,47 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           timestamp: Date.now(),
         });
 
-        const skillStart = Date.now();
-        const currentPaneSide = paneSideForTraceSide('current');
-        const executionContext = {
-          ...(currentPaneSide ? { __paneSide: currentPaneSide } : {}),
-          __outputLanguage: outputLanguage, __traceSide: 'current', signal,
-        };
-        const result = prepared.processScope
-          ? await skillExecutor.execute(skillId, traceId, effectiveParams, executionContext, prepared.processScope)
-          : await skillExecutor.execute(skillId, traceId, effectiveParams, executionContext);
-        const skillDuration = Date.now() - skillStart;
-
-        emitUpdate?.({
-          type: 'progress',
-          content: {
-            phase: 'analyzing',
-            // Duration is a real signal in a performance tool. The result-layer
-            // count is not: the evidence line that follows already says what
-            // arrived, and repeating the number twice reads as bookkeeping.
-            message: localize(
-              outputLanguage,
-              `技能 ${skillId} 完成 (${skillDuration}ms)`,
-              `Skill ${skillId} completed (${skillDuration}ms)`,
-            ),
+        // Compact summaries are read as each display artifact is stored, so a
+        // later store in the same call cannot evict one before it is summarized.
+        const storedSummaries: SkillArtifactSummaryForModel[] = [];
+        const outcome = await executePreparedSkillRun(skillRunDeps, preparation.prepared, {
+          producer, signal,
+          afterExecute: skillDuration => emitUpdate?.({
+            type: 'progress',
+            content: {
+              phase: 'analyzing',
+              // Duration is a real signal in a performance tool. The result-layer
+              // count is not: the evidence line that follows already says what
+              // arrived, and repeating the number twice reads as bookkeeping.
+              message: localize(
+                outputLanguage,
+                `技能 ${skillId} 完成 (${skillDuration}ms)`,
+                `Skill ${skillId} completed (${skillDuration}ms)`,
+              ),
+            },
+            timestamp: Date.now(),
+          }),
+          onDisplayArtifactStored: ({artifactId: artId, evidenceRefId, modelProjection}) => {
+            const storedSummary = artifactStore!.generateCompactSummary(artId);
+            const summary = storedSummary && artifactAccessPolicy.forbidRows
+              ? (({preview: _preview, ...rowFreeSummary}) => rowFreeSummary)(storedSummary)
+              : storedSummary;
+            const preview = artifactAccessPolicy.forbidRows
+              ? undefined
+              : storedSummary?.preview ?? previewFromColumnarData(modelProjection.data);
+            if (summary) storedSummaries.push({
+              ...summary,
+              ...(preview ? { preview } : {}),
+              evidenceRefId,
+              ...(producer.sourceToolCallId ? { sourceToolCallId: producer.sourceToolCallId } : {}),
+            });
           },
-          timestamp: Date.now(),
         });
+        // The model path never refuses a commit; the narrowing keeps the shape exact.
+        if (outcome.status !== 'committed') throw new Error(`invoke_skill commit refused: ${outcome.reason}`);
+        const {result, modelDisplayProjections, artifactIdsByDisplayIndex, queryReviewsByDisplayIndex,
+          diagnosticsArtifactId, synthesizeArtifacts} = outcome;
+        const skillTraceProvenance = outcome.traceProvenance;
 
         // Capture skill SQL errors in this turn's learning window — skill SQL is
         // the most complex and most likely to break across Perfetto versions.
@@ -3103,150 +2972,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           if (recentSqlErrors.length > 10) recentSqlErrors.shift();
         }
 
-        // Artifact mode stores displayResults before emitting DataEnvelopes so
-        // evidence meta can carry the same artifact ids that the model sees.
-        let artifacts: SkillArtifactSummaryForModel[] | undefined;
-        let diagnosticsArtifactId: string | undefined;
-        let synthesizeArtifacts: Array<{ artifactId: string; stepId: string; rowCount: number; columns: string[];
-          executionStatus?: DataEnvelopeMeta['executionStatus'] }> | undefined;
-        const artifactIdsByDisplayIndex: Array<string | undefined> = [];
-        const queryReviewsByDisplayIndex: Array<QueryReviewV1 | undefined> = [];
-        const modelDisplayProjections = (result.displayResults || []).map(dr =>
-          projectEvidenceTableForModel(dr.data, evidenceTableFor(dr)));
-        if (artifactStore && result.displayResults?.length) {
-          artifacts = result.displayResults.map((dr, displayIndex) => {
-            const modelProjection = modelDisplayProjections[displayIndex];
-            const evidenceRefId = stableSkillEvidenceRefId(
-              result.skillId || skillId,
-              dr.stepId,
-              dr.title,
-              dr.data,
-              skillTraceProvenance,
-              producer,
-              dr.scopeProvenance,
-            );
-            const artId = artifactStore.store({
-              skillId: result.skillId || skillId,
-              stepId: dr.stepId,
-              layer: dr.layer,
-              title: dr.title,
-              data: modelProjection.data,
-              modelProjection: modelProjection.modelProjection,
-              executionStatus: dr.executionStatus,
-              executionMessage: dr.executionMessage,
-              executionError: dr.executionError,
-              diagnostics: undefined,
-              planPhaseId: producer.planPhaseId,
-              planPhaseTitle: producer.planPhaseTitle,
-              planPhaseGoal: producer.planPhaseGoal,
-              sourceToolCallId: producer.sourceToolCallId,
-              paramsHash: producer.paramsHash,
-              identityResolution: identityForScopeEvidence(dr.scopeProvenance, result.identityResolution),
-              scopeProvenance: dr.scopeProvenance,
-              traceProvenance: skillTraceProvenance,
-            });
-            const witness = evidenceTableFor(dr) || captureEvidenceTable(undefined, {}, 'display_transformation_unmapped');
-            artifactStore.registerEvidenceCapture?.(artId, witness, {evidenceRefId,
-              ...(dr.sql ? {queryHash: evidenceHash(dr.sql)} : {})});
-            const queryReview = buildSkillQueryReview({
-              skillId: result.skillId || skillId,
-              displayResult: dr as SkillDisplayResult,
-              traceProvenance: skillTraceProvenance,
-              producer,
-              artifactId: artId,
-              evidenceRefId,
-              outputLanguage,
-            });
-            if (queryReview) {
-              artifactStore.updateQueryReview(artId, queryReview);
-              queryReviewsByDisplayIndex[displayIndex] = queryReview;
-            }
-            artifactIdsByDisplayIndex[displayIndex] = artId;
-            const storedSummary = artifactStore.generateCompactSummary(artId);
-            const summary = storedSummary && artifactAccessPolicy.forbidRows
-              ? (({preview: _preview, ...rowFreeSummary}) => rowFreeSummary)(storedSummary)
-              : storedSummary;
-            const preview = artifactAccessPolicy.forbidRows
-              ? undefined
-              : storedSummary?.preview ?? previewFromColumnarData(modelProjection.data);
-            return summary ? {
-              ...summary,
-              ...(preview ? { preview } : {}),
-              evidenceRefId,
-              ...(producer.sourceToolCallId ? { sourceToolCallId: producer.sourceToolCallId } : {}),
-            } : undefined;
-          }).filter((summary): summary is SkillArtifactSummaryForModel => Boolean(summary));
-        }
-
-        // Store diagnostics as a separate artifact if present, even for
-        // diagnostics-only skill results that do not emit displayResults.
-        if (artifactStore && result.diagnostics && Array.isArray(result.diagnostics) && result.diagnostics.length > 0) {
-          diagnosticsArtifactId = artifactStore.store({
-            skillId: result.skillId || skillId,
-            stepId: '_diagnostics',
-            layer: 'diagnosis',
-            title: `${skillId} diagnostics`,
-            data: { columns: ['diagnostic'], rows: result.diagnostics.map((d: any) => [d]) },
-            diagnostics: result.diagnostics,
-            planPhaseId: producer.planPhaseId,
-            planPhaseTitle: producer.planPhaseTitle,
-            planPhaseGoal: producer.planPhaseGoal,
-            sourceToolCallId: producer.sourceToolCallId,
-            paramsHash: producer.paramsHash,
-            identityResolution: identityForScopeEvidence(mergeScopeProvenance(result.diagnostics.map(diagnostic => diagnostic.scopeProvenance)), result.identityResolution),
-            scopeProvenance: mergeScopeProvenance(result.diagnostics.map(diagnostic => diagnostic.scopeProvenance)),
-            traceProvenance: skillTraceProvenance,
-          });
-        }
-
-        // Store synthesizeData entries as artifacts too — these contain the
-        // raw step data that would otherwise overflow token limits.
-        if (artifactStore && result.synthesizeData && Array.isArray(result.synthesizeData) && result.synthesizeData.length > 0) {
-          synthesizeArtifacts = result.synthesizeData
-            .filter((sd: any) => sd.data && sd.success !== false)
-            .map((sd: any) => {
-              const normalizedData = normalizeSynthesizeDataForStorage(sd.data);
-              const artId = artifactStore.store({
-                skillId: result.skillId || skillId,
-                stepId: sd.stepId,
-                layer: sd.layer || 'synthesize',
-                title: sd.stepName || sd.stepId,
-                data: normalizedData,
-                executionStatus: sd.executionStatus,
-                executionMessage: sd.executionMessage,
-                executionError: sd.executionError,
-                planPhaseId: producer.planPhaseId,
-                planPhaseTitle: producer.planPhaseTitle,
-                planPhaseGoal: producer.planPhaseGoal,
-                sourceToolCallId: producer.sourceToolCallId,
-                paramsHash: producer.paramsHash,
-                identityResolution: identityForScopeEvidence(sd.scopeProvenance, result.identityResolution),
-                scopeProvenance: sd.scopeProvenance,
-                traceProvenance: skillTraceProvenance,
-              });
-              // A display and synthesize artifact may expose the same SQL step.
-              // Keep their locators distinct without changing existing display IDs.
-              const evidenceRefId = `${stableSkillEvidenceRefId(result.skillId || skillId, sd.stepId,
-                sd.stepName || sd.stepId, normalizedData, skillTraceProvenance, producer, sd.scopeProvenance)}:artifact:${artId}`;
-              // The normalizer flattens iterator-shaped rows and drops the columns
-              // of an empty array. Only its plain object-row branch preserves this table.
-              const firstRow = Array.isArray(sd.data) ? sd.data[0] : undefined;
-              const directRows = firstRow && typeof firstRow === 'object' &&
-                !('itemIndex' in firstRow && 'result' in firstRow);
-              const witness = (directRows && evidenceTableFor(sd)) || captureEvidenceTable(undefined, {},
-                sd.executionStatus === 'skipped' ? 'execution_skipped' : 'synthesize_transformation_unmapped');
-              artifactStore.registerEvidenceCapture?.(artId, witness, {evidenceRefId});
-              return {
-                artifactId: artId,
-                stepId: sd.stepId,
-                rowCount: normalizedData.rows?.length ?? 0,
-                columns: normalizedData.columns ?? [],
-                // rowCount 0 alone would read as an empty result for a step that never ran.
-                ...(sd.executionStatus === 'skipped' ? { executionStatus: sd.executionStatus } : {}),
-              };
-            });
-        }
-
+        let artifacts: SkillArtifactSummaryForModel[] | undefined =
+          artifactStore && result.displayResults?.length ? storedSummaries : undefined;
         const externalAuthored =
           effectiveSkillRegistry.getSkillOrigin(skillId)?.origin ===
           'external_pack';
@@ -8008,43 +7735,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   };
 }
 
-function evidenceHash(input: unknown): string {
-  const text = typeof input === 'string'
-    ? input
-    : JSON.stringify(input, (_key, value) => typeof value === 'bigint' ? value.toString() : value);
-  return createHash('sha256').update(text || '').digest('hex').slice(0, 12);
-}
-
 const SQL_RAW_INLINE_ROW_LIMIT = 50;
 const SQL_ARTIFACT_PAGE_SIZE = 50;
-
-function evidencePart(value: unknown, fallback = 'unknown'): string {
-  const text = String(value ?? fallback)
-    .trim()
-    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 80);
-  return text || fallback;
-}
-
-function evidenceTracePart(traceProvenance?: TraceProcessorQueryProvenance): string {
-  if (!traceProvenance) return 'trace_unknown';
-  const side = evidencePart(traceProvenance.traceSide || 'current', 'current');
-  const trace = evidenceHash(traceProvenance.traceId);
-  return `${side}:${trace}`;
-}
-
-interface EvidenceProducerContext {
-  sourceToolCallId?: string;
-  paramsHash?: string;
-  planPhaseId?: string;
-  planPhaseTitle?: string;
-  planPhaseGoal?: string;
-  planPhaseAttribution?: 'active' | 'inferred' | 'missing' | 'ambiguous' | 'unexpected_tool' | 'none';
-  planPhaseWarning?: string;
-  toolNarration?: string;
-  producerReason?: string;
-}
 
 function storeSqlResultArtifact(
   artifactStore: ArtifactStore | undefined,
@@ -8585,24 +8277,6 @@ function stableSqlEvidenceRefId(
     evidenceRefId: `data:sql_${mode}:${evidenceTracePart(traceProvenance)}:${queryHash}:${toolPart}`,
     queryHash,
   };
-}
-
-function stableSkillEvidenceRefId(
-  skillId: string,
-  stepId: string | undefined,
-  title: string | undefined,
-  data: unknown,
-  traceProvenance?: TraceProcessorQueryProvenance,
-  producer?: EvidenceProducerContext,
-  scopeProvenance?: EvidenceScopeProvenanceV1,
-): string {
-  const dataHash = evidenceHash({
-    title,
-    data,
-    scopeProvenance,
-  });
-  const toolPart = evidencePart(producer?.paramsHash || 'tool', 'tool');
-  return `data:skill:${evidencePart(skillId, 'skill')}:${evidencePart(stepId || title, 'step')}:${evidenceTracePart(traceProvenance)}:${dataHash}:${toolPart}`;
 }
 
 function sqlSummaryMarkdown(summary: SqlSummary): string {
