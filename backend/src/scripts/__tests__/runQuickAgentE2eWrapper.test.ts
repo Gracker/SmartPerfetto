@@ -9,7 +9,6 @@ import path from 'path';
 import { promisify } from 'util';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
 import { resolveTraceCase } from '../../../tests/helpers/traceCorpus';
-import { evaluateAgentSseExpectation, parseAgentSseExpectation } from '../verifyAgentSseScrolling';
 
 const backendRoot = path.resolve(__dirname, '../../..');
 const wrapperPath = path.join(backendRoot, 'scripts/run-quick-agent-e2e.cjs');
@@ -596,8 +595,8 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
       const args: string[] = wrapper.suites[suite].args;
       const value = args[args.indexOf('--expectation-json') + 1];
       expect(value).toBe(`@${wrapper.FLAGSHIP_EXPECTATIONS[suite]}`);
-      expect(() => parseAgentSseExpectation(JSON.parse(fs.readFileSync(path.join(backendRoot, value.slice(1)), 'utf8'))))
-        .not.toThrow();
+      // verifyCodeAwareSemanticDelta.test.ts parses these through the closed verifier schema.
+      expect(JSON.parse(fs.readFileSync(path.join(backendRoot, value.slice(1)), 'utf8')).schemaVersion).toBe(1);
       expect(args).not.toContain('--strict');
     }
     expect(wrapper.parseArgs(['--suite', 'flagship'])).toMatchObject({suite: 'flagship', strict: false});
@@ -613,23 +612,21 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
     }
   });
 
-  it('leaves the quick frame expectation and every earlier flat check key in place', () => {
-    const expectation = wrapper.frameFactExpectation({taskKind: 'investigation', withJank: true});
-    expect(expectation.intent).toEqual({sceneId: 'scrolling', taskKind: 'investigation', scope: 'bounded_question', deliverable: 'answer'});
-    expect(expectation.facts.map((fact: any) => [fact.id, fact.columns, fact.verification, fact.unit]))
-      .toEqual([['total_frames', ['total_frames'], 'proved', 'frames'], ['jank_frames', ['jank_frames'], 'proved', 'frames']]);
-    const keys = Object.keys(evaluateAgentSseExpectation({expectation: parseAgentSseExpectation(expectation), traceId: 'trace'}).checks);
-    expect(keys).toEqual(expect.arrayContaining(['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed',
-      'deliveryIdentityPassed', 'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified',
-      'intent:sceneId', 'intent:taskKind', 'intent:scope', 'intent:deliverable', 'fact:total_frames', 'fact:jank_frames']));
-  });
-
   it('records the provider by origin and model only', () => {
     expect(wrapper.providerFingerprint('openai-agents-sdk', {OPENAI_BASE_URL: 'https://user:secret@api.deepseek.com/v1?key=x',
       OPENAI_MODEL: 'deepseek-v4-pro'})).toEqual({providerOrigin: 'https://api.deepseek.com', model: 'deepseek-v4-pro'});
     expect(wrapper.providerFingerprint('claude-agent-sdk', {})).toEqual({providerOrigin: 'anthropic-default', model: 'claude-runtime-default'});
     expect(wrapper.providerFingerprint('qoder-agent-sdk', {QODER_BYOK_BASE_URL: 'not a url', QODER_MODEL: 'm'}))
       .toEqual({providerOrigin: 'invalid-base-url', model: 'm'});
+    // Pi and OpenCode read their model JSON, not the OpenAI env, so their provider is not 'openai-default'.
+    expect(wrapper.providerFingerprint('pi-agent-core', {SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: JSON.stringify({
+      id: 'deepseek-v4-pro', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY'})}))
+      .toEqual({providerOrigin: 'https://api.deepseek.com', model: 'deepseek-v4-pro'});
+    expect(wrapper.providerFingerprint('opencode', {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
+      providerID: 'deepseek', modelID: 'deepseek-v4-pro', baseURL: 'https://api.deepseek.com/v1'})}))
+      .toEqual({providerOrigin: 'https://api.deepseek.com', model: 'deepseek-v4-pro'});
+    expect(wrapper.providerFingerprint('opencode', {SMARTPERFETTO_OPENCODE_MODEL_JSON: 'not json'}))
+      .toEqual({providerOrigin: 'opencode-default', model: 'opencode-runtime-default'});
   });
 
   it('summarizes a run with its full fingerprint and per-fact tiers', () => {
@@ -654,7 +651,7 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
     const unknownProcessor = summary({runIdentity: {...report().runIdentity, traceProcessorVersion: 'unknown:external_rpc_binary_unavailable'}});
     expect(wrapper.compareFlagshipSummaries(baseline(unknownProcessor), unknownProcessor)).toMatchObject({status: 'refused',
       reason: 'fingerprint_incomplete', incompleteKeys: {baseline: ['traceProcessorVersion'], current: ['traceProcessorVersion']}});
-    expect(wrapper.flagshipRunVerdict({...current, delta: {status: 'refused', reason: 'baseline_missing'}}, {delta: true}))
+    expect(wrapper.flagshipRunVerdict({...current, delta: {status: 'refused', reason: 'baseline_missing'}}))
       .toEqual({passed: false, reasons: ['delta_refused:baseline_missing']});
   });
 
@@ -671,19 +668,19 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
       newFailures: ['value:fact:total_frames'], fixed: ['value:taskCompleted'], unchanged: ['proof:fact:total_frames:proved'],
       added: ['value:fact:jank_frames'], removed: ['delivery:hasAnalysisCompletedEvent'],
       factTierChanges: {total_frames: {from: 'proved', to: 'none'}}});
-    expect(wrapper.flagshipRunVerdict({...current, exitCode: 1, delta}, {delta: true}))
+    expect(wrapper.flagshipRunVerdict({...current, exitCode: 1, delta}))
       .toEqual({passed: false, reasons: ['delta_new_failures:1']});
     const steady = wrapper.compareFlagshipSummaries(baseline(before), before, {now: Date.parse('2026-11-01T00:00:00Z')});
     expect(steady).toMatchObject({status: 'compared', newFailures: [], stale: true});
     // A known failure that did not regress is not a delta failure; it is still not acceptance.
-    expect(wrapper.flagshipRunVerdict({...before, exitCode: 1, delta: steady}, {delta: true})).toEqual({passed: true, reasons: []});
+    expect(wrapper.flagshipRunVerdict({...before, exitCode: 1, delta: steady})).toEqual({passed: true, reasons: []});
   });
 
   it('fails --strict on anything short of complete acceptance and diagnostic runs on the verifier exit', () => {
     const inconclusive = summary();
-    expect(wrapper.flagshipRunVerdict(inconclusive, {strict: true})).toEqual({passed: false,
+    expect(wrapper.flagshipRunVerdict({...inconclusive, strict: true})).toEqual({passed: false,
       reasons: ['strict_acceptance_INCONCLUSIVE']});
-    expect(wrapper.flagshipRunVerdict({...inconclusive, completeAcceptance: true, semanticAcceptance: 'PASSED'}, {strict: true}))
+    expect(wrapper.flagshipRunVerdict({...inconclusive, strict: true, completeAcceptance: true, semanticAcceptance: 'PASSED'}))
       .toEqual({passed: true, reasons: []});
     expect(wrapper.flagshipRunVerdict(inconclusive)).toEqual({passed: true, reasons: []});
     expect(wrapper.flagshipRunVerdict({...inconclusive, exitCode: 1})).toEqual({passed: false, reasons: ['verifier_exit_1']});
@@ -691,6 +688,13 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
       git: {commit: 'unknown', worktreeDirty: null}, strict: false});
     expect(missing).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED', checkGroups: null});
     expect(wrapper.flagshipRunVerdict(missing).reasons).toEqual(['report_unavailable', 'verifier_exit_1']);
+    // A timed-out run's failure artifact says INCONCLUSIVE for older readers; undelivered is FAILED here.
+    const timedOut = wrapper.buildFlagshipSummary({suiteName: 'startup', runtimeKind: 'opencode', exitCode: 1,
+      report: {schemaVersion: 'agent_sse_verification_failure@1', phase: 'analysis_stream', errorCode: 'SSE_TIMEOUT',
+        semanticAcceptance: 'INCONCLUSIVE', passed: false}, git: {commit: 'unknown', worktreeDirty: null}, strict: false});
+    expect(timedOut).toMatchObject({reportAvailable: false, semanticAcceptance: 'FAILED', proofAcceptance: 'INCOMPLETE',
+      verificationFailure: {phase: 'analysis_stream', errorCode: 'SSE_TIMEOUT'}});
+    expect(missing).not.toHaveProperty('verificationFailure');
   });
 
   it('reads a baseline file or the matching file in a baseline directory', () => {

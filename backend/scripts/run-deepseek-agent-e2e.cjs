@@ -39,6 +39,7 @@ const FLAGSHIP_SUMMARY_SCHEMA = 'agent_sse_flagship_summary@1';
 const FLAGSHIP_SUMMARY_DIR = 'test-output/e2e-baselines';
 // A baseline older than this is still compared, but only as visibly stale local diagnosis.
 const FLAGSHIP_BASELINE_STALE_MS = 14 * 24 * 60 * 60 * 1000;
+const FLAGSHIP_CHECK_GROUPS = ['value', 'proof', 'delivery'];
 const FLAGSHIP_FINGERPRINT_KEYS = ['suite', 'runtime', 'traceSha256', 'query', 'expectationHash', 'providerOrigin', 'model',
   'commit', 'gateSchemaVersion', 'verificationSchemaVersion', 'traceProcessorVersion', 'stdlibRevision'];
 const SEMANTIC_DELTA_QUERIES = [
@@ -1217,7 +1218,17 @@ function originOf(value, fallback) {
   }
 }
 
-// Provider endpoint origin and model name only: never a path, query or credential.
+function parseModelJson(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Provider endpoint origin and model name only: never a path, query or credential. Pi and
+// OpenCode take their model from the model JSON this wrapper (or the caller) supplies.
 function providerFingerprint(runtimeKind, env) {
   if (runtimeKind === 'claude-agent-sdk') {
     return {providerOrigin: originOf(env.ANTHROPIC_BASE_URL, 'anthropic-default'), model: env.CLAUDE_MODEL || 'claude-runtime-default'};
@@ -1225,7 +1236,34 @@ function providerFingerprint(runtimeKind, env) {
   if (runtimeKind === 'qoder-agent-sdk') {
     return {providerOrigin: originOf(env.QODER_BYOK_BASE_URL, 'qoder-default'), model: env.QODER_MODEL || 'qoder-runtime-default'};
   }
+  if (runtimeKind === 'pi-agent-core' && env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON) {
+    const model = parseModelJson(env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON);
+    return {providerOrigin: originOf(model.baseUrl, 'pi-default'), model: model.id || 'pi-runtime-default'};
+  }
+  if (runtimeKind === 'opencode' && env.SMARTPERFETTO_OPENCODE_MODEL_JSON) {
+    const model = parseModelJson(env.SMARTPERFETTO_OPENCODE_MODEL_JSON);
+    return {providerOrigin: originOf(model.baseURL, 'opencode-default'), model: model.modelID || 'opencode-runtime-default'};
+  }
   return {providerOrigin: originOf(env.OPENAI_BASE_URL, 'openai-default'), model: env.OPENAI_MODEL || 'openai-runtime-default'};
+}
+
+function posixRelative(filePath) {
+  return path.relative(backendRoot, path.resolve(backendRoot, filePath)).split(path.sep).join('/');
+}
+
+/** One read for baselines and reports: missing and unparsable stay distinct. */
+function readJsonFile(filePath) {
+  let text;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return {status: 'missing', path: filePath};
+  }
+  try {
+    return {status: 'ok', path: filePath, value: JSON.parse(text)};
+  } catch {
+    return {status: 'corrupt', path: filePath};
+  }
 }
 
 function gitIdentity() {
@@ -1242,18 +1280,9 @@ function flagshipSummaryFileName(suiteName, runtimeKind, runtimeSpecificOutput) 
 }
 
 function readFlagshipBaseline(baselinePath, fileName) {
-  let target = baselinePath;
-  try {
-    if (fs.statSync(baselinePath).isDirectory()) target = path.join(baselinePath, fileName);
-  } catch {
-    return {status: 'missing', path: baselinePath};
-  }
-  if (!fs.existsSync(target)) return {status: 'missing', path: target};
-  try {
-    return {status: 'ok', path: target, summary: JSON.parse(fs.readFileSync(target, 'utf8'))};
-  } catch {
-    return {status: 'corrupt', path: target};
-  }
+  const directory = fs.statSync(baselinePath, {throwIfNoEntry: false})?.isDirectory();
+  const {value, ...result} = readJsonFile(directory ? path.join(baselinePath, fileName) : baselinePath);
+  return result.status === 'ok' ? {...result, summary: value} : result;
 }
 
 function buildFlagshipSummary({suiteName, runtimeKind, report, reportPath, exitCode, provider, git, strict, now = Date.now()}) {
@@ -1274,21 +1303,23 @@ function buildFlagshipSummary({suiteName, runtimeKind, report, reportPath, exitC
     stdlibRevision: identity?.stdlibRevision ?? null,
   };
   const reportAvailable = Boolean(report && groups && typeof groups === 'object');
+  // A failure artifact (timeout, lifecycle error) still says INCONCLUSIVE for its older readers;
+  // here a run without judged groups never delivered, which is a failure, not a proof gap.
+  const failure = report?.schemaVersion === 'agent_sse_verification_failure@1'
+    ? {phase: String(report.phase ?? 'unknown'), errorCode: String(report.errorCode ?? 'unknown')} : undefined;
   return {
     schemaVersion: FLAGSHIP_SUMMARY_SCHEMA,
     generatedAt: new Date(now).toISOString(),
-    suite: suiteName,
-    runtime: runtimeKind,
     fingerprint,
-    commit: git.commit,
     worktreeDirty: git.worktreeDirty,
     ...(identity?.reportedVersion ? {traceProcessorReportedVersion: identity.reportedVersion} : {}),
-    report: reportPath ? path.relative(backendRoot, path.resolve(backendRoot, reportPath)).split(path.sep).join('/') : null,
+    report: reportPath ? posixRelative(reportPath) : null,
     reportAvailable,
+    ...(failure ? {verificationFailure: failure} : {}),
     exitCode,
     strict,
-    semanticAcceptance: report?.semanticAcceptance ?? 'FAILED',
-    proofAcceptance: report?.proofAcceptance ?? 'INCOMPLETE',
+    semanticAcceptance: reportAvailable ? report.semanticAcceptance ?? 'FAILED' : 'FAILED',
+    proofAcceptance: reportAvailable ? report.proofAcceptance ?? 'INCOMPLETE' : 'INCOMPLETE',
     observedChecksPassed: report?.observedChecksPassed === true,
     hardGatesPassed: report?.hardGatesPassed === true,
     completeAcceptance: report?.completeAcceptance === true,
@@ -1302,7 +1333,7 @@ function validFlagshipSummary(summary) {
   const object = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
   return object(summary) && summary.schemaVersion === FLAGSHIP_SUMMARY_SCHEMA && summary.reportAvailable === true &&
     object(summary.fingerprint) && Number.isFinite(Date.parse(summary.generatedAt)) && object(summary.facts) &&
-    object(summary.checkGroups) && ['value', 'proof', 'delivery'].every(group => object(summary.checkGroups[group]) &&
+    object(summary.checkGroups) && FLAGSHIP_CHECK_GROUPS.every(group => object(summary.checkGroups[group]) &&
       Object.values(summary.checkGroups[group]).every(value => typeof value === 'boolean'));
 }
 
@@ -1326,7 +1357,7 @@ function compareFlagshipSummaries(baseline, current, {now = Date.now()} = {}) {
   }
   const mismatchedKeys = FLAGSHIP_FINGERPRINT_KEYS.filter(key => key !== 'commit' && base.fingerprint[key] !== current.fingerprint[key]);
   if (mismatchedKeys.length) return {status: 'refused', reason: 'fingerprint_mismatch', mismatchedKeys};
-  const flatten = summary => Object.fromEntries(['value', 'proof', 'delivery'].flatMap(group =>
+  const flatten = summary => Object.fromEntries(FLAGSHIP_CHECK_GROUPS.flatMap(group =>
     Object.entries(summary.checkGroups[group]).map(([key, value]) => [`${group}:${key}`, value])));
   const before = flatten(base);
   const after = flatten(current);
@@ -1351,9 +1382,9 @@ function compareFlagshipSummaries(baseline, current, {now = Date.now()} = {}) {
   return {
     status: 'compared',
     evidence: 'regression_delta_only_not_acceptance',
-    baselinePath: path.relative(backendRoot, baseline.path).split(path.sep).join('/'),
+    baselinePath: posixRelative(baseline.path),
     baselineGeneratedAt: base.generatedAt,
-    stale: !(ageMs <= FLAGSHIP_BASELINE_STALE_MS),
+    stale: ageMs > FLAGSHIP_BASELINE_STALE_MS,
     commits: {baseline: base.fingerprint.commit, current: current.fingerprint.commit},
     newFailures, fixed, unchanged, added, removed, factTierChanges,
     acceptance: {semantic: {from: base.semanticAcceptance, to: current.semanticAcceptance},
@@ -1362,7 +1393,9 @@ function compareFlagshipSummaries(baseline, current, {now = Date.now()} = {}) {
 }
 
 /** Diagnostic runs follow the verifier exit code; --strict and --delta-baseline add their own requirements. */
-function flagshipRunVerdict(summary, {strict = false, delta = false} = {}) {
+function flagshipRunVerdict(summary) {
+  const strict = summary.strict === true;
+  const delta = summary.delta !== undefined;
   const reasons = [];
   if (!summary.reportAvailable) reasons.push('report_unavailable');
   if (strict && (summary.exitCode !== 0 || !summary.completeAcceptance)) reasons.push(`strict_acceptance_${summary.semanticAcceptance}`);
@@ -1389,17 +1422,11 @@ function runFlagshipSuites(options, suiteNames, runtimeKinds) {
       const baseline = options.deltaBaseline !== undefined ? readFlagshipBaseline(options.deltaBaseline, fileName) : undefined;
       const run = runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, options.timeoutMs, undefined,
         {throwOnFailure: false, extraArgs: options.strict ? ['--strict'] : []});
-      const reportFile = run.outputPath ? path.resolve(backendRoot, run.outputPath) : undefined;
-      let report;
-      try {
-        report = reportFile && fs.existsSync(reportFile) ? JSON.parse(fs.readFileSync(reportFile, 'utf8')) : undefined;
-      } catch {
-        report = undefined;
-      }
+      const report = run.outputPath ? readJsonFile(path.resolve(backendRoot, run.outputPath)).value : undefined;
       const summary = buildFlagshipSummary({suiteName, runtimeKind, report, reportPath: run.outputPath, exitCode: run.status,
         provider: run.provider, git, strict: options.strict});
       if (baseline) summary.delta = compareFlagshipSummaries(baseline, summary);
-      const verdict = flagshipRunVerdict(summary, {strict: options.strict, delta: Boolean(baseline)});
+      const verdict = flagshipRunVerdict(summary);
       summary.verdict = verdict;
       const summaryPath = path.join(backendRoot, FLAGSHIP_SUMMARY_DIR, fileName);
       writeJson(summaryPath, summary);

@@ -1357,10 +1357,12 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
     terminal.deliveryAssurance!.claims = 'coverage_incomplete';
     return terminal;
   }
-  const accept = (terminal: TerminalAnalysisEvidence, extra: {observed?: Record<string, boolean>; hard?: Record<string, boolean>;
-    strict?: boolean} = {}) => evaluateAgentSseAcceptance({task: evaluate(terminal),
-    observedChecks: {hasTerminalConclusionPayload: true, hasNoSseErrors: true, hasAnalysisCompletedEvent: true, ...extra.observed},
-    hardChecks: extra.hard ?? {}, strict: extra.strict});
+  type Checks = Record<string, boolean>;
+  const accept = (terminal: TerminalAnalysisEvidence, extra: {value?: Checks; delivery?: Checks; proof?: Checks;
+    ungrouped?: Checks; hard?: Checks; strict?: boolean} = {}) => evaluateAgentSseAcceptance({task: evaluate(terminal),
+    observedGroups: {value: {hasTerminalConclusionPayload: true, hasNoSseErrors: true, ...extra.value},
+      delivery: {hasAnalysisCompletedEvent: true, ...extra.delivery}, proof: extra.proof},
+    ungroupedChecks: extra.ungrouped ?? {}, hardChecks: extra.hard ?? {}, strict: extra.strict});
 
   it('keeps a right but unproved value at the value tier: INCONCLUSIVE, and the run exits by its hard flags', () => {
     const result = evaluate(unprovedTerminal());
@@ -1375,7 +1377,7 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
       passed: true, completeAcceptance: false});
     expect(observed.uncoveredFacets).toEqual(expect.arrayContaining(['frame_count: proposition not proved (tier=value)',
       'proof check not passed: originalClaimsVerified']));
-    const hard = accept(unprovedTerminal(), {observed: {claimVerifierPassed: false}, hard: {claimVerifierPassed: false}});
+    const hard = accept(unprovedTerminal(), {proof: {claimVerifierPassed: false}, hard: {claimVerifierPassed: false}});
     expect(hard).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', hardGatesPassed: false, passed: false});
     expect(hard.checkGroups.proof.claimVerifierPassed).toBe(false);
   });
@@ -1411,20 +1413,21 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
     expect(accept(terminalFixture(), {strict: true})).toMatchObject({semanticAcceptance: 'PASSED', proofAcceptance: 'PASSED',
       completeAcceptance: true, strict: true, passed: true, uncoveredFacets: []});
     expect(accept(unprovedTerminal(), {strict: true})).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', strict: true, passed: false});
-    expect(accept(terminalFixture(), {strict: true, observed: {analysisCompletedNotPartial: false},
+    expect(accept(terminalFixture(), {strict: true, delivery: {analysisCompletedNotPartial: false},
       hard: {analysisCompletedNotPartial: false}})).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
-    expect(evaluateAgentSseAcceptance({observedChecks: {hasNoSseErrors: true}, hardChecks: {}, strict: true}))
+    expect(evaluateAgentSseAcceptance({observedGroups: {value: {hasNoSseErrors: true}}, ungroupedChecks: {}, hardChecks: {}, strict: true}))
       .toMatchObject({semanticAcceptance: 'INCONCLUSIVE', uncoveredFacets: ['task semantics not evaluated'], passed: false});
   });
 
   it('blocks an unfinished run in the delivery group and keeps ungrouped observed gates', () => {
-    const observed = accept(terminalFixture(), {observed: {hasAnalysisCompletedEvent: false, 'requiresTool:invoke_skill': true}});
+    const observed = accept(terminalFixture(), {delivery: {hasAnalysisCompletedEvent: false}, ungrouped: {'requiresTool:invoke_skill': true}});
     expect(observed.checkGroups.delivery.hasAnalysisCompletedEvent).toBe(false);
     expect(observed).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
-    const tool = accept(terminalFixture(), {observed: {'requiresTool:invoke_skill': false}});
+    const tool = accept(terminalFixture(), {ungrouped: {'requiresTool:invoke_skill': false}});
     expect(tool.ungroupedChecks).toEqual({'requiresTool:invoke_skill': false});
     expect(tool).toMatchObject({semanticAcceptance: 'PASSED', observedChecksPassed: false, passed: false});
-    expect(evaluateAgentSseAcceptance({task: evaluate(), observedChecks: {}, hardChecks: {}, additionalGatesPassed: false}).passed)
+    expect(evaluateAgentSseAcceptance({task: evaluate(), observedGroups: {}, ungroupedChecks: {}, hardChecks: {},
+      additionalGatesPassed: false}).passed)
       .toBe(false);
   });
 
@@ -1515,6 +1518,18 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
       resolveProcessor: async () => {throw new Error('boom');}});
     expect(failed).toMatchObject({traceSha256: null, expectationHash: null, stdlibRevision: null,
       traceProcessorVersion: 'unknown:identity_resolution_failed'});
+  });
+
+  it('leaves the quick frame expectation and every earlier flat check key in place', () => {
+    const wrapper = require('../../../scripts/run-deepseek-agent-e2e.cjs');
+    const quick = wrapper.frameFactExpectation({taskKind: 'investigation', withJank: true});
+    expect(quick.intent).toEqual({sceneId: 'scrolling', taskKind: 'investigation', scope: 'bounded_question', deliverable: 'answer'});
+    expect(quick.facts.map((fact: any) => [fact.id, fact.columns, fact.verification, fact.unit]))
+      .toEqual([['total_frames', ['total_frames'], 'proved', 'frames'], ['jank_frames', ['jank_frames'], 'proved', 'frames']]);
+    const keys = Object.keys(evaluateAgentSseExpectation({expectation: parseAgentSseExpectation(quick), traceId: 'trace'}).checks);
+    expect(keys).toEqual(expect.arrayContaining(['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed',
+      'deliveryIdentityPassed', 'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified',
+      'intent:sceneId', 'intent:taskKind', 'intent:scope', 'intent:deliverable', 'fact:total_frames', 'fact:jank_frames']));
   });
 
   it('parses --strict and keeps it away from the scene route', () => {

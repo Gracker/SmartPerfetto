@@ -59,6 +59,7 @@ import {
 import {isTerminalSseEvent} from '../assistant/stream/sessionSseReplay';
 import {createSceneSseObservation, recordSceneSseEvent, evaluateSceneSseVerification, SCENE_RUN_TERMINAL_EVENTS, parseSceneOracleSpecs, collectSceneOracleRows, evaluateSceneOracleRows, type SceneOracleSpec, type SceneOracleObservation, type SceneSseObservation} from './sceneSseVerification';
 import {rowObject} from '../utils/traceProcessorRowUtils';
+import {stableStringify} from '../utils/stableJson';
 
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
 type SmartAction = 'preview' | 'analyze';
@@ -935,8 +936,7 @@ export function evaluateAgentSseExpectation(input: {
   const legacy: Record<string, boolean> = {
     deliveryClaimsPassed: proof.deliveryClaimsVerified,
     deliverySourcePassed: proof.deliverySourceVerified,
-    deliveryReportPassed: reportDeliverable
-      ? assurance?.report === 'passed' : assurance?.report === 'passed' || assurance?.report === 'not_applicable',
+    deliveryReportPassed: delivery.deliveryReportPassed ?? (assurance?.report === 'passed' || assurance?.report === 'not_applicable'),
   };
   for (const [key, expected] of Object.entries(expectation.intent)) {
     value[`intent:${key}`] = terminal?.turnIntent?.[key as keyof AnalysisTurnIntent] === expected;
@@ -1027,21 +1027,6 @@ export function evaluateAgentSseExpectation(input: {
       ...expectation.facts.filter(fact => fact.verification === 'reference_only').map(fact => `${fact.id}: proposition proof unavailable`)]};
 }
 
-/** Observed (non-task) checks that belong to a group; any other observed check is ungrouped but still gates. */
-const OBSERVED_CHECK_GROUPS: Readonly<Record<string, keyof AgentSseCheckGroups>> = {
-  hasTerminalConclusionPayload: 'value',
-  hasNoSseErrors: 'value',
-  hasAnalysisCompletedEvent: 'delivery',
-  analysisCompletedNotPartial: 'delivery',
-  hasClaimVerifierResult: 'proof',
-  claimVerifierPassed: 'proof',
-  claimVerifierHasNoUnsupportedClaims: 'proof',
-};
-
-function observedCheckGroup(key: string): keyof AgentSseCheckGroups | undefined {
-  return key.startsWith('forbidsDegradedFallback:') ? 'value' : OBSERVED_CHECK_GROUPS[key];
-}
-
 /**
  * The run's verdict. Value or delivery failures FAIL the run; proof gaps leave it INCONCLUSIVE.
  * Hard flags (`--require-claim-verifier-ok`, `--require-non-partial`) still decide the exit code
@@ -1049,9 +1034,11 @@ function observedCheckGroup(key: string): keyof AgentSseCheckGroups | undefined 
  */
 export function evaluateAgentSseAcceptance(input: {
   task?: Pick<ReturnType<typeof evaluateAgentSseExpectation>, 'checkGroups' | 'facts' | 'uncoveredFacets'>;
-  /** Every non-task check the run computed, including the hard-flag checks. */
-  observedChecks: Record<string, boolean>;
-  /** The checks requested by hard flags; they are also members of `observedChecks`. */
+  /** Non-task checks, grouped where they are built. */
+  observedGroups: Partial<AgentSseCheckGroups>;
+  /** Other observed checks: they still gate the run but say nothing about value, proof or delivery. */
+  ungroupedChecks: Record<string, boolean>;
+  /** The checks requested by hard flags; they are also members of a group. */
   hardChecks: Record<string, boolean>;
   /** Gates outside the check map (full-mode shape, follow-up turn). */
   additionalGatesPassed?: boolean;
@@ -1069,26 +1056,25 @@ export function evaluateAgentSseAcceptance(input: {
   passed: boolean;
 } {
   const groups: AgentSseCheckGroups = {
-    value: {...input.task?.checkGroups.value}, proof: {...input.task?.checkGroups.proof},
-    delivery: {...input.task?.checkGroups.delivery},
+    value: {...input.task?.checkGroups.value, ...input.observedGroups.value},
+    proof: {...input.task?.checkGroups.proof, ...input.observedGroups.proof},
+    delivery: {...input.task?.checkGroups.delivery, ...input.observedGroups.delivery},
   };
-  const ungroupedChecks: Record<string, boolean> = {};
-  for (const [key, passed] of Object.entries(input.observedChecks)) {
-    const group = observedCheckGroup(key);
-    if (group) groups[group][key] = passed;
-    else ungroupedChecks[key] = passed;
-  }
+  const {ungroupedChecks} = input;
   const all = (checks: Record<string, boolean>) => Object.values(checks).every(Boolean);
   const hardGatesPassed = all(input.hardChecks);
   const observedChecksPassed = all(groups.value) && all(groups.delivery) && hardGatesPassed && all(ungroupedChecks) &&
     input.additionalGatesPassed !== false;
   const uncoveredFacets = [...(input.task?.uncoveredFacets ?? ['task semantics not evaluated'])];
+  const factProofKeys = new Set<string>();
+  for (const [id, fact] of Object.entries(input.task?.facts ?? {})) {
+    const key = `fact:${id}:proved`;
+    if (!(key in groups.proof)) continue;
+    factProofKeys.add(key);
+    if (fact.tier !== 'proved') uncoveredFacets.push(`${id}: proposition not proved (tier=${fact.tier})`);
+  }
   for (const [key, passed] of Object.entries(groups.proof)) {
-    if (passed) continue;
-    const factId = /^fact:(.+):proved$/.exec(key)?.[1];
-    uncoveredFacets.push(factId
-      ? `${factId}: proposition not proved (tier=${input.task?.facts[factId]?.tier ?? 'none'})`
-      : `proof check not passed: ${key}`);
+    if (!passed && !factProofKeys.has(key)) uncoveredFacets.push(`proof check not passed: ${key}`);
   }
   const semanticAcceptance: AgentSseSemanticAcceptance = !(all(groups.value) && all(groups.delivery)) ? 'FAILED'
     : uncoveredFacets.length ? 'INCONCLUSIVE' : 'PASSED';
@@ -1099,18 +1085,9 @@ export function evaluateAgentSseAcceptance(input: {
     passed: strict ? completeAcceptance : observedChecksPassed};
 }
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.keys(value).sort().filter(key => (value as Record<string, unknown>)[key] !== undefined)
-      .map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** Content hash of the parsed expectation; the same facts give the same hash wherever the file lives. */
 export function agentSseExpectationHash(expectation: AgentSseExpectation): string {
-  return createHash('sha256').update(canonicalJson(expectation)).digest('hex');
+  return createHash('sha256').update(stableStringify(expectation)).digest('hex');
 }
 
 /** Bundled binaries are keyed by their pinned revision, custom ones by their bytes; `--version` text is not a key. */
@@ -1144,11 +1121,11 @@ export async function resolveAgentSseRunIdentity(input: {
   resolveTrace?: typeof resolveCapabilityTraceIdentity;
   resolveProcessor?: typeof resolveCapabilityTraceProcessorIdentity;
 } = {}): Promise<AgentSseRunIdentity> {
-  const trace = await (dependencies.resolveTrace ?? resolveCapabilityTraceIdentity)({
-    source: 'local_file', filePath: input.tracePath, traceSide: 'current'});
-  const processor: CapabilityManifestTraceProcessorIdentityV1 = await (dependencies.resolveProcessor ??
-    resolveCapabilityTraceProcessorIdentity)(input.processorInput ?? {source: 'external_rpc'})
-    .catch(() => ({source: 'unknown' as const, unavailableReason: 'identity_resolution_failed' as const}));
+  const [trace, processor] = await Promise.all([
+    (dependencies.resolveTrace ?? resolveCapabilityTraceIdentity)({source: 'local_file', filePath: input.tracePath, traceSide: 'current'}),
+    (dependencies.resolveProcessor ?? resolveCapabilityTraceProcessorIdentity)(input.processorInput ?? {source: 'external_rpc'})
+      .catch((): CapabilityManifestTraceProcessorIdentityV1 => ({source: 'unknown', unavailableReason: 'identity_resolution_failed'})),
+  ]);
   return {schemaVersion: 1, gateSchemaVersion: AGENT_SSE_GATE_SCHEMA_VERSION,
     verificationSchemaVersion: AGENT_SSE_VERIFICATION_SCHEMA_VERSION, runtime: input.runtime, query: input.query,
     traceSha256: trace.status === 'ready' ? trace.identity.fingerprintSha256 : null,
@@ -3717,14 +3694,18 @@ async function main(): Promise<void> {
       ...externalIssueChecks,
     };
     // Task proof checks no longer fail an observed run by themselves; evaluateAgentSseAcceptance groups them.
-    const observedChecks: Record<string, boolean> = {
-      ...requiredChecks,
+    const {hasTerminalConclusionPayload, hasNoSseErrors, hasAnalysisCompletedEvent, ...otherRequiredChecks} = requiredChecks;
+    const observedGroups: Partial<AgentSseCheckGroups> = {
+      value: {hasTerminalConclusionPayload, hasNoSseErrors, ...degradedFallbackChecks},
+      delivery: {hasAnalysisCompletedEvent, ...partialChecks},
+      proof: claimVerifierChecks,
+    };
+    const ungroupedChecks: Record<string, boolean> = {
+      ...otherRequiredChecks,
       ...dualTraceChecks,
       ...modeExpectationChecks,
       ...conclusionEvidenceChecks,
       ...codeReferenceChecks,
-      ...claimVerifierChecks,
-      ...partialChecks,
       ...finalReportHeadingChecks,
       ...processNarrationChecks,
       ...conclusionLengthChecks,
@@ -3733,7 +3714,6 @@ async function main(): Promise<void> {
       ...requiredToolChecks,
       ...requiredSuccessfulLookupChecks,
       ...requiredSkillChecks,
-      ...degradedFallbackChecks,
       ...dataEnvelopeChecks,
       ...quickRunChecks,
       ...externalIssueChecks,
@@ -3797,7 +3777,7 @@ async function main(): Promise<void> {
         summary: followUpSse,
       };
     }
-    const acceptance = evaluateAgentSseAcceptance({task: taskVerification, observedChecks,
+    const acceptance = evaluateAgentSseAcceptance({task: taskVerification, observedGroups, ungroupedChecks,
       hardChecks: {...claimVerifierChecks, ...partialChecks}, additionalGatesPassed: fullModePassed && followUpPassed,
       strict: options.strict});
     const passed = acceptance.passed;
@@ -3890,12 +3870,22 @@ async function main(): Promise<void> {
 }
 
 if (require.main === module) {
+  let settled = false;
+  // Node exits 0 when the loop drains under a pending await: no verdict and no report, which
+  // callers that only read the exit code would count as a pass. A settled main exits explicitly.
+  process.once('beforeExit', () => {
+    if (settled) return;
+    console.error('verification_unsettled: the event loop drained before a verdict was written');
+    process.exit(1);
+  });
   main().then(() => {
+    settled = true;
     // The verdict and artifacts are written; trace processors, SDK children and keep-alive
     // sockets would otherwise hold the loop open, so batch callers needed an external watchdog.
     TraceProcessorFactory.cleanup();
     process.stdout.write('', () => process.exit(process.exitCode ?? 0));
   }, (error) => {
+    settled = true;
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
   });
