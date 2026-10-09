@@ -340,7 +340,8 @@ they neither trigger automatic continuation nor determine answer completeness al
 **Scene entry evidence (product-owned).** Strategy frontmatter may declare
 `entry_skill` (a Skill id plus closed parameter bindings: `focus_app`,
 `user_target`, `trace_start`, `trace_end`, `selection_start`, `selection_end`).
-For a resolved `scene_wide` `read_new` investigation (not a comparison), every
+For a resolved `scene_wide` `read_new` investigation of a mounted trace (no
+comparison turn and no reference trace), every
 runtime's preflight runs that Skill (`agentRuntime/sceneEntryEvidence.ts`)
 before it builds the acquisition-capable MCP server. A package binding takes only
 a user-named package or a high/medium focus app, and the Skill's own identity

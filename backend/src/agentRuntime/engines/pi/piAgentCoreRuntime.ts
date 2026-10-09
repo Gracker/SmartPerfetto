@@ -2087,6 +2087,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
     const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
       policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
       selectionContext: options.selectionContext, outputLanguage, canInvokeTool, executionLease, runAuthorization,

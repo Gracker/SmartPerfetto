@@ -75,6 +75,13 @@ export interface SceneEntryEvidenceInput {
   /** The run id the MCP registry would bind; observations and captures join under it. */
   runId?: string;
   traceId: string;
+  /** The run's reference trace, when it compares two traces. */
+  referenceTraceId?: string;
+  /**
+   * The MCP server's `conversationTraceAttached`: false for a conversation with
+   * no mounted trace, whose registry registers no acquisition tool at all.
+   */
+  conversationTraceAttached?: boolean;
   turnIntent: AnalysisTurnIntent;
   policy: Pick<RuntimeTurnPolicy, 'allowNewEvidence'>;
   strategyRegistry: ReadonlyStrategyRegistrySnapshot;
@@ -156,7 +163,7 @@ export type SceneEvidenceCellTuple = [string, number, string, unknown, string | 
 
 /** Reasons the model never needs to hear about: nothing was declared or asked for. */
 const SILENT_REASONS: ReadonlySet<SceneEntryNotRunReason> =
-  new Set(['no_entry_skill', 'not_scene_wide', 'comparison_turn', 'existing_only']);
+  new Set(['no_entry_skill', 'not_scene_wide', 'comparison_turn', 'no_trace', 'existing_only']);
 
 function emptyOutcome(status: 'ran' | 'not_run', extra: Partial<SceneEntryEvidenceOutcome> = {}): SceneEntryEvidenceOutcome {
   return {status, artifacts: [], keyCells: [], summaryCells: [], artifactCount: 0,
@@ -282,8 +289,12 @@ export async function acquireSceneEntryEvidence(input: SceneEntryEvidenceInput):
   // 1. Request scope, decided as the registry decides it for invoke_skill.
   if (intent.scope !== 'scene_wide') return notRun('not_scene_wide');
   // The entry Skill reads the current trace only; a comparison reads both sides
-  // through its own tools, and its prompt has no budget for one-sided overview cells.
-  if (intent.taskKind === 'comparison') return notRun('comparison_turn');
+  // through its own tools, and its prompt has no budget for one-sided overview
+  // cells. A run with a reference trace carries that comparison context whatever
+  // the turn's task kind, so it is a comparison turn too.
+  if (intent.taskKind === 'comparison' || input.referenceTraceId) return notRun('comparison_turn');
+  // A trace-less conversation registers no acquisition tool; there is nothing to read.
+  if (input.conversationTraceAttached === false) return notRun('no_trace');
   if (intent.evidenceAccess !== 'read_new' || !isToolAllowedForScope(ENTRY_SKILL_TOOL_ACCESS,
     {sessionId: '', hasCodebaseAccess: false, allowNewEvidence: input.policy.allowNewEvidence})) {
     return notRun('existing_only');

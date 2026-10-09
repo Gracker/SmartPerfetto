@@ -3173,6 +3173,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ? `${prompt}\n\n${extraSystemPrompt}` : prompt;
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
     const sceneEvidence = await collectSceneEvidenceForPrompt({runId, traceId, turnIntent, policy: turnPolicy,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
       strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.input.traceProcessorService, artifactStore, focusTarget,
       userPackageName: options.packageName, selectionContext: options.selectionContext, outputLanguage, canInvokeTool,

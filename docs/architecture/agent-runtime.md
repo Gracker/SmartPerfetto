@@ -215,7 +215,7 @@ override 时、在其自身查询完成后，经共享缓存的 `traceVendorReso
 
 **场景入口证据（产品采集）。** 策略 frontmatter 可声明 `entry_skill`（Skill id + 闭合参数绑定：
 `focus_app`/`user_target`/`trace_start`/`trace_end`/`selection_start`/`selection_end`）。已解析的
-`scene_wide`、`read_new` investigation（不含 comparison）在五个 runtime 的预检中、构造带取证工具的
+`scene_wide`、`read_new` investigation（须挂载 trace；不含 comparison 回合或带参考 trace 的运行）在五个 runtime 的预检中、构造带取证工具的
 MCP server 之前，由产品运行该 Skill（`agentRuntime/sceneEntryEvidence.ts`）：包名绑定只接受用户包名或
 high/medium 焦点，并须经 Skill 自身的身份门（`prepareInvocation`）`verified` 才运行，`ambiguous` 时只把候选
 写进提示。它与模型的 `invoke_skill` 共用核心层 `agentv3/skillRunCore.ts`，同参数产生同样的 evidenceRefId、

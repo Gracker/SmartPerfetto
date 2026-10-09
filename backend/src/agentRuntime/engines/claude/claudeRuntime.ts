@@ -2504,10 +2504,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       precomputed.runActivity?.active !== false && !executionLease?.signal.aborted;
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
     const sceneEvidence = await collectSceneEvidenceForPrompt({runId: precomputed.runId, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
       policy: turnPolicy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
       selectionContext: options.selectionContext, outputLanguage: runtimeConfig.outputLanguage, canInvokeTool,
-      executionLease, runAuthorization: precomputed.runAuthorization, runtimePerformance});
+      executionLease, runAuthorization: precomputed.runAuthorization, deadlineMs: precomputed.sceneDeadlineMs,
+      runtimePerformance});
     executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,

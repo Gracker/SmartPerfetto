@@ -1354,11 +1354,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const canInvokeTool = () => runtime.isActive?.() !== false && !executionLease?.signal.aborted;
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
     const sceneEvidence = await collectSceneEvidenceForPrompt({runId: runtime.runId, traceId,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
       turnIntent: runtime.turnIntent, policy, strategyRegistry: runtime.strategyRegistry,
       skillRegistry: effectiveSkillRegistry, skillExecutor, traceProcessorService: this.traceProcessorService,
       artifactStore, focusTarget, userPackageName: options.packageName, selectionContext: options.selectionContext,
       outputLanguage: config.outputLanguage, canInvokeTool, executionLease, runAuthorization: runtime.runAuthorization,
-      runtimePerformance: runtime.runtimePerformance});
+      deadlineMs: runtime.sceneDeadlineMs, runtimePerformance: runtime.runtimePerformance});
     executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: runtime.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,

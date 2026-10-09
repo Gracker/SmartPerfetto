@@ -719,7 +719,8 @@ Important whitelisted examples:
   vendor override, after that Skill's own queries. `allowMemoryPrefetch`
   gates the memory tier only. Product-owned scene entry evidence
   (`agentRuntime/sceneEntryEvidence.ts`) is a separate preflight step: a
-  resolved `scene_wide` `read_new` investigation (not a comparison) whose
+  resolved `scene_wide` `read_new` investigation of a mounted trace (no comparison
+  turn, no reference trace) whose
   strategy declares `entry_skill` has that Skill run before the
   acquisition-capable MCP server exists, through the shared core
   (`agentv3/skillRunCore.ts`) and only under a `verified` identity gate. It is

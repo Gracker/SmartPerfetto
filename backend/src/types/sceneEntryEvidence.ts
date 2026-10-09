@@ -27,7 +27,7 @@ export interface StrategyEntrySkill {
 
 /** Why the entry Skill did not run. One closed set for the helper, prompt, receipt and tests. */
 export const SCENE_ENTRY_NOT_RUN_REASONS = [
-  'no_entry_skill', 'not_scene_wide', 'comparison_turn', 'existing_only', 'acquisition_closed', 'cancelled',
+  'no_entry_skill', 'not_scene_wide', 'comparison_turn', 'no_trace', 'existing_only', 'acquisition_closed', 'cancelled',
   'authorization_revoked', 'target_unresolved', 'identity_ambiguous', 'capability_missing', 'timeout', 'failed',
 ] as const;
 export type SceneEntryNotRunReason = typeof SCENE_ENTRY_NOT_RUN_REASONS[number];

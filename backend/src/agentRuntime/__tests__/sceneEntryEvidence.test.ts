@@ -143,6 +143,8 @@ describe('product-owned scene entry evidence', () => {
   it.each([
     ['a bounded question', {intent: {scope: 'bounded_question' as const}}, 'not_scene_wide'],
     ['a comparison', {intent: {taskKind: 'comparison' as const}}, 'comparison_turn'],
+    ['a run with a reference trace', {overrides: {referenceTraceId: 'trace-reference'}}, 'comparison_turn'],
+    ['a trace-less conversation', {overrides: {conversationTraceAttached: false}}, 'no_trace'],
     ['an existing_only turn', {intent: {evidenceAccess: 'existing_only' as const}}, 'existing_only'],
     ['a policy that admits no new evidence', {overrides: {policy: {allowNewEvidence: false}}}, 'existing_only'],
     ['a closed run', {overrides: {canInvokeTool: () => false}}, 'acquisition_closed'],
@@ -327,7 +329,7 @@ describe('scene_evidence prompt data', () => {
   });
 
   it('says nothing for reasons the model need not act on', () => {
-    for (const reason of ['no_entry_skill', 'not_scene_wide', 'comparison_turn', 'existing_only'] as const) {
+    for (const reason of ['no_entry_skill', 'not_scene_wide', 'comparison_turn', 'no_trace', 'existing_only'] as const) {
       expect(buildSceneEvidencePromptData({...outcome([], []), status: 'not_run', reason})).toBeUndefined();
     }
     expect(buildSceneEvidencePromptData({...outcome([], []), status: 'not_run', reason: 'timeout'}))
