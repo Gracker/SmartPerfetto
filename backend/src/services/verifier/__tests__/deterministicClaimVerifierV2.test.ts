@@ -393,6 +393,28 @@ describe('finite numeric.cell proof', () => {
     expect(verify(claim([nullValue], {semantics: semantics(nullValue)})).deterministicProof.reason).toBe('exact_numeric_value_unavailable');
   });
 
+  it.each([
+    {producerUnit: 'frames', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'events', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'frame', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'event', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'count', declaredUnit: 'frames', status: 'rejected'},
+    {producerUnit: 'events', declaredUnit: 'frames', status: 'rejected'},
+    {producerUnit: 'frames', declaredUnit: 'events', status: 'rejected'},
+    {producerUnit: 'count', declaredUnit: 'events', status: 'rejected'},
+    {producerUnit: 'ns', declaredUnit: 'count', status: 'rejected'},
+    {producerUnit: 'bytes', declaredUnit: 'count', status: 'rejected'},
+    {producerUnit: 'Hz', declaredUnit: 'count', status: 'rejected'},
+    {producerUnit: '%', declaredUnit: 'count', status: 'rejected'},
+  ])('keeps declared $declaredUnit against producer $producerUnit one-directional at 1:1', ({producerUnit, declaredUnit, status}) => {
+    const evidence = metric({row: {value: 42}, expected: 42, fields: {value: literal({unit: producerUnit})}});
+    const result = verify(claim([evidence], {semantics: semantics(evidence, {
+      numeric: {operator: 'eq', value: 42, unit: declaredUnit},
+    })}));
+    expect(result.deterministicProof.status).toBe(status);
+    if (status === 'rejected') expect(result.deterministicProof.reason).toBe('unit_dimension_mismatch');
+  });
+
   it('does not guess rounding and handles decimal exponents with exact arithmetic', () => {
     const precise = metric({row: {value: '0.000001'}, expected: '0.000001'});
     expect(verify(claim([precise], {semantics: semantics(precise, {numeric: {operator: 'eq', value: '1e-3', unit: 'us'}})})).status)
@@ -648,6 +670,28 @@ describe('finite comparison.delta proof', () => {
     const prior = metric({id: 'prior', side: 'reference', fields: {}, beforeCapture: sameParams});
     expect(verify(comparison(current, prior)).deterministicProof.reason).toBe('comparison_metric_authority_unknown');
   });
+
+  it.each([
+    // Producer sides stay strictly same-dimension; only a generic declared
+    // `count` widens to the counted producer dimension, at 1:1.
+    {leftUnit: 'frames', rightUnit: 'frames', declaredUnit: 'count', status: 'proved'},
+    {leftUnit: 'events', rightUnit: 'events', declaredUnit: 'count', status: 'proved'},
+    {leftUnit: 'frames', rightUnit: 'events', declaredUnit: 'count', status: 'rejected'},
+    {leftUnit: 'events', rightUnit: 'frames', declaredUnit: 'count', status: 'rejected'},
+    {leftUnit: 'count', rightUnit: 'frames', declaredUnit: 'count', status: 'rejected'},
+    {leftUnit: 'frames', rightUnit: 'frames', declaredUnit: 'events', status: 'rejected'},
+    {leftUnit: 'frames', rightUnit: 'frames', declaredUnit: 'count', mismatch: true, status: 'rejected'},
+  ])('keeps cited delta units strict between producers while declared $declaredUnit only widens generically',
+    ({leftUnit, rightUnit, declaredUnit, mismatch, status}) => {
+      const current = metric({id: 'current', row: {value: 2}, expected: 2, fields: {value: comparable({unit: leftUnit})}});
+      const prior = metric({id: 'prior', side: 'reference', row: {value: 1}, expected: 1, fields: {value: comparable({unit: rightUnit})}});
+      const result = verify(claim([current, prior], {kind: 'comparison', semantics: semantics(current, {
+        predicate: 'comparison.delta', numeric: {operator: 'eq', value: mismatch ? 5 : 1, unit: declaredUnit},
+        scope: {population: 'cited_rows', subjectRefs: [reference(current, 'value')], objectRefs: [reference(prior, 'value')]},
+      })}));
+      expect(result.deterministicProof.status).toBe(status);
+      if (status === 'rejected' && !mismatch) expect(result.deterministicProof.reason).toBe('unit_dimension_mismatch');
+    });
 });
 
 describe('supported deterministic rule catalog', () => {

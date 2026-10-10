@@ -1467,6 +1467,27 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
     expect(evaluate(terminal).facts.frame_count.tier).toBe('value');
   });
 
+  it.each([
+    // Generic declared/cell `count` accepts any counted oracle dimension at 1:1.
+    {declared: 'count', cell: 'count', oracle: 'events', bound: true},
+    // A concrete declaration or cell never accepts a generic or different counted oracle unit.
+    {declared: 'frames', cell: 'frames', oracle: 'count', bound: false},
+    {declared: 'count', cell: 'frames', oracle: 'events', bound: false},
+    {declared: 'events', cell: 'events', oracle: 'frames', bound: false},
+  ] as const)('binds declared $declared and cell $cell against oracle $oracle only one-directionally',
+    ({declared, cell, oracle, bound}) => {
+      const terminal = terminalFixture();
+      terminal.conclusionContract!.claims![0].semantics!.numeric!.unit = declared;
+      terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
+      terminal.claimSupport![0].anchors[0].cells![0].unit = cell;
+      const counted = parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
+        oracle: {...expectation.facts[0].oracle!, unit: oracle}}]});
+      const result = evaluateAgentSseExpectation({terminal, expectation: counted, traceId: 'trace-current',
+        oracleRows: {frame_count: [{total_frames: 1912}]}});
+      expect(result.facts.frame_count.tier === 'none').toBe(!bound);
+      expect(result.checks['fact:frame_count']).toBe(bound);
+    });
+
   it('binds a categorical startup_type to the oracle row of the same startup and process', () => {
     const startup = parseAgentSseExpectation({schemaVersion: 1, intent: {sceneId: 'startup', deliverable: 'report'}, facts: [{
       id: 'startup_type', kind: 'categorical', columns: ['startup_type'], verification: 'reference_only',

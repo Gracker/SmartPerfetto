@@ -60,6 +60,7 @@ import {isTerminalSseEvent} from '../assistant/stream/sessionSseReplay';
 import {createSceneSseObservation, recordSceneSseEvent, evaluateSceneSseVerification, SCENE_RUN_TERMINAL_EVENTS, parseSceneOracleSpecs, collectSceneOracleRows, evaluateSceneOracleRows, type SceneOracleSpec, type SceneOracleObservation, type SceneSseObservation} from './sceneSseVerification';
 import {rowObject} from '../utils/traceProcessorRowUtils';
 import {stableStringify} from '../utils/stableJson';
+import {countedUnitDimension, declaredUnitAcceptsProducerDimension} from '../services/verifier/claimUnits';
 
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
 type SmartAction = 'preview' | 'analyze';
@@ -805,9 +806,11 @@ function factValueEquals(actual: unknown, actualUnit: string | undefined, expect
   if (left === undefined || right === undefined || !actualUnit || !expectedUnit) return false;
   if (actualUnit === expectedUnit) return left === right;
   const timeScale: Record<string, number> = {ns: 1, us: 1_000, ms: 1_000_000, s: 1_000_000_000};
-  // A frame count may be declared in frames or as a plain count; the fact's columns say what is counted.
-  const frameCount = ['frame', 'frames', 'count'];
-  if (frameCount.includes(actualUnit) && frameCount.includes(expectedUnit)) return left === right;
+  // The actual side is the declared (or captured cell) unit, the expected side
+  // the oracle producer unit: a generic `count` accepts the producer's counted
+  // dimension (frames/events) at 1:1, never the reverse and never frames<->events.
+  const producerDimension = countedUnitDimension(expectedUnit);
+  if (producerDimension !== undefined && declaredUnitAcceptsProducerDimension(actualUnit, producerDimension)) return left === right;
   return Boolean(actualUnit && expectedUnit && timeScale[actualUnit] && timeScale[expectedUnit] &&
     left * timeScale[actualUnit] === right * timeScale[expectedUnit]);
 }
@@ -986,7 +989,8 @@ export function evaluateAgentSseExpectation(input: {
             return values.some(row => {
               const expected = fact.oracle ? row[fact.oracle.column] : row.value;
               const unit = fact.oracle?.unit ?? fact.unit;
-              if (fact.value !== undefined && !factValueEquals(expected, unit, fact.value, fact.unit)) return false;
+              // The expectation declares (fact.value/fact.unit); the oracle row produces (expected/unit).
+              if (fact.value !== undefined && !factValueEquals(fact.value, fact.unit, expected, unit)) return false;
               // Native row identity is proof data; the value tier binds the anchor's own time and process.
               const nativeMatch = requireProof ? nativeOracleAnchorMatches({fact, proof: claimProof, anchor, oracleRow: row,
                 schema: input.oracleNativeSchemas?.[fact.id], traceId: factTraceId}) : undefined;
