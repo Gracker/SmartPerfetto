@@ -138,6 +138,27 @@ describe('product-owned scene entry evidence', () => {
       .toEqual([['freq', 1234], ['status', 'observed']]);
   });
 
+  it('carries a producer-declared counted unit through capture fields and column units to the scene_evidence tuple', async () => {
+    const frames: InvestigationEvidenceDeclaration = {window: {start: 'start', end: 'end'},
+      identity: {upid: 'upid', utid: 'utid'}, metrics: [{domain: 'frame_production', metric_id: 'render.fixture.frames',
+        value: 'freq', unit: 'frames', status: 'status'}]};
+    const h = harness({skill: entrySkillDefinition({investigation_evidence: frames} as Partial<SkillDefinition>)});
+    const outcome = await h.run();
+    expect(outcome.status).toBe('ran');
+    // (a) The registered capture keeps the producer-declared field semantics.
+    const [resolved] = await h.store.createEvidenceReadView({ownerKey: 'owner', currentRunId: RUN,
+      allowedTraces: [{traceId: TRACE, traceSide: 'current'}]})
+      .resolveReferences([{key: 'scene-entry-unit', reference: {artifactId: 'art-1', rowIndex: 0, column: 'freq'},
+        requiredColumns: ['freq']}]);
+    expect(resolved).toMatchObject({status: 'resolved', record: {fields: {freq: {unit: 'frames',
+      metricId: 'render.fixture.frames', origin: {kind: 'skill_literal'}}}}});
+    // (b) The model column-unit projection and the outcome cell keep the same unit.
+    expect(outcome.keyCells).toEqual(expect.arrayContaining([expect.objectContaining({column: 'freq', unit: 'frames'})]));
+    // (c) The scene_evidence tuple's fifth field is the producer-declared unit.
+    const tuple = buildSceneEvidencePromptData(outcome)!.cells!.key.find(([, , column]) => column === 'freq');
+    expect(tuple?.[4]).toBe('frames');
+  });
+
   it('uses invoke_skill\'s registered access for the request-scope guard', () => {
     expect(ENTRY_SKILL_TOOL_ACCESS).toEqual({exposure: 'public', evidenceEffect: 'acquire'});
   });

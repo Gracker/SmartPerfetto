@@ -119,6 +119,8 @@ function schemas(strict: boolean) {
     rowSelector: scalarRecord.optional(), column: z.string(), value: nullableScalar.optional(),
     actualValue: nullableScalar.optional(), isSqlNull: z.boolean().optional(), displayValue: z.string().optional(),
     unit: z.string().optional(),
+    producer: object({skillId: z.string(), stepId: z.string(), metricId: z.string(),
+      aggregation: z.string().optional()}).optional(),
   });
   const evidenceIdentity = object({
     packageName: z.string().optional(), processName: z.string().optional(), threadName: z.string().optional(),

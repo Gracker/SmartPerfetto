@@ -727,6 +727,24 @@ function buildCell(ref: ConclusionContractClaimReference, row: Record<string, un
 }
 
 /**
+ * Producer-declared metric identity of the cited column, read from the issued
+ * read resolution's captured field semantics (not the anchor's witness map, so
+ * the binding order below stays untouched). Only a complete tuple is
+ * projected: a declaration missing skill, step or metric leaves the cell
+ * without producer identity, and a column no producer declared (model-written
+ * SQL) never gains one. The cell is frozen with its anchor once the read
+ * binds, which is why this runs before that binding.
+ */
+function enrichCellProducer(cell: EvidenceCellV1 | undefined, resolution: EvidenceReadResolution | undefined): void {
+  if (!cell || resolution?.status !== 'resolved') return;
+  const field = resolution.record.fields[cell.column];
+  const {skillId, stepId} = field?.origin ?? {};
+  if (!field?.metricId || !skillId || !stepId) return;
+  cell.producer = {skillId, stepId, metricId: field.metricId,
+    ...(field.aggregation ? {aggregation: field.aggregation} : {})};
+}
+
+/**
  * Qualifiers an evidence row declares about itself.
  *
  * Skills emit these as ordinary columns — "this count is not a frame count",
@@ -801,6 +819,7 @@ function buildAnchor(
   const meta = envelope.meta || {};
   const artifactId = ref.artifactId || ref.sourceArtifactId || (meta as any).artifactId || (meta as any).sourceArtifactId;
   const cell = buildCell(ref, row);
+  enrichCellProducer(cell, match.readResolution);
   const declaredQualifiers = rowDeclaredQualifiers(row);
   const scopeProvenance = ref.column
     ? scopeProvenanceForFields(meta.scopeProvenance, [ref.column])

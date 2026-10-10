@@ -36,7 +36,7 @@ import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {hasSourceCitation} from '../services/codebase/sourceCitations';
 import {sanitizeSourceUseDecision, type SourceClaimBindingV1, type SourceUseDecisionV1} from '../services/codebase/sourceUseDecision';
 import type {ClaimVerificationResult, ClaimVerificationClaimResult} from '../types/claimVerification';
-import type {ClaimSupportV1, EvidenceAnchorV1} from '../types/evidenceContract';
+import type {ClaimSupportV1, EvidenceAnchorV1, EvidenceCellV1} from '../types/evidenceContract';
 import type {AnalysisDeliveryAssurance, AnalysisCompletion} from '../types/analysisDelivery';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
@@ -60,6 +60,7 @@ import {isTerminalSseEvent} from '../assistant/stream/sessionSseReplay';
 import {createSceneSseObservation, recordSceneSseEvent, evaluateSceneSseVerification, SCENE_RUN_TERMINAL_EVENTS, parseSceneOracleSpecs, collectSceneOracleRows, evaluateSceneOracleRows, type SceneOracleSpec, type SceneOracleObservation, type SceneSseObservation} from './sceneSseVerification';
 import {rowObject} from '../utils/traceProcessorRowUtils';
 import {stableStringify} from '../utils/stableJson';
+import {countedUnitDimension, declaredUnitAcceptsProducerDimension} from '../services/verifier/claimUnits';
 
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
 type SmartAction = 'preview' | 'analyze';
@@ -283,6 +284,13 @@ export interface SseSummary {
 }
 
 type FactScalar = string | number | boolean;
+/** Producer-declared metric identity a fact may bind by; same closed shape as a cell's captured declaration. */
+export interface AgentSseExpectedFactProducer {
+  skillId: string;
+  stepId: string;
+  metricId: string;
+  aggregation?: string;
+}
 export interface AgentSseExpectedFact {
   id: string;
   kind: 'numeric' | 'categorical' | 'identity';
@@ -291,6 +299,13 @@ export interface AgentSseExpectedFact {
   population?: ClaimSemanticsV1['scope']['population'];
   value?: FactScalar;
   unit?: string;
+  /**
+   * Bind by the producer-declared metric identity instead of column names.
+   * When present, the column allowlist does not participate: the cell must
+   * carry the exact tuple (alias-free), and a column is compared only through
+   * the reference identity gate (`ref.column === cell.column` stays required).
+   */
+  producer?: AgentSseExpectedFactProducer;
   /** Suite-owned read-only query. Results never enter the model context. */
   oracle?: {sql: string; column: string; unit?: string; traceSide?: 'current' | 'reference';
     anchorMatch?: {startTs?: string; upid?: string;
@@ -728,13 +743,19 @@ export function parseAgentSseExpectation(value: unknown): AgentSseExpectation {
   }
   const ids = new Set<string>();
   for (const fact of value.facts) {
-    if (!object(fact) || !keys(fact, ['id', 'kind', 'columns', 'verification', 'population', 'value', 'unit', 'oracle']) ||
+    if (!object(fact) || !keys(fact, ['id', 'kind', 'columns', 'verification', 'population', 'value', 'unit', 'producer', 'oracle']) ||
         typeof fact.id !== 'string' || !fact.id.trim() || ids.has(fact.id) || !strings(fact.columns) ||
         !['numeric', 'categorical', 'identity'].includes(String(fact.kind)) ||
         !['proved', 'reference_only'].includes(String(fact.verification)) ||
         (fact.population !== undefined && !['cited_rows', 'selected_interval', 'process_instance', 'trace', 'codebase'].includes(String(fact.population))) ||
         (fact.value !== undefined && !scalar(fact.value)) || (fact.unit !== undefined && (typeof fact.unit !== 'string' || !fact.unit.trim())) ||
         (fact.value === undefined && fact.oracle === undefined)) return fail();
+    if (fact.producer !== undefined) {
+      const producer = fact.producer;
+      if (!object(producer) || !keys(producer, ['skillId', 'stepId', 'metricId', 'aggregation']) ||
+          !['skillId', 'stepId', 'metricId'].every(key => typeof producer[key] === 'string' && producer[key].trim()) ||
+          (producer.aggregation !== undefined && (typeof producer.aggregation !== 'string' || !producer.aggregation.trim()))) return fail();
+    }
     ids.add(fact.id);
     if (fact.oracle !== undefined) {
       const oracle = fact.oracle;
@@ -793,6 +814,17 @@ export function parseAgentSseExpectation(value: unknown): AgentSseExpectation {
   return structuredClone(value) as unknown as AgentSseExpectation;
 }
 
+/**
+ * Every declared component must equal the cell's captured producer tuple; an
+ * aggregation the fact left undeclared is not compared. A cell without a
+ * producer declaration (model-written SQL) matches nothing here.
+ */
+function cellProducerMatches(cellProducer: EvidenceCellV1['producer'], expected: AgentSseExpectedFactProducer): boolean {
+  return Boolean(cellProducer && cellProducer.skillId === expected.skillId && cellProducer.stepId === expected.stepId &&
+    cellProducer.metricId === expected.metricId &&
+    (expected.aggregation === undefined || cellProducer.aggregation === expected.aggregation));
+}
+
 /** Only declared units are converted; column names never imply a unit. */
 function factValueEquals(actual: unknown, actualUnit: string | undefined, expected: unknown, expectedUnit: string | undefined): boolean {
   const numeric = (value: unknown): number | undefined => {
@@ -805,9 +837,11 @@ function factValueEquals(actual: unknown, actualUnit: string | undefined, expect
   if (left === undefined || right === undefined || !actualUnit || !expectedUnit) return false;
   if (actualUnit === expectedUnit) return left === right;
   const timeScale: Record<string, number> = {ns: 1, us: 1_000, ms: 1_000_000, s: 1_000_000_000};
-  // A frame count may be declared in frames or as a plain count; the fact's columns say what is counted.
-  const frameCount = ['frame', 'frames', 'count'];
-  if (frameCount.includes(actualUnit) && frameCount.includes(expectedUnit)) return left === right;
+  // The actual side is the declared (or captured cell) unit, the expected side
+  // the oracle producer unit: a generic `count` accepts the producer's counted
+  // dimension (frames/events) at 1:1, never the reverse and never frames<->events.
+  const producerDimension = countedUnitDimension(expectedUnit);
+  if (producerDimension !== undefined && declaredUnitAcceptsProducerDimension(actualUnit, producerDimension)) return left === right;
   return Boolean(actualUnit && expectedUnit && timeScale[actualUnit] && timeScale[expectedUnit] &&
     left * timeScale[actualUnit] === right * timeScale[expectedUnit]);
 }
@@ -967,7 +1001,8 @@ export function evaluateAgentSseExpectation(input: {
           if (requireProof && (!claimProof?.deterministicProof?.anchorIds.includes(anchor.anchorId) ||
               !claimProof.deterministicProof.evidenceRefIds.includes(anchor.evidenceRefId))) return false;
           return anchor.cells?.some(cell => {
-            if (!fact.columns.includes(cell.column) || cell.actualValue === undefined || cell.actualValue === null ||
+            if (!(fact.producer ? cellProducerMatches(cell.producer, fact.producer) : fact.columns.includes(cell.column)) ||
+                cell.actualValue === undefined || cell.actualValue === null ||
                 (cell.value !== undefined && cell.value !== cell.actualValue)) return false;
             const originalRefs = fact.kind === 'numeric' ? semantics.scope.subjectRefs ?? [] : claim.references;
             if (!originalRefs.some(ref => {
@@ -986,7 +1021,8 @@ export function evaluateAgentSseExpectation(input: {
             return values.some(row => {
               const expected = fact.oracle ? row[fact.oracle.column] : row.value;
               const unit = fact.oracle?.unit ?? fact.unit;
-              if (fact.value !== undefined && !factValueEquals(expected, unit, fact.value, fact.unit)) return false;
+              // The expectation declares (fact.value/fact.unit); the oracle row produces (expected/unit).
+              if (fact.value !== undefined && !factValueEquals(fact.value, fact.unit, expected, unit)) return false;
               // Native row identity is proof data; the value tier binds the anchor's own time and process.
               const nativeMatch = requireProof ? nativeOracleAnchorMatches({fact, proof: claimProof, anchor, oracleRow: row,
                 schema: input.oracleNativeSchemas?.[fact.id], traceId: factTraceId}) : undefined;

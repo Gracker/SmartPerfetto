@@ -10,6 +10,10 @@ import {
   type QueryReviewV1,
 } from '../../../types/queryReviewContract';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
+import {parseConclusionContractDeclaration, type ConclusionContractClaimReference} from '../../../agent/core/conclusionContract';
+import {ArtifactStore} from '../../../agentv3/artifactStore';
+import {captureEvidenceTable, type CapturedFieldSemantics} from '../evidenceCapture';
+import {prepareClaimEvidence} from '../claimEvidencePreparation';
 import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVerifier';
 import {evidenceValuesMatch} from '../valueComparison';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../../types/identityContract';
@@ -1255,5 +1259,58 @@ describe('evidence rows carry their declared boundary onto the claims citing the
     const built = buildEvidenceContract({conclusionContract: contract, dataEnvelopes: [envelope]});
 
     expect(built.claimSupport[0].anchors[0]).not.toHaveProperty('claimBoundary');
+  });
+});
+
+describe('captured cells carry their producer metric declaration', () => {
+  async function builtCell(fields: Record<string, CapturedFieldSemantics>,
+    reference: ConclusionContractClaimReference = {evidenceRefId: 'data:metric', rowIndex: 0, column: 'value', value: 42}) {
+    const contract = {
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+      evidenceChain: [], uncertainties: [], nextSteps: [], claims: [{id: 'metric', kind: 'numeric',
+        text: 'The metric is 42.', references: [reference]}],
+    } as never;
+    const parsed = parseConclusionContractDeclaration(contract);
+    expect(parsed.issues).toEqual([]);
+    const envelope = createDataEnvelope({columns: ['value'], rows: [[42]]}, {
+      type: 'skill_result', source: 'execute_skill', title: 'Metric', evidenceRefId: 'data:metric',
+      traceId: 'trace-prod', traceSide: 'current', executionStatus: 'observed',
+    });
+    const store = new ArtifactStore();
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data, fields),
+      {meta: envelope.meta, display: envelope.display})).toBe(true);
+    const prepared = await prepareClaimEvidence({conclusionContract: parsed.contract, bindingEligibility: 'eligible',
+      evidenceReadView: store.createEvidenceReadView({ownerKey: 'producer-test', currentRunId: 'run-prod',
+        allowedTraces: [{traceId: 'trace-prod', traceSide: 'current'}]})});
+    const built = buildEvidenceContract({conclusionContract: parsed.contract, preparedEvidence: prepared,
+      bindingEligibility: 'eligible', dataEnvelopes: [envelope]});
+    return built.claimSupport[0].anchors[0].cells![0];
+  }
+
+  it('projects the full producer tuple from the captured field semantics', async () => {
+    const cell = await builtCell({value: {origin: {kind: 'skill_literal', definitionFingerprint: 'fp',
+      skillId: 'scrolling_analysis', stepId: 'frame_timeline_population', selectedSqlHash: 'sql'},
+      unit: 'frames', metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'}});
+    expect(cell.producer).toEqual({skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+      metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'});
+  });
+
+  it('leaves a cell without a producer declaration carrying none', async () => {
+    // A model-written SQL column: a unit may be projected, but no metric identity exists to copy.
+    const model = await builtCell({value: {origin: {kind: 'native_producer', definitionFingerprint: 'fp'},
+      unit: 'count'}});
+    expect(model.producer).toBeUndefined();
+    // A declaration missing its skill or step is not a bindable producer identity either.
+    const partial = await builtCell({value: {origin: {kind: 'skill_literal', definitionFingerprint: 'fp',
+      stepId: 'frame_timeline_population'}, metricId: 'render.frame.timeline.trace_frames'}});
+    expect(partial.producer).toBeUndefined();
+  });
+
+  it('keeps an undeclared aggregation out of the projected tuple', async () => {
+    const cell = await builtCell({value: {origin: {kind: 'skill_literal', definitionFingerprint: 'fp',
+      skillId: 'scrolling_analysis', stepId: 'frame_timeline_population'}, metricId: 'render.frame.timeline.trace_frames'}});
+    expect(cell.producer).toEqual({skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+      metricId: 'render.frame.timeline.trace_frames'});
+    expect(cell.producer).not.toHaveProperty('aggregation');
   });
 });

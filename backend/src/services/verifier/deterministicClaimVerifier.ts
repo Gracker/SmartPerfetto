@@ -25,6 +25,7 @@ import {evidenceReferenceKey} from '../evidence/claimEvidencePreparation';
 import {compareRationals as compare, exactNumber, type Rational} from '../../utils/exactDecimal';
 import {referenceBindingFailureIsAdvisory} from '../evidence/evidenceReadView';
 import {classifyComparisonSides} from '../evidence/comparisonSides';
+import {declaredUnitAcceptsProducerDimension} from './claimUnits';
 
 export interface DeterministicClaimVerifierInput {
   claimSupport?: ClaimSupportV1[];
@@ -268,7 +269,10 @@ function numericProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): Deter
   if (!trustedField(cell.field) || !actualUnit || !expectedUnit) {
     return proof(kind, 'candidate', 'unit_authority_unknown', anchors);
   }
-  if (actualUnit.dimension !== expectedUnit.dimension) return proof(kind, 'rejected', 'unit_dimension_mismatch', anchors);
+  if (actualUnit.dimension !== expectedUnit.dimension &&
+      !declaredUnitAcceptsProducerDimension(semantics.numeric.unit, actualUnit.dimension)) {
+    return proof(kind, 'rejected', 'unit_dimension_mismatch', anchors);
+  }
   const actual = exactNumber(cell.value);
   const expected = exactNumber(semantics.numeric.value);
   if (!actual || !expected) return proof(kind, 'candidate', 'exact_numeric_value_unavailable', anchors);
@@ -370,7 +374,8 @@ function intervalProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): Dete
 
 function comparisonProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): DeterministicClaimProof {
   const kind = 'comparison_delta';
-  if (semantics.scope.subjectRefs?.length !== 1 || semantics.scope.objectRefs?.length !== 1 || !semantics.numeric) {
+  const numeric = semantics.numeric;
+  if (semantics.scope.subjectRefs?.length !== 1 || semantics.scope.objectRefs?.length !== 1 || !numeric) {
     return proof(kind, 'candidate', 'comparison_scope_requires_two_cells');
   }
   const current = resolveCell(claim, semantics.scope.subjectRefs[0]);
@@ -399,19 +404,24 @@ function comparisonProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): De
   if (leftRole !== rightRole) return proof(kind, 'rejected', 'comparison_field_scope_mismatch', anchors);
   const leftUnit = unitFor(left.field.unit);
   const rightUnit = unitFor(right.field.unit);
-  const declaredUnit = unitFor(semantics.numeric.unit);
+  const declaredUnit = unitFor(numeric.unit);
   if (!leftUnit || !rightUnit || !declaredUnit) return proof(kind, 'candidate', 'unit_authority_unknown', anchors);
-  if (leftUnit.dimension !== rightUnit.dimension || leftUnit.dimension !== declaredUnit.dimension) {
+  // Left and right are both producer units: they stay strictly same-dimension.
+  // The declared unit accepts each producer side by matching its dimension, or
+  // through the one-directional generic `count` -> frames|events equivalence.
+  const declaredAccepts = (producer: Unit): boolean => declaredUnit.dimension === producer.dimension ||
+    declaredUnitAcceptsProducerDimension(numeric.unit, producer.dimension);
+  if (leftUnit.dimension !== rightUnit.dimension || !declaredAccepts(leftUnit) || !declaredAccepts(rightUnit)) {
     return proof(kind, 'rejected', 'unit_dimension_mismatch', anchors);
   }
   const leftNumber = exactNumber(left.value);
   const rightNumber = exactNumber(right.value);
-  const declaredNumber = exactNumber(semantics.numeric.value);
+  const declaredNumber = exactNumber(numeric.value);
   if (!leftNumber || !rightNumber || !declaredNumber) return proof(kind, 'candidate', 'exact_numeric_value_unavailable', anchors);
   const a = scale(leftNumber, leftUnit);
   const b = scale(rightNumber, rightUnit);
   const delta = {numerator: a.numerator * b.denominator - b.numerator * a.denominator, denominator: a.denominator * b.denominator};
-  const matched = numericOperator(compare(delta, scale(declaredNumber, declaredUnit)), semantics.numeric.operator);
+  const matched = numericOperator(compare(delta, scale(declaredNumber, declaredUnit)), numeric.operator);
   return proof(kind, matched ? 'proved' : 'rejected', matched ? 'cited_metric_delta_proved' : 'comparison_delta_rejected', anchors);
 }
 
