@@ -62,8 +62,11 @@ these closed unit mappings: time `ns/us/µs/μs/ms/s` (1000 ns = 1 us = 1 µs = 
 1000 us = 1 ms; 1000 ms = 1 s); frequency `Hz/kHz/MHz/GHz` (1000 per step);
 bytes `B/bytes/KiB/MiB/GiB` (B = bytes; 1024 per step); `ratio/%/percent`
 (1 ratio = 100% = 100 percent); aliases `frame/frames`, `event/events`.
-`count` stays `count`; other units must match verbatim. Never infer a mapping
-from a column name, display format, casing or familiar suffix.
+When the cited cell or producer declares a counted unit (`frames`/`events`),
+compare with that word; `count` is for counts whose unit is not declared.
+Verification and this review treat `count` and a producer's `frames`/`events`
+as the same dimension at 1:1 (no conversion); `frames` and `events` never
+interchange. Never infer a mapping from a column name, display format, casing or familiar suffix.
 
 An exact equivalent needs no approximation marker. Discarding decimal digits
 requires `约`, `≈`, `~`, `about`, `approximately`, or stated rounding to N decimals.

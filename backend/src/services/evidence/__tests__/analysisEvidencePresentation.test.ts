@@ -34,7 +34,13 @@ describe('analysis evidence presentation', () => {
     expect(projected?.claims[0].references[0]).toMatchObject({rowIndex: 0, value: null});
     expect(projected?.claimSupport[0].anchors[0].cells?.[0]).toMatchObject({
       rowIndex: 0, actualValue: null, isSqlNull: false,
+      producer: {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+        metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'},
     });
+    // The producer tuple survives the writer and the strict reader round-trip.
+    expect(parseClosedAnalysisEvidencePresentation(JSON.parse(JSON.stringify(projected)))?.claimSupport[0].anchors[0].cells?.[0]?.producer)
+      .toEqual({skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+        metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'});
     expect(projected?.claimVerificationResult?.claimResults[0].deterministicProof?.nativeRows?.[0])
       .toMatchObject({id: 0, anchorId: 'anchor-1'});
     expect(projected?.investigationAssessment?.evidenceRecords?.[0]).toMatchObject({
@@ -220,7 +226,9 @@ function fixture(): {result: AnalysisResult; sourceProvenance: SafeSourceProvena
       anchors: [{
         anchorId: 'anchor-1', version: 'evidence_contract@1', evidenceRefId: 'evidence-1',
         context: {traceId: 'trace-1', captureId: 'capture-1', producerKind: 'execute_sql'},
-        cells: [{column: 'value', rowIndex: 0, value: 0, actualValue: null, isSqlNull: false}],
+        cells: [{column: 'value', rowIndex: 0, value: 0, actualValue: null, isSqlNull: false,
+          producer: {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+            metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'}}],
         confidence: 0,
       }],
     }],

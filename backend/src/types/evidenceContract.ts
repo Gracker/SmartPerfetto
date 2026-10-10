@@ -120,6 +120,14 @@ export interface EvidenceIdentityV1 {
   warnings?: string[];
 }
 
+/** Producer-declared metric identity of one captured cell; never model-authored. */
+export interface EvidenceCellProducerV1 {
+  skillId: string;
+  stepId: string;
+  metricId: string;
+  aggregation?: string;
+}
+
 export interface EvidenceCellV1 {
   sourceRef?: string;
   rowIndex?: number;
@@ -132,6 +140,13 @@ export interface EvidenceCellV1 {
   isSqlNull?: boolean;
   displayValue?: string;
   unit?: string;
+  /**
+   * Captured field semantics of this column's producer declaration, issued by
+   * the evidence read that bound the cell. Present only when the producer
+   * declared the full tuple (skill/step/metric); a model-written SQL column
+   * carries none, so it can never satisfy a producer-bound expectation.
+   */
+  producer?: EvidenceCellProducerV1;
 }
 
 export interface EvidenceAnchorV1 {

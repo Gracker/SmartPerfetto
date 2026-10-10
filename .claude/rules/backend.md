@@ -309,7 +309,12 @@ Keep these boundaries intact:
   ineligible declaration, and evidence the product could not read, stay
   `not_checked` with warnings; only reference errors, value mismatches, rejected
   propositions and semantic inconsistencies are errors that fail the gate (an
-  unmarked display rounding and an undeclared assertion are warnings; see below). The
+  unmarked display rounding and an undeclared assertion are warnings; see below). Unit
+  dimension equivalence is one-directional and lives in
+  `services/verifier/claimUnits.ts`: a declared generic `count` accepts a producer
+  `frames`/`events` dimension at 1:1 (numeric cell, each cited-delta side, and the
+  E2E fact gate against the oracle unit); `frames`↔`events` and the reverse
+  direction never pass. The
   unreadable classification is a positive list in `evidenceReadView.ts`
   (`evidence_not_retained` stays an error: it cannot tell eviction from a never
   issued identifier) and must come from an issued mark set by the builder
