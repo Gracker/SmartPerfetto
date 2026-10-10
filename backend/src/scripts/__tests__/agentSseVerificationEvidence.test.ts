@@ -39,6 +39,8 @@ import {
   type TerminalAnalysisEvidence,
 } from '../verifyAgentSseScrolling';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {stepNodesOf} from '../../services/skillEngine/skillSteps';
+import yaml from 'js-yaml';
 import * as nativeCapture from '../../services/evidence/rawSqlNativeProvenance';
 import type {PerfettoSqlDocsAsset} from '../../services/perfettoSqlDocs';
 import type {RunningNativeProcessorObservation, TraceInfo} from '../../services/traceProcessorService';
@@ -1557,5 +1559,132 @@ describe('grouped acceptance: wrong answer, unproved answer and undelivered answ
     expect(parseVerificationArgs(['--strict']).strict).toBe(true);
     expect(parseVerificationArgs([]).strict).toBeUndefined();
     expect(() => parseVerificationArgs(['--entry', 'scene-reconstruction', '--strict'])).toThrow('Scene entry cannot borrow');
+  });
+});
+
+describe('producer-bound flagship facts', () => {
+  const frameProducer = {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+    metricId: 'render.frame.timeline.trace_frames'};
+  type CellInput = {column: string; producer?: {skillId: string; stepId: string; metricId: string; aggregation?: string};
+    unit?: string; actualValue?: string | number | boolean | null};
+
+  /** The base fixture with the cited column renamed and the cell carrying producer metadata. */
+  function producerFixture(cell: CellInput, options: {unproved?: boolean; extraCells?: CellInput[]} = {}) {
+    const terminal = terminalFixture();
+    const claim = terminal.conclusionContract!.claims![0];
+    const support = terminal.claimSupport![0];
+    for (const reference of [claim.references[0], ...claim.semantics!.scope.subjectRefs!]) reference.column = cell.column;
+    support.semantics = JSON.parse(JSON.stringify(claim.semantics));
+    const all = [cell, ...(options.extraCells ?? [])];
+    support.anchors[0].cells = all.map(item => ({rowIndex: 0, value: item.actualValue ?? 1912,
+      actualValue: item.actualValue ?? 1912, ...(item.unit ? {unit: item.unit} : {}),
+      ...(item.producer ? {producer: item.producer} : {}), column: item.column}));
+    terminal.claimVerificationResult!.claimResults[0].referenceCells = [{anchorId: 'anchor:frames',
+      evidenceRefId: 'data:frames', column: cell.column, status: 'matched'}];
+    if (options.unproved) {
+      Object.assign(terminal.claimVerificationResult!, {status: 'partial', passed: false});
+      Object.assign(terminal.claimVerificationResult!.claimResults[0], {status: 'partial'});
+      terminal.claimVerificationResult!.claimResults[0].deterministicProof!.status = 'candidate';
+      terminal.claimVerificationResult!.claimResults[0].propositionCoverage =
+        {status: 'partial', covered: [], uncovered: ['numeric'], reason: 'candidate'};
+      terminal.deliveryAssurance!.claims = 'coverage_incomplete';
+    }
+    return terminal;
+  }
+  const producerExpectation = (producer: typeof frameProducer | undefined) => parseAgentSseExpectation({...expectation,
+    facts: [{...expectation.facts[0], ...(producer ? {producer} : {})}]});
+  const evaluateProducer = (terminal: ReturnType<typeof producerFixture>, producer: typeof frameProducer | undefined,
+    rows: Array<Record<string, unknown>> = [{total_frames: 1912}]) => evaluateAgentSseExpectation({terminal,
+    expectation: producerExpectation(producer), traceId: 'trace-current', oracleRows: {frame_count: rows}});
+
+  it.each([false, true])('binds a producer tuple across an aliased column at the proved and value tiers (unproved=%s)',
+    unproved => {
+      const terminal = producerFixture({column: 'total_rows', producer: frameProducer, unit: 'frames'}, {unproved});
+      const result = evaluateProducer(terminal, frameProducer);
+      expect(result.facts.frame_count).toMatchObject({tier: unproved ? 'value' : 'proved',
+        matchedClaimIds: ['frames'], matchedAnchorIds: ['anchor:frames']});
+      expect(result.checks['fact:frame_count']).toBe(true);
+    });
+
+  it('keeps the column allowlist fallback for facts without a producer tuple', () => {
+    const whitelisted = producerFixture({column: 'total_frames', producer: frameProducer, unit: 'frames'});
+    expect(evaluateProducer(whitelisted, undefined).facts.frame_count.tier).toBe('proved');
+    // The fallback never consults producer metadata: an out-of-list column stays unbound.
+    const aliased = producerFixture({column: 'total_rows', producer: frameProducer, unit: 'frames'});
+    expect(evaluateProducer(aliased, undefined).facts.frame_count.tier).toBe('none');
+  });
+
+  it.each([
+    ['a wrong value', {rows: [{total_frames: 9999}]}],
+    ['a cross-family cell unit', {cell: {column: 'total_rows', producer: frameProducer, unit: 'ns'}}],
+    ['a producer tuple from another skill with the same metric id', {cell: {column: 'total_rows', unit: 'frames',
+      producer: {skillId: 'thread_system_summary_in_range', stepId: 'summary', metricId: 'render.frame.timeline.trace_frames'}}}],
+    ['a producer tuple from another step of the same skill', {cell: {column: 'total_rows', unit: 'frames',
+      producer: {skillId: 'scrolling_analysis', stepId: 'other_step', metricId: 'render.frame.timeline.trace_frames'}}}],
+    ['a cell with no producer declaration at all', {cell: {column: 'total_rows', unit: 'frames'}}],
+  ] as const)('does not bind %s', (_label, options) => {
+    const rows: Array<Record<string, unknown>> = 'rows' in options ? [...options.rows] : [{total_frames: 1912}];
+    const cell = 'cell' in options ? options.cell : {column: 'total_rows', producer: frameProducer, unit: 'frames'};
+    const terminal = producerFixture(cell);
+    const result = evaluateProducer(terminal, frameProducer, rows);
+    expect(result.facts.frame_count.tier).toBe('none');
+    expect(result.checks['fact:frame_count']).toBe(false);
+  });
+
+  it('does not bind the same row\'s same-valued other metric when the model cites it instead', () => {
+    const terminal = producerFixture({column: 'smooth_frames', unit: 'frames',
+      producer: {...frameProducer, metricId: 'render.frame.timeline.smooth_frames'}},
+      {extraCells: [{column: 'total_rows', unit: 'frames', producer: frameProducer}]});
+    // The identity gate passes for the cited smooth_frames cell; only the producer tuple rejects it.
+    expect(evaluateProducer(terminal, frameProducer).facts.frame_count.tier).toBe('none');
+    const swapped = producerFixture({column: 'total_rows', unit: 'frames', producer: frameProducer},
+      {extraCells: [{column: 'smooth_frames', unit: 'frames',
+        producer: {...frameProducer, metricId: 'render.frame.timeline.smooth_frames'}}]});
+    expect(evaluateProducer(swapped, frameProducer).facts.frame_count.tier).toBe('proved');
+  });
+
+  it('requires the declared aggregation when the fact states one', () => {
+    const declared = {...frameProducer, aggregation: 'trace_wide_all_processes'};
+    const matching = producerFixture({column: 'total_rows', unit: 'frames',
+      producer: {...frameProducer, aggregation: 'trace_wide_all_processes'}});
+    expect(evaluateProducer(matching, declared).facts.frame_count.tier).toBe('proved');
+    const other = producerFixture({column: 'total_rows', unit: 'frames',
+      producer: {...frameProducer, aggregation: 'per_process_max'}});
+    expect(evaluateProducer(other, declared).facts.frame_count.tier).toBe('none');
+  });
+
+  it('rejects malformed producer tuples in the closed expectation schema', () => {
+    for (const producer of [null, {}, {...frameProducer, skillId: ''}, {...frameProducer, metricId: 1},
+      {...frameProducer, aggregation: ' '}, {...frameProducer, extra: true}]) {
+      expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
+        producer: producer as any}]})).toThrow('Invalid --expectation-json');
+    }
+  });
+
+  it('validates every flagship producer tuple against the skill YAML that declares it', () => {
+    const files = ['tests/e2e/flagship/startup-heavy.expectation.json', 'tests/e2e/flagship/scrolling-customer.expectation.json'];
+    let producerFacts = 0;
+    for (const file of files) {
+      const flagship = parseAgentSseExpectation(JSON.parse(fs.readFileSync(path.resolve(process.cwd(), file), 'utf8')));
+      for (const fact of flagship.facts) {
+        if (!fact.producer) continue;
+        producerFacts += 1;
+        const declared = fact.producer;
+        const skillFile = ['composite', 'atomic', 'modules', 'comparison', 'deep', 'pipelines']
+          .map(directory => path.join(process.cwd(), 'skills', directory, `${declared.skillId}.skill.yaml`))
+          .find(candidate => fs.existsSync(candidate));
+        expect(skillFile).toBeDefined();
+        const skill = yaml.load(fs.readFileSync(skillFile!, 'utf8')) as any;
+        const step = stepNodesOf(skill).find(entry => entry.node?.id === declared.stepId);
+        expect(step).toBeDefined();
+        const metric = (step!.node?.investigation_evidence?.metrics ?? [])
+          .find((entry: any) => entry.metric_id === declared.metricId);
+        expect(metric).toBeDefined();
+        expect(metric.value).toEqual(expect.any(String));
+        if (declared.aggregation !== undefined) expect(metric.aggregation).toBe(declared.aggregation);
+      }
+    }
+    // The scrolling gate binds by producer; startup stays on the column allowlist to pin the fallback.
+    expect(producerFacts).toBeGreaterThanOrEqual(2);
   });
 });

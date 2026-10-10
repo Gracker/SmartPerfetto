@@ -36,7 +36,7 @@ import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {hasSourceCitation} from '../services/codebase/sourceCitations';
 import {sanitizeSourceUseDecision, type SourceClaimBindingV1, type SourceUseDecisionV1} from '../services/codebase/sourceUseDecision';
 import type {ClaimVerificationResult, ClaimVerificationClaimResult} from '../types/claimVerification';
-import type {ClaimSupportV1, EvidenceAnchorV1} from '../types/evidenceContract';
+import type {ClaimSupportV1, EvidenceAnchorV1, EvidenceCellV1} from '../types/evidenceContract';
 import type {AnalysisDeliveryAssurance, AnalysisCompletion} from '../types/analysisDelivery';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
@@ -284,6 +284,13 @@ export interface SseSummary {
 }
 
 type FactScalar = string | number | boolean;
+/** Producer-declared metric identity a fact may bind by; same closed shape as a cell's captured declaration. */
+export interface AgentSseExpectedFactProducer {
+  skillId: string;
+  stepId: string;
+  metricId: string;
+  aggregation?: string;
+}
 export interface AgentSseExpectedFact {
   id: string;
   kind: 'numeric' | 'categorical' | 'identity';
@@ -292,6 +299,13 @@ export interface AgentSseExpectedFact {
   population?: ClaimSemanticsV1['scope']['population'];
   value?: FactScalar;
   unit?: string;
+  /**
+   * Bind by the producer-declared metric identity instead of column names.
+   * When present, the column allowlist does not participate: the cell must
+   * carry the exact tuple (alias-free), and a column is compared only through
+   * the reference identity gate (`ref.column === cell.column` stays required).
+   */
+  producer?: AgentSseExpectedFactProducer;
   /** Suite-owned read-only query. Results never enter the model context. */
   oracle?: {sql: string; column: string; unit?: string; traceSide?: 'current' | 'reference';
     anchorMatch?: {startTs?: string; upid?: string;
@@ -729,13 +743,19 @@ export function parseAgentSseExpectation(value: unknown): AgentSseExpectation {
   }
   const ids = new Set<string>();
   for (const fact of value.facts) {
-    if (!object(fact) || !keys(fact, ['id', 'kind', 'columns', 'verification', 'population', 'value', 'unit', 'oracle']) ||
+    if (!object(fact) || !keys(fact, ['id', 'kind', 'columns', 'verification', 'population', 'value', 'unit', 'producer', 'oracle']) ||
         typeof fact.id !== 'string' || !fact.id.trim() || ids.has(fact.id) || !strings(fact.columns) ||
         !['numeric', 'categorical', 'identity'].includes(String(fact.kind)) ||
         !['proved', 'reference_only'].includes(String(fact.verification)) ||
         (fact.population !== undefined && !['cited_rows', 'selected_interval', 'process_instance', 'trace', 'codebase'].includes(String(fact.population))) ||
         (fact.value !== undefined && !scalar(fact.value)) || (fact.unit !== undefined && (typeof fact.unit !== 'string' || !fact.unit.trim())) ||
         (fact.value === undefined && fact.oracle === undefined)) return fail();
+    if (fact.producer !== undefined) {
+      const producer = fact.producer;
+      if (!object(producer) || !keys(producer, ['skillId', 'stepId', 'metricId', 'aggregation']) ||
+          !['skillId', 'stepId', 'metricId'].every(key => typeof producer[key] === 'string' && producer[key].trim()) ||
+          (producer.aggregation !== undefined && (typeof producer.aggregation !== 'string' || !producer.aggregation.trim()))) return fail();
+    }
     ids.add(fact.id);
     if (fact.oracle !== undefined) {
       const oracle = fact.oracle;
@@ -792,6 +812,17 @@ export function parseAgentSseExpectation(value: unknown): AgentSseExpectation {
     }
   }
   return structuredClone(value) as unknown as AgentSseExpectation;
+}
+
+/**
+ * Every declared component must equal the cell's captured producer tuple; an
+ * aggregation the fact left undeclared is not compared. A cell without a
+ * producer declaration (model-written SQL) matches nothing here.
+ */
+function cellProducerMatches(cellProducer: EvidenceCellV1['producer'], expected: AgentSseExpectedFactProducer): boolean {
+  return Boolean(cellProducer && cellProducer.skillId === expected.skillId && cellProducer.stepId === expected.stepId &&
+    cellProducer.metricId === expected.metricId &&
+    (expected.aggregation === undefined || cellProducer.aggregation === expected.aggregation));
 }
 
 /** Only declared units are converted; column names never imply a unit. */
@@ -970,7 +1001,8 @@ export function evaluateAgentSseExpectation(input: {
           if (requireProof && (!claimProof?.deterministicProof?.anchorIds.includes(anchor.anchorId) ||
               !claimProof.deterministicProof.evidenceRefIds.includes(anchor.evidenceRefId))) return false;
           return anchor.cells?.some(cell => {
-            if (!fact.columns.includes(cell.column) || cell.actualValue === undefined || cell.actualValue === null ||
+            if (!(fact.producer ? cellProducerMatches(cell.producer, fact.producer) : fact.columns.includes(cell.column)) ||
+                cell.actualValue === undefined || cell.actualValue === null ||
                 (cell.value !== undefined && cell.value !== cell.actualValue)) return false;
             const originalRefs = fact.kind === 'numeric' ? semantics.scope.subjectRefs ?? [] : claim.references;
             if (!originalRefs.some(ref => {
