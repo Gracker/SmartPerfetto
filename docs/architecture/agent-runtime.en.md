@@ -360,6 +360,8 @@ tier-2 `scene_evidence` segment, never dropped whole (at most 24 cells and 2 KiB
 summary cells go before key cells), and `RuntimePerformance` records a
 `scene_evidence` phase and the closed `sceneEvidence` receipt.
 `allowMemoryPrefetch` gates only the memory tier and has nothing to do with it.
+String cells shortened upstream are not offered to the model as exact values;
+artifact locators remain available for reading the original evidence.
 
 ## Turn Budgets And Closeout
 
@@ -380,12 +382,30 @@ It cannot query again or certify completion: `partial`, `turn_limit` completion
 and `max_turns` termination remain. No model semantic review follows this closeout;
 deterministic evidence checks can still run.
 
-A failed closeout or declaration completion retains the original candidate. Cancellation, timeout, revoked
-authorization or an exhausted explicit cost budget cannot start another call.
+OpenAI's acquisition deadline may advance with actual progress without consuming
+the reserved delivery and finalization budgets. An acquisition timeout with
+returned data may use one no-tool closeout inside the delivery reserve, retaining
+`partial/timeout` and adding no semantic model review. A failed closeout or
+declaration completion retains the original candidate. Cancellation, an expired
+hard deadline, revoked authorization or an exhausted explicit cost budget cannot
+start another call.
 A one-turn configuration has no extra delivery allowance. OpenCode stops acquisition
 after observing native messages and can overshoot between observations. It records
 actual turns and skips the summary when no allowance remains; this is not a strict
 model-call cap.
+
+Before dispatch, review, declaration repair and continuation use
+`services/runtimeCallStats.ts` to estimate duration from successful calls' p75
+for the same provider origin, model, purpose and input-size bucket. Insufficient
+samples use the current provider defaults (GLM 180 s, DeepSeek 120 s, others
+90 s). A call that does not fit the time left is skipped; review records
+`not_checked/budget_insufficient` and preserves the body. Report delivery and
+continuation when the body is missing may still dispatch, bounded by the original
+deadline. An estimate cannot extend the deadline or bypass cancellation,
+authorization or cost limits. Server samples come from successful calls in sealed
+RunManifests; CLI does not aggregate samples, uses defaults, and records
+`stats_not_configured`. Admission decisions and actual durations are internal
+performance receipts, neither proof nor public SSE.
 
 ## SSE Events
 
@@ -452,10 +472,11 @@ workspace focus does not establish which trace supplied the selection, so its
 origin remains unknown. A privacy projection that cannot preserve the admitted
 selection exactly leaves review incomplete rather than silently changing scope.
 
-Semantic review adds no application output-token cap. OpenAI sends only an
+Semantic review output limits are mapped by each adapter. OpenAI sends only an
 explicit `maxOutputTokens` captured for this run; Claude preserves the captured
-SDK environment; Pi uses the pinned model's native SDK capability when no
-explicit cap is supplied. Classifiers retain their separate small-protocol
+SDK environment; without an explicit cap, Pi derives a token allowance from
+the response byte limit, bounded by the pinned model's `maxTokens`. Classifiers
+retain their separate small-protocol
 budgets. Provider and SDK output limits still apply, as do complete-terminal-state
 checks and the 64 KiB guard on the completed review JSON.
 The shared OpenCode model configuration does not invent context/output capacity:
@@ -475,6 +496,20 @@ captured evidence with semantic review of the current proposition. Reports, CLI
 artifacts and snapshots keep provenance. Chat projects the body, machine
 sidecars and structured runtime appendix separately without mechanically editing
 natural-language conclusions.
+
+Declaration validity is per entry. Framing, root schema, duplicate IDs, an invalid
+proposal collection and `sourceClaimBindings` reference failures still make the
+whole declaration `ineligible`. An individual claim or proposal failure affects
+only that entry: the declaration is `partially_valid` and its root remains
+`eligible`. Invalid claims retain their positions with parser-owned `valid: false`
+and closed `invalidCodes`; they create no evidence anchors, receive no semantic
+review, and retain a `not_checked/invalid_claim` verifier row. Other valid claims
+can complete review and proof independently. Repair targets only invalid claims
+with a usable ID and joins the returned declaration to the original body.
+Acceptance preserves the claim ID set, the position and semantics of valid items,
+and corresponding relation proposals, while reducing invalid items. A repair may
+remain `partially_valid`; unresolved entries stay visible rather than disappearing
+or changing the body to obtain a pass.
 
 Conclusion presentation retains the complete body rather than removing semantic
 sections by headings such as “Evidence Index” or “Claim Verification”. Web stores

@@ -71,30 +71,10 @@ Use these rules before touching code-aware analysis, codebase registry, source i
 
 ## Verification
 
-After backend changes:
-
-```bash
-cd backend
-npm run typecheck
-npm run validate:strategies
-npm run validate:skills
-npm run test:scene-trace-regression
-```
-
-After plugin UI changes:
-
-```bash
-./scripts/start-dev.sh
-# Stop the dev server after browser verification.
-(cd perfetto && tools/node ui/build.mjs)
-./scripts/update-frontend.sh
-```
-
-Before landing:
-
-```bash
-npm run verify:pr
-```
+Choose the affected backend or UI tier from [testing.md](testing.md); do not run
+unrelated source, UI or trace gates just because a backend file changed. That
+rule also defines dev-mode UI verification, prebuild regeneration and the PR
+gate. Use the focused source/privacy tests for the contract being changed.
 
 For full code-aware validation:
 

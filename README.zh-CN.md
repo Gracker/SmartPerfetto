@@ -45,6 +45,8 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
   对比和报告。达到分析轮次上限后，会基于已有证据交付结论并列出不足；同一会话
   的追问可继承已授权的历史，重新打开或后端重启后也可恢复。
 - 使用确定性的 YAML Skill 与 Markdown 策略，将事实证据、模型解释和报告来源分开。
+- 按问题关联关键任务、CPU 频率、系统负载、线程状态、核运行分布和调度证据。
+  整场景调查在 Trace 和进程条件满足时先运行策略声明的入口 Skill，缺少的证据明确说明。
 - 按每次请求显式选择已注册的本机源码，无需索引也能有界按需检索，并在
   Web、报告、CLI、snapshot 和 API 的安全来源中区分 trace 发生证据与
   `CodeRef` 机制证据。通过“选择文件夹 → 添加并用于分析”即可开始，排除路径和
@@ -54,8 +56,8 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
 - 可按轮选用已注册的文档知识库（如 Android Internals Wiki 或团队文档），按需检索并带出处引用；
   知识库只作背景，不替代当前 trace 的证据。见
   [Android Internals 知识](docs/getting-started/android-internals-knowledge.md)。
-- 先交付、后核验：Claude 与 OpenAI runtime 边生成边显示回答草稿；回答写完立即可读，
-  一次无工具语义复核的核验结论随后补上，停止只结束核验、不丢回答。
+- 先交付、后核验：Claude 与 OpenAI runtime 边生成边显示回答草稿；回答完成后可立即阅读，
+  满足审核条件和预算时再做一次无工具复核。停止核验会保留回答；完整停止和强制停止有各自语义。
 - 在选中的 `thread_state` 上打开 Critical path 等待链抽屉，或在火焰图页查看 CPU 调用栈热点，
   均带规则兜底的 AI 总结。见 [Critical path 与火焰图](docs/getting-started/critical-path-and-flamegraph.md)。
 - 用 `smp capture` 从连接的 Android 设备按预置或自定义配置抓 trace，可选抓完直接分析。
@@ -129,6 +131,8 @@ Pi 用户可在 model JSON 中配置推理设置；provider 默认、显式关�
 
 每一轮先展示本轮分析过程和步骤，最后展示本轮结论；下一轮问题接在该结论之后。
 服务器核验详情默认折叠，点击可查看完整记录；核验警告仍直接显示。
+Web、CLI 和导出报告保留每条断言的证据与核验状态；某条声明格式错误时，其他有效声明仍可核验。
+证据不足与断言被证据反驳分别显示。
 最终结论保留问题范围内所有重要发现、支持证据与限制，即使中间表格折叠也能独立阅读；不会只为缩短篇幅而删减发现或引用声明。
 结论中的多项指标、阶段耗时和 Trace 差异优先用紧凑表格呈现，配合机制解释与证据引用；单个数值或不适合表格的问题仍可直接用文字回答。
 
@@ -168,9 +172,3 @@ CLI 未完成时会显示终止原因和具体诊断；已有报告正文也可�
 SmartPerfetto 核心代码使用 [AGPL-3.0-or-later](LICENSE)；`perfetto/` submodule 继续使用
 [Apache-2.0](https://github.com/google/perfetto/blob/main/LICENSE)。如需不受 AGPL 约束的
 商业授权，请通过微信 `553000664` 联系维护者。
-
-## 跨场景系统调查
-
-性能调查会按问题关联关键任务、CPU 频率、系统负载、线程状态、核运行分布和调度证据。根因策略详情完整读取；缺少的证据明确说明。调查覆盖独立于报告章节和运行时完成状态核验，使用方式见 [基本使用](docs/getting-started/usage.md)。
-
-结论正文完整保留。Web、CLI 和导出报告显示每条声明的证据与服务器核验详情，包括未通过或未核验的项。找到来源并不代表声明或根因已经得到验证。

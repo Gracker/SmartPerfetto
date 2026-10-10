@@ -23,8 +23,8 @@ SmartPerfetto exposes one analysis core through several products:
 | Portable | Three platform release assets | Bundles Node.js 24, backend, frontend, trace processor, and runtime assets |
 | HTTP/SSE API | `/api/*` | Web, CLI support, and integrations reuse backend contracts |
 
-A feature cannot be verified on only one entry point. The authoritative surface
-list is [`.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md).
+Identify the entry points and shared contracts affected by a change, then verify
+their behavior. The authoritative surface list is [`.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md).
 
 ## 2. Component Boundaries
 
@@ -37,9 +37,11 @@ flowchart LR
   M --> S["YAML Skill engine"]
   S --> T["trace_processor_shell pool"]
   O --> K["Strategies and knowledge retrieval"]
-  O --> Q["Result normalization and quality gates"]
-  Q --> D["DataEnvelope / evidence / identity"]
-  D --> X["Chat / report / CLI / snapshot / comparison"]
+  R --> Q["Product-owned finalization"]
+  O -->|"Exact result + private context"| Q
+  M --> D["DataEnvelope / capture / identity"]
+  D --> Q
+  Q --> X["Chat / report / CLI / snapshot / comparison"]
 ```
 
 Primary directories:
@@ -68,21 +70,26 @@ POST /api/agent/v1/analyze
   -> resolve workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
   -> select Claude / OpenAI / Pi / OpenCode / Qoder runtime
+  -> typed intent pins scope, evidence access, budget, and deliverable
+  -> product acquires strategy-declared scene entry evidence when eligible
   -> use the shared MCP registry for SQL, Skills, knowledge, and planning
   -> selected source: bounded lookup or structured SourceUseDecision stop
   -> DataEnvelope + evidence/claim/identity sidecars
-  -> final-result normalization / report-contract + source-claim-binding gate
+  -> exact runtime result + private finalization context
+  -> product-owned finalizeAnalysisResult: finite proof, at most one no-tool review, terminal state
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
 `options.analysisMode` supports:
 
-- `fast`: lightweight tools and deterministic direct-evidence paths;
-- `full`: full tools, planning, and quality checks;
-- `auto`: non-negotiable context rules, then semantic classification.
+- `fast`: fixed quick budget with the request's authorized capabilities;
+- `full`: fixed full budget;
+- `auto`: the typed intent's complexity recommendation, with an explicit fallback when unavailable.
 
-When a reference trace, codebase, or private knowledge source requires full
-context, a requested `fast` mode must not silently drop the capability.
+Budget, investigation scope, evidence access, and deliverable are independent.
+A full budget does not automatically require a plan, report, or source lookup;
+a quick budget does not reduce permissions. `existing_only` prohibits new
+acquisition at the tool handler boundary. See [Agent Runtime](agent-runtime.en.md#analysis-modes).
 
 ### 3.1 Enterprise Identity Boundary
 
@@ -153,7 +160,7 @@ establish SDK readiness.
 exposure, and allowlists; `claudeMcpServer.ts` supplies implementations and
 request-shaped composition. The total is intentionally dynamic:
 
-- fast and full requests expose different surfaces;
+- quick budgets compact the catalog and result projections outside scene-wide investigations; request and handler boundaries still determine permissions;
 - code-aware tools require permission;
 - comparison tools require a reference trace;
 - artifact tools depend on session capabilities;
@@ -168,7 +175,7 @@ The two content layers have different jobs:
 
 ```text
 Markdown Strategy / Template
-  -> classification, methodology, constraints, final_report_contract
+  -> classification, methodology, investigation_requirements, entry_skill, final_report_contract
 
 YAML Skill
   -> SQL / iterator / conditional / composite execution
@@ -239,21 +246,27 @@ confused with the live arbitrary raw-trace dual view.
 
 Codebases pass through `PathSecurityGate` preview/register/reindex.
 `metadata_only` exposes `CodeRef`; `provider_send` additionally requires
-registration consent and an explicit request mode. Raw source never belongs in
-sessions, logs, SSE, reports, or exports.
+registration consent and an explicit request mode. Owner-authorized result
+projection may retain quoted source for the user's UI, local history and reports;
+logs, public and shared outputs use strict projection. Sensitive paths,
+credentials and revoked authority remain independently checked. See
+[Private Analysis Context](private-analysis-context.en.md).
 
 Registration only makes a codebase selectable; it does not attach source.
 `search_codebase` / `read_codebase_file` work against a live root without an
 active index. Reindexing is optional acceleration for semantic/symbol lookup
-and patch workflows. Full analysis with selected source and a queryable trace
-anchor must perform lookup or record a structured stop status first.
-`SourceUseDecisionV1` records selected/queried/used IDs, status, and coverage.
+and patch workflows. Source lookup follows the question and `sourceNeed`;
+budget mode does not insert it automatically. `existing_only` permits no new
+acquisition. `SourceUseDecisionV1` records actual selected/queried/used IDs,
+status, and coverage.
 
-Trace/Skill/SQL proves occurrence, while `CodeRef` proves mechanism.
-`SourceClaimBindingV1` is limited to
-`corroborated|compatible|ambiguous|unverified`; `corroborated` requires verified
-same-claim trace occurrence plus `provider_send` body/indexed evidence.
-`metadata_only` is locate-only. One canonical projector provides safe
+Trace/Skill/SQL supports observations, source bodies support mechanism analysis,
+and `CodeRef` metadata only locates source. `SourceClaimBindingV1` declares a
+claim's source/trace references; `source_claim_verifier@2` computes status from
+the actual ledger. `invalid` rejects the binding; `unbound`, `location_only`,
+and `source_only` remain partial. `trace_linked` means this run read the body
+and linked it to verified same-claim trace evidence; it does not independently
+prove a general mechanism or causal relation. One canonical projector provides safe
 provenance for SSE, reports, CLI, snapshots, and APIs; Web further reduces it
 to the current-run receipt.
 
@@ -332,12 +345,14 @@ The final result is not one Markdown string:
 | HTML report | Evidence, claims, identity, background references, and appendix |
 | CLI artifact | Turn, report, resume state, and machine-readable output |
 | Analysis-result snapshot | Standard metrics, evidence references, comparison input |
-| Provider session snapshot | Runtime/provider-specific resume state |
+| Logical session snapshot | Provider/runtime pin and product history; no native SDK session restoration across turns |
 | Source provenance | Safe SourceUseDecision, relative `CodeRef`, and trace-to-mechanism bindings; the Web receipt retains no `CodeRef` |
 
-`final_report_contract`, normalization, and quality gates converge provider
-outputs on shared semantics rather than patching one provider-specific string
-at one exit.
+The product takes the private context from the exact runtime result and invokes
+`finalizeAnalysisResult` once. It preserves the original propositions and capture
+provenance, with independent completion, declaration, evidence, source, identity,
+and report assessments. Declarations are checked per entry; delivery model calls
+are admitted against the time left. See [Agent Runtime](agent-runtime.en.md#final-result-and-quality-artifacts).
 
 ## 12. Release Assets
 
@@ -375,7 +390,7 @@ npm run verify:code-aware-semantic-delta
 npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
-npm --prefix backend run verify:codebase-aware
+npm run verify:codebase-aware
 ```
 
 Additionally:

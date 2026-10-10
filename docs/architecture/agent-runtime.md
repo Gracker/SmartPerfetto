@@ -226,6 +226,7 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 `scene_evidence` 段给模型（≤24 单元格、≤2 KiB，超限先丢 summary 再丢 key 单元格），并记入
 `RuntimePerformance` 的 `scene_evidence` 阶段与闭合回执 `sceneEvidence`。`allowMemoryPrefetch` 只控制记忆层预取，
 与入口证据无关。
+字符串单元格若被上游截短，就不作为精确值交给模型；artifact 定位仍可用于读取原始证据。
 完整性探测在检查 stdlib 视图前先加载其定义模块（能力定义静态声明 `requiredModules`，并由测试守住）；
 模块加载失败或查询未完成的能力带 `reasonCode`，表示“未探测”，不是“缺失”。计划按需产生，阶段完成标记必须有真实成功证据或明确处置。
 未结束的探索计划和假设保留原状态，不自动触发续跑，也不单独决定回答是否完整。
@@ -245,9 +246,20 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 
 声明 JSON 本身不算可读交付。Pi 已完成但只有声明的候选使用同一预留交付机会补写正文，保留已有 claim 数量与 ID；已有可读正文不因缺少标题而续写。完整闭合的单个畸形声明可隔离修复，但原文截断或重复 marker 不走声明专用修复。修复后仍须通过严格解析和独立核验。
 
-收尾或声明补交失败时保留原候选；取消、超时、授权失效或已耗尽的显式费用预算不会启动额外调用。
+OpenAI 的采集截止时间可随实际进展延后，但不侵占预留交付和 finalization 预算；
+采集超时且已有返回数据时可在交付预算内做一次无工具收尾，结果保留 `partial/timeout`，
+不追加模型语义审核。收尾或声明补交失败时保留原候选；取消、硬 deadline 到期、授权失效
+或已耗尽的显式费用预算不会启动额外调用。
 只有 1 轮的配置没有额外收尾额度。OpenCode 通过观察原生消息停止采集，可能在两次观察
 之间过冲；实际轮数照实记录，已无剩余额度时不再请求总结，不能将它宣称为严格调用硬上限。
+
+审核、声明修复和续写在派发前通过 `services/runtimeCallStats.ts` 估计所需时长，
+按 provider origin、model、purpose 和输入大小档使用成功调用的 p75；样本不足时采用
+当前提供方默认值（GLM 180 s、DeepSeek 120 s、其他 90 s）。剩余时间不足时跳过调用，
+审核记录 `not_checked/budget_insufficient`，保留正文。报告交付和缺少正文时的续写仍可
+派发，由原截止时间约束；估计不能延长 deadline 或绕过取消、授权和费用限制。
+服务端从 sealed RunManifest 的成功调用生成本机时长样本；CLI 不汇总样本，使用默认值，
+回执注明 `stats_not_configured`。准入决策和实际调用时长是内部性能记录，不是证明或公开 SSE。
 
 ## SSE 事件
 
@@ -308,9 +320,9 @@ deadline、trace identity 和证据读取范围；产品 owner 在 await 前后�
 双 Trace 场景中，工作区焦点不能证明选区来自哪条 Trace，因此来源保持未知。
 隐私投影无法完整保留本次获准的选区时，审核记录为不完整，不能静默更换分析范围。
 
-语义审核不另加应用层输出 token 上限。OpenAI 只发送本次运行冻结的显式
-`maxOutputTokens`；Claude 保留原 SDK 环境；Pi 未显式传入上限时使用已固定模型的
-原生 SDK 能力。分类请求仍保留各自的小协议预算。服务商与 SDK 的输出限制仍然有效，
+语义审核的输出限制由各 adapter 映射。OpenAI 只发送本次运行冻结的显式
+`maxOutputTokens`；Claude 保留原 SDK 环境；Pi 未显式传入上限时按响应字节边界推导
+token 额度，并受已固定模型的 `maxTokens` 约束。分类请求仍保留各自的小协议预算。服务商与 SDK 的输出限制仍然有效，
 审核也仍校验完整结束状态和已完成 JSON 的 64 KiB 大小边界。
 OpenCode 的共享模型配置不伪造 context/output 容量：未提供容量时依赖 SDK 默认值，
 未知 context 不触发容量阈值驱动的预压缩，真实 context overflow 仍走原生被动压缩。
@@ -323,6 +335,15 @@ witness、受信单位/字段语义或覆盖时保留候选/未知状态；
 一般因果关系不能由相等数值或端点推导。完整 claim 状态由捕获证据与当前命题的语义审核
 联合决定。报告、CLI 和 snapshot 保留 provenance；chat 分开投影正文、machine sidecar
 和结构化 runtime appendix，不能机械删改自然语言结论。
+
+声明有效性按条目判定。framing、根 schema、重复 ID、无效 proposal 集合和
+`sourceClaimBindings` 引用等根错误仍使整份声明 `ineligible`；某条 claim 或 proposal
+的错误只影响该条目，声明为 `partially_valid`、根保持 `eligible`。无效 claim 保留原位置，
+由解析器标记 `valid: false` 和闭合 `invalidCodes`，不生成证据锚点、不参与语义审核，
+核验行记为 `not_checked/invalid_claim`；其他有效 claim 可独立完成审核与证明。
+修复仅针对可定位 ID 的无效 claim，返回声明后拼回原正文；接受时要求保留 claim ID 集合、
+有效条目的位置与语义、relation proposal 的对应关系，并减少无效项。修复后仍可
+`partially_valid`，未修复项继续显示，不能删除条目或改写正文以获得通过。
 
 结论呈现保留全部正文，不按“证据索引”或“断言验证”等标题删除语义段落。
 Web 将服务器核验详情作为独立消息字段，绑定候选身份；替换正文时清除旧详情，

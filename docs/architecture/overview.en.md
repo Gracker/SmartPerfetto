@@ -153,8 +153,10 @@ to come from the existing configuration sources.
 
 The five runtimes share acquisition budgets and closeout state. Budgets above one
 reserve the last call for a tool-free conclusion from returned facts, remaining
-gaps, and next steps. Cancellation, deadlines, revoked authority, and provider
-errors do not trigger another summary. Delivery retains `incomplete/turn_limit`;
+gaps, and next steps. Cancellation, revoked authority, and provider errors do not
+trigger another summary. An OpenAI acquisition timeout with returned data may
+use the reserved delivery budget for closeout, retaining `partial/timeout`.
+Turn-limit delivery retains `incomplete/turn_limit`;
 text delivery does not establish complete evidence. OpenCode stops after observing
 the limit, records actual overshoot, and cannot add a summary after an overshoot.
 
@@ -173,7 +175,7 @@ Jank investigation starts with continuous execution on the target process's main
 
 Strategy frontmatter `investigation_requirements` is separate from report formatting. The shared typed-intent prompt builder reads these evidence obligations from the run's pinned strategy snapshot for investigation answers and reports. Bounded questions apply only relevant obligations; facts and acknowledgements gain no investigation recipe, and `existing_only` gains no retrieval authority. Older snapshots may omit the optional field; declared requirements participate in the fingerprint.
 
-Strategy frontmatter `entry_skill` declares a scene's entry Skill: for a resolved `scene_wide` `read_new` investigation the product runs it before the model's first turn (only once its identity gate reports `verified`) and hands the result to the model in the bounded `scene_evidence` prompt segment, which is never dropped whole. It shares `skillRunCore` with `invoke_skill` but is not a model tool call; only `RuntimePerformance` records its phase and receipt. The body of the strategy detail marked `default` reaches the first turn as the most expendable prompt segment, its title still listed with the other details. See [Agent Runtime Architecture](agent-runtime.en.md).
+Strategy frontmatter `entry_skill` declares a scene's entry Skill: for a resolved `scene_wide` `read_new` investigation with a mounted single trace and no reference/comparison, the product runs it before the model's first turn (only once its identity gate reports `verified`) and hands the result to the model in the bounded `scene_evidence` prompt segment, which is never dropped whole. It shares `skillRunCore` with `invoke_skill` but is not a model tool call and enters neither `toolResults` nor plan call records. Captures enter the investigation ledger; `RuntimePerformance` records the phase and receipt. The body of the strategy detail marked `default` reaches the first turn as the most expendable prompt segment, its title still listed with the other details. See [Agent Runtime Architecture](agent-runtime.en.md).
 
 All runtimes use this pinned-context builder. Missing intent or registry fails explicitly, with no legacy quick/full template fallback. The final conclusion is the primary deliverable; budgets and intermediate table previews do not cap its findings, claims or prose. The input discipline budget is 16,000 estimated tokens, with identity and evidence obligations protected from trimming. Actual output or review capacity limits must remain explicit incomplete states.
 
@@ -365,6 +367,14 @@ reason `not_required` and ends `~` (an accepted residual: a contradiction only
 the review would find goes undetected; a finite-proof `unsupported` still
 yields `!`). The finite proof catalog is defined in
 source; general causality and unknown fields cannot be presented as proved.
+
+Review, declaration repair and continuation compare the time left with an
+estimated duration before dispatch. Insufficient time preserves the answer; a
+skipped review records `budget_insufficient`. Report delivery and missing-body continuation
+remain bounded by the original deadline. Declaration validation is per entry:
+root failures reject the whole declaration, while item failures retain
+`partially_valid` and leave other valid claims eligible for checking. See
+[Agent Runtime Architecture](agent-runtime.en.md#final-result-and-quality-artifacts).
 
 Conversation may retain original captures within a logical session's exact
 trace/authorization/owner scope while physical run/session IDs remain unique.

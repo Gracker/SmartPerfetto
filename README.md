@@ -51,6 +51,10 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   reopening the page or restarting the backend.
 - Uses deterministic YAML Skills and Markdown strategies so factual evidence,
   model interpretation, and report provenance remain separate.
+- Relates critical tasks to CPU frequency, system load, thread states, CPU
+  placement and scheduling evidence when the question needs them. Scene-wide
+  investigations start with the strategy's entry Skill when its trace and
+  process prerequisites are satisfied; missing evidence remains explicit.
 - Optionally selects registered local source per run, uses bounded on-demand
   lookup without requiring an index, and separates trace occurrence from
   `CodeRef` mechanism evidence in safe Web, report, CLI, snapshot, and API
@@ -64,9 +68,9 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   knowledge base is background, never a substitute for current-trace evidence.
   See [Android Internals Knowledge](docs/getting-started/android-internals-knowledge.en.md).
 - Delivers first, verifies after: the Claude and OpenAI runtimes stream the
-  answer as a draft while it is written, the finished answer is readable at
-  once, and the verdict of one no-tool semantic review follows; a stop ends
-  only the verification and keeps the answer.
+  answer as a draft while it is written. A finished answer remains readable
+  while an eligible, budgeted no-tool review checks it. Stopping that review
+  keeps the answer; full and forced stops have separate semantics.
 - Opens a critical-path wait-chain drawer on a selected `thread_state`, and a
   flamegraph page for CPU call-stack hotspots, both with a rule-based fallback
   AI summary. See [Critical Path And Flamegraph](docs/getting-started/critical-path-and-flamegraph.en.md).
@@ -149,6 +153,9 @@ Pi users can configure reasoning in model JSON; see the [Pi configuration](docs/
    `Analyze the ANR in this trace`.
 
 Server verification details are collapsed by default; expand them to read the full record. Verification warnings remain visible.
+Web, CLI and exported reports retain each claim's evidence and verification
+status. A malformed claim leaves other valid claims eligible for checking;
+missing proof and a contradicted claim remain distinct outcomes.
 Final conclusions retain all material findings, supporting evidence and limitations within the requested scope, even when intermediate tables are hidden. Length alone does not justify dropping findings or claims.
 Final answers prefer compact tables for comparable metrics, phase timings and trace differences, alongside explanations and evidence references. Single values and questions better answered in prose remain free-form.
 
@@ -196,9 +203,3 @@ support details are in [docs/sponsor.en.md](docs/sponsor.en.md).
 submodule remains under [Apache-2.0](https://github.com/google/perfetto/blob/main/LICENSE).
 For commercial licensing without AGPL obligations, contact the maintainer on
 WeChat: `553000664`.
-
-## System investigation across scenes
-
-Performance investigations relate critical tasks to CPU frequency, system load, thread states, CPU placement and scheduling evidence when relevant to the question. Root-cause strategy details are read in full. Answers report missing evidence explicitly; investigation coverage is assessed independently of report headings and native runtime completion. See [Basic Usage](docs/getting-started/usage.en.md).
-
-The conclusion body is retained in full. Web, CLI and exported reports expose each claim's evidence and server verification details, including failed or unchecked claims. Finding a source does not establish that a claim or root cause is verified.

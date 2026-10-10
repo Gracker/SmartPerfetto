@@ -1,195 +1,70 @@
 # Agent Orchestration Rules
 
-Use this contract when a task needs more than one agent, a read-only reviewer,
-or an explicit handoff between agents. It defines repository expectations, not a
-specific model, plugin, tool schema, or local machine setup.
+Use this contract for bounded delegation, independent review or an agent
+handoff. It does not require a particular model, plugin or machine setup.
 
-## Scope
+## When to Delegate
 
-Do not split simple, single-file, low-risk tasks only because multiple agents
-are available. The primary agent may handle those directly and run the normal
-project checks.
+Keep simple work and shared decisions with the primary agent. Delegate when an
+independent workstream improves quality or saves time, or when the risk-based
+review in `AGENTS.md` applies. Capacity alone is not a reason to split work.
 
-Use orchestration for non-trivial work when a bounded, independent workstream
-would save time or improve quality, or an independent review is required before
-or after implementation. Keep shared state and sequential decisions with the
-primary agent; available capacity alone is not a reason to delegate.
-If a task starts simple but discovers
-runtime, security, release, public-contract, generated-artifact, submodule, or
-cross-surface risk, upgrade to this workflow.
+For material architecture, security, release, shared-state or public-contract
+risk, use Plan -> independent read-only review -> Revise -> Execute. A fresh
+final review is also required for security, release/packaging, material public
+or shared-state contracts and high-risk combined diffs. Review changed portions
+after fixes; reopen the whole review only when its assumptions changed.
 
-## Authority
+If no stable reviewer is available, record structured self-review and post-diff
+review as the fallback. Retry only a plausibly transient failure. A timeout or
+an unavailable result is not a successful independent review.
 
-Follow the instruction priority in `AGENTS.md`: system/platform constraints
-first, then the user's current explicit instructions, then scoped project
-rules. Skills, memory, old reports, and agent preferences do not override that
-authority. Verify project facts against current source, scripts, tests, and
-runtime evidence.
+## Ownership and Task Packet
 
-The primary agent owns:
+The primary agent owns scope, architecture, shared state, Git/external actions,
+combined-diff inspection, verification and final acceptance. Sub-agent evidence
+is a candidate result until checked against the live worktree.
 
-- Requirement clarification and user-visible scope changes.
-- Architecture, task decomposition, and ownership boundaries.
-- Git, commit, push, branch, PR, release, and deployment authority.
-- Real status and diff inspection before accepting any handoff.
-- Staged change detection, applicable project verification, and final acceptance.
+Before delegation, record the base ref, `git status --short --branch` and
+existing overlapping edits. Each task packet states:
 
-Sub-agents and reviewers provide candidate evidence. They do not change the
-repository authority model.
+- Objective and completion criteria.
+- Owned files/symbols/outputs, forbidden paths and relevant interfaces.
+- Applicable rules, authorization and concurrency constraints.
+- Baseline and existing changes.
+- Repository-defined verification and expected evidence.
 
-## Gates
+Tell workers they are not alone: preserve unrelated edits and accommodate
+concurrent changes. Reviewers must not edit files. Do not delegate scope, commit,
+push, PR, release, publication or deployment authority unless expressly granted.
+New user-visible chats require the user's explicit authorization.
 
-Before executing work that meets the risk-based independent review gate in
-`AGENTS.md`, follow these steps:
+## Shared Workspace
 
-1. Plan the change, including touched files, order, dependencies, and risks.
-2. Obtain an independent read-only review of the plan when a stable reviewer is
-   available.
-3. Revise the plan based on valid findings.
-4. Execute within the accepted scope.
+Independent reads may run in parallel. Shared-worktree implementation is serial
+unless ownership excludes conflicts in paths, symbols, generated output,
+lockfiles/dependencies, submodules/Git, processes/ports/caches and test/build
+outputs. Otherwise isolate the work or serialize it.
 
-Other tasks may use a concise plan and self-review. If newly discovered risk
-meets the gate, review that decision before the dependent implementation.
+At handoff, inspect actual status/diff and ownership overlap, then validate the
+combined result with `.claude/rules/testing.md`. Reuse a passing check only while
+its files, dependencies, configuration and environment are unchanged. Stage only
+task-owned files; use staged GitNexus change detection when `.claude/rules/git.md`
+requires it. Prefer returning fixes to the original owner while that ownership
+remains valid.
 
-After implementation, run a fresh read-only final review for security-sensitive
-work, release or packaging changes, material public-contract or shared-state
-changes, or a high-risk combined diff from multiple agents.
-The final review must be fresh: it cannot reuse a pre-implementation verdict.
-Later fixes require review of the changed portions and affected conclusions
-when the risk class still applies. Preserve findings supported by unchanged
-evidence; reopen the full review only if the fix changes its underlying scope
-or assumptions.
+## Reviewer and Handoff Results
 
-If no stable reviewer exists, use the fallback in `AGENTS.md`: structured
-self-review plus post-diff review. Retry only a plausibly transient failure;
-repeated timeouts are not a prerequisite. Record the fallback plainly; do not
-call it a successful independent review.
-
-## Baseline and Dirty Tree
-
-Before delegation, record:
-
-- Base ref or commit.
-- `git status --short --branch`.
-- Task-owned files, generated outputs, and symbols.
-- Forbidden paths and symbols.
-- Existing dirty or untracked changes that overlap the task.
-
-Assume unrelated dirty-tree changes belong to the user or another process. Do
-not revert, format, stage, or rewrite them.
-
-At handoff and acceptance, recheck overlap against the live worktree. Stage only
-the files owned by the current task. Run GitNexus `detect_changes` with staged
-scope when the change meets `.claude/rules/git.md`. Use whole-tree or all-scope
-checks only when the entire dirty tree is explicitly part of the task.
-
-## Task Packet
-
-Every delegated implementation or review task should include this packet:
-
-- `OBJECTIVE`: the exact result expected.
-- `FILES AND OWNERSHIP`: allowed files, owned symbols, generated outputs, and
-  forbidden paths.
-- `INTERFACES`: contracts, CLI/API surfaces, data schemas, docs, tests, or user
-  flows that must remain compatible.
-- `CONSTRAINTS`: repository rules, user authorization, no-go actions, language,
-  style, licensing, and concurrency limits.
-- `BASELINE`: base ref or commit, current status, and known overlapping changes.
-- `VERIFICATION`: exact commands, scenario names, success conditions, and
-  required evidence artifacts.
-- `STRUCTURED RETURN`: required return fields and verdict format.
-
-State explicitly that the worker is not alone in the repository. The worker must
-preserve unrelated changes and adapt to concurrent changes instead of reverting
-them.
-
-## Parallelism
-
-Read-only investigation can run in parallel when the questions are independent.
-
-Implementation in a shared worktree is serial by default. Parallel
-implementation is allowed only when the primary agent can show there is no
-conflict in:
-
-- Paths or symbols.
-- Generated files.
-- Lockfiles, package installation, or dependency graph changes.
-- Submodules or gitlinks.
-- `.git` operations.
-- Ports, processes, daemons, and caches.
-- Test output directories, evidence directories, and temporary artifacts.
-- Build, test, release, or package dependency chains.
-
-When conflict cannot be ruled out, use an isolated worktree or serialize the
-work. Shared files and shared dependency stacks are serialized.
-
-## Handoff and Acceptance
-
-A sub-agent report is candidate evidence only. Before accepting it, the primary
-agent checks the live repository status, actual diff, touched paths, generated
-outputs, and forbidden-path boundaries. The primary agent verifies the gate
-evidence against the combined result and runs missing or invalidated checks.
-Reuse a passing check only when its relevant files, dependencies, configuration,
-and execution environment are unchanged; a worker's claim of success alone is
-not evidence. Follow `.claude/rules/testing.md`, including required PR/release
-gates, without repeating valid checks solely because a handoff occurred.
-
-Send fixes back to the original worker when its ownership and context are still
-valid. If ownership changed, context expired, or the fix crosses boundaries, the
-primary agent must reassign explicitly or repair directly within its authority.
-
-After a correction, re-review the changed portions and affected conclusions
-under the Gates section; a correction alone does not require full re-review.
-
-## Reviewer Contract
-
-Reviewers are fresh, read-only, and do not implement fixes. Give reviewers:
-
-- Objective and allowed files.
-- Complete diff, or base and head refs.
-- Relevant constraints and forbidden paths.
-- Verification already run by the primary session.
-- Known residual risks and unavailable checks.
-
-Reviewer verdict labels are repository labels, not tool schemas:
+Give reviewers the objective, diff or base/head refs, constraints, completed
+verification and residual risks. Verdicts:
 
 - `SHIP`: no blocking findings.
-- `FIX_FIRST`: specific issues must be fixed before acceptance.
-- `RETHINK`: the plan or architecture is likely wrong.
+- `FIX_FIRST`: specific issues require repair.
+- `RETHINK`: the plan or architecture needs revision.
 
-The reviewer should report findings, evidence, and residual risk. The primary
-agent decides whether the change is accepted.
+Report whether read-only behavior is technically enforced or only requested;
+if a reviewer writes files, stop the review and discard its verdict.
 
-## Isolation Truth
-
-Distinguish requested read-only behavior from enforced read-only isolation.
-Record observable sandbox, permissions, write-tool availability, and any other
-facts that show whether writes were technically prevented.
-
-If enforcement cannot be proven, say the review was behaviorally read-only and
-record the residual risk. If a reviewer modifies files, immediately terminate
-that review and discard its verdict.
-
-## Authority Boundaries
-
-Sub-agents must not commit, push, open PRs, publish, deploy, create releases, or
-change task scope unless the task packet explicitly grants that authority.
-
-Creating new user-visible tasks requires explicit authorization from the user's
-current request. Do not silently replace requested models, roles, plugins, or
-tools; report the substitution and get permission when it changes the user's
-requested workflow.
-
-## Structured Return
-
-Delegated agents return:
-
-- `STATUS`: `complete`, `partial`, or `blocked`.
-- `CHANGES`: files and behavior changed.
-- `VERIFIED`: actual commands, scenarios, binary success observations, and
-  evidence artifact paths.
-- `JUDGMENT CALLS`: tradeoffs and non-obvious decisions.
-- `GAPS`: skipped, unavailable, partial, or failed checks.
-- `GIT/EXTERNAL ACTIONS`: staging, commits, pushes, PRs, releases, deploys, or
-  external writes performed; normally this should be `none` unless explicitly
-  authorized.
+Workers return `STATUS` (complete/partial/blocked), `CHANGES`, `VERIFIED` (actual
+commands/scenarios/results), `JUDGMENT CALLS`, `GAPS`, and `GIT/EXTERNAL ACTIONS`.
+The primary agent decides acceptance and reports evidenced delivery state.

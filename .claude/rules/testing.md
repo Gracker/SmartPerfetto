@@ -2,25 +2,22 @@
 
 ## Proportionate Verification
 
-- Choose the smallest applicable tier below and complete its required checks.
-  Use commands defined by this repository's rules, scripts, or documentation
-  that the current environment can execute. Record missing entrypoints as
-  `NOT CONFIGURED` and unavailable prerequisites as `NOT AVAILABLE`.
-- Do not add tests for reversible, low-impact changes merely to restate the
-  implementation. Add or update tests when they protect an observable behavior,
-  regression boundary, or maintained contract; an existing contract test must
-  still match an intentionally changed contract.
-- After applicable checks pass, repeat or broaden them only for new changes,
-  failures, unresolved doubts, or a required PR/release gate. Reuse evidence only
-  when the relevant files, dependencies, configuration, and execution environment
-  are unchanged. The PR and exact-archive release gates below still apply.
-- Before committing code, simplify only task-owned changes without changing
-  behavior: use an available `/simplify`, then a project-defined executable
-  simplification script, then `code-simplifier` on PATH. If none is available,
-  perform a manual simplification review plus `git diff --check`; record the
-  unavailable tool without treating it as a blocker.
-- Preserve evidence needed for acceptance. Remove only disposable temporary
-  files created by this task; do not clean unrelated work or shared caches.
+Use the smallest applicable repository-defined tier below. Missing entrypoints
+are `NOT CONFIGURED`; missing prerequisites are `NOT AVAILABLE`. Broaden or repeat
+checks only for new changes, failures, unresolved risk or a required PR/release
+gate. Reuse evidence while its files, dependencies, configuration and execution
+environment are unchanged.
+
+Add tests for observable behavior, regression boundaries and maintained
+contracts. Avoid tests that only restate literals or implementation layout.
+Before removing a case, identify its unique assertions and retain their coverage,
+or establish that the feature no longer exists. Model capability is not evidence
+that a runtime, privacy or release regression can no longer happen.
+
+Review and simplify the task-owned diff before final validation. Use a scoped
+simplification tool only for evident repetition/complexity or when requested;
+manual review is sufficient otherwise. Preserve unrelated work and acceptance
+evidence; `git diff --check` checks the final diff's whitespace.
 
 ## Default PR Gate
 
@@ -30,186 +27,88 @@ Before opening or landing a PR, run from the repository root:
 npm run verify:pr
 ```
 
-This runs root quality checks, Rust checks, backend Skill/Strategy validation,
-typecheck, build, CLI package checks, core, architecture, Self-Evolution, and
-external issue-reporting tests, trace-processor availability, the constructed
-Trace SQL regression, and the 6-trace scene regression gate.
+The root and backend `package.json` scripts define its checks: governance,
+documentation/i18n, runtime assets, quality, Rust, Skill/Strategy validation,
+typecheck/build, CLI packaging, registered test tiers and Trace regression.
+Use the actual scripts for the current selection rather than duplicating it here.
 
-## New Test Files Must Be Registered
+## Test Ownership and Registration
 
-`test:core`, `test:architecture`, and `test:self-evolution` enumerate their
-targets; new subsystems may use a directory-scoped gate such as
-`test:external-issue-reporting`. An unregistered suite never runs in
-`verify:pr`.
+Every backend suite must be reachable from root `verify:pr`. Register a new
+suite in its owning `test:*` tier, reachable from backend `test:gate`; a focused
+script outside that chain does not provide default-gate coverage. Prefer one
+owning tier per suite in the default chain to avoid repeated execution. Use a
+directory-scoped tier when it selects only real suites without overlap; Jest's
+`testMatch` also treats `.ts` files under `__tests__/` as suites, so helpers and
+fixtures belong outside that pattern.
 
-Jest does not type-check: `tsconfig.json` sets `isolatedModules`, so ts-jest
-transpiles each file on its own. `npm run typecheck` checks `src/` and
-`tests/`, test files included, as one program through
-`tsconfig.typecheck.json`; the build `tsconfig.json` still excludes tests from
-emit. Per-file type checking inside ts-jest cost most of the `verify:pr` wall
-clock, because every suite rebuilt a language service over the imports it
-shared with every other suite. `isolatedModules` also makes `tsc` reject code
-that per-file transpilation cannot compile, such as re-exporting a type
-without `export type`.
-
-`tsconfig.typecheck.json` also sets `noUnusedLocals` and `noUnusedParameters`,
-so an unused import, local, private member or parameter fails `npm run
-typecheck`; the build config does not, and its emit is unchanged. Name a
-parameter a framework signature requires but the body ignores with a leading
-`_`. A compile-time-only check belongs in a type position or a test that uses
-it, not in an unused production constant.
-
-When adding a test file, register it in the matching `test:*` script in the same
-change, and make sure that script is reachable from `test:gate`. For a new
-subsystem, add a directory-scoped `test:<subsystem>` script and wire it into
-`test:gate` rather than listing files one by one. During development, verify
-registration from the repository root:
+After adding, moving, deleting or changing test registration:
 
 ```bash
 npm run check:test-registration
 ```
 
-Then run the owning `test:*` entrypoint for the new or changed suite. Keep the
-full `npm run verify:pr` gate before opening or landing a PR; reuse its passing
-result only under the unchanged-evidence conditions above.
+Run the owning tier during development. When reorganizing gate scripts, compare
+before/after selection to confirm that retained suites stay reachable. The
+registration checker recognizes `.test.ts`, `.spec.ts`, `.eval.ts` and
+`_unittest.ts` under `backend/src/` and `backend/tests/`; it follows the npm script
+chain from root `verify:pr`. `scripts/test-registration-baseline.json` stays
+empty; any deliberately accepted debt needs an explicit justification rather
+than silently expanding the baseline.
 
-A suite that is green locally but absent from `test:gate` remains unguarded by
-the project gate and cannot satisfy integration acceptance.
+Jest/ts-jest transpiles isolated modules without type-checking. `npm run typecheck`
+in `backend/` checks source and tests together via `tsconfig.typecheck.json`,
+including unused locals/parameters; build excludes test emit. Use `export type`
+for type-only re-exports and `_` for unused framework-required parameters.
 
-Asking people to remember this did not work: when the rule was first written,
-237 of 573 backend suites — 41% — were unreachable from any `test:*`/`verify:*`
-script, and six of them were failing while `verify:pr` stayed green. One had
-rotted outright: a member added to `RagSourceKind` left a fixture in
-`sparkContracts.test.ts` type-broken, invisible because the file is both
-unregistered and excluded from typecheck.
+Trace-dependent evals belong in `test:analysis-accuracy`, which materializes the
+corpus. `getTestTracePath` resolves real traces or constructed base-plus-overlay
+cases. `describeWithTrace` fails on unknown/missing fixtures. Assert the fixture's
+expected result; do not skip absent data or accept both success and failure.
 
-`npm run check:test-registration` now answers the question mechanically, and
-`test:governance` runs it first in `verify:pr`. It lists every suite Jest runs
-(`.test.ts`, `.spec.ts`, `.eval.ts`, `_unittest.ts`) under both `backend/src/`
-and `backend/tests/`, and counts a suite as reachable only when a Jest command
-of a script that root `npm run verify:pr` runs (following `npm run`,
-`npm --prefix backend run`, `cd backend && …` and `npm test`) names it or a
-directory above it. A `test:*` script outside that chain (`test:unit`,
-`test:integration`, `test:skill-eval`) does not count. All suites are
-reachable and `scripts/test-registration-baseline.json` is empty, so the
-check is zero-tolerance: any new suite the gate cannot reach fails it.
+## Production Reachability
 
-Evals that load a constructed or real trace live in `test:analysis-accuracy`,
-which materializes the corpus first. `getTestTracePath` resolves a case id or
-alias to the trace it is analyzed on: a real case's committed trace, or a
-constructed case's materialized base plus overlay (its committed file is only
-the overlay). `describeWithTrace` fails a suite whose case does not resolve or
-whose trace is not on disk: seven evals once named a retired fixture and
-skipped forever while the gate stayed green. Assert what the fixture carries
-instead of returning early when data is missing, and do not accept both a
-step's success and its failure; either form passes without checking anything.
-
-Keep it that way. The baseline exists so the check could be introduced without
-a 237-file bang; it is not a parking space. `--update-baseline` records
-deliberately accepted debt and must be justified in the commit that does it —
-a baselined suite is still untested, and the file records what is unguarded
-rather than blessing it.
-
-## Dead Code Must Not Keep A Green Suite
-
-`check:test-registration` asks which suites the gate cannot run.
-`check:orphaned-modules` asks the mirror question: which modules no live module
-imports while a registered suite may still test them. Both failures look
-the same from `verify:pr` — everything green — and the second is worse, because
-a passing suite reads as proof the behaviour works.
+A passing suite over unused code is not product acceptance. When removing call
+sites, modules or exports, run the owning tests and:
 
 ```bash
 npm run check:orphaned-modules
-```
-
-`phaseHintMatcher.ts` sat in that state with 17 passing tests after the commit
-that replaced prescribed plans removed its only call site. The strategy field it
-served kept accepting authored `critical_tools`, and Self-Evolution kept
-proposing patches to it, with no effect on any analysis, until the field and
-its Self-Evolution targets were removed as well.
-
-The check matches a module by its own source path, never by basename: the test
-path was itself registered in `package.json`, so a basename match would have
-cleared the very module that was dead. Entrypoints are the modules a
-`backend/package.json` script or bin, or tooling under `backend/scripts/`,
-names by path (a `dist/<path>.js` command names `src/<path>.ts`) and modules
-that tooling imports; imports from
-`backend/tests/` count as tests, and a sibling naming `<stem>.js` counts as
-importing the worker it loads. Re-export shims are never reported, but only a
-live shim keeps its target alive.
-
-Location makes nothing an entrypoint. A maintainer script under `src/scripts/`
-or a `*Cli.ts` is live only while a `package.json` script or build tooling
-runs it, so register a tool you keep (CI and docs invoke it through that
-script) and delete one you do not. Unregistered scripts used to count by path, and two January ad hoc
-scripts kept the whole `agent/experts/crossDomain` tree reachable for eight
-months after the runtime stopped using it. Data or fixtures only a suite reads
-belong under `backend/tests/`, not in `src/`. `knip.json` follows the same
-rule: its backend production entries (`!`) are these entrypoints, listed by
-path rather than by directory, and `check:unused-exports` fails when the two
-drift apart.
-
-Orphaned means not reachable from an entrypoint: imported only by tests, by
-nothing, or only by other orphans (including cycles). An importer count cannot
-see the last shape, because a dead root keeps its whole subtree looking alive.
-Counting importers and skipping untested files missed 52 modules, among them
-the legacy executor/strategy orchestrator under `agent/core`, which a
-2026-09-26 fix still patched before it was deleted.
-
-Reachability is per module, not per export. A module stays reachable while any
-live module imports it for one symbol, and a barrel keeps every re-exported
-module reachable whether or not anything uses the symbol: `agent/index.ts` once
-kept the legacy domain agents, decision trees, experts and pipeline executor
-alive while its importers used six symbols. Keep a barrel to what its importers
-use. The orphan check sees none of the dead exports this leaves inside a live
-module; the export-level gate does:
-
-```bash
 npm run check:unused-exports
 ```
 
-It resolves symbols with knip in production mode, so an export only tests
-import is unused, and a same-named local elsewhere cannot hide it. Text search
-could not tell them apart: `rg -w` let `createHypothesisId` and `isStringArray`
-survive a sweep. A use inside the declaring file counts, so a test seam into
-live code passes; one that production never touches can be tagged
-`/** @internal */`. Exports of entrypoints themselves are not checked, since
-build tooling may read them as text. Run it again after deleting an orphan
-root: the exports it alone consumed surface only then, as `skillExecutor`'s
-module-expert extractors did once `agent/experts/crossDomain` went.
+The first checks module reachability from registered production/tool entrypoints,
+including orphan-only cycles. Tests cannot keep a module alive; an unregistered
+maintainer script is not an entrypoint. Register retained tools explicitly, keep
+fixtures under `backend/tests/` and barrels limited to consumed exports.
 
-`scripts/orphaned-modules-baseline.json` and
-`scripts/unused-exports-baseline.json` record the modules and exports already
-in this state. They are accepted debt, not blessed: each is behaviour the
-product does not run, and any suite over it vouches for nothing. Shrink a list
-by restoring the call site or deleting the code with its suite;
-`--update-baseline` grows it only with a justification in the same commit.
+The second uses production symbol resolution: exports used only by tests are
+unused. Test-only exports that expose live internal behavior may use
+`@internal`; that does not make an otherwise dead module reachable.
+It also checks alignment of backend entrypoints with `knip.json`. Run it again
+when orphan deletion changes which exports have live consumers.
 
-Suites that no focused tier owns live in `test:unit-sweep` (about 40s).
-Prefer the tier that matches the change; the sweep is the home for everything
-else. Directory-scoped patterns are also supported by the check, but note two
-costs before reaching for one: a directory pattern re-runs suites already owned
-by another tier (the same suites cost five minutes that way rather than
-about 40 seconds), and Jest's `testMatch` treats every `.ts` under `__tests__/` as a
-suite, so a fixture such as `sourceFinalizationFixture.ts` fails with "must
-contain at least one test".
+The orphan/unused-export baselines record accepted debt, not verified behavior.
+Shrink them by restoring production use or deleting dead code and its tests;
+growing them requires justification. `test:unit-sweep` owns suites without a
+more specific tier; do not also register them in a default-chain focused tier.
 
 ## Verification by Change Type
 
 | Change type | Required verification |
 | --- | --- |
-| Docs-only, not runtime-read | `git diff --check` |
+| Docs-only, not runtime-read | `git diff --check`; use `npm run verify:docs` for maintained doc links/commands, `npm run verify:i18n` for changed bilingual structure, and relevant governance tests when changing rule/adapter contracts |
+| Test tier/registration wiring | `npm run check:test-registration`, compare before/after selected suites and preparation/execution dependencies, and run affected owning tiers; apply the relevant fixture or SQL gate when those dependencies or coverage change |
 | Removing a call site, an export or a module | `npm run check:orphaned-modules`, `npm run check:unused-exports`, plus the owning `test:*` tier |
 | Docs that define commands, release/package workflow, or runtime-read paths | `git diff --check` plus the smallest command/path smoke that proves the doc did not drift |
 | Build/type fix | `cd backend && npm run typecheck` plus affected tests |
-| Contract/type-only change | `cd backend && npx tsc --noEmit` plus relevant contract tests |
+| Contract/type-only change | `cd backend && npm run typecheck` plus relevant contract tests |
 | CRUD-only service, no agent/runtime path | That service's `__tests__/<name>.test.ts` |
 | MCP, memory, report, provider, session, or agent runtime | `cd backend && npm run test:scene-trace-regression` |
 | Raw SQL capture units or native processor provenance | `npm --prefix backend run test:raw-sql-provenance` plus affected parser, worker lifecycle, RPC and capture tests; this gate ensures the pinned binary and materializes the Trace fixture |
 | Skill YAML | `cd backend && npm run validate:skills` plus scene trace regression |
 | Strategy/template Markdown | `cd backend && npm run validate:strategies` plus scene trace regression |
 | Trace corpus, Skill/Strategy coverage, or generator | `npm run trace:regression`; it includes `npm run trace:tooling:test` plus generated-corpus build and SQL execution |
-| SQL-bearing Skill or default backend gate wiring | `cd backend && npm run trace:sql-regression`; `npm run verify:pr` includes this gate |
+| SQL-bearing Skill or SQL regression/preparation gate wiring | `cd backend && npm run trace:sql-regression`; `npm run verify:pr` includes this gate |
 | Frontend generated types | `cd backend && npm run generate:frontend-types` plus relevant tests |
 | AI plugin UI | Browser verification in `start-dev.sh`, relevant `perfetto/ui` tests/typecheck, then `./scripts/update-frontend.sh` |
 | Self-Evolution control plane | `npm --prefix backend run test:self-evolution`, `npm --prefix backend run typecheck`, and scene trace regression; add the AI plugin UI gate when the panel changes. That script covers RBAC/scope isolation, disabled and dependency fail-closed cases, and fixed validation + holdout replay selection. It is wired into `test:gate`, so `npm run verify:pr` runs it too |
@@ -828,6 +727,12 @@ processor, exercises production registration/audit, on-demand and indexed
 handlers, and verifies A0–A4 plus source-claim bindings. Its default artifact is
 `backend/test-output/code-aware-semantic-delta/deterministic-summary.json`.
 This is local deterministic evidence, not provider acceptance.
+
+The command prepares the fixture and runs the semantic-delta replay.
+`test:source-claim-contract` owns source-result attachment tests;
+`test:report-contracts` owns source provenance across output surfaces. Run those
+owning tiers when their contracts change; the default `test:gate` already runs
+all three without repeating their suites.
 
 With credentials safely available, run the separate repeated provider matrix:
 

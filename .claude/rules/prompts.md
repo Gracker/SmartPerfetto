@@ -6,15 +6,8 @@ Do not hardcode durable prompt instructions in TypeScript. TypeScript should
 load, validate, substitute, route, and assemble prompt assets. The content lives
 in Markdown strategy/template files.
 
-Runtime prompt assets:
-
-- Scene strategies: `backend/strategies/*.strategy.md`
-- Prompt templates: `backend/strategies/prompt-*.template.md`
-- Architecture knowledge: `backend/strategies/knowledge-rendering-pipeline.template.md`
-- Selection scope: `backend/strategies/knowledge-selection-scope.template.md`
-- Knowledge templates: `backend/strategies/knowledge-*.template.md`
-- Comparison methodology: `backend/strategies/knowledge-trace-comparison.template.md`
-  and `backend/strategies/multi-trace-result-comparison.strategy.md`
+Runtime prompt assets live in `backend/strategies/` as `*.strategy.md` and
+`*.template.md`. Deterministic evidence programs live in `backend/skills/`.
 
 Current strategy set is discovered from strategy frontmatter through
 `strategyLoader.ts`; do not duplicate the scene list in TypeScript when the
@@ -117,23 +110,18 @@ entering the native prompt path. Missing or evicted data remains unavailable.
   expendable segment (dropped first under budget pressure; its title stays in
   `scene_strategy_details`). Measure a larger default detail with the token
   regression test below.
-- `phase_hints` and `plan_template` (with `critical_tools`,
-  `mandatory_aspects` and its expected calls) are removed: no runtime path
-  ever injected them into an analysis. `validate:strategies` rejects a
-  strategy file that declares one, and loading ignores a stray declaration
-  with a `strategy_frontmatter_removed_field` warning
-  (`REMOVED_STRATEGY_FRONTMATTER_KEYS`). Self-Evolution refuses new phase-hint
-  targets (`inert_injection_target`) and quarantines overlays persisted with
-  them. An obligation that must bind to what a run actually measured belongs
-  in `investigation_contract`, whose `evidence` condition and
-  `evidence_metrics` resolve against the producer ledger and so still apply
-  when the final semantic review is unavailable. A plan the model submits
-  (`submit_plan` / `revise_plan` expected calls) is a separate, live contract.
+- `phase_hints` and `plan_template` are unsupported
+  (`REMOVED_STRATEGY_FRONTMATTER_KEYS`); validation rejects them and
+  Self-Evolution refuses new inert targets and quarantines persisted overlays.
+  An obligation binding to actual measurements belongs in
+  `investigation_contract`: its evidence conditions and metrics resolve
+  against the producer ledger even without semantic review. Model-submitted
+  plans (`submit_plan` / `revise_plan` expected calls) remain a separate live
+  contract.
 - Never write a variable in braces inside a template comment. Rendering
   substitutes inside comments too, and split points that search for a
-  placeholder find the documented one first — that once injected the whole
-  scene core inside an unterminated HTML comment and pushed the methodology
-  preamble after it. Write `Variable "name" = ...` instead.
+  placeholder find the documented one first. Write `Variable "name" = ...`
+  instead.
 - HTML comments are stripped when a template becomes a prompt segment, so
   SPDX and authoring notes cost no tokens and never reach the model.
 - The full-mode prompt is budget-bound (`MAX_PROMPT_TOKENS`). Before adding a

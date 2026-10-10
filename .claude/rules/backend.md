@@ -1,85 +1,21 @@
 # Backend Rules
 
-## Runtime Selection
+## Runtime and Request Boundaries
 
-SmartPerfetto has five production agent runtimes behind the shared
-`IOrchestrator` contract:
+Production runtimes and capabilities come from
+`backend/src/agentRuntime/runtimeKinds.ts` and `runtimeDescriptors.ts`; selection
+comes from `runtimeSelection.ts`. Provider names are not runtime values.
+Selection precedence is the request's Provider Manager profile, persisted
+session runtime/provider on recovery, `SMARTPERFETTO_AGENT_RUNTIME` when no
+provider is pinned, then the default `claude-agent-sdk`. Preserve provider and
+session pinning when changing this path.
 
-- `claude-agent-sdk`: default runtime for Claude Code, Anthropic direct,
-  Bedrock, Vertex, and Anthropic-compatible providers.
-- `openai-agents-sdk`: OpenAI Responses API and OpenAI-compatible Chat
-  Completions providers.
-- `pi-agent-core`: Pi Agent Core runtime, selected through custom Provider
-  Manager profiles or explicit env/runtime pins.
-- `opencode`: OpenCode SDK runtime, selected through custom Provider Manager
-  profiles or explicit env/runtime pins.
-- `qoder-agent-sdk`: opt-in Qoder Agent SDK runtime, selected through custom
-  Provider Manager profiles or explicit env/runtime pins; local CLI auth is
-  allowed only after the optional SDK is installed.
-
-Runtime selection lives in `backend/src/agentRuntime/runtimeSelection.ts`.
-Selection order is:
-
-1. Explicit Provider Manager profile for the request.
-2. Persisted session snapshot runtime/provider on recovery.
-3. `SMARTPERFETTO_AGENT_RUNTIME` when no provider is pinned.
-4. Default `claude-agent-sdk`.
-
-Do not treat provider names such as DeepSeek or Qwen as runtime values. Valid
-runtime values are `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`,
-`opencode`, and `qoder-agent-sdk`.
-
-## Primary Flow
-
-Current backend analysis path:
-
-```text
-POST /api/agent/v1/analyze
-  -> backend/src/routes/agentRoutes.ts
-  -> AgentAnalyzeSessionService.prepareSession()
-  -> createAgentOrchestrator()
-  -> selected runtime: typed turn intent + authorized, on-demand tools
-  -> shared MCP / Skill / trace_processor_shell + raw execution capture
-  -> exact runtime result + private finalization context
-  -> product-owned finalizeAnalysisResult()
-  -> SSE projection + report generation + analysis-result snapshot
-```
-
-Key files:
-
-| File | Purpose |
-| --- | --- |
-| `backend/src/index.ts` | Express bootstrap, route registration, health output |
-| `backend/src/routes/agentRoutes.ts` | analyze endpoint, SSE stream, turns, response/cancel/focus |
-| `backend/src/assistant/application/agentAnalyzeSessionService.ts` | session creation/reuse, provider pinning, persistence recovery |
-| `backend/src/agentRuntime/runtimeSelection.ts` | runtime selection and orchestrator creation |
-| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator |
-| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
-| `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core orchestrator |
-| `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode SDK orchestrator and bridge |
-| `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder Agent SDK orchestrator, private streaming projection, and session isolation |
-| `backend/src/agentv3/claudeMcpServer.ts` | shared MCP tool implementations |
-| `backend/src/agentv3/mcpToolRegistry.ts` | single registry for MCP tool exposure and allowed tool names |
-| `backend/src/agentv3/planToolCallRecorder.ts` | provider-neutral tool-call evidence log for plan adherence |
-| `backend/src/agentv3/planCompletionStatus.ts` | provider-neutral plan completion status |
-| `backend/src/agentv3/claudeSystemPrompt.ts` | system prompt assembly shared by all five runtimes |
-| `backend/src/agentv3/strategyLoader.ts` | loads `*.strategy.md` and `*.template.md` |
-| `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | typed semantic intent and separate budget/evidence/delivery policy |
-| `backend/src/agentRuntime/analysisFinalizationContext.ts` | private run-bound provider, deadline, evidence reader and terminal context |
-| `backend/src/agentRuntime/runtimeEvidenceContext.ts` | issued in-memory evidence continuity with exact scope and run leases |
-| `backend/src/agentRuntime/runtimeDraftDiagnostics.ts`, `engines/claude/claudeVerifier.ts` | runtime draft diagnostics that only choose a same-run repair; no semantic LLM call, no terminal state |
-| `backend/src/agentRuntime/runtimeTraceAttachment.ts` | whether a run has a mounted trace, and its trace identity and evidence traces |
-| `backend/src/agentv3/sessionStateSnapshot.ts` | persisted runtime state snapshot |
-| `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | canonical body/claim extraction and the single asynchronous finalization boundary |
-| `backend/src/services/finalSemanticAssessment.ts` | bounded no-tool semantic review of the current body and declarations |
-| `backend/src/services/evidence/evidenceCapture.ts`, `evidenceReadView.ts` | original execution witnesses and bounded reads of retained captures |
-| `backend/src/services/finalReportContractGate.ts` | checks strategy `final_report_contract` completeness |
-| `backend/src/services/evidence/evidenceContractBuilder.ts` | builds evidence and claim-support contract from DataEnvelope output |
-| `backend/src/services/verifier/claimVerificationRunner.ts` | deterministic claim verification and identity-resolution collection |
-| `backend/src/services/analysisResultSnapshotPipeline.ts` | persists completed-analysis snapshots for comparison/report reuse |
-| `backend/src/services/providerManager/` | provider profiles, env isolation, runtime switching |
-| `backend/src/services/traceProcessorService.ts` | trace loading and SQL RPC |
-| `backend/src/services/skillEngine/` | YAML Skill loading/execution |
+The request flows through session preparation, typed turn intent, authorized
+shared MCP/Skill/SQL execution, then product-owned finalization and separate
+chat/report/snapshot projections. See [Agent Runtime](../../docs/architecture/agent-runtime.md)
+for the entrypoints, runtime/provider matrix and file map, and
+[Private Analysis Context](../../docs/architecture/private-analysis-context.md)
+before changing source, knowledge or owner/strict projection boundaries.
 
 ## AI Output Contract
 
@@ -113,9 +49,8 @@ Keep these boundaries intact:
 - The finalizer alone writes the terminal state. Before `addTurn` a runtime
   records only native facts: completion status, turn limit, timeout, provider
   failure, cancellation, an empty native body, a privacy replacement. Its draft
-  diagnostics (`agentRuntime/runtimeDraftDiagnostics.ts`) decide only whether
-  a same-run continuation or declaration repair applies (Claude and Pi; OpenAI,
-  OpenCode and Qoder have no issue-based repair and run no verifier); they set
+  diagnostics and native declaration-completion paths decide only whether a
+  same-run continuation or declaration repair applies; they set
   no `partial`, `terminationReason` or `confidence`, emit no `degraded` or
   progress update, and a failed optional repair keeps the accepted candidate's
   terminal message. No engine calls `applyFinalResultQualityGate`; the
@@ -281,8 +216,8 @@ Keep these boundaries intact:
   declaration recovery delivers the original body with the completion's
   declaration; one that drops declared claims, stays invalid or fails restores
   the original candidate.
-- `plan_phase_updated` is emitted from nine sites across six files. Build its
-  payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
+- Build each `plan_phase_updated` payload with `planPhaseUpdatedContent(...)`
+  so `origin` (`auto` vs `model`) is
   always present: the process view shows automatic transitions, which nothing
   else in the stream reports, and skips model-driven ones because the
   `update_plan_phase` dispatch line already narrates them. Never infer origin
@@ -292,16 +227,11 @@ Keep these boundaries intact:
 - `SSE_EVENT_TYPES` in `types/dataContract.ts` is documentation, not
   enforcement. Events reach the wire whether or not they are listed, so an
   event with no frontend handler is silently discarded after being computed and
-  transmitted — `plan_submitted`, `plan_phase_updated`, and `plan_revised` were
-  in that state. When adding an event, wire a consumer or say why there is none.
+  transmitted. When adding an event, wire a consumer or say why there is none.
 - Result confidence comes from `estimateAnalysisConfidence` in
-  `agentv3/analysisTermination.ts`, shared by every runtime. Four private
-  copies once disagreed exactly where the number matters most — with no
-  findings to average, Claude returned 0.30 while OpenAI returned 0.55 whenever
-  the conclusion string was non-empty, so the same trace scored differently
-  depending only on which runtime ran it. Confidence follows the findings' own
-  confidences; never infer it from the presence of text. With no findings the
-  number is a fixed baseline (Round 60 printed 35% for every conclusion), so
+  `agentv3/analysisTermination.ts`, shared by every runtime. Confidence follows
+  the findings' own confidences; never infer it from the presence of text. With no findings the
+  number is a fixed baseline, so
   user-facing text checks `analysisConfidenceIsGrounded` and shows the
   verified-claim count instead; do not repurpose the field as a verification
   ratio — pattern memory still consumes it as confidence.
@@ -320,8 +250,7 @@ Keep these boundaries intact:
   `artifactId`, `sourceArtifactId`) names; the reference stays `missing` and
   its claim unverified. An identity claim's locator, a conflict no issued
   identifier resolves, a copied read receipt, and identity, scope or integrity
-  conflicts stay errors. In the GLM four-runtime E2E, selector and identifier
-  slips were the only error in 7 of 25 `!` answers. The CLI
+  conflicts stay errors. The CLI
   marker comes from `deriveDeliveryVerdict`: `~` is a delivered but unverified
   answer (including `not_required`, whose uncontradicted claims external issue
   triage does not report as uncertain), `!` an unfinished run or a contradicted
@@ -346,20 +275,17 @@ Keep these boundaries intact:
   call is spent once attempted, so no declaration repair follows it; a
   continuation without a body restores the original. No delivery
   call (closeout, continuation, correction, declaration repair) has a cap of
-  its own below the run's delivery deadline: a fixed 120 s Claude cap cut off
-  every GLM declaration repair of 27-29 claims.
+  its own below the run's delivery deadline.
 - OpenCode no-tool calls (classifier, closeout, declaration repair, semantic
-  review) each start a fresh host whose agent allows two steps. At its step
-  limit OpenCode appends its own "maximum steps reached" summary instructions
-  as an assistant message, so a one-step host received them on its only
-  request, and GLM answered 6 of 16 classifications with a progress summary
-  instead of the decision. The transport reads the session back and accepts
+  review) each start a fresh host whose agent allows two steps. The second step
+  keeps OpenCode's native step-limit summary instructions out of the only
+  expected model request. The transport reads the session back and accepts
   only a single assistant reply, so a step after a tool call is `tool_use`.
   Provider controls go in that agent's `options`, which OpenCode puts into the
   request body (a model entry's `options` never reach it), selected by the
-  call's `purpose`. Only the classifier passes one; the review does not yet
-  pass `final_semantic` (DeepSeek JSON mode in the OpenAI runtime), which is
-  unverified on OpenCode's wire.
+  call's `purpose`. Classification, declaration repair and semantic review pass
+  their shared purpose (`classification`, `declaration_repair`, `final_semantic`) so
+  provider request controls remain purpose-specific.
 - `perTurnMs × maxTurns` is an initial deadline, not a wall. The OpenAI runtime
   uses `createProgressAwareRunDeadline`: each returned tool result moves the
   deadline by the slowest recent round, provider output (text, reasoning, tool
@@ -374,16 +300,14 @@ Keep these boundaries intact:
   no-tool semantic review from the unspent budget: a completed report with a
   usable declaration will make that review and may use everything up to hard
   (OpenAI runs and Claude scene runs), because the report
-  quality gate fails whenever the review does not finish (a GLM review of a
-  176 KB report outlasted the 600 s reserve with 1157 s still left); any other
+  quality gate fails whenever the review does not finish; any other
   run gets at most the delivery reserve from now. Prefetch shares that
   deadline, so the extension is granted only when the review will run, and
   outer harness timeouts (evaluation replay, the SSE verifier default) can
   now end such a run before hard. A one-shot provider call must not wait for
   a whole non-streamed reply: its headers arrive only after generation, so a
-  long reasoning phase hits fetch's default 300 s headers timeout (a GLM
-  review first emitted answer text at 496 s) whatever the budget. The OpenAI
-  intent and semantic requests therefore stream, leaving the run deadline in
+  long reasoning phase can hit the transport's headers timeout before the run
+  deadline. The OpenAI intent and semantic requests therefore stream, leaving the run deadline in
   charge; a body idle timeout still applies. Like turn-limit results, a
   timeout result authorizes no semantic model call. `*_MAX_RUN_TIMEOUT_MS` is
   part of the provider snapshot fingerprint. Claude scene dispatch uses the
@@ -395,8 +319,7 @@ Keep these boundaries intact:
   An item the parser cannot use becomes `unknown`; an `inconsistent` judgment
   keeps its issue even without a location; an unlocatable omission leaves body
   coverage incomplete. Only envelope, body-coverage, report and investigation
-  rows still reject the whole response. In the E2E corpus one bad location used
-  to discard 9 of 20 reviews outright. Finalization reports only review
+  rows still reject the whole response. Finalization reports only review
   started/finished progress; no heartbeat (it would evict SSE replay entries).
 - `analyze_wait_chain` headlines attributable time: other threads' work,
   runnable and uninterruptible segments. Perfetto ends a critical path at IRQ,
@@ -404,9 +327,7 @@ Keep these boundaries intact:
   leaves (`event_wait`). They are reported apart, never recursed into, and never
   read as idle on their own: idle needs the root wait between slices *and* low
   attributable time, while an in-slice chain ending in a peer's event wait is a
-  `peer_event_wait` warning (a lock holder waiting on the network). Summing leaves
-  as blocking once reported 95% "external critical path" for a thread idly
-  waiting for input.
+  `peer_event_wait` warning (a lock holder waiting on the network).
 - A semantic `numeric_mismatch` is recorded as the warning
   `semantic_numeric_display_rounding` only under captured-cell identity: the
   claim is a `captured.cell` proposition with exactly one subject reference and
@@ -418,10 +339,8 @@ Keep these boundaries intact:
   place is a real mismatch, so any other proposition shape — a `numeric.cell`
   declaration included — keeps the error. The claim stays unverified, never
   contradicted. An undeclared assertion (`semantic_undeclared_claim`) is
-  likewise a warning that blocks passing and stays named in the claim line. Once
-  the review stopped failing to parse, these two produced `!` on 7 of 8 E2E runs
-  in which no value was actually contradicted (34 of 34 mismatches were faithful
-  roundings). The review quotes the number itself; the location only selects
+  likewise a warning that blocks passing and stays named in the claim line.
+  The review quotes the number itself; the location only selects
   it, and its whole line decides (ranges, signs, comparisons, units). A review
   that quotes the wrong, correct-looking number is its own error; the check
   cannot recover which value the claim meant.
@@ -454,17 +373,11 @@ Keep these boundaries intact:
   position by position under their id or resolvable semantic identity, and no
   normalized duplicate content; an unrecoverable payload keeps the pre-matrix
   guarantee that no declared entry disappears. The accepted replacement may
-  itself stay `partially_valid`. Re-copying a long body verbatim failed most
-  glm-5.3 repairs on one changed character. For Pi this replaces the former
-  full-answer correction of such a declaration, and for OpenAI its
-  `invalid_protocol` continuation. Framing failures keep the existing
+  itself stay `partially_valid`. Framing failures keep the existing
   full-answer path.
-- Declaration wire forms are canonicalized, never interpreted. The prompt keeps
-  teaching the full verbose declaration: in a same-window GLM A/B (9 questions ×
-  2 per arm), asking for minified JSON and showing examples without the nested
-  `schemaVersion` cut the sidecar by 12 % but produced 5 recoveries instead of 0
-  (2 missing declarations) and 14 % fewer declared claims, so a lighter
-  declaration is a parser tolerance, not a prompt instruction. The claim-semantics and relation-proposal `schemaVersion`
+- Declaration wire forms are canonicalized, never interpreted. The prompt
+  teaches the full verbose declaration; lighter wire forms are parser
+  tolerances. The claim-semantics and relation-proposal `schemaVersion`
   (each with one supported value) may be omitted: the item validators accept
   the omission and the valid clone inserts it as the first key, so the
   declaration parser, the legacy JSON branch and every direct item parser
@@ -488,11 +401,10 @@ Keep these boundaries intact:
   native failure.
 - Structured facts must be read from a tool result **before**
   `summarizeExternalToolResult` truncates it. `planPhaseId` and `success` are
-  appended after the result body, so they are the first casualties of the
-  2000-char transport cap: a realistic 13.8 KB skill result loses both, which
-  silently degrades plan phase attribution to semantic inference and leaves
-  tool success unknown. Pass `resultFacts` from `readToolResultFacts(...)` at
-  the runtime call site; `resultText` is a fallback, not a source of truth.
+  appended after the result body and can be lost at the transport cap.
+  Truncated text cannot establish plan attribution or tool success. Pass
+  `resultFacts` from `readToolResultFacts(...)` at the runtime call site;
+  `resultText` is a fallback, not a source of truth.
   The same cap hides whether the model ever received a trailing hint such as
   `vendorOverride`. `RunManifest.toolResults` (`runtimeToolResultAudit.ts`)
   answers that: `withRuntimeToolConcurrency`, the outermost shared tool
@@ -539,25 +451,19 @@ Keep these boundaries intact:
   `runtime_update` events with no `seqId` and no SSE `id:` line, outside the
   run's replay events, and stops once the provisional answer is out. The CLI never shows drafts. The runtime's
   `conclusion` stays dropped; the provisional or final conclusion replaces the
-  draft. Whether pre-tool prose appears depends on the provider: DeepSeek and
-  GLM emit none between tool calls.
-- A policy refusal is not a tool malfunction. Around thirty MCP handlers answer
+  draft. Pre-tool prose remains provider-dependent.
+- A policy refusal is not a tool malfunction. MCP handlers answer
   a disallowed call with `{success: false, action_required: '<what to do
   instead>'}`; `isPolicyRefusalResult` recognises them by that field, which no
   genuinely broken tool supplies. Keep them out of aggregate failure-rate
-  monitoring: the circuit breaker's remedy is to tell the model to simplify its
-  scope, and in a real run one budget refusal plus two plan-phase refusals were
-  enough to trip its 60%-of-5 threshold — the system manufacturing evidence
-  that the model was failing, then shrinking its room because of it. The
+  monitoring: a policy refusal is not evidence that a tool is broken. The
   same-tool watchdog still counts them, because retrying a refused call is a
   loop worth interrupting.
 - `sqlUsesProcessNameFilter` decides both the raw-SQL identity warning and
   Skill identity admission, so it is an accuracy control, not a formatting
   nicety. Any change to it must be checked in both directions against real
-  query shapes — it previously required whitespace before the operator, which
-  let `p.name='com.foo'` scope a query to one process while reading as
-  unscoped. Quick mode answers through model-written raw SQL, where that style
-  is ordinary. It reads the statement's structure (`services/skillEngine/sqlStructure.ts`):
+  query shapes, including filters without whitespace around their operator.
+  It reads the statement's structure (`services/skillEngine/sqlStructure.ts`):
   any comparison of a process-name column through wrappers (`LOWER`, `TRIM`,
   `COALESCE`, `CAST`, `COLLATE`), either operand order, a simple `CASE`, the
   `glob()`/`like()` forms, columns a CTE or derived table carries out of one
@@ -658,14 +564,11 @@ add model, provider snapshot, usage, or performance fields to public SSE as an
 incidental benchmark shortcut; any public contract expansion needs its own
 privacy and compatibility review.
 
-The candidate scopes are durable architecture boundaries: `task4` reuses quick
-evidence; `task5` admits commutative reads; `task6` overlaps Claude/OpenAI
-preflights; `task7` overlaps independent Pi startup and enables quick parallel
-batch scheduling without bypassing descriptor/tool exclusivity; `task8`
-uses OpenCode adaptive observation; and `task9` overlaps Qoder registry/SDK
-startup. Shipped defaults remain serial until genuine five-adapter
-deterministic admission and bounded real-provider A/B are available. Synthetic
-scorer fixtures test scoring mechanics only.
+The admitted candidate scopes are documented in
+[Agent Runtime](../../docs/architecture/agent-runtime.md#并发观测与准入).
+Shipped defaults remain serial until production-adapter deterministic admission
+and bounded real-provider A/B are available. Synthetic scorer fixtures test
+scoring mechanics only.
 
 ## Self-Evolution Control Plane
 
@@ -702,14 +605,6 @@ explicit whitelist. When adding a field to `AnalysisOptions`, update that
 whitelist in the same change. Otherwise the HTTP body field is silently dropped
 before it reaches a runtime. Private issued capabilities are internal options
 sidecars, never fields accepted from request JSON.
-
-Important whitelisted examples:
-
-- `selectionContext`
-- `analysisMode`
-- `traceContext`
-- `providerId`
-- `referenceTraceId` / comparison context wiring
 
 ## Analysis Mode
 
@@ -893,23 +788,11 @@ or a private run; a store's error then travels on through routes that echo
   and asserts that no message, response, report or log line contains it;
   `tests/helpers/consoleWarnings.ts` captures the log lines.
 
-## TypeScript Conventions
+## Implementation Conventions
 
 - Use TypeScript strict mode and existing local patterns.
 - Prefer structured parsing, typed contracts, and existing services over ad hoc
   string handling.
 - Keep route handlers thin when behavior belongs in application/services.
-- For generated or mirrored contracts, update the source generator/template and
-  regenerate instead of hand-editing outputs.
-
-## Build Errors in Unfamiliar Files
-
-Before fixing a build error, check whether the file is generated. Look for:
-
-- `Generated`
-- `Auto-generated`
-- `generated/`
-- `dist/`
-- copied frontend bundles
-
-If generated, fix the generator or source contract, then regenerate.
+- Check unfamiliar build-error files for generated or mirrored output; fix the
+  source generator/template and regenerate instead of hand-editing outputs.

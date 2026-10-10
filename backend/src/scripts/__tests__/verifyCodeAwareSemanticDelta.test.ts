@@ -211,14 +211,14 @@ describe('constructed source/trace ground truth', () => {
     expect(groundTruth.trace.outputSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it('registers clean-checkout preparation and the existing Task 7 runtime gate', () => {
+  it('registers clean-checkout preparation and the owning source verification gates', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'backend/package.json'), 'utf8')) as {
       scripts: Record<string, string>;
     };
     expect(pkg.scripts['prepare:code-aware-semantic-delta']).toBe(
       'npm run trace-processor:ensure && npm run trace:materialize',
     );
-    expect(pkg.scripts['test:code-aware-semantic-delta']).toContain(
+    expect(pkg.scripts['test:source-claim-contract']).toContain(
       'src/agentRuntime/__tests__/sourceUseResultAttachment.test.ts',
     );
     expect(pkg.scripts['test:code-aware-semantic-delta']).toContain(
@@ -227,9 +227,17 @@ describe('constructed source/trace ground truth', () => {
     expect(pkg.scripts['verify:code-aware-semantic-delta']).toContain(
       'npm run prepare:code-aware-semantic-delta',
     );
-    expect(pkg.scripts['verify:code-aware-semantic-delta']).toContain(
+    expect(pkg.scripts['test:report-contracts']).toContain(
       'src/services/__tests__/sourceProvenanceSurfaces.test.ts',
     );
+    for (const gate of [
+      'test:source-claim-contract',
+      'test:report-contracts',
+      'test:code-aware-semantic-delta',
+      'verify:code-aware-semantic-delta',
+    ]) {
+      expect(pkg.scripts['test:gate'].split(' && ')).toContain(`npm run ${gate}`);
+    }
   });
 });
 

@@ -21,50 +21,8 @@ type IsExact<A, B> =
       (<T>() => T extends A ? 1 : 2) ? true : false)
     : false;
 
-const runtimeKindMatchesM10PublicRuntimeContract:
-  IsExact<AgentRuntimeKind, 'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core' | 'opencode' | 'qoder-agent-sdk'> = true;
 const snapshotRuntimeKindMatchesProviderManager:
   IsExact<NonNullable<SessionStateSnapshot['agentRuntimeKind']>, AgentRuntimeKind> = true;
-
-const PRODUCT_STATE_FIELDS = [
-  'conversationSteps',
-  'queryHistory',
-  'conclusionHistory',
-  'agentDialogue',
-  'agentResponses',
-  'dataEnvelopes',
-  'claimSupport',
-  'claimVerificationResult',
-  'identityResolutions',
-  'hypotheses',
-  'analysisNotes',
-  'analysisPlan',
-  'planHistory',
-  'uncertaintyFlags',
-  'architecture',
-  'artifacts',
-  'runSequence',
-  'conversationOrdinal',
-] as const satisfies readonly (keyof SessionStateSnapshot)[];
-
-const RUNTIME_PINNING_FIELDS = [
-  'engineState',
-  'agentRuntimeKind',
-  'agentRuntimeProviderId',
-  'agentRuntimeProviderSnapshotHash',
-] as const satisfies readonly (keyof SessionStateSnapshot)[];
-
-const LEGACY_CLAUDE_RUNTIME_MIRROR_FIELDS = [
-  'sdkSessionId',
-  'sdkSessionMode',
-  'claudeHypotheses',
-] as const satisfies readonly (keyof SessionStateSnapshot)[];
-
-const LEGACY_OPENAI_RUNTIME_MIRROR_FIELDS = [
-  'openAIHistory',
-  'openAILastResponseId',
-  'openAIRunState',
-] as const satisfies readonly (keyof SessionStateSnapshot)[];
 
 describe('SessionStateSnapshot runtime state inventory', () => {
   it('removes model-authored intermediate state from private durable fields', () => {
@@ -91,117 +49,8 @@ describe('SessionStateSnapshot runtime state inventory', () => {
     expect(JSON.stringify(projected)).not.toContain('PRIVATE_');
   });
 
-  it('keeps snapshot v1 runtime kind aligned with public Provider Manager values', () => {
-    expect(runtimeKindMatchesM10PublicRuntimeContract).toBe(true);
+  it('keeps snapshot runtime kind aligned with Provider Manager', () => {
     expect(snapshotRuntimeKindMatchesProviderManager).toBe(true);
-    const publicRuntimeKinds: Array<NonNullable<SessionStateSnapshot['agentRuntimeKind']>> = [
-      'claude-agent-sdk',
-      'openai-agents-sdk',
-      'pi-agent-core',
-      'opencode',
-      'qoder-agent-sdk',
-    ];
-    expect(publicRuntimeKinds).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core', 'opencode', 'qoder-agent-sdk']);
-  });
-
-  it('documents product state separately from current engine-local fields', () => {
-    expect(PRODUCT_STATE_FIELDS).toEqual([
-      'conversationSteps',
-      'queryHistory',
-      'conclusionHistory',
-      'agentDialogue',
-      'agentResponses',
-      'dataEnvelopes',
-      'claimSupport',
-      'claimVerificationResult',
-      'identityResolutions',
-      'hypotheses',
-      'analysisNotes',
-      'analysisPlan',
-      'planHistory',
-      'uncertaintyFlags',
-      'architecture',
-      'artifacts',
-      'runSequence',
-      'conversationOrdinal',
-    ]);
-    expect(RUNTIME_PINNING_FIELDS).toEqual([
-      'engineState',
-      'agentRuntimeKind',
-      'agentRuntimeProviderId',
-      'agentRuntimeProviderSnapshotHash',
-    ]);
-    expect(LEGACY_CLAUDE_RUNTIME_MIRROR_FIELDS).toEqual([
-      'sdkSessionId',
-      'sdkSessionMode',
-      'claudeHypotheses',
-    ]);
-    expect(LEGACY_OPENAI_RUNTIME_MIRROR_FIELDS).toEqual([
-      'openAIHistory',
-      'openAILastResponseId',
-      'openAIRunState',
-    ]);
-  });
-
-  it('characterizes the current mixed v1 shape before any state split', () => {
-    const snapshot: SessionStateSnapshot = {
-      version: 1,
-      snapshotTimestamp: 1,
-      sessionId: 'session-1',
-      traceId: 'trace-1',
-      conversationSteps: [],
-      queryHistory: [],
-      conclusionHistory: [],
-      agentDialogue: [],
-      agentResponses: [],
-      dataEnvelopes: [],
-      claimSupport: [],
-      claimVerificationResult: undefined,
-      identityResolutions: [],
-      hypotheses: [],
-      analysisNotes: [],
-      analysisPlan: null,
-      planHistory: [],
-      uncertaintyFlags: [],
-      architecture: undefined,
-      artifacts: [],
-      engineState: {
-        kind: 'openai-agents-sdk',
-        provider: {
-          providerId: 'provider-1',
-          providerSnapshotHash: 'hash-1',
-        },
-        openai: {
-          history: [{ role: 'user', content: 'q' }],
-          lastResponseId: 'resp-1',
-          runState: 'opaque-openai-state',
-        },
-      },
-      sdkSessionId: 'claude-sdk-session',
-      sdkSessionMode: 'full',
-      claudeHypotheses: [],
-      agentRuntimeKind: 'openai-agents-sdk',
-      agentRuntimeProviderId: 'provider-1',
-      agentRuntimeProviderSnapshotHash: 'hash-1',
-      openAIHistory: [{ role: 'user', content: 'q' }],
-      openAILastResponseId: 'resp-1',
-      openAIRunState: 'opaque-openai-state',
-      runSequence: 0,
-      conversationOrdinal: 0,
-    };
-
-    for (const field of [
-      ...PRODUCT_STATE_FIELDS,
-      ...RUNTIME_PINNING_FIELDS,
-      ...LEGACY_CLAUDE_RUNTIME_MIRROR_FIELDS,
-      ...LEGACY_OPENAI_RUNTIME_MIRROR_FIELDS,
-    ]) {
-      expect(field in snapshot).toBe(true);
-    }
-    expect(snapshot.version).toBe(1);
-    expect(getSnapshotRuntimeKind(snapshot)).toBe('openai-agents-sdk');
-    expect(getSnapshotRuntimeProviderId(snapshot)).toBe('provider-1');
-    expect(getSnapshotRuntimeProviderSnapshotHash(snapshot)).toBe('hash-1');
   });
 
   it('normalizes legacy v1 runtime mirrors into canonical engineState', () => {

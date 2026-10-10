@@ -131,8 +131,9 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 ## 轮次上限与连续追问
 
 五个运行时共享采集预算与收尾状态。总预算大于一轮时，预留最后一轮无工具请求，
-在采集触顶后根据已经返回的事实生成有限结论、不足和下一步；取消、超时、授权失效及
-提供方错误不会触发额外总结。结果仍保留 `incomplete/turn_limit`，不能把交付文本当作
+在采集触顶后根据已经返回的事实生成有限结论、不足和下一步；取消、授权失效及
+提供方错误不会触发额外总结。OpenAI 采集超时且已有返回数据时，可在预留交付预算内收尾，
+仍保留 `partial/timeout`。触顶结果保留 `incomplete/turn_limit`，不能把交付文本当作
 取证完整。OpenCode 的上限依赖观察后中止，实际超额必须记录且不得再追加总结。
 
 每个用户问题使用新的物理模型上下文。同一逻辑会话经 owner、Trace、provider 和源码
@@ -147,7 +148,7 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 
 策略 frontmatter 的 `investigation_requirements` 独立于报告格式。共享 typed-intent 提示构造器从本轮固定的策略快照中读取这些取证义务，供 investigation 的 answer/report 使用；具体问题仅应用相关义务，fact/acknowledgement 不增加调查流程，`existing_only` 不因此获得取证权限。旧快照可以省略此可选字段，新字段参与快照指纹。
 
-策略 frontmatter 的 `entry_skill` 声明场景入口 Skill：已解析的 `scene_wide`、`read_new` investigation 在模型首轮之前由产品运行它（身份门 `verified` 才运行），结果以不可整体丢弃、有界的 `scene_evidence` 提示段交给模型；它与 `invoke_skill` 共用 `skillRunCore`，但不是模型工具调用，只记入 `RuntimePerformance` 的阶段与回执。`default` 标记的策略 detail 正文作为最先让位的提示段随首轮下发，标题仍列在 detail 清单里。详见 [Agent Runtime 架构](agent-runtime.md)。
+策略 frontmatter 的 `entry_skill` 声明场景入口 Skill：已解析的 `scene_wide`、`read_new` investigation，挂载单条 Trace 且无 reference/comparison 时，在模型首轮之前由产品运行它（身份门 `verified` 才运行）。结果以不可整体丢弃、有界的 `scene_evidence` 提示段交给模型；它与 `invoke_skill` 共用 `skillRunCore`，但不是模型工具调用，不进入 `toolResults` 或计划调用记录，采集进入调查账本，性能阶段与回执由 `RuntimePerformance` 记录。`default` 标记的策略 detail 正文作为最先让位的提示段随首轮下发，标题仍列在 detail 清单里。详见 [Agent Runtime 架构](agent-runtime.md)。
 
 所有运行时只使用这套固定上下文的提示构造器；缺失 intent 或策略快照会明确失败，不回退到旧 quick/full 模板。最终结论是主要交付记录，预算与中间表格预览不限制发现、声明或正文数量。输入提示词纪律预算为 16,000 个估算 token，身份和证据义务不可裁剪；实际输出或核验容量不足仍须显式保留不完整状态。
 
@@ -310,6 +311,11 @@ finalizer 保留原命题，在原 deadline、pinned provider 和 owner/授权�
 未被证据台账排除的调查要求、“完美审核”假设下仍可达 `✓` 的断言，或零断言的纯确认回合；
 其余回答记为未核验原因 `not_required`，终态 `~`（接受的残余：只有审核能发现的矛盾不会被发现，
 有限证明的 `unsupported` 仍给出 `!`）。有限证明目录以源码为准，不能把一般因果关系或未知字段解释成已证明。
+
+审核、声明修复和续写在派发前检查剩余时间与预计时长；不足时保留原回答，跳过的审核记为
+`budget_insufficient`，报告和缺正文续写仍受原 deadline 约束。声明按条目校验：根错误使
+整份声明无效，条目错误保留 `partially_valid`，其他有效断言仍可核验。详见
+[Agent Runtime 架构](agent-runtime.md#final-result-与质量产物)。
 
 Conversation 可以在同一逻辑 session 的精确 trace/授权/owner scope 内保留原始采集，
 而每轮物理 run/session 保持唯一。模型只得到有界 artifact 定位目录；旧取消、回调和
