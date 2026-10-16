@@ -243,7 +243,7 @@
     "better-sqlite3@12.11.1": true,
     "esbuild@0.28.0": true,
     "fsevents@2.3.3": true,
-    "opencode-ai@1.17.15": true,
+    "opencode-ai@1.18.31": true,
     "protobufjs@7.6.4": true,
     "unrs-resolver@1.12.2": true
   }
