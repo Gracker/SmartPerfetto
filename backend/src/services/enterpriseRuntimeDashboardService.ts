@@ -4,7 +4,6 @@
 
 import type Database from 'better-sqlite3';
 import type { RequestContext } from '../middleware/auth';
-import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
 import { openEnterpriseDb } from './enterpriseDb';
 import {
   repositoryScopeFromRequestContext,
@@ -23,25 +22,12 @@ import {
 
 type TraceProcessorFactoryStats = ReturnType<typeof TraceProcessorFactory.getStats>;
 
-interface ModelUsageStats {
-  calls: number;
-  tokens: number;
-  cost: number;
-  failures: number;
-}
-
-interface ModelRouterUsageSnapshot {
-  stats: Record<string, ModelUsageStats>;
-  totalCost: number;
-}
-
 export interface EnterpriseRuntimeDashboardDependencies {
   now?: () => number;
   eventLimit?: number;
   openDb?: () => Database.Database;
   listLeases?: (scope: EnterpriseRepositoryScope) => TraceProcessorLeaseRecord[];
   traceProcessorStatsProvider?: () => TraceProcessorFactoryStats;
-  modelRouterUsageProvider?: () => ModelRouterUsageSnapshot;
 }
 
 interface RecentAgentEventRow {
@@ -172,17 +158,6 @@ function listRecentAuditEvents(
     }));
 }
 
-function getModelUsageSnapshot(
-  deps: EnterpriseRuntimeDashboardDependencies,
-): ModelRouterUsageSnapshot {
-  if (deps.modelRouterUsageProvider) return deps.modelRouterUsageProvider();
-  const router = getSharedModelRouter();
-  return {
-    stats: router.getStats(),
-    totalCost: router.getTotalCost(),
-  };
-}
-
 export function buildEnterpriseRuntimeDashboard(
   context: RequestContext,
   deps: EnterpriseRuntimeDashboardDependencies = {},
@@ -221,13 +196,6 @@ export function buildEnterpriseRuntimeDashboard(
     db.close();
   }
 
-  const modelUsage = getModelUsageSnapshot(deps);
-  const llmTotals = Object.values(modelUsage.stats).reduce((sum, stats) => {
-    sum.calls += stats.calls;
-    sum.tokens += stats.tokens;
-    sum.failures += stats.failures;
-    return sum;
-  }, { calls: 0, tokens: 0, failures: 0 });
   const queueTotals = summarizeQueueTotals(processors);
   const observedProcessorRssBytes = processors.reduce((sum, processor) => {
     return sum + (processor.rssBytes && processor.rssBytes > 0 ? processor.rssBytes : 0);
@@ -289,13 +257,6 @@ export function buildEnterpriseRuntimeDashboard(
     events: {
       recentAgentEvents,
       recentAuditEvents,
-    },
-    llmCost: {
-      totalCost: modelUsage.totalCost,
-      totalCalls: llmTotals.calls,
-      totalTokens: llmTotals.tokens,
-      totalFailures: llmTotals.failures,
-      byModel: modelUsage.stats,
     },
   };
 }

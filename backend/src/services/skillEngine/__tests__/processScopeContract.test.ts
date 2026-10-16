@@ -55,6 +55,10 @@ describe('Skill process scoping', () => {
   // visible and cannot grow silently; narrowing that fallback needs its own
   // root-cause review.
   const FUZZY_DISCOVERY_ALLOWLIST = new Set(['atomic/process_slice_cpu_hotspots.skill.yaml']);
+  // process_identity_resolver ranks candidate processes and excludes a
+  // package's own process family by design; it selects no target evidence.
+  const PREFIX_COMPARISON_ALLOWLIST = new Set([...FUZZY_DISCOVERY_ALLOWLIST,
+    'atomic/process_identity_resolver.skill.yaml']);
 
   it('never scopes a target process with a bare prefix glob', () => {
     const offenders: string[] = [];
@@ -82,13 +86,13 @@ describe('Skill process scoping', () => {
   });
 
   it('never prefix-globs a process or package column against another column', () => {
-    // e.g. `p.name GLOB dp.pkg || '*'` or `bt.client_process GLOB s.package || '*'`.
+    // e.g. `p.name GLOB dp.pkg || '*'`, `p2.name NOT GLOB (si.package || '*')`.
     // These absorb prefix-sharing siblings exactly like the target_process form.
     const offenders: string[] = [];
-    const pattern = /\b(?:p\.name|client_process|process_name)\s+GLOB\s+[A-Za-z_][\w.]*\s*\|\|\s*'\*'/;
+    const pattern = /[\w.]+\s+(?:NOT\s+)?GLOB\s+\(?\s*[A-Za-z_][\w.]*\s*\|\|\s*'\*'/;
     for (const file of listSkillFiles(skillsRoot)) {
       const rel = path.relative(skillsRoot, file);
-      if (FUZZY_DISCOVERY_ALLOWLIST.has(rel)) continue;
+      if (PREFIX_COMPARISON_ALLOWLIST.has(rel)) continue;
       fs.readFileSync(file, 'utf-8').split('\n').forEach((line, i) => {
         if (pattern.test(line)) offenders.push(`${rel}:${i + 1}`);
       });
@@ -96,14 +100,17 @@ describe('Skill process scoping', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('never scopes any Skill or Strategy with a bare package prefix', () => {
-    // scrollingAnalysisSchema already enforced this for the scrolling skill.
-    // The same idiom existed across ~150 sites repo-wide; keep it from returning.
+  it('never scopes any Skill or Strategy with a process or package prefix or substring', () => {
+    // A user-supplied process or package name matches exactly or as a `name:*`
+    // subprocess. Prefix (`'${x}*'`, `LIKE '${x}%'`) and substring (`'*${x}*'`,
+    // `LIKE '%${x}%'`) forms absorb unrelated processes such as com.foobar.
+    // Layer names use the boundary-aware form in sf_frame_consumption and
+    // sf_layer_count_in_range.
     const offenders: string[] = [];
+    const token = String.raw`\$\{(?:process_name|package)(?:\|[^}]*)?\}`;
     const bad = [
-      /(?<![\w.])[A-Za-z_][A-Za-z0-9_.]*\s+(?:NOT\s+)?GLOB\s+'\$\{package\}\*'/,
-      /(?<![\w.])[A-Za-z_][A-Za-z0-9_.]*\s+(?:NOT\s+)?LIKE\s+'\$\{package\}%'/,
-      /(?<![\w.])[A-Za-z_][A-Za-z0-9_.]*\s+(?:NOT\s+)?GLOB\s+'\{process_name\}\*'/,
+      new RegExp(String.raw`\s(?:NOT\s+)?GLOB\s+'\*?${token}\*'`),
+      new RegExp(String.raw`\s(?:NOT\s+)?LIKE\s+'%?${token}%'`),
     ];
     const roots = [skillsRoot, path.join(process.cwd(), 'strategies')];
     for (const root of roots) {

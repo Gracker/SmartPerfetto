@@ -7,14 +7,19 @@
  * `smartperfetto` CLI entry point.
  *
  * All async work routes through command handlers that return an exit code.
- * We call `process.exit(code)` explicitly to ensure the process terminates
- * even if some module has a stray setInterval / active handle we missed.
+ * We exit explicitly to ensure the process terminates even if some module has
+ * a stray setInterval / active handle we missed — after a bounded flush of
+ * stdout/stderr (exitAfterFlush), because a pipe discards queued output on
+ * process.exit. Signal exits stay immediate.
  */
 
+// Must stay first: loads env files before any module below reads process.env.
+import './envEntry';
 import {Command, CommanderError, Option} from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrap } from './bootstrap';
+import { exitAfterFlush } from './exitAfterFlush';
 import { createRenderer, parseOutputFormat, parseTextJsonFormat, type OutputFormat } from './repl/renderer';
 import { CliAnalyzeService } from './services/cliAnalyzeService';
 import { runRepl } from './repl';
@@ -38,9 +43,10 @@ import {
   runCapturePresetsCommand,
   runCaptureSuggestCommand,
 } from './commands/capture';
-import { isCapturePresetId } from './services/captureConfig';
+import { isCapturePresetId, listCapturePresets } from './services/captureConfig';
 import {
   runCodebaseAuditCommand,
+  runCodebaseAuthorizeContentCommand,
   runCodebaseAuthorizeExtensionsCommand,
   runCodebaseAuthorizeSelectionCommand,
   runCodebaseConsentCommand,
@@ -55,15 +61,22 @@ import {
 } from './commands/codebase';
 import type {CodebaseOutputFormat} from './commands/codebase';
 import {
-  runKnowledgePackStatusCommand,
-  runKnowledgePackUpdateCommand,
-} from './commands/knowledgePack';
+  runKnowledgeConsentCommand,
+  runKnowledgeListCommand,
+  runKnowledgePreviewCommand,
+  runKnowledgeRegisterCommand,
+  runKnowledgeReindexCommand,
+  runKnowledgeRemoveCommand,
+  runKnowledgeSearchCommand,
+} from './commands/knowledge';
 import {runUpdateCheckCommand} from './commands/update';
 import {beginCliUpdateNotice} from './updateNotice';
 import { DEFAULT_ANALYSIS_QUERY } from './constants';
 import type {CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import type {CapturePresetId, CliAnalysisMode} from './types';
 import {localize, parseOutputLanguage} from '../agentv3/outputLanguage';
+import {usePerProcessPortScanOrigin} from '../services/portPool';
+import {isRequestedSourceDepth, type RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
 interface GlobalOpts {
   file?: string;
@@ -91,14 +104,14 @@ function installFatalHandlers(): void {
   process.on('uncaughtException', (err) => {
     console.error(`Fatal: uncaught exception: ${err.message}`);
     if (process.env.DEBUG) console.error(err.stack);
-    process.exit(1);
+    void exitAfterFlush(1);
   });
 
   process.on('unhandledRejection', (reason) => {
     const message = reason instanceof Error ? reason.message : String(reason);
     console.error(`Fatal: unhandled promise rejection: ${message}`);
     if (process.env.DEBUG && reason instanceof Error) console.error(reason.stack);
-    process.exit(1);
+    void exitAfterFlush(1);
   });
 
   process.once('SIGTERM', () => {
@@ -114,6 +127,9 @@ function programName(): string {
 
 function main(): void {
   installFatalHandlers();
+  // Several CLI processes may start trace processors at once; each scans the
+  // shared port range from its own origin so they rarely race for one port.
+  usePerProcessPortScanOrigin();
 
   const program = new Command();
   program.exitOverride();
@@ -142,9 +158,14 @@ function main(): void {
     });
     const exitCode = await fn();
     notice.flush();
-    process.exit(exitCode);
+    await exitAfterFlush(exitCode);
   };
   const collectRepeatedOption = (value: string, previous: string[] = []): string[] => [...previous, value];
+  const sourceDepth = (value?: string): RequestedSourceDepth | undefined => {
+    if (!value) return undefined;
+    if (isRequestedSourceDepth(value)) return value;
+    throw new Error(`Invalid source depth: ${value}. Expected auto, locate, or mechanism.`);
+  };
   const codeAwareMode = (value?: string): CodeAwareMode | undefined => {
     if (!value) return undefined;
     if (value === 'off' || value === 'metadata_only' || value === 'provider_send') return value;
@@ -159,7 +180,8 @@ function main(): void {
     .option('--code-aware <mode>', 'code-aware mode: off, metadata_only, provider_send')
     .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectRepeatedOption, [])
     .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectRepeatedOption, [])
-    .action(async (trace: string, question: string[] | undefined, opts: { format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[] }) => {
+    .option('--source-depth <depth>', 'source budget: auto, locate, mechanism (default auto)')
+    .action(async (trace: string, question: string[] | undefined, opts: { format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[]; sourceDepth?: string }) => {
       const g = globals();
       await runAndExit(() => runAnalyzeCommand({
         trace,
@@ -173,6 +195,7 @@ function main(): void {
         codeAwareMode: codeAwareMode(opts.codeAware),
         codebaseIds: opts.codebaseId,
         knowledgeSourceIds: opts.knowledgeSourceId,
+        sourceDepth: sourceDepth(opts.sourceDepth),
       }));
     });
 
@@ -185,7 +208,8 @@ function main(): void {
     .option('--code-aware <mode>', 'code-aware mode: off, metadata_only, provider_send')
     .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectRepeatedOption, [])
     .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectRepeatedOption, [])
-    .action(async (trace: string, opts: { query?: string; format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[] }) => {
+    .option('--source-depth <depth>', 'source budget: auto, locate, mechanism (default auto)')
+    .action(async (trace: string, opts: { query?: string; format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[]; sourceDepth?: string }) => {
       const g = globals();
       const query = g.prompt ?? g.query ?? opts.query ?? DEFAULT_ANALYSIS_QUERY;
       await runAndExit(() => runAnalyzeCommand({
@@ -200,6 +224,7 @@ function main(): void {
         codeAwareMode: codeAwareMode(opts.codeAware),
         codebaseIds: opts.codebaseId,
         knowledgeSourceIds: opts.knowledgeSourceId,
+        sourceDepth: sourceDepth(opts.sourceDepth),
       }));
     });
 
@@ -230,7 +255,7 @@ function main(): void {
       const query = opts.query ?? g.query ?? g.prompt;
       if (!query?.trim()) {
         console.error('Fatal: resume requires --query <question>.');
-        process.exit(2);
+        return exitAfterFlush(2);
       }
       await runAndExit(() => runResumeCommand({
         sessionId,
@@ -275,7 +300,8 @@ function main(): void {
     .command('probe')
     .description('verify this artifact can load the live strategy registry before a batch run')
     .action(async () => {
-      await runAndExit(() => runProbeCommand());
+      const g = globals();
+      await runAndExit(() => runProbeCommand({envFile: g.envFile, sessionDir: g.sessionDir}));
     });
 
   const configCmd = program.command('config').description('manage SmartPerfetto CLI configuration');
@@ -409,19 +435,95 @@ function main(): void {
       }));
     });
 
-  const knowledgePackCmd = program
-    .command('knowledge-pack')
-    .description('inspect or update the signed Android Internals Knowledge Pack');
-  knowledgePackCmd
-    .command('status')
-    .description('show the active, bundled, and signed-channel Pack state')
+  const knowledgeCmd = program
+    .command('knowledge')
+    .description('register document folders as searchable knowledge bases for analysis');
+  knowledgeCmd
+    .command('preview <rootPath>')
+    .description('show how many documents a folder would index, and what it would skip')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (rootPath: string, opts: {format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgePreviewCommand({
+        rootPath, envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('register <rootPath>')
+    .description('register a document folder as a knowledge base (index it with `reindex`)')
+    .option('--accept-rights', 'confirm you have the right to use these documents (required)', false)
+    .option('--send-to-provider', 'allow retrieved text to be sent to the AI service')
+    .option('--no-send-to-provider', 'withdraw consent to send retrieved text to the AI service')
+    .option('--name <name>', 'display name')
+    .option('--description <text>', 'what the documents cover, shown to the model as data')
+    .option('--attribution <text>', 'attribution for the documents')
+    .option('--license <text>', 'license the documents are under')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (rootPath: string, opts: {
+      acceptRights?: boolean; sendToProvider?: boolean; name?: string; description?: string;
+      attribution?: string; license?: string; format?: string;
+    }) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeRegisterCommand({
+        rootPath, acceptRights: opts.acceptRights, sendToProvider: opts.sendToProvider, name: opts.name,
+        description: opts.description, attribution: opts.attribution, license: opts.license,
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('list')
+    .description('list registered knowledge sources')
     .option('--format <format>', 'output format: text or json')
     .action(async (opts: {format?: string}) => {
       const g = globals();
-      await runAndExit(() => runKnowledgePackStatusCommand({
-        envFile: g.envFile,
-        sessionDir: g.sessionDir,
-        format: textJsonFormat(opts.format) === 'json' ? 'json' : 'text',
+      await runAndExit(() => runKnowledgeListCommand({
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('consent <sourceId>')
+    .description('grant or revoke sending a knowledge base\'s retrieved text to the AI service')
+    .addOption(new Option('--enable', 'allow retrieved text to be sent to the AI service').conflicts('disable'))
+    .addOption(new Option('--disable', 'withdraw that consent').conflicts('enable'))
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, opts: {enable?: boolean; disable?: boolean; format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeConsentCommand({
+        sourceId, enable: opts.enable, disable: opts.disable,
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('reindex <sourceId>')
+    .description('index a registered document folder into a new generation')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, opts: {format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeReindexCommand({
+        sourceId, envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('remove <sourceId>')
+    .description('delete a document knowledge base and every index it has')
+    .option('--yes', 'confirm permanent deletion', false)
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, opts: {yes?: boolean; format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeRemoveCommand({
+        sourceId, yes: opts.yes, envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
+      }));
+    });
+  knowledgeCmd
+    .command('search <sourceId> <query...>')
+    .description('try a search against a knowledge base\'s active index')
+    .option('--top-k <n>', 'maximum hits (default 5)', value => Number(value))
+    .option('--format <format>', 'output format: text or json')
+    .action(async (sourceId: string, query: string[], opts: {topK?: number; format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runKnowledgeSearchCommand({
+        sourceId, query: query.join(' '), topK: opts.topK,
+        envFile: g.envFile, sessionDir: g.sessionDir, format: textJsonFormat(opts.format),
       }));
     });
 
@@ -438,20 +540,6 @@ function main(): void {
         envFile: g.envFile,
         sessionDir: g.sessionDir,
         format: textJsonFormat(opts.format),
-      }));
-    });
-  knowledgePackCmd
-    .command('update')
-    .description('refresh TUF metadata and atomically install the stable Pack')
-    .option('--check', 'check for an update without installing it', false)
-    .option('--format <format>', 'output format: text or json')
-    .action(async (opts: {check?: boolean; format?: string}) => {
-      const g = globals();
-      await runAndExit(() => runKnowledgePackUpdateCommand({
-        envFile: g.envFile,
-        sessionDir: g.sessionDir,
-        checkOnly: opts.check,
-        format: textJsonFormat(opts.format) === 'json' ? 'json' : 'text',
       }));
     });
 
@@ -482,7 +570,7 @@ function main(): void {
     .description('register a local app/AOSP/kernel source codebase')
     .option('--kind <kind>', 'codebase kind: app_source, aosp, kernel_source, oem_sdk', 'app_source')
     .option('--name <name>', 'display name')
-    .option('--send-to-provider', 'allow snippets to be sent when the session also uses provider_send mode', false)
+    .option('--send-to-provider', 'refused: grant consent afterwards with `smp codebase authorize-content`', false)
     .option('--path-filter <prefix>', 'relative path prefix to ingest; repeatable', collectRepeatedOption, [])
     .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectRepeatedOption, [])
     .option('--vendor <vendor>', 'vendor id for kernel/OEM codebases')
@@ -526,10 +614,15 @@ function main(): void {
     .description('replace the registered source selection policy')
     .option('--path-filter <prefix>', 'replacement relative path prefix; repeatable', collectRepeatedOption)
     .option('--exclude-glob <glob>', 'replacement relative exclusion glob; repeatable', collectRepeatedOption)
+    .option('--preview', 'print what the replacement would admit (JSON) without saving it')
+    .option('--expected-revision <n>', 'refuse the save unless the selection is still at this previewed revision',
+      parsePositiveInteger)
     .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
     .action(async (codebaseId: string, opts: {
       pathFilter?: string[];
       excludeGlob?: string[];
+      preview?: boolean;
+      expectedRevision?: number;
       format: CodebaseOutputFormat;
     }) => {
       const g = globals();
@@ -537,6 +630,8 @@ function main(): void {
         codebaseId,
         pathFilters: opts.pathFilter,
         excludeGlobs: opts.excludeGlob,
+        preview: opts.preview,
+        expectedRevision: opts.expectedRevision,
         format: opts.format,
         envFile: g.envFile,
         sessionDir: g.sessionDir,
@@ -545,8 +640,8 @@ function main(): void {
 
   codebaseCmd
     .command('consent <codebaseId>')
-    .description('enable or disable provider-send consent')
-    .addOption(new Option('--enable', 'enable provider-send consent').conflicts('disable'))
+    .description('disable provider-send consent (grant it with authorize-content)')
+    .addOption(new Option('--enable', 'refused: grant with `smp codebase authorize-content`').conflicts('disable'))
     .addOption(new Option('--disable', 'disable provider-send consent').conflicts('enable'))
     .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
     .action(async (codebaseId: string, opts: {
@@ -559,6 +654,22 @@ function main(): void {
         codebaseId,
         enable: opts.enable,
         disable: opts.disable,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('authorize-content <codebaseId>')
+    .description('show what sending source text would cover; with --confirm, grant exactly that')
+    .option('--confirm <token>', 'the content disclosure token the disclosure printed')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {confirm?: string; format: CodebaseOutputFormat}) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseAuthorizeContentCommand({
+        codebaseId,
+        confirm: opts.confirm,
         format: opts.format,
         envFile: g.envFile,
         sessionDir: g.sessionDir,
@@ -751,7 +862,7 @@ function main(): void {
       const query = opts.query ?? g.query;
       if (!query?.trim()) {
         console.error('Fatal: compare requires --query <question>.');
-        process.exit(2);
+        return exitAfterFlush(2);
       }
       await runAndExit(() => runCompareCommand({
         currentTrace,
@@ -827,7 +938,7 @@ function main(): void {
   captureCmd
     .command('android')
     .description('capture an Android Perfetto trace from a connected adb device')
-    .option('--preset <preset>', 'capture preset: startup, scrolling, camera, anr, game, memory, cpu, power, overview, full', parseCapturePreset)
+    .option('--preset <preset>', `capture preset: ${capturePresetIds().join(', ')}`, parseCapturePreset)
     .option('--config <pbtxt>', 'existing Perfetto textproto config file')
     .option('--app <package>', 'target Android package name or *')
     .requiredOption('--out <file>', 'output trace file path')
@@ -922,7 +1033,7 @@ function main(): void {
     }
     if (g.prompt || g.query) {
       console.error('Fatal: --prompt/--query requires --file <trace> for one-shot analysis.');
-      process.exit(2);
+      return exitAfterFlush(2);
     }
 
     await runAndExit(() => runReplCommand({
@@ -936,11 +1047,11 @@ function main(): void {
 
   program.parseAsync(process.argv).catch((err: Error) => {
     if (err instanceof CommanderError) {
-      process.exit(err.exitCode === 0 ? 0 : 2);
+      return exitAfterFlush(err.exitCode === 0 ? 0 : 2);
     }
     console.error(localize(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), `致命错误：${err.message}`, `Fatal: ${err.message}`));
     if (process.env.DEBUG) console.error(err.stack);
-    process.exit(2);
+    return exitAfterFlush(2);
   });
 }
 
@@ -991,7 +1102,11 @@ function parseAnalysisMode(mode: string | undefined): CliAnalysisMode | undefine
 
 function parseCapturePreset(preset: string): CapturePresetId {
   if (isCapturePresetId(preset)) return preset;
-  throw new Error(`Invalid capture preset: ${preset}. Expected startup, scrolling, camera, anr, game, memory, cpu, power, overview, or full.`);
+  throw new Error(`Invalid capture preset: ${preset}. Expected one of: ${capturePresetIds().join(', ')}.`);
+}
+
+function capturePresetIds(): string[] {
+  return listCapturePresets().map((definition) => definition.id);
 }
 
 function parseCodebaseKind(kind: string | undefined): 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk' {

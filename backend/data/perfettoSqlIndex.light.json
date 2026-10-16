@@ -1,7 +1,7 @@
 {
   "version": "2.0",
-  "generatedAt": "2026-08-25T13:54:06.577759",
-  "generatedFrom": "add693d8b338ba9599dbcbc3e300b1ab8c000897",
+  "generatedAt": "2026-09-24T08:32:58.425908",
+  "generatedFrom": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368",
   "source": "perfetto/src/trace_processor/perfetto_sql/stdlib",
   "templates": [
     {
@@ -206,6 +206,122 @@
       "description": "All app cold starts with information about their cold start reason: broadcast, service, activity or provider."
     },
     {
+      "id": "stdlib.android.android_app_wakelocks_sdk",
+      "name": "android_app_wakelocks_sdk",
+      "category": "android",
+      "type": "table",
+      "description": "Table for app wakelocks sourced from SDK trace events. This is the preferred source. Suggested minimal config: data_sources: { config: { name: \"android.app_wakelocks\" } }"
+    },
+    {
+      "id": "stdlib.android.android_app_wakelocks_batterystats",
+      "name": "android_app_wakelocks_batterystats",
+      "category": "android",
+      "type": "table",
+      "description": "Table for app wakelocks sourced from BatteryStats. This is a fallback for traces that do not contain the SDK events. Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"power\" } } }"
+    },
+    {
+      "id": "stdlib.android.android_app_wakelocks",
+      "name": "android_app_wakelocks",
+      "category": "android",
+      "type": "view",
+      "description": "Unified view for App Wakelocks. Prioritizes SDK over BatteryStats. If SDK events exist in the trace, only SDK events will be returned. Otherwise, it falls back to BatteryStats.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "name",
+          "type": "STRING"
+        },
+        {
+          "name": "uid",
+          "type": "LONG"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_audio_track_state",
+      "name": "android_audio_track_state",
+      "category": "android",
+      "type": "view",
+      "description": "View to get audio track usage intervals Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"audio\" } } }",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "uid",
+          "type": "LONG"
+        },
+        {
+          "name": "pid",
+          "type": "LONG"
+        },
+        {
+          "name": "track_name",
+          "type": "STRING"
+        },
+        {
+          "name": "content_type",
+          "type": "STRING"
+        },
+        {
+          "name": "usage",
+          "type": "STRING"
+        },
+        {
+          "name": "devices",
+          "type": "STRING"
+        },
+        {
+          "name": "flags",
+          "type": "STRING"
+        },
+        {
+          "name": "format",
+          "type": "STRING"
+        },
+        {
+          "name": "sample_rate",
+          "type": "LONG"
+        },
+        {
+          "name": "channel_mask",
+          "type": "LONG"
+        },
+        {
+          "name": "frame_count",
+          "type": "LONG"
+        },
+        {
+          "name": "thread_type",
+          "type": "STRING"
+        },
+        {
+          "name": "thread_id",
+          "type": "LONG"
+        },
+        {
+          "name": "thread_sample_rate",
+          "type": "LONG"
+        },
+        {
+          "name": "thread_format",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android.android_auto_multiuser_timing",
       "name": "android_auto_multiuser_timing",
       "category": "android",
@@ -398,16 +514,8 @@
           "type": "DURATION"
         },
         {
-          "name": "track_name",
-          "type": "STRING"
-        },
-        {
-          "name": "value",
-          "type": "LONG"
-        },
-        {
-          "name": "value_name",
-          "type": "STRING"
+          "name": "machine_id",
+          "type": "JOINID(machine.id)"
         }
       ]
     },
@@ -431,16 +539,8 @@
           "type": "DURATION"
         },
         {
-          "name": "track_name",
-          "type": "STRING"
-        },
-        {
-          "name": "str_value",
-          "type": "STRING"
-        },
-        {
-          "name": "int_value",
-          "type": "LONG"
+          "name": "machine_id",
+          "type": "JOINID(machine.id)"
         }
       ]
     },
@@ -1239,6 +1339,13 @@
       "description": "Provides a list of broadcast names and processes they were sent to by the system_server process on U+ devices."
     },
     {
+      "id": "stdlib.android.android_codec_events",
+      "name": "android_codec_events",
+      "category": "android",
+      "type": "table",
+      "description": "Parsed codec track events. Track names are expected to follow the format: `codec.track.<track_event_type>.<codec_name>.<unique_no>` E.g.: `codec.track.state.c2.android.aac.decoder.0` `codec.track.action.c2.google.av1.decoder.1` Suggested minimal config: data_sources: { config { name: \"linux.ftrace\" ftrace_config { atrace_categories: \"video\" atrace_apps: \"*\" } } }"
+    },
+    {
       "id": "stdlib.android._cores",
       "name": "_cores",
       "category": "android",
@@ -1258,6 +1365,10 @@
           "type": "TIMESTAMP"
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)"
+        },
+        {
           "name": "active_cpu_count",
           "type": "LONG"
         }
@@ -1275,6 +1386,10 @@
           "type": "TIMESTAMP"
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)"
+        },
+        {
           "name": "active_cpu_count",
           "type": "LONG"
         }
@@ -1283,6 +1398,41 @@
         {
           "name": "cluster_type",
           "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_cpu_cluster_utilization_in_interval",
+      "name": "android_cpu_cluster_utilization_in_interval",
+      "category": "android",
+      "type": "function",
+      "description": "CPU utilization broken down by cluster over a given interval. Returns one row per cluster. Clusters which ran nothing during the interval are still reported, with zero active time and zero utilization. Durations are measured on the monotonic clock, so time spent with the device suspended is excluded.",
+      "columns": [
+        {
+          "name": "cluster_type",
+          "type": "STRING"
+        },
+        {
+          "name": "core_count",
+          "type": "LONG"
+        },
+        {
+          "name": "active_dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "utilization",
+          "type": "DOUBLE"
+        }
+      ],
+      "params": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "LONG"
         }
       ]
     },
@@ -1339,6 +1489,31 @@
       "category": "android",
       "type": "function",
       "description": "Retained for backwards compatibility with any external callers. The `depth` argument is unused."
+    },
+    {
+      "id": "stdlib.android._android_critical_blocking_calls_draw_frames",
+      "name": "_android_critical_blocking_calls_draw_frames",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _android_critical_blocking_calls_draw_frames",
+      "columns": [
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_critical_blocking_calls",
@@ -2070,6 +2245,13 @@
       "category": "android",
       "type": "table",
       "description": "Table tracking all jank/latency CUJs information."
+    },
+    {
+      "id": "stdlib.android.android_cuj_blocking_calls",
+      "name": "android_cuj_blocking_calls",
+      "category": "android",
+      "type": "table",
+      "description": "Slices corresponding to critical blocking calls that occurred during a CUJ, clipped to the CUJ time boundaries."
     },
     {
       "id": "stdlib.android.android_jank_cuj_app_thread",
@@ -2925,6 +3107,43 @@
       "description": "All frozen processes and their frozen duration."
     },
     {
+      "id": "stdlib.android.android_freezer_state_statsd",
+      "name": "android_freezer_state_statsd",
+      "category": "android",
+      "type": "view",
+      "description": "View to get app freezer state intervals from StatsD",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "pid",
+          "type": "LONG"
+        },
+        {
+          "name": "process_name",
+          "type": "STRING"
+        },
+        {
+          "name": "freezer_state",
+          "type": "STRING"
+        },
+        {
+          "name": "time_unfrozen_millis",
+          "type": "LONG"
+        },
+        {
+          "name": "unfreeze_reason",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android._gc_slice",
       "name": "_gc_slice",
       "category": "android",
@@ -3311,11 +3530,11 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "event_time",
+          "name": "read_time",
           "type": "UNKNOWN"
         },
         {
-          "name": "read_time",
+          "name": "event_time",
           "type": "UNKNOWN"
         }
       ]
@@ -3403,6 +3622,10 @@
         },
         {
           "name": "event_action",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "event_time",
           "type": "UNKNOWN"
         },
         {
@@ -4319,6 +4542,328 @@
       "description": "This table returns the constraint, charging, and screen state changes that a job will go through in a single trace. Values from this table are derived from the `ScheduledJobStateChanged` atom. This differs from the `android_job_scheduler_events` table in the `android.job_scheduler` module which is derived from ATrace the system server category (`atrace_categories: \"ss\"`). This also differs from the `android_job_scheduler_states` in this module (`android.job_scheduler_states`) by providing charging and screen state changes. To populate this table, enable the Statsd Tracing Config with the ATOM_SCHEDULED_JOB_STATE_CHANGED push atom id. https://perfetto.dev/docs/reference/trace-config-proto#StatsdTracingConfig This table is preferred over `android_job_scheduler_events` since it contains more information and should be used whenever `ATOM_SCHEDULED_JOB_STATE_CHANGED` is available in a trace."
     },
     {
+      "id": "stdlib.android.android_job_scheduler_sdk",
+      "name": "android_job_scheduler_sdk",
+      "category": "android",
+      "type": "view",
+      "description": "View for SDK sourced JobScheduler events. Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"jobscheduler\" } } }",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "job_name",
+          "type": "STRING"
+        },
+        {
+          "name": "package_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_job_scheduler_statsd",
+      "name": "android_job_scheduler_statsd",
+      "category": "android",
+      "type": "view",
+      "description": "View for StatsD sourced JobScheduler events. Suggested minimal config: data_sources: { config: { name: \"android.statsd\" statsd_config: { push_atom_id: ATOM_SCHEDULED_JOB_STATE_CHANGED } } }",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "job_name",
+          "type": "STRING"
+        },
+        {
+          "name": "package_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_job_scheduler_batterystats",
+      "name": "android_job_scheduler_batterystats",
+      "category": "android",
+      "type": "view",
+      "description": "View for BatteryStats sourced JobScheduler events. Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"power\" } } }",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "job_name",
+          "type": "STRING"
+        },
+        {
+          "name": "package_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_job_scheduler",
+      "name": "android_job_scheduler",
+      "category": "android",
+      "type": "view",
+      "description": "Provides unified access to Android JobScheduler events. Prioritizes SDK > StatsD > BatteryStats. If a higher-priority source exists in the trace, only its events will be returned.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "job_name",
+          "type": "STRING"
+        },
+        {
+          "name": "package_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_js_extract_trace_tag",
+      "name": "_android_js_extract_trace_tag",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the trace tag from a JobScheduler job name. In Android JobScheduler, the job name string follows the general structure: [#<trace_tag>#][@<namespace>@]<target_component_or_tag> where the trace tag is an optional prefix enclosed between '#' delimiters. Synthetic Examples: - '#sync_worker#@BACKUP_NAMESPACE@com.example.app/com.example.app.BackupService' -> 'sync_worker' - '#download_task#DownloadManager:com.example.downloader' -> 'download_task' - '#cleanup#com.example.app/com.example.app.CleanupJobService' -> 'cleanup' - 'com.example.app/com.example.app.SyncJobService' -> '' Returns the extracted trace tag, or empty string if not present."
+    },
+    {
+      "id": "stdlib.android._android_js_extract_package_name",
+      "name": "_android_js_extract_package_name",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the package name from a JobScheduler job name. In Android JobScheduler, the target package is embedded in one of two formats: 1. Tagged / Delegated job format (SourceTag:PackageName): [#<trace_tag>#][@<namespace>@]<source_tag>:<package_name>[#<job_id>] where the package name is located after the last colon (':'). 2. Standard component format (PackageName/ClassName): [#<trace_tag>#][@<namespace>@]<package_name>/<class_name>[#<job_id>] where the package name is located before the slash ('/'). Synthetic Examples: - '#sync_worker#@SYNC_NAMESPACE@com.example.sync/tag:com.example.app' -> 'com.example.app' - '#download_task#DownloadManager:com.example.downloader' -> 'com.example.downloader' - '#backup#@BACKUP_NAMESPACE@com.example.app/com.example.app.BackupService' -> 'com.example.app' - 'com.example.app/com.example.app.SyncJobService' -> 'com.example.app' Returns the extracted package name, or empty string if not found."
+    },
+    {
+      "id": "stdlib.android._android_js_extract_job_namespace",
+      "name": "_android_js_extract_job_namespace",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the job namespace from a JobScheduler job name. In Android JobScheduler, the namespace is an optional segment enclosed between '@' delimiters following any trace tag prefix: [#<trace_tag>#][@<namespace>@]<target_component_or_tag> Synthetic Examples: - '#sync_worker#@SYNC_NAMESPACE@com.example.app/com.example.app.SyncJobService' -> 'SYNC_NAMESPACE' - '@BACKUP_NAMESPACE@#restore_task#com.example.app/com.example.app.RestoreService' -> 'BACKUP_NAMESPACE' - '#download_task#DownloadManager:com.example.downloader' -> '' - 'com.example.app/com.example.app.SyncJobService' -> '' Returns the extracted namespace, or empty string if not present."
+    },
+    {
+      "id": "stdlib.android._android_js_job_state_events",
+      "name": "_android_js_job_state_events",
+      "category": "android",
+      "type": "table",
+      "description": "Create a table containing all JobScheduler job state changes from slices.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "job_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "slice_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "job_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "uid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "proxy_uid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "standby_bucket",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "requested_priority",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "effective_priority",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "num_previous_attempts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "deadline_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "delay_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "job_start_latency_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "num_uncompleted_work_items",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "proc_state",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "internal_stop_reason",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "public_stop_reason",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "periodic_job_interval_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "periodic_job_flex_interval_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "filtered_trace_tag",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "num_reschedules_due_to_abandonment",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "back_off_policy_type",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_charging_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_battery_not_low_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_storage_not_low_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_timing_delay_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_deadline_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_idle_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_connectivity_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_content_trigger_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_requested_expedited_job",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_running_as_expedited_job",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_prefetch",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_requested_as_user_initiated_job",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_running_as_user_initiated_job",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_periodic",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "has_flexibility_constraint",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "can_apply_transport_affinities",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_js_job_started",
+      "name": "_android_js_job_started",
+      "category": "android",
+      "type": "table",
+      "description": "Valid state transitions in Android JobScheduler: 1. JOB_STATE_SCHEDULED -> JOB_STATE_STARTED: Constraints met and execution begins (JobServiceContext binds service). 2. JOB_STATE_SCHEDULED -> JOB_STATE_CANCELLED: App calls cancel() or updates job while waiting in queue (!wasRunning). 3. JOB_STATE_STARTED -> JOB_STATE_FINISHED: The only valid transition for a running job. Emitted on successful completion, timeout, constraint drop, preemption, process death/ANR, or cancellation of a running job. 4. JOB_STATE_FINISHED -> JOB_STATE_STARTED: Rescheduled periodic/retry job executes (internal rescheduling bypasses JOB_STATE_SCHEDULED). 5. JOB_STATE_FINISHED -> JOB_STATE_CANCELLED: A rescheduled job waiting in queue for next window is cancelled before running. 6. JOB_STATE_FINISHED -> JOB_STATE_SCHEDULED: App explicitly invokes JobScheduler.schedule() again for the job ID. 7. JOB_STATE_CANCELLED -> JOB_STATE_SCHEDULED: App re-schedules or replaces the cancelled job with the same job ID. Note on Packet Loss & Dropped Events: JOB_STATE_STARTED -> JOB_STATE_SCHEDULED is invalid in the OS runtime and only appears in traces due to packet loss (e.g. traced_chunks_discarded) where a JOB_STATE_FINISHED event was dropped, causing LEAD() to bridge across the idle gap to the next JOB_STATE_SCHEDULED event when an app recycles the integer job_id. Resilience to packet losses & dropped trace events: 1. If JOB_STATE_FINISHED is dropped/missing: The next event in the window partition will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or NULL. Because lead_state != 'JOB_STATE_FINISHED', the unclosed JOB_STATE_STARTED slice is safely discarded, preventing false multi-hour durations from bridging across recycled IDs. 2. If JOB_STATE_STARTED is dropped/missing: The preceding event will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or JOB_STATE_FINISHED. Because state != 'JOB_STATE_STARTED', no execution interval is emitted. 3. Incomplete execution intervals lacking a verified [ts_start, ts_end] pair are safely omitted, ensuring duration and latency metrics are not corrupted. Create table with verified job execution intervals (state='JOB_STATE_STARTED' AND lead_state='JOB_STATE_FINISHED').",
+      "columns": [
+        {
+          "name": "package_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "job_namespace",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_rescheduled",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "effective_requested_priority",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_job_scheduler_states_track_events",
+      "name": "android_job_scheduler_states_track_events",
+      "category": "android",
+      "type": "table",
+      "description": "This table returns all running jobs from job scheduler track events. Values in this table are derived from job scheduler track events. To populate this table, the `jobscheduler` category must be enabled in the `track_event` data source."
+    },
+    {
       "id": "stdlib.android._kernel_wakelock_track",
       "name": "_kernel_wakelock_track",
       "category": "android",
@@ -4382,6 +4927,96 @@
       "category": "android",
       "type": "table",
       "description": "Table of kernel (or native) wakelocks with held duration. Subtracts suspended time from each period to calculate the fraction of awake time for which the wakelock was held."
+    },
+    {
+      "id": "stdlib.android._android_keyvalue_lookup_extract_key_value_arg",
+      "name": "_android_keyvalue_lookup_extract_key_value_arg",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the value associated with a given key from a string containing key-value pairs. The payload string is expected to be in a format like '{ key1=value1 key2=\"value2\" ... }'. This function handles both quoted and unquoted values.",
+      "params": [
+        {
+          "name": "atrace_payload",
+          "type": "STRING"
+        },
+        {
+          "name": "key_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_lock_held_slices",
+      "name": "_android_lock_held_slices",
+      "category": "android",
+      "type": "table",
+      "description": "Slices matching `<lock>_lock_held` with the suffix stripped from `lock_name`.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_incomplete",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "lock_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_lock_held_raw",
+      "name": "_android_lock_held_raw",
+      "category": "android",
+      "type": "table",
+      "description": "Raw held intervals after merging recursive holds on the same thread and truncating holds when acquired by a successor thread.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "is_incomplete",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "lock_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_lock_held",
+      "name": "android_lock_held",
+      "category": "android",
+      "type": "table",
+      "description": "Intervals during which a named lock was held by a thread. Overlapping holds on the same thread (recursive locks) are merged. Holds on exclusive locks are truncated when acquired by a successor thread."
     },
     {
       "id": "stdlib.android._raw_dmabuf_events",
@@ -4532,16 +5167,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: _heap_graph_class_tree_cumulatives",
-      "columns": [
-        {
-          "name": "cumulative_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cumulative_size",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.android.android_heap_graph_class_summary_tree",
@@ -4642,40 +5268,6 @@
       "columns": []
     },
     {
-      "id": "stdlib.android._heap_graph_dominator_tree_bottom_up_scan",
-      "name": "_heap_graph_dominator_tree_bottom_up_scan",
-      "category": "android",
-      "type": "table",
-      "description": "Table: _heap_graph_dominator_tree_bottom_up_scan",
-      "columns": [
-        {
-          "name": "subtree_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "subtree_size_bytes",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "subtree_native_size_bytes",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.android._heap_graph_dominator_tree_top_down_scan",
-      "name": "_heap_graph_dominator_tree_top_down_scan",
-      "category": "android",
-      "type": "table",
-      "description": "Table: _heap_graph_dominator_tree_top_down_scan",
-      "columns": [
-        {
-          "name": "depth",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
       "id": "stdlib.android.heap_graph_dominator_tree",
       "name": "heap_graph_dominator_tree",
       "category": "android",
@@ -4702,6 +5294,20 @@
       "type": "table",
       "description": "Table: _excluded_refs",
       "columns": []
+    },
+    {
+      "id": "stdlib.android._experimental_flamegraph_heap_graph_frames",
+      "name": "_experimental_flamegraph_heap_graph_frames",
+      "category": "android",
+      "type": "macro",
+      "description": "Expands the heap graph dump at (upid, ts) into its shortest-path object tree and produces one frame row per object: name, mapping, and the value columns (count, size, alloc_count, alloc_size) which the flamegraph pipeline aggregates into self_*/cumulative_* output pairs. The BFS tree is the stdlib's canonical _heap_graph_object_min_depth_tree; the class tree module aggregates differently (path hashes keyed on heap type and root type, no root suffix in names), so the frames are built here to preserve the experimental_flamegraph output shape. Object ids are doubled so synthetic \"[native]\" children (id = 2*object_id + 1) sort after their parent (2*object_id) while staying unique within the tree."
+    },
+    {
+      "id": "stdlib.android._experimental_flamegraph_heap_graph_state",
+      "name": "_experimental_flamegraph_heap_graph_state",
+      "category": "android",
+      "type": "macro",
+      "description": "Returns whether the heap graph dump at (upid, ts) has any roots and whether it was recorded as truncated during import. experimental_flamegraph checks this before running the flamegraph pipeline, which needs a non-empty tree."
     },
     {
       "id": "stdlib.android._partition_tree_super_root_fn",
@@ -4808,12 +5414,29 @@
       "description": "Given a table containing heap graph tree-table aggregated by path hashes (see _heap_graph_path_hash_aggregate) computes the \"class tree\" by converting the path hashes to ids. Note that |tab| *must* be a Perfetto (e.g. not a subquery) for this macro to work."
     },
     {
+      "id": "stdlib.android._heap_graph_object_tree_cumulatives",
+      "name": "_heap_graph_object_tree_cumulatives",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _heap_graph_object_tree_cumulatives",
+      "columns": [
+        {
+          "name": "self_count",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android._heap_graph_object_tree_aggregation",
       "name": "_heap_graph_object_tree_aggregation",
       "category": "android",
       "type": "table",
-      "description": "Aggregates cumulative sizes for each object in the heap graph tree. This performs an expensive bottom-up traversal of the tree to compute cumulative sizes, native sizes, and object counts for each node.",
+      "description": "The cumulative size, native size and object count of every object in the heap graph: the totals over the object and everything below it in the min depth tree. Objects which are not part of the tree only count themselves.",
       "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
         {
           "name": "cumulative_size",
           "type": "UNKNOWN"
@@ -4962,16 +5585,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: _android_heap_profile_cumulatives",
-      "columns": [
-        {
-          "name": "cumulative_size",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cumulative_alloc_size",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.android.android_heap_profile_summary_tree",
@@ -5800,6 +6414,90 @@
       "description": "Data about packages running on the process."
     },
     {
+      "id": "stdlib.android._android_process_state_rank",
+      "name": "_android_process_state_rank",
+      "category": "android",
+      "type": "table",
+      "description": "Ordering follows the declaration order of ProcessStateEnum in protos/third_party/android/frameworks/base/proto/tracing/frameworks_base_track_event.proto (lines 317-342). Numeric values do not match declaration order because PROCESS_STATE_BOUND_TOP was appended as 1020 while declared between TOP (1002) and FOREGROUND_SERVICE (1003). Explicit unknown states (UNSPECIFIED, UNKNOWN_TO_PROTO, UNKNOWN) sort last.",
+      "columns": [
+        {
+          "name": "state",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "rank",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_process_state_intervals",
+      "name": "_android_process_state_intervals",
+      "category": "android",
+      "type": "table",
+      "description": "Intervals of Android framework process states. One interval per state a process was in.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_rank",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._android_process_state_concurrency",
+      "name": "_android_process_state_concurrency",
+      "category": "android",
+      "type": "table",
+      "description": "Number of processes concurrently in each framework process state over time.",
+      "columns": [
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_rank",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "concurrency",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_process_uid_state",
+      "name": "android_process_uid_state",
+      "category": "android",
+      "type": "view",
+      "description": "View to get process UID state intervals, showing how long each process stayed in each state.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "uid",
+          "type": "LONG"
+        },
+        {
+          "name": "process_state_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android.android_profiling_manager_cold_startup",
       "name": "android_profiling_manager_cold_startup",
       "category": "android",
@@ -5992,6 +6690,43 @@
         {
           "name": "name",
           "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android.android_standby_bucket",
+      "name": "android_standby_bucket",
+      "category": "android",
+      "type": "view",
+      "description": "View to get standby bucket intervals for each package",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "package_name",
+          "type": "STRING"
+        },
+        {
+          "name": "user_id",
+          "type": "LONG"
+        },
+        {
+          "name": "bucket",
+          "type": "STRING"
+        },
+        {
+          "name": "main_reason",
+          "type": "STRING"
+        },
+        {
+          "name": "sub_reason",
+          "type": "LONG"
         }
       ]
     },
@@ -6425,6 +7160,10 @@
         },
         {
           "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "dur_without_trampoline",
           "type": "DURATION"
         },
         {
@@ -7805,12 +8544,17 @@
       ]
     },
     {
-      "id": "stdlib.appleos._appleos_instruments_raw_callstacks",
-      "name": "_appleos_instruments_raw_callstacks",
+      "id": "stdlib.appleos._appleos_instruments_callstacks",
+      "name": "_appleos_instruments_callstacks",
       "category": "appleos",
       "type": "table",
-      "description": "Table: _appleos_instruments_raw_callstacks",
-      "columns": []
+      "description": "Table: _appleos_instruments_callstacks",
+      "columns": [
+        {
+          "name": "callsite_id",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.appleos.appleos_instruments_samples_summary_tree",
@@ -7926,13 +8670,6 @@
       "category": "callstacks",
       "type": "macro",
       "description": "Similar to _callstacks_for_callsites but accepts samples with a value column and returns the sum of values instead of count. Input: subquery with (callsite_id, value) columns Output: callstacks with self_value (SUM of value)"
-    },
-    {
-      "id": "stdlib.callstacks._callstacks_self_to_cumulative",
-      "name": "_callstacks_self_to_cumulative",
-      "category": "callstacks",
-      "type": "macro",
-      "description": "Macro: _callstacks_self_to_cumulative"
     },
     {
       "id": "stdlib.callstacks._callstack_frame_symbolize",
@@ -13161,12 +13898,17 @@
       ]
     },
     {
-      "id": "stdlib.linux._linux_perf_raw_callstacks",
-      "name": "_linux_perf_raw_callstacks",
+      "id": "stdlib.linux._linux_perf_callstacks",
+      "name": "_linux_perf_callstacks",
       "category": "linux",
       "type": "table",
-      "description": "Table: _linux_perf_raw_callstacks",
-      "columns": []
+      "description": "Table: _linux_perf_callstacks",
+      "columns": [
+        {
+          "name": "callsite_id",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.linux.linux_perf_samples_summary_tree",
@@ -17421,11 +18163,11 @@
       "description": "Table containing all the timestamped samples of CPU profiling which occurred during the trace: a convenience projection of the `stack_sample` view with thread and cpu information denormalized. This covers every callstack profiler source (linux perf, simpleperf, macOS instruments, Chrome, legacy V8, gecko, the StackSample packet, ...) but only samples from what is generally considered CPU profiling: sampling on time, cpu cycles or instructions. Samples from sessions known to sample on some other quantity (off-cpu sampling, tracepoint-based sampling, ...) are excluded."
     },
     {
-      "id": "stdlib.stacks._cpu_profiling_self_callsites",
-      "name": "_cpu_profiling_self_callsites",
+      "id": "stdlib.stacks._cpu_profiling_callstacks",
+      "name": "_cpu_profiling_callstacks",
       "category": "stacks",
       "type": "table",
-      "description": "Table: _cpu_profiling_self_callsites",
+      "description": "Table: _cpu_profiling_callstacks",
       "columns": [
         {
           "name": "callsite_id",
@@ -17502,6 +18244,90 @@
       "category": "std",
       "type": "macro",
       "description": "Removes the surrounding parentheses from a parenthesised expression list, yielding a bare comma-separated expression list. Typically used when you already have something like `(a, b, c)` but need to splice it into a context (e.g. a `GROUP BY` clause or a `PARTITION BY` clause) that expects an unparenthesised list."
+    },
+    {
+      "id": "stdlib.std._stack_sample_flamechart_supported",
+      "name": "_stack_sample_flamechart_supported",
+      "category": "std",
+      "type": "function",
+      "description": "Whether a sampling timebase supports reconstructing callstack runs over time. Clock, cycle, and instruction sampling qualify. Other event counters and unknown timebases do not. This describes eligibility, not duration accuracy: boundaries are inferred from samples rather than recorded function exits.",
+      "columns": [
+        {
+          "name": "AS",
+          "type": "("
+        },
+        {
+          "name": "c0",
+          "type": "AS ts"
+        },
+        {
+          "name": "c1",
+          "type": "AS dur"
+        },
+        {
+          "name": "c2",
+          "type": "AS depth"
+        },
+        {
+          "name": "c3",
+          "type": "AS id"
+        },
+        {
+          "name": "c4",
+          "type": "AS sample_count"
+        },
+        {
+          "name": "FROM",
+          "type": "__intrinsic_table_ptr("
+        }
+      ],
+      "params": [
+        {
+          "name": "timebase_unit",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.std._stack_sample_flamechart_runs",
+      "name": "_stack_sample_flamechart_runs",
+      "category": "std",
+      "type": "macro",
+      "description": "Computes the flame-chart rectangle set (\"runs\") for a stack tree and a series of sample points. Zero-duration runs from stack transitions at equal timestamps are omitted. For each stack depth, a run spans the time range over which the same frame was continuously present at that depth: consecutive points sharing a stack prefix extend the shared runs, only divergent depths open new ones. Runs still open after the last point have duration -1 (incomplete). Consumers can extend these runs to the end of the trace. Example usage: ``` SELECT ts, dur, depth, id, sample_count FROM _stack_sample_flamechart_runs!( _tree_from_table!( (SELECT id, parent_id, name FROM stacks), (name) ), (SELECT ts, callsite_id AS leaf_id FROM samples ORDER BY ts) ); ```"
+    },
+    {
+      "id": "stdlib.std._stack_sample_mapping_category",
+      "name": "_stack_sample_mapping_category",
+      "category": "std",
+      "type": "function",
+      "description": "Best-effort code origin from a mapping path. Mapping metadata does not distinguish executable ELF files from shared objects, so conventional library suffixes identify libraries; other ordinary filenames are treated as binaries. Symbol availability and process display names do not affect this classification.",
+      "params": [
+        {
+          "name": "mapping_name",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.std._stack_sample_mapping_classification",
+      "name": "_stack_sample_mapping_classification",
+      "category": "std",
+      "type": "table",
+      "description": "Classify once per mapping, shared by sample instants and callstack frames.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "category",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.std._thread_with_process",
@@ -18006,76 +18832,6 @@
       ]
     },
     {
-      "id": "stdlib.viz._viz_flamegraph_hash_coalesce",
-      "name": "_viz_flamegraph_hash_coalesce",
-      "category": "viz",
-      "type": "macro",
-      "description": "Macro: _viz_flamegraph_hash_coalesce"
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_prepare_filter",
-      "name": "_viz_flamegraph_prepare_filter",
-      "category": "viz",
-      "type": "macro",
-      "description": "For each frame in |tab|, returns a row containing the result of running all the filtering operations over that frame's name."
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_filter_frames",
-      "name": "_viz_flamegraph_filter_frames",
-      "category": "viz",
-      "type": "macro",
-      "description": "Walks the forest from root to leaf and performs the following operations: 1) removes frames which were filtered out 2) make any pivot nodes become the roots 3) computes whether the stack as a whole should be retained or not"
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_accumulate",
-      "name": "_viz_flamegraph_accumulate",
-      "category": "viz",
-      "type": "macro",
-      "description": "Walks the forest from leaves to root and does the following: 1) removes nodes whose stacks are filtered out 2) computes the cumulative value for each node (i.e. the sum of the self value of the node and all descendants)."
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_s_prefix",
-      "name": "_viz_flamegraph_s_prefix",
-      "category": "viz",
-      "type": "macro",
-      "description": "Macro: _viz_flamegraph_s_prefix"
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_upwards_hash",
-      "name": "_viz_flamegraph_upwards_hash",
-      "category": "viz",
-      "type": "macro",
-      "description": "Propogates the cumulative value of the pivot nodes to the roots and computes the \"fingerprint\" of the path."
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_downwards_hash",
-      "name": "_viz_flamegraph_downwards_hash",
-      "category": "viz",
-      "type": "macro",
-      "description": "Computes the \"fingerprint\" of the path by walking from the laves to the root."
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_merge_hashes",
-      "name": "_viz_flamegraph_merge_hashes",
-      "category": "viz",
-      "type": "macro",
-      "description": "Converts a table of hashes and paretn hashes into ids and parent ids, grouping all hashes together."
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_local_layout",
-      "name": "_viz_flamegraph_local_layout",
-      "category": "viz",
-      "type": "macro",
-      "description": "Performs a \"layout\" of nodes in the flamegraph relative to their siblings."
-    },
-    {
-      "id": "stdlib.viz._viz_flamegraph_global_layout",
-      "name": "_viz_flamegraph_global_layout",
-      "category": "viz",
-      "type": "macro",
-      "description": "Walks the graph from root to leaf, propogating the layout of parents to their children."
-    },
-    {
       "id": "stdlib.viz._viz_slice_ancestor_agg",
       "name": "_viz_slice_ancestor_agg",
       "category": "viz",
@@ -18543,11 +19299,56 @@
       ]
     },
     {
+      "id": "stdlib.wattson._curve_2d_freq_shift",
+      "name": "_curve_2d_freq_shift",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Bit shifts for _curve_2d_key"
+    },
+    {
+      "id": "stdlib.wattson._curve_2d_dep_freq_shift",
+      "name": "_curve_2d_dep_freq_shift",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _curve_2d_dep_freq_shift"
+    },
+    {
+      "id": "stdlib.wattson._curve_2d_dep_policy_shift",
+      "name": "_curve_2d_dep_policy_shift",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _curve_2d_dep_policy_shift"
+    },
+    {
+      "id": "stdlib.wattson._curve_2d_key",
+      "name": "_curve_2d_key",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Packs (freq_khz, dep_freq, dep_policy, idle) into a 64-bit integer key for single-column index lookups into _curves_2d_lut."
+    },
+    {
+      "id": "stdlib.wattson._curves_2d_lut",
+      "name": "_curves_2d_lut",
+      "category": "wattson",
+      "type": "table",
+      "description": "Pre-joins the 2D CPU curves (~450 rows) with L3 and interconnect curves and indexes them by a single 64-bit integer key. This replaces ten multi-column virtual-table index lookups per unique config with eight single-column integer index lookups.",
+      "columns": [
+        {
+          "name": "key_2d",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "interconnect",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.wattson._unique_estimates_mw",
       "name": "_unique_estimates_mw",
       "category": "wattson",
       "type": "table",
-      "description": "Get estimates per unique configuration, establishing the 1-to-1 map from CPU configuration to the config_hash",
+      "description": "`suspended` is part of `config_hash`, so a config is either wholly suspended or wholly not. That means the suspended-to-zero rule can be applied here, once per config, instead of once per interval downstream.",
       "columns": [
         {
           "name": "cpu0_mw",
@@ -18586,6 +19387,14 @@
           "type": "UNKNOWN"
         },
         {
+          "name": "l3_hit",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "l3_miss",
+          "type": "UNKNOWN"
+        },
+        {
           "name": "interconnect_mw",
           "type": "UNKNOWN"
         }
@@ -18595,41 +19404,9 @@
       "id": "stdlib.wattson._cpu_estimates_mw",
       "name": "_cpu_estimates_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "The most basic components of Wattson, all normalized to be in mW on a per system state basis",
+      "type": "view",
+      "description": "View: _cpu_estimates_mw",
       "columns": [
-        {
-          "name": "cpu0_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu1_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu2_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu3_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu4_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu5_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu6_mw",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu7_mw",
-          "type": "UNKNOWN"
-        },
         {
           "name": "dsu_scu_mw",
           "type": "UNKNOWN"
@@ -18675,17 +19452,8 @@
       "name": "_idle_freq_materialized",
       "category": "wattson",
       "type": "table",
-      "description": "Start matching CPUs with 1D curves based on combination of freq and idle",
-      "columns": [
-        {
-          "name": "idle",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "curve_value",
-          "type": "UNKNOWN"
-        }
-      ]
+      "description": "Start matching CPUs with 1D curves based on combination of freq and idle. Passing freq and idle directly as id into _interval_intersect! eliminates rowid table joins inside _idle_freq_materialized, and carrying state_id through _stats_cpu0..7 eliminates 10 table joins in _w_cpu_slices.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._cpu_hotplug_offline",
@@ -18776,48 +19544,6 @@
       ]
     },
     {
-      "id": "stdlib.wattson._wattson_cpuidle_counters_exist",
-      "name": "_wattson_cpuidle_counters_exist",
-      "category": "wattson",
-      "type": "view",
-      "description": "Table that is empty if the actual cpuidle counters do not exist on this trace",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._unified_idle_state",
-      "name": "_unified_idle_state",
-      "category": "wattson",
-      "type": "table",
-      "description": "Create table that uses idle counters if present, otherwise extrapolates idle states in a simplified way (only 2 states, active or idle) from the swapper thread.",
-      "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "prev_ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_prev",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
       "id": "stdlib.wattson._adjusted_deep_idle",
       "name": "_adjusted_deep_idle",
       "category": "wattson",
@@ -18831,19 +19557,25 @@
       ]
     },
     {
-      "id": "stdlib.wattson._cpu_stats_subquery",
-      "name": "_cpu_stats_subquery",
-      "category": "wattson",
-      "type": "macro",
-      "description": "Helper macro to do pivot function"
-    },
-    {
       "id": "stdlib.wattson._stats_cpu0",
       "name": "_stats_cpu0",
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu0",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu1",
@@ -18851,7 +19583,20 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu1",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu2",
@@ -18859,7 +19604,20 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu2",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu3",
@@ -18867,7 +19625,20 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu3",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu4",
@@ -18875,7 +19646,20 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu4",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu5",
@@ -18883,7 +19667,20 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu5",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu6",
@@ -18891,7 +19688,20 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu6",
-      "columns": []
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._stats_cpu7",
@@ -18899,85 +19709,116 @@
       "category": "wattson",
       "type": "table",
       "description": "Table: _stats_cpu7",
-      "columns": []
-    },
-    {
-      "id": "stdlib.wattson._all_stats",
-      "name": "_all_stats",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _all_stats",
       "columns": [
         {
-          "name": "l3_hit_count",
+          "name": "id",
           "type": "UNKNOWN"
         },
         {
-          "name": "l3_miss_count",
+          "name": "ts",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_0",
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._w_cpu_slices",
+      "name": "_w_cpu_slices",
+      "category": "wattson",
+      "type": "table",
+      "description": "Per-interval CPU data, and the last generic table before going to device specific table calcs. Because `_stats_cpu0..7` pass `state_id` as their `id`, `_wattson_dsu_frequency` passes `dsu_freq` as its `id`, and `_gapless_suspend_slices` passes `suspended` as its `id`, `interval_intersect` directly outputs those values in `base.id_0..10`. This eliminates 10 out of 11 table joins across 434K intervals.",
+      "columns": [
+        {
+          "name": "id",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_0",
+          "name": "ts",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_1",
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._cpu_state_lut",
+      "name": "_cpu_state_lut",
+      "category": "wattson",
+      "type": "table",
+      "description": "Tiny (~400 row) L1/L2-cached lookup table decoding state_id into (freq, idle, curve_value, static) built directly from _adjusted_cpu_freq.",
+      "columns": [
+        {
+          "name": "state_id",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_1",
+          "name": "idle",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_2",
+          "name": "curve_value",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_2",
+          "name": "static",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._w_unique_configs",
+      "name": "_w_unique_configs",
+      "category": "wattson",
+      "type": "table",
+      "description": "All UNIQUE configs of independent CPU data.",
+      "columns": [
+        {
+          "name": "config_hash",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_3",
+          "name": "dsu_freq",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_3",
+          "name": "suspended",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_4",
+          "name": "state_id_0",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_4",
+          "name": "state_id_1",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_5",
+          "name": "state_id_2",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_5",
+          "name": "state_id_3",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_6",
+          "name": "state_id_4",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_6",
+          "name": "state_id_5",
           "type": "UNKNOWN"
         },
         {
-          "name": "freq_7",
+          "name": "state_id_6",
           "type": "UNKNOWN"
         },
         {
-          "name": "idle_7",
+          "name": "state_id_7",
           "type": "UNKNOWN"
         },
         {
@@ -18990,142 +19831,9 @@
       "id": "stdlib.wattson._w_independent_cpus_calc",
       "name": "_w_independent_cpus_calc",
       "category": "wattson",
-      "type": "table",
-      "description": "Does calculations for CPUs that are independent of other CPUs or frequencies This is the last generic table before going to device specific table calcs",
-      "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "l3_hit_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "l3_miss_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "config_hash",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_0",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_0",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_1",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_1",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_2",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_2",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_3",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_3",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_4",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_4",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_5",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_5",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_6",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_6",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq_7",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "idle_7",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu0_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu1_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu2_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu3_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu4_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu5_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu6_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu7_curve",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "suspended",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dsu_freq",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "policy_cpus_on_mask",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "static_1d",
-          "type": "UNKNOWN"
-        }
-      ]
+      "type": "view",
+      "description": "Per-interval CPU data with the configuration columns attached. Consumers that only need the per-interval columns should read `_w_cpu_slices` directly, since this view has to join every interval back to its config.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._w_dependent_cpus_unique",
@@ -19411,11 +20119,28 @@
       ]
     },
     {
+      "id": "stdlib.wattson._filtered_curves_dsu_1d",
+      "name": "_filtered_curves_dsu_1d",
+      "category": "wattson",
+      "type": "table",
+      "description": "Device specific 1D DSU curve (policy 255)",
+      "columns": [
+        {
+          "name": "dsu_freq",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "power",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.wattson._filtered_curves_interconnect",
       "name": "_filtered_curves_interconnect",
       "category": "wattson",
       "type": "table",
-      "description": "Device specific interconnect curves",
+      "description": "Device specific interconnect curves (for 2D dependency models)",
       "columns": [
         {
           "name": "curve_value",
@@ -19477,11 +20202,35 @@
       "columns": []
     },
     {
+      "id": "stdlib.wattson._linux_soc_compatible_map",
+      "name": "_linux_soc_compatible_map",
+      "category": "wattson",
+      "type": "table",
+      "description": "Table: _linux_soc_compatible_map",
+      "columns": []
+    },
+    {
+      "id": "stdlib.wattson._linux_board_compatible_map",
+      "name": "_linux_board_compatible_map",
+      "category": "wattson",
+      "type": "table",
+      "description": "Table: _linux_board_compatible_map",
+      "columns": []
+    },
+    {
       "id": "stdlib.wattson._wattson_device_map",
       "name": "_wattson_device_map",
       "category": "wattson",
       "type": "table",
       "description": "Table: _wattson_device_map",
+      "columns": []
+    },
+    {
+      "id": "stdlib.wattson._wattson_soc_aliases",
+      "name": "_wattson_soc_aliases",
+      "category": "wattson",
+      "type": "table",
+      "description": "Mapping for SoC model aliases (i.e. different name for same SoC)",
       "columns": []
     },
     {
@@ -19644,10 +20393,6 @@
       "description": "Gets all CPUs on device and whether the CPU vote is be freq or power",
       "columns": [
         {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        },
-        {
           "name": "vote_by_freq",
           "type": "UNKNOWN"
         }
@@ -19667,7 +20412,12 @@
       "category": "wattson",
       "type": "table",
       "description": "The most basic components of Wattson, all normalized to be in mW on a per system state basis",
-      "columns": []
+      "columns": [
+        {
+          "name": "val",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._wattson_base_components_avg_mw",
@@ -19758,7 +20508,15 @@
       "description": "Attribute GPU power to each UID based on its active task count. Formula: attributed_mw = total_gpu_mw / active_tasks",
       "columns": [
         {
-          "name": "estimated_mw",
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
           "type": "UNKNOWN"
         }
       ]
@@ -19771,19 +20529,7 @@
       "description": "Table: _unioned_wattson_estimates_mw",
       "columns": [
         {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
           "name": "cpu",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "estimated_mw",
           "type": "UNKNOWN"
         }
       ]
@@ -19793,7 +20539,7 @@
       "name": "_estimates_w_tasks_attribution",
       "category": "wattson",
       "type": "table",
-      "description": "Table: _estimates_w_tasks_attribution",
+      "description": "Power estimates split by the task that was running. Only utid is carried here; descriptive metadata lives in _wattson_task_metadata and is joined once after aggregation.",
       "columns": []
     },
     {
@@ -19982,6 +20728,31 @@
       ]
     },
     {
+      "id": "stdlib.wattson._ii_idle_tasks",
+      "name": "_ii_idle_tasks",
+      "category": "wattson",
+      "type": "table",
+      "description": "Tasks that ran within each deep idle exit, keyed by the idle exit they belong to. Materialized because the three aggregates in _idle_w_tasks below all read it.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.wattson._idle_w_tasks",
       "name": "_idle_w_tasks",
       "category": "wattson",
@@ -20075,14 +20846,22 @@
       "name": "_task_wo_irq_infos",
       "category": "wattson",
       "type": "table",
-      "description": "Establish relationships between tasks, such as thread/process/package",
+      "description": "Slices where tasks ran without IRQ information",
       "columns": [
         {
-          "name": "thread_name",
+          "name": "ts",
           "type": "UNKNOWN"
         },
         {
-          "name": "process_name",
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
           "type": "UNKNOWN"
         }
       ]
@@ -20143,24 +20922,12 @@
       ]
     },
     {
-      "id": "stdlib.wattson._all_tasks_flattened_slices",
-      "name": "_all_tasks_flattened_slices",
+      "id": "stdlib.wattson._wattson_task_metadata",
+      "name": "_wattson_task_metadata",
       "category": "wattson",
       "type": "table",
-      "description": "Replace nominal tasks with IRQ if the IRQ slice is present. IRQs could preempt tasks, but not the other way around.",
+      "description": "Thread/process/package descriptions of every task, keyed by utid. Splitting metadata out from task slices avoids dragging 7 descriptive columns through every slice in task_slices.sql and _estimates_w_tasks_attribution.",
       "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        },
         {
           "name": "utid",
           "type": "UNKNOWN"
@@ -20191,6 +20958,31 @@
         },
         {
           "name": "package_name",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.wattson._all_tasks_flattened_slices",
+      "name": "_all_tasks_flattened_slices",
+      "category": "wattson",
+      "type": "table",
+      "description": "Replace nominal tasks with IRQ if the IRQ slice is present. IRQs could preempt tasks, but not the other way around.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
           "type": "UNKNOWN"
         },
         {
@@ -20253,31 +21045,7 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "tid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "pid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "uid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "thread_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "process_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "package_name",
+          "name": "idle_group",
           "type": "UNKNOWN"
         }
       ]
@@ -20296,37 +21064,15 @@
       "category": "wattson",
       "type": "table",
       "description": "TPU power estimates in mW",
-      "columns": [
-        {
-          "name": "tpu_mw",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.wattson._tpu_freq",
       "name": "_tpu_freq",
       "category": "wattson",
       "type": "table",
-      "description": "Creates TPU freq counter and cluster based off of slices",
-      "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "freq",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cluster",
-          "type": "UNKNOWN"
-        }
-      ]
+      "description": "Creates TPU freq counter and cluster based off of slices (gapless from trace_start to trace_end)",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._tpu_requests_count",
@@ -20526,6 +21272,76 @@
       "category": "wattson",
       "type": "macro",
       "description": "Constructs an 8-bit mask based on policy matches"
+    },
+    {
+      "id": "stdlib.wattson._deepest_idle_id",
+      "name": "_deepest_idle_id",
+      "category": "wattson",
+      "type": "macro",
+      "description": "3-bit idle_id encoding (bits 0..2 of state_id): 0..2: inactive states (_deepest_idle_id, _offline_idle_id, _null_idle_id) -> bit 2 is 0 4..7: active idle states (_encode_idle!(idle) = idle + 5 for idle in -1..2) -> bit 2 is 1"
+    },
+    {
+      "id": "stdlib.wattson._offline_idle_id",
+      "name": "_offline_idle_id",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _offline_idle_id"
+    },
+    {
+      "id": "stdlib.wattson._null_idle_id",
+      "name": "_null_idle_id",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _null_idle_id"
+    },
+    {
+      "id": "stdlib.wattson._idle_id_mask",
+      "name": "_idle_id_mask",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _idle_id_mask"
+    },
+    {
+      "id": "stdlib.wattson._cpu_active_bit",
+      "name": "_cpu_active_bit",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _cpu_active_bit"
+    },
+    {
+      "id": "stdlib.wattson._encode_idle",
+      "name": "_encode_idle",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _encode_idle"
+    },
+    {
+      "id": "stdlib.wattson._is_cpu_active",
+      "name": "_is_cpu_active",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _is_cpu_active"
+    },
+    {
+      "id": "stdlib.wattson._cpu_state_cpu_shift",
+      "name": "_cpu_state_cpu_shift",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _cpu_state_cpu_shift"
+    },
+    {
+      "id": "stdlib.wattson._cpu_state_freq_shift",
+      "name": "_cpu_state_freq_shift",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Macro: _cpu_state_freq_shift"
+    },
+    {
+      "id": "stdlib.wattson._pack_cpu_state",
+      "name": "_pack_cpu_state",
+      "category": "wattson",
+      "type": "macro",
+      "description": "Encodes (cpu, freq_khz, idle_id) into a 29-bit state_id: bits 26..28: cpu (0..7) bits 3..25:  freq_khz (0..8388607 kHz) bits 0..2:   idle_id (0=deepest, 1=offline, 2=null, 4..7=active idle)"
     },
     {
       "id": "stdlib.wattson.wattson_window_markers",
@@ -20869,7 +21685,15 @@
       "description": "Table: blocking_call_slices_scoped_to_cujs",
       "columns": [
         {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
           "name": "slice_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "name",
           "type": "UNKNOWN"
         },
         {
@@ -20882,6 +21706,30 @@
         },
         {
           "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cuj_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cuj_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "process_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "upid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cuj_type",
           "type": "UNKNOWN"
         }
       ],
@@ -29913,7 +30761,12 @@
       "category": "metric",
       "type": "view",
       "description": "View: trace_metadata_output",
-      "columns": [],
+      "columns": [
+        {
+          "name": "str_value",
+          "type": "UNKNOWN"
+        }
+      ],
       "dependencies": [
         "metric:trace_metadata.sql"
       ],

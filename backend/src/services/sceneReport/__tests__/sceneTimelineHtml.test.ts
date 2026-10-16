@@ -40,7 +40,8 @@ function reportData(value: SceneTimelineAssessment, privateKnowledge = false) {
     orchestrator: {}, hypotheses: [], agentDialogue: [], conversationSteps: [], dataEnvelopes: [], agentResponses: [],
     queryHistory: [], conclusionHistory: [], ...(privateKnowledge ? {codeAwareMode: 'provider_send', codebaseIds: ['private-app']} : {}),
   } as unknown as AnalyzeManagedSession;
-  return buildAgentDrivenReportData({session, result, backendBaseUrl: 'http://127.0.0.1:9010'});
+  return buildAgentDrivenReportData({session, result, backendBaseUrl: 'http://127.0.0.1:9010',
+    privateContext: {codebase: privateKnowledge, knowledge: false}});
 }
 afterEach(() => {clearCodeAwareOutputGuards(sessionId);});
 

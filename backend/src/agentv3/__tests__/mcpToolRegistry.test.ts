@@ -17,9 +17,9 @@ import {
   MCP_NAME_PREFIX,
   buildAllowedTools,
   filterByExposure,
-  resolveMcpToolPlanCapability,
   type McpToolDefinition,
   type McpToolRegistration,
+  isToolAllowedForScope,
 } from '../mcpToolRegistry';
 
 /** Stub SDK tool object with the shape returned by Claude SDK `tool(...)`. */
@@ -51,6 +51,74 @@ describe('McpToolRegistry — basic registration', () => {
     expect(refused.structuredContent).toMatchObject({unsupportedReason: 'acquisition_closed'});
   });
 
+  it('checks the run authorization before a tool runs and again before its result is handed back', async () => {
+    const revoke = new Error('analysis_context_changed_restart_required');
+    let checks = 0;
+    let revokeAt = Infinity;
+    const check = jest.fn(() => { if (++checks >= revokeAt) throw revoke; });
+    const authorization = {enforced: true, assertCurrent: check, assertCurrentInTurn: check,
+      revoke: (): never => { throw revoke; }, settled: async () => undefined};
+    // The body reads a source file; consent is withdrawn while it runs.
+    const body = jest.fn(async () => { revokeAt = checks + 1; return createRuntimeToolResult({success: true, text: 'body'}); });
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'read_codebase_file', description: 'read', inputSchema: {}, handler: body,
+      exposure: 'public', evidenceEffect: 'read_existing'});
+    const tool = registry.list()[0].shared;
+    await expect(tool.handler({}, {})).rejects.toBe(revoke);
+    expect(body).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledTimes(2);
+    // Once revoked, the next call never reaches its body.
+    await expect(tool.handler({}, {})).rejects.toBe(revoke);
+    expect(body).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps no tool for a run whose fence is not enforced', async () => {
+    const authorization = {enforced: false, assertCurrent: jest.fn(), assertCurrentInTurn: jest.fn(),
+      revoke: (): never => { throw new Error('unused'); }, settled: async () => undefined};
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'execute_sql', description: 'sql', inputSchema: {},
+      handler: async () => createRuntimeToolResult({success: true}), exposure: 'public', evidenceEffect: 'acquire'});
+    await registry.list()[0].shared.handler({}, {});
+    expect(authorization.assertCurrentInTurn).not.toHaveBeenCalled();
+  });
+
+  it('fails a call whose own check saw the revoke only after the run cancel settled', async () => {
+    const revoke = new Error('analysis_context_changed_restart_required');
+    let finish!: () => void;
+    const cancelled = new Promise<void>(resolve => { finish = resolve; });
+    // The wrapper's checks pass; the tool's own private-context check sees the revoke.
+    const authorization = {enforced: true, assertCurrent: () => undefined, assertCurrentInTurn: () => undefined,
+      revoke: (): never => { throw revoke; }, settled: () => cancelled};
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'read_codebase_file', description: 'read', inputSchema: {},
+      handler: async () => { throw revoke; }, exposure: 'public', evidenceEffect: 'read_existing'});
+    let outcome: unknown;
+    const call = registry.list()[0].shared.handler({}, {}).catch(error => { outcome = error; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(outcome).toBeUndefined();
+    finish();
+    await call;
+    expect(outcome).toBe(revoke);
+  });
+
+  it('fails a revoked tool call only after the run cancel settled', async () => {
+    const revoke = new Error('analysis_context_changed_restart_required');
+    let finish!: () => void;
+    const cancelled = new Promise<void>(resolve => { finish = resolve; });
+    const authorization = {enforced: true, assertCurrent: (): never => { throw revoke; },
+      assertCurrentInTurn: (): never => { throw revoke; }, revoke: (): never => { throw revoke; }, settled: () => cancelled};
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'read_codebase_file', description: 'read', inputSchema: {},
+      handler: async () => createRuntimeToolResult({success: true}), exposure: 'public', evidenceEffect: 'read_existing'});
+    let outcome: unknown;
+    const call = registry.list()[0].shared.handler({}, {}).catch(error => { outcome = error; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(outcome).toBeUndefined();
+    finish();
+    await call;
+    expect(outcome).toBe(revoke);
+  });
+
   it('rechecks acquisition after waiting behind an already running tool', async () => {
     let active = true;
     let release!: () => void;
@@ -70,22 +138,6 @@ describe('McpToolRegistry — basic registration', () => {
     await first;
     expect(isPolicyRefusalResult(await queued)).toBe(true);
     expect(body).toHaveBeenCalledTimes(1);
-  });
-
-  it('accepts legacy exported definitions without plan capability and derives a safe default', () => {
-    const registry = new McpToolRegistry();
-    registry.registerSdk(stub('legacy'), 'legacy_runtime_tool', 'public');
-    const registered = registry.list()[0];
-    const legacyDefinition: McpToolDefinition = {
-      name: registered.name,
-      shared: registered.shared,
-      tool: registered.tool,
-      exposure: registered.exposure,
-    };
-
-    expect(legacyDefinition.planCapability).toBeUndefined();
-    expect(resolveMcpToolPlanCapability(legacyDefinition)).toBe('evidence');
-    expect(registry.list()[0].planCapability).toBe('evidence');
   });
 
   it('register preserves insertion order', () => {
@@ -190,7 +242,7 @@ describe('McpToolRegistry — allowedTools shape', () => {
     });
     const result = createRuntimeToolResult({success: true, value: 'stored'});
     const body = jest.fn(async () => result);
-    for (const evidenceEffect of ['none', 'read_existing'] as const) {
+    for (const evidenceEffect of ['none', 'read_existing', 'background'] as const) {
       registry.registerShared({
         name: evidenceEffect, description: 'Existing capability', exposure: 'public',
         inputSchema: {}, handler: body, evidenceEffect,
@@ -200,7 +252,22 @@ describe('McpToolRegistry — allowedTools shape', () => {
       expect(definition.shared.evidenceEffect).toBe(definition.evidenceEffect);
       await expect(definition.shared.handler({}, {})).resolves.toBe(result);
     }
-    expect(body).toHaveBeenCalledTimes(2);
+    expect(body).toHaveBeenCalledTimes(3);
+  });
+
+  it('never paces or observes a background read as an acquisition', async () => {
+    const events: RuntimeToolInvocationEvent[] = [];
+    const admit = jest.fn(() => createRuntimeToolResult({success: false, action_required: 'wait'}));
+    const registry = new McpToolRegistry({
+      acquisitionObserver: event => {events.push(event);},
+      acquisitionPolicy: {admit},
+    });
+    const result = createRuntimeToolResult({success: true});
+    registry.registerShared({name: 'search_knowledge', description: 'Background knowledge', exposure: 'public',
+      inputSchema: {}, handler: async () => result, evidenceEffect: 'background'});
+    await expect(registry.list()[0].shared.handler({}, {})).resolves.toBe(result);
+    expect(admit).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
   });
 
   it.each(['acquire', undefined] as const)('rejects held shared/SDK descriptors for effect=%s before executing the body', async evidenceEffect => {
@@ -295,12 +362,12 @@ describe('McpToolRegistry — allowedTools shape', () => {
     ]);
   });
 
-  it('keeps the source-use control classification and request-shaped views in parity', () => {
+  it('keeps codebase-permission tools out of every view of a request without codebase access', () => {
     const registry = new McpToolRegistry();
     registry.registerSdk(stub('trace'), 'execute_sql', 'public');
     registry.registerSdk(
-      stub('source-control'),
-      'record_source_use_decision',
+      stub('source-search'),
+      'search_codebase',
       'requires_codebase_permission',
     );
     const denied = {sessionId: 's1', hasCodebaseAccess: false};
@@ -311,19 +378,18 @@ describe('McpToolRegistry — allowedTools shape', () => {
     expect(registry.buildAllowedTools(denied))
       .toEqual([`${MCP_NAME_PREFIX}execute_sql`]);
     expect(registry.listForRequest(allowed)).toContainEqual(expect.objectContaining({
-      name: 'record_source_use_decision',
-      planCapability: 'control',
+      name: 'search_codebase',
     }));
     expect(registry.buildAllowedTools(allowed)).toContain(
-      `${MCP_NAME_PREFIX}record_source_use_decision`,
+      `${MCP_NAME_PREFIX}search_codebase`,
     );
 
     const deniedTools = ((registry.buildSdkServer({scope: denied}) as any).instance?.tools ?? [])
       .map((entry: {name: string}) => entry.name.replace(MCP_NAME_PREFIX, ''));
     const allowedTools = ((registry.buildSdkServer({scope: allowed}) as any).instance?.tools ?? [])
       .map((entry: {name: string}) => entry.name.replace(MCP_NAME_PREFIX, ''));
-    expect(deniedTools).not.toContain('record_source_use_decision');
-    expect(allowedTools).toContain('record_source_use_decision');
+    expect(deniedTools).not.toContain('search_codebase');
+    expect(allowedTools).toContain('search_codebase');
   });
 });
 
@@ -560,5 +626,22 @@ describe('McpToolRegistry — invocation observation', () => {
     expect(events.map(event => [event.phase, event.toolCallId])).toEqual([
       ['started', 'first'], ['completed', 'first'],
     ]);
+  });
+});
+
+describe('isToolAllowedForScope', () => {
+  const scope = (allowNewEvidence?: boolean) => ({sessionId: 's', hasCodebaseAccess: false,
+    ...(allowNewEvidence === undefined ? {} : {allowNewEvidence})});
+  it('admits acquisition only when the request admits new evidence; reads stay admitted', () => {
+    const acquire = {exposure: 'public' as const, evidenceEffect: 'acquire' as const};
+    expect(isToolAllowedForScope(acquire, undefined)).toBe(true);
+    expect(isToolAllowedForScope(acquire, scope())).toBe(true);
+    expect(isToolAllowedForScope(acquire, scope(true))).toBe(true);
+    expect(isToolAllowedForScope(acquire, scope(false))).toBe(false);
+    for (const evidenceEffect of ['none', 'read_existing', 'background'] as const) {
+      expect(isToolAllowedForScope({exposure: 'public', evidenceEffect}, scope(false))).toBe(true);
+    }
+    expect(isToolAllowedForScope({exposure: 'deprecated', evidenceEffect: 'none'}, scope(true))).toBe(false);
+    expect(isToolAllowedForScope({exposure: 'requires_codebase_permission', evidenceEffect: 'none'}, scope(true))).toBe(false);
   });
 });

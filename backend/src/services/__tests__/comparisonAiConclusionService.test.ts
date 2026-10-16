@@ -12,6 +12,7 @@ import {
 } from '../comparisonAiConclusionService';
 import { buildDeterministicComparisonResult } from '../comparisonResultService';
 import { AI_CAPABILITY_ENV_KEY, resolveAiCapabilityPolicy } from '../aiCapabilityPolicy';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 function snapshot(
   id: string,
@@ -30,6 +31,7 @@ function snapshot(
     runId: `run-${id}`,
     createdBy: 'user-a',
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze',

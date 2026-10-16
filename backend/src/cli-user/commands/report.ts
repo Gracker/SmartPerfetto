@@ -13,12 +13,16 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import { loadSession, turnReportPath } from '../io/sessionStore';
 import { openPath } from '../io/openFile';
 import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {loadCliAnalysisEvidence, renderCliAnalysisEvidence} from '../services/analysisResultPresentation';
+import {sourceUseDecisionForClient} from '../../services/codebase/sourceUseDecision';
 import {cliSceneReportMetadata, loadCliSceneReport, renderCliSceneReport} from '../services/sceneReportReference';
+import {sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
+import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
+import type {CliSessionConfig} from '../types';
 
 export interface ReportCommandArgs {
   sessionId: string;
@@ -73,7 +77,7 @@ export async function runReportCommand(args: ReportCommandArgs): Promise<number>
 }
 
 export async function runReportExportCommand(args: ReportExportCommandArgs): Promise<number> {
-  const outPath = path.resolve(args.out);
+  const outPath = resolveInvocationPath(args.out);
   const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false });
   const { sp, config } = loadSession(paths, args.sessionId);
 
@@ -185,6 +189,19 @@ function buildMarkdownExport(sp: ReturnType<typeof loadSession>['sp'], config: N
   return lines.join('\n');
 }
 
+/** The turn's bound source decision, as the CLI exports it: with its derived counts. */
+function storedSourceUseDecision(
+  sp: ReturnType<typeof loadSession>['sp'],
+  sessionId: string,
+  turn: number,
+  turnMarkdown: string,
+): unknown {
+  const loaded = loadCliAnalysisEvidence({sp, sessionId, turn, turnMarkdown});
+  return loaded.status === 'available'
+    ? sourceUseDecisionForClient(loaded.bundle.evidence.sourceUseDecision)
+    : null;
+}
+
 function formatStoredEvidence(
   sp: ReturnType<typeof loadSession>['sp'],
   sessionId: string,
@@ -215,7 +232,7 @@ function buildJsonExport(sp: ReturnType<typeof loadSession>['sp'], config: NonNu
     claimSupport: readJsonIfExists(sp.claimSupport, []),
     claimVerificationResult: readJsonIfExists(sp.claimVerification, null),
     identityResolutions: readJsonIfExists(sp.identityResolutions, []),
-    transcript: readTranscript(sp.transcript),
+    transcript: readTranscript(sp.transcript, config),
     files: {
       sessionDir: sp.dir,
       reportHtml: fs.existsSync(sp.report) ? sp.report : null,
@@ -237,13 +254,14 @@ function buildTurnJsonExport(
   const htmlPath = turnReportPath(sp, turn);
   const mdPath = path.join(sp.turnsDir, `${String(turn).padStart(3, '0')}.md`);
   const turnPrefix = path.join(sp.turnsDir, String(turn).padStart(3, '0'));
-  const transcript = readTranscript(sp.transcript);
+  const transcript = readTranscript(sp.transcript, config);
   return {
     ok: true,
     ...cliSceneReportMetadata(readStoredScene(sp, config, turn)),
     config,
     turn,
     turnMarkdown: readIfExists(mdPath),
+    sourceUseDecision: storedSourceUseDecision(sp, config.sessionId, turn, readIfExists(mdPath)),
     claimSupport: readJsonIfExists(`${turnPrefix}.claim-support.json`, []),
     claimVerificationResult: readJsonIfExists(`${turnPrefix}.claim-verification.json`, null),
     identityResolutions: readJsonIfExists(`${turnPrefix}.identity-resolutions.json`, []),
@@ -292,18 +310,29 @@ function readJsonIfExists(file: string, fallback: unknown): unknown {
   }
 }
 
-function readTranscript(file: string): unknown[] {
+/**
+ * A private turn stores its question verbatim because resume reads it as model
+ * history; an export is the creator's view, which masks credentials. The run's
+ * guards died with its process, so only the credential patterns apply here.
+ * A line that does not parse may still hold a private question whose marker
+ * cannot be read, so its text is left out; resume skips it too. A row written
+ * before turns carried a marker follows the session's selection, as resume does.
+ */
+function readTranscript(file: string, config: CliSessionConfig): unknown[] {
   if (!fs.existsSync(file)) return [];
+  const legacySourceDerived = analysisHasPrivateContext(config);
+  const project = (value: unknown) => typeof value === 'string' ? sanitizeOwnerCodeAwareText(undefined, value) : value;
   return fs
     .readFileSync(file, 'utf-8')
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return { raw: line };
-      }
+      let turn: any;
+      try { turn = JSON.parse(line); } catch { return {unreadable: true}; }
+      if (!turn || typeof turn !== 'object' || Array.isArray(turn)) return {unreadable: true};
+      if (!(turn.history ? turn.history.sourceDerived === true : legacySourceDerived)) return turn;
+      return {...turn, question: project(turn.question),
+        ...(turn.history ? {history: {...turn.history, query: project(turn.history.query)}} : {})};
     });
 }

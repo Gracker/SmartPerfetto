@@ -12,6 +12,8 @@ import type {ConversationRuntimeOutcome, ConversationTraceContext} from '../assi
 import type {AnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {AnalysisHistoryStore, type AnalysisHistoryScope} from './analysisHistoryStore';
 import {openEnterpriseDb, resolveEnterpriseDbPath} from './enterpriseDb';
+import {parseStoredJson} from '../utils/storedData';
+import {isRequestedSourceDepth} from './codebase/sourceDepthPolicy';
 
 const RUNTIME_TYPE = 'conversation-logical-session@1';
 type WithoutRuntimeResult<T> = T extends unknown ? Omit<T, 'finalResult' | 'recoveryStatus'> : never;
@@ -31,6 +33,7 @@ export interface ConversationSessionDescriptor extends ConversationSessionOwner 
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: AnalysisOptions['sourceDepth'];
   status: AssistantSessionStatus;
   createdAt: number;
   lastActivityAt: number;
@@ -69,6 +72,8 @@ function projectedDescriptor(input: ConversationSessionDescriptor): Conversation
     outputLanguage: input.outputLanguage, codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds ? [...input.codebaseIds] : undefined,
     knowledgeSourceIds: input.knowledgeSourceIds ? [...input.knowledgeSourceIds] : undefined,
+    // Only a depth the request validator accepts is kept.
+    ...(isRequestedSourceDepth(input.sourceDepth) ? {sourceDepth: input.sourceDepth} : {}),
     status: input.status, createdAt: input.createdAt, lastActivityAt: input.lastActivityAt,
     lastRun: {runId: input.lastRun.runId, query: input.lastRun.query, turnIndex: input.lastRun.turnIndex,
       startedAt: input.lastRun.startedAt, completedAt: input.lastRun.completedAt, status: input.lastRun.status,
@@ -97,7 +102,12 @@ export class ConversationSessionStore {
       snapshotId({...owner, sessionId}), RUNTIME_TYPE, owner.tenantId, owner.workspaceId, sessionId, owner.userId,
     ) as {snapshot_json: string} | undefined;
     if (!row) return undefined;
-    const parsed: ConversationSessionDescriptor = JSON.parse(row.snapshot_json);
+    let parsed: ConversationSessionDescriptor;
+    try {
+      parsed = parseStoredJson<ConversationSessionDescriptor>(row.snapshot_json, 'conversation descriptor');
+    } catch {
+      throw new Error('conversation_recovery_descriptor_invalid');
+    }
     if (parsed.version !== 1 || parsed.sessionId !== sessionId || parsed.userId !== owner.userId ||
       parsed.tenantId !== owner.tenantId || parsed.workspaceId !== owner.workspaceId ||
       !parsed.lastRun?.runId || !Number.isSafeInteger(parsed.lastRun.turnIndex) || parsed.lastRun.turnIndex < 0 ||
@@ -128,6 +138,11 @@ export class ConversationSessionStore {
         (finalizedTurn && descriptor.lastRun.status !== 'running' && previous.lastRun.runId !== descriptor.lastRun.runId))) {
         throw new Error('conversation_recovery_stale_run');
       }
+      // One terminal write per run: a turn that already settled is never rewritten.
+      if (previous && finalizedTurn && descriptor.lastRun.status !== 'running' &&
+        previous.lastRun.runId === descriptor.lastRun.runId && previous.lastRun.status !== 'running') {
+        throw new Error('conversation_recovery_turn_already_terminal');
+      }
       if (finalizedTurn) {
         if (finalizedTurn.id !== descriptor.lastRun.runId || finalizedTurn.turnIndex !== descriptor.lastRun.turnIndex) {
           throw new Error('conversation_recovery_turn_identity_mismatch');
@@ -156,6 +171,7 @@ export function getConversationSessionStore(): ConversationSessionStore {
   }
   return singleton.store;
 }
+/** @internal Test seam. */
 export function resetConversationSessionStoreForTests(): void {
   singleton?.store.close();
   singleton = undefined;

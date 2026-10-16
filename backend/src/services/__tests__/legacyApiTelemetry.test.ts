@@ -74,4 +74,16 @@ describe('legacyApiTelemetry', () => {
     expect(subject.startsWith('api-key:')).toBe(true);
     expect(subject).not.toContain('my-dev-api-key');
   });
+
+  it('caps the tracked path table while still counting every request', () => {
+    for (let i = 0; i < 510; i += 1) {
+      recordLegacyApiUsage(createMockRequest({ path: `/api/perfetto-sql/random-${i}` }));
+    }
+    recordLegacyApiUsage(createMockRequest({ path: '/api/perfetto-sql/random-0' }));
+
+    const snapshot = getLegacyApiUsageSnapshot();
+    expect(snapshot.totalLegacyRequests).toBe(511);
+    expect(snapshot.trackedPathCount).toBe(500);
+    expect(snapshot.topPaths[0]).toMatchObject({ key: 'GET /api/perfetto-sql/random-0', count: 2 });
+  });
 });

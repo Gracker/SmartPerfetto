@@ -7,10 +7,13 @@ import {
   type SdkMcpToolDefinition,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import {isPlaceholderToolString} from './toolArgPlaceholders';
+import type {RunAuthorizationCheck} from './runAuthorizationFence';
 import type { McpToolExposure } from '../types/sparkContracts';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {runtimeOutcomeFromError} from './runtimePerformance';
 import {normalizeRuntimeToolResult, readRuntimeToolReceipt, runtimeToolReceiptMetadata} from './runtimeToolResult';
+import {describeRuntimeToolFailure, describeRuntimeToolResultHandoff} from './runtimeToolResultAudit';
 import {
   currentRunManifestAttributionSink,
   resolveRunManifestAttributionSink,
@@ -24,7 +27,6 @@ import {
 
 export type {
   RuntimeToolConcurrencyCoordinator,
-  RuntimeToolConcurrencyMode,
   RuntimeToolConcurrencyPolicy,
   RuntimeToolScheduling,
 } from './runtimeToolConcurrency';
@@ -51,8 +53,14 @@ export type RuntimeToolHandler = (
   extra: RuntimeToolExtra,
 ) => Promise<RuntimeToolResult>;
 
-/** Evidence access is declared by the canonical registration, not inferred from a tool name. */
-export type RuntimeToolEvidenceEffect = 'none' | 'read_existing' | 'acquire';
+/**
+ * Evidence access is declared by the canonical registration, not inferred from
+ * a tool name. `background` reads owner-selected background material (a
+ * document knowledge base): it collects no trace evidence and produces no
+ * capture, so an `existing_only` turn may call it, and it is never paced as an
+ * acquisition.
+ */
+export type RuntimeToolEvidenceEffect = 'none' | 'read_existing' | 'background' | 'acquire';
 
 export interface SharedToolSpec {
   name: string;
@@ -332,22 +340,91 @@ export function withRuntimeToolConcurrency(
     const runManifestAttributionSink = timingSinkResolution.kind === 'resolved'
       ? timingSinkResolution.sink
       : undefined;
-    return coordinator.run({
-      toolName: timedSpec.name,
-      policy: timedSpec.concurrency,
-      signal: normalizedExtra.signal,
-      execute: scheduling => timedHandler(args, {
-        ...normalizedExtra,
-        ...(timingSinkResolution.kind === 'suppressed'
-          ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
-          : {}),
-        runManifestAttributionSink,
-        runtimeToolScheduling: scheduling,
-      }),
-    });
+    // The outermost shared boundary: every product wrapper, including pacing
+    // reminders, has already shaped the result the adapter receives.
+    const auditRecorder = runManifestAttributionSink?.toolResultAuditRecorder;
+    const toolCallId = normalizedExtra.toolCallId;
+    try {
+      const result = await coordinator.run({
+        toolName: timedSpec.name,
+        policy: timedSpec.concurrency,
+        signal: normalizedExtra.signal,
+        execute: scheduling => timedHandler(args, {
+          ...normalizedExtra,
+          ...(timingSinkResolution.kind === 'suppressed'
+            ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
+            : {}),
+          runManifestAttributionSink,
+          runtimeToolScheduling: scheduling,
+        }),
+      });
+      auditRecorder?.record(() => describeRuntimeToolResultHandoff(timedSpec.name, result, {
+        toolCallId, cancelled: normalizedExtra.signal?.aborted === true,
+      }));
+      return result;
+    } catch (error) {
+      auditRecorder?.record(() => describeRuntimeToolFailure(timedSpec.name, {
+        toolCallId, cancelled: runtimeOutcomeFromError(error, normalizedExtra.signal) === 'cancelled',
+      }));
+      throw error;
+    }
   };
   coordinatedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
   return {...timedSpec, handler: coordinatedHandler};
+}
+
+/**
+ * The run's authorization around one tool call: checked before the call and
+ * again after it, before its result reaches the runtime adapter. A revoked
+ * authorization ends the run; the call fails only after that cancel settled,
+ * whether the wrapper's check or the tool's own (a private-context check, an
+ * index checkpoint) saw it, so a native loop cannot turn the failure into
+ * another model request carrying this result or an earlier one. `settled`
+ * resolves at once when nothing was revoked.
+ */
+export function withRuntimeToolAuthorization(
+  spec: SharedToolSpec,
+  authorization: Pick<RunAuthorizationCheck, 'assertCurrentInTurn' | 'settled'>,
+): SharedToolSpec {
+  // The pre-check produces no timing; the post-check runs after timing ended.
+  const authorized = withRunAuthorizationOnly(withRuntimeToolTiming(spec), authorization);
+  return {...spec, handler: authorized.handler};
+}
+
+/**
+ * The run authorization fence alone: the pre-check, waiting for the revoke's
+ * cancel to settle when the body fails, and the post-check. No timing receipt
+ * and no performance sink, so product-owned work that is not a model tool call
+ * (scene entry evidence) shares the fence without appearing as a tool.
+ */
+export function withRunAuthorizationOnly(
+  spec: SharedToolSpec,
+  authorization: Pick<RunAuthorizationCheck, 'assertCurrentInTurn' | 'settled'>,
+): SharedToolSpec {
+  const inner = spec.handler;
+  const check = async () => {
+    try {
+      authorization.assertCurrentInTurn();
+    } catch (error) {
+      await authorization.settled();
+      throw error;
+    }
+  };
+  const handler: TimedRuntimeToolHandler = async (args, extra) => {
+    await check();
+    let result: Awaited<ReturnType<typeof inner>>;
+    try {
+      result = await inner(args, extra);
+    } catch (error) {
+      await authorization.settled();
+      throw error;
+    }
+    await check();
+    return result;
+  };
+  // Timed exactly when the wrapped body is: outer wrappers must neither re-time nor skip it.
+  if ((inner as TimedRuntimeToolHandler)[TIMED_SHARED_TOOL_HANDLER]) handler[TIMED_SHARED_TOOL_HANDLER] = true;
+  return {...spec, handler};
 }
 
 /** Both admission branches own one timing receipt, including already-timed SDK handlers. */
@@ -484,14 +561,52 @@ function parseJsonContainerString(value: string): unknown {
   }
 }
 
-export function normalizeRuntimeToolArgs(value: unknown): unknown {
+/**
+ * Strict tool schemas make a model fill every field, so an optional argument
+ * it meant to omit arrives as `null` or a placeholder string. With the tool's
+ * input shape, top-level optional fields holding one are dropped before the
+ * handler sees them; required fields and nested values are left to the handler.
+ */
+function dropOptionalPlaceholders(
+  args: Record<string, unknown>,
+  inputSchema: z.ZodRawShape,
+): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([key, value]) => {
+    const field = inputSchema[key];
+    if (!field || (value !== null && !isPlaceholderToolString(value))) return true;
+    return !z.safeParse(field, undefined).success;
+  }));
+}
+
+export function normalizeRuntimeToolArgs(
+  value: unknown,
+  inputSchema?: z.ZodRawShape,
+): unknown {
+  const normalized = normalizeRuntimeToolArgValue(value, inputSchema);
+  return inputSchema && normalized && typeof normalized === 'object' && !Array.isArray(normalized)
+    ? dropOptionalPlaceholders(normalized as Record<string, unknown>, inputSchema)
+    : normalized;
+}
+
+function requiresStringInput(field: z.ZodRawShape[string] | undefined): boolean {
+  if (!field) return false;
+  try {
+    // Use the original input schema: adapter-safe schemas encode open records
+    // as strings too, but those still require JSON-container normalization.
+    return z.toJSONSchema(field, {io: 'input'}).type === 'string';
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRuntimeToolArgValue(value: unknown, inputSchema?: z.ZodRawShape): unknown {
   if (typeof value === 'string') {
     const parsed = parseJsonContainerString(value);
-    return parsed === value ? value : normalizeRuntimeToolArgs(parsed);
+    return parsed === value ? value : normalizeRuntimeToolArgValue(parsed, inputSchema);
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeRuntimeToolArgs(item));
+    return value.map((item) => normalizeRuntimeToolArgValue(item));
   }
 
   if (!value || typeof value !== 'object') {
@@ -499,7 +614,9 @@ export function normalizeRuntimeToolArgs(value: unknown): unknown {
   }
 
   return Object.fromEntries(
-    Object.entries(value).map(([key, nested]) => [key, normalizeRuntimeToolArgs(nested)]),
+    Object.entries(value).map(([key, nested]) => [key,
+      typeof nested === 'string' && requiresStringInput(inputSchema?.[key])
+        ? nested : normalizeRuntimeToolArgValue(nested)]),
   );
 }
 

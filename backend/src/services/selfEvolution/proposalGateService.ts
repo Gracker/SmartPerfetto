@@ -3,7 +3,6 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {scanContent} from '../../agentv3/selfImprove/contentScanner';
-import type {PhaseHint} from '../../agentv3/strategyLoader';
 import type {
   CurationProposalV1,
   EvalCaseV1,
@@ -24,6 +23,10 @@ import {
   type ProposalContainmentProbeV1,
 } from './proposalContainmentGate';
 import {proposalDraftContentHash} from './proposalGateContract';
+import {
+  INERT_INJECTION_TARGET,
+  proposalTargetsInertInjection,
+} from './proposalContract';
 import type {
   ProposalMaterializationPlanner,
 } from './proposalMaterializationPlanner';
@@ -62,17 +65,13 @@ const MAX_PROPOSAL_BYTES = 512 * 1024;
 const MAX_DELTA_BYTES = 256 * 1024;
 const MAX_OPS_PER_OVERLAY = 32;
 const MAX_STEPS_PER_OP = 64;
-const PROPOSAL_GATE_POLICY_VERSION = 2;
+const PROPOSAL_GATE_POLICY_VERSION = 3;
 
 export interface ProposalPairedReplayExecution {
   replay: ReplayRunResult;
   cases: readonly EvalCaseV1[];
   store: EvalReplayRunStore;
   publisher: EvaluationReplayPublisher;
-  resolveBaselinePhaseHint?(
-    scene: string,
-    hintId: string,
-  ): PhaseHint | undefined;
 }
 
 export interface ProposalGateServiceOptions {
@@ -191,8 +190,11 @@ export class ProposalGateService {
     let pairedProof:
       Awaited<ReturnType<typeof evaluateProposalPairedReplay>> | undefined;
 
+    // An inert target fails here, before any materialization or replay cost.
+    const inert = proposalTargetsInertInjection(proposal);
     await runCheck(checks, 0, async () => ({
-      verdict: 'passed',
+      verdict: inert ? 'failed' : 'passed',
+      reasonCodes: inert ? [INERT_INJECTION_TARGET] : [],
       evidenceContentHashes: [proposalDraftContentHash(proposal)],
     }));
 

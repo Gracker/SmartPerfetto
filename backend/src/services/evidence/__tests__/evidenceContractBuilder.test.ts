@@ -4,12 +4,18 @@
 
 import {describe, expect, it} from '@jest/globals';
 import type {ConclusionContract} from '../../../agent/core/conclusionContract';
-import {createDataEnvelope} from '../../../types/dataContract';
+import {createDataEnvelope, type DataEnvelopeMeta, type DataPayload} from '../../../types/dataContract';
 import {
   QUERY_REVIEW_SCHEMA_VERSION,
   type QueryReviewV1,
 } from '../../../types/queryReviewContract';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
+import {parseConclusionContractDeclaration, type ConclusionContractClaimReference} from '../../../agent/core/conclusionContract';
+import {ArtifactStore} from '../../../agentv3/artifactStore';
+import {captureEvidenceTable, type CapturedFieldSemantics} from '../evidenceCapture';
+import {prepareClaimEvidence, preparedReferenceResolution} from '../claimEvidencePreparation';
+import {isCurrentEmptyResultRead} from '../evidenceReadView';
+import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVerifier';
 import {evidenceValuesMatch} from '../valueComparison';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../../types/identityContract';
 
@@ -63,6 +69,21 @@ describe('evidenceContractBuilder', () => {
         ? {verificationStatus: 'candidate', reasonCode: 'derived_not_verified'}
         : {verificationStatus: 'rejected', reasonCode: 'relation_endpoint_value_mismatch'});
     }
+  });
+
+  it('selects a row by a column aliased __proto__', () => {
+    // Model-written SQL can alias a column `__proto__`; JSON.parse keeps it as an own key.
+    const envelope = createDataEnvelope({columns: ['__proto__', 'value'], rows: [['main', 5], ['other', 6]]}, {
+      type: 'sql_result', source: 'execute_sql', title: 'Aliased evidence',
+      evidenceRefId: 'data:proto-column', traceId: 'trace-proto', traceSide: 'current',
+    });
+    const built = buildEvidenceContract({dataEnvelopes: [envelope], relationCandidates: [{
+      schemaVersion: 'evidence_relation_candidate@1', id: 'relation:proto-column',
+      kind: 'derived', direction: 'subject_to_object',
+      subject: {evidenceRefId: 'data:proto-column', rowSelector: JSON.parse('{"__proto__":"main"}'), column: 'value', value: 5},
+    }]});
+    expect(built.warnings).toEqual([]);
+    expect(built.anchors[0].cells![0]).toMatchObject({value: 5, actualValue: 5});
   });
 
   it('still rejects null relation selectors and aggregate proposal values', () => {
@@ -138,16 +159,62 @@ describe('evidenceContractBuilder', () => {
         expect(build('metric', wrong).anchors[0].missing).toBe(true);
       }
     });
+    const otherSide = {...resolution, target: {...resolution.target, traceSide: 'reference' as const}};
+    const ambiguous = {...resolution, status: 'ambiguous' as const};
+    const wrongProcess = {...resolution, processes: [{...resolution.processes[0], upid: 43}]};
     it('cannot transfer target identity from a different row instance or root side', () => {
       expect(build('metric', mixed, 43).anchors[0].identity).toBeUndefined();
-      const otherSide = {...resolution, target: {...resolution.target, traceSide: 'reference' as const}};
       expect(build('metric', mixed, 42, otherSide).anchors[0].identity).toBeUndefined();
-      const ambiguous = {...resolution, status: 'ambiguous' as const};
       expect(build('metric', mixed, 42, ambiguous).anchors[0].identity).toBeUndefined();
       const wrongTarget = {...resolution, target: {...resolution.target, upid: 43}};
       expect(build('metric', mixed, 42, wrongTarget).anchors[0].identity).toBeUndefined();
-      const wrongProcess = {...resolution, processes: [{...resolution.processes[0], upid: 43}]};
       expect(build('metric', mixed, 42, wrongProcess).anchors[0].identity).toBeUndefined();
+    });
+    it('leaves a whole-row citation of mixed scope unbound only when its target part would bind', () => {
+      expect(build().anchors[0]).toMatchObject({missing: true, missingReason: 'cited_scope_identity_unbound'});
+      for (const conflicting of [build(undefined, mixed, 43), build(undefined, mixed, 42, otherSide),
+        build(undefined, mixed, 42, ambiguous), build(undefined, mixed, 42, wrongProcess)]) {
+        expect(conflicting.anchors[0]).toMatchObject({missing: true, missingReason: 'captured_identity_conflict'});
+      }
+      const targetOnly = {version: mixed.version, entries: [mixed.entries[0]]};
+      const bound = build(undefined, targetOnly).anchors[0];
+      expect(bound).toMatchObject({identity: {status: 'verified'}});
+      expect(bound.missing).not.toBe(true);
+    });
+    it('binds a whole multi-row envelope to the target only when every row belongs to it', () => {
+      const targetOnly = {version: mixed.version, entries: [mixed.entries[0]]};
+      // Rows may be arrays or objects: the builder reads both, though DataPayload types only arrays.
+      const cite = (data: {columns: string[]; rows: unknown[]}) => {
+        const built = buildEvidenceContract({dataEnvelopes: [createDataEnvelope(data as DataPayload, {
+          type: 'skill_result', source: 'scoped', title: 'Target rows', traceId: 'trace-a', traceSide: 'current',
+          evidenceRefId: 'data:rows', scopeProvenance: targetOnly,
+          identityRefId: target.identityRefId, identityStatus: 'verified', identityResolution: resolution,
+        })], conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
+          clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+          claims: [{id: 'claim:rows', kind: 'identity', text: 'Rows of the target', references: [{evidenceRefId: 'data:rows'}]}],
+        }});
+        const claim = runDeterministicClaimVerifier({claimSupport: built.claimSupport}).claimResults[0];
+        return {anchor: built.anchors[0], cells: claim.referenceCells.map(cell => cell.status), status: claim.status};
+      };
+      const wholeCitation = (upids: unknown[]) => cite({columns: ['upid', 'metric'], rows: upids.map((upid, index) => [upid, index])});
+      expect(wholeCitation([42, 42, 42]).anchor).toMatchObject({identity: {status: 'verified'}});
+      expect(wholeCitation([42, 42, 42]).anchor.missing).not.toBe(true);
+      // A conflict anywhere wins over an unreadable cell elsewhere.
+      for (const upids of [[42, 42, 43], [42, null], [undefined, 43]]) {
+        expect(wholeCitation(upids)).toMatchObject({cells: ['missing'], status: 'unsupported',
+          anchor: {missing: true, missingReason: 'whole_result_identity_conflict'}});
+      }
+      // A declared upid column with an unreadable cell, explicit or past a short row, proves nothing.
+      for (const unreadable of [wholeCitation([42, undefined]), cite({columns: ['metric', 'upid'], rows: [[1, 42], [2]]}),
+        cite({columns: ['upid', 'metric'], rows: [{upid: 42, metric: 1}, {metric: 2}]}),
+        cite({columns: ['upid', 'metric'], rows: [{metric: 1}, {metric: 2}]}),
+        cite({columns: ['metric'], rows: [{upid: 42, metric: 1}, {metric: 2}]})]) {
+        expect(unreadable).toMatchObject({cells: ['not_checked'], status: 'not_checked',
+          anchor: {missing: true, missingReason: 'whole_result_identity_cell_unreadable'}});
+      }
+      // Rows that carry no upid at all leave the scope declaration as the authority.
+      expect(cite({columns: ['metric'], rows: [{metric: 1}, {metric: 2}]}).anchor).toMatchObject({identity: {status: 'verified'}});
     });
     it('preserves pure global context without borrowing a verified target', () => {
       const global = {version: mixed.version, entries: [mixed.entries[1]]};
@@ -921,6 +988,37 @@ describe('evidenceContractBuilder', () => {
     expect(built.anchors.find(anchor => anchor.anchorId === wrongValue.objectAnchorId)?.cells?.[0].actualValue).toBe(100);
   });
 
+  it('keeps a within-trace delta candidate, so a causal claim citing it is not made unsupported', () => {
+    const envelope = (evidenceRefId: string, traceId: string, traceSide: 'current' | 'reference') =>
+      createDataEnvelope({columns: ['blocked_ms'], rows: [[10]]}, {type: 'sql_result', source: 'execute_sql',
+        title: evidenceRefId, evidenceRefId, traceId, traceSide});
+    const ref = (evidenceRefId: string) => ({evidenceRefId, rowIndex: 0, column: 'blocked_ms'});
+    const delta = (id: string, subject: string, object: string) => ({schemaVersion: 'evidence_relation_candidate@1', id,
+      kind: 'comparison_delta', direction: 'subject_to_object', deltaDirection: 'current_minus_reference',
+      subject: ref(subject), object: ref(object), metricColumn: 'blocked_ms', value: 0, unit: 'ms'});
+    const citing = (relationRef: string): ConclusionContract => ({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{id: 'causal', kind: 'causal', text: 'the first wait causes the second',
+        references: [ref('data:a')], relationRefs: [relationRef]}]});
+    const build = (relationRef: string) => buildEvidenceContract({
+      dataEnvelopes: [envelope('data:a', 'trace', 'current'), envelope('data:b', 'trace', 'current'),
+        envelope('data:other', 'trace-other', 'current')],
+      relationCandidates: [delta('relation:within', 'data:a', 'data:b'), delta('relation:other', 'data:a', 'data:other')],
+      conclusionContract: citing(relationRef),
+    } as any);
+
+    const within = build('relation:within');
+    expect(within.relations.find(relation => relation.id === 'relation:within')).toMatchObject({
+      verificationStatus: 'candidate', reasonCode: 'comparison_not_cross_trace'});
+    expect(within.claimSupport[0]).toMatchObject({relationEvaluation: 'candidate'});
+    expect(within.claimSupport[0].supportLevel).not.toBe('unsupported');
+    // Current cells of two different traces remain a side contradiction.
+    const other = build('relation:other');
+    expect(other.relations.find(relation => relation.id === 'relation:other')).toMatchObject({
+      verificationStatus: 'rejected', reasonCode: 'comparison_side_mismatch'});
+    expect(other.claimSupport[0]).toMatchObject({relationEvaluation: 'rejected', supportLevel: 'unsupported'});
+  });
+
   it('excludes hostile candidates, conflicting duplicate ids, and invalid envelopes defensively', () => {
     const valid = createDataEnvelope({columns: ['ts', 'dur'], rows: [[0, 10]]}, {
       type: 'sql_result',
@@ -1162,5 +1260,178 @@ describe('evidence rows carry their declared boundary onto the claims citing the
     const built = buildEvidenceContract({conclusionContract: contract, dataEnvelopes: [envelope]});
 
     expect(built.claimSupport[0].anchors[0]).not.toHaveProperty('claimBoundary');
+  });
+});
+
+describe('empty result target identity remains unbound', () => {
+  const target = {mode: 'exact_upid' as const, upid: 14, traceId: 'trace-empty',
+    traceSide: 'current' as const, identityRefId: 'identity:14'};
+  const scope: EvidenceScopeProvenanceV1 = {version: 'process_scope_evidence@1', entries: [
+    {role: 'target', scope: target, fields: [], availability: 'available'},
+    {role: 'peer_context', scope: {mode: 'unscoped', traceId: target.traceId, traceSide: target.traceSide},
+      fields: ['interface'], availability: 'available', relativeTo: target},
+  ]};
+  const verified: IdentityResolutionV1 = {version: 'identity_contract@1', identityRefId: target.identityRefId,
+    status: 'verified', target: {...target, source: 'user_param'},
+    processes: [{upid: target.upid, confidence: 1, matchSources: ['upid']}], threads: [], warnings: []};
+
+  async function emptyFixture(options: {
+    meta?: Partial<DataEnvelopeMeta>;
+    data?: DataPayload;
+    reference?: ConclusionContractClaimReference;
+    read?: 'live' | 'copied' | 'unbound' | 'legacy';
+    allowedTraceId?: string;
+  } = {}) {
+    // batch20 wechat art-62: an executed binder_calls result has no rows,
+    // no target-bearing fields and no identityResolution to borrow.
+    const envelope = createDataEnvelope(options.data ?? {columns: ['interface', 'count', 'dur_ms'], rows: []}, {
+      type: 'skill_result', source: 'jank_frame_detail:binder_calls', title: 'Binder calls',
+      evidenceRefId: 'data:empty-binder', artifactId: 'art-empty-binder',
+      traceId: target.traceId, traceSide: target.traceSide, executionStatus: 'empty', scopeProvenance: scope,
+      ...options.meta,
+    });
+    const reference = options.reference ?? {artifactId: 'art-empty-binder'};
+    const contract = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: [{
+        id: 'binder-empty', kind: 'inference', text: 'The cited Binder query returned no rows.', references: [reference],
+        semantics: {schemaVersion: 'claim_semantics@1', predicate: 'sql.empty_result', polarity: 'affirmed',
+          discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'selected_interval'}},
+      }]}).contract!;
+    const store = new ArtifactStore();
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data),
+      {meta: envelope.meta, display: envelope.display})).toBe(true);
+    const view = store.createEvidenceReadView({ownerKey: 'empty-result-test',
+      ...(options.read === 'unbound' ? {} : {currentRunId: 'run-current'}),
+      allowedTraces: [{traceId: options.allowedTraceId ?? target.traceId, traceSide: target.traceSide}]});
+    const prepared = options.read === 'legacy' ? undefined : await prepareClaimEvidence({conclusionContract: contract,
+      bindingEligibility: 'eligible', evidenceReadView: options.read === 'copied'
+        ? {resolveReferences: async requests => structuredClone(await view.resolveReferences(requests))} : view});
+    const built = buildEvidenceContract({conclusionContract: contract, preparedEvidence: prepared,
+      bindingEligibility: 'eligible', dataEnvelopes: [envelope]});
+    return {built, view, resolution: prepared && preparedReferenceResolution(prepared, reference),
+      verification: runDeterministicClaimVerifier({claimSupport: built.claimSupport})};
+  }
+
+  it.each(['empty', 'observed'] as const)('does not invent an identity conflict for an issued %s empty table', async executionStatus => {
+    const {built, verification, resolution} = await emptyFixture({meta: {executionStatus}});
+    expect(isCurrentEmptyResultRead(resolution)).toBe(true);
+    expect(built.claimSupport[0].anchors[0]).toMatchObject({missing: true, missingReason: 'cited_scope_identity_unbound'});
+    expect(built.claimSupport[0].anchors[0].identity).toBeUndefined();
+    expect(verification.unsupportedClaimCount).toBe(0);
+    expect(verification.claimResults[0]).toMatchObject({status: 'partial', referenceCells: [{status: 'not_checked'}],
+      deterministicProof: {status: 'candidate', reason: 'unsupported_predicate'}});
+    expect(verification.passed).toBe(false);
+    expect(isCurrentEmptyResultRead(structuredClone(resolution!))).toBe(false);
+    expect(runDeterministicClaimVerifier({claimSupport: structuredClone(built.claimSupport)}).claimResults[0].status)
+      .toBe('unsupported');
+  });
+
+  it.each(['copied', 'unbound', 'legacy'] as const)('does not grant the empty-result exception to a %s read', async read => {
+    const {built, resolution, verification} = await emptyFixture({read});
+    expect(isCurrentEmptyResultRead(resolution)).toBe(false);
+    expect(built.claimSupport[0].anchors[0].missingReason).not.toBe('cited_scope_identity_unbound');
+    expect(verification.passed).toBe(false);
+  });
+
+  it('does not use metadata-only access as an empty-result witness', async () => {
+    const {view} = await emptyFixture();
+    const [metadataOnly] = await view.resolveReferences([{key: 'metadata-only', reference: {artifactId: 'art-empty-binder'},
+      requiredColumns: [], metadataOnly: true}]);
+    expect(metadataOnly.status).toBe('resolved');
+    expect(isCurrentEmptyResultRead(metadataOnly)).toBe(false);
+  });
+
+  it.each([
+    {meta: {executionStatus: undefined}}, {meta: {executionStatus: 'skipped' as const}},
+    {meta: {executionStatus: 'optional_error' as const}}, {meta: {executionStatus: 'unavailable' as const}},
+    {allowedTraceId: 'another-trace'},
+    {data: {columns: ['interface', 'count', 'dur_ms'], rows: [['server', 1, 2]]}},
+    {reference: {artifactId: 'art-empty-binder', rowIndex: 0}},
+    {reference: {artifactId: 'art-empty-binder', column: 'count', value: 0}},
+    {reference: {artifactId: 'art-empty-binder', rowSelector: {count: 0}}},
+  ])('requires an observed authorized whole-result empty capture: %j', async options => {
+    const {built, resolution, verification} = await emptyFixture(options);
+    expect(isCurrentEmptyResultRead(resolution)).toBe(false);
+    expect(built.claimSupport[0].anchors[0].missingReason).not.toBe('cited_scope_identity_unbound');
+    expect(verification.passed).toBe(false);
+  });
+
+  it.each([
+    {fields: undefined}, {fields: ['count']}, {availability: 'unavailable' as const},
+    {scope: {...target, traceId: 'another-trace'}}, {scope: {...target, traceSide: 'reference' as const}},
+  ])('retains invalid or target-bearing scope rejection: %j', async patch => {
+    const provenance = {version: scope.version, entries: [{...scope.entries[0], ...patch}, scope.entries[1]]};
+    const {built, verification} = await emptyFixture({meta: {scopeProvenance: provenance}});
+    expect(built.claimSupport[0].anchors[0].missingReason).not.toBe('cited_scope_identity_unbound');
+    expect(verification.claimResults[0].status).toBe('unsupported');
+  });
+
+  it.each([
+    {identityStatus: 'error' as const}, {identityStatus: 'ambiguous' as const},
+    {identityRefId: 'conflicting-meta'},
+    {identityRefId: target.identityRefId, identityStatus: 'verified' as const,
+      identityResolution: {...verified, status: 'ambiguous' as const}},
+    {identityRefId: 'conflicting-meta', identityStatus: 'verified' as const, identityResolution: verified},
+    {identityRefId: target.identityRefId, identityStatus: 'verified' as const,
+      identityResolution: {...verified, target: {...verified.target, traceId: 'another-trace'}}},
+    {identityRefId: target.identityRefId, identityStatus: 'verified' as const,
+      identityResolution: {...verified, processes: [{upid: 15, confidence: 1, matchSources: ['upid' as const]}]}},
+  ])('does not suppress explicit identity metadata conflicts: %j', async meta => {
+    const {built, verification} = await emptyFixture({meta});
+    expect(built.claimSupport[0].anchors[0]).toMatchObject({missing: true, missingReason: 'captured_identity_conflict'});
+    expect(verification.claimResults[0].status).toBe('unsupported');
+  });
+});
+
+describe('captured cells carry their producer metric declaration', () => {
+  async function builtCell(fields: Record<string, CapturedFieldSemantics>,
+    reference: ConclusionContractClaimReference = {evidenceRefId: 'data:metric', rowIndex: 0, column: 'value', value: 42}) {
+    const contract = {
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+      evidenceChain: [], uncertainties: [], nextSteps: [], claims: [{id: 'metric', kind: 'numeric',
+        text: 'The metric is 42.', references: [reference]}],
+    } as never;
+    const parsed = parseConclusionContractDeclaration(contract);
+    expect(parsed.issues).toEqual([]);
+    const envelope = createDataEnvelope({columns: ['value'], rows: [[42]]}, {
+      type: 'skill_result', source: 'execute_skill', title: 'Metric', evidenceRefId: 'data:metric',
+      traceId: 'trace-prod', traceSide: 'current', executionStatus: 'observed',
+    });
+    const store = new ArtifactStore();
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data, fields),
+      {meta: envelope.meta, display: envelope.display})).toBe(true);
+    const prepared = await prepareClaimEvidence({conclusionContract: parsed.contract, bindingEligibility: 'eligible',
+      evidenceReadView: store.createEvidenceReadView({ownerKey: 'producer-test', currentRunId: 'run-prod',
+        allowedTraces: [{traceId: 'trace-prod', traceSide: 'current'}]})});
+    const built = buildEvidenceContract({conclusionContract: parsed.contract, preparedEvidence: prepared,
+      bindingEligibility: 'eligible', dataEnvelopes: [envelope]});
+    return built.claimSupport[0].anchors[0].cells![0];
+  }
+
+  it('projects the full producer tuple from the captured field semantics', async () => {
+    const cell = await builtCell({value: {origin: {kind: 'skill_literal', definitionFingerprint: 'fp',
+      skillId: 'scrolling_analysis', stepId: 'frame_timeline_population', selectedSqlHash: 'sql'},
+      unit: 'frames', metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'}});
+    expect(cell.producer).toEqual({skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+      metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'});
+  });
+
+  it('leaves a cell without a producer declaration carrying none', async () => {
+    // A model-written SQL column: a unit may be projected, but no metric identity exists to copy.
+    const model = await builtCell({value: {origin: {kind: 'native_producer', definitionFingerprint: 'fp'},
+      unit: 'count'}});
+    expect(model.producer).toBeUndefined();
+    // A declaration missing its skill or step is not a bindable producer identity either.
+    const partial = await builtCell({value: {origin: {kind: 'skill_literal', definitionFingerprint: 'fp',
+      stepId: 'frame_timeline_population'}, metricId: 'render.frame.timeline.trace_frames'}});
+    expect(partial.producer).toBeUndefined();
+  });
+
+  it('keeps an undeclared aggregation out of the projected tuple', async () => {
+    const cell = await builtCell({value: {origin: {kind: 'skill_literal', definitionFingerprint: 'fp',
+      skillId: 'scrolling_analysis', stepId: 'frame_timeline_population'}, metricId: 'render.frame.timeline.trace_frames'}});
+    expect(cell.producer).toEqual({skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+      metricId: 'render.frame.timeline.trace_frames'});
+    expect(cell.producer).not.toHaveProperty('aggregation');
   });
 });

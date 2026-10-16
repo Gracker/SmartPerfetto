@@ -17,6 +17,15 @@
 #     TRACE, not the hardware or OPP-table maximum.
 #   - A limit says nothing about why it was applied. Attribution needs
 #     cpu_frequency_limit_attribution.
+#
+# Two independent gates:
+#   1. Max-limit analysis (overview aggregates, capped episodes) needs at least
+#      one VALID max-limit sample; otherwise limit_unavailable reports
+#      LIMIT_EVIDENCE_MISSING with max_limit_not_captured /
+#      max_limit_samples_missing.
+#   2. limit_events lists every max and min sample whenever any exists, valid
+#      or not. Validity, direction and episode membership come from the shared
+#      fragments; min-limit events are non-trigger facts.
 # =============================================================================
 
 name: cpu_freq_limit_timeline
@@ -76,22 +85,26 @@ steps:
     process_scope:
       role: global_context
     display: false
+    sql_fragments:
+      - fragments/system_cpu_freq_limit_spans.sql
     sql: |
       SELECT
-        CASE WHEN EXISTS (
-          SELECT 1 FROM cpu_counter_track WHERE type = 'cpu_max_frequency_limit'
-        ) THEN 1 ELSE 0 END AS has_max_limit_track,
-        CASE WHEN EXISTS (
-          SELECT 1 FROM cpu_counter_track WHERE type = 'cpu_min_frequency_limit'
-        ) THEN 1 ELSE 0 END AS has_min_limit_track,
-        (SELECT COUNT(*) FROM cpu_counter_track
-          WHERE type IN ('cpu_max_frequency_limit', 'cpu_min_frequency_limit')) AS limit_track_count
+        CASE WHEN ds.max_limit_track_count > 0 THEN 1 ELSE 0 END AS has_max_limit_track,
+        CASE WHEN ds.min_limit_track_count > 0 THEN 1 ELSE 0 END AS has_min_limit_track,
+        ds.max_limit_track_count + ds.min_limit_track_count AS limit_track_count,
+        ds.has_max_limit_data,
+        ds.has_any_limit_sample,
+        ds.valid_max_sample_count,
+        ds.invalid_max_sample_count,
+        ds.invalid_min_sample_count,
+        ds.limit_evidence_missing_reason
+      FROM system_cpu_freq_limit_data_status ds
     save_as: limit_data_check
 
   - id: limit_summary
     type: atomic
     name: "限频概览"
-    condition: "limit_data_check.data?.[0]?.has_max_limit_track === 1 || limit_data_check.data?.[0]?.has_min_limit_track === 1"
+    condition: "limit_data_check.data?.[0]?.has_max_limit_data === 1"
     optional: true
     process_scope:
       role: global_context
@@ -138,6 +151,9 @@ steps:
         - {name: first_sample_state_unknown, label: "首样本前状态未知", type: string}
         - {name: limit_covered_ns, label: "限频覆盖", type: duration, unit: ns}
         - {name: limit_evidence, label: "限频证据", type: string}
+        - {name: invalid_sample_count, label: "无效样本数", type: number}
+        - {name: invalid_limit_ns, label: "无效样本时长", type: duration, unit: ns}
+        - {name: data_quality_note, label: "数据质量", type: string}
         - {name: limit_source, label: "数据来源", type: string}
         - {name: evidence_scope, label: "证据范围", type: string}
     sql: |
@@ -154,42 +170,59 @@ steps:
           COALESCE(${start_ts}, (SELECT ts FROM data_start), (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
           COALESCE(${end_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
       )
-      SELECT
-        s.window_id, s.window_start_ts, s.window_end_ts,
-        s.window_end_ts - s.window_start_ts AS window_dur_ns,
-        s.policy_cpu, MAX(s.ucpu) AS ucpu, MAX(s.machine_id) AS machine_id,
-        MAX(s.core_type) AS core_type, MAX(s.topology_source) AS topology_source,
-        s.kind,
-        CAST(ROUND(SUM(s.limit_khz * 1.0 * s.dur_ns) / NULLIF(SUM(s.dur_ns), 0)) AS INTEGER) AS avg_limit_khz,
-        MIN(s.limit_khz) AS min_limit_khz,
-        MAX(s.limit_khz) AS max_limit_khz,
-        MAX(s.reference_max_limit_khz) AS reference_max_limit_khz,
-        MAX(s.reference_basis) AS reference_basis,
-        COUNT(*) AS sample_count,
-        MIN(s.raw_start_ts) AS first_sample_ts,
-        MAX(s.raw_start_ts) AS last_sample_ts,
-        MAX(0, MIN(s.raw_start_ts) - s.window_start_ts) AS pre_first_sample_ns,
-        CASE WHEN MIN(s.raw_start_ts) > s.window_start_ts
+      SELECT a.window_id, a.window_start_ts, a.window_end_ts, a.window_dur_ns,
+        a.policy_cpu, a.ucpu, a.machine_id, a.core_type, a.topology_source, a.kind,
+        CAST(ROUND(a.valid_weighted_khz_ns / NULLIF(a.valid_dur_ns, 0)) AS INTEGER) AS avg_limit_khz,
+        a.min_limit_khz, a.max_limit_khz, a.reference_max_limit_khz, a.reference_basis,
+        a.sample_count, a.first_sample_ts, a.last_sample_ts,
+        MAX(0, a.first_sample_ts - a.window_start_ts) AS pre_first_sample_ns,
+        CASE WHEN a.first_sample_ts > a.window_start_ts
           THEN 'state_before_first_change_is_unknown_not_unlimited'
           ELSE 'window_starts_inside_observed_limit_state' END AS first_sample_state_unknown,
-        SUM(s.dur_ns) AS limit_covered_ns,
+        COALESCE(a.valid_dur_ns, 0) AS limit_covered_ns,
         CASE
-          WHEN SUM(s.dur_ns) IS NULL THEN 'unavailable'
-          WHEN SUM(s.dur_ns) < s.window_end_ts - s.window_start_ts THEN 'partial'
+          WHEN COALESCE(a.valid_dur_ns, 0) = 0 THEN 'unavailable'
+          WHEN a.valid_dur_ns < a.window_dur_ns THEN 'partial'
           ELSE 'observed'
         END AS limit_evidence,
-        MAX(s.limit_source) AS limit_source,
+        a.invalid_sample_count, a.invalid_limit_ns,
+        CASE WHEN a.invalid_sample_count > 0
+          THEN 'invalid_limit_samples_excluded_from_aggregates'
+          ELSE 'all_samples_valid' END AS data_quality_note,
+        a.limit_source,
         'observation_not_causal' AS evidence_scope
-      FROM system_cpu_freq_limit_spans s
-      WHERE s.dur_ns > 0
-      GROUP BY s.window_id, s.window_start_ts, s.window_end_ts, s.policy_cpu, s.kind
-      ORDER BY s.policy_cpu, s.kind DESC
+      FROM (
+        -- Invalid samples (limit_value_valid = 0) are not limits: they are
+        -- excluded from every aggregate and reported separately.
+        SELECT
+          s.window_id, s.window_start_ts, s.window_end_ts,
+          s.window_end_ts - s.window_start_ts AS window_dur_ns,
+          s.policy_cpu, MAX(s.ucpu) AS ucpu, MAX(s.machine_id) AS machine_id,
+          MAX(s.core_type) AS core_type, MAX(s.topology_source) AS topology_source,
+          s.kind,
+          SUM(CASE WHEN s.limit_value_valid = 1 THEN s.limit_khz * 1.0 * s.dur_ns END) AS valid_weighted_khz_ns,
+          SUM(CASE WHEN s.limit_value_valid = 1 THEN s.dur_ns END) AS valid_dur_ns,
+          MIN(CASE WHEN s.limit_value_valid = 1 THEN s.limit_khz END) AS min_limit_khz,
+          MAX(CASE WHEN s.limit_value_valid = 1 THEN s.limit_khz END) AS max_limit_khz,
+          MAX(s.reference_max_limit_khz) AS reference_max_limit_khz,
+          MAX(s.reference_basis) AS reference_basis,
+          SUM(CASE WHEN s.limit_value_valid = 1 THEN 1 ELSE 0 END) AS sample_count,
+          MIN(s.raw_start_ts) AS first_sample_ts,
+          MAX(s.raw_start_ts) AS last_sample_ts,
+          SUM(CASE WHEN s.limit_value_valid = 0 THEN 1 ELSE 0 END) AS invalid_sample_count,
+          SUM(CASE WHEN s.limit_value_valid = 0 THEN s.dur_ns ELSE 0 END) AS invalid_limit_ns,
+          MAX(s.limit_source) AS limit_source
+        FROM system_cpu_freq_limit_spans s
+        WHERE s.dur_ns > 0
+        GROUP BY s.window_id, s.window_start_ts, s.window_end_ts, s.policy_cpu, s.kind
+      ) a
+      ORDER BY a.policy_cpu, a.kind DESC
     save_as: limit_summary
 
   - id: limit_episodes
     type: atomic
     name: "限频区段"
-    condition: "limit_data_check.data?.[0]?.has_max_limit_track === 1"
+    condition: "limit_data_check.data?.[0]?.has_max_limit_data === 1"
     optional: true
     process_scope:
       role: global_context
@@ -203,17 +236,20 @@ steps:
       title: "限频区段（去抖动合并）"
       columns:
         - {name: episode_id, label: "区段", type: string}
+        - {name: trace_episode_id, label: "全 trace 区段", type: string}
         - {name: policy_cpu, label: "policy 首核", type: number}
         - {name: core_type, label: "核心类型", type: string}
         - {name: topology_source, label: "拓扑来源", type: string}
         - {name: episode_start_ts, label: "开始", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: episode_end_ts, label: "结束", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: episode_dur_ns, label: "持续", type: duration, unit: ns}
+        - {name: onset_ts, label: "限频起点", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: onset_observed, label: "起点可观测", type: boolean}
         - {name: min_limit_khz, label: "最低上限", type: number}
         - {name: reference_max_limit_khz, label: "参考上限", type: number}
         - {name: depth_pct, label: "限频深度", type: percentage}
         - {name: change_count, label: "合并变更数", type: number}
-        - {name: starts_at_data_start, label: "起点未知", type: boolean}
+        - {name: starts_at_data_start, label: "区段含轨道首样本", type: boolean}
         - {name: ends_at_data_end, label: "终点未知", type: boolean}
         - {name: evidence_status, label: "证据状态", type: string}
         - {name: reference_basis, label: "参考依据", type: string}
@@ -234,8 +270,9 @@ steps:
           COALESCE(${start_ts}, (SELECT ts FROM data_start), (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
           COALESCE(${end_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
       )
-      SELECT e.episode_id, e.policy_cpu, e.core_type, e.topology_source,
+      SELECT e.episode_id, e.trace_episode_id, e.policy_cpu, e.core_type, e.topology_source,
         e.episode_start_ts, e.episode_end_ts, e.episode_dur_ns,
+        e.onset_ts, e.onset_observed,
         e.min_limit_khz, e.reference_max_limit_khz, e.depth_pct, e.change_count,
         e.starts_at_data_start, e.ends_at_data_end, e.evidence_status, e.reference_basis,
         printf('episode_drop_pct=%s;merge_gap_ms=%s', ${episode_drop_pct|10}, ${merge_gap_ms|500}) AS thresholds,
@@ -247,13 +284,14 @@ steps:
   - id: limit_events
     type: atomic
     name: "限频变更事件"
-    condition: "limit_data_check.data?.[0]?.has_max_limit_track === 1 || limit_data_check.data?.[0]?.has_min_limit_track === 1"
+    condition: "limit_data_check.data?.[0]?.has_any_limit_sample === 1"
     optional: true
     process_scope:
       role: global_context
     sql_fragments:
       - fragments/system_sched_spans.sql
       - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
     display:
       level: detail
       layer: list
@@ -267,6 +305,10 @@ steps:
         - {name: limit_khz, label: "变更后", type: number}
         - {name: delta_khz, label: "变化量", type: number}
         - {name: direction, label: "方向", type: string}
+        - {name: direction_basis, label: "方向依据", type: string}
+        - {name: limit_value_valid, label: "有效样本", type: boolean}
+        - {name: event_role, label: "事件角色", type: string}
+        - {name: trace_episode_id, label: "所属全 trace 区段", type: string}
         - {name: dur_ns, label: "保持时长", type: duration, unit: ns}
         - {name: reference_max_limit_khz, label: "参考上限", type: number}
         - {name: limit_source, label: "数据来源", type: string}
@@ -286,20 +328,17 @@ steps:
           COALESCE(${start_ts}, (SELECT ts FROM data_start), (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
           COALESCE(${end_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
       )
+      -- Validity, direction and episode membership come from the shared
+      -- event CTE; an invalid sample is a data-quality event, and the first
+      -- valid value after it has direction `unknown`, never `relaxed`.
       SELECT s.raw_start_ts AS ts, s.policy_cpu, s.core_type, s.kind,
-        s.prev_limit_khz, s.limit_khz,
-        s.limit_khz - s.prev_limit_khz AS delta_khz,
-        CASE
-          WHEN s.prev_limit_khz IS NULL THEN 'first_observed_sample'
-          WHEN s.kind = 'max' AND s.limit_khz < s.prev_limit_khz THEN 'tightened'
-          WHEN s.kind = 'max' AND s.limit_khz > s.prev_limit_khz THEN 'relaxed'
-          WHEN s.kind = 'min' AND s.limit_khz > s.prev_limit_khz THEN 'floor_raised'
-          WHEN s.kind = 'min' AND s.limit_khz < s.prev_limit_khz THEN 'floor_lowered'
-          ELSE 'unchanged'
-        END AS direction,
+        ev.prev_sample_limit_khz AS prev_limit_khz, s.limit_khz, ev.delta_khz,
+        ev.direction, ev.direction_basis, ev.limit_value_valid, ev.event_role,
+        ev.trace_episode_id,
         s.dur_ns, s.reference_max_limit_khz, s.limit_source,
         'observation_not_causal' AS evidence_scope
       FROM system_cpu_freq_limit_spans s
+      JOIN system_cpu_freq_limit_events ev ON ev.counter_id = s.counter_id
       WHERE s.raw_start_ts >= s.window_start_ts AND s.raw_start_ts < s.window_end_ts
       ORDER BY s.raw_start_ts, s.policy_cpu, s.kind DESC
     save_as: limit_events
@@ -307,22 +346,29 @@ steps:
   - id: limit_unavailable
     type: atomic
     name: "限频数据不可用"
-    condition: "limit_data_check.data?.[0]?.has_max_limit_track !== 1 && limit_data_check.data?.[0]?.has_min_limit_track !== 1"
+    condition: "limit_data_check.data?.[0]?.has_max_limit_data !== 1"
     process_scope:
       role: global_context
+    sql_fragments:
+      - fragments/system_cpu_freq_limit_spans.sql
     display:
       level: summary
       layer: overview
       title: "限频数据不可用"
       columns:
         - {name: limit_evidence, label: "限频证据", type: string}
+        - {name: limit_classification, label: "分类", type: string}
+        - {name: limit_evidence_missing_reason, label: "缺失原因", type: string}
         - {name: required_ftrace_event, label: "需要采集的 ftrace 事件", type: string}
         - {name: message, label: "说明", type: string}
     sql: |
       SELECT
         'unavailable' AS limit_evidence,
+        ds.limit_evidence_classification AS limit_classification,
+        ds.limit_evidence_missing_reason,
         'power/cpu_frequency_limits' AS required_ftrace_event,
-        'Trace 中没有 cpufreq policy 限频轨道（cpu_max_frequency_limit / cpu_min_frequency_limit）。缺少该数据时无法直接观测限频，只能观测实际频率，不能据此判断是否被限频。请在采集配置的 ftrace_events 中加入 power/cpu_frequency_limits 后重新采集。' AS message
+        ds.limit_evidence_missing_note AS message
+      FROM system_cpu_freq_limit_data_status ds
     save_as: limit_unavailable
 
 output:

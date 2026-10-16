@@ -76,13 +76,59 @@ describe('OpenAI native intent transport', () => {
     const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
     if (protocol === 'responses') {
       expect(body.text).toEqual({format: {type: 'json_object'}});
+      expect(body.reasoning).toEqual({effort: 'none'});
       expect(body).not.toHaveProperty('response_format');
+      expect(body).not.toHaveProperty('thinking');
     } else {
       expect(body.response_format).toEqual({type: 'json_object'});
+      expect(body.thinking).toEqual({type: 'disabled'});
       expect(body).not.toHaveProperty('text');
+      expect(body).not.toHaveProperty('reasoning');
     }
-    expect(body).not.toHaveProperty('thinking');
-    expect(body).not.toHaveProperty('reasoning');
+  });
+
+  it.each(['responses', 'chat_completions'] as const)(
+    'disables official DeepSeek thinking for every %s delivery purpose, JSON mode only for review', async protocol => {
+      for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
+        const {input, fetchImpl} = fixture(protocol);
+        input.config.baseURL = 'https://api.deepseek.com/v1'; input.config.lightModel = 'deepseek-v4-flash';
+        input.purpose = purpose;
+        const observed: string[] = [];
+        input.observer = {reasoning: policy => observed.push(policy)};
+        expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+        const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
+        expect(body[protocol === 'responses' ? 'reasoning' : 'thinking'])
+          .toEqual(protocol === 'responses' ? {effort: 'none'} : {type: 'disabled'});
+        expect(Boolean(body.text ?? body.response_format)).toBe(purpose === 'final_semantic');
+        expect(observed).toEqual(['disabled']);
+      }
+    });
+
+  it('disables official GLM thinking for every chat delivery purpose and adds nothing to Responses', async () => {
+    for (const baseURL of ['https://open.bigmodel.cn/api/paas/v4', 'https://api.z.ai/api/paas/v4']) {
+      for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
+        for (const protocol of ['chat_completions', 'responses'] as const) {
+          const {input, fetchImpl} = fixture(protocol);
+          input.config.baseURL = baseURL; input.config.lightModel = 'glm-5.3'; input.purpose = purpose;
+          expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+          const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
+          if (protocol === 'chat_completions') expect(body.thinking).toEqual({type: 'disabled'});
+          else expect(body).not.toHaveProperty('thinking');
+          expect(body).not.toHaveProperty('response_format');
+        }
+      }
+    }
+  });
+
+  it('reports a thrown headers timeout as a timeout and does not retry it', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    jest.useRealTimers();
+    input.deadlineMs = Date.now() + 60_000;
+    const error = Object.assign(new TypeError('fetch failed'), {cause: Object.assign(new Error('Headers Timeout Error'),
+      {name: 'HeadersTimeoutError', code: 'UND_ERR_HEADERS_TIMEOUT'})});
+    fetchImpl.mockRejectedValue(error);
+    expect(await runOpenAiIntentTransport(input)).toEqual({status: 'unavailable', reason: 'timeout'});
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it.each(['https://api.deepseek.com:8443/v1', 'http://api.deepseek.com/v1',
@@ -359,6 +405,30 @@ describe('OpenAI native intent transport streaming', () => {
   const final = (status: string, extra: Record<string, unknown> = {}, text = '{}') => event({type: `response.${status}`, response: {
     model: 'm', status, error: null, incomplete_details: null, output: [{type: 'message', role: 'assistant', status: 'completed',
       content: [{type: 'output_text', text}]}], ...extra}});
+
+  it('reports first output, usage and the reasoning control to an observer without changing the result', async () => {
+    const seen: string[] = [];
+    const usage: unknown[] = [];
+    const observer = {firstOutput: () => seen.push('first'), usage: (value: unknown) => usage.push(value),
+      reasoning: (policy: string) => seen.push(policy)};
+    const chatFetch = once(sse([chat({role: 'assistant'}), chat({reasoning_content: 'thinking'}), chat({content: 'fine'}, 'stop'),
+      'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":2}}\n\n', 'data: [DONE]\n\n']));
+    const plain = await runOpenAiIntentTransport(input('chat_completions', once(sse([chat({content: 'fine'}, 'stop'),
+      'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":2}}\n\n', 'data: [DONE]\n\n']))));
+    const observed = await runOpenAiIntentTransport({...input('chat_completions', chatFetch), observer});
+    expect(observed).toEqual(plain);
+    expect(seen).toEqual(['provider_default', 'first']);
+    expect(usage).toEqual([{prompt_tokens: 9, completion_tokens: 2}]);
+
+    const responsesSeen: string[] = [];
+    const responsesFetch = once(sse([event({type: 'response.output_text.delta', item_id: 'm', delta: '{}'}),
+      final('completed', {usage: {input_tokens: 5, output_tokens: 1}})]));
+    const responsesUsage: unknown[] = [];
+    await runOpenAiIntentTransport({...input('responses', responsesFetch),
+      observer: {firstOutput: () => responsesSeen.push('first'), usage: (value: unknown) => responsesUsage.push(value)}});
+    expect(responsesSeen).toEqual(['first']);
+    expect(responsesUsage).toEqual([{input_tokens: 5, output_tokens: 1}]);
+  });
 
   it('asks both protocols to stream', async () => {
     for (const protocol of ['chat_completions', 'responses'] as const) {

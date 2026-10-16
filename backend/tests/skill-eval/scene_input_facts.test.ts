@@ -3,14 +3,14 @@ import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
 import yaml from 'js-yaml';
+import {androidInputEventsTableDdl} from '../helpers/androidInputEventsFixture';
+import {withStepFragments} from '../helpers/skillFragmentSql';
 const skills = new Map(['scene_reconstruction', 'state_timeline'].map(name => [name,
   yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite', `${name}.skill.yaml`), 'utf8')) as any]));
 function query(db: Database.Database, id: string, skill = 'scene_reconstruction', limit = 4096, start = 'NULL', end = 'NULL'): any[] {
   const step = skills.get(skill).steps.find((item: any) => item.id === id);
-  const fragments = (step.sql_fragments || []).map((file: string) => fs.readFileSync(path.join(process.cwd(), 'skills', file), 'utf8')).join('\n,\n');
-  let sql = step.sql.replace(/\$\{scene_row_limit\|4096\}/g, String(limit));
-  if (fragments) sql = /^WITH\s/i.test(sql) ? sql.replace(/^WITH\s/i, `WITH\n${fragments}\n,\n`) : `WITH\n${fragments}\n${sql}`;
-  sql = sql.replace(/\$\{start_ts\}/g, start).replace(/\$\{end_ts\}/g, end);
+  const sql = withStepFragments(step.sql.replace(/\$\{scene_row_limit\|4096\}/g, String(limit)), step.sql_fragments)
+    .replace(/\$\{start_ts\}/g, start).replace(/\$\{end_ts\}/g, end);
   return db.prepare(sql).all();
 }
 function fixture(start = 0n, end = 10000000000n): Database.Database {
@@ -18,7 +18,7 @@ function fixture(start = 0n, end = 10000000000n): Database.Database {
   db.exec(`CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
     CREATE TABLE android_motion_events(id INTEGER, event_id INTEGER, ts INTEGER, action INTEGER, device_id INTEGER, display_id INTEGER, source INTEGER);
     CREATE TABLE android_key_events(id INTEGER, event_id INTEGER, ts INTEGER, action INTEGER, device_id INTEGER, display_id INTEGER, source INTEGER);
-    CREATE TABLE android_input_events(input_event_id TEXT, event_seq TEXT, event_channel TEXT, dispatch_ts INTEGER, receive_ts INTEGER, read_time INTEGER, event_type TEXT, event_action TEXT, upid INTEGER, process_name TEXT);
+    ${androidInputEventsTableDdl()}
     CREATE TABLE android_screen_state(id INTEGER, ts INTEGER, dur INTEGER, simple_screen_state TEXT, short_screen_state TEXT, screen_state TEXT);
     CREATE TABLE slice(id INTEGER, ts INTEGER, dur INTEGER, name TEXT, track_id INTEGER);
     CREATE TABLE thread_track(id INTEGER, utid INTEGER); CREATE TABLE thread(utid INTEGER, upid INTEGER, is_main_thread INTEGER);
@@ -26,8 +26,9 @@ function fixture(start = 0n, end = 10000000000n): Database.Database {
     CREATE TABLE actual_frame_timeline_slice(ts INTEGER, dur INTEGER, upid INTEGER, surface_frame_token INTEGER);`);
   db.prepare('INSERT INTO trace_bounds VALUES (?, ?)').run(start, end); return db;
 }
-function legacy(db: Database.Database, time: bigint, action: string | null, channel = 'A', upid = 1): void {
-  db.prepare('INSERT INTO android_input_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(String(time), String(time), channel, time, time, time, 'MOTION', action, upid, `app-${upid}`);
+function legacy(db: Database.Database, time: bigint, action: string | null, channel = 'A', upid = 1, processName = `app-${upid}`): void {
+  db.prepare(`INSERT INTO android_input_events(input_event_id, event_seq, event_channel, dispatch_ts, receive_ts,
+    read_time, event_type, event_action, upid, process_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(String(time), String(time), channel, time, time, time, 'MOTION', action, upid, processName);
 }
 function native(db: Database.Database, id: number, ts: bigint, action: number, device = 1, display = 0, source = 4098): void {
   db.prepare('INSERT INTO android_motion_events VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, id, ts, action, device, display, source);
@@ -43,6 +44,15 @@ describe('shared scene input facts: independent semantic cases', () => {
       expect(gap).toMatchObject({category:'unknown',source_status:'partial'});
     }
     expect(query(db,'scroll_initiation')).toEqual([]);
+  });
+  it('reads prefixed runtime actions (ACTION_MOVE) as the same contract actions (MOVE)', () => {
+    const gestures = (actions: string[]) => {
+      db = fixture(); actions.forEach((a,i) => legacy(db, BigInt(i+1)*100000000n,a));
+      const rows = query(db,'user_gestures'); db.close(); return rows;
+    };
+    const prefixed = gestures(['ACTION_DOWN','ACTION_MOVE','ACTION_MOVE','ACTION_UP']);
+    expect(prefixed).toEqual([expect.objectContaining({gesture_type:'touch_move',event_count:4,boundary_complete:1,source_status:'observed'})]);
+    expect(prefixed).toEqual(gestures(['DOWN','MOVE','MOVE','UP']));
   });
   it('retains 55 action-less MOTION rows and never calls them idle', () => {
     db=fixture(); for(let i=1;i<=55;i++) legacy(db,BigInt(i)*1000000n,null);
@@ -139,6 +149,43 @@ describe('shared scene input facts: independent semantic cases', () => {
   it('does not choose an app when every receiver lacks action information',()=>{
     db=fixture();legacy(db,1n,null,'A',1);legacy(db,1n,null,'B',2);
     expect(query(db,'user_gestures')).toEqual([expect.objectContaining({event_count:1,dispatch_count:2,upid:null,app_package:null,identity_status:'multiple_recipients'})]);
+  });
+  it('assigns an action-free event to the one receiver that owns its window, whatever the stream order',()=>{
+    db=fixture();
+    for(const time of [1n,2n,3n]){
+      legacy(db,time,null,'[Gesture Monitor] swipe-to-screenshot (server)',10,'com.android.systemui');
+      legacy(db,time,null,'e620163 NavigationBar0 (server)',10,'com.android.systemui');
+      legacy(db,time,null,'PointerEventDispatcher0 (server)',11,'system_server');
+      legacy(db,time,null,'f4033a5 com.android.systemui.wallpapers.ImageWallpaper',10,'com.android.systemui');
+      legacy(db,time,null,'32c6ecb com.tencent.mm/com.tencent.mm.ui.LauncherUI (server)',2,'com.tencent.mm:appbrand0');
+    }
+    expect(query(db,'user_gestures')).toEqual([expect.objectContaining({event_count:3,dispatch_count:15,receiver_count:1,
+      upid:2,app_package:'com.tencent.mm:appbrand0',stream_key:'2:32c6ecb com.tencent.mm/com.tencent.mm.ui.LauncherUI (server)',
+      identity_status:'observed_recipient',gesture_type:'input_unknown',source_status:'partial',missing_action_count:3})]);
+  });
+  it('keeps an action-free event unassigned when two receivers own their windows, and never by name prefix alone',()=>{
+    db=fixture();
+    legacy(db,1n,null,'a1 com.foo/com.foo.Main',1,'com.foo');legacy(db,1n,null,'b2 com.bar/com.bar.Main',2,'com.bar');
+    legacy(db,1n,null,'[Gesture Monitor] edge-swipe',3,'com.android.systemui');
+    legacy(db,5n,null,'c3 com.foo/com.foo.Main',4,'com.foox');legacy(db,5n,null,'[Gesture Monitor] edge-swipe',3,'com.android.systemui');
+    expect(query(db,'user_gestures').map(r=>[r.ts,r.receiver_count,r.upid,r.identity_status,r.stream_key])).toEqual([
+      ['1',2,null,'multiple_recipients','1:a1 com.foo/com.foo.Main'],
+      ['5',2,null,'multiple_recipients','3:[Gesture Monitor] edge-swipe']]);
+  });
+  it('lets an action narrow past other window owners',()=>{
+    db=fixture();
+    for(const [time,action] of [[1n,'DOWN'],[2n,'UP']] as const){
+      legacy(db,time,null,'b2 com.bar/com.bar.WatchOutsideDialog',1,'com.bar');legacy(db,time,action,'a1 com.foo/com.foo.Main',9,'com.foo');
+    }
+    expect(query(db,'user_gestures')).toEqual([expect.objectContaining({gesture_type:'tap',receiver_count:1,upid:9,
+      identity_status:'observed_recipient',stream_key:'9:a1 com.foo/com.foo.Main'})]);
+  });
+  it('picks the representative in the same precedence as the candidates',()=>{
+    db=fixture();
+    for(const [time,action] of [[1n,'DOWN'],[2n,null],[3n,'UP']] as const){
+      legacy(db,time,null,'b2 com.bar/com.bar.Main',1,'com.bar');legacy(db,time,action,'NotificationShade',9,'com.android.systemui');
+    }
+    expect(query(db,'user_gestures')).toEqual([expect.objectContaining({event_count:3,receiver_count:1,upid:9,stream_key:'9:NotificationShade'})]);
   });
   it('orders same-timestamp native events by ingestion identity, preserving an instant contact',()=>{
     db=fixture();native(db,9,10n,0);native(db,10,10n,1);

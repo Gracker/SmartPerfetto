@@ -9,6 +9,7 @@ import {
   INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS,
   intentTransportTextResult,
   runIntentTransport,
+  sdkResultFailureReason,
   type IntentTransportInput,
 } from '../../intentTransport';
 
@@ -23,6 +24,8 @@ export interface QoderIntentTransportInput extends IntentTransportInput {
   config: Pick<QoderRuntimeConfig, 'model' | 'lightModel' | 'byok' | 'cliPath'>;
   scopedEnv: Record<string, string | undefined>;
   isolatedClassifierDirectory: string;
+  /** The run's authorization, checked after the SDK and auth resolved, right before `query`. */
+  beforeQuery?: () => void;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -69,6 +72,7 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
       if (!queryHasClose) scope.signal.removeEventListener('abort', onAbort);
     });
     if (scope.signal.aborted) onAbort();
+    input.beforeQuery?.();
     const candidate = sdk.query({
       prompt: input.prompt,
       options: {
@@ -130,7 +134,7 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
       }
       if (message.type !== 'result') continue;
       if (message.subtype !== 'success' || message.is_error !== false) {
-        return {status: 'unavailable', reason: 'invalid_response'};
+        return {status: 'unavailable', reason: sdkResultFailureReason(message)};
       }
       if (message.stop_reason === 'tool_use') return {status: 'unavailable', reason: 'tool_use'};
       if (message.stop_reason === 'max_tokens') return {status: 'unavailable', reason: 'incomplete_output'};

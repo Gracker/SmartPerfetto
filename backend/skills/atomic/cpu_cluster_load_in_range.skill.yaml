@@ -5,9 +5,24 @@
 # =============================================================================
 # CPU 簇负载分析 (Composite Skill)
 # =============================================================================
-# 计算指定时间范围内各 CPU 簇（大核/小核）的整体负载
-# 负载 = Running 时间 / (时间范围 × 簇内核心数)
-# 100% 表示该簇所有核心完全跑满
+# 计算指定时间范围内各 CPU 簇（超大核/大核/中核/小核）的整体负载
+# 负载 = Running 时间 / (非挂起时长 × 簇内核心数)
+# 100% 表示该簇所有核心在设备醒着的时间里完全跑满
+#
+# v2.3: Running 区间和窗口统一扣除挂起；任一转换缺失时整体回退墙钟。
+#   多 machine 或重复 CPU 元数据时负载不可用，保留原因，不合并身份或钳位百分比。
+#
+# v2.2: 计算移入 fragments/cpu_cluster_load.sql，jank_frame_detail 根因的
+#   大/小核负载复用同一定义，簇表与根因文本不再各算一套
+#
+# v2.1: 分母对齐上游 android_cpu_cluster_utilization_in_interval (7af4ec945c)
+#   - 核心数取 _cpu_topology 中该簇的全部核心，而不是窗口内跑过任务的核心；
+#     旧算法在部分核心空闲时会把负载高估（空闲核心被排除出分母）
+#   - 时长用 to_monotonic 扣除挂起时间；无时钟快照时回退墙钟时长
+#   - 仍用 SmartPerfetto 自己的 _cpu_topology 分级（上游映射没有 prime 档、
+#     会计入从未上线的核心、且不区分 machine）
+#   - active_core_count 给出窗口内实际跑过任务的核心数，便于区分"空闲"与"离线"
+#   - 拓扑无法分级时标为"未分类核心"，不再冒充小核簇
 #
 # v2.0: 重构为 composite skill，复用 _cpu_topology 视图
 #   - 调用 cpu_topology_view 创建共享拓扑视图
@@ -15,7 +30,7 @@
 #   - 支持 prime/big/medium/little 四级分类
 
 name: cpu_cluster_load_in_range
-version: "2.0"
+version: "2.3"
 type: composite
 category: cpu
 tier: B
@@ -61,9 +76,27 @@ steps:
         - name: cluster
           label: "CPU 簇"
           type: string
+        - name: load_status
+          label: "负载测量状态"
+          label_i18n:
+            en: "Load measurement status"
+          type: string
+        - name: clock_basis
+          label: "计时口径"
+          label_i18n:
+            en: "Clock basis"
+          type: string
         - name: core_count
           label: "核心数"
           type: number
+        - name: active_core_count
+          label: "活跃核心数"
+          type: number
+        - name: awake_ms
+          label: "非挂起时长"
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: running_ms
           label: "Running 时间"
           type: duration
@@ -86,54 +119,32 @@ steps:
           label: "最忙核心"
           type: percentage
           format: percentage
+    # 簇负载的唯一定义（分母 = 全部核心 × 非挂起时长）；jank_frame_detail 的根因复用同一份
+    sql_fragments:
+      - fragments/cpu_cluster_load.sql
     sql: |
-      WITH
-      -- 获取每个 CPU 上的 Running 状态时间
-      cpu_running AS (
-        SELECT
-          ts.cpu,
-          ct.core_type as cluster_type,
-          -- 裁剪 slice 到时间范围内
-          MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts}) as clipped_dur
-        FROM thread_state ts
-        JOIN _cpu_topology ct ON ts.cpu = ct.cpu_id
-        WHERE ts.ts < ${end_ts}
-          AND ts.ts + ts.dur > ${start_ts}
-          AND ts.state = 'Running'
-          AND ts.cpu IS NOT NULL
-      ),
-      -- 按 CPU 聚合
-      per_cpu_stats AS (
-        SELECT
-          cpu,
-          cluster_type,
-          SUM(CASE WHEN clipped_dur > 0 THEN clipped_dur ELSE 0 END) as running_ns
-        FROM cpu_running
-        GROUP BY cpu, cluster_type
-      ),
-      -- 按簇聚合
-      cluster_stats AS (
-        SELECT
-          cluster_type,
-          COUNT(DISTINCT cpu) as core_count,
-          SUM(running_ns) as total_running_ns,
-          MAX(running_ns) as max_core_running_ns
-        FROM per_cpu_stats
-        GROUP BY cluster_type
-      )
       SELECT
-        CASE
-          WHEN cluster_type = 'big' THEN '大核簇'
-          ELSE '小核簇'
-        END as cluster,
-        core_count,
-        ROUND(total_running_ns / 1e6, 2) as running_ms,
-        ROUND((${end_ts} - ${start_ts}) * core_count / 1e6, 2) as total_capacity_ms,
-        ROUND(100.0 * total_running_ns / NULLIF((${end_ts} - ${start_ts}) * core_count, 0), 1) as load_pct,
-        ROUND(100.0 - 100.0 * total_running_ns / NULLIF((${end_ts} - ${start_ts}) * core_count, 0), 1) as idle_pct,
-        ROUND(100.0 * max_core_running_ns / NULLIF(${end_ts} - ${start_ts}, 0), 1) as max_single_core_pct
-      FROM cluster_stats
-      ORDER BY cluster_type DESC
+        CASE cs.core_type
+          WHEN 'prime' THEN '超大核簇'
+          WHEN 'big' THEN '大核簇'
+          WHEN 'medium' THEN '中核簇'
+          WHEN 'little' THEN '小核簇'
+          ELSE '未分类核心'
+        END AS cluster,
+        cs.load_status,
+        cs.clock_basis,
+        cs.core_count,
+        cs.active_core_count,
+        ROUND(cs.awake_ns / 1e6, 2) AS awake_ms,
+        ROUND(cs.running_ns / 1e6, 2) AS running_ms,
+        ROUND(cs.awake_ns * cs.core_count / 1e6, 2) AS total_capacity_ms,
+        ROUND(100.0 * cs.running_ns / NULLIF(cs.awake_ns * cs.core_count, 0), 1) AS load_pct,
+        ROUND(100.0 - 100.0 * cs.running_ns / NULLIF(cs.awake_ns * cs.core_count, 0), 1) AS idle_pct,
+        ROUND(100.0 * cs.max_core_running_ns / NULLIF(cs.awake_ns, 0), 1) AS max_single_core_pct
+      FROM cpu_cluster_load_by_tier cs
+      ORDER BY CASE cs.core_type
+        WHEN 'prime' THEN 0 WHEN 'big' THEN 1 WHEN 'medium' THEN 2 WHEN 'little' THEN 3 ELSE 4
+      END
     save_as: cluster_load
 
 output:

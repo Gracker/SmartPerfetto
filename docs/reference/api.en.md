@@ -2,8 +2,13 @@
 
 [English](api.en.md) | [中文](api.md)
 
-The default backend address is `http://localhost:3000`. Set
-`SMARTPERFETTO_BACKEND_PORT` to use a different backend port. If
+The default backend address is `http://127.0.0.1:3000`. Set
+`SMARTPERFETTO_BACKEND_PORT` to use a different backend port. The Web UI uses
+the `/api/workspaces/:workspaceId/*` routes; the matching global paths
+(`/api/agent/v1/*`, `/api/traces/*`, `/api/reports/*`, `/api/v1/providers/*`)
+remain available for local and compatibility use, but every response carries
+`Deprecation: true`, `Sunset: Wed, 30 Jun 2027 00:00:00 GMT`, and a
+`Link: <...>; rel="successor-version"` naming the workspace route. If
 `SMARTPERFETTO_API_KEY` is set, protected APIs require:
 
 ```http
@@ -12,6 +17,159 @@ Authorization: Bearer <token>
 
 `SMARTPERFETTO_API_KEY` is the deployment-operator credential. Enterprise
 users should use durable API keys with explicit roles and scopes.
+
+## Unhandled Errors
+
+Error contracts that an endpoint declares itself (for example
+`{success: false, code, error}`) are unchanged. An exception no route handled,
+which reaches the global fallback, returns only fixed content under every
+`NODE_ENV`:
+
+```json
+{"success": false, "code": "unhandled_error", "error": "Internal Server Error", "requestId": "req-…"}
+```
+
+The HTTP status is the exception's own 4xx/5xx status, otherwise 500. `error`
+is that status's standard name (such as `Bad Request` or `Payload Too Large`,
+or `Request failed` for a status Node has no name for); it never contains the
+exception message or a stack trace, and a malformed JSON body is not quoted
+back. `requestId` is the request's id (see below) and equals the
+`X-Request-Id` response header. The full message and stack go
+only to the server log's `[UnhandledError]` line, correlated by `requestId`;
+the raw request body a body-parse error carries is not logged. There is no
+switch that echoes exception messages.
+
+A request (preflight included) whose `Origin` is not in the `CORS_ORIGINS`
+allow-list is not a server failure: it gets `403`
+`{"success": false, "code": "cors_origin_rejected", "error": "This origin is not allowed to call the SmartPerfetto API", "requestId": "…"}`
+without `Access-Control-Allow-Origin`, and the server logs one warning naming
+the origin. Requests without an `Origin` (curl, server-to-server) are
+unaffected.
+
+## Request IDs
+
+Each request gets exactly one request id when it reaches the backend. Every
+response, including CORS rejections, body-parse failures, 404s and unhandled
+errors, carries it in the `X-Request-Id` header, which CORS exposes to
+browsers. The id is the first of the caller's `X-Request-Id`,
+`X-Correlation-Id` and `X-Amzn-Trace-Id` headers that is non-empty after
+sanitizing (only `A-Z a-z 0-9 . _ : -` are kept, at most 128 characters), else
+a generated `req-<epoch ms>-<random hex>`. The same id is the authenticated
+request context's id, the `requestId` that Agent endpoints return, the
+analysis run's observability id, the Trace Processor proxy's WebSocket upgrade
+id, and the id in server logs. A `requestId` field in the request body is not
+read.
+
+## Route-Level Failures
+
+When an endpoint (including the SQL, Skill, Skill pack and batch trace
+endpoints implemented under `backend/src/controllers/`) catches a downstream
+failure itself (storage, filesystem, trace processor, secret store, export,
+model call), it answers with the same shape:
+
+```json
+{"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
+```
+
+`code` is stable and names the failed operation (`report_export_failed`,
+`provider_operation_failed`, `trace_processor_proxy_failed`, …); branch on it,
+not on `error`. `error` is fixed text that never contains the exception
+message, and `requestId` / `X-Request-Id` follow the rules above. The message
+and stack go only to the server log line of that route, correlated by
+`requestId`.
+
+Errors SmartPerfetto writes for the caller keep their actionable text: the
+same shape, with that text as `error`, the error's own HTTP status, and for a
+few errors (Agent analyze options) structured `details`. In the backend they
+are domain subclasses of `PublicRequestError`, and each route echoes only the
+subclasses it lists; any other exception gets fixed text. A 5xx one (a system
+directory picker that cannot open) still logs its cause. One that escapes to
+the global error handler keeps its status there, with the handler's fixed
+text. For example:
+
+- Provider Manager input (`provider_invalid_request` 400, `provider_not_found`
+  404) and an unreadable providers.json (`provider_store_unreadable` 409),
+  trace list paging (`INVALID_TRACE_LIST_PAGE`), agent log level
+  (`invalid_log_level`), Agent analyze options, RAG search input
+  (`invalid_rag_search_input`), the directory picker (`DIRECTORY_*`), and
+  enterprise workspace administration (`enterprise_admin_invalid_request` 400,
+  `enterprise_admin_forbidden` 403, `enterprise_admin_not_found` 404,
+  `enterprise_admin_conflict` 409).
+- Conversations: `CONVERSATION_NOT_FOUND` 404, `CONVERSATION_QUERY_REQUIRED`
+  400, a changed conversation context (`CONVERSATION_TRACE_CHANGED`,
+  `CONVERSATION_PROVIDER_CHANGED`, `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`,
+  `ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`, or the lowercase
+  `analysis_context_changed_restart_required` when a source or knowledge grant
+  no longer holds at recovery) 409, `RUN_ALREADY_ACTIVE` 409,
+  `CANCELLATION_IN_PROGRESS` 409, and stopping a run that is no longer active
+  `CONVERSATION_RUN_NOT_ACTIVE` 409. The error type decides the status; the
+  message text is no longer matched.
+- URL upload: `INVALID_TRACE_URL` 400, `TRACE_URL_TIMEOUT` 504,
+  `TRACE_URL_REDIRECT_INVALID` 502.
+- Knowledge curation (baselines, cases, memory promotion), enterprise API key
+  creation, a refused OIDC login (`oidc_subject_tenant_conflict` 403), trace
+  config proposals, feedback writes (input validation and a missing or contradictory target 400,
+  supersede/idempotency conflicts 409), codebase and external knowledge source
+  field validation (codebase management uses `CODEBASE_*` codes, including
+  `CODEBASE_METADATA_INVALID` and `PENDING_GENERATION_ID_INVALID`), and batch
+  trace requests (`error` may carry a field name, count or Skill type after
+  `:`, e.g. `invalid_batch_trace_limit:trace_count:2>1`; a Skill colliding with
+  a workspace Skill pack is 409).
+- Skill packs: an invalid manifest, asset or pack Skill definition, or a pack
+  that is not installable 400; an asset that changed
+  since preview, an installed version whose content changed
+  (`installed_pack_content_hash_mismatch`), or a collision with workspace Skills
+  or fragments 409; an unknown pack 404. `error` is the reason code, possibly
+  followed by the pack-relative path, field name or Skill id after `:`.
+  Internal failures such as persistence get fixed text.
+
+The services behind RAG administration throw machine reason codes as their
+messages (`root_outside_allowlist`, `source_chunk_limit_exceeded:5000`). Only
+the codes listed one by one as caller-actionable (source paths, knowledge
+roots, the index lifecycle, consent and right-to-use acknowledgement;
+`CALLER_FACING_RAG_REASONS` in `ragAdminRoutes.ts`) are returned as `code` and
+`error`, without the detail after the first `:` (an id, path, size or excluded
+item count), and the original message is logged at warn level; any unlisted
+code, whatever its prefix (store corruption, staged chunk count mismatches,
+subprocess failures), and messages that are not reason codes get fixed
+text. Self-Evolution keeps its
+`{success: false, error: <code>}` shape and returns the whole lowercase reason
+code (only `a-z 0-9 _ : -`, possibly with an id after `:`); any other
+exception is `self_evolution_request_failed`.
+
+Failure records read later through other endpoints carry no exception text
+either: a comparison run's `error` is `Comparison failed`; a tenant purge job
+(`GET /api/tenant/purge/:jobId`) keeps only the purge-window and
+missing-tombstone texts in `error` and adds `errorCode`
+(`tenant_purge_window_open`, `tenant_tombstone_not_found`,
+`tenant_purge_failed`); a failed report generation sets `reportError` to
+`report generation failed`; and a trace that trace_processor_shell cannot load
+after upload answers `trace_processor_shell could not load the trace`. A trace
+upload `details` field is kept only for explanations we write (a rejected URL,
+a file that is too large) and never carries exception text. In a batch trace
+submitted through the API, a failed trace keeps only its reason code (else
+`batch_trace_failed`, or `batch_skill_failed` when the Skill execution reports
+the failure) in `error` and its diagnostic, while a local CLI batch
+keeps the whole message; each skipped file's `reason` in a codebase reindex
+result keeps only its reason code (else `source_file_unreadable`). In
+enterprise mode an SSO session or API key lookup failure answers 401 with
+fixed text. Records written before this change keep their stored text.
+
+Analysis run failures follow one projection (`projectAnalysisFailure`) on
+every surface the owner reads: the Agent analysis `error` SSE event, the
+`error` of `/status` and of the analyze/run start response, and the
+conversation `run_failed` event and stored run. A runtime or model provider
+that fails (authentication, quota) returns a failed result whose own reason
+reaches the owner through the result. A run that throws keeps the text only of
+a failure SmartPerfetto wrote for the owner (authorization changed, provider
+not found or unreadable, AI disabled, trace processor lease or memory
+admission) or of a bare reason token (`analysis_history_parent_not_authorized`,
+without any detail after `:`). Any other exception (SQLite, the filesystem)
+answers `Analysis did not complete; the server logged the error (request ID:
+<id>).` (Chinese by default), and the cause is logged under that id. A run
+that uses private knowledge (source code, external knowledge sources) passes
+that text through its own output guard, which suppresses it once its session
+was revoked, and logs only the error class.
 
 ## OIDC Authentication
 
@@ -46,7 +204,7 @@ do not share internal workspace IDs or data.
 model-backed analysis is allowed. When `aiPolicy.aiEnabled=false`, trace
 upload/read, SQL, reports, Provider configuration/switching, and deterministic
 Skills remain available; model analysis, resume, scene reconstruction start,
-Provider tests, and LLM Skill steps return `403`:
+and Provider tests return `403`:
 
 ```json
 {
@@ -100,8 +258,12 @@ npm registry, or Docker Hub; clients cannot supply a URL. With
 Upload example:
 
 ```bash
-curl -F "file=@trace.pftrace" http://localhost:3000/api/traces/upload
+curl -F "file=@trace.pftrace" \
+  http://127.0.0.1:3000/api/workspaces/default-workspace/traces/upload
 ```
+
+Every `/api/traces/*` path in the table has the same child path under
+`/api/workspaces/:workspaceId/traces/*`.
 
 The list returns the newest 100 records by default. Use `limit=1..200` and the
 opaque `nextCursor` from the previous response:
@@ -113,6 +275,10 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 Clients must not parse or synthesize cursors. In `/api/traces/stats`,
 `traces.metadataCount` is the total visible persisted trace count for the
 workspace, while `traces.count` is the number active in the current process.
+
+Trace records in responses (upload, failed upload, list, detail, viewer) carry
+no server filesystem path (`path`, `filePath`); a client addresses a trace by
+its `id`.
 
 ## Workspace-scoped APIs
 
@@ -127,11 +293,12 @@ for local and compatibility flows.
 | `/api/workspaces/:workspaceId/agent` | Workspace-scoped agent analysis, SSE, turns, and feedback |
 | `/api/workspaces/:workspaceId/providers` | Workspace-scoped Provider Manager profiles |
 | `/api/workspaces/:workspaceId/analysis-results` | Analysis-result snapshot list, read, and update |
-| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state |
+| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state; a window is identified by (user, windowId), and other users' windows are listed only as pointers to analysis results you can read |
 | `/api/workspaces/:workspaceId/comparisons` | Multi-result comparison create, read, stream, and export |
 | `/api/workspaces/:workspaceId/trace-config` | Side-effect-free trace config proposals |
 | `/api/workspaces/:workspaceId/skill-packs` | Local-directory Skill Pack preview, install, enable/disable, and remove |
 | `/api/workspaces/:workspaceId/batch-traces` | Deterministic Skill batch over workspace trace sets, report export, snapshot promotion, and comparison bridge |
+| `/api/workspaces/:workspaceId/critical-path` | Critical-path wait-chain analysis of a selected `thread_state`; see [Critical-Path Wait Chain](#critical-path-wait-chain) below |
 
 ## Skill Pack API
 
@@ -152,7 +319,7 @@ Skill YAML, SQL fragments, and docs into
 | `DELETE` | `/:packId` | Disable the pack and remove only its managed copy; built-in Skills are untouched |
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/skill-packs/preview \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/skill-packs/preview \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{ "sourcePath": "/absolute/path/to/local-skill-pack" }'
@@ -195,7 +362,7 @@ by `SMARTPERFETTO_BATCH_TRACE_MAX_TRACES`.
 Create example:
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/batch-traces \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/batch-traces \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
@@ -234,7 +401,7 @@ tracebox, and it does not record the device. `proposal.config.textproto` is
 rendered by the same renderer used by `smp capture config`.
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/trace-config/proposals \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/trace-config/proposals \
   -H "Content-Type: application/json" \
   -d '{
     "request": "debug startup first frame jank",
@@ -271,6 +438,7 @@ Base path: `/api/agent/v1`
 |---|---|---|
 | `POST` | `/analyze` | Start analysis |
 | `POST` | `/conversation` | Start or continue a lightweight conversation with optional trace and authorized source context |
+| `GET` | `/conversation/:sessionId` | Read conversation state and the latest 200 history messages |
 | `GET` | `/conversation/:sessionId/stream` | Conversation SSE by `runId`, with `Last-Event-ID` replay |
 | `POST` | `/conversation/:sessionId/cancel` | Cancel the exact conversation run |
 | `GET` | `/conversation/:sessionId/full-handoff` | Read a recommended full-analysis handoff |
@@ -295,29 +463,87 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-detect-quick` | Quick scene detection |
 | `POST` | `/teaching/pipeline` | Rendering pipeline teaching |
 | `GET` | `/sessions` | Session catalog |
-| `GET` | `/logs` | Agent logs, gated by feature flag |
+| `GET` | `/logs` | List agent session logs |
+| `GET` | `/logs/:sessionId` | Read one session's logs, filtered by `level`, `component`, `search`, `limit` |
+| `GET` | `/logs/:sessionId/errors` | Read only that session's error logs |
+| `GET` | `/logs/metrics/summary` | Aggregate session metrics over the last `days` (default 7) |
+| `POST` | `/logs/cleanup` | Delete log files older than `maxAgeDays` (default 7) |
+| `GET` / `PUT` | `/admin/log-level` | Read or set the process log level; `PUT {level: null}` restores the `LOG_LEVEL` default |
 
 The workspace-scoped agent base is `/api/workspaces/:workspaceId/agent`, with
-the same child paths as the table above. `/api/agent/v1` still exists and is
-tracked by legacy telemetry with a migration target.
+the same child paths as the table above. `/api/agent/v1` still exists; its
+responses carry the `Deprecation` / `Sunset` / `Link` headers described above
+and are counted by legacy telemetry.
+
+`/logs*` is gated by `FEATURE_AGENT_LOGS_API` (on by default) and answers 503
+`FEATURE_DISABLED` when it is off; only callers with the `org_admin` role or the
+`*` scope can read it, everyone else gets 404. Reading and setting `/admin/log-level`
+require the `runtime:manage` permission (the level is process-wide); without
+it the route answers 403.
 
 ### Lightweight Conversation
 
-All four `/conversation` endpoints require `agent:run` and revalidate tenant,
+All five `/conversation` endpoints require `agent:run` and revalidate tenant,
 workspace, and user ownership on every request. `POST /conversation` returns a
-`sessionId` and exact `runId`. A new turn in the same session cancels the older
-run before reserving the new run. Without `traceId`, the runtime exposes no
+`sessionId` and exact `runId`. A new turn in the same session stops the older
+run before reserving the new run, waiting at most one review-stop watchdog
+bound (see below) for it to commit. Without `traceId`, the runtime exposes no
 trace tools. Codebase and knowledge-source selections still use the same
 permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
 replay or durable persistence.
 
-`run_completed` means the primary answer is ready for immediate display and
-contains `enrichmentPending`. When it is `false`, the stream closes. When it is
-`true`, the stream continues with `source_enrichment_started` and closes after
-`source_enrichment_completed`, `source_enrichment_failed`, or
-`source_enrichment_cancelled`. A source terminal event never changes the
-primary run's completed status. Primary failures still end with `run_failed`.
+`GET /conversation/:sessionId` returns `status`, `traceContext`, the latest 200
+`history` messages (older ones counted in `historyOmittedMessages`, those hidden
+because their source authorization is unavailable in
+`historyUnavailableMessages`), `recoveryStatus`, the in-progress run's
+`activeRunId`, and, when the latest turn's sources are readable,
+`pendingQuestion`, `recommendedFullAnalysis`, and `fullHandoff`. Source-derived
+messages pass the owner credential filter before they are returned.
+
+When the semantic review is dispatched, the stream first sends one
+`provisional_answer` (`message` is the owner-projected final body,
+`verification: "pending"`): the text is final and readable, but its verdict does
+not exist yet. Clients keep the run active, write no history, and let
+`run_completed` complete the same message with the verdict. The first cancel
+after the answer appeared stops only the review and answers at once with
+`{success: true, sessionId, runId, status: "review_stop_requested"}`; the run
+then commits its turn with the `cancelled_by_user` not-checked reason and the
+stream carries it as `run_completed`, so history matches what the user read. A
+second cancel is a force stop: it waits for that commit up to the same
+watchdog and then answers with the settled outcome kind (`status: "answered"`,
+…, or `"cancelled"`). A cancel before the answer appeared is the full cancel
+and answers `status: "cancelled"`; nothing but the cancelled marker is stored.
+The watchdog (`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`, default 15000, never below
+10000) starts only at such a stop. If the run has not committed when it
+elapses, the body the user read is stored as a partial turn
+(`completion.status: incomplete`, `terminationReason: "review_not_finished"`,
+claim verification `not_checked`) with the run's own source partition, and the
+run is aborted. Private-knowledge runs, runs whose authorization was revoked
+and runs that lost their session keep that body live-only and are cancelled.
+History readers and the preview present such a turn as incomplete. Each run
+has one terminal write: the descriptor and its turn commit in one SQLite
+transaction that refuses a turn already terminal.
+A review is sent only when `✓` is still reachable or an obligation needs it
+(see `/analyze` below). When none is required there is no `provisional_answer` and no review
+progress; the answer arrives with `run_completed`.
+
+When the runtime declares the `draftAnswerStreaming` capability (currently
+Claude and OpenAI), the answer the model is writing before finalization streams
+live as `runtime_update`: `update.type` is `answer_token` (`content` is
+`{token, runId, attempt}`, sidecar-free, owner-projected, coalesced at about
+200 ms / 256 characters) or `answer_segment_reset` (`{runId, attempt}`, which
+revokes the draft shown so far, for example because the model then called a
+tool, continued or retried). The draft is display-only: clients drop events of
+an older `attempt`, `provisional_answer` or `run_completed` replaces it on the
+same message, and a stop turns it into the cancelled notice. It never enters the
+replay buffer, history or any persistence, so a reconnect does not replay it.
+Other runtimes send no draft. The loading label comes only from `progress`
+runtime updates.
+
+`run_completed` means the run has ended and its answer is ready for immediate
+display; the stream closes after it. It carries the `outcome`. A failed run
+ends with `run_failed`.
 Reconnecting clients can send `Last-Event-ID` or the `lastEventId` query parameter; replay uses
 monotonic event ids for deduplication. `full-handoff` succeeds only after a
 `recommend_full` outcome; otherwise it returns
@@ -356,7 +582,7 @@ for the user and privacy contract.
 Start analysis:
 
 ```bash
-curl -X POST http://localhost:3000/api/agent/v1/analyze \
+curl -X POST http://127.0.0.1:3000/api/agent/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "traceId": "trace-id",
@@ -370,14 +596,14 @@ curl -X POST http://localhost:3000/api/agent/v1/analyze \
 The response returns `sessionId`. Then subscribe:
 
 ```bash
-curl -N http://localhost:3000/api/agent/v1/<sessionId>/stream
+curl -N http://127.0.0.1:3000/api/agent/v1/<sessionId>/stream
 ```
 
 Cancellation must include the exact `runId` returned by `/analyze`. A missing,
 unknown, or no-longer-active run cannot trigger a session-level runtime abort:
 
 ```bash
-curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
+curl -X POST http://127.0.0.1:3000/api/agent/v1/<sessionId>/cancel \
   -H "Content-Type: application/json" \
   -d '{"runId":"<runId>"}'
 ```
@@ -387,17 +613,115 @@ new run in the same session receives `409 CANCELLATION_IN_PROGRESS` until the
 cancelled runtime exits, preventing old-run cleanup or continuity state from
 affecting the replacement run.
 
+Deliver first, verify after: when the semantic review is dispatched the stream
+sends one `conclusion` whose `data` is
+`{conclusion, provisional: true, verification: "pending"}`. Its body equals the
+later `analysis_completed` body (the review cannot rewrite it; the terminal
+result may only append completeness notices), but the verdict and terminal
+markers such as `!`/`~` come only from `analysis_completed`. Clients keep the
+run active (loading, stop control, session lock) and replace the same message
+when `analysis_completed` arrives; on `error`, `analysis_cancelled`, or a lost
+stream before that, they keep the text and mark it unverified. The runtime's own
+`conclusion` is not forwarded. For private-knowledge
+sessions the event stays in the in-memory replay buffer and is never written to
+the durable event store. Scene runs do not send it.
+
+Answer draft: for a runtime with the `draftAnswerStreaming` capability
+(currently Claude and OpenAI) the stream sends display-only `answer_token`
+events before finalization (`data` is `{token, runId, attempt}`, sidecar-free,
+owner-projected, coalesced at about 200 ms / 256 characters) and
+`answer_segment_reset` (`{runId, attempt}`), which revokes the draft shown so
+far: at a model response start, at a tool call after text in the same response,
+and before any continuation or retry. Clients drop events of an older `attempt`
+or another run and clear the draft on a reset; a provisional or final
+`conclusion` replaces it on the same message, and a stop, error or lost stream
+discards it (a stop shows the cancelled notice). The draft is never written to
+browser storage. For every session draft events carry no SSE `id`, never enter
+the in-memory replay buffer or the durable event store, and are not replayed on
+reconnect. In a session with registered source or knowledge, drafts reach
+only the owner and pass the owner projection, which holds text until a
+credential split across tokens or lines is complete. The first time that
+projection has to redact or drop anything, the run's draft is revoked with an
+`answer_segment_reset` and no further draft follows; the projected body arrives
+at finalization. Other runtimes send no draft.
+
+The review is sent only when `✓` is still reachable or an obligation needs it:
+a report deliverable, a selection, source access or source fields in the
+declaration, a resolved investigation requirement the evidence ledger does not
+rule out, at least one declared claim for which a hypothetical perfect review
+would yield `passed` (`✓` is still reachable), or a zero-claim pure
+acknowledgement. Every other answer (no declaration, a zero-claim factual
+answer, claims no finite proof can establish) gets no review: claim
+verification is `partial` with the not-checked reason `not_required`, and the
+terminal marker is `~`, never `✓`. This skip is an accepted residual: a
+contradiction only the review would find is then not detected (the answer
+stays `~` instead of `!`); a deterministic `unsupported` from finite proof still
+yields `!`. The stream then sends no provisional
+`conclusion` and no review progress; right after finalization, before report and
+snapshot generation, it sends one plain `conclusion` whose `data` holds only
+`conclusion` (no `provisional`/`verification`), and the verdict still arrives
+only with `analysis_completed`. Clients show it at once as the final answer (no
+pending cue) but keep the run active until `analysis_completed` as well.
+Private-knowledge sessions keep it in the in-memory replay buffer as well. An ineligible declaration sends no review
+either and keeps the not-checked reason `invalid_declarations`.
+
+After that `conclusion`, a cancel for the same `runId` stops only the review:
+it returns `200` with the non-terminal `status: "review_stop_requested"` and
+`runStatus: "running"`; the run still completes with the review recorded as
+`not_checked` / `cancelled_by_user` (`~` for answers, `!` for report
+deliverables through `report_assessment_not_checked`), then publishes
+`analysis_completed` and persists as usual. Stop-and-redirect waits for that
+`analysis_completed` before sending the next question. The first cancel after the
+provisional answer is review-only even when the review already finished (then a
+no-op); a second cancel for the same `runId` is a force stop and takes the full
+cancellation (`analysis_cancelled`) only after waiting, up to the review-stop
+watchdog started by the first cancel, for the run to commit. If it committed in
+that window the force stop answers `200` with `status: "completed"`,
+`outcome: "committed"`; if it did not, a non-private run whose authorization
+still holds keeps the body the user read as an unverified partial turn
+(`terminationReason: "review_not_finished"`, published with
+`analysis_completed` and its report) and the cancel answers `200` with
+`status: "completed"`, `outcome: "review_not_finished"`; otherwise the run is
+fully cancelled. In both `completed` cases `analysis_completed` carries the
+turn. The watchdog also applies when no second cancel
+arrives.
+
 The terminal `analysis_completed` event can include `analysisReceipt`,
 `uiActionProposals`, and safely projected
-`conclusionContract.sourceUseDecision` / `sourceClaimBindings`.
-`sourceUseDecision` distinguishes selected, queried, and used codebases plus
-status/reason code and search coverage. `sourceClaimBindings` uses
-`corroborated|compatible|ambiguous|unverified` to bind an implementation
-mechanism to same-claim Trace evidence. A `CodeRef` explains mechanism and
-cannot raise occurrence or root-cause confidence alone. `metadata_only` is
-locate-only and cannot become `corroborated` merely by locating a file. The
+`conclusionContract.sourceUseDecision` / `sourceClaimBindings` with
+`sourceClaimVerificationResult`. `sourceUseDecision` distinguishes selected,
+queried, and used codebases plus status/reason code and search coverage.
+`sourceClaimBindings` links a claim to this run's source references and
+same-claim Trace evidence. `sourceClaimVerificationResult`
+(`source_claim_verifier@2`) reports `claims[].status` as
+`invalid|unbound|location_only|source_only|trace_linked` and `citations[]`, the
+source locations written in the body matched against this run's references
+(`verified_body|located|unmatched|ambiguous`); historical results may still be
+`@1` with `mechanismStatus`. A `CodeRef` explains mechanism and cannot raise
+occurrence or root-cause confidence alone; `metadata_only` is locate-only. The
 projection contains no absolute root, snippet, search query, or model-authored
 free-text binding reason.
+
+A run that selected knowledge bases also carries `knowledgeUse`
+(`knowledge_use@1`; absent means not recorded, never zero use): `sources[]`
+lists each base that delivered content (`knowledgeBaseId`, `kind`, the pinned
+index `generation`, distinct `deliveredReferenceCount`), and `citations[]`
+grades each `kb:path#Lx-Ly` written in the answer as `delivered` (its text was
+delivered), `located` (only its location), `unmatched` or `ambiguous`. It is
+background, never trace evidence, and no verdict reads it; strict projections
+keep the sources and drop the citations. The receipt may carry
+`nonEvidenceContext.knowledgeReferenceCount`; older receipts lack it.
+
+An index rebuild no longer revokes a session or run: the authorization
+fingerprint (format `acf2:`) covers consent, selection, lifecycle and deletion
+only. Index tools check the generation their run pinned and refuse a rebuilt
+index with `codebase_index_generation_changed` (`action_required:
+use_search_codebase`), `knowledge_index_generation_changed` for the Android
+Internals Wiki, or `knowledge_index_unavailable` once a document collection's
+pinned generation is gone or incomplete; an index whose stored data was lost
+under an unchanged registry refuses the same way. Sessions, conversations and history recorded before
+`acf2` do not match: a session starts fresh once, a conversation cannot be
+recovered, and earlier source-derived history no longer enters the model context.
 
 `uiActionProposals` only
 contains safe UI proposals derived from DataEnvelope evidence and column click
@@ -433,6 +757,8 @@ Supported `selectionContext` values contain identity and time bounds only:
 Names, thread/process labels, depth, or child counts sent by older clients are
 stripped during request normalization and do not enter runtime prompts or
 evidence state.
+
+With a codebase selected, `options.sourceDepth` may be `auto` (default), `locate`, or `mechanism`. It only sizes the run's source budget and grants no access: `locate` finds code, `mechanism` allows reading enough code to explain a mechanism, and `auto` follows the turn intent's source need (locating or no source → `locate`, explaining an implementation → `mechanism`), or the budget when the intent did not say (full → `mechanism`, quick → `locate`); `metadata_only` is capped at `locate`. The effective depth and how it was decided are recorded in `sourceUseDecision.depth`. The limits live in `backend/strategies/source-depth-policy.yaml`; an invalid value returns `SOURCE_DEPTH_INVALID`. In a lightweight conversation (`/conversation`), a `sourceDepth` given in one turn carries over to later turns and survives conversation recovery.
 
 Dual-trace comparison requires `referenceTraceId`, and it must be different from `traceId`. `traceId` is the baseline and `referenceTraceId` is the comparison; either may be a workspace-history trace.
 
@@ -482,7 +808,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-reconstruct` | Start scene reconstruction |
 | `GET` | `/scene-reconstruct/:analysisId/stream` | Subscribe to scene reconstruction SSE |
 | `GET` | `/scene-reconstruct/:analysisId/tracks` | Fetch tracks |
-| `GET` | `/scene-reconstruct/:analysisId/status` | Poll status |
+| `GET` | `/scene-reconstruct/:analysisId/status` | Poll status; `result.narrative` is the same owner-projected body as `conclusion` from `/:sessionId/status` (scene-replay-only queries get the scene replay summary instead), and `error` is projected the same way |
 | `POST` | `/scene-reconstruct/:analysisId/deep-dive` | Deep-dive one scene |
 | `POST` | `/scene-reconstruct/:analysisId/cancel` | Cancel |
 | `DELETE` | `/scene-reconstruct/:analysisId` | Delete |
@@ -502,18 +828,51 @@ Base path: `/api/skills`
 | `POST` | `/detect-intent` | Intent detection |
 | `POST` | `/detect-vendor` | Vendor detection |
 
+`POST /detect-vendor` (body `{traceId}`) resolves the device identity from the
+trace `metadata`, never from slice names, and caches the result per trace
+identity. The response uses schema `trace_vendor@1`:
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `trace_vendor@1` |
+| `vendor` | `pixel`, `xiaomi`, `oppo`, `vivo`, `honor`, `huawei`, `samsung`, `aosp`, `other`, `unknown` |
+| `brand` | Only when `vendor` is `other`: the normalized brand (for example `nubia`) |
+| `confidence` | Number: high 0.9, medium 0.7, low 0.4; 0 when `vendor` is `unknown` or the query failed |
+| `vendorConfidence` | `high`, `medium`, `low` |
+| `soc` | `qualcomm`, `mtk`, `google_tensor`, `samsung_exynos`, `unknown` |
+| `os` | `android`, `harmonyos`, `unknown` |
+| `source` | `metadata_manufacturer`, `metadata_fingerprint`, `soc_model`, `trace_os`, `none`, `query_failed` |
+| `evidence` | The manufacturer, fingerprint brand, SoC model and SDK used, plus conflict flags (`manufacturerBrandMismatch`, `osConflict`; for conflicting device identities, `scopeConflict` with each scope's `scopeIdentities`) |
+
+Contract change: `aosp` now means an AOSP or generic build only. A trace with
+no identity returns `unknown` (earlier versions returned `aosp`), and a failed
+query returns `unknown` with `source: query_failed`. `harmonyos` is no longer a
+`vendor` value; it appears only in `os`, and only when format detection says
+HarmonyOS and no scope of the trace carries Android identity.
+`POST /execute/:skillId` and `POST /analyze` include `vendor` only when an OEM
+was identified (`vendor` is not `aosp`, `unknown` or `other`).
+
 Admin path: `/api/admin`
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/skills` | Admin Skill list |
-| `POST` | `/skills` | Create a Skill |
-| `PUT` | `/skills/:skillId` | Update a Skill |
-| `DELETE` | `/skills/:skillId` | Delete a Skill |
-| `POST` | `/skills/validate` | Validate a Skill |
-| `POST` | `/skills/reload` | Reload Skills |
-| `POST` | `/strategies/reload` | Reload strategies |
-| `GET` | `/self-improve/metrics` | Self-improvement metrics |
+| Method | Path | RBAC | Purpose |
+|---|---|---|---|
+| `GET` | `/skills` | `agent:run` | Admin Skill list (metadata only) |
+| `GET` | `/skills/:skillId` | `runtime:manage` | Skill definition and raw YAML; `filePath` is relative to the Skills root (`composite/<id>.skill.yaml`) |
+| `POST` | `/skills` | `runtime:manage` | Create a custom Skill (disabled in enterprise mode) |
+| `PUT` | `/skills/:skillId` | `runtime:manage` | Update a custom Skill (disabled in enterprise mode) |
+| `DELETE` | `/skills/:skillId` | `runtime:manage` | Delete a custom Skill (disabled in enterprise mode) |
+| `POST` | `/skills/validate` | `runtime:manage` | Validate Skill YAML without saving |
+| `POST` | `/skills/reload` | `runtime:manage` | Reload the process-wide Skill registry |
+| `GET` | `/vendors` | `agent:run` | Vendor ids and the Skills they override |
+| `GET` | `/vendors/:vendor/overrides` | `runtime:manage` | Vendor overrides with raw YAML |
+| `POST` | `/strategies/reload` | `runtime:manage` | Reload strategies |
+| `GET` | `/self-improve/metrics` | `audit:read` | Self-improvement metrics |
+
+The built-in Skill catalog is the agent's own tool catalog, so whoever may run
+the agent may list it; raw Skill content, server-side validation, reloads and
+writes manage the runtime's analysis content. A missing permission is `403`
+with `{success: false, error: 'Forbidden', details}`. Keyless local mode and
+the operator API key hold every permission.
 
 ## Self-Evolution Admin API
 
@@ -537,7 +896,7 @@ Proposals, operations, overlays, and reconciliation results are isolated by
 | `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | Apply an accepted proposal; body requires a unique `actionId` |
 | `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | Revert an applied proposal; body requires a unique `actionId` |
 | `GET` | `/overlays` | `self_evolution:read` | Overlay registry entries for the current workspace |
-| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report |
+| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report; an issue `message` is an error code or the fixed text for its `reasonCode`, and `contentHash` names the stored report |
 
 The control plane is off by default. `SELF_EVOLUTION_ENABLED=true` is required
 for curation/gate/accept/reject/export. Apply/revert additionally require
@@ -590,26 +949,27 @@ Base path: `/api/rag`
 | `GET` | `/stats` | RAG store stats |
 | `GET` | `/chunks/:chunkId` | Read one chunk |
 | `DELETE` | `/chunks/:chunkId` | Delete one chunk |
-| `POST` | `/search` | Search code or knowledge chunks |
-| `POST` | `/android-internals/preview` | Preview the allowed Wiki article inventory without prose |
-| `GET` | `/android-internals/sources` | List external Wiki registrations in the current scope |
-| `POST` | `/android-internals/sources` | Register a Wiki with separate rights and provider consent |
-| `POST` | `/android-internals/sources/:id/reindex` | Stage and atomically activate an index generation |
-| `GET` | `/android-internals/sources/:id/audit` | Return one metadata-only Skill disposition per article |
-| `PATCH` | `/android-internals/sources/:id/consent` | Explicitly grant or revoke provider-send consent |
-| `DELETE` | `/android-internals/sources/:id/index` | Deactivate and clear every chunk for the source |
-| `GET` | `/codebases` | List registered codebases |
+| `POST` | `/search` | Search the RAG store: public corpus chunks, or the indexed chunks of the codebases the request's `codebaseIds` names (a codebase chunk carries `snippetHash`/`snippetLength`, never its text); document knowledge bases are not searched here, use `/knowledge/:sourceId/search` |
+| `*` | `/android-internals/*` | Removed; answers 410 (`migration.fallback` is `/api/rag/knowledge`). Use `/knowledge/*` below. Sources registered through the legacy Wiki connector are still listed by `GET /knowledge` (`kind: android_internals_wiki`, retired, not selectable) and can be removed with `DELETE /knowledge/:sourceId` |
+| `GET` | `/knowledge` | List every external knowledge source in the current scope (with `kind`, `description`, `documentCount`, `hasActiveIndex`, `retired`), never its root path; a `retired: true` legacy Wiki record can only have its consent revoked or be deleted, and granting consent answers 409 `KNOWLEDGE_SOURCE_RETIRED` |
+| `POST` | `/knowledge/preview` | Preview a document collection (`rootPath`, optional `directorySelectionId`): indexable documents, section/chunk counts and skips by reason; zero documents answers 400 `KNOWLEDGE_COLLECTION_EMPTY` |
+| `POST` | `/knowledge/register` | Register a document collection (`rootPath`, `rightsAcknowledged: true`, optional `directorySelectionId`, `displayName`, `description` of at most 280 characters, `attribution`, `license`, `sendToProvider`); an omitted `sendToProvider` keeps the recorded consent |
+| `PATCH` | `/knowledge/:sourceId/consent` | `{sendToProvider: boolean}` explicitly grants or revokes the source's provider-send consent; answers with the `/knowledge` list projection |
+| `POST` | `/knowledge/:sourceId/reindex` | Build the local SQLite FTS index in batches and atomically activate the new generation; needs the rights acknowledgement, not provider-send consent |
+| `POST` | `/knowledge/:sourceId/search` | Owner test search `{query, topK?}`: titles, relative paths, heading paths, line ranges and snippets |
+| `DELETE` | `/knowledge/:sourceId` | Write a tombstone that revokes access at once, then delete the index files (chunks for a Wiki) and the registration; a failure can be retried |
+| `GET` | `/codebases` | List registered codebases; an unavailable `rootAvailable` carries a fixed `unavailableReason`; with `contentDisclosure` |
 | `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
-| `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization |
+| `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization; optional `purpose: "codebase" \| "knowledge"` only sets the dialog title, codebases and knowledge bases share one kind of selection |
 | `POST` | `/codebases/preview` | Preview source files and enumeration coverage with the same selection policy used by indexing |
-| `POST` | `/codebases/register` | Register a local codebase |
-| `GET` | `/codebases/:id` | Codebase detail |
+| `POST` | `/codebases/register` | Register a local codebase; it grants no provider-send consent: `sendToProvider: true` answers 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, registering nothing and leaving a directory selection unused; grant afterwards with the returned `contentDisclosure` through `PATCH /codebases/:id/consent` (`authorizeContent`) |
+| `GET` | `/codebases/:id` | Codebase detail (including `rootAvailable` / `unavailableReason`, `contentDisclosure`) |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
-| `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
 | `POST` | `/codebases/:id/reindex` | Reindex; the request body retains a bounded `pathPrefix` compatibility input, while CLI `reindex` has no such option |
 | `GET` | `/codebases/:id/audit` | Index audit |
-| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: set `sendToProvider`, authorize new languages with `authorizeAvailableExtensions: true`, or authorize the current path scope with `authorizeCurrentSelection: true` |
-| `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs, immediately revoke the old active generation, and require reindexing |
+| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: `authorizeContent: true` with `contentDisclosureToken` grants the disclosed current scope and every language at once (recommended); revoke with `sendToProvider: false` (`true` answers 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED` and changes nothing: it would revive the previous grant's old scope and languages without a disclosure); authorize only new languages with `authorizeAvailableExtensions: true`; or authorize only the current path scope with `authorizeCurrentSelection: true` |
+| `POST` | `/codebases/:id/selection/preview` | Without saving, enumerate the files new include prefixes / exclude globs would admit, exactly as a save enumerates them (`complete` / `partial` / `unavailable`); relative paths only |
+| `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs; the save enumerates again and a complete enumeration with no match is `400 CODEBASE_SELECTION_EMPTY_MATCH`; an optional `expectedSelectionPolicyRevision` is a CAS (`409 CODEBASE_SELECTION_STALE`) |
 | `POST` | `/codebases/:id/pending/accept` | Echo `candidateGenerationId`, `selectionPolicyRevision`, and `grantRevision` to explicitly accept a truncated candidate generation with CAS |
 | `POST` | `/codebases/:id/pending/reject` | Echo `candidateGenerationId` to reject a candidate generation with CAS and remove its staged chunks |
 | `DELETE` | `/codebases/:id` | Retire the registration and remove every staged, active, and superseded generation in the current scope |
@@ -624,16 +984,68 @@ consent grant admit its relative path. A successful AOSP/OEM preview preserves
 enumeration when optional manifest metadata is unavailable and reports
 `manifestUnavailableReason`; `codebase_root_realpath_drift` still blocks. Codebase
 summaries expose `providerGrantScopeCurrent` to show whether the current path
-filters/exclude globs match the frozen grant. Any selection change sets
-`reindexRequired=selection_scope_changed`; the legacy
-`selection_scope_narrowed` value remains readable. Extensions added by a later version are
-reported as `availableNotConsentedExtensions` until the consent endpoint is
-called explicitly with `authorizeAvailableExtensions: true`. That operation
-requires existing provider-send consent and never turns source-text sending on
-for the user. With an active index it sets `reindexRequired` to
-`provider_language_scope_expanded`. Selection changes also never expand consent
-automatically; `authorizeCurrentSelection: true` copies only the current include
-prefixes and exclude globs into the grant and preserves language consent.
+filters/exclude globs match the frozen grant.
+
+Any selection change advances `indexGeneration`, so an index build started
+under the old scope (a first build included) cannot activate; only a codebase
+that had an active generation gets `reindexRequired=selection_scope_changed`,
+and one never indexed no longer shows it. The legacy `selection_scope_narrowed`
+value remains readable.
+
+A provider-send grant covers exactly the scope it was given for and must match
+the current selection; there is no partial grant. On a selection change, a new
+scope provably inside the grant (every new include prefix under a granted one or
+a whole-root grant, no noise directory the grant left out, every granted
+exclusion still excluded) narrows the grant with it (`grantRevision`
+increments); anything else, including a change that cannot be proven narrower,
+revokes provider-send consent until it is granted again. Languages are not part
+of a path selection, so the grant keeps its languages.
+
+`authorizeContent: true` is the one combined consent action: it turns
+provider-send on and sets the grant to the current include prefixes/exclude
+globs and every language of the kind. List and detail return
+`contentDisclosure: {token, includePrefixes, excludeGlobs, extensions}`: the
+three lists are exactly what `authorizeContent` writes into the grant, the
+canonical scope and every language of the kind (not only the new languages in
+`availableNotConsentedExtensions`), and `token` binds the selection revision and
+a digest of the three lists. The request must carry the disclosed `token` in
+the request-body field `contentDisclosureToken`: without it the answer is
+`400 CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, and after a selection edit or a
+language a newer version adds it is `409 CODEBASE_CONSENT_DISCLOSURE_STALE`
+with the grant unchanged. Show the lists of one response
+and submit that response's `token`; after a 409 stale, read again, show again
+and let the user confirm again rather than retrying with a fresh token. Repeating it
+while the grant already says exactly that changes neither the consent hash nor
+`grantRevision`, so it never interrupts a session; repeating
+`sendToProvider: false` on revoked consent, or `authorizeAvailableExtensions` on a grant that already
+covers every language, is idempotent too. The two narrow actions keep their own boundaries and
+preconditions and are never widened into the combined one: extensions added by
+a later version are reported as `availableNotConsentedExtensions` until
+`authorizeAvailableExtensions: true` adds only them, and
+`authorizeCurrentSelection: true` copies only the current path scope and keeps
+the grant's languages. Both require existing provider-send consent and never
+turn source-text sending on. With an active index a language expansion sets
+`reindexRequired` to `provider_language_scope_expanded`.
+
+`selection/preview` shares the save's enumeration: a `complete` count is exact
+(a complete zero proves the selection empty); a `partial` count is a lower bound
+from a traversal that stopped early; `unavailable` carries `unavailableReason`
+(a root reason or `enumeration_failed`). Only a complete zero refuses a save.
+
+`rootAvailable` and `unavailableReason` come from one root check that answers
+the first failing reason in a fixed order: `deleting`, `root_missing`,
+`root_identity_changed`, `root_not_directory`, `outside_allowlist`,
+`unreadable`. The analysis start gate, a run's capabilities and every on-demand
+read use the same check. Starting an analysis (`/analyze`, `/sessions/:id/runs`,
+conversations) with a selected codebase that fails it answers 409 with
+`codebases: [{codebaseId, reason}]`, one fixed reason per failing codebase, root
+reasons before mode reasons: `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE` when any
+root fails, otherwise `ANALYSIS_CONTEXT_CODEBASE_NOT_CONSENTED`
+(`consent_required`) or `ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`
+(`consent_scope_stale`, a `provider_send` grant that no longer matches the
+selection). Missing codebases stay 404 and missing `codebase:read` stays 403. An
+on-demand source call against a stale grant is refused with
+`provider_grant_scope_stale`.
 
 `register` still accepts `commitHash` as registration compatibility metadata
 for legacy callers, but it is not authoritative index provenance. Every
@@ -669,9 +1081,12 @@ loopback listeners receiving a loopback request. Picker, preview, and register
 mutations also require a loopback Origin. A successful selection returns
 a `directorySelectionId` valid for five minutes. Send it with the same
 `rootPath` to `/codebases/preview` and `/codebases/register`. Preview does not
-consume it. Register holds it exclusively while synchronously persisting the
-registration, consumes it after success, and keeps the original expiry for a
-retry if persistence fails. The
+consume it. Register holds it exclusively for the whole registration (the root
+check, the source enumeration and the registry write), consumes it after
+success, and gives it back for a retry when the registration fails (a complete
+enumeration that matched nothing included) unless it expired meanwhile; a
+concurrent replay of the same `directorySelectionId` answers
+`400 DIRECTORY_SELECTION_NOT_FOUND`. The
 credential is bound to tenant/workspace/user and cannot authorize another
 path. Docker, remote, or headless environments must use manual paths and
 `SMARTPERFETTO_CODEBASE_ROOTS`. The backend retains the authorization source
@@ -680,12 +1095,29 @@ for later reindex and deletion, but safe responses from `GET /codebases`,
 `rootAuthorization`, absolute paths, nor raw operational errors. Deleting the
 codebase revokes the persistent directory authorization.
 
-See [Android Internals External Knowledge](../getting-started/android-internals-knowledge.en.md)
-for path allowlisting, the CC rights acknowledgement, revocable consent,
-request-scoped `options.knowledgeSourceIds`, and Docker mounts. Private Wiki
-chunks are completely absent from ordinary `/chunks/:id` and `/search` reads;
-only the dedicated source/audit management endpoints return prose-free metadata
-inside the current scope.
+Document knowledge bases use the same selection: send `directorySelectionId`
+with the same `rootPath` to `/knowledge/preview` and `/knowledge/register`
+(loopback Host, socket and Origin only, otherwise
+`403 DIRECTORY_PICKER_UNAVAILABLE`); preview does not consume it, and register
+holds it for the whole registration (the asynchronous preview and the registry
+write), consumes it after success and gives it back on failure under the same
+expiry rule. The registered source records
+the `native_picker` channel in its own owner-scoped record (no shared
+configuration is written), and only that source's own root is exempt from
+`SMARTPERFETTO_KNOWLEDGE_ROOTS` on its later reindexes; every read still checks
+the directory's identity, permissions and link boundaries, and deleting the
+source revokes it. A request with only `rootPath`, including the same user
+registering the same folder again, is admitted by `SMARTPERFETTO_KNOWLEDGE_ROOTS`
+alone and never inherits a picker authorization; such a re-registration
+replaces the recorded channel with the configured allowlist. Knowledge
+responses and errors never return an absolute path or `rootAuthorization`.
+When reading the chosen folder fails (an unreadable subdirectory, a directory
+removed meanwhile), these knowledge routes and the codebase
+preview/register/reindex routes answer a fixed code with the `requestId`, and
+the server log keeps the errno, syscall and source stack frames, never a path.
+
+The Android Internals Wiki joins as a document knowledge base; see
+[Using The Android Internals Wiki As A Knowledge Base](../getting-started/android-internals-knowledge.en.md).
 
 See [Private Analysis Context Architecture](../architecture/private-analysis-context.en.md)
 for the source/RAG request matrix, authorization fingerprint, and private-output
@@ -702,6 +1134,45 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId/report/export` | Export comparison report |
 | `GET` | `/:comparisonId` | Get comparison |
 | `GET` | `/:comparisonId/stream` | Subscribe to comparison stream |
+
+A Skill result row may declare the definition of a metric column with a
+`<column>_definition` string on the same row; the snapshot stores it as the
+metric's `source.metricDefinition`. When two snapshots declare different
+definitions for the same metric (including one side undeclared), the comparison
+computes no delta (`deltaValue: null`, `assessment: "unknown"`) and names both
+definitions in `matrix.warnings` and the conclusion `uncertainty`. Undeclared
+historical metrics keep comparing as before.
+
+`cpu.big_core_pct` has a producer contract
+(`backend/src/services/comparisonMetricProducerContract.ts`) instead of taking the
+first `big_core_pct` column:
+
+- Definition `main_thread_running:core_tier_group:prime+big+medium@3`: the
+  big-group (prime/big/medium) share of **one** main thread's Running time in the
+  selected event window, with no time on unclassified cores. It describes the one
+  selected startup or slow input event, not an aggregate over the analysis.
+- Admitted sources, by envelope top-level `skillId` + display `stepId`:
+  `cpu_core_analysis` of `startup_detail` and `click_response_detail`, and the
+  `cpu_core_analysis` section of the iterator items of
+  `startup_analysis.analyze_startups` and
+  `click_response_analysis.analyze_slow_events` (`source.section` and
+  `source.itemIndex` record which item). Same-named columns of other Skills,
+  `type: skill` nested steps, raw SQL, frontend pre-queried data and
+  reference-trace envelopes are never candidates.
+- The first candidate unit that returned rows decides: exactly one row, its
+  `big_core_pct_definition` equal to the definition above, `main_thread_count = 1`,
+  and an unrounded numeric `unknown_core_ns = 0`. Otherwise the snapshot stores the
+  metric with `value: null` and `missingReason: "producer_contract:<reason>"`
+  (`ambiguous_population`, `definition_mismatch`, `unknown_core_time`,
+  `unknown_core_time_unverified`, `value_unavailable`) and never takes a later
+  thread, event or envelope instead; the comparison lists it as missing with that
+  reason.
+- A delta is computed only when both values were declared under the current
+  definition by admitted producers. History is classified by provenance and never
+  diffed; the warning names the class: `legacy_admitted_producer` (an admitted
+  producer's earlier value, unknown-core time never checked), `outside_contract`
+  (any other Skill step, including `cpu_profiling`'s earlier `@2` declaration), or
+  `non_skill_source`.
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
@@ -743,16 +1214,25 @@ should prefer the `/api/workspaces/:workspaceId/*` paths above:
 - `/api/reports/*`; prefer `/api/workspaces/:workspaceId/reports/*`
 - `/api/agent/v1/*`; workspace products should prefer `/api/workspaces/:workspaceId/agent/*`
 - `/api/v1/providers/*`; prefer `/api/workspaces/:workspaceId/providers/*`
-- `/api/perfetto-sql/*`
-- `/api/template-analysis/*`
 
 Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
 `/api/baselines/*`, `/api/memory/*`, `/api/cases/*`, `/api/ci/*`, `/api/tp/*`,
 `/api/auth/*`, `/api/tenant/*`, and `/api/admin/runtime/*`. These are scoped to
 specific product or admin surfaces; confirm the relevant feature/auth state
-before integrating against them.
+before integrating against them. Reading `/api/cases/*` needs a login; creating,
+deleting, publishing and archiving cases and adding or removing edges need
+`self_evolution:curate`, and the curator and reviewer are the signed-in
+identity, never a name in the body. Learned cases are retired: ids beginning
+`learned:` and cases of learned origin are no longer returned, and writing them
+is refused. Analyses read only published or reviewed cases that are `redacted`
+and carry a curation attestation: creating or publishing a case attests its
+current content, while archiving keeps a case's admission and never grants
+one. Every returned case carries `analysisAdmitted` and `curation` (issuer,
+actor, issuedAt); a POST body's copies of these are ignored. A case written
+before attestations needs one again: send a reviewed case back as GET returned
+it, and publish a published case again.
 
-The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`.
+The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API. `/api/template-analysis/*` likewise answers 410; `/auto`, `/four-quadrant`, `/cpu-core` and `/frame-stats` have no successor that takes the same body, so only `migration.fallback` is set. `/api/sessions/*` answers 410: it was an unscoped session-store API that ignored ownership, and `migration.successor` names the owner-checked route (`GET /api/sessions` → `/api/agent/v1/sessions`, `GET /api/sessions/:id` → `/api/agent/v1/:id/turns`, `DELETE /api/sessions/:id` → `/api/agent/v1/:id`); `/export` has none. `/api/sql/*` also answers 410: `/tables` returned a fixed five-table excerpt rather than the loaded trace's schema, and `/generate` only matched a regex template or returned a canned query without reading any trace. Neither has a successor that takes the same body; `migration.fallback` points to the workspace agent API, which reads the actual schema and runs SQL.
 
 ### Critical-path wait chain
 
@@ -786,7 +1266,7 @@ only at the edge: `presentationAnalysis` is the requested language. `analysis`
 is the same result rendered in zh-CN and is deprecated: it stays for existing
 clients and will be removed in a later release, so new clients read
 `presentationAnalysis` only. `longestSegment` names the
-longest external segment of the whole chain.
+longest attributable segment of the whole chain.
 `totalsNs` (`blocking`, `chainWait`, `waiting`, integer ns; the window is
 `task.dur` and self time is `task.dur - blocking`) and the
 counterfactual's `longestSegmentDurNs`, `bestCaseDurationNs` and `maxSavingNs`
@@ -801,6 +1281,34 @@ on the Claude Agent SDK runtime, credentials are missing, the call times out, or
 the client disconnects. Raw model errors go only to the server log.
 Disabling AI never turns this route into a 403. A client disconnect cancels the
 in-flight model call and any pending trace query; no response is written then.
+
+Chain time is accounted by each segment's `pathRole`: `work` (Running),
+`runnable` (R/R+), `device_wait` (D/DK), `event_wait` (S/I) and `other`.
+Perfetto ends the wake chain at every S/I/D segment of another thread (that
+thread was woken from IRQ context, by the idle task or out of an io_wait, so no
+waker exists), so those segments are chain leaves and are never recursed into;
+recursion expands `work` segments only. The headline is `attributableMs` /
+`attributablePercentage` (other threads running, runnable or in uninterruptible
+wait); `blockingMs` / `externalBlockingPercentage` is path coverage and includes
+`eventWaitMs` / `eventWaitPercentage`, other threads' interruptible sleeps at the
+end of the chain. `totalsNs` adds `work`, `runnable`, `deviceWait`, `eventWait`,
+`other` and `attributable`, with `work + runnable + deviceWait + eventWait + other
+= blocking` and `chainWait = deviceWait + eventWait`. `longestSegment` and the
+counterfactual consider attributable segments only; `longestEventWait` names the
+longest chain-end wait and its wake-source class. `rootWait` places the selected
+thread's own wait (the selected row, or in range mode the longest waiting slice)
+relative to its slices: `in_slice` (with `enclosingSlice`), `between_slices`
+(slices before and after), or `no_slice_data` (no slices on one side, so idle
+time cannot be told apart). The `idle_wait` anomaly appears only for a
+`between_slices` wait with a low attributable share and means idle, not slow;
+`peer_event_wait` appears when chain-end waits cover at least half the window
+and the wait is not between slices, and points at the thread that waited for a
+network, timer or device event. `unavailableReason` also takes
+`no_thread_state_in_window` (the thread has no thread_state row in the range,
+which is not idleness) and `wait_open_at_trace_end` (the selected wait never
+ended before the trace did and there is no chain to follow); an open row
+(`dur = -1`) is read up to the end of the trace with a `wait_open_at_trace_end`
+warning. `threadStateId` 0 is a valid row id.
 
 Failures return `{success: false, code, error}` with a localized `error`:
 

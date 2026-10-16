@@ -13,6 +13,7 @@ import type {
   AppendFeedbackEventInput,
   AppendFeedbackEventResult,
   EffectiveFeedbackV1,
+  FeedbackCommand,
   FeedbackDimension,
   FeedbackEventV1,
   FeedbackTargetKind,
@@ -24,9 +25,20 @@ import {
   FEEDBACK_POSITIVE_DIMENSIONS,
   FEEDBACK_SOURCES,
   FEEDBACK_TARGET_KINDS,
+  isRetiredFeedbackTarget,
+  RETIRED_FEEDBACK_TARGET_KINDS,
 } from '../../types/selfEvolution';
 import {withFilesystemRegistryLockAsync} from '../filesystemRegistryLock';
+import {PublicRequestError} from '../../utils/publicRequestError';
 import {canonicalContentHash, canonicalJsonString} from './canonicalJson';
+import {parseStoredJson} from '../../utils/storedData';
+
+/** A feedback write the caller has to change; the reason code is its message and route code. */
+export class FeedbackRequestError extends PublicRequestError {
+  constructor(code: string, status: number) {
+    super(code, code, status);
+  }
+}
 
 export interface FeedbackEventStoreOptions {
   scope: RunManifestScope;
@@ -48,15 +60,6 @@ export interface FeedbackProjectionTarget {
   targetKind: FeedbackTargetKind;
   targetId: string;
   revision: number;
-}
-
-export interface LegacyCandidateFeedbackImport {
-  sourceRowId: number;
-  candidateId: string;
-  sourceSessionId: string;
-  sourceAnalysisRunId?: string;
-  rating: 'positive' | 'negative';
-  receivedAt: number;
 }
 
 interface IndexedEventRow {
@@ -99,6 +102,14 @@ const POSITIVE_DIMENSIONS = new Set<FeedbackDimension>(
 const EVENT_KINDS = new Set<string>(FEEDBACK_EVENT_KINDS);
 const SOURCES = new Set<string>(FEEDBACK_SOURCES);
 const TARGET_KINDS = new Set<string>(FEEDBACK_TARGET_KINDS);
+/**
+ * Every active read carries this; history (the event index, rebuild and
+ * catch-up) does not, so a retired target's feedback still decodes and a
+ * rebuild still accepts its log.
+ */
+const ACTIVE_TARGET_KIND_SQL = `target_kind NOT IN (${
+  RETIRED_FEEDBACK_TARGET_KINDS.map(kind => `'${kind}'`).join(', ')
+})`;
 
 function scopeKey(scope: RunManifestScope): string {
   return `${scope.tenantId}\0${scope.workspaceId}`;
@@ -117,7 +128,7 @@ function checksumForEvent(event: Omit<FeedbackEventV1, 'checksum'>): string {
   return canonicalContentHash(event);
 }
 
-function normalizedCommand(input: AppendFeedbackEventInput): Record<string, unknown> {
+function normalizedCommand(input: FeedbackCommand): Record<string, unknown> {
   return {
     kind: input.kind,
     ...(input.kind !== 'created' && input.feedbackId
@@ -147,40 +158,45 @@ function normalizedCommand(input: AppendFeedbackEventInput): Record<string, unkn
   };
 }
 
-function commandFingerprint(input: AppendFeedbackEventInput): string {
+function commandFingerprint(input: FeedbackCommand): string {
   return canonicalContentHash(normalizedCommand(input));
 }
 
+/**
+ * The event's target id. `invalid` builds the error for a missing or
+ * contradictory target: a request rejection when it checks caller input, a
+ * plain error (internal) when it reads a stored event.
+ */
 function eventTargetId(input: {
   targetKind: FeedbackTargetKind;
   targetId?: string;
   patternId?: string;
   caseCandidateId?: string;
   sessionId: string;
-}): string {
+}, invalid: (code: string) => Error = code => new Error(code)): string {
   if (input.targetKind === 'pattern') {
     const patternId = input.patternId ?? input.targetId;
-    if (!patternId) throw new Error('feedback_pattern_target_required');
+    if (!patternId) throw invalid('feedback_pattern_target_required');
     if (input.targetId && input.targetId !== patternId) {
-      throw new Error('feedback_pattern_target_mismatch');
+      throw invalid('feedback_pattern_target_mismatch');
     }
     return patternId;
   }
   if (input.targetKind === 'case_candidate') {
     const candidateId = input.caseCandidateId ?? input.targetId;
-    if (!candidateId) throw new Error('feedback_case_candidate_target_required');
+    if (!candidateId) throw invalid('feedback_case_candidate_target_required');
     if (input.targetId && input.targetId !== candidateId) {
-      throw new Error('feedback_case_candidate_target_mismatch');
+      throw invalid('feedback_case_candidate_target_mismatch');
     }
     return candidateId;
   }
   if (input.targetKind === 'session') {
     if (input.targetId && input.targetId !== input.sessionId) {
-      throw new Error('feedback_session_target_mismatch');
+      throw invalid('feedback_session_target_mismatch');
     }
     return input.sessionId;
   }
-  if (!input.targetId) throw new Error('feedback_target_id_required');
+  if (!input.targetId) throw invalid('feedback_target_id_required');
   return input.targetId;
 }
 
@@ -328,6 +344,9 @@ function assertFeedbackEvent(value: unknown): asserts value is FeedbackEventV1 {
   eventTargetId(event as FeedbackEventV1);
 }
 
+/** Another member's feedback can be selected by id, so a parse error never quotes the record. */
+const FEEDBACK_RECORD = 'feedback record';
+
 function parseEffectiveRow(row: EffectiveFeedbackRow): EffectiveFeedbackV1 {
   return {
     feedbackId: row.feedback_id,
@@ -338,7 +357,7 @@ function parseEffectiveRow(row: EffectiveFeedbackRow): EffectiveFeedbackV1 {
     ...(row.run_manifest_id ? {runManifestId: row.run_manifest_id} : {}),
     sessionId: row.session_id,
     rating: row.rating,
-    dimensions: JSON.parse(row.dimensions_json) as FeedbackDimension[],
+    dimensions: parseStoredJson<FeedbackDimension[]>(row.dimensions_json, FEEDBACK_RECORD),
     ...(row.comment !== null ? {comment: row.comment} : {}),
     targetKind: row.target_kind,
     targetId: row.target_id,
@@ -347,7 +366,7 @@ function parseEffectiveRow(row: EffectiveFeedbackRow): EffectiveFeedbackV1 {
       ? {caseCandidateId: row.case_candidate_id}
       : {}),
     source: row.source,
-    actor: JSON.parse(row.actor_json) as EffectiveFeedbackV1['actor'],
+    actor: parseStoredJson<EffectiveFeedbackV1['actor']>(row.actor_json, FEEDBACK_RECORD),
     scope: {
       tenantId: '',
       workspaceId: '',
@@ -443,13 +462,13 @@ export class FeedbackEventStore {
         const existing = this.findByIdempotencyKey(input.idempotencyKey);
         if (existing) {
           if (existing.commandFingerprint !== fingerprint) {
-            throw new Error('feedback_idempotency_conflict');
+            throw new FeedbackRequestError('feedback_idempotency_conflict', 409);
           }
           if (existing.legacy === 1) {
-            throw new Error('feedback_idempotency_conflict');
+            throw new FeedbackRequestError('feedback_idempotency_conflict', 409);
           }
           return {
-            event: JSON.parse(existing.eventJson) as FeedbackEventV1,
+            event: parseStoredJson<FeedbackEventV1>(existing.eventJson, FEEDBACK_RECORD),
             idempotent: true,
             storage: this.storage,
           };
@@ -479,9 +498,6 @@ export class FeedbackEventStore {
           targetKind: input.targetKind,
           targetId,
           ...(input.patternId ? {patternId: input.patternId} : {}),
-          ...(input.caseCandidateId
-            ? {caseCandidateId: input.caseCandidateId}
-            : {}),
           source: input.source,
           actor: {...input.actor},
           scope: {...input.scope},
@@ -495,56 +511,6 @@ export class FeedbackEventStore {
         lease.assertHeld();
         this.catchUpLocked(new Map([[event.eventId, fingerprint]]));
         return {event, idempotent: false, storage: this.storage};
-      },
-    );
-  }
-
-  async importAcceptedLegacyCandidateFeedback(
-    records: readonly LegacyCandidateFeedbackImport[],
-  ): Promise<number> {
-    return withFilesystemRegistryLockAsync(
-      this.eventLogPath,
-      'feedback_event_store_busy',
-      async lease => {
-        lease.assertHeld();
-        this.catchUpLocked();
-        let imported = 0;
-        for (const record of records) {
-          if (
-            !Number.isSafeInteger(record.sourceRowId) ||
-            record.sourceRowId <= 0 ||
-            !record.candidateId.trim() ||
-            !record.sourceSessionId.trim() ||
-            !Number.isFinite(record.receivedAt)
-          ) {
-            throw new Error('legacy_candidate_feedback_import_invalid');
-          }
-          const timestamp = new Date(record.receivedAt).toISOString();
-          const line = canonicalJsonString({
-            legacyCandidateFeedbackAccepted: true,
-            legacySourceRowId: record.sourceRowId,
-            sessionId: record.sourceSessionId,
-            ...(record.sourceAnalysisRunId
-              ? {runId: record.sourceAnalysisRunId}
-              : {}),
-            rating: record.rating,
-            caseCandidateId: record.candidateId,
-            timestamp,
-            storageScope: {...this.scope},
-          });
-          const eventId = `legacy:${hashText(
-            `${scopeKey(this.scope)}\0${line}`,
-          )}`;
-          const existing = this.db().prepare(`
-            SELECT 1 FROM feedback_event_index WHERE event_id = ?
-          `).get(eventId);
-          if (existing) continue;
-          this.appendLine(line);
-          imported += 1;
-        }
-        lease.assertHeld();
-        this.catchUpLocked();
-        return imported;
       },
     );
   }
@@ -589,6 +555,7 @@ export class FeedbackEventStore {
       FROM effective_feedback
       WHERE tenant_id = ? AND workspace_id = ?
         AND target_kind = ? AND target_id = ?
+        AND ${ACTIVE_TARGET_KIND_SQL}
       ORDER BY COALESCE(sequence, -1), event_index_id, feedback_id
     `).all(
       this.scope.tenantId,
@@ -611,6 +578,7 @@ export class FeedbackEventStore {
       FROM feedback_projection_targets
       WHERE tenant_id = ? AND workspace_id = ?
         AND (applied_revision IS NULL OR applied_revision < revision)
+        AND ${ACTIVE_TARGET_KIND_SQL}
       ORDER BY revision, target_kind, target_id
     `).all(
       this.scope.tenantId,
@@ -649,6 +617,7 @@ export class FeedbackEventStore {
       FROM effective_feedback
       WHERE tenant_id = ? AND workspace_id = ?
         AND (? IS NULL OR target_kind = ?)
+        AND ${ACTIVE_TARGET_KIND_SQL}
     `).get(
       this.scope.tenantId,
       this.scope.workspaceId,
@@ -671,6 +640,7 @@ export class FeedbackEventStore {
       SELECT *
       FROM effective_feedback
       WHERE tenant_id = ? AND workspace_id = ?
+        AND ${ACTIVE_TARGET_KIND_SQL}
       ORDER BY COALESCE(sequence, -1), event_index_id, feedback_id
     `).all(
       this.scope.tenantId,
@@ -704,34 +674,35 @@ export class FeedbackEventStore {
     if (!sameScope(input.scope, this.scope)) {
       throw new Error('feedback_scope_mismatch');
     }
+    if (isRetiredFeedbackTarget(input)) throw new Error('feedback_target_retired');
     if (!input.idempotencyKey.trim()) {
-      throw new Error('feedback_idempotency_key_required');
+      throw new FeedbackRequestError('feedback_idempotency_key_required', 400);
     }
     if (input.comment && input.comment.length > MAX_COMMENT_CHARS) {
-      throw new Error('feedback_comment_too_long');
+      throw new FeedbackRequestError('feedback_comment_too_long', 400);
     }
     const timestamp = input.timestamp ?? new Date().toISOString();
     if (!Number.isFinite(Date.parse(timestamp))) {
-      throw new Error('feedback_timestamp_invalid');
+      throw new FeedbackRequestError('feedback_timestamp_invalid', 400);
     }
-    eventTargetId(input);
+    eventTargetId(input, code => new FeedbackRequestError(code, 400));
     if (input.kind === 'created') {
       if (input.feedbackId) {
-        throw new Error('feedback_created_feedback_id_forbidden');
+        throw new FeedbackRequestError('feedback_created_feedback_id_forbidden', 400);
       }
       if (input.supersedesEventId) {
-        throw new Error('feedback_created_must_not_supersede');
+        throw new FeedbackRequestError('feedback_created_must_not_supersede', 400);
       }
-      if (!input.rating) throw new Error('feedback_rating_required');
+      if (!input.rating) throw new FeedbackRequestError('feedback_rating_required', 400);
     } else {
       if (!input.feedbackId || !input.supersedesEventId) {
-        throw new Error('feedback_supersedes_required');
+        throw new FeedbackRequestError('feedback_supersedes_required', 400);
       }
       if (input.kind === 'retracted' && (input.rating || input.dimensions)) {
-        throw new Error('feedback_retracted_payload_forbidden');
+        throw new FeedbackRequestError('feedback_retracted_payload_forbidden', 400);
       }
       if (input.kind === 'replaced' && !input.rating) {
-        throw new Error('feedback_rating_required');
+        throw new FeedbackRequestError('feedback_rating_required', 400);
       }
     }
     if (
@@ -741,11 +712,11 @@ export class FeedbackEventStore {
           ? !POSITIVE_DIMENSIONS.has(dimension)
           : !NEGATIVE_DIMENSIONS.has(dimension))
     ) {
-      throw new Error('feedback_dimension_rating_mismatch');
+      throw new FeedbackRequestError('feedback_dimension_rating_mismatch', 400);
     }
   }
 
-  private validateTransition(input: AppendFeedbackEventInput): void {
+  private validateTransition(input: FeedbackCommand): void {
     const database = this.db();
     if (input.kind === 'created') return;
 
@@ -763,12 +734,12 @@ export class FeedbackEventStore {
       this.scope.workspaceId,
       input.supersedesEventId,
     ) as IndexedEventRow | undefined;
-    if (!superseded) throw new Error('feedback_superseded_event_not_found');
+    if (!superseded) throw new FeedbackRequestError('feedback_superseded_event_not_found', 404);
     if (superseded.legacy === 1) {
-      throw new Error('legacy_feedback_not_retractable');
+      throw new FeedbackRequestError('legacy_feedback_not_retractable', 409);
     }
     if (superseded.feedbackId !== input.feedbackId) {
-      throw new Error('feedback_supersedes_feedback_mismatch');
+      throw new FeedbackRequestError('feedback_supersedes_feedback_mismatch', 409);
     }
     const current = database.prepare(`
       SELECT *
@@ -780,9 +751,9 @@ export class FeedbackEventStore {
       input.feedbackId,
     ) as EffectiveFeedbackRow | undefined;
     if (!current || current.current_event_id !== input.supersedesEventId) {
-      throw new Error('feedback_supersedes_fork');
+      throw new FeedbackRequestError('feedback_supersedes_fork', 409);
     }
-    const supersededEvent = JSON.parse(superseded.eventJson) as FeedbackEventV1;
+    const supersededEvent = parseStoredJson<FeedbackEventV1>(superseded.eventJson, FEEDBACK_RECORD);
     const nextTargetId = eventTargetId(input);
     if (
       supersededEvent.sessionId !== input.sessionId ||
@@ -791,7 +762,7 @@ export class FeedbackEventStore {
       eventTargetId(supersededEvent) !== nextTargetId ||
       (supersededEvent.actor.userId ?? '') !== (input.actor.userId ?? '')
     ) {
-      throw new Error('feedback_supersedes_identity_mismatch');
+      throw new FeedbackRequestError('feedback_supersedes_identity_mismatch', 409);
     }
   }
 
@@ -1419,6 +1390,7 @@ export function isCanonicalPublicFeedbackCurationSource(
     sameScope(storeIdentity.scope, canonical.scope);
 }
 
+/** @internal Test seam. */
 export const feedbackEventStoreTesting = {
   checksumForEvent,
   commandFingerprint,

@@ -20,6 +20,10 @@ comparison role; physical left/right/top/bottom comes from the supplied mapping.
 compare_skill accepts currentParams/referenceParams for distinct windows and
 identities. execute_sql and invoke_skill use current; execute_sql_on selects a
 side explicitly. A tool on one side does not collect evidence from both.
+compare_skill aligns steps, not rows: a bounded ranking can omit on one side
+an item present on the other. Before calling an item new or gone, request it
+by name on both sides (for heap dumps, `class_names`). Only an explicit zero
+row from a successfully read source counts as zero.
 
 For stored-result comparisons, use the normalized snapshot metrics and their
 original provenance. Do not recover numbers from report prose or treat missing

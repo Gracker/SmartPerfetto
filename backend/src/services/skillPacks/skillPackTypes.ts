@@ -4,7 +4,6 @@
 
 export type SkillPackAssetKind = 'skill' | 'fragment' | 'doc';
 export type SkillPackTrustState = 'local_unverified' | 'approved';
-export type SkillPackInstallState = 'enabled' | 'disabled';
 export type SkillOriginKind = 'built_in' | 'external_pack';
 
 export interface SkillPackManifestAssetV1 {

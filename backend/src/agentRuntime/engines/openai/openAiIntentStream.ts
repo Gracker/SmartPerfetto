@@ -135,11 +135,21 @@ export async function readSseData(
   }
 }
 
+/** Called once, at the first provider output (text, reasoning or tool call); timing only. */
+export type IntentStreamFirstOutputObserver = () => void;
+
+function nonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0;
+}
+
 /** Fold a streamed Chat Completion into the non-streamed body shape. */
-export async function readChatCompletionStream(body: ReadableStream<Uint8Array>, outputByteLimit: number): Promise<StreamOutcome> {
+export async function readChatCompletionStream(body: ReadableStream<Uint8Array>, outputByteLimit: number,
+  onFirstOutput?: IntentStreamFirstOutputObserver): Promise<StreamOutcome> {
   const message: {role: unknown; content: string; refusal: string; tool_calls: unknown[]; function_call?: unknown} =
     {role: 'assistant', content: '', refusal: '', tool_calls: []};
   let model: string | undefined;
+  let usage: Record<string, unknown> | undefined;
+  let sawOutput = false;
   let contentBytes = 0;
   let finishReason: string | undefined;
   let outcome: StreamOutcome | undefined;
@@ -151,6 +161,7 @@ export async function readChatCompletionStream(body: ReadableStream<Uint8Array>,
     if (!chunk) return invalid();
     if (chunk.error != null) {outcome = {kind: 'unavailable', reason: 'provider_error'}; return 'stop';}
     if (typeof chunk.model === 'string' && model === undefined) model = chunk.model;
+    if (isPlainObject(chunk.usage)) usage = chunk.usage;
     const verdict = (): SseDataVerdict => finishReason === undefined ? 'continue' : 'drain';
     // A usage-only chunk omits choices or carries an empty list; two choices cannot become one answer.
     if (chunk.choices === undefined || (Array.isArray(chunk.choices) && chunk.choices.length === 0)) return verdict();
@@ -159,6 +170,11 @@ export async function readChatCompletionStream(body: ReadableStream<Uint8Array>,
     if (!isPlainObject(choice) || (choice.index !== undefined && choice.index !== 0)) return invalid();
     const delta = choice.delta ?? {};
     if (!isPlainObject(delta)) return invalid();
+    if (!sawOutput && (nonEmptyString(delta.content) || nonEmptyString(delta.reasoning_content) ||
+      nonEmptyString(delta.reasoning) || (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0))) {
+      sawOutput = true;
+      try { onFirstOutput?.(); } catch { /* Timing observers never change the reply. */ }
+    }
     if (delta.role != null && message.role === 'assistant') message.role = delta.role;
     if (delta.content != null) {
       if (typeof delta.content !== 'string' || (delta.content && finishReason !== undefined)) return invalid();
@@ -187,19 +203,26 @@ export async function readChatCompletionStream(body: ReadableStream<Uint8Array>,
   // Gateways differ on sending `[DONE]`; a finish reason or `[DONE]` both close the reply.
   if (!sawDone && finishReason === undefined) throw new IntentStreamTruncatedError();
   return {kind: 'body', body: {...(model !== undefined ? {model} : {}),
-    choices: [{message, ...(finishReason !== undefined ? {finish_reason: finishReason} : {})}]}};
+    choices: [{message, ...(finishReason !== undefined ? {finish_reason: finishReason} : {})}],
+    ...(usage !== undefined ? {usage} : {})}};
 }
 
 const RESPONSES_TERMINAL_EVENTS = new Set(['response.completed', 'response.incomplete', 'response.failed']);
 
 /** Take the complete response a Responses stream ends with, bounding answer text as it arrives. */
-export async function readResponsesStream(body: ReadableStream<Uint8Array>, outputByteLimit: number): Promise<StreamOutcome> {
+export async function readResponsesStream(body: ReadableStream<Uint8Array>, outputByteLimit: number,
+  onFirstOutput?: IntentStreamFirstOutputObserver): Promise<StreamOutcome> {
   const commentary = new Set<string>();
   let answerBytes = 0;
   let outcome: StreamOutcome | undefined;
+  let sawOutput = false;
   const framed = await readSseData(body, data => {
     const event = parseEvent(data);
     if (!event || typeof event.type !== 'string') {outcome = INVALID; return 'stop';}
+    if (!sawOutput && event.type.endsWith('.delta') && nonEmptyString(event.delta)) {
+      sawOutput = true;
+      try { onFirstOutput?.(); } catch { /* Timing observers never change the reply. */ }
+    }
     if (event.type === 'error') {outcome = {kind: 'unavailable', reason: 'provider_error'}; return 'stop';}
     if (event.type === 'response.output_item.added') {
       const item = event.item;

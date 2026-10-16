@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { phaseMatchesCall, expectedToolNames, type PlanPhase } from '../types';
+import { phaseMatchesCall, expectedToolNames, getPlanToolCapability, type PlanPhase } from '../types';
 
 const basePhase: PlanPhase = {
   id: 'p1',
@@ -25,6 +25,16 @@ const basePhase: PlanPhase = {
 };
 
 describe('phaseMatchesCall', () => {
+  it('never lets a background knowledge read satisfy an evidence phase', () => {
+    for (const tool of ['search_knowledge', 'read_knowledge_section']) {
+      expect(getPlanToolCapability(`mcp__smartperfetto__${tool}`)).toBe('informational');
+      expect(phaseMatchesCall(
+        { ...basePhase, expectedTools: [tool] },
+        { toolName: `mcp__smartperfetto__${tool}`, timestamp: 0 },
+      )).toBe(false);
+    }
+  });
+
   it('matches by tool name when only expectedTools is set', () => {
     expect(phaseMatchesCall(
       { ...basePhase, expectedTools: ['execute_sql'] },

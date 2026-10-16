@@ -5,8 +5,8 @@
 # =============================================================================
 # App SystemUI Module Expert
 # =============================================================================
-# Provides SystemUI analysis capabilities for cross-domain experts.
-# Answers questions about status bar, notification shade, quick settings,
+# Provides SystemUI analysis capabilities.
+# Covers status bar, notification shade, quick settings,
 # navigation bar, and other system UI components.
 #
 # Key Analysis Areas:
@@ -39,87 +39,6 @@ module:
     - navigation_bar
     - lock_screen
     - volume_dialog
-  relatedModules:
-    - framework_wms
-    - framework_input
-    - framework_surfaceflinger
-    - app_launcher
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: systemui_performance
-      questionTemplate: "What is the SystemUI performance?"
-      requiredParams: []
-      description: "Analyze overall SystemUI performance"
-
-    - id: notification_shade_analysis
-      questionTemplate: "Is notification shade expand/collapse smooth?"
-      requiredParams: []
-      description: "Analyze notification shade animation"
-
-    - id: quick_settings_analysis
-      questionTemplate: "Are quick settings tiles responsive?"
-      requiredParams: []
-      description: "Analyze quick settings performance"
-
-    - id: statusbar_update_analysis
-      questionTemplate: "Are status bar updates causing performance issues?"
-      requiredParams: []
-      description: "Analyze status bar update frequency"
-
-  findingsSchema:
-    - id: systemui_startup_slow
-      severity: warning
-      titleTemplate: "Slow SystemUI startup: {startup_ms}ms"
-      descriptionTemplate: "SystemUI took {startup_ms}ms to fully initialize"
-      evidenceFields: [startup_ms, blocking_component]
-
-    - id: shade_animation_jank
-      severity: warning
-      titleTemplate: "Notification shade jank: {jank_frames} frames dropped"
-      descriptionTemplate: "Shade expand/collapse animation is not smooth"
-      evidenceFields: [jank_frames, total_frames, avg_frame_ms]
-
-    - id: quick_settings_slow
-      severity: warning
-      titleTemplate: "Slow quick settings: {tile_name} took {response_ms}ms"
-      descriptionTemplate: "Quick settings tile response time exceeded threshold"
-      evidenceFields: [tile_name, response_ms]
-
-    - id: statusbar_update_frequent
-      severity: info
-      titleTemplate: "Frequent status bar updates: {update_count} times"
-      descriptionTemplate: "Status bar updating frequently, may impact battery"
-      evidenceFields: [update_count, update_source]
-
-    - id: navbar_gesture_slow
-      severity: warning
-      titleTemplate: "Slow navigation gesture: {gesture_ms}ms"
-      descriptionTemplate: "Navigation gesture response exceeded threshold"
-      evidenceFields: [gesture_ms, gesture_type]
-
-  suggestionsSchema:
-    - id: check_wms_for_shade
-      condition: "shade_animation_jank == true"
-      targetModule: wms_module
-      questionTemplate: "What window animations were happening during shade animation?"
-      paramsMapping: {}
-      priority: 1
-
-    - id: check_surfaceflinger_for_jank
-      condition: "shade_animation_jank == true"
-      targetModule: surfaceflinger_module
-      questionTemplate: "Was SurfaceFlinger causing the shade animation jank?"
-      paramsMapping: {}
-      priority: 2
-
-    - id: check_input_for_gesture
-      condition: "navbar_gesture_slow == true"
-      targetModule: input_module
-      questionTemplate: "What was the input dispatch latency for the gesture?"
-      paramsMapping: {}
-      priority: 1
 
 prerequisites:
   required_tables:

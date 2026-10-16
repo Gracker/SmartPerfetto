@@ -15,15 +15,16 @@ import {evaluateTenantMutationPolicy, sendTenantMutationDeniedPayload} from '../
 import {TraceProcessorAdmissionError} from '../../services/traceProcessorRamBudget';
 import {prepareAnalysisRunTraceProcessorLeases, analysisRunTraceProcessorFailureSide, type AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions, normalizeSelectionContext} from '../../routes/agent/normalizeAnalyzeOptions';
-import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError} from './agentAnalyzeSessionService';
-import {getDefaultAndroidInternalsPackResolver} from '../../services/androidInternalsPack/androidInternalsPackResolver';
-import {projectPrimaryAnalysisOptions, resolveAnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
+import {publicRequestErrorBody} from '../../utils/publicRequestError';
+import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError, sessionRunPrivateContext} from './agentAnalyzeSessionService';
 import {knowledgeScopeFromRequestContext} from '../../services/scopedKnowledgeStore';
 import {authorizeAnalysisContext} from '../../services/analysisContextAuthorization';
 import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
-import {privateAnalysisFailureMessage, projectOwnerAnalysisError, sessionUsesPrivateKnowledge} from '../../services/security/privateAnalysisProjection';
+import {privateAnalysisFailureMessage} from '../../services/security/privateAnalysisProjection';
+import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import {withRunManifestLifecycle, type RunManifestLifecycle} from '../../services/selfEvolution/runManifestLifecycle';
+import {recordRuntimeCallStatsFromManifest} from '../../services/runtimeCallStats';
 import type {RequestContext} from '../../middleware/auth';
 import type {AnalyzeManagedSession, AnalyzeSessionRunContext} from './agentAnalyzeSessionService';
 import type {AssistantApplicationService} from './assistantApplicationService';
@@ -32,7 +33,6 @@ import type {AgentRuntimeAnalysisResult, StreamingUpdate} from '../../agent';
 import type {TraceProcessorHolderType} from '../../services/traceProcessorLeaseStore';
 import type {TraceProcessorLeaseModeDecision} from '../../services/traceProcessorLeaseModeDecision';
 import type {PersistedAnalysisRunStatus} from '../../services/analysisRunStore';
-import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import type {AnalyzeMode, NormalizedAnalyzeOptions} from '../../routes/agent/normalizeAnalyzeOptions';
 import type {SceneAnalysisSelection} from '../../agent/scene/types';
 import type {ResourceOwnerFields} from '../../services/resourceOwnership';
@@ -40,6 +40,11 @@ import type {KnowledgeScope} from '../../services/scopedKnowledgeStore';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {AiDisabledError, assertAiFeatureEnabled, buildAiDisabledPayload} from '../../services/aiCapabilityPolicy';
 import {readTraceMetadataForContext} from '../../services/traceMetadataStore';
+import {
+  analysisHasPrivateContext,
+  NO_PRIVATE_CONTEXT,
+  privateContextRestrictsAudience,
+} from '../../services/security/analysisPrivateContext';
 
 export interface AnalysisDispatchSession extends AnalyzeManagedSession {
   sceneStoryReport?: SceneReport;
@@ -121,7 +126,6 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
   abortHttpFinalizationRuns(session: TSession, runId?: string): void;
   isStaleRun(session: TSession, runId: string | undefined): boolean;
   settleSessionRunExecution(session: TSession, runId: string): void;
-  resetSessionRuntimeForSourceActivation(session: TSession, query: string, nextActivation: AnalysisSourceActivation): Promise<void>;
   createHttpRunManifestLifecycle(session: TSession, run: AnalyzeSessionRunContext, options: {
     analysisMode?: AnalyzeMode;
     referenceTraceId?: string;
@@ -129,12 +133,10 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
   sealCompletedHttpRunManifest(session: TSession, lifecycle: RunManifestLifecycle, runId: string): void;
   finalizeHttpRunManifestLifecycle(session: TSession, lifecycle: RunManifestLifecycle): void;
   persistSessionRunState(session: TSession, status: PersistedAnalysisRunStatus, error?: string, runId?: string): void;
-  cancelActiveAnalysisSourceEnrichment(session: TSession, reason: string): Promise<boolean>;
   assignSessionOwner(session: TSession, context: RequestContext): void;
   requestedSessionIsVisible(sessionId: string, context: RequestContext): boolean;
   resolveVisibleSessionReferenceTraceIdForTrace(sessionId: string | undefined, traceId: string, context: RequestContext): string | undefined;
   buildRecoveredResultFromContext(sessionId: string, context: EnhancedSessionContext): AgentRuntimeAnalysisResult | null;
-  ensureToolsRegistered(): void;
   isDedicatedSceneReplayRequest(query: string): boolean;
   runSmartAnalysis(sessionId: string, query: string, traceId: string, options: {
     runContext: AnalyzeSessionRunContext;
@@ -151,6 +153,7 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
     codeAwareMode?: import('../../services/codebase/codeAwareFeature').CodeAwareMode;
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
+    sourceDepth?: NormalizedAnalyzeOptions['sourceDepth'];
     runManifestAttributionSink: RunManifestAttributionSink;
   }): Promise<void>;
   smartSelectionReportId(selection?: SceneAnalysisSelection): string | undefined;
@@ -187,11 +190,11 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     configuredOutputLanguage, sessionOutputLanguage, enterpriseLeasesEnabled,
     leaseScopeFromRequestContext, buildLeaseModeDecisionForTrace, startSessionRun,
     markSessionRunStatus, isSessionRunCancelled, abortHttpFinalizationRuns,
-    isStaleRun, settleSessionRunExecution, resetSessionRuntimeForSourceActivation,
+    isStaleRun, settleSessionRunExecution,
     createHttpRunManifestLifecycle, sealCompletedHttpRunManifest, finalizeHttpRunManifestLifecycle,
-    persistSessionRunState, cancelActiveAnalysisSourceEnrichment, assignSessionOwner,
+    persistSessionRunState, assignSessionOwner,
     requestedSessionIsVisible, resolveVisibleSessionReferenceTraceIdForTrace, buildRecoveredResultFromContext,
-    ensureToolsRegistered, isDedicatedSceneReplayRequest, runSmartAnalysis,
+    isDedicatedSceneReplayRequest, runSmartAnalysis,
     smartSelectionReportId, analyzeOptionsErrorMessage, smartPreviewSelectionErrorMessage,
     resolveSmartPreviewReportForSelection, runAgentDrivenAnalysis, broadcastToAgentDrivenClients,
     assistantAppService, httpAnalysisRunLeaseControllers, admittedLocalAnalysisRuns,
@@ -201,6 +204,12 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     if (response) throw new Error('analysis_dispatch_response_already_sent');
     response = {status, body};
   };
+  const respondAnalyzeOptionsError = (error: AnalyzeOptionsError, language: OutputLanguage): void =>
+    respond(error.status, publicRequestErrorBody(
+      error,
+      input.requestId,
+      analyzeOptionsErrorMessage(error, language),
+    ));
   const ensureTraceAccessible = async (traceId: string, code = 'TRACE_NOT_UPLOADED'): Promise<boolean> => {
     if (await readTraceMetadataForContext(traceId, input.context)) return true;
     respond(404, {success: false, error: 'Trace not found in backend', code});
@@ -355,11 +364,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
                 !Array.isArray(rawOptions) && rawOptions.outputLanguage === 'zh-CN'
               ? 'zh-CN'
               : configuredOutputLanguage();
-          respond(error.httpStatus, {
-            success: false,
-            error: analyzeOptionsErrorMessage(error, requestedErrorLanguage),
-            code: error.code,
-          });
+          respondAnalyzeOptionsError(error, requestedErrorLanguage);
           return;
         }
         throw error;
@@ -380,12 +385,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         respond(503, {success: false, code: 'SCENE_DISPATCH_NOT_CONFIGURED', error: 'Scene investigation dispatch is not configured'});
         return;
       }
-      const sourceActivation = resolveAnalysisSourceActivation({
-        query,
-        analysisMode: options.analysisMode,
-        codeAwareMode: options.codeAwareMode,
-        codebaseIds: options.codebaseIds,
-      });
       const authorizedCodebaseSelection =
         options.codeAwareMode &&
         options.codeAwareMode !== 'off' &&
@@ -437,11 +436,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         selectionContext = normalizeSelectionContext(rawSelectionContext);
       } catch (error) {
         if (error instanceof AnalyzeOptionsError) {
-          respond(error.httpStatus, {
-            success: false,
-            code: error.code,
-            error: analyzeOptionsErrorMessage(error, requestOutputLanguage),
-          });
+          respondAnalyzeOptionsError(error, requestOutputLanguage);
           return;
         }
         throw error;
@@ -521,9 +516,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         return;
       }
 
-      // Initialize tools
-      ensureToolsRegistered();
-
       const analyzeSessionService = new AgentAnalyzeSessionService<TSession>({
         assistantAppService,
         createSessionLogger,
@@ -532,37 +524,21 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         onSessionSecurityCleanup: sessionId => {
           revokeCodeAwareOutputGuards(sessionId);
           const active = assistantAppService.getSession(sessionId);
-          if (active) {
-            abortHttpFinalizationRuns(active);
-            void cancelActiveAnalysisSourceEnrichment(active, 'analysis_context_changed');
-          }
+          if (active) abortHttpFinalizationRuns(active);
         },
       });
 
       let sessionId: string;
       let preparedSession: TSession | undefined;
       let isNewSession = true;
+      let analysisContextFingerprint: string;
       if (sendRunStartConflictIfNeeded(liveRequestedSession)) return;
       try {
-        const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
+        analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
           options,
           knowledgeScopeFromRequestContext(requestContext),
         );
-        options = projectPrimaryAnalysisOptions(
-          {
-            ...options,
-            analysisContextFingerprint,
-          } as AnalysisOptions,
-          sourceActivation,
-        ) as ReturnType<typeof normalizeAnalyzeOptions>;
-        const availablePack = getDefaultAndroidInternalsPackResolver().resolve();
-        if (availablePack) {
-          (options as AnalysisOptions).androidInternalsPackPin = {
-            contentVersion: availablePack.contentVersion,
-            contentFingerprint: availablePack.contentFingerprint,
-            sourceRevision: availablePack.sourceRevision,
-          };
-        }
+        options = {...options, analysisContextFingerprint} as ReturnType<typeof normalizeAnalyzeOptions>;
         const prepared = analyzeSessionService.prepareSession({
           traceId,
           query,
@@ -578,12 +554,8 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           analysisContextFingerprint,
         });
         sessionId = prepared.sessionId;
+        // A prepared session carries the fingerprint it was prepared under.
         preparedSession = prepared.session as TSession;
-        preparedSession.analysisContextFingerprint = analysisContextFingerprint;
-        preparedSession.androidInternalsPackPin ??=
-          (options as AnalysisOptions).androidInternalsPackPin;
-        (options as AnalysisOptions).androidInternalsPackPin =
-          preparedSession.androidInternalsPackPin;
         isNewSession = prepared.isNewSession;
         if (isNewSession) {
           assignSessionOwner(preparedSession, requestContext);
@@ -624,13 +596,10 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         sessionForRun.referenceTraceId = effectiveReferenceTraceId;
         sessionForRun.comparisonSource = 'raw_trace_pair';
       }
-      await cancelActiveAnalysisSourceEnrichment(sessionForRun, 'superseded_by_new_analysis');
-      await resetSessionRuntimeForSourceActivation(sessionForRun, query, sourceActivation);
-      sessionForRun.sourceActivation = sourceActivation;
       sessionForRun.sourceAuthorization = authorizedCodebaseSelection
         ? {
             ...authorizedCodebaseSelection,
-            analysisContextFingerprint: sessionForRun.analysisContextFingerprint as string,
+            analysisContextFingerprint,
           }
         : undefined;
       sessionForRun.codeAwareMode = options.codeAwareMode;
@@ -638,7 +607,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       sessionForRun.knowledgeSourceIds = Array.isArray(options.knowledgeSourceIds)
         ? options.knowledgeSourceIds
         : undefined;
-      if (sessionUsesPrivateKnowledge(sessionForRun)) {
+      if (analysisHasPrivateContext(sessionForRun)) {
         registerPrivateAnalysisQueryForEcho(sessionId, query);
       }
       if (validatedSmartPreviewReport) {
@@ -668,6 +637,8 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         },
       );
       executionRunManifestLifecycle = runManifestLifecycle;
+      // Durable runs feed the delivery-call duration estimates (runtimeCallStats.ts).
+      runManifestLifecycle.builder.addSealObserver(manifest => recordRuntimeCallStatsFromManifest(manifest));
 
       const leaseController = new AbortController();
       const leaseControllers = httpAnalysisRunLeaseControllers.get(sessionForRun) ?? new Map<string, AbortController>();
@@ -712,15 +683,17 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           respond(200, {success: false, status: 'cancelled', sessionId, runId: runContext.runId});
           return;
         }
+        const leaseFailure = projectAnalysisFailure(leaseError, {privateContext: runContext.privateContext,
+          guardSessionId: sessionId, language: sessionOutputLanguage(sessionForRun), requestId: runContext.requestId});
         sessionForRun.status = 'failed';
-        sessionForRun.error = leaseError.message;
-        markSessionRunStatus(sessionForRun, 'failed', leaseError.message, runContext.runId);
+        sessionForRun.error = leaseFailure;
+        markSessionRunStatus(sessionForRun, 'failed', leaseFailure, runContext.runId);
         const admission = leaseError instanceof TraceProcessorAdmissionError;
         respond(admission ? 503 : 409, {success: false,
           code: admission ? 'TRACE_PROCESSOR_RAM_BUDGET_EXCEEDED' : leaseError.code ??
             (analysisRunTraceProcessorFailureSide(leaseError) === 'reference'
               ? 'REFERENCE_TRACE_PROCESSOR_LEASE_UNAVAILABLE' : 'TRACE_PROCESSOR_LEASE_UNAVAILABLE'),
-          error: leaseError.message, ...(admission ? {details: leaseError.decision} : {}),
+          error: leaseFailure, ...(admission ? {details: leaseError.decision} : {}),
         });
         return;
       }
@@ -747,10 +720,9 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         // handler covers startup failures, without producing a second error event.
         if (session.activeRun?.runId === runContext.runId &&
           ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(session.activeRun.status)) return;
-        const privateKnowledge = sessionUsesPrivateKnowledge(session);
-        const publicErrorMessage = privateKnowledge
-          ? projectOwnerAnalysisError(sessionId, error, sessionOutputLanguage(session))
-          : error instanceof Error ? error.message : String(error);
+        const privateKnowledge = privateContextRestrictsAudience(runContext.privateContext);
+        const publicErrorMessage = projectAnalysisFailure(error, {privateContext: runContext.privateContext,
+          guardSessionId: sessionId, language: sessionOutputLanguage(session), requestId: runContext.requestId});
         session.logger.error('AgentRoutes', 'Analysis failed', privateKnowledge
           ? new Error(privateAnalysisFailureMessage(sessionOutputLanguage(session))) : error);
         session.status = 'failed';
@@ -778,6 +750,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
             codeAwareMode: options.codeAwareMode,
             codebaseIds: options.codebaseIds,
             knowledgeSourceIds: options.knowledgeSourceIds,
+            sourceDepth: options.sourceDepth,
             runManifestAttributionSink: runManifestLifecycle.builder,
           })),
         )
@@ -861,7 +834,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         success: true,
         sessionId,
         message: preparedSession?.providerSnapshotChanged
-          ? 'Provider configuration changed; continuing with a fresh SDK session'
+          ? 'Provider configuration changed; continuing the session with the new provider'
           : isNewSession
             ? 'Analysis started'
             : 'Continuing analysis (multi-turn)',
@@ -887,23 +860,31 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         },
       });
     } catch (error: any) {
+      if (executionSession && executionRunId && !executionHandedOff &&
+        (isSessionRunCancelled(executionSession, executionRunId) || isStaleRun(executionSession, executionRunId))) {
+        respond(200, {success: false, status: 'cancelled', sessionId: executionSession.sessionId, runId: executionRunId});
+        return;
+      }
+      // Before a session exists no run has read anything private.
+      const startupFailure = projectAnalysisFailure(error, {
+        privateContext: executionSession ? sessionRunPrivateContext(executionSession, executionRunId) : NO_PRIVATE_CONTEXT,
+        guardSessionId: executionSession?.sessionId, language: executionSession
+          ? sessionOutputLanguage(executionSession) : configuredOutputLanguage(),
+        requestId: input.requestId,
+      });
       if (executionSession && executionRunId && !executionHandedOff) {
-        if (isSessionRunCancelled(executionSession, executionRunId) || isStaleRun(executionSession, executionRunId)) {
-          respond(200, {success: false, status: 'cancelled', sessionId: executionSession.sessionId, runId: executionRunId});
-          return;
-        }
         executionSession.status = 'failed';
-        executionSession.error = error?.message || 'Agent analysis failed';
-        markSessionRunStatus(executionSession, 'failed', executionSession.error, executionRunId);
+        executionSession.error = startupFailure;
+        markSessionRunStatus(executionSession, 'failed', startupFailure, executionRunId);
       }
       if (error instanceof AiDisabledError) {
         respond(403, buildAiDisabledPayload(error));
         return;
       }
-      console.error('[AgentRoutes] Analyze error:', error);
       respond(500, {
         success: false,
-        error: error.message || 'Agent analysis failed',
+        error: startupFailure,
+        requestId: input.requestId,
       });
     } finally {
       if (!executionHandedOff) await finishExecution();

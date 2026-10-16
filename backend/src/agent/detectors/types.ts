@@ -9,22 +9,25 @@
  */
 
 /**
- * 渲染架构类型
+ * 渲染架构类型：检测器、pipeline catalog 与 case 适用架构共用的唯一词表。
  */
-export type RenderingArchitectureType =
-  | 'STANDARD'      // 标准 Android View + RenderThread
-  | 'FLUTTER'       // Flutter 应用
-  | 'WEBVIEW'       // WebView/Chrome/Chromium
-  | 'COMPOSE'       // Jetpack Compose
-  | 'SURFACEVIEW'   // SurfaceView 独立渲染
-  | 'GLSURFACEVIEW' // GLSurfaceView (OpenGL)
-  | 'SOFTWARE'      // 软件渲染 (无 RenderThread)
-  | 'MIXED'         // 混合渲染 (如 SurfaceView + RecyclerView)
-  | 'GAME_ENGINE'   // 游戏引擎 (Unity/Unreal/Godot/Cocos)
-  | 'CAMERA'        // 相机管线 (HAL3/Camera2)
-  | 'VIDEO_OVERLAY' // 视频 Overlay (HWC 硬件合成)
-  | 'REACT_NATIVE'  // React Native (S14: Old Arch Bridge / New Arch Fabric / Skia)
-  | 'UNKNOWN';      // 未知架构
+export const RENDERING_ARCHITECTURE_TYPES = [
+  'STANDARD',      // 标准 Android View + RenderThread
+  'FLUTTER',       // Flutter 应用
+  'WEBVIEW',       // WebView/Chrome/Chromium
+  'COMPOSE',       // Jetpack Compose
+  'SURFACEVIEW',   // SurfaceView 独立渲染
+  'GLSURFACEVIEW', // GLSurfaceView (OpenGL)
+  'SOFTWARE',      // 软件渲染 (无 RenderThread)
+  'MIXED',         // 混合渲染 (如 SurfaceView + RecyclerView)
+  'GAME_ENGINE',   // 游戏引擎 (Unity/Unreal/Godot/Cocos)
+  'CAMERA',        // 相机管线 (HAL3/Camera2)
+  'VIDEO_OVERLAY', // 视频 Overlay (HWC 硬件合成)
+  'REACT_NATIVE',  // React Native (S14: Old Arch Bridge / New Arch Fabric / Skia)
+  'UNKNOWN',       // 未知架构
+] as const;
+
+export type RenderingArchitectureType = (typeof RENDERING_ARCHITECTURE_TYPES)[number];
 
 /**
  * Flutter 渲染引擎类型
@@ -117,20 +120,6 @@ export interface ArchitectureInfo {
 }
 
 /**
- * 单个检测器的结果
- */
-export interface DetectorResult {
-  /** 检测到的架构类型 */
-  type: RenderingArchitectureType;
-  /** 置信度 */
-  confidence: number;
-  /** 检测证据 */
-  evidence: DetectionEvidence[];
-  /** 附加信息 */
-  metadata?: Record<string, any>;
-}
-
-/**
  * 检测上下文
  */
 export interface DetectorContext {
@@ -141,15 +130,4 @@ export interface DetectorContext {
   /** 可选的包名过滤 */
   packageName?: string;
   signal?: AbortSignal;
-}
-
-/**
- * 基础检测器接口
- */
-export interface IArchitectureDetector {
-  /** 检测器名称 */
-  readonly name: string;
-
-  /** 执行检测 */
-  detect(context: DetectorContext): Promise<DetectorResult>;
 }

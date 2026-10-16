@@ -17,6 +17,7 @@ const contract: ConclusionContract = {
 };
 const marker = renderConclusionContractSidecar(contract);
 const prefix = '<!-- smartperfetto:conclusion-contract@';
+const malformedComment = (payload: string) => `<!-- smartperfetto:conclusion_contract@1\n${payload}\n-->`;
 
 function update(content: unknown, type: StreamingUpdate['type'] = 'answer_token'): StreamingUpdate {
   return {type, content, timestamp: 1234, id: 'transport-event'};
@@ -114,8 +115,8 @@ describe('sidecar narrative framing', () => {
     expect(scanner.bufferedCharacterCount).toBe(1);
     expect(scanner.write('tag>XML')).toBe('<tag>XML');
     expect(scanner.write('\n<!-- smartperfetto:conclusion-')).toBe('\n');
-    expect(scanner.write('example')).toBe('<!-- smartperfetto:conclusion-example');
-    expect(scanner.finish()).toBe('');
+    expect(scanner.write('example')).toBe('');
+    expect(scanner.finish()).toBe('<!-- smartperfetto:conclusion-example');
   });
 
   it('does not wait for an arbitrarily long prose, comment, or fence-opening line', () => {
@@ -151,6 +152,129 @@ describe('sidecar narrative framing', () => {
     const narrative = `${fence}\n~~~\n${marker}\n${fence}\n`;
     expect(project(raw.split(''))).toBe(narrative);
     expect(parseConclusionContractSidecar(raw)).toMatchObject({narrative, status: 'valid'});
+  });
+
+  it('quarantines a complete reserved declaration at every chunk boundary without accepting its marker', () => {
+    const payload = {...contract, claims: [{id: 'original', text: '😀 --> is escaped', kind: 'inference', references: []}]};
+    const json = JSON.stringify(payload).replace(/>/g, '\\u003e');
+    const comment = malformedComment(json);
+    const raw = `Body\r\n${comment.replace(/\n/g, '\r\n')}\r\nTail`;
+    const parsed = parseConclusionContractSidecar(raw);
+    expect(parsed).toMatchObject({status: 'invalid', bindingEligibility: 'ineligible', narrative: 'Body\r\n\r\nTail',
+      rawPayload: payload, issues: [{code: 'invalid_framing', path: '$'}],
+      machineSegments: [{start: 6, end: raw.length - '\r\nTail'.length}]});
+    expect(parsed.contract).toBeUndefined();
+    for (let split = 0; split <= raw.length; split++) {
+      expect(project([raw.slice(0, split), raw.slice(split)])).toBe(parsed.narrative);
+    }
+    expect(project(raw.split(''))).toBe(parsed.narrative);
+  });
+
+  it.each([
+    malformedComment('{}'),
+    malformedComment('{"schemaVersion":"other"}'),
+    malformedComment(JSON.stringify(contract) + '\n{}'),
+    malformedComment(JSON.stringify(contract) + '\nExtra prose'),
+    malformedComment(JSON.stringify(contract)).slice(0, -3),
+    malformedComment('```json\n' + JSON.stringify(contract) + '\n```'),
+    malformedComment(JSON.stringify(contract)).replace('smartperfetto:', 'ordinary:'),
+    malformedComment(JSON.stringify(contract)).replace('conclusion_contract@1', 'conversation-control'),
+    `<!-- example\n${malformedComment(JSON.stringify(contract))}\n-->`,
+    `\`\`\`text\n${malformedComment(JSON.stringify(contract))}\n\`\`\``,
+    malformedComment(JSON.stringify(contract)).split('\n').map(line => `> ${line}`).join('\n'),
+    malformedComment(JSON.stringify(contract)).split('\n').map(line => `    ${line}`).join('\n'),
+  ])('flushes ambiguous or ordinary reserved-comment examples unchanged: %s', raw => {
+    expect(parseConclusionContractSidecar(raw)).toMatchObject({status: 'absent', narrative: raw, machineSegments: []});
+    expect(project(raw.split(''))).toBe(raw);
+  });
+
+  it('keeps a realistic 44 KiB reserved machine payload out of the visible body', () => {
+    const payload = {...contract, claims: [{text: 'machine-only'.repeat(3700)}]};
+    const raw = `Body\n${malformedComment(JSON.stringify(payload))}\nTail`;
+    expect(Buffer.byteLength(raw, 'utf8')).toBeGreaterThan(44000);
+    expect(parseConclusionContractSidecar(raw)).toMatchObject({status: 'invalid', rawPayload: payload, narrative: 'Body\n\nTail'});
+    expect(project(raw.split(''))).toBe('Body\n\nTail');
+  });
+
+  it('bounds reserved buffering by UTF-8 bytes and preserves overflow plus nested canonical text', () => {
+    const scanner = new ConclusionSidecarFramingScanner();
+    const beginning = '<!-- smartperfetto:conclusion_contract@1\n{"schemaVersion":"conclusion_contract_v1","text":"';
+    expect(scanner.write(beginning)).toBe('');
+    const large = '中😀'.repeat(18000);
+    const visible = scanner.write(large);
+    expect(visible).toBe(beginning + large);
+    expect(scanner.bufferedCharacterCount).toBe(0);
+    const tail = `"}\n${marker}\n-->\nTail`;
+    expect(scanner.write(tail) + scanner.finish()).toBe(tail);
+    const raw = beginning + large + tail;
+    expect(parseConclusionContractSidecar(raw)).toMatchObject({status: 'absent', narrative: raw, machineSegments: []});
+    expect(project(raw.split(''))).toBe(raw);
+  });
+
+  it.each([0, 1])('recognizes only within the existing 64 KiB temporary bound (extra bytes: %s)', extra => {
+    const payload = {...contract, padding: ''};
+    const baseline = malformedComment(JSON.stringify(payload));
+    payload.padding = 'x'.repeat(64 * 1024 - Buffer.byteLength(baseline, 'utf8') + extra);
+    const raw = malformedComment(JSON.stringify(payload));
+    expect(Buffer.byteLength(raw, 'utf8')).toBe(64 * 1024 + extra);
+    const expected = extra === 0 ? '' : raw;
+    expect(parseConclusionContractSidecar(raw).narrative).toBe(expected);
+    expect(project([raw.slice(0, -2), raw.slice(-2)])).toBe(expected);
+  });
+
+  it('does not reinterpret text after a rejected reserved comment as a line-start marker', () => {
+    const raw = malformedComment('{}') + marker;
+    expect(parseConclusionContractSidecar(raw)).toMatchObject({status: 'absent', narrative: raw});
+    expect(project(raw.split(''))).toBe(raw);
+  });
+
+  it.each([
+    malformedComment(JSON.stringify(contract)) + ' extra',
+    malformedComment(JSON.stringify(contract)) + ' ',
+    malformedComment(JSON.stringify(contract)).replace('\n-->', '-->'),
+    malformedComment(JSON.stringify(contract)).replace('\n-->', '--> extra'),
+  ])('preserves nonexclusive closing lines at every chunk boundary: %s', raw => {
+    expect(parseConclusionContractSidecar(raw)).toMatchObject({status: 'absent', narrative: raw, machineSegments: []});
+    for (let split = 0; split <= raw.length; split++) {
+      expect(project([raw.slice(0, split), raw.slice(split)])).toBe(raw);
+    }
+    expect(project(raw.split(''))).toBe(raw);
+    const followed = `${raw}\n${marker}`;
+    expect(parseConclusionContractSidecar(followed)).toMatchObject({status: 'valid', narrative: `${raw}\n`});
+    expect(project(followed.split(''))).toBe(`${raw}\n`);
+  });
+
+  it('waits for closing-line disambiguation before classifying a reserved payload', () => {
+    const scanner = new ConclusionSidecarFramingScanner();
+    const raw = malformedComment(JSON.stringify(contract));
+    expect(scanner.write(raw)).toBe('');
+    expect(scanner.markerCount).toBe(0);
+    expect(scanner.write(' extra\n')).toBe(`${raw} extra\n`);
+    expect(scanner.markerCount).toBe(0);
+    expect(scanner.write(marker) + scanner.finish()).toBe('');
+    expect(scanner.markerCount).toBe(1);
+  });
+
+  it('preserves a bare trailing CR at EOF rather than assuming a CRLF closing line', () => {
+    const raw = malformedComment(JSON.stringify(contract)) + '\r';
+    expect(parseConclusionContractSidecar(raw)).toMatchObject({status: 'absent', narrative: raw, machineSegments: []});
+    for (let split = 0; split <= raw.length; split++) {
+      expect(project([raw.slice(0, split), raw.slice(split)])).toBe(raw);
+    }
+    expect(project(raw.split(''))).toBe(raw);
+  });
+
+  it('does not hide an unfinished candidate and discards its temporary state on reset', () => {
+    const scanner = new ConclusionSidecarFramingScanner();
+    const unfinished = malformedComment(JSON.stringify(contract)).slice(0, -3);
+    expect(scanner.write(unfinished)).toBe('');
+    expect(scanner.bufferedCharacterCount).toBeGreaterThan(0);
+    scanner.reset();
+    expect(scanner.bufferedCharacterCount).toBe(0);
+    expect(scanner.write('New run') + scanner.finish()).toBe('New run');
+    const raw = malformedComment(JSON.stringify(contract));
+    expect(parseConclusionContractSidecar(`${raw}\n${marker}`)).toMatchObject({status: 'invalid',
+      bindingEligibility: 'ineligible', issues: [{code: 'duplicate_marker', path: '$'}]});
   });
 });
 

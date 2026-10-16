@@ -10,7 +10,12 @@ const {
   validateCatalog,
 } = require('./lib/catalog.cjs');
 const {writeIndexes} = require('./lib/indexer.cjs');
-const {buildCatalogCases, materializeCatalogCases, updateCaseExpectations} = require('./lib/builder.cjs');
+const {
+  buildCatalogCases,
+  materializeCatalogCases,
+  staleCaseExpectations,
+  updateCaseExpectations,
+} = require('./lib/builder.cjs');
 const {importRealCase, promoteRealCase} = require('./lib/import-real.cjs');
 
 function parseArgs(argv) {
@@ -108,6 +113,16 @@ function main(argv) {
     if (!validation.ok) {
       printIssues(validation);
       return 1;
+    }
+    if (parsed.flags.has('--check-generated')) {
+      const constructed = validation.catalog.cases.filter((entry) => entry.kind === 'constructed');
+      const stale = staleCaseExpectations(parsed.repoRoot, constructed.map((entry) => entry.id));
+      if (stale.length > 0) {
+        for (const caseId of stale) {
+          console.error(`[stale-expectations] run expectations --case ${caseId} (Trace/constructed/${caseId}/analysis/expected.json)`);
+        }
+        return 1;
+      }
     }
     console.log(`PASS ${validation.catalog.cases.length} trace case(s) validated`);
     return 0;

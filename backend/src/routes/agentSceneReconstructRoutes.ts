@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
+import { requestIdOf } from '../middleware/requestId';
 import {
   type AgentRuntimeAnalysisResult,
   type Hypothesis,
@@ -34,6 +35,7 @@ import {
   type OutputLanguage,
 } from '../agentv3/outputLanguage';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   ownerFieldsFromContext,
@@ -66,7 +68,11 @@ export interface SceneReconstructSession extends ManagedAssistantSession {
   workspaceId?: string;
   userId?: string;
   logger: SessionLogger;
-  result?: AgentRuntimeAnalysisResult;
+  /**
+   * Only the fields routing needs. Bodies and claims reach a client solely
+   * through `projectSceneResult`, which applies the owner projection.
+   */
+  result?: Pick<AgentRuntimeAnalysisResult, 'sceneTimeline'>;
   /** Set by SceneStoryService once the pipeline completes (fresh or cached). */
   sceneStoryReport?: SceneReport;
   hypotheses: Hypothesis[];
@@ -141,14 +147,13 @@ function getAuthorizedSceneSession<TSession extends SceneReconstructSession>(
 interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSession> {
   assistantAppService: AssistantApplicationService<TSession>;
   dispatchSceneAnalysis(input: AnalysisRunDispatchInput): Promise<AnalysisRunDispatchResponse>;
-  getRequestId(req: express.Request): string;
   streamSceneAnalysis(req: express.Request, res: express.Response, sessionId: string): Promise<void>;
   checkSceneHistory(req: express.Request, res: express.Response, sessionId: string): Promise<boolean>;
   projectSceneResult(session: TSession): AgentRuntimeAnalysisResult | undefined;
+  projectSceneError(session: TSession): string | undefined;
   cancelSceneRun(sessionId: string, runId: string): Promise<{status: number; body: Record<string, unknown>}>;
   isSceneReplayOnlyQuery: (query: string) => boolean;
   buildSceneReplayNarrative: (scenes: any[]) => string;
-  normalizeNarrativeForClient: (narrative: string) => string;
   /** Historical report access and publication adapter; execution uses shared dispatch. */
   sceneStoryService: SceneStoryService;
 }
@@ -230,12 +235,12 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
             }
           : null,
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] Scene reconstruction preview error:', error);
-      return res.status(500).json({
-        success: false,
-        error: error?.message ?? 'Failed to compute scene reconstruction preview',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'scene_preview_failed',
+        error: 'Failed to compute scene reconstruction preview',
+        logLabel: '[AgentRoutes] Scene reconstruction preview error',
+      }, error);
     }
   });
 
@@ -268,12 +273,12 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         success: true,
         report: projectSceneReport(report, outputLanguage),
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] getReport error:', error);
-      return res.status(500).json({
-        success: false,
-        error: error?.message ?? 'Failed to load scene reconstruction report',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'scene_report_read_failed',
+        error: 'Failed to load scene reconstruction report',
+        logLabel: '[AgentRoutes] getReport error',
+      }, error);
     }
   });
 
@@ -322,20 +327,20 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       // Legacy cache flags remain accepted, but never select a separate model pipeline.
       const {generateTracks: _tracks, forceRefresh: _refresh, ...analysisOptions} = options;
       const response = await deps.dispatchSceneAnalysis({entry: 'scene_reconstruction',
-        requestId: deps.getRequestId(req), context: requireRequestContext(req),
+        requestId: requestIdOf(req), context: requireRequestContext(req),
         body: {traceId, query, providerId: req.body?.providerId,
           options: {...analysisOptions, outputLanguage, analysisMode: 'full'}}});
       return res.status(response.status).json({...response.body,
         ...(response.body.sessionId ? {analysisId: response.body.sessionId} : {})});
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (sendAiDisabledErrorIfPresent(res, error)) {
         return;
       }
-      console.error('[AgentRoutes] Scene reconstruction start error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to start scene reconstruction',
-      });
+      sendRouteFailure(res, {
+        code: 'scene_reconstruction_start_failed',
+        error: 'Failed to start scene reconstruction',
+        logLabel: '[AgentRoutes] Scene reconstruction start error',
+      }, error);
     }
   });
 
@@ -375,44 +380,35 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       analysisId,
       status: session.status,
     };
+    // Every body comes from `projectSceneResult`: the stored result for this
+    // run, owner-projected exactly as `/:sessionId/status` serves it.
     const canonical = deps.projectSceneResult(session);
     if (canonical?.sceneTimeline) {
       response.result = {narrative: canonical.conclusion, partial: canonical.partial,
         sceneTimeline: projectSceneTimelineForClient(canonical.sceneTimeline), sceneReport: canonical.sceneReport,
         confidence: canonical.confidence, executionTimeMs: canonical.totalDurationMs,
         scenesCount: canonical.sceneTimeline.segments.length};
-      if (session.status === 'failed') response.error = session.error;
-      return res.json(response);
-    }
-
-    // Two completion shapes — legacy agent-driven (session.result) and the
-    // new Scene Story pipeline (session.sceneStoryReport). Surface whichever
-    // is present so polling clients can see "done" for both flows.
-    if (session.status === 'completed') {
-      if (session.result) {
-        const narrative = deps.isSceneReplayOnlyQuery(session.query)
+    } else if (session.status === 'completed' && canonical) {
+      // An agent-driven run without a scene timeline.
+      response.result = {
+        narrative: deps.isSceneReplayOnlyQuery(session.query)
           ? deps.buildSceneReplayNarrative(session.scenes || [])
-          : deps.normalizeNarrativeForClient(session.result.conclusion);
-        response.result = {
-          narrative,
-          confidence: session.result.confidence,
-          executionTimeMs: session.result.totalDurationMs,
-          scenesCount: session.scenes?.length || 0,
-          tracksCount: session.trackEvents?.length || 0,
-        };
-      } else {
-        const sceneStoryReport = session.sceneStoryReport;
-        if (sceneStoryReport) {
-          response.result = projectSceneStoryStatusResult(
-            sceneStoryReport,
-            session.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
-          );
-        }
-      }
+          : canonical.conclusion,
+        confidence: canonical.confidence,
+        executionTimeMs: canonical.totalDurationMs,
+        scenesCount: session.scenes?.length || 0,
+        tracksCount: session.trackEvents?.length || 0,
+      };
+    } else if (session.status === 'completed' && session.sceneStoryReport) {
+      // The Scene Story pipeline.
+      response.result = projectSceneStoryStatusResult(
+        session.sceneStoryReport,
+        session.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
+      );
     }
 
     if (session.status === 'failed') {
-      response.error = session.error;
+      response.error = deps.projectSceneError(session);
     }
 
     res.json(response);
@@ -464,12 +460,12 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         description: route.description,
         result: result.displayResults,
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] Deep-dive error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Deep-dive analysis failed',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'scene_deep_dive_failed',
+        error: 'Deep-dive analysis failed',
+        logLabel: '[AgentRoutes] Deep-dive error',
+      }, error);
     }
   });
 

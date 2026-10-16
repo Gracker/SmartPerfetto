@@ -60,7 +60,7 @@ beforeEach(() => {
     registryOrigin: 'codebase_registry',
     sourceGeneration,
   }, scope);
-  ledger = new CodeLookupLedger('session-patch', 1000, 3, path.join(tmpDir, 'ledger.jsonl'));
+  ledger = new CodeLookupLedger('session-patch', 3, path.join(tmpDir, 'ledger.jsonl'));
   ledger.record({
     turn: 1,
     ts: Date.now(),
@@ -126,7 +126,7 @@ describe('PatchProposer', () => {
   });
 
   it('rejects missing prior lookup and cross-codebase patches', async () => {
-    const emptyLedger = new CodeLookupLedger('empty', 1000, 3, path.join(tmpDir, 'empty.jsonl'));
+    const emptyLedger = new CodeLookupLedger('empty', 3, path.join(tmpDir, 'empty.jsonl'));
     const noPrior = new PatchProposer(store, registry, emptyLedger, scope)
       .propose({contextChunkIds: ['chunk-main'], problem: 'x'});
     expect(noPrior).toMatchObject({patchStatus: 'unverified', unsupportedReason: 'prior_lookup_required'});

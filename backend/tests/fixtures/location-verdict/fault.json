@@ -1,0 +1,197 @@
+{
+  "provenance": {
+    "session": "agent-1791785059500-jxe43xef",
+    "source": "sfix3-fault_a1",
+    "sha256": "e105c3405fef295417f82572d9bc7034dde6e2a613bd1479325419bb7844a949",
+    "note": "Original body excerpts, declarations and prior verifier rows. Raw semantic transport/captures were not persisted; review responses and live test captures are explicitly reconstructed by tests."
+  },
+  "body": "cold（冷启动，置信 high）\n 分析完成：以下为启动耗时归因报告，末尾附机器声明清单 -->\n\n# 启动耗时分析报告：com.tracedemo.startup 冷启动 2050 ms\n\n**结论先行**：本次是 `com.tracedemo.startup`（upid 6 / pid 6700，当前 tra",
+  "claims": [
+    {
+      "id": "c_type",
+      "text": "本次启动 startup_type 为 cold。",
+      "kind": "categorical",
+      "references": [
+        {
+          "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+          "rowIndex": 0,
+          "column": "startup_type",
+          "value": "cold"
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "captured.cell",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "subjectRefs": [
+            {
+              "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+              "rowIndex": 0,
+              "column": "startup_type",
+              "value": "cold"
+            }
+          ],
+          "population": "cited_rows"
+        }
+      }
+    },
+    {
+      "id": "n_dur",
+      "text": "启动总时长（android_startups.dur）为 2050 ms。",
+      "kind": "numeric",
+      "references": [
+        {
+          "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+          "rowIndex": 0,
+          "column": "dur_ms",
+          "value": 2050
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "numeric.cell",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "subjectRefs": [
+            {
+              "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+              "rowIndex": 0,
+              "column": "dur_ms",
+              "value": 2050
+            }
+          ],
+          "population": "cited_rows"
+        },
+        "numeric": {
+          "operator": "eq",
+          "value": 2050,
+          "unit": "ms"
+        }
+      }
+    }
+  ],
+  "priorResults": [
+    {
+      "claimId": "c_type",
+      "status": "partial",
+      "referenceResults": [
+        {
+          "anchorId": "anchor:99b270ed54e0",
+          "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+          "artifactId": "art-2",
+          "sourceToolCallId": "scene-entry:startup_analysis:bdb4a0ef",
+          "column": "startup_type",
+          "status": "matched"
+        }
+      ],
+      "referenceCells": [
+        {
+          "anchorId": "anchor:99b270ed54e0",
+          "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+          "artifactId": "art-2",
+          "sourceToolCallId": "scene-entry:startup_analysis:bdb4a0ef",
+          "column": "startup_type",
+          "status": "matched"
+        }
+      ],
+      "deterministicProof": {
+        "kind": "captured_cell",
+        "status": "proved",
+        "reason": "captured_cell_value_proved",
+        "anchorIds": [
+          "anchor:99b270ed54e0"
+        ],
+        "evidenceRefIds": [
+          "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef"
+        ]
+      },
+      "propositionCoverage": {
+        "status": "complete",
+        "covered": [
+          "predicate",
+          "polarity",
+          "discourse",
+          "quantifier",
+          "modality",
+          "conditions",
+          "scope",
+          "value"
+        ],
+        "uncovered": [],
+        "reason": "complete_typed_proposition_proved"
+      },
+      "semanticReview": {
+        "consistency": "consistent",
+        "contentLocations": [
+          {
+            "start": 644,
+            "end": 661,
+            "textHash": "f016ca49034cd3ed"
+          }
+        ]
+      }
+    },
+    {
+      "claimId": "n_dur",
+      "status": "partial",
+      "referenceResults": [
+        {
+          "anchorId": "anchor:d9d45564dcd9",
+          "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+          "artifactId": "art-2",
+          "sourceToolCallId": "scene-entry:startup_analysis:bdb4a0ef",
+          "column": "dur_ms",
+          "status": "matched"
+        }
+      ],
+      "referenceCells": [
+        {
+          "anchorId": "anchor:d9d45564dcd9",
+          "evidenceRefId": "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef",
+          "artifactId": "art-2",
+          "sourceToolCallId": "scene-entry:startup_analysis:bdb4a0ef",
+          "column": "dur_ms",
+          "status": "matched"
+        }
+      ],
+      "deterministicProof": {
+        "kind": "numeric_cell",
+        "status": "proved",
+        "reason": "numeric_operator_proved",
+        "anchorIds": [
+          "anchor:d9d45564dcd9"
+        ],
+        "evidenceRefIds": [
+          "data:skill:startup_analysis:get_startups:current:19b8596725da:9d0aa86bd66b:bdb4a0ef"
+        ]
+      },
+      "propositionCoverage": {
+        "status": "complete",
+        "covered": [
+          "predicate",
+          "polarity",
+          "discourse",
+          "quantifier",
+          "modality",
+          "conditions",
+          "scope",
+          "numeric"
+        ],
+        "uncovered": [],
+        "reason": "complete_typed_proposition_proved"
+      },
+      "semanticReview": {
+        "consistency": "unknown",
+        "contentLocations": []
+      }
+    }
+  ],
+  "locatedQuote": "cold（冷启动，置信 high）"
+}

@@ -6,6 +6,8 @@
 -- explicitly; no global process-table replacement or synthetic switch boundary.
 -- Capacity extrema require a complete machine population. A missing capacity
 -- on any CPU prevents certifying which recorded CPU is fastest or smallest.
+-- Big/little rollups over core_type follow the contract in
+-- atomic/cpu_topology_view.skill.yaml (big group = prime/big/medium).
 system_cpu_topology AS (
   SELECT c.id AS ucpu,c.cpu,c.machine_id,c.cluster_id,c.capacity,
     CASE WHEN c.recorded_capacity_count<c.machine_cpu_count THEN 'unknown'

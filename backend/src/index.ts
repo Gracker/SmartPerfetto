@@ -6,7 +6,6 @@ configureRuntimeEnvironment();
 import { installEpipeGuard } from './utils/epipeGuard';
 
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import type { Server } from 'http';
 import type { Duplex } from 'stream';
@@ -15,13 +14,8 @@ import type { Duplex } from 'stream';
 import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
-import sqlRoutes from './routes/sql';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
-import perfettoLocalRoutes from './routes/perfettoLocalRoutes';
-import sessionRoutes from './routes/sessionRoutes';
-import perfettoSqlRoutes from './routes/perfettoSqlRoutes';
 import exportRoutes from './routes/exportRoutes';
-import templateAnalysisRoutes from './routes/templateAnalysisRoutes';
 import skillRoutes from './routes/skillRoutes';
 import skillAdminRoutes from './routes/skillAdminRoutes';
 import strategyAdminRoutes from './routes/strategyAdminRoutes';
@@ -46,7 +40,7 @@ import comparisonRoutes from './routes/comparisonRoutes';
 import traceConfigProposalRoutes from './routes/traceConfigProposalRoutes';
 import skillPackRoutes from './routes/skillPackRoutes';
 import batchTraceRoutes from './routes/batchTraceRoutes';
-import traceProcessorProxyRoutes, { handleTraceProcessorProxyUpgrade } from './routes/traceProcessorProxyRoutes';
+import traceProcessorProxyRoutes from './routes/traceProcessorProxyRoutes';
 import applicationUpdateRoutes from './routes/applicationUpdateRoutes';
 import {authenticate, requireRequestContext} from './middleware/auth';
 import { collectEnvCredentialSources } from './agentRuntime/envCredentialSources';
@@ -58,32 +52,41 @@ import {
   AGENT_API_V1_BASE,
   LEGACY_AGENT_API_BASE,
   markLegacyApi,
-  rejectLegacyAgentApi,
 } from './middleware/legacyAgentApi';
+import {
+  rejectLegacyAgentApi,
+  rejectRemovedPerfettoSqlApi,
+  rejectRemovedSessionsApi,
+  rejectRemovedSqlApi,
+  rejectRemovedTemplateAnalysisApi,
+} from './middleware/removedApi';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
 } from './middleware/workspaceRouteContext';
 import {
-  isCorsOriginAllowed,
-  isLoopbackRequestHostname,
   isSsoCookieMutationOriginAllowed,
   normalizeCorsOrigins,
 } from './security/requestOriginPolicy';
+import {
+  createCorsMiddleware,
+  dispatchUpgrade,
+  rejectUntrustedKeylessHost,
+} from './middleware/httpEdge';
 import {rejectEnterpriseUnscopedApi} from './middleware/enterpriseRouteBoundary';
+import {unhandledErrorHandler} from './middleware/unhandledErrorHandler';
+import {requestIdMiddleware} from './middleware/requestId';
 import {hasRbacPermission, sendForbidden} from './services/rbac';
 import {getSmartPerfettoVersion} from './version';
+import {sendResolvedFile} from './utils/sendResolvedFile';
 
 // Import cleanup utilities
 import { TraceProcessorFactory, killOrphanProcessors } from './services/workingTraceProcessor';
 import { shouldCleanOrphanProcessorsOnStartup } from './services/startupCleanupPolicy';
-import { getPortPool, resetPortPool } from './services/portPool';
+import { resetPortPool } from './services/portPool';
 import { failInterruptedAnalysisRunsOnStartup } from './services/analysisRunStore';
-import { startCaseEvolutionWorker } from './services/caseEvolution/caseEvolutionWorkerBootstrap';
+import { caseEvolutionStartupWarnings } from './services/caseEvolution/caseEvolutionConfig';
 import { startPatternMemoryAutoConfirmSweep } from './agentv3/analysisPatternMemory';
-import {
-  startAndroidInternalsPackUpdateWorker,
-} from './services/androidInternalsPack/knowledgePackUpdateWorker';
 import {startApplicationUpdateWorker} from './services/applicationUpdate/applicationUpdateWorker';
 import {installRuntimeShutdownControl} from './services/runtimeShutdownControl';
 import {createActiveHttpResponseTracker} from './services/activeHttpResponseTracker';
@@ -101,6 +104,8 @@ import {
 const app = express();
 const activeHttpResponses = createActiveHttpResponseTracker();
 app.use(activeHttpResponses.middleware);
+// One request id per request, before CORS and body parsing so their failures carry it too.
+app.use(requestIdMiddleware);
 const PORT = serverConfig.port;
 const NODE_ENV = serverConfig.nodeEnv;
 const corsAllowedOrigins = normalizeCorsOrigins(serverConfig.corsOrigins);
@@ -110,16 +115,7 @@ const workspaceRouteContextMiddleware: express.RequestHandler[] = [
   requireWorkspaceRouteContext,
 ];
 
-// Middleware — exact-origin CORS. Port-only matching permits DNS rebinding.
-app.use(cors({
-  origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) => {
-    // No Origin header (server-to-server, curl, etc.) → allow
-    if (!requestOrigin) return callback(null, true);
-    if (isCorsOriginAllowed(requestOrigin, corsAllowedOrigins)) return callback(null, true);
-    callback(new Error(`CORS blocked: ${requestOrigin}`));
-  },
-  credentials: true,
-}));
+app.use(createCorsMiddleware(corsAllowedOrigins));
 
 // A browser session cookie may authenticate every API surface. CORS controls
 // response visibility, but it does not stop a cross-site form from sending a
@@ -150,16 +146,9 @@ app.use('/api', (req, res, next) => {
 app.use(express.json({ limit: serverConfig.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 
-// In keyless local mode, reject Host-header DNS rebinding even though the
-// process itself listens only on loopback by default.
-app.use('/api', (req, res, next) => {
-  const keylessLocalMode = !process.env.SMARTPERFETTO_API_KEY && !resolveFeatureConfig(process.env).enterprise;
-  if (keylessLocalMode && !isLoopbackRequestHostname(req.hostname)) {
-    res.status(403).json({success: false, error: 'Untrusted Host in local keyless mode'});
-    return;
-  }
-  next();
-});
+// In keyless local mode, reject Host-header DNS rebinding. WebSocket upgrades
+// skip Express; `dispatchUpgrade` applies the same rule to them.
+app.use('/api', rejectUntrustedKeylessHost);
 
 // Authentication is the default for the complete API surface. OIDC/session
 // bootstrap endpoints own their public-vs-authenticated decisions internally.
@@ -206,7 +195,7 @@ app.get('/api/debug', requireRuntimeDiagnosticsPermission, (_req, res) => {
 app.use('/api/application-update', applicationUpdateRoutes);
 
 // API routes
-app.use('/api/sql', sqlRoutes);
+app.use('/api/sql', rejectRemovedSqlApi);
 app.use('/api/auth', enterpriseAuthRoutes);
 app.use('/api/auth', enterpriseApiKeyRoutes);
 app.use('/api/tenant', enterpriseTenantRoutes);
@@ -275,11 +264,10 @@ app.use(
   ),
   simpleTraceRoutes,
 );
-app.use('/api/perfetto', rejectEnterpriseUnscopedApi, perfettoLocalRoutes);
-app.use('/api/sessions', rejectEnterpriseUnscopedApi, sessionRoutes);
-app.use('/api/perfetto-sql', rejectEnterpriseUnscopedApi, perfettoSqlRoutes);
+app.use('/api/sessions', rejectRemovedSessionsApi);
+app.use('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 app.use('/api/export', exportRoutes);
-app.use('/api/template-analysis', rejectEnterpriseUnscopedApi, templateAnalysisRoutes);
+app.use('/api/template-analysis', rejectRemovedTemplateAnalysisApi);
 app.use('/api/skills', rejectEnterpriseUnscopedApi, skillRoutes);
 app.use('/api/admin/runtime', enterpriseRuntimeDashboardRoutes);
 app.use('/api/admin', skillAdminRoutes);
@@ -321,20 +309,15 @@ app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
 
 const assistantShellDir = path.resolve(__dirname, '../public/assistant-shell');
 app.get('/assistant-shell', (_req, res) => {
-  res.sendFile(path.join(assistantShellDir, 'index.html'));
+  sendResolvedFile(res, path.join(assistantShellDir, 'index.html'));
 });
 app.use('/assistant-shell', express.static(assistantShellDir));
 
 const adminControlPlaneDir = path.resolve(__dirname, '../public/admin-control-plane');
 app.get('/admin-control-plane', (_req, res) => {
-  res.sendFile(path.join(adminControlPlaneDir, 'index.html'));
+  sendResolvedFile(res, path.join(adminControlPlaneDir, 'index.html'));
 });
 app.use('/admin-control-plane', express.static(adminControlPlaneDir));
-
-// Serve uploaded files in development
-if (NODE_ENV === 'development') {
-  app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
-}
 
 // 404 handler
 app.use((req, res) => {
@@ -344,16 +327,7 @@ app.use((req, res) => {
   });
 });
 
-// Global error handler
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Unhandled error:', err);
-
-  res.status(err.status || 500).json({
-    error: 'Internal server error',
-    message: NODE_ENV === 'development' ? err.message : 'Something went wrong',
-    ...(NODE_ENV === 'development' && { stack: err.stack }),
-  });
-});
+app.use(unhandledErrorHandler);
 
 // Initialize services
 function recoverInterruptedEnterpriseRuns(): void {
@@ -390,13 +364,12 @@ for (const warning of selfEvolutionLifecycle.warnings) {
 for (const error of selfEvolutionLifecycle.errors) {
   console.error(`[SelfEvolution] ${error.message}`);
 }
+for (const warning of caseEvolutionStartupWarnings()) {
+  console.warn(`[CaseEvolution] ${warning}`);
+}
 
-let caseEvolutionWorkerHandle:
-  ReturnType<typeof startCaseEvolutionWorker> | undefined;
 let patternMemorySweepHandle:
   ReturnType<typeof startPatternMemoryAutoConfirmSweep> | undefined;
-let androidInternalsPackUpdateWorkerHandle:
-  ReturnType<typeof startAndroidInternalsPackUpdateWorker> | undefined;
 let applicationUpdateWorkerHandle:
   ReturnType<typeof startApplicationUpdateWorker> | undefined;
 let traceProcessorLeaseSupervisorHandle:
@@ -419,14 +392,8 @@ function gracefulShutdown(signal: string) {
   console.log('🔌 Resetting port pool...');
   resetPortPool();
 
-  console.log('🧠 Stopping case evolution worker...');
-  caseEvolutionWorkerHandle?.stop();
-
   console.log('🧠 Stopping pattern memory sweep...');
   patternMemorySweepHandle?.stop();
-
-  console.log('📚 Stopping Android Internals Knowledge Pack updater...');
-  androidInternalsPackUpdateWorkerHandle?.stop();
 
   console.log('⬆️ Stopping application update checker...');
   applicationUpdateWorkerHandle?.stop();
@@ -506,10 +473,7 @@ async function startBackend(): Promise<void> {
     );
   }
 
-  caseEvolutionWorkerHandle = startCaseEvolutionWorker();
   patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
-  androidInternalsPackUpdateWorkerHandle =
-    startAndroidInternalsPackUpdateWorker();
   applicationUpdateWorkerHandle = startApplicationUpdateWorker();
   traceProcessorLeaseSupervisorHandle =
     startTraceProcessorLeaseSupervisor();
@@ -540,8 +504,7 @@ async function startBackend(): Promise<void> {
   server.on('upgrade', (req, socket, head) => {
     upgradedSockets.add(socket);
     socket.once('close', () => upgradedSockets.delete(socket));
-    if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
-    socket.destroy();
+    dispatchUpgrade(req, socket, head, corsAllowedOrigins);
   });
 
   server.on('close', () => {

@@ -245,37 +245,6 @@ function failIfExceeded(state: EvaluationTelemetryState): void {
   }
 }
 
-export function reserveEvaluationTokens(tokens: number): void {
-  const state = requireState();
-  if (state.capabilities.tokens !== 'hard_request_bound') {
-    throw new Error('evaluation_token_reservation_not_supported');
-  }
-  state.tokensReserved += nonnegativeFinite(
-    tokens,
-    'evaluation_token_reservation_invalid',
-  );
-  failIfExceeded(state);
-}
-
-export function settleEvaluationTokens(input: {
-  reserved?: number;
-  used: number;
-}): void {
-  const state = requireState();
-  const reserved = nonnegativeFinite(
-    input.reserved ?? 0,
-    'evaluation_token_reservation_invalid',
-  );
-  state.tokensReserved = Math.max(0, state.tokensReserved - reserved);
-  const used = nonnegativeFinite(
-    input.used,
-    'evaluation_token_usage_invalid',
-  );
-  state.tokensUsed += used;
-  state.tokenBreakdown.unclassified += used;
-  failIfExceeded(state);
-}
-
 export function recordEvaluationObservedTokenTotal(total: number): void {
   const state = requireState();
   const normalized = nonnegativeFinite(

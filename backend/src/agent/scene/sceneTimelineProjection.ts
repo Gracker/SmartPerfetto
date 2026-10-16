@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {projectCodeAwareStructuredText, withOwnerCodeAwareProjection} from '../../services/security/codeAwareOutputRegistry';
-import type {SceneTimelineAssessment, SceneSegmentAssessment} from './sceneTimelineContract';
+import type {SceneTimelineAssessment} from './sceneTimelineContract';
 import type {SceneTimelineView} from '../../types/sceneTimeline';
 import {assertSceneRunActive, sceneRunState, type SceneRunContext} from './sceneRunContext';
 import {assessSceneScanCoverage} from './sceneScanCoverage';

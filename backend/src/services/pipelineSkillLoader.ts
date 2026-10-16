@@ -16,44 +16,20 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import type { RenderingArchitectureType } from '../agent/detectors/types';
+import {
+  RENDERING_ARCHITECTURE_TYPES,
+  type RenderingArchitectureType,
+} from '../agent/detectors/types';
 import type {
   PipelineCandidate,
   RelatedRenderingTypeCandidate,
 } from '../types/teaching.types';
 
-const RENDERING_ARCHITECTURE_TYPES = new Set<RenderingArchitectureType>([
-  'STANDARD',
-  'FLUTTER',
-  'WEBVIEW',
-  'COMPOSE',
-  'SURFACEVIEW',
-  'GLSURFACEVIEW',
-  'SOFTWARE',
-  'MIXED',
-  'GAME_ENGINE',
-  'CAMERA',
-  'VIDEO_OVERLAY',
-  'REACT_NATIVE',
-  'UNKNOWN',
-]);
+const RENDERING_ARCHITECTURE_TYPE_SET: ReadonlySet<string> = new Set(RENDERING_ARCHITECTURE_TYPES);
 
 // =============================================================================
 // Types
 // =============================================================================
-
-export interface PipelineThreadRole {
-  thread: string;
-  role: string;
-  description: string;
-  trace_tags?: string;
-}
-
-export interface PipelineKeySlice {
-  name: string;
-  thread: string;
-  description: string;
-}
 
 export interface SmartFilterConfig {
   enabled: boolean;
@@ -236,7 +212,7 @@ class PipelineSkillLoaderClass {
       if (!['app', 'global'].includes(entry.signal_scope)) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid signal scope`);
       }
-      if (!RENDERING_ARCHITECTURE_TYPES.has(entry.architecture_type)) {
+      if (!RENDERING_ARCHITECTURE_TYPE_SET.has(entry.architecture_type)) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid architecture type`);
       }
       if (entry.classification_role === 'variant') {
@@ -676,25 +652,9 @@ export function getPipelineSkillLoader(): PipelineSkillLoaderClass {
 }
 
 /**
- * Convenience function to get auto-pin instructions
- */
-export async function getAutoPinInstructions(pipelineId: string): Promise<PinInstruction[]> {
-  await ensurePipelineSkillsInitialized();
-  return pipelineSkillLoader.getAutoPinInstructions(pipelineId);
-}
-
-/**
  * Convenience function to get teaching content
  */
 export async function getTeachingContent(pipelineId: string): Promise<TeachingReference | null> {
   await ensurePipelineSkillsInitialized();
   return pipelineSkillLoader.getTeachingContent(pipelineId);
-}
-
-/**
- * Convenience function to get smart filter configs
- */
-export async function getSmartFilterConfigs(pipelineId: string): Promise<Map<string, SmartFilterConfig>> {
-  await ensurePipelineSkillsInitialized();
-  return pipelineSkillLoader.getSmartFilterConfigs(pipelineId);
 }

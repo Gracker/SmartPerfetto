@@ -7,7 +7,17 @@ import type { QuickRunContextInjectedCounts } from '../agent/core/orchestratorTy
 import type { Finding, SubAgentResult } from '../agent/types';
 import type { ComparisonContext, TracePairContext } from '../agentv3/types';
 import type {ArchitectureInfo} from '../agent/detectors/types';
-import {detectFocusApps} from '../agentv3/focusAppDetector';
+import {
+  detectFocusApps,
+  focusAppTimeRangeFromSelection,
+  type FocusAppDetectionResult,
+  type FocusAppTimeRange,
+} from '../agentv3/focusAppDetector';
+import {
+  hasFocusAppDetectionData,
+  resolveFocusAppTarget,
+} from './focusAppTarget';
+import type {RuntimeTurnPolicy} from './runtimeTurnPolicy';
 import {createArchitectureDetector} from '../agent/detectors/architectureDetector';
 import type {TraceProcessorService} from '../services/traceProcessorService';
 import {
@@ -17,12 +27,42 @@ import {
 } from '../agentv3/outputLanguage';
 import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
 import {renderAnalysisHistoryContext, toAnalysisHistoryTurn} from './analysisHistory';
+import {
+  buildNegativePatternSection,
+  buildPatternContextSection,
+  extractTraceFeatures,
+} from '../agentv3/analysisPatternMemory';
+import {buildCaseBackgroundContext} from '../services/caseEvolution/caseBackgroundContext';
+import type {KnowledgeScope} from '../services/scopedKnowledgeStore';
 
 function freezeComparisonContext<T>(value: T, seen = new Set<object>()): T {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
   seen.add(value);
   Object.values(value).forEach(child => freezeComparisonContext(child, seen));
   return Object.freeze(value);
+}
+
+/**
+ * The run's focus-app detection, shared by every runtime: it runs only when the
+ * turn's preflight gathers trace facts, scoped to `timeRange` or else to the
+ * selection's range. `measure` wraps the detection (a runtime phase span, a
+ * non-fatal failure); `undefined` means no detection, which
+ * `resolveFocusAppTarget` reads as nothing detected.
+ */
+export async function detectRunFocusApps(input: {
+  traceProcessorService: TraceProcessorService;
+  traceId: string;
+  preflight: RuntimeTurnPolicy['preflight'];
+  selectionContext?: Parameters<typeof focusAppTimeRangeFromSelection>[0];
+  /** An explicit scope that overrides the selection's range (Qoder accepts one in its options). */
+  timeRange?: FocusAppTimeRange;
+  measure?: (detect: () => Promise<FocusAppDetectionResult>) => Promise<FocusAppDetectionResult | undefined>;
+}): Promise<FocusAppDetectionResult | undefined> {
+  if (input.preflight === 'none') return undefined;
+  const detect = () => detectFocusApps(input.traceProcessorService, input.traceId, {
+    timeRange: input.timeRange ?? focusAppTimeRangeFromSelection(input.selectionContext),
+  });
+  return input.measure ? input.measure(detect) : detect();
 }
 
 /** Pure pair identity. Presence of a reference trace does not authorize a probe. */
@@ -55,11 +95,7 @@ export async function buildRuntimeTracePairComparisonContext(input: {
   const referenceTraceId = identity.referenceTraceId;
   const capabilitySql = "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND (name LIKE 'android_%' OR name LIKE 'linux_%' OR name LIKE 'sched_%' OR name LIKE 'slices_%')";
   const [referenceFocus, referenceArchitecture, currentTables, referenceTables] = await Promise.all([
-    detectFocusApps(input.traceProcessorService, referenceTraceId).catch(() => ({
-      apps: [],
-      method: 'none' as const,
-      primaryApp: undefined,
-    })),
+    detectFocusApps(input.traceProcessorService, referenceTraceId).catch(() => undefined),
     (input.detectReferenceArchitecture
       ? input.detectReferenceArchitecture(referenceTraceId)
       : createArchitectureDetector().detect({
@@ -92,10 +128,13 @@ export async function buildRuntimeTracePairComparisonContext(input: {
     }
   }
 
+  // The reference side has no user-named package: only a confident inference
+  // becomes its effective package, and the candidates travel with it.
+  const referenceFocusTarget = referenceFocus ? resolveFocusAppTarget({focusResult: referenceFocus}) : undefined;
   return {
     ...identity,
-    referencePackageName: referenceFocus.primaryApp,
-    referenceFocusApps: referenceFocus.apps.length > 0 ? referenceFocus.apps : undefined,
+    referencePackageName: referenceFocusTarget?.packageName,
+    ...(hasFocusAppDetectionData(referenceFocusTarget) ? {referenceFocusTarget} : {}),
     referenceArchitecture,
     commonCapabilities,
     capabilityProbeStatus: capabilityProbeSucceeded ? 'checked' : 'unavailable',
@@ -150,10 +189,6 @@ export interface QuickConversationContextTurn {
   completed: boolean;
 }
 
-interface FindingSessionContext<TFinding extends Pick<Finding, 'title'>> {
-  getAllTurns?: () => Array<{ findings?: TFinding[] }>;
-}
-
 export function buildQuickConversationContext(
   previousTurns: QuickConversationContextTurn[],
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
@@ -195,6 +230,35 @@ function countRecentSqlResultSections(text: string | undefined): number {
   const matches = text.match(/SQL Result\s+\d+/gi);
   if (matches && matches.length > 0) return matches.length;
   return 1;
+}
+
+export interface RuntimeMemoryContext {
+  patternContext?: string;
+  negativePatternContext?: string;
+  caseBackgroundContext?: string;
+}
+
+/**
+ * The cross-session memory an automatic prefetch puts into a prompt, the tier
+ * `allowMemoryPrefetch` gates. Every run reads the same admitted memory, a
+ * private one included (`security/durableLearning.ts`, `security/caseCuration.ts`).
+ */
+export function buildRuntimeMemoryContext(input: {
+  allowMemoryPrefetch: boolean;
+  sceneType: string;
+  architectureType?: string;
+  packageName?: string;
+  knowledgeScope?: KnowledgeScope;
+  outputLanguage: OutputLanguage;
+}): RuntimeMemoryContext {
+  if (!input.allowMemoryPrefetch) return {};
+  const {sceneType, architectureType, knowledgeScope, outputLanguage} = input;
+  const features = extractTraceFeatures({architectureType, sceneType, packageName: input.packageName});
+  return {
+    patternContext: buildPatternContextSection(features, knowledgeScope),
+    negativePatternContext: buildNegativePatternSection(features, knowledgeScope),
+    caseBackgroundContext: buildCaseBackgroundContext(sceneType, architectureType, knowledgeScope, {outputLanguage}),
+  };
 }
 
 export function buildQuickMemoryContextPayload(input: QuickMemoryContextInput): QuickMemoryContextPayload {
@@ -264,21 +328,6 @@ export function buildQuickMemoryContextPayload(input: QuickMemoryContextInput): 
 
 export function buildQuickMemoryContext(input: QuickMemoryContextInput): string | undefined {
   return buildQuickMemoryContextPayload(input).text;
-}
-
-export function collectRecentFindings<TFinding extends Pick<Finding, 'title'> = Finding>(
-  sessionContext: FindingSessionContext<TFinding>,
-  options: { maxTurns?: number; maxFindings?: number } = {},
-): TFinding[] {
-  try {
-    let turns = sessionContext.getAllTurns?.() ?? [];
-    if (options.maxTurns && options.maxTurns > 0) {
-      turns = turns.slice(-options.maxTurns);
-    }
-    return turns.flatMap(turn => turn.findings ?? []).slice(-(options.maxFindings ?? 5));
-  } catch {
-    return [];
-  }
 }
 
 /**

@@ -102,7 +102,10 @@ export const STANDARD_COMPARISON_METRICS: readonly NormalizedMetricDefinition[] 
   { key: 'trace.capture_config_summary', label: 'Capture config', group: 'environment', unit: 'text', direction: 'neutral', aggregation: 'single' },
 ] as const;
 
-export const STANDARD_COMPARISON_METRIC_KEYS = STANDARD_COMPARISON_METRICS.map(metric => metric.key);
+/** Standard metrics describe the analysed app; only trace environment metrics read any scope. */
+export function standardMetricDescribesApp(definition: Pick<NormalizedMetricDefinition, 'group'>): boolean {
+  return definition.group !== 'environment';
+}
 
 export interface TraceComparisonMetadata {
   appPackage?: string;
@@ -132,7 +135,8 @@ export interface AnalysisSummary {
   investigationAssessment?: import('./analysisInvestigationAssessment').FinalInvestigationAssessment;
   deliveryAssurance?: import('./analysisDelivery').AnalysisDeliveryAssurance;
   sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
-  sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').SourceClaimVerificationResult;
+  sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+  knowledgeUse?: import('../services/knowledge/knowledgeUse').KnowledgeUseV1;
   details?: string[];
   risks?: string[];
   recommendations?: string[];
@@ -147,11 +151,21 @@ export interface NormalizedMetricSource {
   type: NormalizedMetricSourceType;
   skillId?: string;
   stepId?: string;
+  /** Child step of an iterator envelope whose per-item section supplied the value. */
+  section?: string;
+  /** Index of that iterator item (the event window the value describes). */
+  itemIndex?: number;
   dataEnvelopeId?: string;
   reportId?: string;
   messageId?: string;
   sql?: string;
   backfillRunId?: string;
+  /**
+   * Definition the producer declared for this value (a `<column>_definition`
+   * on its row). Values compare only under the same declaration; historical
+   * and undeclared values have none.
+   */
+  metricDefinition?: string;
 }
 
 export interface NormalizedMetricValue {
@@ -246,6 +260,11 @@ export interface AnalysisResultSnapshot {
   reportId?: string;
   createdBy?: string;
   visibility: AnalysisResultVisibility;
+  /**
+   * Fixed when the snapshot is written. A private or unknown context keeps it
+   * with its creator and ignores `visibility: 'workspace'`.
+   */
+  privateContext: import('../services/security/analysisPrivateContext').AnalysisPrivateContextMarker;
   sceneType: AnalysisResultSceneType;
   title: string;
   userQuery: string;
@@ -269,7 +288,7 @@ export interface AnalysisResultWindowState {
   tenantId: string;
   workspaceId: string;
   windowId: string;
-  userId?: string;
+  userId: string;
   traceId?: string;
   backendTraceId?: string;
   activeSessionId?: string;
@@ -384,6 +403,8 @@ export interface MultiTraceComparisonRun {
   createdBy?: string;
   inputSnapshotIds: string[];
   baselineSnapshotId?: string;
+  /** Union of the input snapshots' markers, fixed when the comparison is created. */
+  privateContext: import('../services/security/analysisPrivateContext').AnalysisPrivateContextMarker;
   query: string;
   metricKeys?: ComparisonMetricKey[];
   status: MultiTraceComparisonRunStatus;

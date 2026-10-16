@@ -56,8 +56,6 @@ export interface ClaudeAgentConfig {
   effort: EffortLevel;
   /** Enable sub-agent delegation (frame-expert, system-expert, startup-expert). Default: false */
   enableSubAgents: boolean;
-  /** Enable conclusion verification (heuristic + LLM). Default: false */
-  enableVerification: boolean;
   /** Per sub-agent timeout in ms. Sub-agents exceeding this are stopped via stopTask(). Default: 120000 (2min) */
   subAgentTimeoutMs: number;
   /** Sub-agent model shorthand. Defaults to 'sonnet'.
@@ -78,9 +76,6 @@ export interface ClaudeAgentConfig {
   /** Per-turn timeout (ms) for the quick analysis pipeline. Default: 40_000 (40s/turn).
    *  Override via CLAUDE_QUICK_PER_TURN_MS. */
   quickPathPerTurnMs: number;
-  /** Timeout (ms) for the single-turn verifier LLM call. Default: 60_000.
-   *  Override via CLAUDE_VERIFIER_TIMEOUT_MS (raise when CLAUDE_LIGHT_MODEL is not Haiku). */
-  verifierTimeoutMs: number;
   /** Timeout (ms) for the single-turn query complexity classifier. Default: 30_000.
    *  Override via CLAUDE_CLASSIFIER_TIMEOUT_MS. */
   classifierTimeoutMs: number;
@@ -123,7 +118,6 @@ function loadClaudeConfigFromEnv(
     cwd: overrides?.cwd ?? env.CLAUDE_CWD ?? process.cwd(),
     effort: (overrides?.effort ?? env.CLAUDE_EFFORT ?? DEFAULT_EFFORT) as EffortLevel,
     enableSubAgents: overrides?.enableSubAgents ?? env.CLAUDE_ENABLE_SUB_AGENTS === 'true',
-    enableVerification: overrides?.enableVerification ?? (env.CLAUDE_ENABLE_VERIFICATION !== 'false'),
     subAgentTimeoutMs: overrides?.subAgentTimeoutMs
       ?? (env.CLAUDE_SUB_AGENT_TIMEOUT_MS ? parseInt(env.CLAUDE_SUB_AGENT_TIMEOUT_MS, 10) : 120_000),
     subAgentModel: (env.CLAUDE_SUB_AGENT_MODEL as ClaudeAgentConfig['subAgentModel']) || undefined,
@@ -157,8 +151,6 @@ function loadClaudeConfigFromEnv(
       ),
     quickPathPerTurnMs: overrides?.quickPathPerTurnMs
       ?? (env.CLAUDE_QUICK_PER_TURN_MS ? parseInt(env.CLAUDE_QUICK_PER_TURN_MS, 10) : 40_000),
-    verifierTimeoutMs: overrides?.verifierTimeoutMs
-      ?? (env.CLAUDE_VERIFIER_TIMEOUT_MS ? parseInt(env.CLAUDE_VERIFIER_TIMEOUT_MS, 10) : 60_000),
     classifierTimeoutMs: overrides?.classifierTimeoutMs
       ?? (env.CLAUDE_CLASSIFIER_TIMEOUT_MS ? parseInt(env.CLAUDE_CLASSIFIER_TIMEOUT_MS, 10) : 30_000),
     outputLanguage: overrides?.outputLanguage
@@ -420,7 +412,7 @@ export function isClaudeQuotaError(message: string): boolean {
 }
 
 export interface CredentialSourceHint {
-  source: 'provider-manager' | 'env-or-default';
+  source: 'provider-manager' | 'env-or-default' | 'provider-store-unreadable';
   providerName?: string;
   providerType?: string;
   providerRuntime?: string;
@@ -433,13 +425,20 @@ export function getCredentialSourceHint(
   providerScope?: ProviderScope,
 ): CredentialSourceHint {
   const envCredentialSources = collectEnvCredentialSources(process.env, 'env');
-  const { getProviderService } = require('../../../services/providerManager');
+  const { getProviderService, ProviderStoreUnreadableError } = require('../../../services/providerManager');
   const svc = getProviderService();
-  const provider = typeof providerId === 'string'
-    ? svc.getRawProvider(providerId, providerScope)
-    : providerId === null
-      ? undefined
-      : svc.getRawEffectiveProvider(providerScope);
+  let provider;
+  try {
+    provider = typeof providerId === 'string'
+      ? svc.getRawProvider(providerId, providerScope)
+      : providerId === null
+        ? undefined
+        : svc.getRawEffectiveProvider(providerScope);
+  } catch (error) {
+    // This explains another failure, so it must not throw in its place.
+    if (!(error instanceof ProviderStoreUnreadableError)) throw error;
+    return { source: 'provider-store-unreadable', envCredentialSources, providerOverridesEnv: false };
+  }
 
   if (provider) {
     return {
@@ -461,6 +460,13 @@ export function getCredentialSourceHint(
 
 function credentialSourceHintText(hint: CredentialSourceHint | undefined, lang: OutputLanguage): string {
   if (!hint) return '';
+  if (hint.source === 'provider-store-unreadable') {
+    return '\n\n' + localize(
+      lang,
+      '当前凭证来源未知：providers.json 无法读取，无法确定 active provider。请修复或移走该文件后重试。',
+      'Current credential source is unknown: providers.json could not be read, so the active provider cannot be determined. Repair or move the file, then retry.',
+    );
+  }
   if (hint.source === 'provider-manager') {
     const providerLabel = `${hint.providerName || 'unnamed'}${hint.providerType ? ` (${hint.providerType})` : ''}`;
     const overrideText = hint.providerOverridesEnv
@@ -529,15 +535,6 @@ export function explainClaudeRuntimeError(
 }
 
 /**
- * Check if ClaudeRuntime (agentv3) is the active orchestrator.
- * Defaults to true unless the explicit runtime is OpenAI Agents SDK.
- */
-export function isClaudeCodeEnabled(): boolean {
-  const runtime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
-  return !runtime || runtime === 'claude-agent-sdk';
-}
-
-/**
  * Create a lightweight config for quick (factual) queries.
  * Reduces maxTurns, effort, and disables verification/sub-agents
  * to optimize for fast response on simple questions.
@@ -559,7 +556,6 @@ export function createQuickConfig(
       quickMaxTurns,
     ),
     effort: 'low',
-    enableVerification: false,
     enableSubAgents: false,
   };
 }
@@ -580,7 +576,7 @@ interface AutoBinaryResolution {
 
 let autoBinaryCache: AutoBinaryResolution | null = null;
 
-/** Test-only: reset the auto-detection memo. */
+/** @internal Test-only: reset the auto-detection memo. */
 export function resetSdkBinaryOptionCache(): void {
   autoBinaryCache = null;
 }
@@ -804,7 +800,6 @@ export function runtimeConfigForProviderEnv(
     maxBudgetUsd: providerEnv.CLAUDE_MAX_BUDGET_USD ? loaded.maxBudgetUsd : baseConfig.maxBudgetUsd,
     effort: providerEnv.CLAUDE_EFFORT ? loaded.effort : baseConfig.effort,
     enableSubAgents: providerEnv.CLAUDE_ENABLE_SUB_AGENTS !== undefined ? loaded.enableSubAgents : baseConfig.enableSubAgents,
-    enableVerification: providerEnv.CLAUDE_ENABLE_VERIFICATION !== undefined ? loaded.enableVerification : baseConfig.enableVerification,
     subAgentTimeoutMs: providerEnv.CLAUDE_SUB_AGENT_TIMEOUT_MS ? loaded.subAgentTimeoutMs : baseConfig.subAgentTimeoutMs,
     fullPathPerTurnMs: providerEnv.CLAUDE_FULL_PER_TURN_MS ? loaded.fullPathPerTurnMs : baseConfig.fullPathPerTurnMs,
     fullRequestTimeoutMs: providerEnv.CLAUDE_FULL_REQUEST_TIMEOUT_MS
@@ -817,7 +812,6 @@ export function runtimeConfigForProviderEnv(
       ? loaded.streamIdleTimeoutMs
       : baseConfig.streamIdleTimeoutMs,
     quickPathPerTurnMs: providerEnv.CLAUDE_QUICK_PER_TURN_MS ? loaded.quickPathPerTurnMs : baseConfig.quickPathPerTurnMs,
-    verifierTimeoutMs: providerEnv.CLAUDE_VERIFIER_TIMEOUT_MS ? loaded.verifierTimeoutMs : baseConfig.verifierTimeoutMs,
     classifierTimeoutMs: providerEnv.CLAUDE_CLASSIFIER_TIMEOUT_MS ? loaded.classifierTimeoutMs : baseConfig.classifierTimeoutMs,
   };
 }

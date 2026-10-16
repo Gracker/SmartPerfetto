@@ -17,6 +17,7 @@ import {buildDeterministicExternalIssueReview} from '../deterministicFallback';
 import {resolveExternalIssueProviderPin} from '../providerPin';
 import {buildExternalIssueTriagePrompt} from '../triagePrompt';
 import {runExternalIssueTriage} from '../triageRunner';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 function manifest(
   overrides: Partial<RunManifestV1> = {},
@@ -205,6 +206,22 @@ describe('external issue reporting services', () => {
       opportunity.signals.find(item => item.kind === 'unsupported_claim')
         ?.references.evidenceRefIds,
     ).toEqual(['evidence-1']);
+  });
+
+  it('does not triage the by-design partial claims of an answer whose review was not required', () => {
+    const [baseClaim] = source().completedData.claimSupport as Array<Record<string, unknown>>;
+    const partialClaim = {...baseClaim, claimId: 'claim-partial', supportLevel: 'partial'};
+    const verification = (notCheckedReason: string) => ({schemaVersion: 'claim_verifier@2', policy: 'record_only',
+      status: 'partial', passed: false, checkedClaimCount: 1, unsupportedClaimCount: 0, issues: [],
+      claimResults: [{claimId: 'claim-partial', status: 'partial'}], notCheckedReason});
+    const run = (notCheckedReason: string) => detectExternalIssueOpportunity(source({
+      completedData: {...source().completedData, claimSupport: [partialClaim],
+        claimVerificationResult: verification(notCheckedReason)},
+    })).signals.map(item => item.kind);
+    expect(run('not_required')).not.toContain('uncertain_claim');
+    expect(run('not_required')).not.toContain('partial_quality_gate');
+    // An unfinished review is still a triage signal.
+    expect(run('timeout')).toEqual(expect.arrayContaining(['uncertain_claim', 'partial_quality_gate']));
   });
 
   it('turns durable negative feedback into an Agent-triage opportunity', () => {
@@ -838,6 +855,7 @@ describe('external issue reporting services', () => {
         getCompletedEvent: () => event,
         getManifest: () => run.manifest,
         hasNegativeFeedback: () => false,
+        getRunPrivateContext: () => NO_PRIVATE_CONTEXT,
       },
     );
     expect(resolved.ok).toBe(true);
@@ -856,6 +874,7 @@ describe('external issue reporting services', () => {
         getCompletedEvent: () => event,
         getManifest: () => run.manifest,
         hasNegativeFeedback: () => false,
+        getRunPrivateContext: () => NO_PRIVATE_CONTEXT,
       },
     );
     expect(mismatch).toEqual(expect.objectContaining({
@@ -882,11 +901,26 @@ describe('external issue reporting services', () => {
         }),
         getManifest: () => run.manifest,
         hasNegativeFeedback: () => false,
+        // The older event witness still refuses, whatever the run marker says.
+        getRunPrivateContext: () => NO_PRIVATE_CONTEXT,
       },
     );
     expect(privateResult).toEqual(expect.objectContaining({
       ok: false,
       code: 'private_analysis',
     }));
+
+    const request = {sessionId: 'session-1', runId: 'run-1', runManifestId: 'manifest-1'};
+    const scope = {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'};
+    for (const runPrivateContext of [{codebase: false, knowledge: true}, 'unknown' as const]) {
+      // A marked run, and a run written before markers existed, are refused
+      // even when the completed event carries no projection flag.
+      expect(resolveExternalIssueSourceRun(request, scope, {
+        getCompletedEvent: () => event,
+        getManifest: () => run.manifest,
+        hasNegativeFeedback: () => false,
+        getRunPrivateContext: () => runPrivateContext,
+      })).toEqual(expect.objectContaining({ok: false, code: 'private_analysis'}));
+    }
   });
 });

@@ -4,6 +4,7 @@
 
 import { copyScopeProvenance, scopeMetadata, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from './identityContract';
 import type {SceneTimelineView, SceneReportReference} from './sceneTimeline';
+import {claimUnitFor} from '../utils/claimUnits';
 
 /**
  * SmartPerfetto Data Contract
@@ -109,8 +110,8 @@ export interface ColumnDefinition {
   /** For timestamp click actions, the associated duration column for range selection */
   durationColumn?: string;
 
-  /** Time unit for timestamp/duration columns (default: 'ns') */
-  unit?: 'ns' | 'us' | 'ms' | 's';
+  /** Authored quantity unit; timestamp/duration columns accept time units only. */
+  unit?: string;
 
   /** Whether this column should be hidden by default */
   hidden?: boolean;
@@ -211,6 +212,17 @@ export function inferColumnDefinition(columnName: string): ColumnDefinition {
 const VALID_COLUMN_UNITS = ['ns', 'us', 'ms', 's'] as const;
 const VALID_COLUMN_WIDTHS = ['narrow', 'medium', 'wide', 'auto'] as const;
 
+/** Formatting and column-name inference never establish a quantity's unit. */
+export function isValidColumnUnit(type: unknown, unit: unknown): unit is string {
+  if (typeof unit !== 'string') return false;
+  if (type === undefined || type === 'timestamp' || type === 'duration')
+    return VALID_COLUMN_UNITS.includes(unit as typeof VALID_COLUMN_UNITS[number]);
+  const dimension = claimUnitFor(unit)?.dimension;
+  if (type === 'percentage') return dimension === 'ratio';
+  if (type === 'bytes') return dimension === 'bytes';
+  return type === 'number' && dimension !== undefined;
+}
+
 function normalizeDisplayLayer(layer: unknown): DisplayLayer {
   return typeof layer === 'string' && isValidDisplayLayer(layer) ? layer : 'list';
 }
@@ -238,7 +250,7 @@ function sanitizeColumnDefinition(name: string, explicit?: Partial<ColumnDefinit
   if (VALID_COLUMN_FORMATS.includes(explicit.format as ColumnFormat)) column.format = explicit.format as ColumnFormat;
   if (VALID_CLICK_ACTIONS.includes(explicit.clickAction as ClickAction)) column.clickAction = explicit.clickAction as ClickAction;
   if (typeof explicit.durationColumn === 'string') column.durationColumn = explicit.durationColumn;
-  if (VALID_COLUMN_UNITS.includes(explicit.unit as any)) column.unit = explicit.unit;
+  if (isValidColumnUnit(column.type, explicit.unit)) column.unit = explicit.unit;
   if (typeof explicit.hidden === 'boolean') column.hidden = explicit.hidden;
   if (typeof explicit.sortable === 'boolean') column.sortable = explicit.sortable;
   if (explicit.defaultSort === 'asc' || explicit.defaultSort === 'desc') column.defaultSort = explicit.defaultSort;
@@ -311,8 +323,12 @@ export interface DataEnvelopeMeta extends EvidenceScopeMetadata {
   /** Optional step ID within a skill */
   stepId?: string;
 
-  /** Query execution state retained across Agent, report, snapshot, and UI projections. */
-  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable';
+  /**
+   * Query execution state retained across Agent, report, snapshot, and UI projections.
+   * `skipped` means the step's condition was not met and its query never ran;
+   * it is not an observation and must not be read as an empty result.
+   */
+  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable' | 'skipped';
   executionMessage?: string;
   executionError?: string;
 
@@ -715,6 +731,17 @@ export type DisplayFormat = typeof VALID_DISPLAY_FORMATS[number];
  * - progress: Phase/step progress update
  * - error: Error message
  * - snapshot_created: Analysis result snapshot persisted for comparison
+ * - conclusion: Provisional answer (`ProvisionalConclusionEventData`) emitted once
+ *   when the final semantic review is dispatched. The body is final; the verdict is
+ *   pending and arrives only with analysis_completed, which replaces the same message.
+ *   When no review is dispatched, the finalized answer arrives once without
+ *   `provisional`, still before analysis_completed.
+ *   The runtime's own raw conclusion is not forwarded.
+ * - answer_token / answer_segment_reset: display-only answer draft from a
+ *   draft-capable runtime (`EngineCapabilities.draftAnswerStreaming`), each
+ *   carrying runId + attempt. Live only: sent without an SSE id, never in the
+ *   replay buffer or the durable store. A reset revokes the draft; the
+ *   provisional or final conclusion replaces it.
  * - analysis_completed: Final result with report URL
  */
 export const SSE_EVENT_TYPES = [
@@ -732,6 +759,8 @@ export const SSE_EVENT_TYPES = [
   'analysis_completed',
   'thought',
   'tool_call',
+  'answer_token',
+  'answer_segment_reset',
   'conclusion',
   'scene_detected',
   'track_data',
@@ -752,6 +781,18 @@ export const SSE_EVENT_TYPES = [
   'scene_story_smart_eta_refined',
 ] as const;
 export type SSEEventType = typeof SSE_EVENT_TYPES[number];
+
+/**
+ * `conclusion` payload (`data` field). Consumers keep the run active: the stop
+ * control then stops only the review (cancel answers `review_stop_requested`), and
+ * error/cancel/disconnect without analysis_completed leaves the answer unverified.
+ */
+export interface ProvisionalConclusionEventData {
+  /** Owner-projected canonical body, identical to what the review checks. */
+  conclusion: string;
+  provisional: true;
+  verification: 'pending';
+}
 
 /**
  * Unified Data Event - v2.0 SSE event format
@@ -1062,12 +1103,24 @@ export interface AnalysisReceiptBase {
     memoryHintCount: number;
     conversationContextCount: number;
     strategyHintCount: number;
+    /**
+     * Selected-knowledge references the run delivered to the model (background,
+     * never evidence). Absent in older receipts and in runs that recorded none:
+     * absent means not recorded, not zero.
+     */
+    knowledgeReferenceCount?: number;
   };
   claimAudit: {
     totalClaims: number;
     verifiedClaims: number;
     unsupportedClaims: number;
     uncertainClaims: number;
+    /** Claims whose every reference cell matched captured evidence. Absent in older receipts. */
+    referencesMatchedClaims?: number;
+    /** Claims whose typed proposition a finite proof established. Absent in older receipts and before verifier@2. */
+    propositionProvedClaims?: number;
+    /** Claims whose own declaration entry failed item validation; never verified, never contradicted. Absent in older receipts. */
+    invalidDeclarationClaims?: number;
   };
   qualityGates: {
     finalReportContract: AnalysisReceiptGateStatus;
@@ -1158,7 +1211,9 @@ export interface AnalysisCompletedEvent {
     investigationAssessment?: import('./analysisInvestigationAssessment').FinalInvestigationAssessment;
     deliveryAssurance?: import('./analysisDelivery').AnalysisDeliveryAssurance;
     sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
-    sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').SourceClaimVerificationResult;
+    sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
+    /** Selected knowledge the run delivered and the answer's knowledge citations; absent = not recorded. */
+    knowledgeUse?: import('../services/knowledge/knowledgeUse').KnowledgeUseV1;
     conclusion?: string;
     conclusionContract?: import('../agent/core/conclusionContract').ConclusionContract;
     claimSupport?: import('./evidenceContract').ClaimSupportV1[];
@@ -1178,8 +1233,6 @@ export interface AnalysisCompletedEvent {
     smartScenePreview?: import('../agent/scene/types').SmartScenePreviewPayload;
     sceneTimeline?: SceneTimelineView;
     sceneReport?: SceneReportReference;
-    /** Primary result is terminal, but a separate source supplement is still running. */
-    sourceEnrichmentPending?: boolean;
     terminalRunStatus?: 'completed' | 'failed' | 'cancelled' | 'quota_exceeded';
     findings: AnalysisCompletedFinding[];
     resultContract?: import('../assistant/contracts/assistantResultContract').AssistantResultContract;
@@ -1344,36 +1397,6 @@ export function validateLayeredSkillResult(result: any): ValidationError[] {
 // =============================================================================
 // Helper Functions
 // =============================================================================
-
-/**
- * Extract metadata from a data row based on configured fields
- */
-export function extractMetadata(
-  row: Record<string, any> | any[],
-  columns: string[],
-  metadataFields: string[] = [...DEFAULT_METADATA_FIELDS]
-): Record<string, any> {
-  const metadata: Record<string, any> = {};
-
-  if (Array.isArray(row)) {
-    // Row is an array, use columns to map
-    for (const field of metadataFields) {
-      const idx = columns.indexOf(field);
-      if (idx >= 0 && row[idx] !== undefined && row[idx] !== null) {
-        metadata[field] = row[idx];
-      }
-    }
-  } else if (typeof row === 'object') {
-    // Row is an object
-    for (const field of metadataFields) {
-      if (row[field] !== undefined && row[field] !== null) {
-        metadata[field] = row[field];
-      }
-    }
-  }
-
-  return metadata;
-}
 
 /**
  * Remove metadata columns from column list
@@ -1578,10 +1601,10 @@ export function validateColumnDefinition(column: any): ValidationError[] {
     });
   }
 
-  if (column.unit && !VALID_COLUMN_UNITS.includes(column.unit)) {
+  if (column.unit && !isValidColumnUnit(column.type, column.unit)) {
     errors.push({
       path: 'unit',
-      message: `Invalid unit: ${column.unit}. Valid values: ${VALID_COLUMN_UNITS.join(', ')}`,
+      message: `Invalid unit for ${column.type}: ${column.unit}`,
       value: column.unit,
     });
   }

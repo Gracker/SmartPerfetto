@@ -17,6 +17,7 @@ import type {
   QuickRunTurnBudget,
   QuickRunVerifierStatus,
 } from '../agent/core/orchestratorTypes';
+import type {ConversationTurn} from '../agent/types';
 import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
 import {parseAdaptiveRoutingReceipt} from './adaptiveEvidenceRouter';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
@@ -78,6 +79,12 @@ export const EMPTY_QUICK_RUN_CONTEXT_COUNTS: QuickRunContextInjectedCounts = {
   negativePatternHints: 0,
   caseBackgroundCases: 0,
 };
+
+export function countCompletedQuickConversationTurns(
+  turns: ReadonlyArray<Pick<ConversationTurn, 'completed'>>,
+): number {
+  return turns.filter(turn => turn.completed).slice(-3).length;
+}
 
 export function buildQuickRunReceipt(input: {
   requestedMode: QuickRunRequestedMode;
@@ -142,6 +149,24 @@ export function quickStopReasonFromTermination(input: {
   if (input.partial) return 'partial';
   if (input.actualTurns > input.targetTurns) return 'extended_answered';
   return 'answered';
+}
+
+/**
+ * Re-derive a quick receipt's stop reason after the candidate's privacy
+ * projection, which can turn a completed native answer into a partial one.
+ * The stop reason always describes the delivered candidate's native state.
+ */
+export function refreshQuickRunStopReason(result: {
+  quickRun?: QuickRunReceipt;
+  partial?: boolean;
+  terminationReason?: string;
+}): void {
+  if (!result.quickRun) return;
+  result.quickRun.stopReason = quickStopReasonFromTermination({
+    partial: result.partial, terminationReason: result.terminationReason,
+    actualTurns: result.quickRun.actualTurns, targetTurns: result.quickRun.targetTurns,
+    hardCapTurns: result.quickRun.hardCapTurns,
+  });
 }
 
 /** Profile describes semantic scope and actual budget use, never prose shape. */

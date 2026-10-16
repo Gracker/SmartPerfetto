@@ -422,6 +422,7 @@ export class ProviderMutationGenerationStore {
   }
 }
 
+/** @internal Test seam. */
 export const __testing = {
   sameScope,
   scopeKey,

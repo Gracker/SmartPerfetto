@@ -4,7 +4,7 @@
  * Covers the RSS/Swap trend signals used by memory_analysis and memory.strategy.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 const TRACE_FILE = 'launch_light.pftrace';

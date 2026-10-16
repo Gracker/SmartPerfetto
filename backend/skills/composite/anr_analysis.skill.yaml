@@ -135,6 +135,9 @@ steps:
   # ============================================================================
   # 第一阶段：系统健康检查（先定性）
   # ============================================================================
+  # "首个 ANR 窗口" steps run only when get_anr_context produced the window
+  # (anr_ctx.data?.length > 0). Without it they are skipped, never run over the
+  # whole trace or a NULL window that would read as "no pressure" or "app-specific".
 
   # Step 1.1: 检测 ANR 是否存在
   - id: anr_detection
@@ -180,6 +183,8 @@ steps:
           template: "检测到 {{total_anr_count}} 个 ANR 事件，影响 {{affected_process_count}} 个进程"
         - condition: "total_anr_count > 3"
           template: "⚠️ 检测到 {{total_anr_count}} 个 ANR，可能是系统级问题"
+    sql_fragments:
+      - fragments/anr_matched.sql
     sql: |
       SELECT
         COUNT(*) as total_anr_count,
@@ -187,13 +192,7 @@ steps:
         MIN(ts) as first_anr_ts,
         MAX(ts) as last_anr_ts,
         ROUND((MAX(ts) - MIN(ts)) / 1e9, 2) as anr_span_seconds
-      FROM android_anrs
-      WHERE (
-          ('${process_name}' <> '' AND (process_name = '${process_name}' OR process_name GLOB '${process_name}:*'))
-          OR ('${package}' <> '' AND (process_name = '${package}' OR process_name GLOB '${package}:*'))
-          OR ('${process_name}' = '' AND '${package}' = '')
-        )
-        AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
+      FROM anr_matched
     save_as: detection
     optional: true
     on_empty: "未检测到 ANR 事件。请确认 Trace 包含 ANR 数据。"
@@ -239,56 +238,18 @@ steps:
           label: 候选提示
       insights:
         - template: "ANR 触发类型 {{trigger_type}}（{{event_count}} 次）；候选根因提示只作为排查入口，不是最终结论"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/anr_matched.sql
+      - fragments/anr_classified.sql
     sql: |
       WITH classified AS (
         SELECT
           anr_type AS source_anr_type,
-          CASE
-            WHEN anr_type = 'INPUT_DISPATCHING_TIMEOUT_NO_FOCUSED_WINDOW' THEN 'no_focus_window'
-            WHEN anr_type = 'INPUT_DISPATCHING_TIMEOUT' THEN 'input_dispatching_timeout'
-            WHEN anr_type = 'BROADCAST_OF_INTENT' THEN 'broadcast_timeout'
-            WHEN anr_type IN ('EXECUTING_SERVICE', 'START_FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_TIMEOUT', 'FOREGROUND_SHORT_SERVICE_TIMEOUT') THEN 'service_timeout'
-            WHEN anr_type = 'CONTENT_PROVIDER_NOT_RESPONDING' THEN 'content_provider_timeout'
-            WHEN anr_type IN ('JOB_SERVICE_START', 'JOB_SERVICE_STOP', 'JOB_SERVICE_BIND', 'JOB_SERVICE_NOTIFICATION_NOT_PROVIDED') THEN 'job_scheduler_timeout'
-            WHEN anr_type = 'SYSTEM_SERVER_WATCHDOG_TIMEOUT' THEN 'system_watchdog_swt'
-            WHEN anr_type = 'BIND_APPLICATION' THEN 'bind_application_timeout'
-            WHEN anr_type = 'GPU_HANG' THEN 'gpu_hang'
-            WHEN anr_type = 'APP_TRIGGERED' THEN 'app_triggered_anr'
-            ELSE 'unknown'
-          END AS trigger_type,
-          CASE
-            WHEN anr_type = 'UNKNOWN_ANR_TYPE' THEN 'low'
-            WHEN anr_type IS NULL THEN 'low'
-            ELSE 'high'
-          END AS type_confidence,
-          TRIM(
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*deadlock*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*waiting to lock*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*monitor contention*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*futex*'
-                THEN 'deadlock,' ELSE '' END) ||
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*oom*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*lmk*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*memory*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*gc*'
-                THEN 'memory_leak_oom_pressure,' ELSE '' END) ||
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*cpu*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*iowait*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*load*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*sched*'
-                THEN 'high_load_anr,' ELSE '' END),
-            ','
-          ) AS root_cause_pattern_hint
-        FROM android_anrs
-        WHERE (
-            ('${process_name}' <> '' AND (process_name = '${process_name}' OR process_name GLOB '${process_name}:*'))
-            OR ('${package}' <> '' AND (process_name = '${package}' OR process_name GLOB '${package}:*'))
-            OR ('${process_name}' = '' AND '${package}' = '')
-          )
-          AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
+          trigger_type,
+          CASE WHEN anr_type = 'UNKNOWN_ANR_TYPE' OR anr_type IS NULL THEN 'low' ELSE 'high' END AS type_confidence,
+          root_cause_pattern_hint
+        FROM anr_classified
       )
       SELECT
         source_anr_type,
@@ -366,8 +327,8 @@ steps:
           template: "{{core_type}} 核心负载正常 ({{avg_util_pct}}%)"
     sql: |
       WITH system_windows AS (
-        SELECT 0 AS window_id, COALESCE(${anr_ctx.data[0].anr_ts}-${anr_ctx.data[0].timeout_ns}, (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
-          COALESCE(${anr_ctx.data[0].anr_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
+        SELECT 0 AS window_id, ${anr_ctx.data[0].anr_ts}-${anr_ctx.data[0].timeout_ns} AS window_start_ts,
+          ${anr_ctx.data[0].anr_ts} AS window_end_ts
       ),cpu_activity AS (
         SELECT s.ucpu,SUM(CASE WHEN t.is_idle=0 THEN s.dur_ns ELSE 0 END) AS active_ns,
           SUM(s.dur_ns) AS covered_ns,SUM(CASE WHEN t.is_idle IS NULL THEN s.dur_ns ELSE 0 END) AS idle_identity_unknown_ns
@@ -384,7 +345,7 @@ steps:
       FROM system_windows w CROSS JOIN system_cpu_topology ct LEFT JOIN cpu_activity a ON a.ucpu=ct.ucpu
       GROUP BY ct.core_type ORDER BY ct.core_type
     save_as: cpu_health
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # Step 1.3: 系统内存压力检测（LMK 事件）
@@ -417,7 +378,7 @@ steps:
       GROUP BY oom_score_adj
       ORDER BY kill_count DESC
     save_as: memory_pressure
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # Step 1.4: D-state 不可中断等待基线
@@ -459,7 +420,7 @@ steps:
         CROSS JOIN anr_window aw
         JOIN thread t ON ts.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        WHERE ts.state = 'D'
+        WHERE ts.state IN ('D', 'DK')
           AND ts.ts < aw.end_ts
           AND (CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END) > aw.start_ts
         GROUP BY p.name
@@ -473,7 +434,109 @@ steps:
       ORDER BY uninterruptible_wait_ns DESC
       LIMIT 10
     save_as: io_load
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
+    optional: true
+
+  # Step 1.4a: the ANR process's own uninterruptible waits
+  - id: anr_process_io_wait
+    type: atomic
+    name: "ANR 进程不可中断等待"
+    sql_fragments:
+      - fragments/io_blocked_function_families.sql
+      - fragments/system_thread_state_spans.sql
+    display:
+      level: detail
+      layer: list
+      title: "ANR 进程 D 态等待"
+      columns:
+        - name: process_name
+          label: "ANR 进程"
+          type: string
+        - name: main_thread_uninterruptible_ms
+          label: "主线程 D 态"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: process_uninterruptible_ms
+          label: "进程 D 态合计"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: top_thread_name
+          label: "D 态最长线程"
+          type: string
+        - name: top_thread_ms
+          label: "该线程 D 态"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: main_thread_io_wchan_ms
+          label: "主线程 IO 等待点"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: frozen_ms
+          label: "冻结等待"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: blocked_function_coverage_pct
+          label: "等待点覆盖"
+          type: percentage
+          format: percentage
+    # An ANR is explained by its own process: io_load ranks D waits across the
+    # whole system, which is context, not this ANR's evidence. D and DK count;
+    # blocked_function is a single-frame wchan recorded only for D waits with
+    # sched_blocked_reason, so its coverage tells "no I/O wait point" from "no
+    # wait points recorded". The cgroup v1 freezer parks a task in D
+    # (__refrigerator) without any I/O; the cgroup v2 freezer (do_freezer_trap)
+    # waits in S and never appears here. Without an ANR upid the step does not
+    # run: an unknown process is not one without D waits.
+    sql: |
+      WITH system_windows AS (
+        SELECT
+          0 AS window_id,
+          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS window_start_ts,
+          ${anr_ctx.data[0].anr_ts} AS window_end_ts
+      ),
+      system_target_threads AS (
+        SELECT 0 AS window_id, t.upid, t.utid,
+          CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE 'Other' END AS role
+        FROM thread t
+        JOIN process p ON p.upid = t.upid
+        WHERE t.upid = ${anr_ctx.data[0].upid}
+      ),
+      d_waits AS (
+        SELECT
+          utid,
+          role,
+          LOWER(COALESCE(blocked_function, '')) AS wchan,
+          blocked_function IS NOT NULL AS has_wchan,
+          dur_ns AS ns
+        FROM system_thread_state_spans
+        WHERE state IN ('D', 'DK')
+      ),
+      top_thread AS (
+        SELECT utid, SUM(ns) AS ns
+        FROM d_waits
+        GROUP BY utid
+        ORDER BY ns DESC
+        LIMIT 1
+      )
+      SELECT
+        (SELECT name FROM process WHERE upid = ${anr_ctx.data[0].upid}) AS process_name,
+        ROUND(COALESCE(SUM(CASE WHEN role = 'MainThread' THEN ns END), 0) / 1e6, 2) AS main_thread_uninterruptible_ms,
+        ROUND(COALESCE(SUM(ns), 0) / 1e6, 2) AS process_uninterruptible_ms,
+        (SELECT t.name FROM top_thread tt JOIN thread t USING (utid)) AS top_thread_name,
+        ROUND(COALESCE((SELECT ns FROM top_thread), 0) / 1e6, 2) AS top_thread_ms,
+        ROUND(COALESCE(SUM(CASE WHEN role = 'MainThread'
+          AND EXISTS (SELECT 1 FROM io_blocked_function_families f WHERE wchan GLOB f.pattern) THEN ns END), 0) / 1e6, 2)
+          AS main_thread_io_wchan_ms,
+        ROUND(COALESCE(SUM(CASE WHEN wchan GLOB '*refrigerator*' THEN ns END), 0) / 1e6, 2) AS frozen_ms,
+        ROUND(100.0 * SUM(CASE WHEN has_wchan THEN ns ELSE 0 END) / NULLIF(SUM(ns), 0), 1) AS blocked_function_coverage_pct
+      FROM d_waits
+    save_as: anr_io_wait
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0 && anr_ctx.data[0]?.upid != null
     optional: true
 
   # Step 1.4b: 锁等待分布（性能专家探针）
@@ -484,7 +547,7 @@ steps:
     skill: futex_wait_distribution
     params:
       package: "${package || process_name || anr_ctx.data?.[0]?.process_name || ''}"
-      start_ts: "${anr_ctx.data?.[0]?.anr_ts != null && anr_ctx.data?.[0]?.timeout_ns != null ? (Number(anr_ctx.data[0].anr_ts) - Number(anr_ctx.data[0].timeout_ns)) : null}"
+      start_ts: "${anr_ctx.data?.[0]?.window_start_ts ?? null}"
       end_ts: "${anr_ctx.data?.[0]?.anr_ts ?? null}"
     display:
       level: detail
@@ -513,7 +576,7 @@ steps:
           format: duration_ms
           unit: ms
     save_as: lock_waits
-    condition: "detection.data[0]?.total_anr_count > 0 && enable_lock_probe !== false"
+    condition: "detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0 && enable_lock_probe !== false"
     optional: true
 
   # Step 1.5: 系统冻结检测（所有应用都卡住）
@@ -526,42 +589,58 @@ steps:
       title: "首个 ANR 窗口系统冻结检测"
       columns:
         - name: total_apps
-          label: "检测应用数"
+          label: "可评估主线程数"
           type: number
-        - name: frozen_apps
-          label: "冻结应用数"
+        - name: demanding_apps
+          label: "有运行需求的主线程数"
           type: number
-        - name: frozen_pct
-          label: "冻结占比"
+        - name: stalled_apps
+          label: "停滞主线程数"
+          type: number
+        - name: stalled_pct
+          label: "停滞占比（有需求者中）"
           type: percentage
           format: percentage
         - name: freeze_verdict
           label: "判定"
           type: string
+        - name: system_server_evaluated
+          label: "system_server 可评估"
+          type: boolean
+        - name: system_server_stalled_pct
+          label: "system_server 停滞时间占比"
+          type: percentage
+          format: percentage
         - name: system_server_running_pct
           label: "system_server 运行占比"
           type: percentage
           format: percentage
-        - name: system_server_frozen
-          label: "system_server 冻结"
-          type: boolean
+    # A main thread that sleeps (S) through the window is idle or waiting on
+    # something: the state alone cannot tell, so it is no freeze evidence (an
+    # idle Looper sleeps nearly the whole window). Stall evidence is time the
+    # thread wanted the CPU and did not get it (R, R+) or spent blocked in the
+    # kernel (D, DK). The app share is taken over threads with demand (running
+    # or stalled for at least 10% of their alive time), so idle apps neither
+    # prove nor dilute a system-wide stall, and the ANR process itself is left
+    # out of it (its stall is what is being explained). Positive evidence
+    # decides first; without it and without an evaluable system_server the
+    # verdict is undetermined. A system_server deadlock that sleeps in S is not
+    # detected here: the per-ANR blocker analysis reads it.
     sql: |
       WITH anr_window AS (
         SELECT
           ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
-          ${anr_ctx.data[0].anr_ts} AS end_ts
+          ${anr_ctx.data[0].anr_ts} AS end_ts,
+          ${anr_ctx.data[0].timeout_ns} AS window_ns,
+          ${anr_ctx.data[0].upid|NULL} AS anr_upid
       ),
-      app_activity AS (
+      main_thread_states AS (
         SELECT
-          p.name as process_name,
-          SUM(CASE WHEN ts.state = 'Running' THEN
-            MIN(CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END, aw.end_ts)
-              - MAX(ts.ts, aw.start_ts)
-          ELSE 0 END) as running_ns,
-          SUM(
-            MIN(CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END, aw.end_ts)
-              - MAX(ts.ts, aw.start_ts)
-          ) as total_ns
+          p.upid,
+          p.name AS process_name,
+          ts.state,
+          MIN(CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END, aw.end_ts)
+            - MAX(ts.ts, aw.start_ts) AS clipped_ns
         FROM thread_state ts
         CROSS JOIN anr_window aw
         JOIN thread t ON ts.utid = t.utid
@@ -569,36 +648,66 @@ steps:
         WHERE ts.ts < aw.end_ts
           AND (CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END) > aw.start_ts
           AND t.tid = p.pid  -- 主线程
+          -- Regular app uids (isolated and app-zygote ranges excluded), plus
+          -- system_server; a process without a uid is not sampled.
           AND (
-            COALESCE(p.uid, 0) >= 10000
+            COALESCE(p.uid, 0) % 100000 BETWEEN 10000 AND 89999
             OR p.name = 'system_server'
-            OR p.name = 'com.android.systemui'
           )
-        GROUP BY p.name
       ),
-      freeze_eval AS (
+      -- One row per process (a name can belong to several), over its alive
+      -- time: a dead (Z, X, x) main thread is not frozen.
+      main_threads AS (
+        SELECT
+          upid,
+          process_name,
+          SUM(CASE WHEN upper(state) NOT IN ('Z', 'X') THEN clipped_ns ELSE 0 END) AS alive_ns,
+          SUM(CASE WHEN state = 'Running' THEN clipped_ns ELSE 0 END) AS running_ns,
+          SUM(CASE WHEN state IN ('R', 'R+', 'D', 'DK') THEN clipped_ns ELSE 0 END) AS stalled_ns
+        FROM main_thread_states
+        GROUP BY upid, process_name
+      ),
+      -- Evaluable: alive for at least 90% of the window. Stalled: runnable or
+      -- uninterruptible for at least half of that alive time.
+      evaluated AS (
         SELECT
           process_name,
-          100.0 * running_ns / NULLIF(total_ns, 0) as running_pct
-        FROM app_activity
+          upid IS NOT anr_upid AS sampled,
+          100.0 * running_ns / alive_ns AS running_pct,
+          100.0 * stalled_ns / alive_ns AS stalled_time_pct,
+          CASE WHEN running_ns + stalled_ns >= 0.1 * alive_ns THEN 1 ELSE 0 END AS demanding,
+          CASE WHEN stalled_ns >= 0.5 * alive_ns THEN 1 ELSE 0 END AS stalled
+        FROM main_threads, anr_window
+        WHERE alive_ns >= 0.9 * window_ns
+      ),
+      verdict_input AS (
+        SELECT
+          COUNT(*) AS total_apps,
+          SUM(CASE WHEN sampled AND process_name IS NOT 'system_server' THEN demanding ELSE 0 END) AS demanding_apps,
+          SUM(CASE WHEN sampled AND process_name IS NOT 'system_server' THEN stalled ELSE 0 END) AS stalled_apps,
+          COALESCE(MAX(CASE WHEN process_name = 'system_server' THEN 1 ELSE 0 END), 0) AS system_server_evaluated,
+          MAX(CASE WHEN process_name = 'system_server' THEN stalled END) AS system_server_stalled,
+          MAX(CASE WHEN process_name = 'system_server' THEN ROUND(stalled_time_pct, 1) END) AS system_server_stalled_pct,
+          MAX(CASE WHEN process_name = 'system_server' THEN ROUND(running_pct, 1) END) AS system_server_running_pct
+        FROM evaluated
       )
       SELECT
-        COUNT(*) as total_apps,
-        SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) as frozen_apps,
-        ROUND(100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
-              NULLIF(COUNT(*), 0), 1) as frozen_pct,
-        MAX(CASE WHEN process_name = 'system_server' THEN ROUND(running_pct, 1) END) as system_server_running_pct,
-        MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) as system_server_frozen,
+        total_apps,
+        COALESCE(demanding_apps, 0) AS demanding_apps,
+        COALESCE(stalled_apps, 0) AS stalled_apps,
+        ROUND(100.0 * stalled_apps / NULLIF(demanding_apps, 0), 1) AS stalled_pct,
+        system_server_evaluated,
+        system_server_stalled_pct,
+        system_server_running_pct,
         CASE
-          WHEN MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) = 1
-            THEN 'system_server_freeze'
-          WHEN 100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
-               NULLIF(COUNT(*), 0) > 50 THEN 'system_freeze'
+          WHEN system_server_stalled = 1 THEN 'system_server_freeze'
+          WHEN demanding_apps >= 3 AND 2 * stalled_apps > demanding_apps THEN 'system_freeze'
+          WHEN system_server_evaluated = 0 THEN 'undetermined'
           ELSE 'app_specific'
-        END as freeze_verdict
-      FROM freeze_eval
+        END AS freeze_verdict
+      FROM verdict_input
     save_as: freeze_check
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # ============================================================================
@@ -670,52 +779,11 @@ steps:
           template: "广播超时 {{anr_count}} 次：BroadcastReceiver 处理超时"
         - condition: "anr_type === 'EXECUTING_SERVICE'"
           template: "服务超时 {{anr_count}} 次：Service 生命周期方法超时"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/anr_matched.sql
+      - fragments/anr_classified.sql
     sql: |
-      WITH classified AS (
-        SELECT
-          *,
-          CASE
-            WHEN anr_type = 'INPUT_DISPATCHING_TIMEOUT_NO_FOCUSED_WINDOW' THEN 'no_focus_window'
-            WHEN anr_type = 'INPUT_DISPATCHING_TIMEOUT' THEN 'input_dispatching_timeout'
-            WHEN anr_type = 'BROADCAST_OF_INTENT' THEN 'broadcast_timeout'
-            WHEN anr_type IN ('EXECUTING_SERVICE', 'START_FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_TIMEOUT', 'FOREGROUND_SHORT_SERVICE_TIMEOUT') THEN 'service_timeout'
-            WHEN anr_type = 'CONTENT_PROVIDER_NOT_RESPONDING' THEN 'content_provider_timeout'
-            WHEN anr_type IN ('JOB_SERVICE_START', 'JOB_SERVICE_STOP', 'JOB_SERVICE_BIND', 'JOB_SERVICE_NOTIFICATION_NOT_PROVIDED') THEN 'job_scheduler_timeout'
-            WHEN anr_type = 'SYSTEM_SERVER_WATCHDOG_TIMEOUT' THEN 'system_watchdog_swt'
-            WHEN anr_type = 'BIND_APPLICATION' THEN 'bind_application_timeout'
-            WHEN anr_type = 'GPU_HANG' THEN 'gpu_hang'
-            WHEN anr_type = 'APP_TRIGGERED' THEN 'app_triggered_anr'
-            ELSE 'unknown'
-          END AS trigger_type,
-          TRIM(
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*deadlock*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*waiting to lock*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*monitor contention*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*futex*'
-                THEN 'deadlock,' ELSE '' END) ||
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*oom*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*lmk*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*memory*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*gc*'
-                THEN 'memory_leak_oom_pressure,' ELSE '' END) ||
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*cpu*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*iowait*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*load*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*sched*'
-                THEN 'high_load_anr,' ELSE '' END),
-            ','
-          ) AS root_cause_pattern_hint
-        FROM android_anrs
-        WHERE (
-            ('${process_name}' <> '' AND (process_name = '${process_name}' OR process_name GLOB '${process_name}:*'))
-            OR ('${package}' <> '' AND (process_name = '${package}' OR process_name GLOB '${package}:*'))
-            OR ('${process_name}' = '' AND '${package}' = '')
-          )
-          AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
-      )
       SELECT
         anr_type,
         trigger_type,
@@ -750,7 +818,7 @@ steps:
         END as quick_hint,
         COALESCE(NULLIF(GROUP_CONCAT(DISTINCT NULLIF(root_cause_pattern_hint, '')), ''), 'none') AS root_cause_pattern_hints,
         1 AS not_final
-      FROM classified
+      FROM anr_classified
       GROUP BY anr_type, trigger_type
       ORDER BY anr_count DESC
     save_as: overview
@@ -830,71 +898,16 @@ steps:
         - key: anr_dur_ms
           label: 超时时长
           format: "{{value}} ms"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/anr_matched.sql
+      - fragments/anr_classified.sql
     sql: |
       WITH normalized AS (
         SELECT
           *,
-          CASE
-            WHEN anr_type = 'INPUT_DISPATCHING_TIMEOUT_NO_FOCUSED_WINDOW' THEN 'no_focus_window'
-            WHEN anr_type = 'INPUT_DISPATCHING_TIMEOUT' THEN 'input_dispatching_timeout'
-            WHEN anr_type = 'BROADCAST_OF_INTENT' THEN 'broadcast_timeout'
-            WHEN anr_type IN ('EXECUTING_SERVICE', 'START_FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_TIMEOUT', 'FOREGROUND_SHORT_SERVICE_TIMEOUT') THEN 'service_timeout'
-            WHEN anr_type = 'CONTENT_PROVIDER_NOT_RESPONDING' THEN 'content_provider_timeout'
-            WHEN anr_type IN ('JOB_SERVICE_START', 'JOB_SERVICE_STOP', 'JOB_SERVICE_BIND', 'JOB_SERVICE_NOTIFICATION_NOT_PROVIDED') THEN 'job_scheduler_timeout'
-            WHEN anr_type = 'SYSTEM_SERVER_WATCHDOG_TIMEOUT' THEN 'system_watchdog_swt'
-            WHEN anr_type = 'BIND_APPLICATION' THEN 'bind_application_timeout'
-            WHEN anr_type = 'GPU_HANG' THEN 'gpu_hang'
-            WHEN anr_type = 'APP_TRIGGERED' THEN 'app_triggered_anr'
-            ELSE 'unknown'
-          END AS trigger_type,
-          COALESCE(
-            NULLIF(anr_dur_ms, 0),
-            default_anr_dur_ms,
-            CASE
-              WHEN anr_type IN ('INPUT_DISPATCHING_TIMEOUT', 'INPUT_DISPATCHING_TIMEOUT_NO_FOCUSED_WINDOW') THEN 5000
-              WHEN anr_type = 'BROADCAST_OF_INTENT' THEN 10000
-              WHEN anr_type = 'EXECUTING_SERVICE' THEN 20000
-              WHEN anr_type IN ('START_FOREGROUND_SERVICE', 'FOREGROUND_SERVICE_TIMEOUT') THEN 30000
-              WHEN anr_type = 'FOREGROUND_SHORT_SERVICE_TIMEOUT' THEN 180000
-              WHEN anr_type IN ('JOB_SERVICE_START', 'JOB_SERVICE_STOP', 'JOB_SERVICE_BIND', 'JOB_SERVICE_NOTIFICATION_NOT_PROVIDED') THEN 8000
-              WHEN anr_type = 'BIND_APPLICATION' THEN 15000
-              WHEN anr_type IN ('CONTENT_PROVIDER_NOT_RESPONDING', 'GPU_HANG', 'APP_TRIGGERED', 'UNKNOWN_ANR_TYPE') THEN 5000
-              ELSE 5000
-            END
-          ) AS analysis_timeout_ms,
-          CASE
-            WHEN NULLIF(anr_dur_ms, 0) IS NOT NULL THEN 'actual_anr_duration'
-            WHEN default_anr_dur_ms IS NOT NULL THEN 'perfetto_default'
-            ELSE 'heuristic_fallback'
-          END AS timeout_source,
-          COALESCE(NULLIF(TRIM(
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*deadlock*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*waiting to lock*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*monitor contention*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*futex*'
-                THEN 'deadlock,' ELSE '' END) ||
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*oom*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*lmk*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*memory*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*gc*'
-                THEN 'memory_leak_oom_pressure,' ELSE '' END) ||
-            (CASE
-              WHEN LOWER(COALESCE(subject, '')) GLOB '*cpu*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*iowait*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*load*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*sched*'
-                THEN 'high_load_anr,' ELSE '' END),
-            ','
-          ), ''), 'none') AS root_cause_pattern_hints
-        FROM android_anrs
-        WHERE (
-            ('${process_name}' <> '' AND (process_name = '${process_name}' OR process_name GLOB '${process_name}:*'))
-            OR ('${package}' <> '' AND (process_name = '${package}' OR process_name GLOB '${package}:*'))
-            OR ('${process_name}' = '' AND '${package}' = '')
-          )
-          AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
+          COALESCE(NULLIF(root_cause_pattern_hint, ''), 'none') AS root_cause_pattern_hints
+        FROM anr_classified
       )
       SELECT
         error_id,
@@ -993,7 +1006,7 @@ steps:
       ORDER BY cpu_ms DESC
       LIMIT 15
     save_as: top_processes
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # ============================================================================
@@ -1066,24 +1079,24 @@ steps:
         - condition: "severity === 'warning'"
           template: "🟡 警告：{{diagnosis}}"
         - template: "ANR 诊断：{{diagnosis}}"
-    inputs: [detection, trigger_classification, cpu_health, memory_pressure, io_load, lock_waits, freeze_check, overview, anr_events, top_processes]
+    inputs: [detection, trigger_classification, cpu_health, memory_pressure, io_load, anr_io_wait, lock_waits, freeze_check, overview, anr_events, top_processes]
     rules:
       # === 系统级问题判定 ===
 
-      # system_server 冻结（系统服务自身无调度）
+      # system_server 停滞（主线程过半时间可运行等待或不可中断等待）
       - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
         severity: critical
-        diagnosis: "system_server 运行占比仅 ${freeze_check.data[0].system_server_running_pct}%（疑似系统服务冻结）"
+        diagnosis: "system_server 主线程 ${freeze_check.data[0].system_server_stalled_pct}% 的存活时间处于可运行等待或不可中断等待（系统服务停滞）"
         confidence: high
         suggestions:
           - "这是系统级问题，优先排查 system_server 调度阻塞"
           - "检查 Binder 死锁、IO 堵塞和内核锁等待"
           - "结合内核调度与系统服务线程栈定位阻塞点"
 
-      # 系统冻结（多个应用同时卡住）
+      # 系统停滞（有运行需求的应用主线程过半同时停滞）
       - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: critical
-        diagnosis: "系统级冻结：${freeze_check.data[0].frozen_apps}/${freeze_check.data[0].total_apps} 个应用主线程几乎无运行"
+        diagnosis: "系统级停滞：${freeze_check.data[0].stalled_apps}/${freeze_check.data[0].demanding_apps} 个有运行需求的应用主线程过半存活时间处于可运行等待或不可中断等待"
         confidence: high
         suggestions:
           - "这是系统级问题，非单个应用问题"
@@ -1093,7 +1106,7 @@ steps:
       # 多 ANR 场景下，首个窗口系统冻结只能作为 baseline context
       - condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
         severity: warning
-        diagnosis: "首个 ANR 窗口 baseline 显示 system_server 运行占比仅 ${freeze_check.data[0].system_server_running_pct}%，需逐 ANR 复核后才能升级为系统根因"
+        diagnosis: "首个 ANR 窗口 baseline 显示 system_server 主线程 ${freeze_check.data[0].system_server_stalled_pct}% 存活时间停滞，需逐 ANR 复核后才能升级为系统根因"
         confidence: medium
         suggestions:
           - "该 freeze_check 只覆盖首个 ANR 窗口"
@@ -1102,7 +1115,7 @@ steps:
 
       - condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: warning
-        diagnosis: "首个 ANR 窗口 baseline 显示 ${freeze_check.data[0].frozen_apps}/${freeze_check.data[0].total_apps} 个应用主线程低活动，需逐 ANR 复核后才能升级为系统根因"
+        diagnosis: "首个 ANR 窗口 baseline 显示 ${freeze_check.data[0].stalled_apps}/${freeze_check.data[0].demanding_apps} 个有运行需求的应用主线程停滞，需逐 ANR 复核后才能升级为系统根因"
         confidence: medium
         suggestions:
           - "该 freeze_check 只覆盖首个 ANR 窗口"
@@ -1139,9 +1152,10 @@ steps:
           - "top_processes 显示的进程可能是罪魁祸首"
 
       # D-state 不可中断等待：只能作为低置信系统/内核等待候选，不能直接等同磁盘 IO
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && io_load.data[0]?.uninterruptible_wait_ms > (uninterruptible_wait_threshold_ms || io_wait_threshold_ms || 500)"
+      # The main thread of the ANR process, never the longest D wait system-wide.
+      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (anr_io_wait.data?.[0]?.main_thread_uninterruptible_ms || 0) > (uninterruptible_wait_threshold_ms || io_wait_threshold_ms || 500)"
         severity: warning
-        diagnosis: "进程 ${io_load.data[0].process_name} D-state 不可中断等待 ${io_load.data[0].uninterruptible_wait_ms}ms"
+        diagnosis: "ANR 进程 ${anr_io_wait.data[0].process_name} 主线程在 ANR 窗口内 D-state 不可中断等待 ${anr_io_wait.data[0].main_thread_uninterruptible_ms}ms"
         confidence: low
         suggestions:
           - "D-state 只能说明不可中断等待，不能单独证明磁盘 IO"

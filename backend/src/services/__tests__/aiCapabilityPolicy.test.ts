@@ -55,7 +55,6 @@ describe('aiCapabilityPolicy', () => {
       expect(isAiFeatureEnabled('execute_sql', policy)).toBe(true);
       expect(isAiFeatureEnabled('invoke_deterministic_skill', policy)).toBe(true);
       expect(isAiFeatureEnabled('agent_analyze', policy)).toBe(false);
-      expect(isAiFeatureEnabled('llm_skill_step', policy)).toBe(false);
       expect(isAiFeatureEnabled('critical_path_ai_summary', policy)).toBe(false);
     },
   );

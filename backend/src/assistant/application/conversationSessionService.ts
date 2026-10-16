@@ -15,15 +15,24 @@ import type {
   ConversationTraceContext,
   FullAnalysisHandoff,
 } from '../contracts/conversationContract';
+import {assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+import {runAnalysisSelection} from '../../services/effectiveAnalysisSelection';
 import {
-  ConversationSourceEnrichmentCoordinator,
-  type ConversationSourceEnrichmentEvent,
-  type ConversationSourceEnrichmentOutcome,
-  type ConversationSourceEnrichmentState,
-} from './conversationSourceEnrichmentCoordinator';
-import type {PrimaryConversationSourceUse} from '../runtime/conversationSourcePolicy';
-import {buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+  privateContextRestrictsAudience,
+  resolveAnalysisPrivateContext,
+  type AnalysisPrivateContextMarker,
+} from '../../services/security/analysisPrivateContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
+import {PublicRequestError} from '../../utils/publicRequestError';
+import {
+  buildReviewNotFinishedResult,
+  mayPersistUnverifiedBody,
+  resolveReviewStopWatchdogMs,
+  ReviewStopController,
+  settlesWithin,
+} from '../../services/reviewStopHandle';
+import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
+import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 
 export type {
   ConversationEvidenceRef,
@@ -36,29 +45,40 @@ export type {
 export interface ConversationRuntimeInput {
   sessionId: string;
   runId: string;
+  /**
+   * The run's own private-context marker, fixed when the run starts: the value
+   * its ConversationRun records. Absent, the run's context is unknown.
+   */
+  privateContext?: AnalysisPrivateContextMarker;
   query: string;
   history: ConversationMessage[];
   getHistoryTurns?(): readonly AnalysisHistoryTurn[];
   traceContext: ConversationTraceContext;
   selectionContext?: AnalysisOptions['selectionContext'];
+  /** This turn's requested source depth: its own, else the conversation's last one. */
+  sourceDepth?: AnalysisOptions['sourceDepth'];
   onUpdate?(update: unknown): void;
-}
-
-export interface ConversationSourceEnrichmentRuntimeInput extends ConversationRuntimeInput {
-  primaryOutcome: ConversationRuntimeOutcome;
+  /**
+   * Display-only answer draft (`answer_token` / `answer_segment_reset`) from a
+   * draft-capable runtime. Delivered live only: never retained for replay or
+   * written to history, and superseded by provisional_answer / run_completed.
+   */
+  onAnswerDraft?(update: unknown): void;
+  /**
+   * The finished answer, owner-projected, while its semantic review runs. At
+   * most once per run; `run_completed` carries the same answer with its verdict.
+   */
+  onProvisionalAnswer?(answer: {message: string}): boolean | void;
+  /**
+   * Ends only the semantic review of a delivered answer: the review resolves
+   * `cancelled_by_user` and the run still finalizes and commits its turn.
+   * Owned by the session service's stop state; cancel() remains the full abort.
+   */
+  reviewStopSignal?: AbortSignal;
 }
 
 export interface ConversationRuntimeAdapter {
   run(input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome>;
-  resolvePrimarySourceUse?(query: string): PrimaryConversationSourceUse;
-  shouldStartSourceEnrichment?(
-    input: ConversationRuntimeInput,
-    outcome: ConversationRuntimeOutcome,
-  ): boolean;
-  runSourceEnrichment?(
-    input: ConversationSourceEnrichmentRuntimeInput,
-  ): Promise<ConversationSourceEnrichmentOutcome>;
-  cancelSourceEnrichment?(sessionId: string, runId: string): Promise<void>;
   cancel(sessionId: string, runId: string): Promise<void>;
   dispose?(): void | Promise<void>;
 }
@@ -66,17 +86,23 @@ export interface ConversationRuntimeAdapter {
 type ConversationSessionEventPayload =
   | {type: 'run_started'; sessionId: string; runId: string}
   | {type: 'runtime_update'; sessionId: string; runId: string; update: unknown}
+  | {type: 'provisional_answer'; sessionId: string; runId: string; message: string; verification: 'pending'}
   | {
       type: 'run_completed';
       sessionId: string;
       runId: string;
       outcome: ConversationRuntimeOutcome;
-      enrichmentPending: boolean;
     }
-  | {type: 'run_failed'; sessionId: string; runId: string; error: string}
-  | ConversationSourceEnrichmentEvent;
+  | {type: 'run_failed'; sessionId: string; runId: string; error: string};
 
+/** A replayable run event, ordered by `seqId`, which is also its SSE id. */
 export type ConversationSessionEvent = ConversationSessionEventPayload & {seqId: number};
+/**
+ * A live-only event (an answer draft): no `seqId`, so it has no SSE id a
+ * reconnect cursor (Last-Event-ID) could land on, and it is never replayed.
+ */
+export type ConversationLiveEvent = ConversationSessionEventPayload & {liveOnly: true};
+export type ConversationPublishedEvent = ConversationSessionEvent | ConversationLiveEvent;
 
 export interface ConversationRun {
   runId: string;
@@ -91,9 +117,14 @@ export interface ConversationRun {
   completion: Promise<ConversationRuntimeOutcome>;
   events: ConversationSessionEvent[];
   lifecycleSettled?: boolean;
-  sourceUseMode?: PrimaryConversationSourceUse;
-  sourceEnrichmentPending?: boolean;
-  sourceEnrichment?: ConversationSourceEnrichmentState;
+  /** The id of the request that started the run (`StartConversationTurnInput.requestId`). */
+  requestId?: string;
+  /**
+   * Fixed at admission from the selection this run was authorized with. A
+   * session's selection is pinned by its authorization fingerprint, so a
+   * restored run's marker is its session's.
+   */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 export interface ConversationSession extends ManagedAssistantSession {
@@ -115,11 +146,12 @@ export interface ConversationSession extends ManagedAssistantSession {
   providerFollowsActive?: boolean;
   runtimeKind?: AgentRuntimeKind;
   providerSnapshotHash?: string;
-  analysisContextFingerprint?: string;
+  analysisContextFingerprint: string;
   outputLanguage?: AnalysisOptions['outputLanguage'];
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: AnalysisOptions['sourceDepth'];
   sourceAuthorization?: {
     codeAwareMode: NonNullable<AnalysisOptions['codeAwareMode']>;
     codebaseIds: string[];
@@ -136,8 +168,19 @@ export interface StartConversationTurnInput {
   runtimeKind?: AgentRuntimeKind;
   providerSnapshotHash?: string;
   runtimeOptions?: Omit<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'runId'>;
-  analysisContextFingerprint?: string;
+  /** The request's current authorization fingerprint; a session's turns all run under one. */
+  analysisContextFingerprint: string;
+  /** The starting request's id; a failure's fixed text names it and the server log records the cause under it. */
+  requestId?: string;
 }
+
+/**
+ * A stop of a delivered answer returns at once (`review_stop_requested`); the
+ * turn then arrives with `run_completed`. Every other stop settles first.
+ */
+export type ConversationCancelResult =
+  | {status: 'review_stop_requested'}
+  | {status: 'settled'; outcome: ConversationRuntimeOutcome};
 
 export interface ConversationTurnReceipt {
   sessionId: string;
@@ -151,12 +194,27 @@ interface ConversationSessionServiceDeps {
   createId?(prefix: 'conversation' | 'run'): string;
   now?(): number;
   cancelSettleTimeoutMs?: number;
+  /** Bound on the commit after a review-only or force stop; see resolveReviewStopWatchdogMs. */
+  reviewStopWatchdogMs?: number;
   onRunStarted?(session: ConversationSession, run: ConversationRun): void;
   onRunSettled?(session: ConversationSession, run: ConversationRun): void;
 }
 
+/** The physical runtime session of one conversation run, whose output guard projects its private text. */
+export function conversationRuntimeSessionId(sessionId: string, runId: string): string {
+  return `${sessionId}:${runId}`;
+}
+
 function defaultCreateId(prefix: 'conversation' | 'run'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** A conversation request the caller has to change: its text and code are the route contract. */
+export class ConversationRequestError extends PublicRequestError {}
+
+function conversationNotFound(sessionId?: string): ConversationRequestError {
+  return new ConversationRequestError('CONVERSATION_NOT_FOUND',
+    sessionId ? `Conversation session not found: ${sessionId}` : 'Conversation session not found', 404);
 }
 
 const MAX_REPLAY_EVENTS_PER_RUN = 512;
@@ -166,7 +224,7 @@ function normalizeTraceContext(
 ): ConversationTraceContext {
   if (context?.kind !== 'attached') return {kind: 'none'};
   const traceId = context.traceId.trim();
-  if (!traceId) throw new Error('Attached conversation traceId must not be empty');
+  if (!traceId) throw new ConversationRequestError('INVALID_TRACE_CONTEXT', 'Attached conversation traceId must not be empty');
   return {kind: 'attached', traceId};
 }
 
@@ -206,38 +264,24 @@ export class ConversationSessionService {
   private readonly createId: (prefix: 'conversation' | 'run') => string;
   private readonly now: () => number;
   private readonly cancelSettleTimeoutMs: number;
+  private readonly reviewStopWatchdogMs: number;
   private readonly onRunStarted?: ConversationSessionServiceDeps['onRunStarted'];
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
-  private readonly listeners = new Map<string, Set<(event: ConversationSessionEvent) => void>>();
-  private readonly sourceEnrichmentCoordinator: ConversationSourceEnrichmentCoordinator;
+  private readonly listeners = new Map<string, Set<(event: ConversationPublishedEvent) => void>>();
   private nextEventSeqId = 0;
   private readonly cancellationRequested = new WeakSet<ConversationRun>();
   private readonly runAuthorizationChecks = new WeakMap<ConversationRun, () => void>();
+  /** Stop state and delivery of each run; never serialized. */
+  private readonly runStops = new WeakMap<ConversationRun, ReviewStopController<ConversationRuntimeOutcome>>();
 
   constructor(deps: ConversationSessionServiceDeps) {
     this.createRuntime = deps.createRuntime;
     this.createId = deps.createId ?? defaultCreateId;
     this.now = deps.now ?? Date.now;
     this.cancelSettleTimeoutMs = deps.cancelSettleTimeoutMs ?? 120_000;
+    this.reviewStopWatchdogMs = deps.reviewStopWatchdogMs ?? resolveReviewStopWatchdogMs();
     this.onRunStarted = deps.onRunStarted;
     this.onRunSettled = deps.onRunSettled;
-    this.sourceEnrichmentCoordinator = new ConversationSourceEnrichmentCoordinator({
-      now: this.now,
-      onEvent: (event) => {
-        const terminal = event.type !== 'source_enrichment_started';
-        const run = this.sessions.getSession(event.sessionId)?.runs.find(
-          candidate => candidate.runId === event.runId,
-        );
-        if (run) {
-          run.sourceEnrichment = this.sourceEnrichmentCoordinator.get(event.runId);
-          if (terminal) {
-            run.sourceEnrichmentPending = false;
-          }
-        }
-        this.publish(event.sessionId, event);
-        if (terminal) this.sourceEnrichmentCoordinator.remove(event.runId);
-      },
-    });
   }
 
   getSession(sessionId: string): ConversationSession | undefined {
@@ -254,7 +298,8 @@ export class ConversationSessionService {
       input.providerSnapshotHash !== descriptor.providerSnapshotHash || input.runtimeKind !== descriptor.runtimeKind ||
       input.analysisContextFingerprint !== descriptor.analysisContextFingerprint ||
       !traceContextsEqual(normalizeTraceContext(input.traceContext), descriptor.traceContext)) {
-      throw new Error('conversation_recovery_context_mismatch');
+      throw new ConversationRequestError('CONVERSATION_RECOVERY_UNAVAILABLE',
+        'The conversation no longer matches its owner, provider or attached Trace', 409);
     }
     assertCurrentAnalysisContextAuthorization(descriptor, resolveKnowledgeScope(descriptor),
       descriptor.analysisContextFingerprint);
@@ -292,16 +337,16 @@ export class ConversationSessionService {
     // Settled history is replayable; an interrupted SDK has no live execution or pending promise.
     if (outcome) session.runs.push({runId: descriptor.lastRun.runId, query: descriptor.lastRun.query,
       turnIndex: descriptor.lastRun.turnIndex, status: descriptor.lastRun.status === 'cancelled' ? 'cancelled' : 'completed',
-      sourceUseMode: descriptor.lastRun.sourceDerived ? 'explicit' : 'dormant',
       startedAt: descriptor.lastRun.startedAt, completedAt: descriptor.lastRun.completedAt, outcome,
-      completion: Promise.resolve(outcome), lifecycleSettled: true, events: []});
+      completion: Promise.resolve(outcome), lifecycleSettled: true, events: [],
+      privateContext: resolveAnalysisPrivateContext(session)});
     this.sessions.setSession(session.sessionId, session);
     return session;
   }
 
   subscribe(
     sessionId: string,
-    listener: (event: ConversationSessionEvent) => void,
+    listener: (event: ConversationPublishedEvent) => void,
   ): () => void {
     const listeners = this.listeners.get(sessionId) ?? new Set();
     listeners.add(listener);
@@ -314,14 +359,14 @@ export class ConversationSessionService {
 
   startTurn(input: StartConversationTurnInput): ConversationTurnReceipt {
     const query = input.query.trim();
-    if (!query) throw new Error('Conversation query is required');
+    if (!query) throw new ConversationRequestError('CONVERSATION_QUERY_REQUIRED', 'Conversation query is required');
 
     let session = input.sessionId
       ? this.sessions.getSession(input.sessionId)
       : undefined;
     const isNewSession = !session;
     if (input.sessionId && !session) {
-      throw new Error(`Conversation session not found: ${input.sessionId}`);
+      throw conversationNotFound(input.sessionId);
     }
     if (!session) {
       const sessionId = this.createId('conversation');
@@ -347,9 +392,7 @@ export class ConversationSessionService {
         ...(input.providerSnapshotHash
           ? {providerSnapshotHash: input.providerSnapshotHash}
           : {}),
-        ...(input.analysisContextFingerprint
-          ? {analysisContextFingerprint: input.analysisContextFingerprint}
-          : {}),
+        analysisContextFingerprint: input.analysisContextFingerprint,
         ...(input.runtimeOptions?.outputLanguage
           ? {outputLanguage: input.runtimeOptions.outputLanguage}
           : {}),
@@ -362,6 +405,7 @@ export class ConversationSessionService {
         ...(input.runtimeOptions?.knowledgeSourceIds?.length
           ? {knowledgeSourceIds: [...input.runtimeOptions.knowledgeSourceIds]}
           : {}),
+        ...(input.runtimeOptions?.sourceDepth ? {sourceDepth: input.runtimeOptions.sourceDepth} : {}),
         ...(input.runtimeOptions?.codeAwareMode &&
           input.runtimeOptions.codeAwareMode !== 'off' &&
           input.runtimeOptions.codebaseIds?.length
@@ -376,23 +420,25 @@ export class ConversationSessionService {
       this.sessions.setSession(sessionId, session);
     }
     if (input.owner && (session.userId !== input.owner.userId || session.tenantId !== input.owner.tenantId ||
-      session.workspaceId !== input.owner.workspaceId)) throw new Error('Conversation session not found');
-    if (!isNewSession && input.analysisContextFingerprint && session.analysisContextFingerprint &&
-      input.analysisContextFingerprint !== session.analysisContextFingerprint) {
-      throw new Error('Start a new conversation after changing authorized sources');
+      session.workspaceId !== input.owner.workspaceId)) throw conversationNotFound();
+    if (!isNewSession && input.analysisContextFingerprint !== session.analysisContextFingerprint) {
+      throw new ConversationRequestError('ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED',
+        'Start a new conversation after changing authorized sources', 409);
     }
     const requestedTraceContext = input.traceContext
       ? normalizeTraceContext(input.traceContext)
       : session.traceContext;
     if (!isNewSession && !traceContextsEqual(session.traceContext, requestedTraceContext)) {
-      throw new Error('Start a new conversation after changing the attached Trace');
+      throw new ConversationRequestError('CONVERSATION_TRACE_CHANGED',
+        'Start a new conversation after changing the attached Trace', 409);
     }
     if (
       !isNewSession &&
       input.providerId !== undefined &&
       session.providerId !== input.providerId
     ) {
-      throw new Error('Start a new conversation after changing the AI provider');
+      throw new ConversationRequestError('CONVERSATION_PROVIDER_CHANGED',
+        'Start a new conversation after changing the AI provider', 409);
     }
     if (
       !isNewSession &&
@@ -400,10 +446,12 @@ export class ConversationSessionService {
       session.providerSnapshotHash &&
       session.providerSnapshotHash !== input.providerSnapshotHash
     ) {
-      throw new Error('Start a new conversation after changing the AI provider configuration');
+      throw new ConversationRequestError('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
+        'Start a new conversation after changing the AI provider configuration', 409);
     }
     if (session.activeRun) {
-      throw new Error(`Conversation already in progress for session ${session.sessionId}`);
+      throw new ConversationRequestError('RUN_ALREADY_ACTIVE',
+        `Conversation already in progress for session ${session.sessionId}`, 409);
     }
 
     session.traceContext = requestedTraceContext;
@@ -419,10 +467,13 @@ export class ConversationSessionService {
     session.lastActivityAt = this.now();
 
     const runId = this.createId('run');
-    const sourceUseMode = session.runtime.resolvePrimarySourceUse?.(query) ?? 'dormant';
+    const stop = this.createRunStop(session, () => run);
+    const privateContext = resolveAnalysisPrivateContext(session);
+    const sourceDepth = input.runtimeOptions?.sourceDepth ?? session.sourceDepth;
     const runtimeInput: ConversationRuntimeInput = {
       sessionId: session.sessionId,
       runId,
+      privateContext,
       query,
       history: session.history.map((message) => ({...message})),
       getHistoryTurns: () => {
@@ -431,12 +482,37 @@ export class ConversationSessionService {
       },
       traceContext: session.traceContext,
       selectionContext: input.runtimeOptions?.selectionContext,
+      ...(sourceDepth ? {sourceDepth} : {}),
       onUpdate: (update) => {
         if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
         this.runAuthorizationChecks.get(run)?.();
         if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
         this.publish(session!.sessionId, {type: 'runtime_update', sessionId: session!.sessionId, runId, update});
       },
+      onAnswerDraft: (update) => {
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run) || stop.provisionalDelivered) return;
+        // A draft is display-only: a revoked authorization drops it; the run's
+        // own path reports the revocation.
+        try {
+          this.runAuthorizationChecks.get(run)?.();
+        } catch {
+          return;
+        }
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
+        this.publish(session!.sessionId, {type: 'runtime_update', sessionId: session!.sessionId, runId, update},
+          {liveOnly: true});
+      },
+      onProvisionalAnswer: ({message: answer}) => {
+        if (!answer.trim() || stop.provisionalDelivered) return false;
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return false;
+        this.runAuthorizationChecks.get(run)?.();
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return false;
+        stop.markDelivered(answer);
+        this.publish(session!.sessionId, {type: 'provisional_answer', sessionId: session!.sessionId, runId,
+          message: answer, verification: 'pending'});
+        return true;
+      },
+      reviewStopSignal: stop.signal,
     };
     const run: ConversationRun = {
       runId,
@@ -447,17 +523,15 @@ export class ConversationSessionService {
       startedAt: this.now(),
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
-      sourceUseMode,
+      privateContext,
+      ...(input.requestId ? {requestId: input.requestId} : {}),
     };
-    const authorizationSelection = {codeAwareMode: session.codeAwareMode,
-      codebaseIds: session.codebaseIds ? [...session.codebaseIds] : undefined,
-      knowledgeSourceIds: session.knowledgeSourceIds ? [...session.knowledgeSourceIds] : undefined};
+    const authorizationSelection = runAnalysisSelection(session);
     const authorizationScope = resolveKnowledgeScope(session);
-    const authorizationFingerprint = input.analysisContextFingerprint ?? input.runtimeOptions?.analysisContextFingerprint ??
-      session.analysisContextFingerprint ?? buildAnalysisContextAuthorizationFingerprint(authorizationSelection, authorizationScope);
     // Bind only new turns to the grant checked for this run; older entries keep their original provenance.
-    session.analysisContextFingerprint ??= authorizationFingerprint;
+    const authorizationFingerprint = session.analysisContextFingerprint;
     run.analysisContextFingerprint = authorizationFingerprint;
+    this.runStops.set(run, stop);
     this.runAuthorizationChecks.set(run, () => assertCurrentAnalysisContextAuthorization(
       authorizationSelection, authorizationScope, authorizationFingerprint));
     session.activeRun = run;
@@ -478,11 +552,14 @@ export class ConversationSessionService {
       }
       throw error;
     }
+    // A started turn that names a depth keeps it for the turns after it.
+    if (input.runtimeOptions?.sourceDepth) session.sourceDepth = input.runtimeOptions.sourceDepth;
     if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
       this.publish(session.sessionId, {type: 'run_started', sessionId: session.sessionId, runId});
     }
     if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
-      session.history.push({role: 'user', content: query, turnId: runId, ...(sourceUseMode === 'explicit' || session.knowledgeSourceIds?.length ? {sourceDerived: true} : {})});
+      session.history.push({role: 'user', content: query, turnId: runId,
+        ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})});
     }
 
     let runtimeCompletion: Promise<ConversationRuntimeOutcome>;
@@ -495,37 +572,16 @@ export class ConversationSessionService {
     }
     const completion = runtimeCompletion
       .then((outcome) => {
-        const enrichmentPending = outcome.kind !== 'cancelled' && this.isCurrentRun(session!, run) &&
-          !this.cancellationRequested.has(run) && Boolean(session!.runtime.runSourceEnrichment &&
-            session!.runtime.shouldStartSourceEnrichment?.(runtimeInput, outcome));
-        const accepted = this.completeRun(session!, run, outcome);
-        if (!accepted) return {kind: 'cancelled' as const, message: ''};
-        run.sourceEnrichmentPending = accepted.kind !== 'cancelled' && enrichmentPending;
-        this.settleRun(session!, run);
-        if (!this.isLatestRun(session!, run)) return accepted;
-        this.publish(session!.sessionId, {type: 'run_completed', sessionId: session!.sessionId, runId,
-          outcome: accepted, enrichmentPending: Boolean(run.sourceEnrichmentPending)});
-        if (run.sourceEnrichmentPending && this.isLatestRun(session!, run)) {
-          queueMicrotask(() => {
-            if (!this.isLatestRun(session!, run) || !run.sourceEnrichmentPending || !session!.runtime.runSourceEnrichment) return;
-            run.sourceEnrichment = this.sourceEnrichmentCoordinator.start({
-              sessionId: session!.sessionId,
-              runId,
-              execute: () => {
-                if (!this.isLatestRun(session!, run) || !run.sourceEnrichmentPending) throw new DOMException('Conversation run changed', 'AbortError');
-                this.runAuthorizationChecks.get(run)?.();
-                return session!.runtime.runSourceEnrichment!({...runtimeInput, primaryOutcome: accepted});
-              },
-              cancel: () => session!.runtime.cancelSourceEnrichment?.(session!.sessionId, runId) ?? Promise.resolve(),
-            });
-          });
-        }
-        return accepted;
+        return this.commitRun(session!, run, outcome, true) ?? {kind: 'cancelled' as const, message: ''};
       })
       .catch((error: unknown) => {
         if (!this.isCurrentRun(session!, run)) return {kind: 'cancelled' as const, message: ''};
         if (this.cancellationRequested.has(run)) return this.settleCancelledRun(session!, run);
-        const message = error instanceof Error ? error.message : String(error);
+        // One text for the stored error, the history and `run_failed`.
+        const message = projectAnalysisFailure(error, {privateContext: run.privateContext,
+          guardSessionId: conversationRuntimeSessionId(session!.sessionId, run.runId),
+          language: session!.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
+          requestId: run.requestId ?? run.runId});
         run.status = 'failed';
         run.error = message;
         run.completedAt = this.now();
@@ -541,6 +597,7 @@ export class ConversationSessionService {
         throw error;
       });
     run.completion = completion;
+    void completion.then(() => stop.dispose(), () => stop.dispose());
 
     return {
       sessionId: session.sessionId,
@@ -554,57 +611,102 @@ export class ConversationSessionService {
     traceContext?: ConversationTraceContext;
   }): Promise<ConversationTurnReceipt> {
     const session = this.sessions.getSession(input.sessionId);
-    if (!session) throw new Error(`Conversation session not found: ${input.sessionId}`);
+    if (!session) throw conversationNotFound(input.sessionId);
     if (session.activeRun) {
-      await this.cancelRun(session.sessionId, session.activeRun.runId);
+      await this.supersedeRun(session.sessionId, session.activeRun.runId);
     }
-    return this.startTurn(input);
+    // A steer continues the session under the authorization it already holds.
+    return this.startTurn({...input, analysisContextFingerprint: session.analysisContextFingerprint});
   }
 
-  async cancelRun(sessionId: string, runId: string): Promise<ConversationRuntimeOutcome> {
+  /**
+   * Stop request for the active run. Before an answer is delivered it is a full
+   * cancel. After delivery the first stop ends only the review and returns at
+   * once; the run commits its normal turn (the watchdog bounds that commit). A
+   * second stop forces: it waits for that commit up to the same watchdog, then
+   * aborts, persisting the read body as an unverified partial turn if needed.
+   */
+  async cancelRun(sessionId: string, runId: string): Promise<ConversationCancelResult> {
     const session = this.sessions.getSession(sessionId);
-    if (!session) throw new Error(`Conversation session not found: ${sessionId}`);
+    if (!session) throw conversationNotFound(sessionId);
     const run = session.activeRun;
     if (!run || run.runId !== runId) {
-      const completedRun = session.runs.find(candidate => candidate.runId === runId);
-      if (
-        completedRun?.sourceEnrichmentPending ||
-        completedRun?.sourceEnrichment?.status === 'running'
-      ) {
-        completedRun.sourceEnrichmentPending = false;
-        await this.sourceEnrichmentCoordinator.cancel(runId);
-        return completedRun.outcome ?? {kind: 'cancelled', message: ''};
-      }
-      throw new Error(`Active conversation run not found: ${runId}`);
+      throw new ConversationRequestError('CONVERSATION_RUN_NOT_ACTIVE', `Active conversation run not found: ${runId}`, 409);
     }
+    const stop = this.runStops.get(run);
+    const request = stop?.requestStop() ?? 'full';
+    if (stop?.provisionalDelivered) {
+      if (request === 'review') return {status: 'review_stop_requested'};
+      await stop.awaitCommitOrExpire(run.completion);
+      return {status: 'settled', outcome: run.outcome ?? {kind: 'cancelled', message: ''}};
+    }
+    return {status: 'settled', outcome: await this.cancelUndeliveredRun(session, run)};
+  }
+
+  /**
+   * A new turn or steer replaces the active run: stop it and wait for its
+   * terminal commit within one watchdog bound, never a review plus a cancel.
+   */
+  async supersedeRun(sessionId: string, runId: string): Promise<ConversationRuntimeOutcome> {
+    const first = await this.cancelRun(sessionId, runId);
+    if (first.status === 'settled') return first.outcome;
+    const session = this.sessions.getSession(sessionId);
+    const run = session?.runs.find(candidate => candidate.runId === runId);
+    if (!session || !run || session.activeRun !== run) return run?.outcome ?? {kind: 'cancelled', message: ''};
+    const forced = await this.cancelRun(sessionId, runId);
+    return forced.status === 'settled' ? forced.outcome : run.outcome ?? {kind: 'cancelled', message: ''};
+  }
+
+  private async cancelUndeliveredRun(session: ConversationSession, run: ConversationRun): Promise<ConversationRuntimeOutcome> {
     this.cancellationRequested.add(run);
-    const cancellation = Promise.resolve().then(() => session.runtime.cancel(sessionId, runId));
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const cancellation = Promise.resolve().then(() => session.runtime.cancel(session.sessionId, run.runId))
+      .then(() => run.completion);
     try {
-      return await Promise.race([
-        cancellation.then(() => run.completion),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error(`Conversation cancellation did not settle within ${this.cancelSettleTimeoutMs}ms`)),
-            this.cancelSettleTimeoutMs,
-          );
-          timeout.unref?.();
-        }),
-      ]);
+      if (!await settlesWithin(cancellation, this.cancelSettleTimeoutMs)) {
+        throw new ConversationRequestError('CANCELLATION_IN_PROGRESS',
+          `Conversation cancellation did not settle within ${this.cancelSettleTimeoutMs}ms`, 409);
+      }
+      return await cancellation;
     } finally {
-      if (timeout) clearTimeout(timeout);
       if (this.isCurrentRun(session, run)) this.settleCancelledRun(session, run);
     }
   }
 
-  async cancelSourceEnrichments(sessionId: string): Promise<void> {
-    const session = this.sessions.getSession(sessionId);
-    if (!session) return;
-    await Promise.all(session.runs.map(async (run) => {
-      if (!run.sourceEnrichmentPending && run.sourceEnrichment?.status !== 'running') return;
-      run.sourceEnrichmentPending = false;
-      await this.sourceEnrichmentCoordinator.cancel(run.runId);
-    }));
+  /**
+   * The run's stop controller. Its watchdog fallback keeps the owner-projected
+   * message the user read (the conversation never holds the raw body), and the
+   * privacy rule is per run: registered source counts only when this run used it.
+   */
+  private createRunStop(session: ConversationSession,
+    getRun: () => ConversationRun): ReviewStopController<ConversationRuntimeOutcome> {
+    const abortRuntime = (run: ConversationRun) => {
+      this.cancellationRequested.add(run);
+      void Promise.resolve().then(() => session.runtime.cancel(session.sessionId, run.runId)).catch(() => undefined);
+    };
+    return new ReviewStopController<ConversationRuntimeOutcome>({watchdogMs: this.reviewStopWatchdogMs, owner: {
+      mayPersistPartial: () => mayPersistUnverifiedBody({
+        // A private run's unverified body stays live-only: no watchdog fallback persists it.
+        privateKnowledge: privateContextRestrictsAudience(getRun().privateContext),
+        isCurrent: () => this.isCurrentRun(session, getRun()),
+        assertAuthorized: () => this.runAuthorizationChecks.get(getRun())?.(),
+      }),
+      commitPartial: message => {
+        const run = getRun();
+        const accepted = this.commitRun(session, run, {kind: 'answered', message,
+          finalResult: buildReviewNotFinishedResult({sessionId: session.sessionId, conclusion: message,
+            outputLanguage: session.outputLanguage ?? 'zh-CN'})});
+        if (!accepted) return false;
+        // The finalization that never settled is abandoned; its late result is ignored.
+        abortRuntime(run);
+        return true;
+      },
+      fullCancel: () => {
+        const run = getRun();
+        if (!this.isCurrentRun(session, run)) return run.outcome ?? {kind: 'cancelled', message: ''};
+        abortRuntime(run);
+        return this.settleCancelledRun(session, run);
+      },
+    }});
   }
 
   buildFullAnalysisHandoff(sessionId: string): FullAnalysisHandoff | undefined {
@@ -646,14 +748,6 @@ export class ConversationSessionService {
         const cancel = activeRun
           ? session.runtime.cancel(sessionId, activeRun.runId)
           : Promise.resolve();
-        for (const run of session.runs) {
-          if (run.sourceEnrichmentPending || run.sourceEnrichment?.status === 'running') {
-            void this.sourceEnrichmentCoordinator.cancel(run.runId)
-              .finally(() => this.sourceEnrichmentCoordinator.remove(run.runId));
-          } else {
-            this.sourceEnrichmentCoordinator.remove(run.runId);
-          }
-        }
         void Promise.resolve(cancel)
           .catch(() => undefined)
           .finally(() => Promise.resolve(session.runtime.dispose?.()).catch(() => undefined));
@@ -673,23 +767,44 @@ export class ConversationSessionService {
 
   private settleCancelledRun(session: ConversationSession, run: ConversationRun): ConversationRuntimeOutcome {
     const outcome: ConversationRuntimeOutcome = {kind: 'cancelled', message: ''};
-    const accepted = this.completeRun(session, run, outcome);
-    if (accepted) {
-      run.sourceEnrichmentPending = false;
-      this.settleRun(session, run);
-      if (this.isLatestRun(session, run)) this.publish(session.sessionId, {type: 'run_completed',
-        sessionId: session.sessionId, runId: run.runId, outcome: accepted, enrichmentPending: false});
+    return this.commitRun(session, run, outcome) ?? outcome;
+  }
+
+  /**
+   * The single terminal write of a run: outcome and history in memory, then the
+   * durable commit (onRunSettled, one SQLite transaction that refuses a turn
+   * already terminal), in one synchronous step. The first writer wins; a run
+   * that is no longer current writes nothing. Once settled, the latest run
+   * announces its outcome; a settlement hook that started a newer run silences it.
+   */
+  private commitRun(
+    session: ConversationSession,
+    run: ConversationRun,
+    outcome: ConversationRuntimeOutcome,
+    finalized = false,
+  ): ConversationRuntimeOutcome | undefined {
+    const accepted = this.completeRun(session, run, outcome, finalized);
+    if (!accepted) return undefined;
+    this.settleRun(session, run);
+    if (this.isLatestRun(session, run)) {
+      this.publish(session.sessionId, {type: 'run_completed', sessionId: session.sessionId, runId: run.runId,
+        outcome: accepted});
     }
-    return accepted ?? outcome;
+    return accepted;
   }
 
   private completeRun(
     session: ConversationSession,
     run: ConversationRun,
     outcome: ConversationRuntimeOutcome,
+    finalized: boolean,
   ): ConversationRuntimeOutcome | undefined {
     if (!this.isCurrentRun(session, run)) return undefined;
-    if (this.cancellationRequested.has(run) && outcome.kind !== 'cancelled') outcome = {kind: 'cancelled', message: ''};
+    // After delivery the user already holds the answer: a finalized outcome that
+    // reaches the commit wins over a stop. A run that is no longer current (a
+    // replaced session or run) never reaches this point.
+    if (this.cancellationRequested.has(run) && outcome.kind !== 'cancelled' &&
+      !(finalized && this.runStops.get(run)?.provisionalDelivered)) outcome = {kind: 'cancelled', message: ''};
     try {this.runAuthorizationChecks.get(run)?.();}
     catch (error) {
       if (outcome.kind !== 'cancelled') throw error;
@@ -728,7 +843,7 @@ export class ConversationSessionService {
       timestamp: run.completedAt ?? run.startedAt, analysisContextFingerprint: run.analysisContextFingerprint,
       traceId: session.traceContext.kind === 'attached' ? session.traceContext.traceId :
         `conversation-no-trace:${session.sessionId}`,
-      sourceDerived: run.sourceUseMode === 'explicit' || Boolean(session.knowledgeSourceIds?.length),
+      sourceDerived: privateContextRestrictsAudience(run.privateContext),
       result: outcome?.finalResult ?? (outcome ? {message: outcome.message,
         partial: outcome.kind === 'cancelled', completion: {status: outcome.kind === 'cancelled' ? 'incomplete' : 'completed'}} :
         {partial: true, completion: {status: 'incomplete'}, terminationReason: 'execution_error'}),
@@ -753,7 +868,14 @@ export class ConversationSessionService {
     }
   }
 
-  private publish(sessionId: string, payload: ConversationSessionEventPayload): void {
+  /** `liveOnly` events reach current subscribers only; a reconnect never replays them. */
+  private publish(sessionId: string, payload: ConversationSessionEventPayload,
+    delivery: {liveOnly?: boolean} = {}): void {
+    if (delivery.liveOnly) {
+      const live: ConversationLiveEvent = {...payload, liveOnly: true};
+      for (const listener of this.listeners.get(sessionId) ?? []) listener(live);
+      return;
+    }
     const event: ConversationSessionEvent = {
       ...payload,
       seqId: ++this.nextEventSeqId,

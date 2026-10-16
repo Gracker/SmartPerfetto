@@ -7,6 +7,7 @@ const {spawnSync} = require('node:child_process');
 const {randomUUID} = require('node:crypto');
 
 const {
+  STATSD_ATOMS,
   collectPacketSequenceIds,
   encodeTrace,
   resolveTracePacketFieldName,
@@ -14,23 +15,61 @@ const {
   loadTraceType,
 } = require('./perfetto-proto.cjs');
 const {sha256Buffer} = require('./hash.cjs');
+// Proto field names in JS form, as protobufjs names the loaded fields.
+const {camelCase} = require('protobufjs').util;
 
 const FIRST_SYNTHETIC_PID = 700000;
+// uid of a process actor that does not declare one.
+const DEFAULT_APP_UID = 10999;
+const PROCESS_STATE_ENUM = 'com.android.internal.ProcessStateEnum';
 const HEAP_GRAPH_EXTENSION = '.com.android.art.tracing.ArtHeapGraphTracePacket.heapGraph';
+const NETWORK_PACKET_EXTENSION = '.android.net.connectivity.tracing.ConnectivityTracePacket.networkPacket';
+// Ftrace common_flags bits trace processor reads as a wakeup from interrupt
+// context (thread_state.irq_context = 1): TRACE_FLAG_HARDIRQ, TRACE_FLAG_SOFTIRQ.
+// Trace processor reads them only from compact sched wakings, which name no
+// waker: it attributes the wakeup to whatever ran on that CPU, as an
+// interrupt does.
+const IRQ_CONTEXT_COMMON_FLAGS = Object.freeze({hardirq: 0x08, softirq: 0x10});
+const NETWORK_PACKET_DIRECTIONS = Object.freeze({received: 'DIR_INGRESS', transmitted: 'DIR_EGRESS'});
 const HEAP_GRAPH_LIMITS = Object.freeze({types: 5000, objects: 10000, roots: 1000, references: 50000});
 const GPU_COMPUTE_KERNELS_EXTENSION = '.perfetto.protos.GpuInternedData.computeKernels';
 const GPU_COMPUTE_ARG_NAMES_EXTENSION = '.perfetto.protos.GpuInternedData.computeArgNames';
 const GPU_COMPUTE_MAX_ARGS = 64;
 const FRAME_TIMELINE_TRACE_PACKET_FIELD_NUMBER = 76;
+const PROCESS_STATE_SNAPSHOT_EXTENSION = '.com.android.internal.FrameworksBaseTracePacket.androidProcessState';
+const PROCESS_STATE_CHANGED_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.processStateChangedEvent';
+// BatteryStats history events that trace processor turns into
+// android_battery_stats_event_slices; `longwake` backs android_app_wakelocks.
+const BATTERY_STATS_EVENTS = new Set(['longwake']);
+// Name tokens that resolve to an allocated synthetic pid or tid, for framework
+// slices that embed one in their name (`Freeze <process>:<pid>`,
+// `monitor contention with owner <thread> (<tid>) ...`).
+const ACTOR_ID_TOKEN = /\{(pid|tid):([^}]*)\}/g;
 const SUPPORTED_SIGNAL_TYPES = new Set([
   'atrace-slice', 'atrace-counter', 'atrace-async-slice', 'atrace-async-track-slice',
   'sched-running', 'sched-switch', 'sched-waking', 'process-stats', 'battery-counters', 'power-rail',
-  'gpu-work-period', 'gpu-compute-kernel', 'gpu-frequency', 'gpu-power-state',
+  'gpu-work-period', 'gpu-compute-kernel', 'gpu-frequency', 'gpu-memory-total', 'gpu-power-state',
   'cpu-frequency', 'cpu-frequency-limits', 'cpu-idle', 'thermal-temperature', 'cdev-update',
   'irq-span', 'frame-timeline', 'lmk-kill',
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
+  'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
+  'android-system-info', 'android-network-packet', 'android-packages-list', 'sched-blocked-reason',
+  'binder-transaction',
 ]);
+// Binder debug ids pair a transaction with its receipt across the whole trace,
+// so an overlay's ids sit far above the small incrementing ids a device writes.
+const BINDER_DEBUG_ID_BASE = 0x7f000000;
+// The SystemInfo device identity an `android-system-info` signal may set,
+// keyed by the name trace processor stores each value under in `metadata`.
+// Trace processor keeps the last SystemInfo value per name, so an overlay
+// replaces a base trace's value but can never remove one the base carries.
+const ANDROID_SYSTEM_INFO_FIELDS = Object.freeze({
+  android_build_fingerprint: 'androidBuildFingerprint',
+  android_device_manufacturer: 'androidDeviceManufacturer',
+  android_soc_model: 'androidSocModel',
+  android_sdk_version: 'androidSdkVersion',
+});
 // Signals that name a CPU twice: once as the ftrace stream (`cpu`) and once as
 // the payload identity (`cpu_id`). Both must be isolated together so an overlay
 // never rewrites a real CPU's counters in the base trace.
@@ -183,6 +222,9 @@ function validateScenario(scenario) {
         throw new Error(`scenario.signals[${index}] ends after scenario.clock.duration_ns`);
       }
     }
+    if (signal.type === 'android-system-info') {
+      androidSystemInfo(signal, `scenario.signals[${index}]`);
+    }
     if (signal.type === 'perf-sample') {
       const sampleCount = positiveSafeInteger(
         signal.sample_count,
@@ -200,6 +242,24 @@ function validateScenario(scenario) {
       }
     }
   }
+  if (scenario.signals.filter((signal) => signal.type === 'android-system-info').length > 1) {
+    throw new Error('scenario declares more than one android-system-info signal');
+  }
+}
+
+/** The identity an `android-system-info` signal declares, by metadata name. */
+function androidSystemInfo(signal, field) {
+  const declared = {};
+  for (const name of Object.keys(ANDROID_SYSTEM_INFO_FIELDS)) {
+    if (signal[name] === undefined) continue;
+    declared[name] = name === 'android_sdk_version'
+      ? positiveSafeInteger(signal[name], `${field}.${name}`)
+      : nonEmptyString(signal[name], `${field}.${name}`);
+  }
+  if (Object.keys(declared).length === 0) {
+    throw new Error(`${field} must set at least one of ${Object.keys(ANDROID_SYSTEM_INFO_FIELDS).join(', ')}`);
+  }
+  return declared;
 }
 
 function buildIdentities(scenario, usedPids) {
@@ -213,7 +273,7 @@ function buildIdentities(scenario, usedPids) {
     if (processDefinitions.has(id)) throw new Error(`duplicate process actor: ${id}`);
     const pid = allocatePid(usedPids);
     processes[id] = pid;
-    processDefinitions.set(id, {...actor, pid});
+    processDefinitions.set(id, {...actor, pid, uid: actor.uid ?? DEFAULT_APP_UID});
   }
   for (const actor of scenario.actors.threads) {
     const id = nonEmptyString(actor.id, 'thread.id');
@@ -524,6 +584,69 @@ function schedSwitchEvent(timestamp, prev, next, prevState, prevPrio = 120, next
   };
 }
 
+function expandActorIdTokens(name, identities, field) {
+  return name.replace(ACTOR_ID_TOKEN, (_, kind, id) => {
+    if (kind === 'pid') return String(processActor(identities, id, field).pid);
+    const thread = identities.threadDefinitions.get(id);
+    if (!thread) throw new Error(`${field} references unknown thread ${id}`);
+    return String(thread.tid);
+  });
+}
+
+function protoEnumNumber(enumType, value, field) {
+  if (typeof value !== 'string' || !Object.hasOwn(enumType.values, value)) {
+    throw new Error(`${field} must be a ${enumType.name} value name`);
+  }
+  return enumType.values[value];
+}
+
+function processStateEnum(repoRoot) {
+  return loadTraceType(repoRoot).root.lookupEnum(PROCESS_STATE_ENUM);
+}
+
+function processActor(identities, id, field) {
+  const process = identities.processDefinitions.get(id);
+  if (!process) throw new Error(`${field} references unknown process ${id}`);
+  return process;
+}
+
+// One statsd atom as trace processor receives it from the android.statsd data
+// source. Field names are the atom's snake_case proto names; enum fields take
+// value names. `process` fills pid/process_name from an actor.
+function statsdAtomPacket(repoRoot, signal, identities, timestamp) {
+  const atomField = camelCase(nonEmptyString(signal.atom, 'statsd-atom atom'));
+  if (!STATSD_ATOMS.includes(atomField)) {
+    throw new Error(`statsd-atom atom is unsupported: ${signal.atom}`);
+  }
+  const type = loadTraceType(repoRoot).root.lookupType('perfetto.protos.Atom').fields[atomField].resolve().resolvedType;
+  if (!signal.fields || typeof signal.fields !== 'object' || Array.isArray(signal.fields)) {
+    throw new Error('statsd-atom fields must be an object');
+  }
+  const payload = {};
+  for (const [key, value] of Object.entries(signal.fields)) {
+    const field = type.fields[camelCase(key)]?.resolve();
+    if (!field) throw new Error(`statsd-atom ${signal.atom} has no field ${key}`);
+    if (field.resolvedType?.values) {
+      protoEnumNumber(field.resolvedType, value, `statsd-atom ${key}`);
+      payload[field.name] = value;
+    } else if (field.type === 'string') {
+      payload[field.name] = nonEmptyString(value, `statsd-atom ${key}`);
+    } else {
+      if (!Number.isSafeInteger(value)) throw new Error(`statsd-atom ${key} must be an integer`);
+      payload[field.name] = value;
+    }
+  }
+  if (signal.process !== undefined) {
+    const process = processActor(identities, signal.process, 'statsd-atom process');
+    if (!type.fields.pid || !type.fields.processName) {
+      throw new Error(`statsd-atom ${signal.atom} has no process fields`);
+    }
+    payload.pid = process.pid;
+    payload.processName = process.name;
+  }
+  return {timestamp, statsdAtom: {atom: [{[atomField]: payload}], timestampNanos: [timestamp]}};
+}
+
 function encodeScenarioOverlay(repoRoot, scenario, options) {
   validateScenario(scenario);
   const frameTimelineFieldName = scenario.signals.some((signal) => signal.type === 'frame-timeline')
@@ -534,6 +657,13 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     options?.realtimeAnchorNs ?? anchorNs,
     'options.realtimeAnchorNs',
   );
+  // CLOCK_MONOTONIC_RAW at the anchor. It stops while the device sleeps, so
+  // on a real base trace it trails BOOTTIME by the time slept so far.
+  const monotonicRawAnchorNs = signedDecimalString(
+    options?.monotonicRawAnchorNs ?? anchorNs,
+    'options.monotonicRawAnchorNs',
+  );
+  const monotonicRawOffsetNs = BigInt(monotonicRawAnchorNs) - BigInt(anchorNs);
   if (!Number.isInteger(options?.sequenceId) || options.sequenceId <= 0) {
     throw new Error('options.sequenceId must be a positive integer');
   }
@@ -542,11 +672,18 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
   const ftraceByCpu = new Map();
   const dataPackets = [];
   const inputEventIds = isolatedInputEventIds(scenario, options.usedInputEventIds);
+  const processStateTracks = new Set();
 
   function eventsForCpu(cpu) {
     if (!Number.isInteger(cpu) || cpu < 0) throw new Error(`invalid cpu: ${cpu}`);
     if (!ftraceByCpu.has(cpu)) ftraceByCpu.set(cpu, []);
     return ftraceByCpu.get(cpu);
+  }
+  const compactWakingsByCpu = new Map();
+  function compactWakingsForCpu(cpu) {
+    eventsForCpu(cpu);
+    if (!compactWakingsByCpu.has(cpu)) compactWakingsByCpu.set(cpu, []);
+    return compactWakingsByCpu.get(cpu);
   }
 
   for (const [index, signal] of scenario.signals.entries()) {
@@ -555,7 +692,8 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const {process, thread} = actorForSignal(signal, identities);
       const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
       const events = eventsForCpu(signal.cpu ?? 0);
-      events.push(printEvent(timestamp, thread.tid, `B|${process.pid}|${nonEmptyString(signal.name, 'signal.name')}`));
+      const name = expandActorIdTokens(nonEmptyString(signal.name, 'signal.name'), identities, 'atrace-slice name');
+      events.push(printEvent(timestamp, thread.tid, `B|${process.pid}|${name}`));
       events.push(printEvent(end, thread.tid, `E|${process.pid}`));
     } else if (signal.type === 'atrace-track-instant') {
       const {process, thread} = actorForSignal(signal, identities);
@@ -616,6 +754,52 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const events = eventsForCpu(signal.cpu);
       events.push(schedSwitchEvent(timestamp, idle, task, '0'));
       events.push(schedSwitchEvent(end, task, idle, endState));
+    } else if (signal.type === 'sched-blocked-reason') {
+      // Why the thread's latest D state blocked: trace processor writes io_wait
+      // and the kernel symbol the caller iid names onto that thread_state row,
+      // so this follows the sched-running that ends in D.
+      const thread = schedActor(signal.thread, identities, 'sched-blocked-reason thread');
+      if (thread.tid === 0) throw new Error('sched-blocked-reason cannot describe the idle thread');
+      if (typeof signal.io_wait !== 'boolean') throw new Error('sched-blocked-reason io_wait must be a boolean');
+      let caller;
+      if (signal.function_name !== undefined) {
+        caller = (index + 1) * 1000 + 1;
+        dataPackets.push({timestamp, internedData: {kernelSymbols: [{
+          iid: caller,
+          str: Buffer.from(nonEmptyString(signal.function_name, 'sched-blocked-reason function_name')),
+        }]}});
+      }
+      eventsForCpu(signal.cpu ?? 0).push({
+        timestamp,
+        pid: thread.tid,
+        schedBlockedReason: {pid: thread.tid, ioWait: signal.io_wait ? 1 : 0, ...(caller ? {caller} : {})},
+      });
+    } else if (signal.type === 'binder-transaction') {
+      // A synchronous call: the client sends at at_ns, the server receives it
+      // 1 ns later, replies 1 ns before the end and the client receives the
+      // reply at at_ns + duration_ns. Trace processor pairs each send with its
+      // receipt by debug id and derives android_binder_txns from the pairs.
+      const client = schedActor(signal.thread, identities, 'binder-transaction thread');
+      const server = schedActor(signal.server_thread, identities, 'binder-transaction server_thread');
+      if (client.tid === 0 || server.tid === 0) throw new Error('binder-transaction needs a client and a server thread');
+      if (client.tid === server.tid) throw new Error('binder-transaction client and server must be different threads');
+      const duration = BigInt(positiveUint64String(signal.duration_ns, 'binder-transaction duration_ns'));
+      if (duration < 3n) throw new Error('binder-transaction duration_ns must leave room for the server to receive and reply');
+      const code = signal.code === undefined ? 1 : uint32(signal.code, 'binder-transaction code');
+      const clientCpu = signal.cpu ?? 0;
+      const serverCpu = signal.server_cpu ?? clientCpu;
+      const callId = BINDER_DEBUG_ID_BASE + index * 2;
+      const at = (offset) => absoluteTimestamp(timestamp, offset.toString(), `scenario.signals[${index}]`);
+      const transaction = (to, debugId, reply) => ({
+        debugId, targetNode: reply ? 0 : 1, toProc: to.tgid, toThread: to.tid, reply: reply ? 1 : 0, code, flags: 0,
+      });
+      eventsForCpu(clientCpu).push(
+        {timestamp, pid: client.tid, binderTransaction: transaction(server, callId, false)});
+      eventsForCpu(serverCpu).push(
+        {timestamp: at(1n), pid: server.tid, binderTransactionReceived: {debugId: callId}},
+        {timestamp: at(duration - 1n), pid: server.tid, binderTransaction: transaction(client, callId + 1, true)});
+      eventsForCpu(clientCpu).push(
+        {timestamp: at(duration), pid: client.tid, binderTransactionReceived: {debugId: callId + 1}});
     } else if (signal.type === 'sched-switch') {
       const prev = schedActor(signal.prev_thread, identities, 'sched-switch prev_thread');
       const next = schedActor(signal.next_thread, identities, 'sched-switch next_thread');
@@ -630,15 +814,32 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const thread = schedActor(signal.thread, identities, 'sched-waking thread');
       const waker = schedActor(signal.waker_thread, identities, 'sched-waking waker_thread');
       if (thread.tid === 0) throw new Error('sched-waking cannot wake the idle thread');
+      const prio = schedPriority(signal.sched_priority, 'sched-waking sched_priority');
+      const targetCpu = nonNegativeInteger(signal.target_cpu, 'sched-waking target_cpu');
+      if (signal.irq_context !== undefined) {
+        if (!Object.hasOwn(IRQ_CONTEXT_COMMON_FLAGS, signal.irq_context)) {
+          throw new Error('sched-waking irq_context must be hardirq or softirq');
+        }
+        if (signal.waker_thread !== null) throw new Error('an interrupt-context sched-waking has no waker_thread');
+        compactWakingsForCpu(signal.cpu).push({
+          timestamp: BigInt(timestamp),
+          pid: thread.tid,
+          comm: thread.name,
+          prio,
+          targetCpu,
+          commonFlags: IRQ_CONTEXT_COMMON_FLAGS[signal.irq_context],
+        });
+        continue;
+      }
       eventsForCpu(signal.cpu).push({
         timestamp,
         pid: waker.tid,
         schedWaking: {
           comm: thread.name,
           pid: thread.tid,
-          prio: schedPriority(signal.sched_priority, 'sched-waking sched_priority'),
+          prio,
           success: 1,
-          targetCpu: nonNegativeInteger(signal.target_cpu, 'sched-waking target_cpu'),
+          targetCpu,
         },
       });
     } else if (signal.type === 'process-stats') {
@@ -660,6 +861,101 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
         stats.oomScoreAdj = signal.oom_score_adj;
       }
       dataPackets.push({timestamp, processStats: {processes: [stats], collectionEndTimestamp: timestamp}});
+    } else if (signal.type === 'statsd-atom') {
+      dataPackets.push(statsdAtomPacket(repoRoot, signal, identities, timestamp));
+    } else if (signal.type === 'battery-stats-span') {
+      const {process, thread} = actorForSignal(signal, identities);
+      const event = nonEmptyString(signal.event, 'battery-stats-span event');
+      if (!BATTERY_STATS_EVENTS.has(event)) throw new Error(`battery-stats-span event is unsupported: ${event}`);
+      const owner = processActor(identities, signal.owner_process, 'battery-stats-span owner_process');
+      const tag = atraceComponent(signal.tag, 'battery-stats-span tag');
+      if (tag.includes('"')) throw new Error('battery-stats-span tag must not contain a quote');
+      const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
+      const history = `${event}=${owner.uid}:"${tag}"`;
+      const events = eventsForCpu(signal.cpu ?? 0);
+      events.push(printEvent(timestamp, thread.tid, `N|${process.pid}|battery_stats.${event}|+${history}`));
+      events.push(printEvent(end, thread.tid, `N|${process.pid}|battery_stats.${event}|-${history}`));
+    } else if (signal.type === 'android-process-state-snapshot') {
+      if (!Array.isArray(signal.records) || signal.records.length === 0) {
+        throw new Error('android-process-state-snapshot records must be a non-empty array');
+      }
+      const record = signal.records.map((item, recordIndex) => {
+        const field = `android-process-state-snapshot records[${recordIndex}]`;
+        const process = processActor(identities, item.process, `${field}.process`);
+        return {
+          pid: process.pid,
+          uid: process.uid,
+          procState: protoEnumNumber(processStateEnum(repoRoot), item.proc_state,
+            `${field}.proc_state`),
+          ...(item.oom_score !== undefined ? {oomScore: int32(item.oom_score, `${field}.oom_score`)} : {}),
+          processName: process.name,
+        };
+      });
+      dataPackets.push({timestamp, [PROCESS_STATE_SNAPSHOT_EXTENSION]: {record}});
+    } else if (signal.type === 'android-process-state-change') {
+      const {thread} = actorForSignal(signal, identities);
+      const target = processActor(identities, signal.target_process, 'android-process-state-change target_process');
+      const trackUuid = ((BigInt(options.sequenceId) << 32n) | BigInt(thread.tid)).toString();
+      if (!processStateTracks.has(trackUuid)) {
+        processStateTracks.add(trackUuid);
+        dataPackets.push({
+          timestamp,
+          trackDescriptor: {uuid: trackUuid, thread: {pid: thread.tgid, tid: thread.tid, threadName: thread.name}},
+        });
+      }
+      const state = (value, field) => protoEnumNumber(processStateEnum(repoRoot), value,
+        `android-process-state-change ${field}`);
+      dataPackets.push({
+        timestamp,
+        trackEvent: {
+          type: 'TYPE_INSTANT',
+          trackUuid,
+          name: 'proc_state_change',
+          [PROCESS_STATE_CHANGED_EXTENSION]: {
+            uid: target.uid,
+            pid: target.pid,
+            prevProcState: state(signal.prev_proc_state, 'prev_proc_state'),
+            curProcState: state(signal.cur_proc_state, 'cur_proc_state'),
+            ...(signal.prev_oom_score !== undefined
+              ? {prevOomScore: int32(signal.prev_oom_score, 'android-process-state-change prev_oom_score')} : {}),
+            ...(signal.cur_oom_score !== undefined
+              ? {curOomScore: int32(signal.cur_oom_score, 'android-process-state-change cur_oom_score')} : {}),
+            ...(signal.reason !== undefined ? {reason: protoEnumNumber(
+              loadTraceType(repoRoot).root.lookupEnum('com.android.internal.OomChangeReasonEnum'), signal.reason, 'android-process-state-change reason')} : {}),
+            seqId: String(nonNegativeInteger(signal.seq_id ?? index, 'android-process-state-change seq_id')),
+          },
+        },
+      });
+    } else if (signal.type === 'android-network-packet') {
+      // The packet's socket uid is its owner actor's uid; trace processor
+      // names it by that uid's app id in package_list (android-packages-list).
+      const owner = processActor(identities, signal.owner_process, 'android-network-packet owner_process');
+      if (!Object.hasOwn(NETWORK_PACKET_DIRECTIONS, signal.direction)) {
+        throw new Error('android-network-packet direction must be received or transmitted');
+      }
+      dataPackets.push({
+        timestamp,
+        [NETWORK_PACKET_EXTENSION]: {
+          direction: NETWORK_PACKET_DIRECTIONS[signal.direction],
+          networkInterface: nonEmptyString(signal.interface, 'android-network-packet interface'),
+          length: positiveUint32(signal.length, 'android-network-packet length'),
+          uid: owner.uid,
+          ipProto: 6,
+        },
+      });
+    } else if (signal.type === 'android-packages-list') {
+      if (!Array.isArray(signal.packages) || signal.packages.length === 0) {
+        throw new Error('android-packages-list packages must be a non-empty array');
+      }
+      dataPackets.push({
+        timestamp,
+        packagesList: {
+          packages: signal.packages.map((entry, packageIndex) => {
+            const process = processActor(identities, entry.process, `android-packages-list packages[${packageIndex}] process`);
+            return {name: nonEmptyString(entry.name, `android-packages-list packages[${packageIndex}] name`), uid: String(process.uid)};
+          }),
+        },
+      });
     } else if (signal.type === 'managed-heap-graph') {
       const process = identities.processDefinitions.get(signal.process);
       if (!process) throw new Error(`signal references unknown process ${signal.process}`);
@@ -742,7 +1038,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
             logId,
             pid: process.pid,
             tid: thread.tid,
-            uid: process.uid ?? 10999,
+            uid: process.uid,
             timestamp: logTimestamp,
             tag: nonEmptyString(signal.tag, 'android-log tag'),
             prio: priority,
@@ -785,14 +1081,16 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       });
     } else if (signal.type === 'gpu-work-period') {
       const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
+      // trace_processor reads the period bounds as CLOCK_MONOTONIC_RAW and
+      // converts them to trace time with the trace's clock snapshots.
       eventsForCpu(signal.cpu ?? 0).push({
         timestamp,
         pid: 0,
         gpuWorkPeriod: {
           gpuId: nonNegativeInteger(signal.gpu_id, 'gpu-work-period gpu_id'),
           uid: nonNegativeInteger(signal.uid, 'gpu-work-period uid'),
-          startTimeNs: timestamp,
-          endTimeNs: end,
+          startTimeNs: (BigInt(timestamp) + monotonicRawOffsetNs).toString(),
+          endTimeNs: (BigInt(end) + monotonicRawOffsetNs).toString(),
           totalActiveDurationNs: decimalString(signal.active_duration_ns, 'gpu-work-period active_duration_ns'),
         },
       });
@@ -829,6 +1127,21 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
         gpuFrequency: {
           gpuId: nonNegativeInteger(signal.gpu_id, 'gpu-frequency gpu_id'),
           state: nonNegativeInteger(signal.value, 'gpu-frequency value'),
+        },
+      });
+    } else if (signal.type === 'gpu-memory-total') {
+      // The kernel's gpu_mem_total event: pid 0 is the device total, any other
+      // pid one process's share, which trace_processor files under the
+      // process counter track "GPU Memory".
+      const process = signal.process === undefined ? undefined : identities.processDefinitions.get(signal.process);
+      if (signal.process !== undefined && !process) throw new Error(`signal references unknown process ${signal.process}`);
+      eventsForCpu(signal.cpu ?? 0).push({
+        timestamp,
+        pid: 0,
+        gpuMemTotal: {
+          gpuId: nonNegativeInteger(signal.gpu_id, 'gpu-memory-total gpu_id'),
+          pid: process?.pid ?? 0,
+          size: decimalString(signal.size_bytes, 'gpu-memory-total size_bytes'),
         },
       });
     } else if (signal.type === 'cpu-frequency') {
@@ -895,7 +1208,9 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
           actualSurfaceFrameStart: {
             cookie,
             token: nonNegativeInteger(signal.token, 'frame-timeline token'),
-            displayFrameToken: nonNegativeInteger(signal.display_frame_token, 'frame-timeline display_frame_token'),
+            // -1: a frame the device inserted (OEM frame interpolation), with no display frame of its own.
+            displayFrameToken: signal.display_frame_token === -1
+              ? -1 : nonNegativeInteger(signal.display_frame_token, 'frame-timeline display_frame_token'),
             pid: process.pid,
             layerName: nonEmptyString(signal.layer_name, 'frame-timeline layer_name'),
             presentType: signal.jank_type ? 2 : 1,
@@ -935,6 +1250,11 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const events = eventsForCpu(signal.cpu ?? 0);
       events.push(printEvent(timestamp, thread.tid, `B|${process.pid}|lmk,${process.pid},${killReason},${signal.oom_score_adj}`));
       events.push(printEvent(end, thread.tid, `E|${process.pid}`));
+    } else if (signal.type === 'android-system-info') {
+      const declared = androidSystemInfo(signal, `scenario.signals[${index}]`);
+      const systemInfo = Object.fromEntries(Object.entries(declared)
+        .map(([name, value]) => [ANDROID_SYSTEM_INFO_FIELDS[name], value]));
+      dataPackets.push({timestamp, systemInfo});
     } else {
       throw new Error(`unsupported signal type: ${signal.type}`);
     }
@@ -945,7 +1265,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       pid: actor.pid,
       ppid: 1,
       cmdline: [actor.name],
-      uid: actor.uid ?? 10999,
+      uid: actor.uid,
     })),
     threads: [...identities.threadDefinitions.values()].map((actor) => ({
       tid: actor.tid,
@@ -960,7 +1280,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       clockSnapshot: {
         clocks: [
           {clockId: 1, timestamp: realtimeAnchorNs},
-          {clockId: 5, timestamp: anchorNs},
+          {clockId: 5, timestamp: monotonicRawAnchorNs},
           {clockId: 6, timestamp: anchorNs},
           {clockId: 11, timestamp: anchorNs},
         ],
@@ -982,7 +1302,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       .map(([cpu, event]) => ({
         timestamp: anchorNs,
         trustedPacketSequenceId: options.sequenceId,
-        ftraceEvents: {cpu, event},
+        ftraceEvents: {cpu, event, ...(compactWakingsByCpu.has(cpu) ? {compactSched: compactSched(compactWakingsByCpu.get(cpu))} : {})},
       })),
   ];
   const buffer = encodeTrace(repoRoot, packets);
@@ -992,10 +1312,26 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     provenance: {
       anchor_ns: anchorNs,
       realtime_anchor_ns: realtimeAnchorNs,
+      monotonic_raw_anchor_ns: monotonicRawAnchorNs,
       sequence_id: options.sequenceId,
       ...(Object.keys(inputEventIds).length > 0 ? {input_event_ids: inputEventIds} : {}),
       overlay_sha256: sha256Buffer(buffer),
     },
+  };
+}
+
+/** Compact sched wakings of one CPU bundle: delta-encoded timestamps, interned comms. */
+function compactSched(wakings) {
+  const sorted = [...wakings].sort((left, right) => (left.timestamp < right.timestamp ? -1 : left.timestamp > right.timestamp ? 1 : 0));
+  const internTable = [...new Set(sorted.map((waking) => waking.comm))];
+  return {
+    internTable,
+    wakingTimestamp: sorted.map((waking, index) => String(index === 0 ? waking.timestamp : waking.timestamp - sorted[index - 1].timestamp)),
+    wakingPid: sorted.map((waking) => waking.pid),
+    wakingTargetCpu: sorted.map((waking) => waking.targetCpu),
+    wakingPrio: sorted.map((waking) => waking.prio),
+    wakingCommIndex: sorted.map((waking) => internTable.indexOf(waking.comm)),
+    wakingCommonFlags: sorted.map((waking) => waking.commonFlags),
   };
 }
 
@@ -1045,6 +1381,18 @@ function parseProbeCsv(output) {
   return lines.slice(1).map((line) => line.split(',').map(unquote));
 }
 
+/** Rows of one query against a trace, as CSV cells; the label names the probe in errors. */
+function queryTraceCsv(repoRoot, tracePath, sql, label) {
+  const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`${label} failed (${result.status}): ${result.stderr}`);
+  return parseProbeCsv(result.stdout);
+}
+
 function probeTrace(repoRoot, tracePath) {
   if (!fs.existsSync(tracePath)) throw new Error(`Missing trace: ${tracePath}`);
   const sql = `
@@ -1062,26 +1410,36 @@ function probeTrace(repoRoot, tracePath) {
       ORDER BY snapshot_id
       LIMIT 1
     ), 0)), ''
+    UNION ALL
+    SELECT 'monotonic_raw_offset', printf('%d', COALESCE((
+      SELECT clock_value - ts
+      FROM clock_snapshot
+      WHERE clock_id = 5
+      ORDER BY snapshot_id
+      LIMIT 1
+    ), 0)), ''
+    UNION ALL
+    -- Hex keeps arbitrary identity strings out of the CSV framing.
+    SELECT 'system_info', name, hex(COALESCE(str_value, CAST(int_value AS TEXT))) FROM metadata
+    WHERE name IN (${Object.keys(ANDROID_SYSTEM_INFO_FIELDS).map((name) => `'${name}'`).join(', ')})
     ORDER BY kind, value_1
   `;
-  const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`trace_processor_shell probe failed (${result.status}): ${result.stderr}`);
-  }
-  const rows = parseProbeCsv(result.stdout);
+  const rows = queryTraceCsv(repoRoot, tracePath, sql, 'trace_processor_shell probe');
   const bounds = rows.find(([kind]) => kind === 'bounds');
   if (!bounds) throw new Error('Trace probe did not return bounds');
   decimalString(bounds[1], 'trace start');
   decimalString(bounds[2], 'trace end');
+  // Every value per name: a trace with several machine or trace scopes has more than one.
+  const systemInfo = new Map();
+  for (const [, name, hex] of rows.filter(([kind]) => kind === 'system_info')) {
+    systemInfo.set(name, [...(systemInfo.get(name) ?? []), Buffer.from(hex, 'hex').toString('utf8')]);
+  }
   return {
     start_ns: bounds[1],
     end_ns: bounds[2],
     realtime_offset_ns: rows.find(([kind]) => kind === 'realtime_offset')?.[1] ?? '0',
+    monotonic_raw_offset_ns: rows.find(([kind]) => kind === 'monotonic_raw_offset')?.[1] ?? '0',
+    system_info: systemInfo,
     used_pids: new Set(
       rows
         .filter(([kind]) => kind === 'pid')
@@ -1127,6 +1485,7 @@ function isolateScenarioCpus(scenario, usedCpus) {
         signal.cpu,
         ...(CPU_ID_SIGNAL_TYPES.has(signal.type) ? [signal.cpu_id] : []),
         ...(signal.type === 'sched-waking' ? [signal.target_cpu] : []),
+        ...(signal.type === 'binder-transaction' ? [signal.server_cpu] : []),
       ])
       .filter((cpu) => Number.isInteger(cpu))
       .map((cpu) => nonNegativeInteger(cpu, 'scenario CPU identity')),
@@ -1148,6 +1507,8 @@ function isolateScenarioCpus(scenario, usedCpus) {
         ...(Number.isInteger(signal.cpu) ? {cpu: cpuMap[signal.cpu]} : {}),
         ...(CPU_ID_SIGNAL_TYPES.has(signal.type) ? {cpu_id: cpuMap[signal.cpu_id]} : {}),
         ...(signal.type === 'sched-waking' ? {target_cpu: cpuMap[signal.target_cpu]} : {}),
+        ...(signal.type === 'binder-transaction' && Number.isInteger(signal.server_cpu)
+          ? {server_cpu: cpuMap[signal.server_cpu]} : {}),
       })),
     },
   };
@@ -1159,12 +1520,31 @@ function probeInputEventIds(repoRoot, tracePath) {
     UNION SELECT CAST(event_id AS TEXT) FROM android_key_events
     UNION SELECT CAST(event_id AS TEXT) FROM android_input_event_dispatch
     UNION SELECT input_event_id FROM android_input_events WHERE input_event_id IS NOT NULL`;
-  const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
-    cwd: repoRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`input identity probe failed: ${result.stderr}`);
-  return new Set(parseProbeCsv(result.stdout).map(([id]) => Number(id)).filter(Number.isInteger));
+  return new Set(queryTraceCsv(repoRoot, tracePath, sql, 'input identity probe')
+    .map(([id]) => Number(id)).filter(Number.isInteger));
+}
+
+/**
+ * The combined trace must report exactly the device identity the scenario
+ * declares. A base value the overlay does not replace, or one trace processor
+ * derives (the SDK version from a fingerprint), would otherwise read as the
+ * declared device's own.
+ */
+function assertSystemInfoIdentity(outputProbe, scenario) {
+  const signal = scenario.signals.find((item) => item.type === 'android-system-info');
+  if (!signal) return;
+  const declared = androidSystemInfo(signal, 'android-system-info');
+  for (const name of Object.keys(ANDROID_SYSTEM_INFO_FIELDS)) {
+    const expected = declared[name] === undefined ? [] : [String(declared[name])];
+    const actual = outputProbe.system_info.get(name) ?? [];
+    if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
+      throw new Error(
+        `combined trace reports ${name}=${JSON.stringify(actual)} but the scenario declares ` +
+        `${JSON.stringify(expected)}; an android-system-info overlay replaces base values and cannot ` +
+        'remove one, so declare the field or choose a base trace without it',
+      );
+    }
+  }
 }
 
 function buildConstructedTrace(repoRoot, options) {
@@ -1179,15 +1559,18 @@ function buildConstructedTrace(repoRoot, options) {
   const overlay = encodeScenarioOverlay(repoRoot, isolated.scenario, {
     anchorNs,
     realtimeAnchorNs: (BigInt(anchorNs) + BigInt(probe.realtime_offset_ns)).toString(),
+    monotonicRawAnchorNs: (BigInt(anchorNs) + BigInt(probe.monotonic_raw_offset_ns)).toString(),
     usedPids: probe.used_pids,
     usedInputEventIds: scenario.signals.some(signal => signal.type.startsWith('android-input-'))
       ? probeInputEventIds(repoRoot, options.basePath) : [],
     sequenceId,
   });
+  const materialization = materializeTrace(base, overlay.buffer, options.outputPath);
+  // Checked before the overlay is written, so a rejected identity never replaces a committed one.
+  const outputProbe = probeTrace(repoRoot, options.outputPath);
+  assertSystemInfoIdentity(outputProbe, scenario);
   fs.mkdirSync(path.dirname(options.overlayPath), {recursive: true});
   fs.writeFileSync(options.overlayPath, overlay.buffer);
-  const materialization = materializeTrace(base, overlay.buffer, options.outputPath);
-  const outputProbe = probeTrace(repoRoot, options.outputPath);
   return {
     overlay,
     output_probe: {

@@ -1,0 +1,79 @@
+[
+  {
+    "runtime": "pi",
+    "source": "TraceDemo/e2e/e2e4-pifix/pi/binder_storm__fault.out",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "json-fence-space",
+    "provenance": "Historical issue observed; malformed native bytes not retained. Variant reconstructs the rejected schema class, not exact original bytes."
+  },
+  {
+    "runtime": "pi",
+    "source": "TraceDemo/e2e/e2e4-pifix/pi/gpu_renderstress__normal.out",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "payload-comment-close",
+    "provenance": "Historical issue observed; malformed native bytes not retained. Variant reconstructs the rejected schema class, not exact original bytes."
+  },
+  {
+    "runtime": "claude",
+    "source": "TraceDemo/e2e/e2e4-fixverify3/claude/device_anr_input.out",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "closing-fence-space",
+    "provenance": "Historical issue observed; malformed native bytes not retained. Variant reconstructs the rejected schema class, not exact original bytes."
+  },
+  {
+    "runtime": "claude",
+    "source": "TraceDemo/e2e/e2e4/claude/device_game_jank.out",
+    "observedIssue": "invalid_json",
+    "reconstructedVariant": "json-trailing-comma",
+    "provenance": "Historical issue observed; malformed native bytes not retained. Variant reconstructs the rejected schema class, not exact original bytes."
+  },
+  {
+    "runtime": "pi",
+    "source": "TraceDemo/e2e/e2e4-pifix/pi/lock_contention__fault.out",
+    "observedIssue": "invalid_relation_proposal",
+    "reconstructedVariant": "invalid-proof-bindings",
+    "provenance": "Historical issue observed; malformed native bytes not retained. Variant reconstructs the rejected schema class, not exact original bytes."
+  },
+  {
+    "runtime": "claude",
+    "source": "TraceDemo/e2e/e2e4/claude/rooted_anr_input.out",
+    "observedIssue": "invalid_relation_proposal",
+    "reconstructedVariant": "invalid-subject",
+    "provenance": "Historical diagnostic invalid_subject observed; reconstructed schema variant, not original native bytes."
+  },
+  {
+    "runtime": "pi/claude",
+    "source": "Parser grammar regression boundary",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "four-backtick-pair",
+    "provenance": "Synthetic complete-frame boundary; not an observed historical byte shape."
+  },
+  {
+    "runtime": "pi/claude",
+    "source": "Parser grammar regression boundary",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "no-fences",
+    "provenance": "Synthetic complete-frame boundary; not an observed historical byte shape."
+  },
+  {
+    "runtime": "pi/claude",
+    "source": "Parser grammar regression boundary",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "blank-before-fence",
+    "provenance": "Synthetic complete-frame boundary; not an observed historical byte shape."
+  },
+  {
+    "runtime": "pi/claude",
+    "source": "Parser grammar regression boundary",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "closing-comment-space",
+    "provenance": "Synthetic complete-frame boundary; not an observed historical byte shape."
+  },
+  {
+    "runtime": "pi/claude",
+    "source": "Parser grammar regression boundary",
+    "observedIssue": "invalid_framing",
+    "reconstructedVariant": "uppercase-json",
+    "provenance": "Synthetic complete-frame boundary; not an observed historical byte shape."
+  }
+]

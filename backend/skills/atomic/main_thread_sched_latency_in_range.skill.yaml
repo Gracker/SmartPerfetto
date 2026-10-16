@@ -36,7 +36,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标应用包名（支持 GLOB）"
+    description: "目标应用包名（精确匹配，含 name:* 子进程）"
 
 display:
   level: detail

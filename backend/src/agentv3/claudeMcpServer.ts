@@ -2,7 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
 import {createRuntimeToolResult, runtimeToolReceiptMetadata} from '../agentRuntime/runtimeToolResult';
+import {diagnoseConclusionDraft, draftDiagnosticOwnerKey, DRAFT_DECLARATION_MAX_BYTES} from '../services/draftDeclarationDiagnostics';
 import {assertSceneRuntimeCapability} from '../agent/scene/sceneRuntimeBinding';
 import {sceneRunState, type SceneRunContext} from '../agent/scene/sceneRunContext';
 import {projectSceneRunCandidate} from '../agent/scene/sceneTimelineProjection';
@@ -12,9 +14,9 @@ import {sceneTimelineProposalToolShape} from '../agent/scene/sceneTimelineContra
 import type {RuntimeToolObserver} from '../agentRuntime/runtimeToolObserver';
 import type {AnalysisHistoryReader} from '../agentRuntime/analysisHistory';
 import {renderRequiredLocalizedStrategyTemplate} from './localizedStrategyTemplate';
+import {findArtifactSqlReference} from './artifactSqlReference';
 import { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -24,6 +26,8 @@ import {
   createSkillAnalysisAdapter,
   type SkillRegistryView,
 } from '../services/skillEngine/skillAnalysisAdapter';
+import {awaitTraceVendorHint} from '../services/traceVendor/traceVendorResolver';
+import {selectVendorOverride} from '../services/skillEngine/vendorOverrideSelection';
 import { skillRegistry } from '../services/skillEngine/skillLoader';
 import { getWorkspaceSkillRegistry } from '../services/skillPacks/workspaceSkillRegistryProvider';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
@@ -50,14 +54,15 @@ import {
 } from '../services/selfEvolution/evaluationTelemetry';
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
 import {resolveRegisteredDrillDownSkillParams} from '../agent/core/drillDownEntityResolver';
-import {findDrillDownSkillConfig} from '../agent/config/drillDownRegistry';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
 import type { ColumnDefinition } from '../types/dataContract';
 import {nsToMs} from '../utils/traceProcessorRowUtils';
 import {
   analyzeCriticalPath,
-  chainWaitTotals,
   classifySlice,
+  isChainLeafRole,
+  segmentPathRole,
+  waitClassTotalsMs,
   CRITICAL_PATH_DEFAULTS,
   CRITICAL_PATH_ENGINE_VERSION,
   CriticalPathInputError,
@@ -67,8 +72,16 @@ import {
 import { renderCriticalPathAnalysis } from '../services/criticalPathLocalization';
 import { buildDeterministicCriticalPathSummary } from '../services/criticalPathSummary';
 import {
+  normalizeWaitChainSelectors,
+  waitChainNamesThread,
+  waitChainWindow,
+} from '../services/criticalPathSelectors';
+import {
+  findThreadsWithSchedData,
+  loadThreadStateOwner,
   MAX_THREAD_CANDIDATES,
   resolveCriticalPathThread,
+  threadStateSelectorConflicts,
   type ResolvedCriticalPathThread,
 } from '../services/criticalPathThreadResolver';
 import type {
@@ -100,16 +113,20 @@ import {
   type TraceProcessorQueryProvenance,
   type TraceProcessorTraceSide,
 } from '../services/traceProcessorConnectionModel';
-import {getConsumableProcessIdentitySelectors, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
-import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
+import {sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
+import {hasProcessIdentitySelector} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
-import {getExactProcessScopeSupport} from '../services/skillEngine/processScopeSql';
-import {captureEvidenceTable, captureRawSqlEvidence, evidenceCaptureHash, evidenceTableFor,
-  projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
-  type CapturedFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
-import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
-import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
+import {exactProcessScopeSupportCatalog} from '../services/skillEngine/processScopeSql';
+import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
+  projectEvidenceColumnUnitsForModel,
+  type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceScalar, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
+import {scopeMetadata, identityForScopeEvidence} from '../types/identityContract';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
+import {
+  buildSqlSchemaDiagnostic,
+  SqlFailureRepeatMemory,
+} from './sqlSchemaDiagnostic';
 import { normalizeRawSql } from './rawSqlNormalizer';
 import {
   buildStrategyRegistrySnapshotFromDefinitions,
@@ -122,10 +139,8 @@ import {
   stripPromptComments,
 } from './strategyLoader';
 import { buildActivePhaseReminder } from './activePhaseReminder';
-import {loadSourceInvestigationPolicy} from './sourceInvestigationPolicy';
 import { summarizeToolCallInput } from './toolCallSummary';
 import {
-  findCompletedPhaseEvidenceGaps,
   getPhaseToolEvidenceStatus,
   replayPrePlanToolCalls,
 } from './planToolCallRecorder';
@@ -133,7 +148,19 @@ import {hasValidPlanSkipDisposition, resolvePlanPhaseForCall} from './planPhaseS
 import {getAnalysisPlanCompletionStatus} from './planCompletionStatus';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
 import { planPhaseUpdatedContent } from './planPhaseEvents';
-import type { ArtifactStore, CompactArtifactSummary } from './artifactStore';
+import { ArtifactStore, type CompactArtifactSummary } from './artifactStore';
+import {
+  evidenceHash,
+  evidencePart,
+  evidenceTracePart,
+  executePreparedSkillRun,
+  normalizeSkillRunParams,
+  prepareSkillRun,
+  stableSkillEvidenceRefId,
+  undeclaredSkillRunParams,
+  type EvidenceProducerContext,
+  type SkillRunDeps,
+} from './skillRunCore';
 import {resolveArtifactAccessPolicy} from './artifactAccessPolicy';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import {
@@ -146,6 +173,7 @@ import { buildSqlQueryReview } from '../services/queryReview/queryReviewBuilder'
 import { buildSkillQueryReview } from '../services/queryReview/skillQueryReviewBuilder';
 import { compactQueryReviewForToolResponse, type QueryReviewV1 } from '../types/queryReviewContract';
 import { RagStore, getDefaultRagStore } from '../services/ragStore';
+import {ragChunkAudience} from '../services/rag/ragChunkAudience';
 import {
   BaselineStore,
   deriveBaselineId,
@@ -158,13 +186,22 @@ import {
 import {ProjectMemory} from './projectMemory';
 import {CaseLibrary} from '../services/caseLibrary';
 import { createCaseRetriever } from '../services/caseEvolution/caseRecommendationRetriever';
-import {
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
-} from '../middleware/auth';
+import { recallCasesByTags } from '../services/caseEvolution/caseTagRecall';
+import { CURATED_CASE_STATUSES } from '../types/caseKnowledge';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
+
+/**
+ * An index call refused because the generation its run pinned can no longer
+ * be served. An index tool's checkpoint throws it from wherever the call
+ * stands; the tool wrapper returns its refusal as the tool result.
+ */
+class IndexGenerationRefused extends Error {
+  constructor(readonly refusal: IndexGenerationRefusal) {
+    super(refusal.payload.unsupportedReason);
+  }
+}
 
 const tool: typeof sdkTool = ((
   name: string,
@@ -181,7 +218,13 @@ const tool: typeof sdkTool = ((
       ? evaluationExposureCursor()
       : undefined;
     try {
-      const result = await handler(...args);
+      let result: unknown;
+      try {
+        result = await handler(...args);
+      } catch (error) {
+        if (!(error instanceof IndexGenerationRefused)) throw error;
+        result = createRuntimeToolResult(error.refusal.payload, {isError: error.refusal.isError});
+      }
       if (cursor !== undefined) {
         commitEvaluationExposureSince(cursor, 'sdk_handoff_observed');
       }
@@ -208,16 +251,24 @@ import {
   type ToolRequestScope,
 } from './mcpToolRegistry';
 import { backendLogPath } from '../runtimePaths';
-import {diagnosticLogIdentity} from '../utils/logger';
-import {activeCodebaseGeneration, CodebaseRegistry} from '../services/codebase/codebaseRegistry';
+import {CodebaseRegistry, summarizeCodebase} from '../services/codebase/codebaseRegistry';
+import {evaluateCodebaseRoot} from '../services/codebase/codebaseCapability';
+import {effectiveAnalysisSelection} from '../services/effectiveAnalysisSelection';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
-import {CodeLookupLedger, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
+import {
+  describeSelectedCodebases,
+  type SelectedCodebaseCapabilities,
+  type SourceAuthorizationPromptData,
+} from '../services/codebase/selectedCodebaseCapabilities';
+import {isClosedCode} from '../utils/closedCode';
+import {CodeLookupLedger, sourceLookupOutcome, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../services/codebase/patchProposer';
 import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import {
   SOURCE_USE_DECISION_SCHEMA_VERSION,
   MAX_SOURCE_REFERENCE_COUNT,
-  loadSourceUseDecisionToolDescription,
+  isBodyLookupKind,
+  mergeSourceUseStatus,
   sanitizeSourceIncompleteReason,
   sanitizeSourceReference,
   sanitizeSourceReferences,
@@ -226,8 +277,32 @@ import {
   type SourceReferenceV1,
   type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
-import {OnDemandSourceAccessService} from '../services/codebase/onDemandSourceAccess';
-import {registerOnDemandSourceLookupForEcho} from '../services/security/codeAwareOutputRegistry';
+import {
+  OnDemandSourceAccessService,
+  type OnDemandSourceReadResult,
+  type OnDemandSourceSearchMatch,
+} from '../services/codebase/onDemandSourceAccess';
+import {
+  loadSourceAnchorNormalization,
+  locateTraceAnchor,
+  planTraceAnchorSearch,
+  TRACE_ANCHOR_KINDS,
+  TRACE_ANCHOR_SEARCH_OPTIONS,
+} from '../services/codebase/traceAnchorLocator';
+import {
+  charsWithin,
+  estimateTextTokens,
+  longestPrefixWithin,
+  SourceBudget,
+  type SourceBudgetSnapshot,
+} from '../services/codebase/sourceBudget';
+import type {SourceDepthDecisionV1, SourceDepthPolicy} from '../services/codebase/sourceDepthPolicy';
+import {REDACTED_SECRET} from '../services/security/secretPatterns';
+import {sourceAccessRefusalAction} from '../services/codebase/sourceAccessRefusal';
+import {
+  registerKnowledgeTextForEcho,
+  registerOnDemandSourceLookupForEcho,
+} from '../services/security/codeAwareOutputRegistry';
 import {
   GitNexusCodeGraphNavigator,
   type CodeGraphNavigator,
@@ -239,23 +314,39 @@ import {
 } from '../services/rag/lookupResponseFilter';
 import type {RagRetrievalResult} from '../types/sparkContracts';
 import {
-  getDefaultAndroidInternalsPackStore,
-  isAndroidInternalsPackRevoked,
-} from '../services/androidInternalsPack/androidInternalsPackResolver';
-import type {
-  AndroidInternalsPackStoreLike,
-} from '../services/androidInternalsPack/types';
-import {
+  externalKnowledgeSourceHasActiveIndex,
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
+  scopeKey,
 } from '../services/externalKnowledgeSourceRegistry';
+import {
+  type DocumentCollectionSearchHit,
+  type DocumentCollectionStore,
+  getDefaultDocumentCollectionStore,
+  KnowledgeIndexUnavailableError,
+} from '../services/knowledge/documentCollectionStore';
+import {describeSelectedKnowledgeBases} from '../services/knowledge/knowledgePrompt';
+import {
+  KNOWLEDGE_REFUSAL_ACTIONS,
+  KnowledgeReferenceLedger,
+  safeSliceEnd,
+  splitKnowledgeSection,
+} from '../services/knowledge/knowledgeTools';
+import {KnowledgeUseRecorder, type KnowledgeUseRecord} from '../services/knowledge/knowledgeUse';
+import {
+  IndexGenerationPins,
+  indexGenerationRefusal,
+  type IndexGenerationPolicy,
+  type IndexGenerationRefusal,
+} from '../services/indexGenerationPins';
 import {SymbolResolver} from '../services/symbol/symbolResolver';
 import {
-  analysisContextUsesPrivateKnowledge,
-  buildAnalysisContextAuthorizationFingerprint,
-  type AnalysisContextSelection,
+  analysisContextFingerprintOf,
+  readAnalysisContextRegistrations,
+  type AnalysisContextRegistrations,
 } from '../services/resolvedAnalysisContext';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
+import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
   throwIfTraceProcessorQueryCancelled,
@@ -264,9 +355,28 @@ import type {
   CriticalPathAnalysis,
   CriticalPathInputErrorCode,
   CriticalPathSegment,
+  CriticalPathWarning,
   SliceKind,
   WakeSourceSummary,
 } from '../types/criticalPathContract';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
+import {
+  admitLearnedEntry,
+  isAdmittedLearning,
+  type DurableLearningPermission,
+  type LearningAdmission,
+} from '../services/security/durableLearning';
+
+/**
+ * A thrown source-tool failure reaches every runtime as its path-free code
+ * only: adapters forward an error message verbatim, and anything that is not
+ * a closed code may carry a filesystem detail.
+ */
+function sourceToolError(error: unknown): Error {
+  const code = error instanceof Error ? error.message : '';
+  return new Error(isClosedCode(code) ? code : 'source_tool_failed');
+}
+
 
 export function requireToolDescription(templateName: string, loaded?: string): string {
   const content = loaded === undefined ? loadPromptSegment(templateName) : stripPromptComments(loaded);
@@ -276,8 +386,8 @@ export function requireToolDescription(templateName: string, loaded?: string): s
 
 /**
  * Process-wide RagStore singleton, lazily initialized on first MCP tool
- * call. Backs the `lookup_blog_knowledge` tool (Plan 55) and will back
- * the project-memory recall tool (Plan 44) when that lands.
+ * call. Backs the codebase and AOSP/OEM lookups and the project-memory
+ * recall tool (Plan 44).
  *
  * Storage path lives next to the existing analysis_*.json files so
  * operators can find every long-lived agent state in one directory.
@@ -304,11 +414,10 @@ function getRuntimeToolSignal(extra: unknown): AbortSignal | undefined {
 /** Process-wide BaselineStore singleton (Plan 50). Storage lives next
  * to the other long-lived JSON files so operators have one mental
  * model for agent state. */
-const BASELINE_STORE_PATH = backendLogPath('baselines.json');
 let cachedBaselineStore: BaselineStore | null = null;
 function getBaselineStore(): BaselineStore {
   if (!cachedBaselineStore)
-    cachedBaselineStore = new BaselineStore(BASELINE_STORE_PATH);
+    cachedBaselineStore = new BaselineStore(backendLogPath('baselines.json'));
   return cachedBaselineStore;
 }
 
@@ -443,14 +552,7 @@ function parseOptionalToolArrayInput<T>(value: unknown): T[] | null {
 }
 
 export function normalizeOptionalToolString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const normalized = trimmed.toLowerCase();
-  if (normalized === 'null' || normalized === 'undefined' || normalized === 'none') {
-    return undefined;
-  }
-  return trimmed;
+  return typeof value === 'string' && !isPlaceholderToolString(value) ? value.trim() : undefined;
 }
 
 function parseToolStringArrayInput(value: unknown): string[] {
@@ -492,6 +594,28 @@ function coercePlanString(value: unknown): string | undefined {
   }
   return undefined;
 }
+
+/** One row window for fetch_artifact: the schema the model sees and the handler agree on it. */
+const FETCH_ARTIFACT_ROW_LIMIT = { min: 1, max: 200 } as const;
+
+/**
+ * Governance reasons that stop a patch or knowledge call, with what the model
+ * should do instead; source lookups use `sourceAccessRefusalAction`. A reason
+ * absent from these maps (an inactive index, invalid codebase metadata, a
+ * failed `git apply --check`) is a failure and still counts toward the circuit
+ * breaker's failure rate.
+ */
+// A Map, so a reason such as `constructor` cannot match an Object.prototype key.
+const PATCH_REFUSAL_ACTIONS: ReadonlyMap<string, string> = new Map([
+  ['missing_context_chunk', 'lookup_source_before_patch'],
+  ['prior_lookup_required', 'lookup_source_before_patch'],
+  ['inactive_codebase_generation', 'lookup_source_before_patch'],
+  ['multi_codebase_not_supported_phase1', 'propose_one_codebase_per_patch'],
+  ['no_send_to_provider_consent', 'continue_without_patch'],
+  ['source_path_outside_provider_grant', 'continue_without_patch'],
+  ['budget_exceeded', 'continue_without_patch'],
+  ['patch_target_not_selected', 'continue_without_patch'],
+]);
 
 function coerceOptionalInteger(
   value: unknown,
@@ -907,48 +1031,21 @@ function collectPlanPhaseShapeErrors(phases: Pick<PlanPhase, 'id' | 'name' | 'go
   return errors;
 }
 
-const TIMESTAMP_EXPRESSION_PARAM_KEYS = new Set([
-  'ts',
-  'start_ts',
-  'end_ts',
-  'frame_ts',
-  'startTs',
-  'endTs',
-  'frameTs',
-]);
-
-function normalizeTimestampExpression(value: unknown): unknown {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  const match = trimmed.match(/^(\d{6,})([+-])(\d{1,15})$/);
-  if (!match) return value;
-  try {
-    const left = BigInt(match[1]);
-    const right = BigInt(match[3]);
-    const result = match[2] === '+' ? left + right : left - right;
-    return result.toString();
-  } catch {
-    return value;
-  }
-}
-
 /** Process-wide ProjectMemory singleton (Plan 44). Independent of the
  * existing `analysisPatternMemory.ts` session-scope store. */
-const PROJECT_MEMORY_PATH = backendLogPath('analysis_project_memory.json');
 let cachedProjectMemory: ProjectMemory | null = null;
 function getProjectMemory(): ProjectMemory {
   if (!cachedProjectMemory)
-    cachedProjectMemory = new ProjectMemory(PROJECT_MEMORY_PATH);
+    cachedProjectMemory = new ProjectMemory(backendLogPath('analysis_project_memory.json'));
   return cachedProjectMemory;
 }
 
 /** Process-wide CaseLibrary singleton (Plan 54). Storage path matches
  * the other long-lived agent-state JSON files. */
-const CASE_LIBRARY_PATH = backendLogPath('case_library.json');
 let cachedCaseLibrary: CaseLibrary | null = null;
 function getCaseLibrary(): CaseLibrary {
   if (!cachedCaseLibrary)
-    cachedCaseLibrary = new CaseLibrary(CASE_LIBRARY_PATH);
+    cachedCaseLibrary = new CaseLibrary(backendLogPath('case_library.json'));
   return cachedCaseLibrary;
 }
 
@@ -993,13 +1090,15 @@ function sqlContentTokens(sql: string): Set<string> {
   );
 }
 
-const SQL_ERROR_LOG_DIR = backendLogPath('sql_learning');
+const sqlErrorLogDir = () => backendLogPath('sql_learning');
 
 interface SqlErrorFixPair {
   errorSql: string;
   errorMessage: string;
   fixedSql?: string;
   timestamp: number;
+  /** See AnalysisPatternEntry.learningAdmission. */
+  learningAdmission?: LearningAdmission;
 }
 
 /**
@@ -1010,23 +1109,13 @@ interface SqlErrorFixPair {
 /** TTL for error-fix pairs: 30 days. Older pairs may reference outdated schemas. */
 const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-/**
- * P0-G2: ReAct reasoning nudge — appended to successful data tool results.
- * Prompts Claude to explicitly reason about observations before next action.
- * Cost: ~20 tokens per data tool call, ~200-300 total per analysis.
- */
-const REASONING_NUDGE_ZH = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
-const REASONING_NUDGE_EN = '\n\n[REFLECT] Before the next action: what is the key finding from this data? Does it support or refute your hypothesis? If there is an important inference, record it with submit_hypothesis or write_analysis_note.';
-/** Compatibility export for runtime callers; summary length no longer controls plan completion. */
-export const MIN_PHASE_SUMMARY_CHARS = 15;
-
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
-    return path.join(SQL_ERROR_LOG_DIR, 'error_fix_pairs.json');
+    return path.join(sqlErrorLogDir(), 'error_fix_pairs.json');
   }
   const resolved = resolveKnowledgeScope(scope);
   return path.join(
-    SQL_ERROR_LOG_DIR,
+    sqlErrorLogDir(),
     resolved.tenantId,
     resolved.workspaceId,
     'error_fix_pairs.json',
@@ -1036,18 +1125,16 @@ function sqlErrorLogFile(scope?: KnowledgeScope): string {
 export function loadLearnedSqlFixPairs(
   maxPairs = 10,
   scope?: KnowledgeScope,
-  selection: AnalysisContextSelection = {},
 ): SqlErrorFixPair[] {
-  if (analysisContextUsesPrivateKnowledge(selection)) return [];
   try {
     const logFile = sqlErrorLogFile(scope);
     if (!fs.existsSync(logFile)) return [];
     const data = fs.readFileSync(logFile, 'utf-8');
     const pairs: SqlErrorFixPair[] = JSON.parse(data);
     const cutoff = Date.now() - ERROR_FIX_PAIR_TTL_MS;
-    // Only return pairs that have successful fixes and are within TTL
+    // Only return admitted pairs that have successful fixes and are within TTL
     return pairs
-      .filter(p => p.fixedSql && p.timestamp >= cutoff)
+      .filter(p => p.fixedSql && p.timestamp >= cutoff && isAdmittedLearning(p))
       .slice(-maxPairs);
   } catch {
     return [];
@@ -1056,8 +1143,11 @@ export function loadLearnedSqlFixPairs(
 
 async function logSqlErrorFixPair(
   pair: SqlErrorFixPair,
-  scope?: KnowledgeScope,
+  scope: KnowledgeScope | undefined,
+  learning: DurableLearningPermission,
 ): Promise<void> {
+  const learningAdmission = admitLearnedEntry(learning, pair.timestamp);
+  if (!learningAdmission) return;
   try {
     const logFile = sqlErrorLogFile(scope);
     let pairs: SqlErrorFixPair[] = [];
@@ -1065,17 +1155,22 @@ async function logSqlErrorFixPair(
       const data = await fs.promises.readFile(logFile, 'utf-8');
       pairs = JSON.parse(data);
     } catch { /* fresh start */ }
-    // Deduplicate: if an equivalent error+fix pair already exists, update timestamp instead of appending
-    const existingIdx = pairs.findIndex(p =>
+    // Deduplicate: if an equivalent admitted error+fix pair already exists,
+    // update its timestamp instead of appending. An unadmitted pair is never
+    // refreshed, so it ages out.
+    const existingIdx = pairs.findIndex(p => isAdmittedLearning(p) &&
       p.errorMessage === pair.errorMessage && p.fixedSql === pair.fixedSql
     );
     if (existingIdx >= 0) {
       pairs[existingIdx].timestamp = pair.timestamp;
     } else {
-      pairs.push(pair);
+      pairs.push({...pair, learningAdmission});
     }
-    // Keep last 200 pairs
-    if (pairs.length > 200) pairs = pairs.slice(-200);
+    // Keep the last 200 pairs; capacity evicts unadmitted pairs first.
+    if (pairs.length > 200) {
+      const unadmitted = pairs.filter(p => !isAdmittedLearning(p));
+      pairs = [...unadmitted, ...pairs.filter(isAdmittedLearning)].slice(-200);
+    }
     await fs.promises.mkdir(path.dirname(logFile), { recursive: true });
     // Atomic write: write to tmp file, then rename
     const tmpFile = logFile + '.tmp';
@@ -1141,95 +1236,24 @@ function compactLegacySqlSchemaEntry(entry: SqlSchemaEntry): Record<string, unkn
   return out;
 }
 
-/**
- * Normalize synthesizeData entry's `data` field into { columns, rows } format.
- * synthesizeData entries can be:
- *   - Array of objects: [{ col1: val1, col2: val2 }, ...]
- *   - Already columnar: { columns: [...], rows: [[...], ...] }
- *   - Iterator results: [{ itemIndex, item, result: { ... } }]
- *   - Single object: { key: value, ... }
- * All are normalized to { columns: string[], rows: any[][] } for ArtifactStore.
- */
-function normalizeSynthesizeDataForStorage(data: any): { columns: string[]; rows: any[][] } {
-  if (!data) return { columns: [], rows: [] };
-
-  // Already columnar format
-  if (data.columns && Array.isArray(data.rows)) {
-    return { columns: data.columns, rows: data.rows };
-  }
-
-  // Array of objects
-  if (Array.isArray(data) && data.length > 0) {
-    const first = data[0];
-    // Iterator format: flatten item + result
-    if (first && typeof first === 'object' && 'itemIndex' in first && 'result' in first) {
-      const allKeys = new Set<string>();
-      const flatRows = data.map((entry: any) => {
-        const flat: Record<string, any> = { itemIndex: entry.itemIndex };
-        // Merge item fields
-        if (entry.item && typeof entry.item === 'object') {
-          for (const [k, v] of Object.entries(entry.item)) {
-            flat[k] = v;
-            allKeys.add(k);
-          }
-        }
-        // Merge result fields (top-level scalars only, skip nested objects)
-        if (entry.result && typeof entry.result === 'object') {
-          for (const [k, v] of Object.entries(entry.result)) {
-            if (typeof v !== 'object' || v === null) {
-              flat[`result_${k}`] = v;
-              allKeys.add(`result_${k}`);
-            }
-          }
-        }
-        allKeys.add('itemIndex');
-        return flat;
-      });
-      const columns = ['itemIndex', ...Array.from(allKeys).filter(k => k !== 'itemIndex')];
-      const rows = flatRows.map((row: Record<string, any>) => columns.map(c => row[c] ?? null));
-      return { columns, rows };
-    }
-
-    // Plain array of objects
-    if (typeof first === 'object' && first !== null) {
-      const columns = Object.keys(first);
-      const rows = data.map((row: Record<string, any>) => columns.map(c => row[c] ?? null));
-      return { columns, rows };
-    }
-
-    // Array of primitives — single column
-    return { columns: ['value'], rows: data.map((v: any) => [v]) };
-  }
-
-  // Single object → single row
-  if (typeof data === 'object' && data !== null) {
-    const columns = Object.keys(data);
-    const rows = [columns.map(c => data[c] ?? null)];
-    return { columns, rows };
-  }
-
-  // Scalar
-  return { columns: ['value'], rows: [[data]] };
-}
-
 function previewFromColumnarData(data: any): Record<string, any> | undefined {
   const columns: string[] = Array.isArray(data?.columns)
     ? data.columns.filter((col: unknown): col is string => typeof col === 'string')
     : [];
   const firstRow = Array.isArray(data?.rows) ? data.rows[0] : undefined;
   if (columns.length === 0 || !Array.isArray(firstRow)) return undefined;
-  const preview: Record<string, any> = {};
-  columns.forEach((column, index) => {
-    preview[column] = index < firstRow.length ? firstRow[index] : null;
-  });
-  return preview;
+  return Object.fromEntries(columns.map((column, index) =>
+    [column, index < firstRow.length ? firstRow[index] : null]));
 }
 
 export interface ClaudeMcpServerOptions {
   traceId: string;
   traceProcessorService: TraceProcessorService;
   skillExecutor: SkillExecutor;
+  /** Effective package for default Skill scoping; must equal `focusTarget.packageName` when both are set. */
   packageName?: string;
+  /** Provenance of `packageName` and the ranked focus-app candidates (resolveFocusAppTarget). */
+  focusTarget?: FocusAppTarget;
   /** Callback to emit StreamingUpdate events (e.g. DataEnvelopes from skill results) */
   emitUpdate?: (update: StreamingUpdate) => void;
   toolObserver?: RuntimeToolObserver;
@@ -1237,6 +1261,18 @@ export interface ClaudeMcpServerOptions {
   allowNewEvidence?: boolean;
   /** Runtime lease: no tool body may execute after acquisition closes. */
   canInvokeTool?: () => boolean;
+  /**
+   * The run's pinned authorization (`createRuntimeRunAuthorization`), checked
+   * before and after every tool call and by every private-context check
+   * inside one; a change ends the run.
+   */
+  runAuthorization?: RunAuthorizationCheck;
+  /**
+   * The run id finalization reads evidence with (`currentRunId`). Tool-call
+   * captures and observations carry it, so the ledger can tell this run's
+   * acquisition from reused evidence; any other value reads as reused.
+   */
+  runId?: string;
   /** In-process, product-issued scene capability. Never reconstructed from tool JSON. */
   sceneRunContext?: SceneRunContext;
   /** Issued session-bound reader, never accepted from HTTP/SDK tool arguments. */
@@ -1264,8 +1300,6 @@ export interface ClaudeMcpServerOptions {
   sceneType?: SceneType;
   /** Mutable uncertainty flags array (P1-G1) */
   uncertaintyFlags?: UncertaintyFlag[];
-  /** Cached vendor detection result (e.g. "xiaomi", "pixel", "aosp") — avoids redundant re-detection */
-  cachedVendor?: string | null;
   /** Reference trace ID for comparison mode — enables dual-trace MCP tools */
   referenceTraceId?: string;
   /** Pre-computed comparison context (capabilities, metadata) for get_comparison_context tool */
@@ -1283,6 +1317,11 @@ export interface ClaudeMcpServerOptions {
   outputLanguage?: OutputLanguage;
   /** Enterprise tenant/workspace scope for knowledge, memory, case, and baseline tools. */
   knowledgeScope?: KnowledgeScope;
+  /**
+   * The run's grant to write cross-session learning, resolved by the runtime
+   * from the product-issued permission. Absent, nothing is persisted.
+   */
+  durableLearning?: DurableLearningPermission;
   /** SmartPerfetto session id, used for code lookup ledger sidecars. */
   sessionId?: string;
   /** Code-aware analysis mode. `metadata_only` never sends source snippets to the provider. */
@@ -1291,21 +1330,24 @@ export interface ClaudeMcpServerOptions {
   codebaseIds?: string[];
   /** Private external-knowledge source ids whitelisted for this analysis session. */
   knowledgeSourceIds?: string[];
-  /** Source phase routing and optional hard tool budget. */
-  sourceUsePolicy?: {
-    phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-    maxSearchCalls?: number;
-    maxReadCalls?: number;
-    maxDurationMs?: number;
-  };
+  /**
+   * How the run's source depth was decided (`resolveEffectiveSourceDepth`); its
+   * effective depth sizes the source budget, `locate` when absent, and it is
+   * stored with the run's source use.
+   */
+  sourceDepthDecision?: SourceDepthDecisionV1;
+  /** Overrides the shipped depth policy (tests); each run still builds its own budget. */
+  sourceDepthPolicy?: SourceDepthPolicy;
   /** Non-secret authorization partition for active lookup/patch capability state. */
   analysisContextFingerprint?: string;
   /** Test hook / alternate private external-knowledge registry. */
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
+  /** Test hook / alternate document-collection index store. */
+  documentCollectionStore?: Pick<DocumentCollectionStore, 'search' | 'readSection' | 'servesGeneration'>;
   /** Test hook / alternate registry. */
   codebaseRegistry?: CodebaseRegistry;
   /** Test hook / deterministic on-demand source backend. */
-  onDemandSourceAccess?: Pick<OnDemandSourceAccessService, 'search' | 'read'>;
+  onDemandSourceAccess?: Pick<OnDemandSourceAccessService, 'search' | 'read' | 'find'>;
   /** Test hook / alternate code lookup ledger. */
   codeLookupLedger?: CodeLookupLedger;
   /** Test hook / alternate optional code graph navigator. */
@@ -1314,19 +1356,40 @@ export interface ClaudeMcpServerOptions {
   caseLibrary?: CaseLibrary;
   /** Test hook / alternate case RAG store. */
   ragStore?: RagStore;
-  /** Test hook / session-pinned built-in Android Internals Knowledge Pack. */
-  androidInternalsPackStore?: AndroidInternalsPackStoreLike | null;
-  /** Immutable public Knowledge Pack identity pinned by the session snapshot. */
-  androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   analysisResultSnapshotRepository?: TraceSimilaritySnapshotRepository;
   /** Explicit per-run attribution boundary for detached/shared tool callbacks. */
   runManifestAttributionSink?: RunManifestAttributionSink;
+}
+
+function sidePackageProvenance(
+  packageName: string | undefined,
+  target: FocusAppTarget | undefined,
+  userMayName: boolean,
+): {packageSource?: string; packageConfidence?: string} {
+  const {source, confidence} = packageProvenance(packageName, target, {userMayName});
+  return {...(source ? {packageSource: source} : {}), ...(confidence ? {packageConfidence: confidence} : {})};
 }
 
 export interface SourceUseDecisionAccessor {
   getSourceUseDecision(): SourceUseDecisionV1 | undefined;
   /** Missing or invalidated scope cannot establish source non-applicability. */
   getSourceExecutionScope?(): SourceExecutionScopeV1 | undefined;
+  /** What the run delivered from its selected knowledge bases; undefined when none was selected. */
+  getKnowledgeUse?(): KnowledgeUseRecord | undefined;
+}
+
+const LIGHTWEIGHT_ARTIFACT_PREVIEW_LIMIT = 10;
+
+/**
+ * Which artifacts keep an inline preview in lightweight mode: overview steps
+ * first, then the rest in order. Overview steps carry a Skill's verdicts;
+ * scrolling_analysis put its smoothness summary twelfth, so in order it lost
+ * its preview to eight context tables and the model never read the verdict.
+ */
+function lightweightPreviewIndexes(results: readonly {layer?: string}[], limit: number): Set<number> {
+  const indexes = results.map((_result, index) => index);
+  const isOverview = (index: number) => results[index].layer === 'overview';
+  return new Set([...indexes.filter(isOverview), ...indexes.filter(index => !isOverview(index))].slice(0, limit));
 }
 
 /**
@@ -1334,11 +1397,15 @@ export interface SourceUseDecisionAccessor {
  * Exposes domain tools: execute_sql, invoke_skill, list_skills,
  * detect_architecture, lookup_sql_schema, and optionally write_analysis_note.
  */
+
 export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const { traceId, traceProcessorService, skillExecutor, packageName, emitUpdate, onSkillResult, analysisNotes, artifactStore } = options;
   const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
   const artifactSummaryState = new Map<string, { complete?: boolean }>();
   const recentSqlErrors: SqlErrorFixPair[] = options.recentSqlErrors || [];
+  // Owned by this server, which the runtimes build once per run: a repeat count
+  // never carries over from another run or session.
+  const sqlFailureMemory = new SqlFailureRepeatMemory();
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
   const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
@@ -1357,6 +1424,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     runtimeRegistrySnapshot?.skillRegistry ?? skillRegistry;
   let pinnedSkillRegistryFingerprint =
     runtimeRegistrySnapshot?.skillRegistry.registryFingerprint ?? 'built_in';
+  // The pinned registry's content fingerprint (buildSkillRegistryAttribution),
+  // when the run has one: a key for caches derived from the registry. The
+  // 'built_in' label above names no content and keys nothing.
+  let pinnedSkillRegistryContentFingerprint: string | undefined =
+    runtimeRegistrySnapshot?.skillRegistry.registryFingerprint;
   const skillAdapter = createSkillAnalysisAdapter(
     traceProcessorService,
     undefined,
@@ -1369,165 +1441,44 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   runManifestAttributionSink?.recordSkillRegistry(
     buildSkillRegistryAttribution(pinnedSkillRegistry),
   );
-  const codeAwareMode = normalizeCodeAwareMode(options.codeAwareMode);
-  const sourceUsePolicy = options.sourceUsePolicy;
-  const codebaseIds = codeAwareMode === 'off'
-    ? []
-    : Array.from(new Set(options.codebaseIds ?? [])).filter(Boolean);
-  const knowledgeSourceIds = Array.from(new Set(options.knowledgeSourceIds ?? [])).filter(Boolean);
-  const retrievedContextSafety = loadPromptTemplate('retrieved-context-tool-safety');
-  if (!retrievedContextSafety) {
-    throw new Error('Missing required retrieved-context-safety prompt template');
-  }
-  const retrievedContextToolBoundary = retrievedContextSafety.replace(/\s+/g, ' ').trim();
+  // The effective selection, then the backend's feature switch on its own.
+  const analysisSelection = effectiveAnalysisSelection(options);
+  const codeAwareMode = normalizeCodeAwareMode(analysisSelection.codeAwareMode);
+  const codebaseIds = codeAwareMode === 'off' ? [] : analysisSelection.codebaseIds ?? [];
+  const knowledgeSourceIds = analysisSelection.knowledgeSourceIds ?? [];
+  const retrievedContextToolBoundary = requireToolDescription('retrieved-context-tool-safety').replace(/\s+/g, ' ');
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
   } => ({...payload, dataTrust: 'untrusted_retrieved_data'});
+  // A governance refusal names what to do instead. `action_required` is what keeps
+  // it out of the circuit breaker's failure rate (isPolicyRefusalResult); a missing
+  // capability (an unavailable pack, an inactive index) has no such instruction.
+  const policyRefusal = (
+    action: string,
+    payload: Record<string, unknown>,
+    resultOptions: {isError?: boolean} = {},
+  ) => createRuntimeToolResult({success: false, action_required: action, ...payload}, resultOptions);
+  // Every source budget refusal reports what is left.
+  const sourceBudgetRefusal = (payload: Record<string, unknown>) =>
+    policyRefusal('continue_with_existing_source_evidence',
+      retrievedData({...payload, budget: sourceBudget.snapshot()}));
+  // Every lookup that takes a codebase id falls back to the selected ones when it is omitted.
+  const codebaseIdRefusal = (unsupportedReason: string, error?: string) =>
+    policyRefusal('retry_without_codebase_id', {...(error ? {error} : {}), unsupportedReason}, {isError: true});
   const ragToolResult = (
     result: RagRetrievalResult | SanitizedRagResult,
     shape: 'inline' | 'nested',
+    budget?: SourceBudgetSnapshot,
   ) => {
     // A top-level reason denotes whole-retrieval failure; zero hits alone do not.
     const success = result.unsupportedReason === undefined;
-    const payload = shape === 'nested' ? {success, result} : {...result};
+    const payload = {...(shape === 'nested' ? {success, result} : {...result}), ...(budget ? {budget} : {})};
     return {
       _meta: runtimeToolReceiptMetadata({success}),
       content: [{type: 'text' as const, text: JSON.stringify(retrievedData(payload))}],
       ...(success ? {} : {isError: true}),
     };
   };
-  const filterAndRecordKnowledgeDocuments = (
-    value: SanitizedRagResult,
-  ): SanitizedRagResult => {
-    const exactKeys = (
-      record: Record<string, unknown>,
-      allowed: readonly string[],
-    ) => Object.keys(record).every(key => allowed.includes(key));
-    if (
-      !value
-      || typeof value !== 'object'
-      || Array.isArray(value)
-      || !exactKeys(value as unknown as Record<string, unknown>, [
-        'query',
-        'hits',
-        'probed',
-        'retrievedAt',
-        'unsupportedReason',
-        'legacyPath',
-        'backgroundKnowledgeReferences',
-      ])
-      || typeof value.query !== 'string'
-      || !Array.isArray(value.hits)
-      || !Array.isArray(value.probed)
-      || !value.probed.every(entry => typeof entry === 'string')
-      || !Number.isFinite(value.retrievedAt)
-      || typeof value.legacyPath !== 'boolean'
-      || (
-        value.unsupportedReason !== undefined
-        && typeof value.unsupportedReason !== 'string'
-      )
-      || (
-        value.backgroundKnowledgeReferences !== undefined
-        && (
-          !Array.isArray(value.backgroundKnowledgeReferences)
-          || value.backgroundKnowledgeReferences.some(reference =>
-            !reference
-            || typeof reference !== 'object'
-            || Array.isArray(reference)
-            || Object.values(reference).some(field =>
-              typeof field !== 'string' && field !== undefined)
-          )
-        )
-      )
-    ) {
-      throw new Error('evaluation_knowledge_payload_invalid');
-    }
-    const hits = value.hits.flatMap(hit => {
-      if (
-        !hit
-        || typeof hit !== 'object'
-        || Array.isArray(hit)
-        || !exactKeys(hit as unknown as Record<string, unknown>, [
-          'chunkId',
-          'score',
-          'metadata',
-          'snippet',
-          'unsupportedReason',
-          'redactedCount',
-        ])
-        || typeof hit.chunkId !== 'string'
-        || !hit.chunkId.trim()
-        || !Number.isFinite(hit.score)
-        || (
-          hit.snippet !== undefined
-          && typeof hit.snippet !== 'string'
-        )
-        || (
-          hit.unsupportedReason !== undefined
-          && typeof hit.unsupportedReason !== 'string'
-        )
-        || (
-          hit.redactedCount !== undefined
-          && !Number.isSafeInteger(hit.redactedCount)
-        )
-        || (
-          hit.metadata !== undefined
-          && (
-            !hit.metadata
-            || typeof hit.metadata !== 'object'
-            || Array.isArray(hit.metadata)
-            || Object.values(hit.metadata).some(field =>
-              field !== undefined
-              && typeof field !== 'string'
-              && typeof field !== 'number'
-              && typeof field !== 'boolean'
-              && (
-                !field
-                || typeof field !== 'object'
-                || Array.isArray(field)
-                || !exactKeys(field as Record<string, unknown>, ['start', 'end'])
-                || Object.values(field).some(boundary =>
-                  !Number.isSafeInteger(boundary))
-              )
-            )
-          )
-        )
-      ) {
-        throw new Error('evaluation_knowledge_payload_invalid');
-      }
-      const normalizedHit = {
-        chunkId: hit.chunkId,
-        score: hit.score,
-        ...(hit.metadata === undefined ? {} : {metadata: hit.metadata}),
-        ...(hit.snippet === undefined ? {} : {snippet: hit.snippet}),
-        ...(hit.unsupportedReason === undefined
-          ? {}
-          : {unsupportedReason: hit.unsupportedReason}),
-        ...(hit.redactedCount === undefined
-          ? {}
-          : {redactedCount: hit.redactedCount}),
-      };
-      if (normalizedHit.snippet === undefined) return [normalizedHit];
-      const contentHash = canonicalContentHash(normalizedHit);
-      const decision = registerEvaluationInjection({
-        category: 'knowledgeDocs',
-        id: hit.chunkId,
-        contentHash,
-        placement: 'mcp:knowledge_lookup',
-      });
-      if (!decision.allowed) return [];
-      runManifestAttributionSink?.recordInjection(
-        'knowledgeDocs',
-        hit.chunkId,
-        contentHash,
-      );
-      return [normalizedHit];
-    });
-    return {...value, hits};
-  };
-  const knowledgeSourceCapabilityHint = knowledgeSourceIds.length > 0
-    ? ` Request-authorized knowledge source ids: ${knowledgeSourceIds.join(', ')}.`
-    : ' No private knowledge source is authorized for this request.';
   const externalKnowledgeRegistry = options.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
   const codebaseRegistry = options.codebaseRegistry ?? getDefaultCodebaseRegistry();
@@ -1536,53 +1487,94 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const codeGraphNavigator = options.codeGraphNavigator ??
     new GitNexusCodeGraphNavigator({registry: codebaseRegistry});
   const ragStore = options.ragStore ?? getRagStore();
-  const androidInternalsPackStore = options.androidInternalsPackStore === undefined
-    ? getDefaultAndroidInternalsPackStore(options.androidInternalsPackPin)
-    : options.androidInternalsPackStore ?? undefined;
   const analysisContextSelection = {codeAwareMode, codebaseIds, knowledgeSourceIds};
-  const privateAnalysisContext = analysisContextUsesPrivateKnowledge(analysisContextSelection);
+  const privateAnalysisContext = analysisHasPrivateContext(analysisContextSelection);
+  // One read of the selected registrations: authorization and the index
+  // generation pins below are derived from the same moment.
+  const readSelectedRegistrations = (): AnalysisContextRegistrations => readAnalysisContextRegistrations(
+    analysisContextSelection, knowledgeScope ?? {}, {codebaseRegistry, knowledgeRegistry: externalKnowledgeRegistry});
+  const registrationsAtStart = readSelectedRegistrations();
   const pinnedAnalysisContextFingerprint = options.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(analysisContextSelection, knowledgeScope ?? {}, {
-      codebaseRegistry,
-      knowledgeRegistry: externalKnowledgeRegistry,
-    });
-  const pinnedCodebaseGenerations = Object.fromEntries(codebaseIds.flatMap(codebaseId => {
-    const ref = codebaseRegistry.get(codebaseId, knowledgeScope);
-    return ref ? [[codebaseId, activeCodebaseGeneration(ref)]] : [];
-  }));
-  const pinnedKnowledgeSourceGenerations = Object.fromEntries(knowledgeSourceIds.flatMap(sourceId => {
+    analysisContextFingerprintOf(analysisContextSelection, knowledgeScope ?? {}, registrationsAtStart);
+  // Decided once per run, like the generation pins below: tools for a
+  // capability no selected codebase has are not registered, and a call naming a
+  // codebase without it is refused before reaching any source.
+  const selectedCodebases = describeSelectedCodebases(codebaseRegistry, codebaseIds, knowledgeScope, codeAwareMode);
+  const codebaseCapabilities = new Map(selectedCodebases.map(view => [view.id, view.capabilities]));
+  const anySelectedCodebaseHas = (capability: keyof SelectedCodebaseCapabilities): boolean =>
+    selectedCodebases.some(view => view.capabilities[capability]);
+  // The selected knowledge sources as this run resolved them, once: the
+  // generation pins, the document collections the knowledge tools serve and
+  // the prompt's knowledge authorization all read this.
+  const selectedKnowledgeSources = new Map(knowledgeSourceIds.flatMap(sourceId => {
     const source = externalKnowledgeRegistry.get(sourceId, knowledgeScope ?? {});
-    return source?.activeGeneration ? [[sourceId, source.activeGeneration]] : [];
+    return source ? [[sourceId, source] as const] : [];
   }));
-  const assertPrivateAnalysisContextCurrent = (): void => {
-    const currentFingerprint = buildAnalysisContextAuthorizationFingerprint(
-      analysisContextSelection,
-      knowledgeScope ?? {},
-      {codebaseRegistry, knowledgeRegistry: externalKnowledgeRegistry},
-    );
-    if (currentFingerprint !== pinnedAnalysisContextFingerprint) {
+  // Run authorization already refused a selection without rights,
+  // provider-send consent or an active index (409), so every collection here
+  // may send its text; there is no metadata-only tier, since titles and paths
+  // are document content too.
+  const documentCollectionStore = options.documentCollectionStore ?? getDefaultDocumentCollectionStore();
+  // The index generations this run reads, pinned once. The authorization
+  // fingerprint does not cover them; every index tool checks them itself.
+  const indexGenerationPins = IndexGenerationPins.capture(registrationsAtStart, {
+    countCodebaseGenerationChunks: (codebaseId, generation) =>
+      ragStore.countCodebaseGenerationChunks(codebaseId, generation, knowledgeScope),
+    documentCollectionServes: (sourceId, generation) =>
+      Boolean(knowledgeScope) && documentCollectionStore.servesGeneration(knowledgeScope!, sourceId, generation),
+  });
+  const documentCollectionIds = knowledgeScope ? knowledgeSourceIds.filter(sourceId => {
+    const source = selectedKnowledgeSources.get(sourceId);
+    return source?.kind === 'document_collection' &&
+      externalKnowledgeRegistry.evaluateAccess(sourceId, knowledgeScope, knowledgeSourceIds).allowed &&
+      externalKnowledgeSourceHasActiveIndex(source);
+  }) : [];
+  const knowledgeReferences = new KnowledgeReferenceLedger();
+  // What this run delivered from its selected knowledge bases, for knowledge_use@1.
+  const knowledgeUse = new KnowledgeUseRecorder(knowledgeReferences);
+  // The run's fence when the runtime supplied one: a revoke seen inside a
+  // tool ends the run exactly as one seen at a model dispatch.
+  const runAuthorization = options.runAuthorization?.enforced ? options.runAuthorization : undefined;
+  const assertRegistrationsAuthorized = (registrations: AnalysisContextRegistrations): void => {
+    if (analysisContextFingerprintOf(analysisContextSelection, knowledgeScope ?? {}, registrations) !==
+      pinnedAnalysisContextFingerprint) {
+      runAuthorization?.revoke();
       throw new Error('analysis_context_changed_restart_required');
     }
   };
+  const assertPrivateAnalysisContextCurrent = (): void => runAuthorization
+    ? runAuthorization.assertCurrentInTurn()
+    : assertRegistrationsAuthorized(readSelectedRegistrations());
   const codeLookupLedger = options.codeLookupLedger ?? (
     options.sessionId
       ? CodeLookupLedger.restore(
           options.sessionId,
-          sourceUsePolicy?.phase === 'deep_enrichment'
-            ? Number.MAX_SAFE_INTEGER
-            : 12_000,
           2,
           undefined,
           pinnedAnalysisContextFingerprint,
         )
       : undefined
   );
-  const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> => {
-    assertPrivateAnalysisContextCurrent();
-    return Object.fromEntries(ids.flatMap(codebaseId => {
-      const generation = pinnedCodebaseGenerations[codebaseId];
-      return generation ? [[codebaseId, generation]] : [];
-    }));
+  // One run's source budget, in memory with this server; the ledger above is
+  // the audit trail and patch authority, not the budget.
+  const sourceDepth = options.sourceDepthDecision?.effective ?? 'locate';
+  const sourceBudget = new SourceBudget(sourceDepth, options.sourceDepthPolicy);
+  // Read after a checkpoint (below), which has just checked authorization.
+  const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> =>
+    indexGenerationPins.codebaseGenerations(ids);
+  /**
+   * One index checkpoint: the authorization fence and the pinned-generation
+   * check, from one read of the selected registrations. Authorization changes
+   * revoke the run; a generation that can no longer be served (moved, or its
+   * stored data no longer whole) refuses the call through the tool wrapper.
+   * Every index tool calls it before reading, after reading and right before
+   * delivering, so a rebuild during a call is never delivered as "no hits".
+   */
+  const indexCheckpoint = (policy: IndexGenerationPolicy, ids: readonly string[]): void => {
+    const registrations = readSelectedRegistrations();
+    assertRegistrationsAuthorized(registrations);
+    const refusal = indexGenerationPins.refusal(policy, ids, registrations);
+    if (refusal) throw new IndexGenerationRefused(refusal);
   };
   const toolRequestScope: ToolRequestScope = {
     sessionId: options.sessionId ?? traceId,
@@ -1600,17 +1592,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         queriedCodebaseIds: [],
         usedCodebaseIds: [],
         references: [],
+        ...(options.sourceDepthDecision ? {depth: options.sourceDepthDecision} : {}),
       }, codebaseIds)
     : undefined;
   let sourceUseDecision = initialSourceUseDecision?.selectedCodebaseIds.length
     ? initialSourceUseDecision
     : undefined;
-  let explicitSourceUseDecisionReason: string | undefined;
   const sourceExecutionScope: SourceExecutionScopeV1 = {
     codeAwareMode,
     selectedCodebaseIds: [...codebaseIds],
     hasCodebaseAccess: toolRequestScope.hasCodebaseAccess === true,
     analysisContextFingerprint: pinnedAnalysisContextFingerprint,
+    ...(toolRequestScope.hasCodebaseAccess ? {sourceDepth} : {}),
   };
   const sourceUse: SourceUseDecisionAccessor = {
     getSourceUseDecision: () => sourceUseDecision
@@ -1626,23 +1619,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return undefined;
       }
     },
-  };
-
-  const syncSourceUseDecisionStatusToPlan = (): void => {
-    const plan = options.analysisPlan?.current;
-    if (!plan) return;
-    if (sourceUseDecision) {
-      plan.sourceUseDecisionStatus = sourceUseDecision.status;
-    } else {
-      delete plan.sourceUseDecisionStatus;
-    }
-  };
-
-  const commitSourceUseDecision = (value: SourceUseDecisionV1): void => {
-    const sanitized = sanitizeSourceUseDecision(value, codebaseIds);
-    if (!sanitized || sanitized.selectedCodebaseIds.length === 0) return;
-    sourceUseDecision = sanitized;
-    syncSourceUseDecisionStatusToPlan();
+    // Facts of delivery, kept whatever happened since: what reached the model did.
+    getKnowledgeUse: () => knowledgeSourceIds.length > 0 ? knowledgeUse.snapshot() : undefined,
   };
 
   // Admission precedes provider delivery. Never expose a new source body or
@@ -1652,6 +1630,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const known = issuedSourceReferences;
     const admitted: T[] = [];
     const references: SourceReferenceV1[] = [];
+    // The issued id of each admitted item, in the same order.
+    const ids: string[] = [];
     let incompleteReason: 'source_reference_limit_exceeded' | 'invalid_source_reference' | undefined;
     for (const item of items) {
       const reference = sanitizeSourceReference(referenceFor(item));
@@ -1666,8 +1646,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       known.set(reference.id, reference);
       admitted.push(item);
       references.push(reference);
+      ids.push(reference.id);
     }
-    return {items: admitted, references: sanitizeSourceReferences(references), incompleteReason};
+    return {items: admitted, ids, references: sanitizeSourceReferences(references), incompleteReason};
   };
 
   type SourceLookupObservation = {
@@ -1678,92 +1659,82 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     success: boolean;
     coverageComplete?: boolean;
     incompleteReasons?: readonly string[];
+    /** False when the call was refused before reaching the source: it queried nothing. */
+    queried?: boolean;
   };
   const observeSourceLookup = (observation: SourceLookupObservation): void => {
-    let current = sourceUseDecision;
+    const current = sourceUseDecision;
     if (!current) return;
     const selected = new Set(current.selectedCodebaseIds);
     const queriedCodebaseIds = observation.codebaseIds.filter(id => selected.has(id));
     if (queriedCodebaseIds.length === 0) return;
-    if (explicitSourceUseDecisionReason) {
-      // A model's earlier decision cannot conceal later execution facts.
-      current = {...current, status: 'pending', reasonCode: undefined,
-        coverageComplete: undefined, incompleteReasons: undefined};
-      explicitSourceUseDecisionReason = undefined;
-    }
     const references = sanitizeSourceReferences(observation.references ?? [])
       .filter(reference => selected.has(reference.codebaseId));
     const incompleteReasons = [...new Set((observation.incompleteReasons ?? [])
       .map(sanitizeSourceIncompleteReason)
       .filter((reason): reason is string => Boolean(reason)))];
     const incomplete = observation.coverageComplete === false || incompleteReasons.length > 0;
+    // Coverage is monotone for the run (one incomplete search keeps a negative
+    // claim unsupported); the status is not: positive findings from any lookup
+    // outrank an incomplete one, and an incomplete search outranks absence.
+    const anyIncomplete = current.coverageComplete === false || incomplete;
     const mayCorroborate = codeAwareMode === 'provider_send' &&
       observation.bodyAvailable === true &&
-      references.some(reference => reference.lookupKind === 'body' || reference.lookupKind === 'indexed');
-    const observedStatus = incomplete
-      ? 'search_incomplete'
-      : references.length > 0
-        ? mayCorroborate ? 'corroborated' : 'located'
-        : observation.success && observation.coverageComplete === true
-          ? 'not_found_complete'
-          : 'attempted';
-    const rank = {
-      pending: 0,
-      attempted: 1,
-      not_found_complete: 2,
-      located: 3,
-      corroborated: 4,
-    } as const;
-    const currentRank = current.status in rank
-      ? rank[current.status as keyof typeof rank]
-      : Number.POSITIVE_INFINITY;
-    const observedRank = observedStatus in rank
-      ? rank[observedStatus as keyof typeof rank]
-      : Number.POSITIVE_INFINITY;
-    const status = current.status === 'search_incomplete'
-      ? current.status
-      : observedStatus === 'search_incomplete'
-        ? observedStatus
-        : observedRank >= currentRank ? observedStatus : current.status;
+      references.some(reference => isBodyLookupKind(reference.lookupKind));
+    const status = mergeSourceUseStatus({
+      current: current.status,
+      observedPositive: references.length > 0 ? mayCorroborate ? 'corroborated' : 'located' : undefined,
+      observedIncomplete: incomplete,
+      runIncomplete: anyIncomplete,
+      observedCompleteAbsence: observation.success && observation.coverageComplete === true,
+    });
     const reasonCode = status === 'search_incomplete' || status === 'not_found_complete'
       ? status
       : undefined;
-    commitSourceUseDecision({
+    const next = sanitizeSourceUseDecision({
       ...current,
       status,
       reasonCode,
       attemptedTools: [...new Set([...current.attemptedTools, observation.toolName])],
-      queriedCodebaseIds: [...new Set([...current.queriedCodebaseIds, ...queriedCodebaseIds])],
+      queriedCodebaseIds: observation.queried === false
+        ? current.queriedCodebaseIds
+        : [...new Set([...current.queriedCodebaseIds, ...queriedCodebaseIds])],
       usedCodebaseIds: [...new Set([
         ...current.usedCodebaseIds,
         ...references.map(reference => reference.codebaseId),
       ])],
-      ...(status === 'search_incomplete'
+      ...(anyIncomplete
         ? {
             coverageComplete: false,
             incompleteReasons: [...new Set([
               ...(current.incompleteReasons ?? []),
               ...incompleteReasons,
-              ...(incompleteReasons.length === 0 ? ['coverage_incomplete'] : []),
+              ...(incompleteReasons.length === 0 && (current.incompleteReasons ?? []).length === 0
+                ? ['coverage_incomplete'] : []),
             ])],
           }
         : observation.coverageComplete === true && current.coverageComplete !== false
           ? {coverageComplete: true}
           : {}),
       references: sanitizeSourceReferences([...current.references, ...references]),
-    });
+    }, codebaseIds);
+    if (next?.selectedCodebaseIds.length) sourceUseDecision = next;
   };
 
+  // `queriedOnDispatch: false` defers the queried mark to the result observer, for
+  // operations that can answer with a refusal before reaching the source.
   const observeSourceOperation = async <T>(
     toolName: CodeLookupLedgerEntry['toolName'],
     queriedCodebaseIds: readonly string[],
     operation: () => T | Promise<T>,
+    {queriedOnDispatch = true}: {queriedOnDispatch?: boolean} = {},
   ): Promise<T> => {
-    observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false});
+    observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false, queried: queriedOnDispatch});
     const startedAt = Date.now();
     try {
       return await operation();
     } catch (error) {
+      if (!queriedOnDispatch) observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false});
       for (const codebaseId of new Set(queriedCodebaseIds.filter(id => codebaseIds.includes(id)))) {
         codeLookupLedger?.record({turn: 0, ts: Date.now(), toolName, codebaseId,
           chunkIds: [], returnedReferenceCount: 0, tokensSpent: 0,
@@ -1771,12 +1742,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           durationMs: Date.now() - startedAt});
       }
       await codeLookupLedger?.flush();
-      throw error;
+      throw sourceToolError(error);
     }
   };
 
   const observeOnDemandSourceLookup = (
-    toolName: 'search_codebase' | 'read_codebase_file',
+    toolName: 'search_codebase' | 'locate_trace_anchor' | 'read_codebase_file',
     result: {
       success: boolean;
       codebaseId: string;
@@ -1795,41 +1766,62 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         text?: string;
       };
       coverageComplete?: boolean;
+      coverageScope?: 'codebase' | 'path_prefix';
       searchIncompleteReason?: string;
       unsupportedReason?: string;
       truncated: boolean;
     },
   ) => {
     const rawReferences = [...(result.matches ?? []), ...(result.reference ? [result.reference] : [])];
+    // A search or locate hit locates code, with or without its context; only a
+    // read window delivers a body the run can cite as evidence.
+    const searchLike = toolName === 'search_codebase' || toolName === 'locate_trace_anchor';
     const admitted = admitSourceItems(rawReferences, reference => ({
       ...reference,
-      lookupKind: codeAwareMode === 'provider_send' && reference.text ? 'body' : 'metadata',
+      referenceId: undefined,
+      lookupKind: searchLike ? 'search_hit'
+        : codeAwareMode === 'provider_send' && reference.text ? 'body' : 'metadata',
     }));
+    const items = admitted.items.map((item, index) => ({...item, id: admitted.ids[index]!}));
+    // A search keeps what it admitted; a read without its one reference fails.
+    const searchIncomplete = admitted.incompleteReason && searchLike;
+    const readIncomplete = admitted.incompleteReason && !searchLike;
+    const success = readIncomplete ? false : result.success;
+    const unsupportedReason = readIncomplete ? admitted.incompleteReason : result.unsupportedReason;
+    const refusalAction = success ? undefined : sourceAccessRefusalAction(unsupportedReason);
+    const refusedAtSource = !result.success && sourceAccessRefusalAction(result.unsupportedReason) !== undefined;
     const delivered = {
       ...result,
-      ...(result.matches ? {matches: admitted.items} : {}),
-      ...(result.reference ? {reference: admitted.items[0]} : {}),
+      matches: result.matches ? items : undefined,
+      reference: result.reference ? items[0] : undefined,
       sourceReferences: admitted.references,
-      ...(admitted.incompleteReason ? toolName === 'search_codebase'
+      ...(searchIncomplete
         ? {coverageComplete: false, truncated: true, searchIncompleteReason: admitted.incompleteReason}
-        : {success: false, unsupportedReason: admitted.incompleteReason} : {}),
+        : {}),
+      ...(readIncomplete ? {success, unsupportedReason} : {}),
+      ...(refusalAction ? {action_required: refusalAction} : {}),
     };
-    const incompleteReasons = [
+    // A read window states nothing about search coverage, failed or not.
+    const incompleteReasons = !searchLike ? [] : [
       delivered.searchIncompleteReason,
       admitted.incompleteReason,
       ...(result.unsupportedReason === 'budget_exceeded' ? ['budget_exceeded'] : []),
-      ...(toolName === 'search_codebase' && result.truncated && result.coverageComplete !== true ? ['result_truncated'] : []),
+      ...(result.truncated && result.coverageComplete !== true ? ['result_truncated'] : []),
     ].filter((reason): reason is string => Boolean(reason));
     observeSourceLookup({
       toolName,
       codebaseIds: [result.codebaseId],
       references: admitted.references,
-      bodyAvailable: admitted.items.some(reference => Boolean(reference.text)),
+      bodyAvailable: !searchLike && admitted.items.some(reference => Boolean(reference.text)),
       success: delivered.success,
-      ...(typeof delivered.coverageComplete === 'boolean'
+      // A refused call searched nothing, so it states no coverage either way; a
+      // complete search of one path_prefix is not codebase-wide coverage.
+      ...(typeof delivered.coverageComplete === 'boolean' && !refusalAction &&
+        !(delivered.coverageComplete && delivered.coverageScope === 'path_prefix')
         ? {coverageComplete: delivered.coverageComplete}
         : {}),
       incompleteReasons,
+      queried: !refusedAtSource,
     });
     return delivered;
   };
@@ -1850,14 +1842,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       unsupportedReason?: string;
     },
   ) => {
-    const admitted = admitSourceItems(result.references, reference => ({...reference, lookupKind: 'graph'}));
-    const delivered = {...result, references: admitted.items, sourceReferences: admitted.references,
-      ...(admitted.incompleteReason ? {truncated: true, unsupportedReason: admitted.incompleteReason, processes: []} : {})};
+    const admitted = admitSourceItems(result.references, reference => ({...reference, referenceId: undefined,
+      lookupKind: 'graph'}));
+    const refusalAction = result.success ? undefined : sourceAccessRefusalAction(result.unsupportedReason);
+    const references = admitted.items.map((item, index) => ({...item, id: admitted.ids[index]!}));
+    const delivered = {...result, references, sourceReferences: admitted.references,
+      ...(admitted.incompleteReason ? {truncated: true, unsupportedReason: admitted.incompleteReason, processes: []} : {}),
+      ...(refusalAction ? {action_required: refusalAction} : {})};
     observeSourceLookup({
       toolName,
       codebaseIds: [result.codebaseId],
       references: admitted.references,
       success: result.success,
+      queried: !refusalAction,
       ...(delivered.truncated ? {coverageComplete: false} : {}),
       incompleteReasons: [
         ...(admitted.incompleteReason ? [admitted.incompleteReason] : []),
@@ -1914,6 +1911,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
     return delivered;
   };
+  /**
+   * An indexed lookup that reaches a registered codebase is a source search
+   * and spends one; a lookup of public indexes only does not.
+   */
+  const indexedSearchBudgetRefusal = async (
+    toolName: CodeLookupLedgerEntry['toolName'],
+    queriedCodebaseIds: readonly string[],
+  ) => {
+    if (queriedCodebaseIds.length === 0) return undefined;
+    const stop = sourceBudget.beginCall('search');
+    if (!stop) return undefined;
+    observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false, queried: false});
+    for (const codebaseId of new Set(queriedCodebaseIds)) {
+      codeLookupLedger?.record({turn: 0, ts: Date.now(), toolName, codebaseId, chunkIds: [],
+        returnedReferenceCount: 0, tokensSpent: 0, consentApplied: codeAwareMode === 'provider_send',
+        outcome: 'budget_exceeded', legacyPath: false});
+    }
+    await codeLookupLedger?.flush();
+    return sourceBudgetRefusal({success: false, results: [], unsupportedReason: stop});
+  };
   const filterIndexedSourceLookup = async (
     toolName: Parameters<typeof observeIndexedSourceLookup>[0],
     raw: RagRetrievalResult,
@@ -1921,7 +1938,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   ) => {
     let bodyAdmissionReason: string | undefined;
     const filtered = await observeSourceOperation(toolName, queriedCodebaseIds, () => filterRagLookup(raw, {toolName, turn: 0, codebaseRegistry,
-      ledger: codeLookupLedger, allowProviderSend: codeAwareMode === 'provider_send',
+      ledger: codeLookupLedger, budget: sourceBudget, allowProviderSend: codeAwareMode === 'provider_send',
       sessionId: options.sessionId, knowledgeScope,
       admitSourceHit: hit => {
         const admitted = admitSourceItems([hit], indexedSourceReference);
@@ -2005,6 +2022,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const handle = await directWorkspaceRegistryPromise;
         pinnedSkillRegistry = handle.registry;
         pinnedSkillRegistryFingerprint = handle.registryFingerprint;
+        pinnedSkillRegistryContentFingerprint = handle.registryFingerprint;
       }
       // Production runs receive an executor that was initialized from the
       // same frozen snapshot before MCP construction. Never replace that
@@ -2131,19 +2149,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     defaultPackage?: string,
     skill?: SkillDefinition,
   ): Record<string, any> {
-    const p = { ...params };
-    for (const key of Object.keys(p)) {
-      if (TIMESTAMP_EXPRESSION_PARAM_KEYS.has(key)) {
-        p[key] = normalizeTimestampExpression(p[key]);
-      }
-    }
-    const declaredNames = new Set((skill?.inputs ?? []).map(input => input.name));
-    const acceptsProcessIdentity = !skill || [...getConsumableProcessIdentitySelectors(skill)]
-      .some(key => key === 'process_name' || key === 'package');
-    if (acceptsProcessIdentity && defaultPackage && !hasProcessIdentitySelector(p)) {
-      p[declaredNames.has('process_name') && !declaredNames.has('package') ? 'process_name' : 'package'] = defaultPackage;
-    }
-    return p;
+    return normalizeSkillRunParams(params, defaultPackage, skill);
   }
 
   function undeclaredModelSkillParams(
@@ -2151,22 +2157,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     params: Record<string, any> | undefined,
     beforeEnrichment = false,
   ): string[] {
-    if (!params) return [];
-    const reserved = Object.keys(params).filter(key => key === '__process_scope' || key.startsWith('__process_scope.'));
-    const selectors = getConsumableProcessIdentitySelectors(skill);
-    const allowed = new Set([...(skill.inputs || []).map(input => input.name), ...selectors]);
-    if (beforeEnrichment) {
-      const registered = findDrillDownSkillConfig(skill.name);
-      if (registered?.dropEntityParamAfterResolution) {
-        for (const [key, source] of Object.entries(registered.paramMapping)) {
-          if (source === `${registered.entityType}Id`) allowed.add(key);
-        }
-      }
-    }
-    // Legacy definitions without input schemas remain open for ordinary params,
-    // but identity selectors still need a declared consumer.
-    return [...new Set([...reserved, ...Object.keys(params).filter(key =>
-      !allowed.has(key) && (Boolean(skill.inputs) || PROCESS_IDENTITY_SELECTORS.includes(key)))])].sort();
+    return undeclaredSkillRunParams(skill, params, beforeEnrichment);
+  }
+
+  /** What `invoke_skill` hands the shared Skill-run core for the current trace. */
+  function currentSkillRunDeps(): SkillRunDeps {
+    const paneSide = paneSideForTraceSide('current');
+    return {
+      traceId, traceProcessorService, skillExecutor, artifactStore, outputLanguage,
+      packageName, focusTarget: options.focusTarget, ...(paneSide ? {paneSide} : {}),
+    };
   }
 
   function referenceSharedParamsForComparison(
@@ -2200,233 +2200,38 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (!sqlUsesProcessNameFilter(sql)) return undefined;
     return localize(
       outputLanguage,
-      'Raw SQL 使用了进程/包名过滤；Process Identity Gate 只会自动保护 invoke_skill。信任这个 SQL 结论前，先用 process_identity_resolver 确认 canonical_package_name 与 recommended_process_name_param，或优先改用对应 Skill。',
-      'Raw SQL uses process/package-name filters; Process Identity Gate only protects invoke_skill automatically. Before trusting this SQL result, verify canonical_package_name and recommended_process_name_param with process_identity_resolver, or prefer the matching skill.',
+      'Raw SQL 使用了进程/包名过滤；Process Identity Gate 只会自动保护 invoke_skill。先核对 process_identity_resolver 的候选证据；目标明确后使用该行的 UPID 和原时间范围，优先重试对应 Skill。SQL 成功、排名或同名都不能消除身份歧义；仍未确认时保留限制。',
+      'Raw SQL uses process/package-name filters; Process Identity Gate only protects invoke_skill automatically. Inspect process_identity_resolver candidate evidence; once the target is distinguished, use that row\'s UPID and original time range, preferably retrying the matching Skill. SQL success, rank or a repeated name does not resolve identity ambiguity; retain unresolved limitations.',
     );
-  }
-
-  function skipSqlQuotedText(sql: string, index: number, quote: string): number {
-    let i = index + 1;
-    while (i < sql.length) {
-      if (sql[i] === quote) {
-        if (sql[i + 1] === quote) {
-          i += 2;
-          continue;
-        }
-        return i + 1;
-      }
-      i += 1;
-    }
-    return sql.length;
-  }
-
-  function skipSqlIgnoredText(sql: string, index: number): number {
-    const char = sql[index];
-    const next = sql[index + 1];
-    if (char === '-' && next === '-') {
-      let i = index + 2;
-      while (i < sql.length && sql[i] !== '\n' && sql[i] !== '\r') i += 1;
-      return i;
-    }
-    if (char === '/' && next === '*') {
-      let i = index + 2;
-      while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
-      return Math.min(sql.length, i + 2);
-    }
-    if (char === '\'' || char === '"' || char === '`') return skipSqlQuotedText(sql, index, char);
-    if (char === '[') {
-      let i = index + 1;
-      while (i < sql.length && sql[i] !== ']') i += 1;
-      return Math.min(sql.length, i + 1);
-    }
-    return index;
-  }
-
-  function readSqlIdentifierToken(sql: string, index: number): { value: string; end: number } | null {
-    const char = sql[index];
-    if (char === '\'' || char === '"' || char === '`') {
-      const end = skipSqlQuotedText(sql, index, char);
-      const inner = sql.slice(index + 1, end - 1).split(`${char}${char}`).join(char);
-      return { value: inner, end };
-    }
-    if (char === '[') {
-      const end = skipSqlIgnoredText(sql, index);
-      return { value: sql.slice(index + 1, end - 1), end };
-    }
-
-    let i = index;
-    while (i < sql.length && /[A-Za-z0-9_$-]/.test(sql[i])) i += 1;
-    if (i === index) return null;
-    return { value: sql.slice(index, i), end: i };
-  }
-
-  function readSqlTableNameAfterFromOrJoin(sql: string, index: number): { tableName: string; end: number } | null {
-    let i = index;
-    while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    if (sql[i] === '(') return null;
-
-    let token = readSqlIdentifierToken(sql, i);
-    if (!token) return null;
-    let tableName = token.value;
-    i = token.end;
-
-    while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    if (sql[i] === '.') {
-      i += 1;
-      while (i < sql.length && /\s/.test(sql[i])) i += 1;
-      token = readSqlIdentifierToken(sql, i);
-      if (!token) return { tableName, end: i };
-      tableName = token.value;
-      i = token.end;
-    }
-
-    return { tableName, end: i };
-  }
-
-  const tableAliasBoundaryWord = /^(WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|GROUP|ORDER|LIMIT|ON|USING|HAVING|UNION|EXCEPT|INTERSECT|WINDOW|QUALIFY|VALUES)$/i;
-
-  function readOptionalSqlAliasEnd(sql: string, index: number): number {
-    let i = index;
-    while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    const asMatch = /^AS\b/i.exec(sql.slice(i));
-    if (asMatch) {
-      i += asMatch[0].length;
-      while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    }
-
-    const token = readSqlIdentifierToken(sql, i);
-    if (!token || tableAliasBoundaryWord.test(token.value)) return index;
-    return token.end;
-  }
-
-  function isArtifactPseudoTableName(tableName: string): boolean {
-    const lower = tableName.toLowerCase();
-    return (
-      lower !== '__intrinsic_batch_frame_root_cause' &&
-      (
-        /^__intrinsic_[a-z_]\w*$/i.test(tableName) ||
-        /^art[-_]\d+(?:[-_]\w+)*$/i.test(tableName) ||
-        lower === 'synthesizeartifacts' ||
-        lower === 'synthesize_artifacts' ||
-        lower === 'artifacts'
-      )
-    );
-  }
-
-  function findArtifactPseudoTableNameInReference(sql: string, index: number): { tableName: string | null; end: number | null } {
-    const table = readSqlTableNameAfterFromOrJoin(sql, index);
-    if (!table) return { tableName: null, end: null };
-    const end = readOptionalSqlAliasEnd(sql, table.end);
-    return {
-      tableName: isArtifactPseudoTableName(table.tableName) ? table.tableName : null,
-      end: Math.max(table.end, end),
-    };
-  }
-
-  function findArtifactPseudoTableName(sql: string): string | null {
-    let i = 0;
-    while (i < sql.length) {
-      const skipped = skipSqlIgnoredText(sql, i);
-      if (skipped !== i) {
-        i = skipped;
-        continue;
-      }
-
-      if (/[A-Za-z_]/.test(sql[i])) {
-        const wordStart = i;
-        while (i < sql.length && /[A-Za-z0-9_]/.test(sql[i])) i += 1;
-        const word = sql.slice(wordStart, i);
-        if (/^FROM$/i.test(word)) {
-          while (i < sql.length) {
-            const reference = findArtifactPseudoTableNameInReference(sql, i);
-            if (reference.tableName) return reference.tableName;
-            if (reference.end === null) break;
-            i = reference.end;
-            while (i < sql.length && /\s/.test(sql[i])) i += 1;
-            if (sql[i] !== ',') break;
-            i += 1;
-          }
-          continue;
-        }
-        if (/^JOIN$/i.test(word)) {
-          const reference = findArtifactPseudoTableNameInReference(sql, i);
-          if (reference.tableName) return reference.tableName;
-          if (reference.end !== null) i = Math.max(i, reference.end);
-        }
-        continue;
-      }
-
-      i += 1;
-    }
-
-    return null;
-  }
-
-  function findArtifactPseudoFunctionReference(
-    sql: string,
-  ): { functionName: string; artifactId: string } | null {
-    let i = 0;
-    while (i < sql.length) {
-      const skipped = skipSqlIgnoredText(sql, i);
-      if (skipped !== i) {
-        i = skipped;
-        continue;
-      }
-
-      if (!/[A-Za-z_]/.test(sql[i])) {
-        i += 1;
-        continue;
-      }
-      const wordStart = i;
-      while (i < sql.length && /[A-Za-z0-9_]/.test(sql[i])) i += 1;
-      const functionName = sql.slice(wordStart, i);
-      if (!/^(?:read|query|fetch)_artifact(?:_rows)?$/i.test(functionName)) continue;
-
-      let argsStart = i;
-      while (argsStart < sql.length && /\s/.test(sql[argsStart])) argsStart += 1;
-      const artifactMatch = /^\(\s*(['"])(?:art[-_])(\d+)\1/i.exec(sql.slice(argsStart));
-      if (artifactMatch?.[2]) {
-        return {functionName, artifactId: `art-${artifactMatch[2]}`};
-      }
-    }
-    return null;
   }
 
   function artifactSqlMisuseHint(sql: string, language: OutputLanguage): Record<string, unknown> | null {
-    const functionReference = findArtifactPseudoFunctionReference(sql);
-    const tableName = findArtifactPseudoTableName(sql);
-    if (!functionReference && !tableName) return null;
-    const artifactNumber = tableName ? /^art[-_](\d+)/i.exec(tableName)?.[1] : undefined;
-    const artifactId = functionReference?.artifactId ?? (artifactNumber ? `art-${artifactNumber}` : undefined);
-    const pseudoReference = functionReference?.functionName ?? tableName!;
-
+    const artifact = findArtifactSqlReference(sql);
+    if (!artifact) return null;
     return {
       success: false,
       blocked: true,
-      error: localize(
-        language,
-        `${pseudoReference} 不是 trace_processor SQL 表或函数。Skill 返回的 art-* / synthesizeArtifacts 是 SmartPerfetto artifact 引用，不能用 execute_sql 查询。`,
-        `${pseudoReference} is not a trace_processor SQL table or function. art-* / synthesizeArtifacts from Skill results are SmartPerfetto artifact references and cannot be queried with execute_sql.`,
-      ),
+      error: renderRequiredLocalizedStrategyTemplate('prompt-artifact-sql-misuse', language,
+        {reference: artifact.reference}),
       action_required: 'fetch_artifact',
-      ...(artifactId ? {artifactId} : {}),
-      hint: artifactId
-        ? `Use fetch_artifact(artifactId="${artifactId}", detail="summary") first. Read the minimum rows needed only if the summary lacks a required field or the user explicitly requests row-level data.`
-        : 'Use fetch_artifact(artifactId="art-N", detail="summary") first with the artifactId returned by invoke_skill. Read the minimum rows needed only if the summary lacks a required field or the user explicitly requests row-level data.',
+      ...(artifact.artifactId ? {artifactId: artifact.artifactId} : {}),
+      hint: renderTemplate(requireToolDescription('prompt-artifact-sql-misuse-hint'),
+        {artifact_id: artifact.artifactId ?? 'art-N'}),
       sql,
     };
   }
 
   /** Planning is optional; a submitted plan keeps its revision and evidence obligations. */
   const analysisPlanRef = options.analysisPlan;
-  // Phase 1-C: Conditional REASONING_NUDGE — only append for first N data tool calls.
-  // After N calls, Claude should have internalized the reflect habit from system prompt.
+  // ReAct reasoning nudge (prompt-reasoning-nudge-*): appended to the first N
+  // successful data tool results, about 20 tokens each; after that the system
+  // prompt's reflect habit is expected to carry.
   const REASONING_NUDGE_MAX_CALLS = 4;
   let dataToolCallCount = 0;
   function getReasoningNudge(): string {
     dataToolCallCount++;
     if (dataToolCallCount > REASONING_NUDGE_MAX_CALLS) return '';
-    return outputLanguage === 'en' ? REASONING_NUDGE_EN : REASONING_NUDGE_ZH;
+    return `\n\n${renderRequiredLocalizedStrategyTemplate('prompt-reasoning-nudge', outputLanguage, {})}`;
   }
 
   let evidenceProducerOrdinal = 0;
@@ -2790,13 +2595,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             return jaccard > 0.3; // At least 30% token overlap
           });
           if (matchingError) {
-            // Private source/RAG runs may learn within this in-memory turn, but
-            // raw SQL and provider errors must never cross the durable boundary.
-            if (!privateAnalysisContext) {
-            await logSqlErrorFixPair(
-              { ...matchingError, fixedSql: sql },
-              knowledgeScope,
-            );
+            // Any run may learn within this in-memory turn; only a run granted
+            // durable learning persists the pair.
+            if (options.durableLearning) {
+              await logSqlErrorFixPair(
+                { ...matchingError, fixedSql: sql },
+                knowledgeScope,
+                options.durableLearning,
+              );
             }
             const idx = recentSqlErrors.indexOf(matchingError);
             if (idx >= 0) recentSqlErrors.splice(idx, 1);
@@ -2833,11 +2639,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             success: true,
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
-            totalRows: summaryResult.totalRows,
-            columns: summaryResult.columns,
-            columnStats: summaryResult.columnStats,
-            sampleRows: summaryResult.sampleRows,
-            sampleRowIndices: summaryResult.sampleRowIndices,
+            ...summaryResult,
             ...(columnUnits ? {columnUnits} : {}),
             ...(sqlArtifact ? {
               artifactId: sqlArtifact.artifactId,
@@ -2909,6 +2711,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
         } : buildSqlFailureToolPayload({
           error: result.error || localize(outputLanguage, 'SQL 执行失败', 'SQL execution failed'),
+          schemaDiagnosis: {error: result.error ?? '', sql: normalizedSql, memory: sqlFailureMemory},
           traceSide: traceProvenance.traceSide,
           traceId: traceProvenance.traceId,
           traceProvenance,
@@ -2949,6 +2752,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             paramsHash: producer.paramsHash,
             planPhaseId: producer.planPhaseId,
             error: errMsg,
+            schemaDiagnosis: {error: errMsg, sql, memory: sqlFailureMemory},
             executableSql: sql,
             outputLanguage,
           })) }],
@@ -3037,58 +2841,60 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
       try {
         const effectiveSkillRegistry = await bindSkillRuntimeRegistry();
-        const skillDef = effectiveSkillRegistry.getSkill(skillId);
-        if (!skillDef) return unavailableSkillResult(skillId);
-        if (skillDef?.type === 'pipeline_definition' || skillDef?.type === 'comparison') {
-          const useHint = skillDef.type === 'comparison'
-            ? 'It describes analysis result comparison. Use the multi-trace comparison API/tools instead.'
-            : 'Use `detect_architecture` to detect the rendering pipeline, or call a composite analysis skill like `scrolling_analysis`, `gpu_analysis`, etc.';
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                error: `Skill "${skillId}" is metadata-only and cannot be used for single-trace analysis. ${useHint}`,
-              }),
-            }],
-          };
+        const skillRunDeps = currentSkillRunDeps();
+        const preparation = await prepareSkillRun(skillRunDeps,
+          {skillId, params, registry: effectiveSkillRegistry, signal});
+        if (preparation.status === 'refused') {
+          const refusal = preparation.refusal;
+          switch (refusal.kind) {
+            case 'unavailable':
+              return unavailableSkillResult(skillId);
+            case 'metadata_only': {
+              const useHint = refusal.skillType === 'comparison'
+                ? 'It describes analysis result comparison. Use the multi-trace comparison API/tools instead.'
+                : 'Use `detect_architecture` to detect the rendering pipeline, or call a composite analysis skill like `scrolling_analysis`, `gpu_analysis`, etc.';
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    success: false,
+                    error: `Skill "${skillId}" is metadata-only and cannot be used for single-trace analysis. ${useHint}`,
+                  }),
+                }],
+              };
+            }
+            case 'undeclared_params':
+              return createRuntimeToolResult({ success: false, skillId,
+                invalidParams: refusal.invalidParams, error: `Undeclared Skill parameters: ${refusal.invalidParams.join(', ')}`,
+                action_required: 'retry_invoke_skill_with_declared_params' });
+            case 'process_selector_required':
+              return createRuntimeToolResult({ success: false, skillId, reason: 'process_selector_required',
+                error: localize(outputLanguage,
+                  `Skill ${skillId} 需要指定目标进程（package / process_name / upid），当前没有确定的目标应用。`,
+                  `Skill ${skillId} needs a target process (package / process_name / upid); no target app is in effect.`),
+                candidates: focusAppSelectorCandidates(options.focusTarget),
+                action_required: 'retry_invoke_skill_with_process_selector' });
+            case 'identity_gate':
+              return createRuntimeToolResult({ success: false, skillId,
+                error: refusal.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector' });
+            case 'undeclared_params_after_resolution':
+              return {
+                content: [{
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    success: false,
+                    partial: false,
+                    skillId,
+                    invalidParams: refusal.invalidParams,
+                    error: `Undeclared Skill parameters: ${refusal.invalidParams.join(', ')}`,
+                    action_required: 'retry_invoke_skill_with_declared_params',
+                  }),
+                }],
+                isError: true,
+              };
+          }
         }
-
-        const normalizedParams = normalizeSkillParams(params, packageName, skillDef);
-        const explicitInvalidParams = undeclaredModelSkillParams(skillDef, params, true);
-        if (explicitInvalidParams.length) return createRuntimeToolResult({ success: false, skillId,
-          invalidParams: explicitInvalidParams, error: `Undeclared Skill parameters: ${explicitInvalidParams.join(', ')}`,
-          action_required: 'retry_invoke_skill_with_declared_params' });
-        const prepared = await skillExecutor.prepareInvocation(skillId, traceId, normalizedParams,
-          { __traceSide: 'current', __outputLanguage: outputLanguage, signal });
-        if (!prepared.allowed) return createRuntimeToolResult({ success: false, skillId,
-          error: prepared.error, action_required: 'choose_supported_exact_skill_or_correct_process_selector' });
-        const paramResolution = await resolveRegisteredDrillDownSkillParams({
-          skillId,
-          params: prepared.params,
-          processScope: prepared.processScope,
-          traceId,
-          traceProcessorService,
-          signal,
-        });
-        const effectiveParams = paramResolution.params;
-        const invalidParams = undeclaredModelSkillParams(skillDef, effectiveParams);
-        if (invalidParams.length > 0) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                partial: false,
-                skillId,
-                invalidParams,
-                error: `Undeclared Skill parameters: ${invalidParams.join(', ')}`,
-                action_required: 'retry_invoke_skill_with_declared_params',
-              }),
-            }],
-            isError: true,
-          };
-        }
+        const {skillDef, effectiveParams, paramResolution, defaultProcessField} = preparation.prepared;
         const producer = createEvidenceProducerContext(
           'invoke_skill',
           {
@@ -3098,7 +2904,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           },
           localize(outputLanguage, `调用 Skill ${skillId}，收集本阶段结构化证据。`, `Run Skill ${skillId} to collect structured evidence for this phase.`),
         );
-        const skillTraceProvenance = buildScopedTraceProvenance(traceId, 'current');
 
         emitUpdate?.({
           type: 'progress',
@@ -3113,189 +2918,63 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           timestamp: Date.now(),
         });
 
-        const skillStart = Date.now();
-        const currentPaneSide = paneSideForTraceSide('current');
-        const executionContext = {
-          ...(currentPaneSide ? { __paneSide: currentPaneSide } : {}),
-          __outputLanguage: outputLanguage, __traceSide: 'current', signal,
-        };
-        const result = prepared.processScope
-          ? await skillExecutor.execute(skillId, traceId, effectiveParams, executionContext, prepared.processScope)
-          : await skillExecutor.execute(skillId, traceId, effectiveParams, executionContext);
-        const skillDuration = Date.now() - skillStart;
-
-        emitUpdate?.({
-          type: 'progress',
-          content: {
-            phase: 'analyzing',
-            // Duration is a real signal in a performance tool. The result-layer
-            // count is not: the evidence line that follows already says what
-            // arrived, and repeating the number twice reads as bookkeeping.
-            message: localize(
-              outputLanguage,
-              `技能 ${skillId} 完成 (${skillDuration}ms)`,
-              `Skill ${skillId} completed (${skillDuration}ms)`,
-            ),
-          },
-          timestamp: Date.now(),
-        });
-
-        // Capture skill SQL errors in the learning system — skill SQL is the most complex
-        // and most likely to break across Perfetto versions.
-        // P1-3: Also persist to disk for cross-session learning (same as execute_sql errors).
-        if (!result.success && result.error && result.error.includes('SQL')) {
-          const errorPair: SqlErrorFixPair = {
-            errorSql: `[skill:${skillId}] ${JSON.stringify(effectiveParams)}`,
-            errorMessage: result.error,
+        // Compact summaries are read as each display artifact is stored, so a
+        // later store in the same call cannot evict one before it is summarized.
+        const storedSummaries: SkillArtifactSummaryForModel[] = [];
+        const outcome = await executePreparedSkillRun(skillRunDeps, preparation.prepared, {
+          producer, signal,
+          afterExecute: skillDuration => emitUpdate?.({
+            type: 'progress',
+            content: {
+              phase: 'analyzing',
+              // Duration is a real signal in a performance tool. The result-layer
+              // count is not: the evidence line that follows already says what
+              // arrived, and repeating the number twice reads as bookkeeping.
+              message: localize(
+                outputLanguage,
+                `技能 ${skillId} 完成 (${skillDuration}ms)`,
+                `Skill ${skillId} completed (${skillDuration}ms)`,
+              ),
+            },
             timestamp: Date.now(),
-          };
-          recentSqlErrors.push(errorPair);
-          if (recentSqlErrors.length > 10) recentSqlErrors.shift();
-          // Persist only trace-public learning. Skill params/errors can contain
-          // private source text or provider echoes.
-          if (!privateAnalysisContext) {
-            logSqlErrorFixPair(errorPair, knowledgeScope).catch(() => {});
-          }
-        }
-
-        // Artifact mode stores displayResults before emitting DataEnvelopes so
-        // evidence meta can carry the same artifact ids that the model sees.
-        let artifacts: SkillArtifactSummaryForModel[] | undefined;
-        let diagnosticsArtifactId: string | undefined;
-        let synthesizeArtifacts: Array<{ artifactId: string; stepId: string; rowCount: number; columns: string[] }> | undefined;
-        const artifactIdsByDisplayIndex: Array<string | undefined> = [];
-        const queryReviewsByDisplayIndex: Array<QueryReviewV1 | undefined> = [];
-        const modelDisplayProjections = (result.displayResults || []).map(dr =>
-          projectEvidenceTableForModel(dr.data, evidenceTableFor(dr)));
-        if (artifactStore && result.displayResults?.length) {
-          artifacts = result.displayResults.map((dr, displayIndex) => {
-            const modelProjection = modelDisplayProjections[displayIndex];
-            const evidenceRefId = stableSkillEvidenceRefId(
-              result.skillId || skillId,
-              dr.stepId,
-              dr.title,
-              dr.data,
-              skillTraceProvenance,
-              producer,
-              dr.scopeProvenance,
-            );
-            const artId = artifactStore.store({
-              skillId: result.skillId || skillId,
-              stepId: dr.stepId,
-              layer: dr.layer,
-              title: dr.title,
-              data: modelProjection.data,
-              modelProjection: modelProjection.modelProjection,
-              executionStatus: dr.executionStatus,
-              executionMessage: dr.executionMessage,
-              executionError: dr.executionError,
-              diagnostics: undefined,
-              planPhaseId: producer.planPhaseId,
-              planPhaseTitle: producer.planPhaseTitle,
-              planPhaseGoal: producer.planPhaseGoal,
-              sourceToolCallId: producer.sourceToolCallId,
-              paramsHash: producer.paramsHash,
-              identityResolution: identityForScopeEvidence(dr.scopeProvenance, result.identityResolution),
-              scopeProvenance: dr.scopeProvenance,
-              traceProvenance: skillTraceProvenance,
-            });
-            const witness = evidenceTableFor(dr) || captureEvidenceTable(undefined, {}, 'display_transformation_unmapped');
-            artifactStore.registerEvidenceCapture?.(artId, witness, {evidenceRefId,
-              ...(dr.sql ? {queryHash: evidenceHash(dr.sql)} : {})});
-            const queryReview = buildSkillQueryReview({
-              skillId: result.skillId || skillId,
-              displayResult: dr as SkillDisplayResult,
-              traceProvenance: skillTraceProvenance,
-              producer,
-              artifactId: artId,
-              evidenceRefId,
-              outputLanguage,
-            });
-            if (queryReview) {
-              artifactStore.updateQueryReview(artId, queryReview);
-              queryReviewsByDisplayIndex[displayIndex] = queryReview;
-            }
-            artifactIdsByDisplayIndex[displayIndex] = artId;
-            const storedSummary = artifactStore.generateCompactSummary(artId);
+          }),
+          onDisplayArtifactStored: ({artifactId: artId, evidenceRefId, modelProjection}) => {
+            const storedSummary = artifactStore!.generateCompactSummary(artId);
             const summary = storedSummary && artifactAccessPolicy.forbidRows
               ? (({preview: _preview, ...rowFreeSummary}) => rowFreeSummary)(storedSummary)
               : storedSummary;
             const preview = artifactAccessPolicy.forbidRows
               ? undefined
               : storedSummary?.preview ?? previewFromColumnarData(modelProjection.data);
-            return summary ? {
+            if (summary) storedSummaries.push({
               ...summary,
               ...(preview ? { preview } : {}),
               evidenceRefId,
               ...(producer.sourceToolCallId ? { sourceToolCallId: producer.sourceToolCallId } : {}),
-            } : undefined;
-          }).filter((summary): summary is SkillArtifactSummaryForModel => Boolean(summary));
-        }
-
-        // Store diagnostics as a separate artifact if present, even for
-        // diagnostics-only skill results that do not emit displayResults.
-        if (artifactStore && result.diagnostics && Array.isArray(result.diagnostics) && result.diagnostics.length > 0) {
-          diagnosticsArtifactId = artifactStore.store({
-            skillId: result.skillId || skillId,
-            stepId: '_diagnostics',
-            layer: 'diagnosis',
-            title: `${skillId} diagnostics`,
-            data: { columns: ['diagnostic'], rows: result.diagnostics.map((d: any) => [d]) },
-            diagnostics: result.diagnostics,
-            planPhaseId: producer.planPhaseId,
-            planPhaseTitle: producer.planPhaseTitle,
-            planPhaseGoal: producer.planPhaseGoal,
-            sourceToolCallId: producer.sourceToolCallId,
-            paramsHash: producer.paramsHash,
-            identityResolution: identityForScopeEvidence(mergeScopeProvenance(result.diagnostics.map(diagnostic => diagnostic.scopeProvenance)), result.identityResolution),
-            scopeProvenance: mergeScopeProvenance(result.diagnostics.map(diagnostic => diagnostic.scopeProvenance)),
-            traceProvenance: skillTraceProvenance,
-          });
-        }
-
-        // Store synthesizeData entries as artifacts too — these contain the
-        // raw step data that would otherwise overflow token limits.
-        if (artifactStore && result.synthesizeData && Array.isArray(result.synthesizeData) && result.synthesizeData.length > 0) {
-          synthesizeArtifacts = result.synthesizeData
-            .filter((sd: any) => sd.data && sd.success !== false)
-            .map((sd: any) => {
-              const normalizedData = normalizeSynthesizeDataForStorage(sd.data);
-              const artId = artifactStore.store({
-                skillId: result.skillId || skillId,
-                stepId: sd.stepId,
-                layer: sd.layer || 'synthesize',
-                title: sd.stepName || sd.stepId,
-                data: normalizedData,
-                planPhaseId: producer.planPhaseId,
-                planPhaseTitle: producer.planPhaseTitle,
-                planPhaseGoal: producer.planPhaseGoal,
-                sourceToolCallId: producer.sourceToolCallId,
-                paramsHash: producer.paramsHash,
-                identityResolution: identityForScopeEvidence(sd.scopeProvenance, result.identityResolution),
-                scopeProvenance: sd.scopeProvenance,
-                traceProvenance: skillTraceProvenance,
-              });
-              // A display and synthesize artifact may expose the same SQL step.
-              // Keep their locators distinct without changing existing display IDs.
-              const evidenceRefId = `${stableSkillEvidenceRefId(result.skillId || skillId, sd.stepId,
-                sd.stepName || sd.stepId, normalizedData, skillTraceProvenance, producer, sd.scopeProvenance)}:artifact:${artId}`;
-              // The normalizer flattens iterator-shaped rows and rewrites empty
-              // arrays. Only its plain object-row branch preserves this table.
-              const firstRow = Array.isArray(sd.data) ? sd.data[0] : undefined;
-              const directRows = firstRow && typeof firstRow === 'object' &&
-                !('itemIndex' in firstRow && 'result' in firstRow);
-              const witness = (directRows && evidenceTableFor(sd)) ||
-                captureEvidenceTable(undefined, {}, 'synthesize_transformation_unmapped');
-              artifactStore.registerEvidenceCapture?.(artId, witness, {evidenceRefId});
-              return {
-                artifactId: artId,
-                stepId: sd.stepId,
-                rowCount: normalizedData.rows?.length ?? 0,
-                columns: normalizedData.columns ?? [],
-              };
             });
+          },
+        });
+        // The model path never refuses a commit; the narrowing keeps the shape exact.
+        if (outcome.status !== 'committed') throw new Error(`invoke_skill commit refused: ${outcome.reason}`);
+        const {result, modelDisplayProjections, artifactIdsByDisplayIndex, queryReviewsByDisplayIndex,
+          diagnosticsArtifactId, synthesizeArtifacts} = outcome;
+        const skillTraceProvenance = outcome.traceProvenance;
+
+        // Capture skill SQL errors in this turn's learning window — skill SQL is
+        // the most complex and most likely to break across Perfetto versions.
+        // Nothing is persisted here: only a pair with its fix is ever read
+        // back, and execute_sql records that once a later query succeeds.
+        if (!result.success && result.error && result.error.includes('SQL')) {
+          recentSqlErrors.push({
+            errorSql: `[skill:${skillId}] ${JSON.stringify(effectiveParams)}`,
+            errorMessage: result.error,
+            timestamp: Date.now(),
+          });
+          if (recentSqlErrors.length > 10) recentSqlErrors.shift();
         }
 
+        let artifacts: SkillArtifactSummaryForModel[] | undefined =
+          artifactStore && result.displayResults?.length ? storedSummaries : undefined;
         const externalAuthored =
           effectiveSkillRegistry.getSkillOrigin(skillId)?.origin ===
           'external_pack';
@@ -3372,31 +3051,25 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           }
         }
 
-        // Vendor override hint: if a vendor is detected and overrides exist for this skill,
-        // include a hint in the result so Claude can consider vendor-specific analysis steps.
-        let vendorOverrideHint: { vendor: string; displayName?: string; additionalStepIds: string[] } | undefined;
-        const detectedVendor = options.cachedVendor;
-        if (detectedVendor && detectedVendor !== 'aosp' && result.success) {
-          const vendorOverride = effectiveSkillRegistry.getVendorOverride(skillId, detectedVendor);
-          if (vendorOverride && vendorOverride.additionalSteps.length > 0) {
-            vendorOverrideHint = {
-              vendor: vendorOverride.vendor,
-              displayName: vendorOverride.displayName,
-              additionalStepIds: vendorOverride.additionalSteps
-                .map((s: any) => s.id || s.name)
-                .filter(Boolean),
-            };
-          }
-        }
+        // Vendor override hint. Resolved only for a Skill that has overrides,
+        // only after its own queries finished, and waited for at most
+        // VENDOR_HINT_WAIT_MS under this call's signal: the hint is optional,
+        // so a slow, failed or cancelled resolution leaves the result as is.
+        const vendorOverrideHint = result.success && effectiveSkillRegistry.hasVendorOverrides(skillId)
+          ? selectVendorOverride(effectiveSkillRegistry, skillId,
+            await awaitTraceVendorHint(traceProcessorService, traceId, {signal}))
+          : undefined;
 
         // Artifact mode: return compact references whenever any fetchable
         // artifact was created.
         if (artifactStore && (artifacts?.length || diagnosticsArtifactId || synthesizeArtifacts?.length)) {
           // Bound inline previews, not the evidence inventory. Later, empty and
           // unavailable artifacts still need locators so findings are not lost.
-          const lightweightArtifacts = options.lightweight
+          const previewIndexes = options.lightweight
+            ? lightweightPreviewIndexes(result.displayResults ?? [], LIGHTWEIGHT_ARTIFACT_PREVIEW_LIMIT) : undefined;
+          const lightweightArtifacts = previewIndexes
             ? artifacts?.map((summary, index) => {
-                if (index < 10) return summary;
+                if (previewIndexes.has(index)) return summary;
                 const {preview: _preview, ...locator} = summary;
                 return {...locator, previewOmitted: true};
               })
@@ -3405,6 +3078,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             success: result.success,
             skillId: result.skillId,
             partial: result.partial,
+            ...defaultProcessField,
             scopeLimitations: result.scopeLimitations,
             scopeProvenance: result.scopeProvenance,
             skillName: localizedSkillName,
@@ -3444,6 +3118,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           success: result.success,
           skillId: result.skillId,
           partial: result.partial,
+          ...defaultProcessField,
           scopeLimitations: result.scopeLimitations,
           scopeProvenance: result.scopeProvenance,
           skillName: localizedSkillName,
@@ -3549,11 +3224,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const capabilityRegistry = await bindSkillRuntimeRegistry();
         const definitions = new Map(capabilityRegistry.getAllSkills().map(skill => [skill.name, skill]));
         const fragments = capabilityRegistry.getFragmentCache?.() || new Map<string, string>();
-        const scopeCapability = (id: string) => {
-          const definition = definitions.get(id);
-          return definition ? getExactProcessScopeSupport(definition, definitions, fragments)
-            : { supported: false, reason: 'Skill definition is unavailable' };
-        };
+        // Every Skill's closure at once, cached per pinned registry content.
+        const scopeCatalog = exactProcessScopeSupportCatalog(definitions, fragments,
+          {registryFingerprint: pinnedSkillRegistryContentFingerprint});
+        const scopeCapability = (id: string) =>
+          scopeCatalog.get(id) ?? { supported: false, reason: 'Skill definition is unavailable' };
         const allSkills = await skillAdapter.listSkills(outputLanguage);
         const filtered = category
           ? allSkills.filter(s =>
@@ -3704,11 +3379,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     async (input, extra) => {
       const signal = getRuntimeToolSignal(extra);
       throwIfTraceProcessorQueryCancelled(signal);
-      const {
-        planPhaseId, thread_state_id: threadStateId, utid, upid, pid, process_name: processName,
-        tid, thread_name: threadName, main_thread: mainThread, start_ts: startTs, end_ts: endTs,
-        max_segments: maxSegments, recursion_depth: recursionDepth,
-      } = input;
+      const {max_segments: maxSegments, recursion_depth: recursionDepth} = input;
+      const selectors = normalizeWaitChainSelectors(input);
+      const {utid, upid, pid, processName, tid, threadName, mainThread, startTs, endTs} = selectors;
       const producer = createEvidenceProducerContext(
         'analyze_wait_chain',
         input as Record<string, unknown>,
@@ -3729,13 +3402,59 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       try {
         let identity: ResolvedCriticalPathThread | undefined;
         let resolvedUtid: number | undefined;
+        let threadStateId = selectors.threadStateId;
+        let selectorWarning: CriticalPathWarning | undefined;
+        const requestedWindow = waitChainWindow(selectors);
+        const requestedThread = {
+          utid: utid ?? null, tid: tid ?? null, upid: upid ?? null, pid: pid ?? null,
+          processName: processName ?? null, threadName: threadName ?? null, mainThread: mainThread ?? false,
+        };
+        const namesThread = waitChainNamesThread(selectors);
+        const hasThreadSelector = namesThread
+          || upid !== undefined || pid !== undefined || processName !== undefined;
+
+        // A thread_state row given beside a thread or a window must belong to
+        // them: a filled-in `thread_state_id: "0"` once analyzed a kworker row
+        // while the caller asked about the app's main thread.
+        if (threadStateId !== undefined && (hasThreadSelector || requestedWindow)) {
+          const owner = await loadThreadStateOwner(traceProcessorService, traceId, threadStateId, {signal});
+          throwIfTraceProcessorQueryCancelled(signal);
+          const conflicts = owner
+            ? threadStateSelectorConflicts(owner, selectors, requestedWindow)
+            : [];
+          // With a named thread and a whole window there is a request to keep:
+          // answer it and say the row was set aside, rather than spend a model
+          // round trip on the refusal.
+          if ((conflicts.length > 0 || !owner) && namesThread && requestedWindow) {
+            selectorWarning = {
+              code: 'thread_state_id_ignored_conflict',
+              params: {threadStateId: String(threadStateId), ownerUtid: owner?.utid ?? null, conflicts: conflicts.join(',') || 'not_found'},
+            };
+            threadStateId = undefined;
+          } else if (owner && conflicts.length > 0) {
+            return refusal({
+              error: 'selector_conflict',
+              action_required: 'drop_thread_state_id_or_use_its_thread',
+              conflicts,
+              threadStateOwner: {
+                threadStateId: owner.threadStateId, utid: owner.utid, tid: owner.tid, threadName: owner.threadName,
+                upid: owner.upid, pid: owner.pid, processName: owner.processName,
+                startTs: owner.startTs, endTs: owner.endTs,
+              },
+              requestedThread,
+              ...(requestedWindow ? {requestedWindow} : {}),
+            });
+          }
+          // A row that does not exist, with nothing to fall back on, is left to
+          // the engine, which names it `thread_state_not_found`.
+        }
+
         if (threadStateId === undefined) {
           if (utid !== undefined) {
             resolvedUtid = Number(utid);
           } else {
-            const resolution = await resolveCriticalPathThread(traceProcessorService, traceId, {
-              upid, pid, processName, tid, threadName, mainThread,
-            }, {signal});
+            // utid is absent here, so the selectors name exactly what the resolver reads.
+            const resolution = await resolveCriticalPathThread(traceProcessorService, traceId, selectors, {signal});
             throwIfTraceProcessorQueryCancelled(signal);
             if (resolution.status === 'ambiguous') {
               return refusal({
@@ -3778,8 +3497,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           recursionEnabled: true,
           signal,
         };
-        const raw = await analyzeCriticalPath(traceProcessorService, traceId, analyzeOptions);
+        const engineResult = await analyzeCriticalPath(traceProcessorService, traceId, analyzeOptions);
         throwIfTraceProcessorQueryCancelled(signal);
+
+        // A thread with no scheduling data in the window is the wrong thread,
+        // not an idle one: refuse and name threads that do have data.
+        if (!engineResult.available && engineResult.unavailableReason === 'no_thread_state_in_window') {
+          const taskWindow = {
+            startTs: engineResult.task.startTs,
+            endTs: engineResult.task.startTs + engineResult.task.dur,
+          };
+          const found = await findThreadsWithSchedData(traceProcessorService, traceId, {
+            upid: engineResult.task.upid ?? identity?.upid ?? null,
+            ...taskWindow,
+          }, {signal});
+          throwIfTraceProcessorQueryCancelled(signal);
+          return refusal({
+            error: 'no_thread_state_in_window',
+            action_required: 'choose_thread_with_sched_data',
+            requestedThread: {...requestedThread, utid: engineResult.task.utid},
+            window: taskWindow,
+            processHasSchedData: found.processHasSchedData,
+            candidates: found.candidates,
+          });
+        }
+        const raw = selectorWarning
+          ? {...engineResult, warningCodes: [selectorWarning, ...engineResult.warningCodes]}
+          : engineResult;
         const analysis = renderCriticalPathAnalysis(raw, outputLanguage);
 
         // The summary row is captured first and the projection's headline
@@ -3816,6 +3560,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           traceProvenance,
           producer,
         });
+        // Every anomaly the engine raised, not the projection's bounded list;
+        // an empty table is the citable form of "none raised".
+        const anomalyColumns = [...WAIT_CHAIN_ANOMALY_COLUMNS];
+        const anomalyRows = analysis.anomalies.map(anomaly => [anomaly.id, anomaly.severity]);
+        const storedAnomalies = analysis.available ? storeToolTableArtifact(artifactStore, {
+          toolName: 'analyze_wait_chain',
+          stepId: 'wait_anomalies',
+          title: `Wait chain anomalies (${anomalyRows.length})`,
+          layer: 'overview',
+          columns: anomalyColumns,
+          rows: anomalyRows,
+          executionWitness: captureEvidenceTable({columns: anomalyColumns, rows: anomalyRows}, WAIT_CHAIN_ANOMALY_FIELDS),
+          traceProvenance,
+          producer,
+        }) : undefined;
 
         // A Running selection, a window with no waiting time and a trace
         // without sched_wakeup all answer `available: false` with an empty
@@ -3847,9 +3606,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           // actually holds, so a fetch of it is not read as the whole chain.
           ...(stored ? {artifactId: stored.artifactId, evidenceRefId: stored.evidenceRefId,
             storedSegmentRows: rows.length} : {}),
-          // The one-row table the headline numbers come from; cite its ns cells.
+          // The one-row table `summaryRow` is read from.
           ...(storedSummary ? {summaryArtifactId: storedSummary.artifactId,
             summaryEvidenceRefId: storedSummary.evidenceRefId} : {}),
+          // One row per anomaly (`id`, `severity`).
+          ...(storedAnomalies ? {anomaliesEvidenceRefId: storedAnomalies.evidenceRefId} : {}),
           sourceToolCallId: producer.sourceToolCallId,
           paramsHash: producer.paramsHash,
           planPhaseId: producer.planPhaseId,
@@ -4055,8 +3816,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       offset: z.coerce.number().int().min(0).optional().describe(
         'Row offset for pagination (detail="rows" only). Default: 0. Use with limit to select a targeted row window.'
       ),
-      limit: z.coerce.number().int().min(0).max(200).optional().describe(
-        'Maximum rows to return (detail="rows" only, 1-200). Ignored for summary/full. Default for rows: 50.'
+      limit: z.coerce.number().int().min(FETCH_ARTIFACT_ROW_LIMIT.min).max(FETCH_ARTIFACT_ROW_LIMIT.max).optional().describe(
+        `Maximum rows to return (detail="rows" only, ${FETCH_ARTIFACT_ROW_LIMIT.min}-${FETCH_ARTIFACT_ROW_LIMIT.max}). Ignored for summary/full. Default for rows: ${ArtifactStore.DEFAULT_PAGE_SIZE}.`
       ),
       purpose: z.string().optional().describe(
         'One short sentence explaining why this artifact is needed for the current plan phase. Used in the user-visible timeline.'
@@ -4074,19 +3835,24 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               ? 'complete_summary_already_available'
               : undefined;
         if (blockedReason) {
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify({
-              success: false,
-              error: 'artifact_access_policy_blocked',
-              reason: blockedReason,
-              artifactId,
-              requestedDetail: effectiveDetail,
-              hint: blockedReason === 'summary_required_before_rows'
-                ? 'Fetch detail="summary" for this artifact first.'
-                : 'Use the existing summary aggregate and report any remaining evidence boundary.',
-            }) }],
-            isError: true,
-          };
+          // A governance refusal, not a broken tool: action_required keeps it out of
+          // failure-rate monitoring. Unlike a malformed pagination below, the call is
+          // not attributed: a producer context would auto-start a pending plan phase
+          // for a read the policy itself refused.
+          const nextStep = summaryState
+            ? {
+              action_required: 'use_existing_artifact_summary',
+              hint: 'Use the existing summary aggregate and report any remaining evidence boundary.',
+            }
+            : {action_required: 'fetch_artifact', hint: 'Fetch detail="summary" for this artifact.'};
+          return createRuntimeToolResult({
+            success: false,
+            error: 'artifact_access_policy_blocked',
+            reason: blockedReason,
+            artifactId,
+            requestedDetail: effectiveDetail,
+            ...nextStep,
+          }, {isError: true});
         }
       }
       const usesPagination = effectiveDetail === 'rows';
@@ -4094,7 +3860,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         ? coerceOptionalInteger(offset, 'offset', { min: 0 })
         : {};
       const normalizedLimit = usesPagination
-        ? coerceOptionalInteger(limit, 'limit', { min: 1, max: 200 })
+        ? coerceOptionalInteger(limit, 'limit', FETCH_ARTIFACT_ROW_LIMIT)
         : {};
       const paginationErrors = [normalizedOffset.error, normalizedLimit.error].filter(Boolean);
       const producerReason = purpose || localize(
@@ -4112,6 +3878,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           content: [{ type: 'text' as const, text: JSON.stringify({
             success: false,
             error: `Invalid pagination arguments: ${paginationErrors.join('; ')}`,
+            sourceToolCallId: producer.sourceToolCallId,
+            paramsHash: producer.paramsHash,
+            planPhaseId: producer.planPhaseId,
           }) }],
           isError: true,
         };
@@ -4300,15 +4069,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         placement: 'mcp:lookup_knowledge',
       });
       if (!decision.allowed) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              success: false,
-              unsupportedReason: 'evaluation_injection_filtered',
-            }),
-          }],
-        };
+        return policyRefusal('continue_without_filtered_knowledge', {
+          unsupportedReason: 'evaluation_injection_filtered',
+        });
       }
       runManifestAttributionSink?.recordInjection(
         'knowledgeDocs',
@@ -4323,134 +4086,222 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     { annotations: { readOnlyHint: true } },
   );
 
-  // lookup_blog_knowledge (Plan 55): retrieve indexed public blog chunks or,
-  // only with an explicit request-scoped source capability, private Android
-  // Internals Wiki chunks.
-  // Read-only — calls ragStore.search() which never writes. The index
-  // is populated by the M2 admin route + ingester; until then the
-  // search returns `unsupportedReason='index empty'` so the agent
-  // never invents content.
-  const lookupBlogKnowledge = tool(
-    'lookup_blog_knowledge',
-    `Retrieve public blog, signed built-in Android Internals Pack, or authorized private Wiki background; knowledge hits are not trace evidence.${knowledgeSourceCapabilityHint} ` +
-    'On unsupportedReason, report unavailable without invention. ' +
-    retrievedContextToolBoundary,
+  // Document-collection knowledge (search_knowledge, read_knowledge_section):
+  // background the owner selected, never trace evidence. Every result is
+  // charged to the knowledge token pool, admitted and recorded as an
+  // injection, and registered for echo before it is returned; references are
+  // issued only for hits actually delivered.
+  const knowledgeBudgetRefusal = (unsupportedReason: string) =>
+    policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.budgetExhausted,
+      retrievedData({unsupportedReason, budget: sourceBudget.knowledgeSnapshot()}));
+  // A read that finds the file gone answers as the pinned-generation check does.
+  const knowledgeIndexUnavailable = () => {
+    const {payload, isError} = indexGenerationRefusal('document_collection', '');
+    return createRuntimeToolResult(payload, {isError});
+  };
+  /**
+   * The generation this run pinned for a selected collection. Authorization
+   * (rights, consent, deletion) is the fingerprint's, which revokes the run;
+   * the generation is checked here: a rebuild keeps the previous generation,
+   * so the pinned one serves while its file exists. Each call checks before
+   * reading and again before delivering.
+   */
+  const pinnedDocumentCollectionGeneration = (sourceId: string): string => {
+    const pinned = indexGenerationPins.knowledgeGeneration(sourceId);
+    if (!pinned || !documentCollectionIds.includes(sourceId)) {
+      throw new Error('analysis_context_changed_restart_required');
+    }
+    return pinned;
+  };
+  // An issued id's length, so the budget check counts the id each hit will carry.
+  const KNOWLEDGE_REFERENCE_ID_PLACEHOLDER = 'kref-00000000-0000-0000-0000-000000000000';
+
+  const searchKnowledge = tool(
+    'search_knowledge',
+    `${requireToolDescription('prompt-search-knowledge-tool-description')} ${retrievedContextToolBoundary}`,
     {
-      query: z.string().describe('Search query — natural language is fine; tokens are lowercased and matched against snippet + title.'),
-      top_k: z.number().int().min(1).max(20).optional().describe('Maximum hits returned (1-20, default 5).'),
-      source: z.enum([
-        'androidperformance.com',
-        'android_internals_pack',
-        'android_internals_wiki',
-      ]).optional()
-        .describe('Knowledge source. Use android_internals_pack for bundled, signed Android system background; omission preserves the androidperformance.com default.'),
-      knowledge_source_id: z.string().optional()
-        .describe(`Request-whitelisted source id for Android Internals Wiki.${knowledgeSourceCapabilityHint}`),
+      query: z.string().min(1).max(512).describe('Names, terms or a natural-language question; identifiers match exactly.'),
+      knowledge_base_id: z.string().optional().describe('One selected knowledge base id; omit to search every selected one.'),
+      max_results: z.number().int().min(1).max(10).optional().describe('Maximum hits (1-10, default 5).'),
     },
-    async ({ query, top_k, source, knowledge_source_id }) => {
-      if (source === 'android_internals_pack') {
-        if (!androidInternalsPackStore) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                unsupportedReason: 'android_internals_pack_unavailable',
-              }),
-            }],
-          };
-        }
-        if (isAndroidInternalsPackRevoked(androidInternalsPackStore.handle)) {
-          throw new Error('analysis_context_changed_restart_required');
-        }
-        const raw = androidInternalsPackStore.search(query, {topK: top_k ?? 5});
-        const filtered = await filterRagLookup(raw, {
-          toolName: 'lookup_blog_knowledge',
-          turn: 0,
-          ledger: codeLookupLedger,
-          sessionId: options.sessionId,
-        });
-        await codeLookupLedger?.flush();
-        if (isAndroidInternalsPackRevoked(androidInternalsPackStore.handle)) {
-          throw new Error('analysis_context_changed_restart_required');
-        }
-        const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-        return ragToolResult(evaluated, 'nested');
+    async ({query, knowledge_base_id, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const requested = normalizeOptionalToolString(knowledge_base_id);
+      if (requested && !documentCollectionIds.includes(requested)) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.unauthorizedKnowledgeBase, {
+          unsupportedReason: 'knowledge_base_not_selected',
+          authorizedKnowledgeBaseIds: documentCollectionIds,
+        }, {isError: true});
       }
-      if (source === 'android_internals_wiki') {
-        assertPrivateAnalysisContextCurrent();
-        const sourceId = normalizeOptionalToolString(knowledge_source_id) ??
-          (knowledgeSourceIds.length === 1 ? knowledgeSourceIds[0] : undefined);
-        if (!sourceId || !knowledgeSourceIds.includes(sourceId) || !knowledgeScope) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                unsupportedReason: 'private_knowledge_source_not_whitelisted',
-                authorizedKnowledgeSourceIds: knowledgeSourceIds,
-              }),
-            }],
-          };
-        }
-        const access = externalKnowledgeRegistry.evaluateAccess(
-          sourceId,
-          knowledgeScope,
-          knowledgeSourceIds,
-        );
-        if (!access.allowed || !access.source.activeGeneration) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                unsupportedReason: access.allowed
-                  ? 'private_knowledge_index_not_active'
-                  : access.reason,
-              }),
-            }],
-          };
-        }
-        const pinnedGeneration = pinnedKnowledgeSourceGenerations[sourceId];
-        if (!pinnedGeneration) {
-          throw new Error('analysis_context_changed_restart_required');
-        }
-        const raw = ragStore.search(query, {
-          topK: top_k ?? 5,
-          kinds: ['android_internals_wiki'],
-          knowledgeSourceIds: [sourceId],
-          activeSourceGenerations: {[sourceId]: pinnedGeneration},
-          scope: knowledgeScope,
-        });
-        const filtered = await filterRagLookup(raw, {
-          toolName: 'lookup_blog_knowledge',
-          turn: 0,
-          ledger: codeLookupLedger,
-          sessionId: options.sessionId,
-          externalKnowledgeRegistry,
-          knowledgeSourceIds,
-          knowledgeScope,
-        });
-        await codeLookupLedger?.flush();
-        assertPrivateAnalysisContextCurrent();
-        const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-        return ragToolResult(evaluated, 'nested');
+      const targetIds = requested ? [requested] : documentCollectionIds;
+      const targets = targetIds.map(sourceId => ({sourceId, generation: pinnedDocumentCollectionGeneration(sourceId)}));
+      indexCheckpoint('document_collection', targetIds);
+      const stop = sourceBudget.beginKnowledgeCall('search');
+      if (stop) return knowledgeBudgetRefusal(stop);
+      const limit = max_results ?? 5;
+      let perSource: Array<Array<{sourceId: string; generation: string; hit: DocumentCollectionSearchHit}>>;
+      try {
+        perSource = targets.map(({sourceId, generation}) => documentCollectionStore
+          .search(knowledgeScope!, sourceId, generation, query, limit)
+          .map(hit => ({sourceId, generation, hit})));
+      } catch (error) {
+        if (error instanceof KnowledgeIndexUnavailableError) return knowledgeIndexUnavailable();
+        throw error;
       }
-      const raw = ragStore.search(query, {
-        topK: top_k ?? 5,
-        kinds: ['androidperformance.com'],
-        scope: knowledgeScope,
-        activeCodebaseGenerations: activeCodebaseGenerations(codebaseIds),
+      // Each collection ranks its own hits; their scores are not comparable,
+      // so collections take turns.
+      const ranked: typeof perSource[number] = [];
+      for (let rank = 0; ranked.length < limit && perSource.some(hits => rank < hits.length); rank += 1) {
+        for (const hits of perSource) if (rank < hits.length && ranked.length < limit) ranked.push(hits[rank]!);
+      }
+      const items = ranked.map(({sourceId, hit}) => ({
+        knowledgeBaseId: sourceId,
+        title: hit.title,
+        headingPath: [...hit.headingPath],
+        relativePath: hit.relativePath,
+        lineRange: {start: hit.startLine, end: hit.endLine},
+        excerpt: hit.snippet,
+      }));
+      const fit = longestPrefixWithin(
+        items.map(item => JSON.stringify({id: KNOWLEDGE_REFERENCE_ID_PLACEHOLDER, ...item}).length),
+        sourceBudget.knowledgeTokens.left(), {fixedChars: 2});
+      if (items.length > 0 && fit === 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
+      // Nothing is admitted, issued or registered unless the run is still
+      // current and every pinned generation it read is still there.
+      indexCheckpoint('document_collection', targetIds);
+      const delivered: Array<{id: string} & typeof items[number]> = [];
+      for (let index = 0; index < fit; index += 1) {
+        const item = items[index]!;
+        const {sourceId, generation, hit} = ranked[index]!;
+        const injectionId = `${sourceId}/${hit.chunkId}`;
+        const contentHash = canonicalContentHash(item);
+        const decision = registerEvaluationInjection({
+          category: 'knowledgeDocs', id: injectionId, contentHash, placement: 'mcp:search_knowledge',
+        });
+        if (!decision.allowed) continue;
+        runManifestAttributionSink?.recordInjection('knowledgeDocs', injectionId, contentHash);
+        const id = knowledgeReferences.issue({
+          scopeKey: scopeKey(knowledgeScope!), sourceId, generation,
+          sectionId: hit.sectionId, chunkId: hit.chunkId, relativePath: hit.relativePath,
+          lineRange: item.lineRange, excerptComplete: hit.snippetComplete,
+        });
+        delivered.push({id, ...item});
+      }
+      registerKnowledgeTextForEcho(options.sessionId, delivered.map(item => ({
+        knowledgeBaseId: item.knowledgeBaseId, referenceId: item.id, title: item.title,
+        headingPath: item.headingPath, relativePath: item.relativePath, text: item.excerpt,
+      })));
+      sourceBudget.knowledgeTokens.spend(estimateTextTokens(JSON.stringify(delivered)));
+      return createRuntimeToolResult(retrievedData({
+        success: true,
+        hits: delivered,
+        // The knowledge budget, not the index, cut the list.
+        ...(fit < items.length ? {truncated: true, budgetExhausted: true} : {}),
+        budget: sourceBudget.knowledgeSnapshot(),
+      }));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const readKnowledgeSection = tool(
+    'read_knowledge_section',
+    `${requireToolDescription('prompt-read-knowledge-section-tool-description')} ${retrievedContextToolBoundary}`,
+    {
+      reference_id: z.string().min(1).max(64).describe('A `kref-` id returned by search_knowledge in this run.'),
+      part: z.number().int().min(1).max(1000).optional().describe('1-based part of a long section (default 1).'),
+    },
+    async ({reference_id, part}) => {
+      assertPrivateAnalysisContextCurrent();
+      const referenceId = reference_id.trim();
+      const binding = knowledgeReferences.resolve(referenceId);
+      if (!binding) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.unknownReference,
+          {unsupportedReason: 'knowledge_reference_not_issued'}, {isError: true});
+      }
+      const generation = pinnedDocumentCollectionGeneration(binding.sourceId);
+      if (binding.scopeKey !== scopeKey(knowledgeScope!) || binding.generation !== generation) {
+        throw new Error('analysis_context_changed_restart_required');
+      }
+      indexCheckpoint('document_collection', [binding.sourceId]);
+      const partNumber = part ?? 1;
+      const earlier = knowledgeReferences.deliveredPart(binding, partNumber);
+      if (earlier) {
+        return createRuntimeToolResult(retrievedData({
+          success: true,
+          alreadyDelivered: true,
+          reference: {id: referenceId, knowledgeBaseId: binding.sourceId},
+          part: partNumber,
+          partCount: earlier.partCount,
+          ...(earlier.truncated ? {truncated: true, budgetExhausted: true} : {}),
+          budget: sourceBudget.knowledgeSnapshot(),
+        }));
+      }
+      if (sourceBudget.knowledgeTokens.left() <= 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
+      const stop = sourceBudget.beginKnowledgeCall('read');
+      if (stop) return knowledgeBudgetRefusal(stop);
+      let section;
+      try {
+        section = documentCollectionStore.readSection(knowledgeScope!, binding.sourceId, generation, binding.sectionId);
+      } catch (error) {
+        if (error instanceof KnowledgeIndexUnavailableError) return knowledgeIndexUnavailable();
+        throw error;
+      }
+      if (!section) {
+        return createRuntimeToolResult({success: false, unsupportedReason: 'knowledge_section_unavailable'},
+          {isError: true});
+      }
+      const parts = splitKnowledgeSection(section.body, sourceBudget.knowledgePartChars);
+      if (partNumber > parts.length) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.partOutOfRange,
+          {unsupportedReason: 'knowledge_part_out_of_range', partCount: parts.length}, {isError: true});
+      }
+      const reference = {
+        id: referenceId,
+        knowledgeBaseId: binding.sourceId,
+        title: section.title,
+        headingPath: [...section.headingPath],
+        relativePath: section.relativePath,
+        // The whole section's source lines; lines inside a part are not
+        // derived, since converted text (HTML) has no line of its own.
+        lineRange: {start: section.startLine, end: section.endLine},
+      };
+      const fullText = parts[partNumber - 1]!;
+      // Truncate rather than refuse: deliver what the knowledge pool still holds.
+      const overheadChars = JSON.stringify({reference, part: partNumber, partCount: parts.length}).length;
+      const textChars = safeSliceEnd(fullText,
+        Math.min(fullText.length, charsWithin(sourceBudget.knowledgeTokens.left(), overheadChars)));
+      if (textChars <= 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
+      const text = fullText.slice(0, textChars);
+      const truncated = text.length < fullText.length;
+      indexCheckpoint('document_collection', [binding.sourceId]);
+      const injectionId = `${binding.sourceId}/${binding.sectionId}#${partNumber}`;
+      const contentHash = canonicalContentHash({knowledgeBaseId: binding.sourceId, sectionId: binding.sectionId,
+        part: partNumber, text});
+      const decision = registerEvaluationInjection({
+        category: 'knowledgeDocs', id: injectionId, contentHash, placement: 'mcp:read_knowledge_section',
       });
-      const filtered = await filterRagLookup(raw, {
-        toolName: 'lookup_blog_knowledge',
-        turn: 0,
-        ledger: codeLookupLedger,
-        sessionId: options.sessionId,
-      });
-      await codeLookupLedger?.flush();
-      const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-      return ragToolResult(evaluated, 'inline');
+      if (!decision.allowed) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.evaluationFiltered,
+          {unsupportedReason: 'evaluation_injection_filtered'});
+      }
+      runManifestAttributionSink?.recordInjection('knowledgeDocs', injectionId, contentHash);
+      registerKnowledgeTextForEcho(options.sessionId, [{
+        knowledgeBaseId: reference.knowledgeBaseId, referenceId, title: reference.title,
+        headingPath: reference.headingPath, relativePath: reference.relativePath, text,
+      }]);
+      knowledgeReferences.recordDelivered(referenceId, binding, partNumber, {partCount: parts.length, truncated,
+        sectionRange: reference.lineRange});
+      sourceBudget.knowledgeTokens.spend(estimateTextTokens(text) + estimateTextTokens(JSON.stringify(reference)));
+      return createRuntimeToolResult(retrievedData({
+        success: true,
+        reference,
+        part: partNumber,
+        partCount: parts.length,
+        text,
+        // A budget-cut part is final for this run: its rest is never sent.
+        ...(truncated ? {truncated: true, budgetExhausted: true} : {}),
+        budget: sourceBudget.knowledgeSnapshot(),
+      }));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4600,20 +4451,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const symbolExact = normalizeOptionalToolString(symbol);
       const pathPrefix = normalizeOptionalToolString(path_prefix);
       if (codebaseId && !codebaseIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not whitelisted for this session'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'Requested codebase is not whitelisted for this session');
       }
       const selectedAospIds = codebaseIds.filter(id =>
         codebaseRegistry.get(id, knowledgeScope)?.kind === 'aosp');
       const effectiveCodebaseIds = codebaseId ? [codebaseId] : selectedAospIds;
       if (codebaseId && !selectedAospIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not a registered AOSP source'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered AOSP source');
       }
+      indexCheckpoint('codebase', effectiveCodebaseIds);
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_aosp_source', effectiveCodebaseIds);
+      if (budgetRefusal) return budgetRefusal;
       const result = await observeSourceOperation('lookup_aosp_source', effectiveCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['aosp'],
@@ -4624,24 +4472,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(effectiveCodebaseIds),
       }));
-      if (result.results.some(hit => hit.chunk?.registryOrigin === 'codebase_registry')) {
+      // After the read, whatever came back: a rebuild during the search must not read as none.
+      indexCheckpoint('codebase', effectiveCodebaseIds);
+      // Any hit that is not public goes through the registry's filter; a
+      // codebase hit outside the selection is dropped before it.
+      if (result.results.some(hit => hit.chunk && ragChunkAudience(hit.chunk) !== 'public')) {
         const scopedResult = {
           ...result,
           results: result.results.filter(hit =>
-            hit.chunk?.registryOrigin !== 'codebase_registry' ||
+            !hit.chunk || ragChunkAudience(hit.chunk) !== 'user_codebase' ||
             (hit.chunk.codebaseId && effectiveCodebaseIds.includes(hit.chunk.codebaseId))),
         };
         const delivered = await filterIndexedSourceLookup('lookup_aosp_source', scopedResult, effectiveCodebaseIds);
         await codeLookupLedger?.flush();
-        assertPrivateAnalysisContextCurrent();
-        return ragToolResult(delivered, 'nested');
+        indexCheckpoint('codebase', effectiveCodebaseIds);
+        return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
       }
       observeSourceLookup({
         toolName: 'lookup_aosp_source',
         codebaseIds: effectiveCodebaseIds,
         success: result.unsupportedReason === undefined,
       });
-      return ragToolResult(result, 'inline');
+      return ragToolResult(result, 'inline', sourceBudget.snapshot());
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4664,20 +4516,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const codebaseId = normalizeOptionalToolString(codebase_id);
       const vendorId = normalizeOptionalToolString(vendor);
       if (codebaseId && !codebaseIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not whitelisted for this session'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'Requested codebase is not whitelisted for this session');
       }
       const selectedOemIds = codebaseIds.filter(id =>
         codebaseRegistry.get(id, knowledgeScope)?.kind === 'oem_sdk');
       const effectiveCodebaseIds = codebaseId ? [codebaseId] : selectedOemIds;
       if (codebaseId && !selectedOemIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not a registered OEM SDK source'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered OEM SDK source');
       }
+      indexCheckpoint('codebase', effectiveCodebaseIds);
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_oem_sdk', effectiveCodebaseIds);
+      if (budgetRefusal) return budgetRefusal;
       const result = await observeSourceOperation('lookup_oem_sdk', effectiveCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['oem_sdk'],
@@ -4686,24 +4535,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(effectiveCodebaseIds),
       }));
-      if (result.results.some(hit => hit.chunk?.registryOrigin === 'codebase_registry')) {
+      // After the read, whatever came back: a rebuild during the search must not read as none.
+      indexCheckpoint('codebase', effectiveCodebaseIds);
+      // Any hit that is not public goes through the registry's filter; a
+      // codebase hit outside the selection is dropped before it.
+      if (result.results.some(hit => hit.chunk && ragChunkAudience(hit.chunk) !== 'public')) {
         const scopedResult = {
           ...result,
           results: result.results.filter(hit =>
-            hit.chunk?.registryOrigin !== 'codebase_registry' ||
+            !hit.chunk || ragChunkAudience(hit.chunk) !== 'user_codebase' ||
             (hit.chunk.codebaseId && effectiveCodebaseIds.includes(hit.chunk.codebaseId))),
         };
         const delivered = await filterIndexedSourceLookup('lookup_oem_sdk', scopedResult, effectiveCodebaseIds);
         await codeLookupLedger?.flush();
-        assertPrivateAnalysisContextCurrent();
-        return ragToolResult(delivered, 'nested');
+        indexCheckpoint('codebase', effectiveCodebaseIds);
+        return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
       }
       observeSourceLookup({
         toolName: 'lookup_oem_sdk',
         codebaseIds: effectiveCodebaseIds,
         success: result.unsupportedReason === undefined,
       });
-      return ragToolResult(result, 'inline');
+      return ragToolResult(result, 'inline', sourceBudget.snapshot());
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4715,15 +4568,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     async () => {
       assertPrivateAnalysisContextCurrent();
       const allowed = new Set(codebaseIds);
-      const codebases = codebaseRegistry.list(knowledgeScope)
+      const codebases = codebaseRegistry.listRefs(knowledgeScope)
         .filter(ref => allowed.has(ref.codebaseId))
-        .map(ref => {
-          const fullRef = codebaseRegistry.get(ref.codebaseId, knowledgeScope);
+        .map(registered => {
+          const ref = summarizeCodebase(registered);
           return {
             codebaseId: ref.codebaseId,
             kind: ref.kind,
             displayName: ref.displayName,
-            rootAvailable: ref.rootAvailable,
+            rootAvailable: evaluateCodebaseRoot(registered).available,
             indexGeneration: ref.indexGeneration,
             activeGeneration: ref.activeGeneration,
             contentFingerprint: ref.contentFingerprint,
@@ -4732,7 +4585,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             commitProvenance: ref.commitProvenance,
             chunkCount: ref.chunkCount,
             eligibleForSendToProvider: ref.eligibleForSendToProvider,
-            ...(ref.rootAvailable && fullRef && fs.existsSync(path.join(fullRef.rootRealpath, '.gitnexus'))
+            ...(codebaseCapabilities.get(ref.codebaseId)?.graph
               ? {optionalGraphNavigation: {engine: 'gitnexus', indexPresent: true, verificationRequired: true}}
               : {}),
           };
@@ -4745,133 +4598,82 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     {annotations: {readOnlyHint: true}},
   );
 
-  const recordSourceUseDecisionDescription = loadSourceUseDecisionToolDescription({
-    codeAwareMode,
-    codebaseIds,
-    outputLanguage,
-  });
-  if (sourceUseDecision && !recordSourceUseDecisionDescription) {
-    throw new Error('Missing required source-use decision prompt template');
-  }
-  const recordSourceUseDecision = tool(
-    'record_source_use_decision',
-    recordSourceUseDecisionDescription ?? '',
-    {
-      status: z.enum([
-        'not_needed',
-        'disallowed',
-        'no_queryable_anchor',
-        'ambiguous_candidates',
-        'not_found_complete',
-        'search_incomplete',
-        'unverified',
-      ]),
-      reason: z.string().min(30).max(1000),
-    },
-    async ({status, reason}) => {
-      const current = sourceUseDecision;
-      if (!current) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_not_required',
-          })}],
-          isError: true,
-        };
+  // A codebase named for a capability it lacks: refused before any source is
+  // reached, so nothing is queried or charged.
+  const codebaseCapabilityRefusal = (codebaseId: string | undefined, capability: 'graph' | 'index') => {
+    const unsupportedReason = capability === 'graph' ? 'codebase_graph_unavailable' : 'codebase_index_unavailable';
+    return policyRefusal(sourceAccessRefusalAction(unsupportedReason)!,
+      {...(codebaseId ? {codebaseId} : {}), unsupportedReason}, {isError: true});
+  };
+  const codebaseHas = (codebaseId: string, capability: 'graph' | 'index'): boolean =>
+    codebaseCapabilities.get(codebaseId)?.[capability] === true;
+  /**
+   * The whitelisted codebases an index tool reads: the named one, refused when
+   * it has no active index, or every selected codebase that has one.
+   */
+  const indexedLookupScope = (codebaseId: string | undefined) => {
+    if (codebaseId) {
+      if (!codebaseIds.includes(codebaseId)) {
+        return {refusal: codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session')};
       }
-      const normalizedReason = reason.trim();
-      if (
-        normalizedReason.length < 30 ||
-        normalizedReason.length > 1000 ||
-        /[\u0000-\u001f\u007f]/.test(normalizedReason)
-      ) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_reason_invalid',
-          })}],
-          isError: true,
-        };
-      }
-      const allowedStatuses = new Set(
-        loadSourceInvestigationPolicy().default.stopStates,
-      );
-      if (!allowedStatuses.has(status)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_status_not_allowed',
-            status,
-          })}],
-          isError: true,
-        };
-      }
-      if (current.status !== 'pending' || current.attemptedTools.length > 0) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_conflict',
-            currentStatus: current.status,
-          })}],
-          isError: true,
-        };
-      }
-      explicitSourceUseDecisionReason = normalizedReason;
-      commitSourceUseDecision({
-        ...current,
-        status,
-        reasonCode: status,
-        ...(status === 'search_incomplete'
-          ? {coverageComplete: false, incompleteReasons: ['explicit_decision']}
-          : status === 'not_found_complete'
-            ? {coverageComplete: true}
-            : {}),
-      });
-      return {
-        content: [{type: 'text' as const, text: JSON.stringify({
-          success: true,
-          status,
-        })}],
-      };
-    },
-    {annotations: {readOnlyHint: false}},
-  );
-
+      return codebaseHas(codebaseId, 'index')
+        ? {allowed: [codebaseId]}
+        : {refusal: codebaseCapabilityRefusal(codebaseId, 'index')};
+    }
+    // Index tools register only when some selected codebase has an index.
+    const allowed = codebaseIds.filter(id => codebaseHas(id, 'index'));
+    return allowed.length > 0 ? {allowed} : {refusal: codebaseCapabilityRefusal(undefined, 'index')};
+  };
+  // Omission resolves only when exactly one codebase is selected, so name them instead.
+  const codebaseIdRequiredRefusal = () =>
+    policyRefusal('list_codebases', {unsupportedReason: 'whitelisted_codebase_id_required'}, {isError: true});
   const resolveOnDemandCodebaseId = (requested: unknown): string | undefined => {
     const codebaseId = normalizeOptionalToolString(requested);
     if (codebaseId) return codebaseIds.includes(codebaseId) ? codebaseId : undefined;
     return codebaseIds.length === 1 ? codebaseIds[0] : undefined;
   };
-  const onDemandSourceTokens = (result: {
-    matches?: Array<{text?: string}>;
-    reference?: {text?: string};
-  }, presentation?: {numberedText: string}): number => {
-    const text = result.matches?.map(match => match.text ?? '').join('\n') ?? result.reference?.text ?? '';
-    const deliveredText = `${text}${presentation?.numberedText ?? ''}`;
-    return deliveredText ? Math.max(1, Math.ceil(deliveredText.length / 4)) : 0;
-  };
-  const sourceReadPresentation = (reference?: {
+  /**
+   * The one copy of a returned body the model reads: line-numbered. The raw
+   * text stays internal (echo registration, accounting, provenance). Nothing
+   * for a reference without a body (metadata_only, a file above the read limit).
+   */
+  const numberedSourceText = (reference: {
     text?: string;
     lineRange?: {start: number; end: number};
-  }): {
-    schemaVersion: 'source_read_presentation@1';
-    format: 'line_numbered';
-    numberedText: string;
-  } | undefined => {
-    const lineRange = reference?.lineRange;
-    if (codeAwareMode !== 'provider_send' || typeof reference?.text !== 'string' ||
+  }): string | undefined => {
+    const lineRange = reference.lineRange;
+    if (codeAwareMode !== 'provider_send' || typeof reference.text !== 'string' ||
       !lineRange || !Number.isSafeInteger(lineRange.start) || !Number.isSafeInteger(lineRange.end) ||
       lineRange.start < 1 || lineRange.end < lineRange.start) return undefined;
     const lines = reference.text.split('\n');
     if (lines.length !== lineRange.end - lineRange.start + 1) return undefined;
-    return {
-      schemaVersion: 'source_read_presentation@1',
-      format: 'line_numbered',
-      numberedText: lines.map((line, index) => `${lineRange.start + index}: ${line}`).join('\n'),
-    };
+    return lines.map((line, index) => `${lineRange.start + index}: ${line}`).join('\n');
+  };
+  /**
+   * A returned item as the model sees it: its issued `id` is the one id to
+   * cite (the lookup's own referenceId never leaves the runtime, nor enters
+   * the reference ledger), and a body is the one numbered copy.
+   */
+  const presentSourceReference = <T extends {text?: string; referenceId?: string; lineRange?: {start: number; end: number}}>(
+    reference: T,
+  ): Omit<T, 'referenceId'> | (Omit<T, 'text' | 'referenceId'> & {numberedText: string}) => {
+    const numberedText = numberedSourceText(reference);
+    const {referenceId: _internal, ...visible} = reference;
+    if (numberedText === undefined) return visible;
+    const {referenceId: _ref, text: _raw, ...rest} = reference;
+    return {...rest, numberedText};
+  };
+  const onDemandSourceTokens = (result: {
+    matches?: Array<{text?: string; lineRange?: {start: number; end: number}}>;
+    reference?: {text?: string; lineRange?: {start: number; end: number}};
+  }): number => {
+    const deliveredText = [...(result.matches ?? []), ...(result.reference ? [result.reference] : [])]
+      .map(reference => numberedSourceText(reference) ?? reference.text ?? '')
+      .join('\n');
+    return estimateTextTokens(deliveredText);
   };
   const recordOnDemandSourceLookup = async (input: {
-    toolName: 'search_codebase' | 'read_codebase_file';
+    toolName: 'search_codebase' | 'locate_trace_anchor' | 'read_codebase_file' | 'find_codebase_files';
     codebaseId: string;
     tokensSpent: number;
     returnedReferenceCount: number;
@@ -4893,49 +4695,64 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
     await codeLookupLedger?.flush();
   };
-  let sourceBudgetStartedAt: number | undefined;
-  let sourceSearchCalls = 0;
-  let sourceReadCalls = 0;
-  const consumeSourceBudget = (
-    kind: 'search' | 'read',
-  ): 'source_search_budget_exceeded' | 'source_read_budget_exceeded' | 'source_deadline_exceeded' | undefined => {
-    if (!sourceUsePolicy) return undefined;
-    const now = Date.now();
-    sourceBudgetStartedAt ??= now;
-    if (
-      sourceUsePolicy.maxDurationMs !== undefined &&
-      now - sourceBudgetStartedAt >= sourceUsePolicy.maxDurationMs
-    ) {
-      return 'source_deadline_exceeded';
-    }
-    if (kind === 'search') {
-      if (
-        sourceUsePolicy.maxSearchCalls !== undefined &&
-        sourceSearchCalls >= sourceUsePolicy.maxSearchCalls
-      ) {
-        return 'source_search_budget_exceeded';
-      }
-      sourceSearchCalls += 1;
-      return undefined;
-    }
-    if (
-      sourceUsePolicy.maxReadCalls !== undefined &&
-      sourceReadCalls >= sourceUsePolicy.maxReadCalls
-    ) {
-      return 'source_read_budget_exceeded';
-    }
-    sourceReadCalls += 1;
-    return undefined;
+  /**
+   * What fits in the run's remaining source tokens. A search keeps its best
+   * matches (files come in rank order) and a find its first files; a read keeps
+   * its first lines and pages the rest. Undefined when nothing fits.
+   */
+  const deliveredLength = (reference: {text?: string; lineRange?: {start: number; end: number}}): number =>
+    (numberedSourceText(reference) ?? reference.text ?? '').length;
+  const fitSearchToBudget = <T extends {matches: OnDemandSourceSearchMatch[]}>(result: T): T | undefined => {
+    const keep = longestPrefixWithin(result.matches.map(deliveredLength), sourceBudget.sourceTokens.left());
+    if (keep === result.matches.length) return result;
+    if (keep === 0) return undefined;
+    const matches = result.matches.slice(0, keep);
+    return {...result, matches, moreResults: true, fileCount: new Set(matches.map(match => match.filePath)).size};
   };
+  const fitReadToBudget = (result: OnDemandSourceReadResult): OnDemandSourceReadResult | undefined => {
+    const {reference, window} = result;
+    if (!reference?.text) return result;
+    const lines = reference.text.split('\n');
+    const start = reference.lineRange.start;
+    // Numbered lines exactly as numberedSourceText delivers them.
+    const keep = longestPrefixWithin(lines.map((line, index) => `${start + index}: `.length + line.length),
+      sourceBudget.sourceTokens.left());
+    if (keep === lines.length) return result;
+    if (keep === 0) return undefined;
+    const text = lines.slice(0, keep).join('\n');
+    const end = start + keep - 1;
+    return {
+      ...result,
+      reference: {...reference, text, lineRange: {start, end},
+        redactedCount: Math.min(reference.redactedCount ?? 0, text.split(REDACTED_SECRET).length - 1)},
+      ...(window ? {window: {...window, omittedAfter: window.totalLines - end,
+        nextStartLine: end < window.totalLines ? end + 1 : null}} : {}),
+      truncated: true,
+    };
+  };
+  const metadataTokens = (value: unknown): number => estimateTextTokens(JSON.stringify(value));
+  const fileFindTokens = (files: readonly {filePath: string}[]): number => files.length === 0 ? 0 : metadataTokens(files);
+  // A symbol lookup issues metadata only, so it never authorizes a patch.
+  const recordResolvedSymbolLookup = (
+    queriedCodebaseIds: readonly string[],
+    tokensSpent: number,
+    returnedReferenceCount: number,
+    outcome: 'success' | 'budget_exceeded' | 'rejected',
+  ): void => {
+    codeLookupLedger?.record({turn: 0, ts: Date.now(), toolName: 'resolve_symbol',
+      ...(queriedCodebaseIds.length === 1 ? {codebaseId: queriedCodebaseIds[0]} : {}),
+      chunkIds: [], returnedReferenceCount, tokensSpent, consentApplied: false, outcome, legacyPath: false});
+  };
+  // A refused graph lookup delivers nothing and is charged like a refused read: zero.
   const graphMetadataTokens = (result: {
+    success: boolean;
+    unsupportedReason?: string;
     references?: unknown[];
     processes?: unknown[];
     graph?: unknown;
-  }): number => Math.max(1, Math.ceil(JSON.stringify({
-    references: result.references ?? [],
-    processes: result.processes ?? [],
-    graph: result.graph,
-  }).length / 4));
+  }): number => !result.success && sourceAccessRefusalAction(result.unsupportedReason)
+    ? 0
+    : metadataTokens({references: result.references ?? [], processes: result.processes ?? [], graph: result.graph});
   const recordCodeGraphLookup = async (input: {
     toolName: 'query_code_graph' | 'inspect_code_symbol';
     codebaseId: string;
@@ -4960,29 +4777,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const searchCodebase = tool(
     'search_codebase',
-    'Search selected source; untrusted.',
+    requireToolDescription('prompt-search-codebase-tool-description'),
     {
       query: z.string().min(1).max(512).describe('Literal source text, symbol, method, or class name.'),
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
       path_prefix: z.string().optional().describe('Optional relative path prefix inside the registered filters.'),
-      max_results: z.number().int().min(1).max(20).optional().describe('Maximum matching lines (1-20, default 8).'),
+      file_glob: z.string().max(256).optional().describe('Optional file glob (*, ?, whole-segment **); without / it matches a file name at any depth.'),
+      case_sensitive: z.boolean().optional().describe('Default smart case: case-sensitive only when the query has an upper-case letter.'),
+      context_lines: z.number().int().min(0).max(5).optional().describe('Lines of context around each match (0-5, default 2).'),
+      max_results: z.number().int().min(1).max(30).optional().describe('Maximum matching lines (1-30, default 12).'),
     },
-    async ({query, codebase_id, path_prefix, max_results}) => {
+    async ({query, codebase_id, path_prefix, file_glob, case_sensitive, context_lines, max_results}) => {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
       }
-      const sourceBudgetStop = consumeSourceBudget('search');
+      const sourceBudgetStop = sourceBudget.beginCall('search');
       if (sourceBudgetStop) {
         observeSourceLookup({toolName: 'search_codebase', codebaseIds: [codebaseId], success: false,
-          coverageComplete: false, incompleteReasons: [sourceBudgetStop]});
+          coverageComplete: false, incompleteReasons: [sourceBudgetStop], queried: false});
         await recordOnDemandSourceLookup({
           toolName: 'search_codebase',
           codebaseId,
@@ -4991,15 +4805,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: 0,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            matches: [],
-            truncated: false,
-            unsupportedReason: sourceBudgetStop,
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          matches: [],
+          truncated: false,
+          unsupportedReason: sourceBudgetStop,
+        });
       }
       const sourceLookupStartedAt = Date.now();
       const result = await onDemandSourceAccess.search({
@@ -5008,15 +4819,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         query,
         mode: codeAwareMode,
         pathPrefix: normalizeOptionalToolString(path_prefix),
+        fileGlob: normalizeOptionalToolString(file_glob),
+        caseSensitive: case_sensitive,
+        contextLines: context_lines,
         maxResults: max_results,
       }).catch(async error => {
         observeSourceLookup({toolName: 'search_codebase', codebaseIds: [codebaseId], success: false});
         await recordOnDemandSourceLookup({toolName: 'search_codebase', codebaseId, tokensSpent: 0,
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
-        throw error;
+        throw sourceToolError(error);
       });
-      const tokensSpent = onDemandSourceTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      const fitted = fitSearchToBudget(result);
+      if (!fitted) {
         observeOnDemandSourceLookup('search_codebase', {
           ...result,
           success: false,
@@ -5032,40 +4846,123 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: Date.now() - sourceLookupStartedAt,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            matches: [],
-            truncated: false,
-            backend: result.backend,
-            coverageComplete: result.coverageComplete,
-            ...(result.searchIncompleteReason
-              ? {searchIncompleteReason: result.searchIncompleteReason}
-              : {}),
-            enumerationBackend: result.enumerationBackend,
-            backendFidelity: result.backendFidelity,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          matches: [],
+          truncated: false,
+          backend: result.backend,
+          coverageComplete: result.coverageComplete,
+          ...(result.searchIncompleteReason
+            ? {searchIncompleteReason: result.searchIncompleteReason}
+            : {}),
+          enumerationBackend: result.enumerationBackend,
+          backendFidelity: result.backendFidelity,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
-      const delivered = observeOnDemandSourceLookup('search_codebase', result);
+      const delivered = observeOnDemandSourceLookup('search_codebase', fitted);
       if (delivered.success && codeAwareMode === 'provider_send') {
         registerOnDemandSourceLookupForEcho(options.sessionId, delivered.matches ?? []);
       }
+      sourceBudget.sourceTokens.spend(onDemandSourceTokens(delivered));
       await recordOnDemandSourceLookup({
         toolName: 'search_codebase',
         codebaseId,
         tokensSpent: onDemandSourceTokens(delivered),
         returnedReferenceCount: delivered.success ? delivered.matches?.length ?? 0 : 0,
-        outcome: delivered.success
-          ? 'success'
-          : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+        outcome: delivered.success ? 'success' : sourceLookupOutcome(result),
         durationMs: Date.now() - sourceLookupStartedAt,
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+          ...delivered,
+          matches: (delivered.matches ?? []).map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences,
+          budget: sourceBudget.snapshot(),
+        }))}],
+      };
+    },
+    {annotations: {readOnlyHint: true}},
+  );
+
+  // A locate stops starting internal searches after this; each search keeps its own time bound.
+  const LOCATE_DEADLINE_MS = 15_000;
+  const locateTraceAnchorTool = tool(
+    'locate_trace_anchor',
+    requireToolDescription('prompt-locate-trace-anchor-tool-description'),
+    {
+      anchor: z.string().min(1).max(512).describe('The name exactly as the trace shows it.'),
+      anchor_kind: z.enum(TRACE_ANCHOR_KINDS).describe('What the anchor is in the trace: slice, marker, thread or native_frame.'),
+      process_name: z.string().max(256).optional().describe('The traced process (package) the anchor came from; ranks its own modules first.'),
+      codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
+      max_results: z.number().int().min(1).max(10).optional().describe('Maximum candidates (1-10, default 5).'),
+    },
+    async ({anchor, anchor_kind, process_name, codebase_id, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const codebaseId = resolveOnDemandCodebaseId(codebase_id);
+      if (!codebaseId) {
+        return codebaseIdRequiredRefusal();
+      }
+      const policy = loadSourceAnchorNormalization();
+      const plan = planTraceAnchorSearch({anchor, kind: anchor_kind}, policy);
+      if (plan.queries.length === 0) {
+        // A framework slice with no app override to look for: nothing is searched or spent.
+        return {content: [{type: 'text' as const, text: JSON.stringify(retrievedData({success: true, codebaseId,
+          matches: [], searchesRun: 0, normalizations: plan.normalizations, framework: plan.framework,
+          truncated: false, sourceReferences: [], budget: sourceBudget.snapshot()}))}]};
+      }
+      const locateBudgetStop = sourceBudget.beginCall('locate');
+      if (locateBudgetStop) {
+        observeSourceLookup({toolName: 'locate_trace_anchor', codebaseIds: [codebaseId], success: false,
+          coverageComplete: false, incompleteReasons: [locateBudgetStop], queried: false});
+        await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: 0});
+        return sourceBudgetRefusal({codebaseId, matches: [], truncated: false, unsupportedReason: locateBudgetStop});
+      }
+      const startedAt = Date.now();
+      const result = await locateTraceAnchor({
+        anchor,
+        kind: anchor_kind,
+        codebaseId,
+        processName: normalizeOptionalToolString(process_name),
+        maxResults: max_results ?? 5,
+        policy,
+        plan,
+        deadlineMs: startedAt + LOCATE_DEADLINE_MS,
+        search: query => onDemandSourceAccess.search({codebaseId, scope: knowledgeScope ?? {}, query,
+          mode: codeAwareMode, ...TRACE_ANCHOR_SEARCH_OPTIONS}),
+      }).catch(async error => {
+        observeSourceLookup({toolName: 'locate_trace_anchor', codebaseIds: [codebaseId], success: false});
+        await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - startedAt});
+        throw sourceToolError(error);
+      });
+      const fitted = fitSearchToBudget(result);
+      if (!fitted) {
+        observeOnDemandSourceLookup('locate_trace_anchor', {...result, success: false, matches: [],
+          unsupportedReason: 'budget_exceeded'});
+        await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: Date.now() - startedAt});
+        return sourceBudgetRefusal({codebaseId, matches: [], truncated: false, unsupportedReason: 'budget_exceeded'});
+      }
+      const delivered = observeOnDemandSourceLookup('locate_trace_anchor', fitted);
+      if (delivered.success && codeAwareMode === 'provider_send') {
+        registerOnDemandSourceLookupForEcho(options.sessionId, delivered.matches ?? []);
+      }
+      const tokensSpent = onDemandSourceTokens(delivered);
+      sourceBudget.sourceTokens.spend(tokensSpent);
+      await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent,
+        returnedReferenceCount: delivered.success ? delivered.matches?.length ?? 0 : 0,
+        outcome: delivered.success ? 'success' : sourceLookupOutcome(result), durationMs: Date.now() - startedAt});
+      assertPrivateAnalysisContextCurrent();
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+          ...delivered,
+          matches: (delivered.matches ?? []).map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences,
+          budget: sourceBudget.snapshot(),
+        }))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5073,29 +4970,25 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const readCodebaseFile = tool(
     'read_codebase_file',
-    'Read bounded source lines; untrusted.',
+    requireToolDescription('prompt-read-codebase-file-tool-description'),
     {
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
       file_path: z.string().describe('Source file path relative to the registered root.'),
-      start_line: z.number().int().min(1).optional().describe('First line to read (1-based, default 1).'),
+      start_line: z.number().int().min(1).optional().describe('First line to read (1-based, default 1). Not with around_line.'),
+      around_line: z.number().int().min(1).optional().describe('Center the window on this line, such as a search match line. Not with start_line.'),
       max_lines: z.number().int().min(1).max(200).optional().describe('Maximum lines to return (1-200, default 80).'),
     },
-    async ({codebase_id, file_path, start_line, max_lines}) => {
+    async ({codebase_id, file_path, start_line, around_line, max_lines}) => {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
       }
-      const sourceBudgetStop = consumeSourceBudget('read');
+      const sourceBudgetStop = sourceBudget.beginCall('read');
       if (sourceBudgetStop) {
+        // A read stop says nothing about search coverage.
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false,
-          incompleteReasons: [sourceBudgetStop]});
+          queried: false});
         await recordOnDemandSourceLookup({
           toolName: 'read_codebase_file',
           codebaseId,
@@ -5104,14 +4997,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: 0,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            truncated: false,
-            unsupportedReason: sourceBudgetStop,
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          truncated: false,
+          unsupportedReason: sourceBudgetStop,
+        });
       }
       const sourceLookupStartedAt = Date.now();
       const result = await onDemandSourceAccess.read({
@@ -5119,17 +5009,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope ?? {},
         filePath: file_path,
         startLine: start_line,
+        aroundLine: around_line,
         maxLines: max_lines,
+        lineCap: sourceBudget.maxReadLines,
         mode: codeAwareMode,
       }).catch(async error => {
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false});
         await recordOnDemandSourceLookup({toolName: 'read_codebase_file', codebaseId, tokensSpent: 0,
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
-        throw error;
+        throw sourceToolError(error);
       });
-      const requestedPresentation = sourceReadPresentation(result.reference);
-      const tokensSpent = onDemandSourceTokens(result, requestedPresentation);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      const fitted = fitReadToBudget(result);
+      if (!fitted) {
         observeOnDemandSourceLookup('read_codebase_file', {
           ...result,
           success: false,
@@ -5144,37 +5035,108 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: Date.now() - sourceLookupStartedAt,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            truncated: false,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          truncated: false,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
-      const delivered = observeOnDemandSourceLookup('read_codebase_file', result);
-      const presentation = delivered.success
-        ? sourceReadPresentation(delivered.reference)
-        : undefined;
+      const delivered = observeOnDemandSourceLookup('read_codebase_file', fitted);
+      sourceBudget.sourceTokens.spend(onDemandSourceTokens(delivered));
       if (delivered.success && codeAwareMode === 'provider_send' && delivered.reference) {
         registerOnDemandSourceLookupForEcho(options.sessionId, [delivered.reference]);
       }
       await recordOnDemandSourceLookup({
         toolName: 'read_codebase_file',
         codebaseId,
-        tokensSpent: onDemandSourceTokens(delivered, presentation),
+        tokensSpent: onDemandSourceTokens(delivered),
         returnedReferenceCount: delivered.success && delivered.reference ? 1 : 0,
-        outcome: delivered.success
-          ? 'success'
-          : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+        outcome: delivered.success ? 'success' : sourceLookupOutcome(result),
         durationMs: Date.now() - sourceLookupStartedAt,
       });
       assertPrivateAnalysisContextCurrent();
       return {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...delivered,
-          ...(presentation ? {presentation} : {}),
+          ...(delivered.reference ? {reference: presentSourceReference(delivered.reference)} : {}),
+          sourceReferences: delivered.sourceReferences,
+          budget: sourceBudget.snapshot(),
+        }))}],
+      };
+    },
+    {annotations: {readOnlyHint: true}},
+  );
+
+  const findCodebaseFiles = tool(
+    'find_codebase_files',
+    requireToolDescription('prompt-find-codebase-files-tool-description'),
+    {
+      pattern: z.string().min(1).max(256).describe('File name substring, path substring (with /), or glob (*, ?, whole-segment **).'),
+      codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
+      path_prefix: z.string().optional().describe('Optional relative path prefix inside the registered filters.'),
+      max_results: z.number().int().min(1).max(50).optional().describe('Maximum files (1-50, default 20).'),
+    },
+    async ({pattern, codebase_id, path_prefix, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const codebaseId = resolveOnDemandCodebaseId(codebase_id);
+      if (!codebaseId) {
+        return codebaseIdRequiredRefusal();
+      }
+      const sourceBudgetStop = sourceBudget.beginCall('search');
+      if (sourceBudgetStop) {
+        observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false,
+          queried: false});
+        await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: 0});
+        return sourceBudgetRefusal({codebaseId, files: [], truncated: false, unsupportedReason: sourceBudgetStop});
+      }
+      const sourceLookupStartedAt = Date.now();
+      const result = await onDemandSourceAccess.find({
+        codebaseId,
+        scope: knowledgeScope ?? {},
+        pattern,
+        mode: codeAwareMode,
+        pathPrefix: normalizeOptionalToolString(path_prefix),
+        maxResults: max_results,
+      }).catch(async error => {
+        observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false});
+        await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
+        throw sourceToolError(error);
+      });
+      // A refusal or failure delivers nothing and is charged nothing; past the
+      // budget only the first (best-ranked) files are delivered.
+      const files = result.files.slice(0, longestPrefixWithin(result.files.map(file => JSON.stringify(file).length),
+        sourceBudget.sourceTokens.left(), {fixedChars: 2}));
+      const tokensSpent = fileFindTokens(files);
+      if (result.files.length > 0 && files.length === 0) {
+        observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false});
+        await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: Date.now() - sourceLookupStartedAt});
+        return sourceBudgetRefusal({codebaseId, files: [], truncated: false, unsupportedReason: 'budget_exceeded'});
+      }
+      const refusalAction = result.success ? undefined : sourceAccessRefusalAction(result.unsupportedReason);
+      // Paths locate files; they are not source evidence, so a find issues no
+      // references and states no search coverage for the source-use decision.
+      observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: result.success,
+        queried: !refusalAction});
+      await recordOnDemandSourceLookup({
+        toolName: 'find_codebase_files',
+        codebaseId,
+        tokensSpent,
+        returnedReferenceCount: 0,
+        outcome: sourceLookupOutcome(result),
+        durationMs: Date.now() - sourceLookupStartedAt,
+      });
+      sourceBudget.sourceTokens.spend(tokensSpent);
+      assertPrivateAnalysisContextCurrent();
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+          ...result,
+          files,
+          ...(files.length < result.files.length ? {moreResults: true} : {}),
+          ...(refusalAction ? {action_required: refusalAction} : {}),
+          budget: sourceBudget.snapshot(),
         }))}],
       };
     },
@@ -5193,22 +5155,25 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
+      }
+      if (!codebaseHas(codebaseId, 'graph')) return codebaseCapabilityRefusal(codebaseId, 'graph');
+      const graphBudgetStop = sourceBudget.beginCall('search');
+      if (graphBudgetStop) {
+        observeSourceLookup({toolName: 'query_code_graph', codebaseIds: [codebaseId], success: false, queried: false});
+        await recordCodeGraphLookup({toolName: 'query_code_graph', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded'});
+        return sourceBudgetRefusal({codebaseId, references: [], processes: [], truncated: false,
+          unsupportedReason: graphBudgetStop});
       }
       const result = await observeSourceOperation('query_code_graph', [codebaseId], () => codeGraphNavigator.query({
         codebaseId,
         scope: knowledgeScope ?? {},
         query,
         limit: max_results,
-      }));
+      }), {queriedOnDispatch: false});
       const tokensSpent = graphMetadataTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      if (tokensSpent > sourceBudget.sourceTokens.left()) {
         observeGraphSourceLookup('query_code_graph', {
           ...result,
           success: false,
@@ -5223,29 +5188,31 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            references: [],
-            processes: [],
-            graph: result.graph,
-            truncated: false,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          references: [],
+          processes: [],
+          graph: result.graph,
+          truncated: false,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
       const delivered = observeGraphSourceLookup('query_code_graph', result);
+      // The check above used the whole result; admission may drop references.
+      const deliveredTokens = graphMetadataTokens(delivered);
+      sourceBudget.sourceTokens.spend(deliveredTokens);
       await recordCodeGraphLookup({
         toolName: 'query_code_graph',
         codebaseId,
-        tokensSpent,
+        tokensSpent: deliveredTokens,
         returnedReferenceCount: delivered.references.length,
         outcome: result.success ? 'success' : 'rejected',
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered,
+          references: delivered.references.map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences, budget: sourceBudget.snapshot()}))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5264,13 +5231,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
+      }
+      if (!codebaseHas(codebaseId, 'graph')) return codebaseCapabilityRefusal(codebaseId, 'graph');
+      const graphBudgetStop = sourceBudget.beginCall('search');
+      if (graphBudgetStop) {
+        observeSourceLookup({toolName: 'inspect_code_symbol', codebaseIds: [codebaseId], success: false, queried: false});
+        await recordCodeGraphLookup({toolName: 'inspect_code_symbol', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded'});
+        return sourceBudgetRefusal({codebaseId, references: [], processes: [], truncated: false,
+          unsupportedReason: graphBudgetStop});
       }
       const result = await observeSourceOperation('inspect_code_symbol', [codebaseId], () => codeGraphNavigator.inspectSymbol({
         codebaseId,
@@ -5278,9 +5248,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         symbol,
         filePath: normalizeOptionalToolString(file_path),
         limit: max_relations,
-      }));
+      }), {queriedOnDispatch: false});
       const tokensSpent = graphMetadataTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      if (tokensSpent > sourceBudget.sourceTokens.left()) {
         observeGraphSourceLookup('inspect_code_symbol', {
           ...result,
           success: false,
@@ -5295,29 +5265,31 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            references: [],
-            processes: [],
-            graph: result.graph,
-            truncated: false,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          references: [],
+          processes: [],
+          graph: result.graph,
+          truncated: false,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
       const delivered = observeGraphSourceLookup('inspect_code_symbol', result);
+      // The check above used the whole result; admission may drop references.
+      const deliveredTokens = graphMetadataTokens(delivered);
+      sourceBudget.sourceTokens.spend(deliveredTokens);
       await recordCodeGraphLookup({
         toolName: 'inspect_code_symbol',
         codebaseId,
-        tokensSpent,
+        tokensSpent: deliveredTokens,
         returnedReferenceCount: delivered.references.length,
         outcome: result.success ? 'success' : 'rejected',
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered,
+          references: delivered.references.map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences, budget: sourceBudget.snapshot()}))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5341,17 +5313,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const symbolExact = normalizeOptionalToolString(symbol);
       const filePath = normalizeOptionalToolString(file_path);
       const pathPrefix = normalizeOptionalToolString(path_prefix);
-      const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
-      const allowed = requestedIds.filter(id => codebaseIds.includes(id));
-      if (allowed.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({success: false, error: 'No requested codebase is whitelisted for this session'}),
-          }],
-          isError: true,
-        };
-      }
+      const lookupScope = indexedLookupScope(codebaseId);
+      if (lookupScope.refusal) return lookupScope.refusal;
+      const allowed = lookupScope.allowed;
+      indexCheckpoint('codebase', allowed);
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_app_source', allowed);
+      if (budgetRefusal) return budgetRefusal;
       const raw = await observeSourceOperation('lookup_app_source', allowed, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['app_source'],
@@ -5362,10 +5329,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(allowed),
       }));
+      indexCheckpoint('codebase', allowed);
       const delivered = await filterIndexedSourceLookup('lookup_app_source', raw, allowed);
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
-      return ragToolResult(delivered, 'nested');
+      indexCheckpoint('codebase', allowed);
+      return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
     },
     {annotations: {readOnlyHint: true}},
   );
@@ -5387,45 +5355,37 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const vendorId = normalizeOptionalToolString(vendor);
       const symbolExact = normalizeOptionalToolString(symbol);
       const pathPrefix = normalizeOptionalToolString(path_prefix);
-      const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
-      const allowed = requestedIds.filter(id => codebaseIds.includes(id));
-      if (allowed.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({success: false, error: 'No requested codebase is whitelisted for this session'}),
-          }],
-          isError: true,
-        };
-      }
-      const kernelRefs = allowed
+      const lookupScope = indexedLookupScope(codebaseId);
+      if (lookupScope.refusal) return lookupScope.refusal;
+      const kernelRefs = lookupScope.allowed
         .map(id => codebaseRegistry.get(id, knowledgeScope))
         .filter(ref => ref?.kind === 'kernel_source');
       const vendors = new Set(kernelRefs.map(ref => ref!.vendor).filter(Boolean));
       if (!codebaseId && !vendorId && vendors.size > 1) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'vendor_required_for_multi_vendor_kernel_lookup',
-            vendors: Array.from(vendors).sort(),
-          })}],
-          isError: true,
-        };
+        return policyRefusal('retry_with_vendor_or_codebase_id', {
+          unsupportedReason: 'vendor_required_for_multi_vendor_kernel_lookup',
+          vendors: Array.from(vendors).sort(),
+        }, {isError: true});
       }
-      const raw = await observeSourceOperation('lookup_kernel_source', kernelRefs.map(ref => ref!.codebaseId), () => ragStore.search(query, {
+      const kernelCodebaseIds = kernelRefs.map(ref => ref!.codebaseId);
+      indexCheckpoint('codebase', kernelCodebaseIds);
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_kernel_source', kernelCodebaseIds);
+      if (budgetRefusal) return budgetRefusal;
+      const raw = await observeSourceOperation('lookup_kernel_source', kernelCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['kernel_source'],
-        codebaseIds: kernelRefs.map(ref => ref!.codebaseId),
+        codebaseIds: kernelCodebaseIds,
         ...(vendorId ? {vendor: vendorId} : {}),
         ...(symbolExact ? {symbolExact} : {}),
         ...(pathPrefix ? {pathPrefix} : {}),
         scope: knowledgeScope,
-        activeCodebaseGenerations: activeCodebaseGenerations(kernelRefs.map(ref => ref!.codebaseId)),
+        activeCodebaseGenerations: activeCodebaseGenerations(kernelCodebaseIds),
       }));
-      const delivered = await filterIndexedSourceLookup('lookup_kernel_source', raw, kernelRefs.map(ref => ref!.codebaseId));
+      indexCheckpoint('codebase', kernelCodebaseIds);
+      const delivered = await filterIndexedSourceLookup('lookup_kernel_source', raw, kernelCodebaseIds);
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
-      return ragToolResult(delivered, 'nested');
+      indexCheckpoint('codebase', kernelCodebaseIds);
+      return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
     },
     {annotations: {readOnlyHint: true}},
   );
@@ -5450,18 +5410,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const filePath = normalizeOptionalToolString(file_path);
       const buildId = normalizeOptionalToolString(build_id);
       const vendorId = normalizeOptionalToolString(vendor);
-      const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
-      const allowed = requestedIds.filter(id => codebaseIds.includes(id));
-      if (allowed.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({success: false, error: 'No requested codebase is whitelisted for this session'}),
-          }],
-          isError: true,
-        };
-      }
-      const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry);
+      const lookupScope = indexedLookupScope(codebaseId);
+      if (lookupScope.refusal) return lookupScope.refusal;
+      const allowed = lookupScope.allowed;
+      indexCheckpoint('codebase', allowed);
+      const budgetRefusal = await indexedSearchBudgetRefusal('resolve_symbol', allowed);
+      if (budgetRefusal) return budgetRefusal;
+      // Resolves against the generations this run pinned, never a newer one.
+      const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry,
+        indexGenerationPins.codebaseGenerations(allowed));
       const results = await observeSourceOperation('resolve_symbol', allowed, () => allowed.map(id => {
         const ref = codebaseRegistry.get(id, knowledgeScope);
         if (kind === 'kernel' || ref?.kind === 'kernel_source') {
@@ -5489,11 +5446,22 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           topK: top_k ?? 5,
         });
       }));
+      indexCheckpoint('codebase', allowed);
+      // Checked before any reference is issued; charged for what is delivered.
+      if (metadataTokens(results) > sourceBudget.sourceTokens.left()) {
+        observeSourceLookup({toolName: 'resolve_symbol', codebaseIds: allowed, success: false});
+        recordResolvedSymbolLookup(allowed, 0, 0, 'budget_exceeded');
+        await codeLookupLedger?.flush();
+        return sourceBudgetRefusal({success: false, results: [], unsupportedReason: 'budget_exceeded'});
+      }
       const admitted = admitSourceItems(results.flatMap(result => result.candidates),
-        candidate => ({...candidate, lookupKind: 'metadata'}));
-      const admittedCandidates = new Set(admitted.items);
+        candidate => ({...candidate, referenceId: undefined, lookupKind: 'metadata'}));
+      const issuedIds = new Map(admitted.items.map((candidate, index) => [candidate, admitted.ids[index]!]));
       const delivered = results.map(result => ({...result,
-        candidates: result.candidates.filter(candidate => admittedCandidates.has(candidate)),
+        candidates: result.candidates.flatMap(candidate => {
+          const id = issuedIds.get(candidate);
+          return id ? [presentSourceReference({...candidate, id})] : [];
+        }),
       }));
       observeSourceLookup({
         toolName: 'resolve_symbol',
@@ -5502,13 +5470,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         success: results.some(result => result.success),
         ...(admitted.incompleteReason ? {coverageComplete: false, incompleteReasons: [admitted.incompleteReason]} : {}),
       });
-      assertPrivateAnalysisContextCurrent();
+      const tokensSpent = metadataTokens(delivered);
+      sourceBudget.sourceTokens.spend(tokensSpent);
+      recordResolvedSymbolLookup(allowed, tokensSpent, admitted.references.length,
+        results.some(result => result.success) ? 'success' : 'rejected');
+      await codeLookupLedger?.flush();
+      indexCheckpoint('codebase', allowed);
       return {
         content: [{type: 'text' as const, text: JSON.stringify({
           success: results.some(result => result.success),
           results: delivered,
           sourceReferences: admitted.references,
           ...(admitted.incompleteReason ? {coverageComplete: false, searchIncompleteReason: admitted.incompleteReason} : {}),
+          budget: sourceBudget.snapshot(),
         })}],
       };
     },
@@ -5526,6 +5500,38 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async ({context_chunk_ids, problem, proposed_diff, patch_sketch}) => {
       assertPrivateAnalysisContextCurrent();
+      // First, from each chunk's owner metadata, before the patch path reads
+      // any chunk body, the ledger or the proposer: every codebase the offered
+      // context names must be in this run's selection and have its index,
+      // whatever the ledger says. (The store itself may load its file or judge
+      // retirement as every read does; nothing it holds reaches a result.) The refusal names no unselected
+      // codebase. A chunk a rebuild has collected has no owner to judge here;
+      // the proposer then refuses it as missing context (`missing_context_chunk`).
+      const offeredCodebaseIds = [...new Set(context_chunk_ids.flatMap(chunkId => {
+        const codebaseId = ragStore.getChunkOwner(chunkId, knowledgeScope)?.codebaseId;
+        return codebaseId ? [codebaseId] : [];
+      }))];
+      if (offeredCodebaseIds.some(codebaseId => !codebaseIds.includes(codebaseId))) {
+        return policyRefusal(PATCH_REFUSAL_ACTIONS.get('patch_target_not_selected')!,
+          {unsupportedReason: 'patch_target_not_selected'}, {isError: true});
+      }
+      const unindexed = offeredCodebaseIds.find(codebaseId => !codebaseHas(codebaseId, 'index'));
+      if (unindexed) return codebaseCapabilityRefusal(unindexed, 'index');
+      // Only now the ledger: the codebases and generations the context was looked up from, as the
+      // lookup ledger recorded them: a rebuild may already have collected the
+      // chunks, so they cannot name their own codebase. A patch is checked
+      // against the generation this run pinned for each, before and after
+      // proposing; context from another generation is not this run's.
+      const lookedUp = context_chunk_ids.flatMap(chunkId => {
+        const entry = codeLookupLedger?.priorLookupOf(chunkId);
+        return entry?.codebaseId && codebaseIds.includes(entry.codebaseId)
+          ? [{codebaseId: entry.codebaseId, generation: entry.sourceGeneration}] : [];
+      });
+      const targetCodebaseIds = [...new Set(lookedUp.map(target => target.codebaseId))];
+      const foreign = lookedUp.find(target => target.generation !== undefined &&
+        target.generation !== indexGenerationPins.codebaseGenerations([target.codebaseId])[target.codebaseId]);
+      if (foreign) throw new IndexGenerationRefused(indexGenerationRefusal('codebase', foreign.codebaseId));
+      indexCheckpoint('codebase', targetCodebaseIds);
       const proposer = new PatchProposer(
         ragStore,
         codebaseRegistry,
@@ -5540,11 +5546,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         turn: 0,
       });
       await codeLookupLedger?.flush();
-      assertPrivateAnalysisContextCurrent();
-      return {
-        content: [{type: 'text' as const, text: JSON.stringify({success: result.patchStatus !== 'unverified', result})}],
-        ...(result.patchStatus === 'unverified' ? {isError: true} : {}),
-      };
+      indexCheckpoint('codebase', targetCodebaseIds);
+      if (result.patchStatus !== 'unverified') {
+        return createRuntimeToolResult({success: true, result});
+      }
+      const refusalAction = PATCH_REFUSAL_ACTIONS.get(result.unsupportedReason ?? '');
+      return refusalAction
+        ? policyRefusal(refusalAction, {result}, {isError: true})
+        : createRuntimeToolResult({success: false, result}, {isError: true});
     },
     {annotations: {readOnlyHint: false}},
   );
@@ -5599,11 +5608,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Read-only over the case library. Returns up to top_k cases ranked by tag-overlap score; published cases rank above reviewed when scores tie. ' +
     'When the result is empty the agent must NOT fabricate prior cases — say "no matching prior case in the library" explicitly.',
     {
-      tags: z.array(z.string()).optional().describe('Tag tokens to score against. Without tags, results rank by published > reviewed > others.'),
+      tags: z.array(z.string()).optional().describe('Tag tokens to score against. Without tags, published cases rank above reviewed ones.'),
       app_id: z.string().optional().describe('Restrict to cases whose key.appId matches.'),
       device_id: z.string().optional().describe('Restrict to cases whose key.deviceId matches.'),
       cuj: z.string().optional().describe('Restrict to cases whose key.cuj matches.'),
-      include_unpublished: z.boolean().optional().describe('Include reviewed/draft cases (default false — only published surface to the agent).'),
+      include_unpublished: z.boolean().optional().describe('Also include reviewed cases (default false: published only). Draft and private cases are never returned.'),
       top_k: z.number().int().min(1).max(20).optional().describe('Maximum cases returned (1-20, default 5).'),
       scene: z.string().optional().describe('Optional scene for evidence-gated case retrieval (for example scrolling).'),
       domain_pack: z.string().optional().describe('Optional case domain pack for evidence-gated retrieval (default scrolling.v1 for scrolling).'),
@@ -5612,7 +5621,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async ({ tags, app_id, device_id, cuj, include_unpublished, top_k, scene, domain_pack, root_cause, evidence_signatures }) => {
       const library = options.caseLibrary ?? getCaseLibrary();
-      const wantedTags = tags ? new Set(tags) : null;
       const limit = top_k ?? 5;
 
       if (evidence_signatures && typeof evidence_signatures === 'object') {
@@ -5627,11 +5635,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           scene: effectiveScene,
           domainPack: domain_pack || (effectiveScene === 'scrolling' ? 'scrolling.v1' : effectiveScene),
           rootCause: effectiveRootCause,
+          architectureType: options.cachedArchitecture?.type,
           audiences: ['app', 'oem'],
           evidenceSignatures: evidence_signatures as Record<string, unknown>,
           textQuery: [effectiveRootCause, ...(tags ?? [])].join(' '),
           topK: limit,
-          includeStatuses: include_unpublished ? ['published', 'reviewed'] : ['published'],
+          includeStatuses: include_unpublished ? CURATED_CASE_STATUSES : ['published'],
         });
         return {
           content: [{
@@ -5641,51 +5650,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
-      // Pull either published-only or published+reviewed depending on the
-      // include_unpublished flag. Drafts and private cases never surface
-      // through this tool — those are operator-side concerns.
-      const allCases = include_unpublished
-        ? [
-            ...library.listCases({status: 'published'}, knowledgeScope),
-            ...library.listCases({status: 'reviewed'}, knowledgeScope),
-          ]
-        : library.listCases({status: 'published'}, knowledgeScope);
-
-      const candidates: Array<{caseScore: number; case: typeof allCases[number]}> = [];
-      for (const c of allCases) {
-        if (app_id && c.key?.appId !== app_id) continue;
-        if (device_id && c.key?.deviceId !== device_id) continue;
-        if (cuj && c.key?.cuj !== cuj) continue;
-        let score = 0;
-        if (wantedTags) {
-          for (const t of c.tags) if (wantedTags.has(t)) score += 1;
-          if (score === 0) continue;
-          score = score / Math.max(wantedTags.size, 1);
-        } else {
-          // Without tags, prefer published over reviewed; both above 0.
-          score = c.status === 'published' ? 1 : 0.5;
-        }
-        candidates.push({caseScore: score, case: c});
-      }
-
-      candidates.sort((a, b) => {
-        if (a.caseScore !== b.caseScore) return b.caseScore - a.caseScore;
-        // Tie-break: published before reviewed before others.
-        const rank = (s: string): number =>
-          s === 'published' ? 0 : s === 'reviewed' ? 1 : 2;
-        return rank(a.case.status) - rank(b.case.status);
-      });
-
-      const hits = candidates.slice(0, limit).map(c => ({
-        caseId: c.case.caseId,
-        score: c.caseScore,
-        title: c.case.title,
-        status: c.case.status,
-        tags: c.case.tags,
-        findings: c.case.findings,
-        traceArtifactId: c.case.traceArtifactId,
-        traceUnavailableReason: c.case.traceUnavailableReason,
-      }));
+      const hits = recallCasesByTags(library, {
+        tags,
+        appId: app_id,
+        deviceId: device_id,
+        cuj,
+        includeReviewed: include_unpublished,
+        topK: limit,
+        architectureType: options.cachedArchitecture?.type,
+      }, knowledgeScope);
 
       return {
         content: [{
@@ -5750,6 +5723,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           snapshotId,
           includeCases: include_cases ?? false,
           limit: top_k,
+          excludeRestricted: !privateAnalysisContext,
         });
         if (!result) {
           return {
@@ -5912,16 +5886,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // analysisPlanRef is declared above (P0-G10) and shared with planning tools
   const submitPlan = analysisPlanRef ? tool(
     'submit_plan',
-    'Optionally submit a structured analysis plan. ' +
-    'Define phases with goals and expected tools. The system tracks plan adherence and warns on deviation. ' +
-    'Use when: an explicit multi-phase plan helps organize the analysis.\n' +
-    'Don\'t use when: plan already submitted (use revise_plan to modify, update_plan_phase to track progress).\n' +
-    'expectedCalls skillId is only valid for invoke_skill/compare_skill; scope every other tool as {tool:"fetch_artifact"} or {tool:"execute_sql"} with no skillId.\n\n' +
-    'Examples:\n' +
-    '1. Scrolling plan: phases=[{id:"p1", name:"概览采集", goal:"获取帧统计和卡顿分布", expectedTools:["invoke_skill"], expectedCalls:[{tool:"invoke_skill", skillId:"scrolling_analysis"}]}, ' +
-    '{id:"p2", name:"根因分析", goal:"逐帧诊断卡顿原因", expectedTools:["invoke_skill","execute_sql"], expectedCalls:[{tool:"invoke_skill", skillId:"jank_frame_detail"}]}, ' +
-    '{id:"p3", name:"深入验证", goal:"验证根因假设", expectedTools:["execute_sql","fetch_artifact"]}], ' +
-    'successCriteria="识别卡顿根因并提供量化证据"',
+    requireToolDescription('prompt-submit-plan-tool-description'),
     {
       phases: PLAN_PHASES_ARG_SCHEMA.describe('Ordered list of analysis phases.'),
       successCriteria: z.string().describe('What constitutes a successful analysis (e.g. "Identify root cause of jank frames with evidence")'),
@@ -6075,9 +6040,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         successCriteria: normalizedSuccessCriteria,
         submittedAt: Date.now(),
         toolCallLog: [],
-        ...(sourceUseDecision
-          ? {sourceUseDecisionStatus: sourceUseDecision.status}
-          : {}),
         ...(waiverInputs.length > 0 ? {waivers: waiverInputs} : {}),
       };
       analysisPlanRef.current = plan;
@@ -6158,7 +6120,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: planPhaseUpdatedContent({phaseId, status: nextStatus, summary: phase.summary ?? '', phaseName: phase.name, origin: 'model'}),
         timestamp: Date.now(),
       });
-      const completion = getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 0});
+      const completion = getAnalysisPlanCompletionStatus(plan);
       return createRuntimeToolResult({
         success: true, allPhasesComplete: completion.complete,
         ...(completion.unresolvedExpectations?.length ? {
@@ -6327,6 +6289,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             text: JSON.stringify({
               success: false,
               error: localize(outputLanguage, '还没有提交 plan，请先调用 submit_plan。', 'No plan submitted yet. Call submit_plan first.'),
+              action_required: 'submit_plan',
             }),
           }],
           isError: true,
@@ -6720,33 +6683,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ? { status: hypothesis.status, evidence: hypothesis.evidence ?? '', resolvedAt: hypothesis.resolvedAt }
           : null;
 
-      if (effectiveStatus === 'confirmed' && options.sceneType === 'scrolling') {
-        const claimBoundaryIssue = assessScrollingJankClaimBoundary(hypothesis.statement);
-        if (claimBoundaryIssue) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                hypothesisId: effectiveHypothesisId,
-                statement: hypothesis.statement,
-                error: localize(
-                  outputLanguage,
-                  claimBoundaryIssue.code === 'prediction_error_noise_overclaim'
-                    ? 'Prediction Error 只能作为 scheduler 预测偏差标签解释；不能把密集或连续样本一概确认为统计噪声、统计假象或 measurement artifact。请拒绝原假设，再提交带“孤立错误通常不代表用户可感知 App 卡顿”等边界的新假设。'
-                    : '不能确认“唯一真实/唯一用户可感知掉帧”这类排他性结论。请拒绝原假设，再提交只描述直接证据范围的新假设。',
-                  claimBoundaryIssue.code === 'prediction_error_noise_overclaim'
-                    ? 'Prediction Error is a scheduler prediction-drift label; dense or continuous samples cannot be confirmed as statistical noise. Reject the original hypothesis, then submit a bounded replacement such as “isolated errors usually do not imply user-perceived app jank.”'
-                    : 'An exclusive “only real/user-perceived jank” conclusion cannot be confirmed. Reject the original hypothesis, then submit a replacement limited to the directly supported evidence.',
-                ),
-                action_required: 'reject_hypothesis_and_submit_bounded_replacement',
-              }),
-            }],
-            isError: true,
-          };
-        }
-      }
-
       if (priorResolution) {
         (hypothesis.history ??= []).push(priorResolution);
       }
@@ -6833,17 +6769,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       keywords: z.array(z.string()).optional().describe('Domain keywords (e.g., ["jank", "binder", "gpu"])'),
     },
     async ({ architectureType, sceneType: querySceneType, keywords }) => {
-      if (privateAnalysisContext) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            success: true,
-            disabled: 'private_analysis_context',
-            positivePatterns: [],
-            negativePatterns: [],
-            message: 'Cross-session pattern recall is disabled for private source and RAG analyses.',
-          }) }],
-        };
-      }
       const features = extractTraceFeatures({
         architectureType,
         sceneType: querySceneType,
@@ -6887,32 +6812,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }))
       );
 
-      // P1-10: Also include verifier's learned misdiagnosis patterns
-      let learnedMisdiagnosis: Array<{ keywords: string[]; message: string; occurrences: number }> = [];
-      try {
-        const learnedPatternsFile = backendLogPath('learned_misdiagnosis_patterns.json');
-        if (fs.existsSync(learnedPatternsFile)) {
-          const raw = JSON.parse(fs.readFileSync(learnedPatternsFile, 'utf-8'));
-          const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60-day TTL
-          learnedMisdiagnosis = (raw as any[])
-            .filter((p: any) => p.createdAt >= cutoff && p.occurrences >= 2)
-            .slice(0, 10)
-            .map((p: any) => ({
-              keywords: p.keywords,
-              message: p.message,
-              occurrences: p.occurrences,
-            }));
-        }
-      } catch { /* non-fatal */ }
-
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           success: true,
           positivePatterns: positive,
           negativePatterns: negative,
-          learnedMisdiagnosis: learnedMisdiagnosis.length > 0 ? learnedMisdiagnosis : undefined,
-          message: `Found ${positive.length} positive and ${negative.length} negative patterns from past sessions.` +
-            (learnedMisdiagnosis.length > 0 ? ` Also ${learnedMisdiagnosis.length} learned misdiagnosis avoidance patterns.` : ''),
+          message: `Found ${positive.length} positive and ${negative.length} negative patterns from past sessions.`,
         }) }],
       };
     },
@@ -7092,6 +6997,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
         } : buildSqlFailureToolPayload({
           error: result.error || localize(outputLanguage, 'SQL 执行失败', 'SQL execution failed'),
+          schemaDiagnosis: {error: result.error ?? '', sql: normalizedSql, memory: sqlFailureMemory},
           trace: traceLabel,
           traceSide: trace,
           traceId: targetTraceId,
@@ -7124,6 +7030,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               paramsHash: producer.paramsHash,
               planPhaseId: producer.planPhaseId,
               error: e.message,
+              schemaDiagnosis: {error: e.message, sql, memory: sqlFailureMemory},
               executableSql: sql,
               outputLanguage,
             })),
@@ -7199,10 +7106,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             invalidParamsBySide: explicitInvalidParamsBySide,
             action_required: 'retry_compare_skill_with_declared_side_params'});
         }
-        const sharedNumericSelectors = ['upid', 'pid'].filter(key => params?.[key] != null);
-        if (sharedNumericSelectors.some(key => currentSideParams?.[key] == null || referenceSideParams?.[key] == null)) {
+        // Process ids and heap dump timestamps only mean something inside one trace.
+        const sharedTraceLocalSelectors = ['upid', 'pid', 'graph_sample_ts'].filter(key => params?.[key] != null);
+        if (sharedTraceLocalSelectors.some(key => currentSideParams?.[key] == null || referenceSideParams?.[key] == null)) {
           return createRuntimeToolResult({ success: false, skillId,
-            error: 'Trace-local UPID/PID selectors require explicit currentParams and referenceParams; they cannot be shared across traces.',
+            error: 'Trace-local UPID/PID/graph_sample_ts selectors require explicit currentParams and referenceParams; they cannot be shared across traces.',
             action_required: 'provide_per_trace_process_selectors' });
         }
         const referenceSharedParams = referenceSharedParamsForComparison(
@@ -7595,6 +7503,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           visualState: currentPane?.visualState,
           traceName: currentPane?.traceName,
           packageName: packageName || 'unknown',
+          ...sidePackageProvenance(packageName, options.focusTarget, true),
           architecture: options.cachedArchitecture?.type || 'unknown',
           focusApps: options.cachedArchitecture ? undefined : 'detect with detect_architecture',
         },
@@ -7604,12 +7513,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           visualState: referencePane?.visualState,
           traceName: referencePane?.traceName,
           packageName: ctx.referencePackageName || 'unknown',
+          ...sidePackageProvenance(ctx.referencePackageName, ctx.referenceFocusTarget, false),
           architecture: ctx.referenceArchitecture?.type || 'unknown',
         },
         tracePairContext: ctx.tracePairContext,
         packageAlignment: packageName && ctx.referencePackageName
           ? (packageName === ctx.referencePackageName ? 'same' : 'different')
           : 'unknown',
+        // Reference packages are always inferred; an alignment between two
+        // hypotheses is not an identity match.
+        ...(packageName && ctx.referencePackageName ? {packageAlignmentBasis:
+          packageProvenance(packageName, options.focusTarget).source === 'user'
+            ? 'user_vs_inferred' : 'inferred'} : {}),
         commonCapabilities: ctx.commonCapabilities,
         capabilityDiff: ctx.capabilityDiff,
       });
@@ -7636,8 +7551,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async request => {
       try { return createRuntimeToolResult(options.analysisHistoryReader!.read(request)); }
-      catch { return createRuntimeToolResult({success: false, action_required: 'use_available_history',
-        unsupportedReason: 'analysis_history_unavailable'}, {isError: true}); }
+      catch { return policyRefusal('use_available_history',
+        {unsupportedReason: 'analysis_history_unavailable'}, {isError: true}); }
     },
     {annotations: {readOnlyHint: true}},
   ) : null;
@@ -7647,14 +7562,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     runManifestAttributionSink,
     toolObserver: options.toolObserver,
     acquisitionObserver: event => { artifactStore?.observeInvestigationTool?.(event); },
+    runId: options.runId,
     requestScope: toolRequestScope,
     canInvokeTool: options.canInvokeTool,
+    runAuthorization,
     // A scene run must commit its timeline before its acquisition budget runs out.
     ...(sceneContext ? {acquisitionPolicy: createSceneAcquisitionPolicy(sceneContext)} : {}),
   });
-  const sourceOnlyPhase = sourceUsePolicy?.phase === 'automatic_enrichment' ||
-    sourceUsePolicy?.phase === 'deep_enrichment';
-
   if (sceneContext) {
     const context = sceneContext;
     const description = requireToolDescription('scene-tool-guidance');
@@ -7708,82 +7622,137 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
   }
 
-  if (sourceOnlyPhase) {
-    registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
-    registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-  } else {
-    // Budget mode does not change the authorized capability set.
-    if (options.conversationTraceAttached !== false) {
-      registry.registerSdk(executeSql, 'execute_sql', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(invokeSkill, 'invoke_skill', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(detectArchitecture, 'detect_architecture', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(analyzeWaitChain, 'analyze_wait_chain', 'public', {evidenceEffect: 'acquire'});
-    }
-    registry.registerSdk(listSkills, 'list_skills', 'public', {evidenceEffect: 'none'});
-    registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
-      evidenceEffect: 'none',
-      concurrency: {mode: 'commutative_read'},
-    });
-    registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public', {
-      evidenceEffect: 'none',
-      concurrency: {mode: 'commutative_read'},
-    });
-    registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
-    registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
-    registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    if (!sourceUsePolicy) {
-      registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  // Budget mode does not change the authorized capability set.
+  if (options.conversationTraceAttached !== false) {
+    registry.registerSdk(executeSql, 'execute_sql', 'public', {evidenceEffect: 'acquire'});
+    registry.registerSdk(invokeSkill, 'invoke_skill', 'public', {evidenceEffect: 'acquire'});
+    registry.registerSdk(detectArchitecture, 'detect_architecture', 'public', {evidenceEffect: 'acquire'});
+    registry.registerSdk(analyzeWaitChain, 'analyze_wait_chain', 'public', {evidenceEffect: 'acquire'});
+  }
+  registry.registerSdk(listSkills, 'list_skills', 'public', {evidenceEffect: 'none'});
+  registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
+    evidenceEffect: 'none',
+    concurrency: {mode: 'commutative_read'},
+  });
+  registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public', {
+    evidenceEffect: 'none',
+    concurrency: {mode: 'commutative_read'},
+  });
+  registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
+  // Background, not acquisition: an existing_only turn may consult them.
+  if (documentCollectionIds.length > 0) {
+    registry.registerSdk(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});
+    registry.registerSdk(readKnowledgeSection, 'read_knowledge_section', 'public', {evidenceEffect: 'background'});
+  }
+  registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
+  registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(locateTraceAnchorTool, 'locate_trace_anchor', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
+  registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
+  registry.registerSdk(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
+  // Graph and index tools only accelerate source access; offered only when a
+  // selected codebase actually has the graph or an active index.
+  if (anySelectedCodebaseHas('graph')) {
+    registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  }
+  if (anySelectedCodebaseHas('index')) {
+    registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    // A patch changes how code behaves, which only a mechanism-depth run reads for.
+    if (sourceDepth === 'mechanism') {
       registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     }
-    registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(recallProjectMemory, 'recall_project_memory', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(recallSimilarCase, 'recall_similar_case', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
-    if (writeAnalysisNote) registry.registerSdk(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
-    if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
-    if (readSessionHistory) registry.registerSdk(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
-    if (submitPlan) registry.registerSdk(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
-    if (updatePlanPhase) registry.registerSdk(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
-    if (revisePlan) registry.registerSdk(revisePlan, 'revise_plan', 'internal', {evidenceEffect: 'none'});
-    registry.registerSdk(lookupStrategyDetail, 'lookup_strategy_detail', 'internal', {evidenceEffect: 'none'});
-    if (submitHypothesis) registry.registerSdk(submitHypothesis, 'submit_hypothesis', 'internal', {evidenceEffect: 'none'});
-    if (resolveHypothesis) registry.registerSdk(resolveHypothesis, 'resolve_hypothesis', 'internal', {evidenceEffect: 'none'});
-    if (flagUncertainty) registry.registerSdk(flagUncertainty, 'flag_uncertainty', 'internal', {evidenceEffect: 'none'});
-    // recall_patterns stays 'internal' for one more commit. Plan 41 M1b
-    // routes the recall path through openSupersedeStoreReadOnly so it no
-    // longer mkdir's or migrates the supersede DB on first call. The
-    // public-readonly exposure flip is gated on the M1b invariant test
-    // soaking for one release cycle to catch any hidden writable code
-    // path; that flip is the M1b commit 2 follow-up.
-    registry.registerSdk(recallPatterns, 'recall_patterns', 'internal', {evidenceEffect: 'read_existing'});
-    // Comparison mode tools — only when referenceTraceId is provided.
-    if (options.conversationTraceAttached !== false && compareSkill) registry.registerSdk(compareSkill, 'compare_skill', 'internal', {evidenceEffect: 'acquire'});
-    if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
-    if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
   }
-
-  if (!sourceUsePolicy) {
-    registry.registerSdk(
-      recordSourceUseDecision,
-      'record_source_use_decision',
-      'requires_codebase_permission',
-      {evidenceEffect: 'none'},
-    );
-  }
+  registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerSdk(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerSdk(recallProjectMemory, 'recall_project_memory', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerSdk(recallSimilarCase, 'recall_similar_case', 'public', {evidenceEffect: 'acquire'});
+  registry.registerSdk(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
+  if (writeAnalysisNote) registry.registerSdk(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
+  if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
+  const checkConclusionDraft = tool(
+    'check_conclusion_draft', requireToolDescription('prompt-draft-declaration-diagnostics-tool-description'),
+    {body: z.string().max(DRAFT_DECLARATION_MAX_BYTES), declarationJson: z.string().max(DRAFT_DECLARATION_MAX_BYTES)},
+    async ({body, declarationJson}, extra) => {
+      const refusal = (reason: string) => createRuntimeToolResult({diagnosticOnly: true, coverageNotChecked: true,
+        finalCertification: false, state: 'unavailable', reason, success: false}, {isError: true});
+      if (options.conversationTraceAttached === false) return refusal('trace_not_attached');
+      if (artifactAccessPolicy.forbidRows || artifactAccessPolicy.requireSummaryBeforeRows ||
+          artifactAccessPolicy.forbidRowsWhenSummaryComplete) return refusal('artifact_row_access_restricted');
+      const runId = options.runId, sessionId = options.sessionId;
+      const readView = typeof artifactStore?.createEvidenceReadView === 'function' && runId && sessionId ? artifactStore.createEvidenceReadView({
+        currentRunId: runId, ownerKey: draftDiagnosticOwnerKey(runId, sessionId),
+        allowedTraces: [{traceId, traceSide: 'current'}, ...(options.referenceTraceId
+          ? [{traceId: options.referenceTraceId, traceSide: 'reference' as const}] : [])],
+      }) : undefined;
+      const diagnostic = await diagnoseConclusionDraft({body, declarationJson, runId, sessionId, readView,
+        signal: (extra as {signal?: AbortSignal} | undefined)?.signal,
+        assertCurrent: () => {
+          options.runAuthorization?.assertCurrentInTurn();
+          if (options.canInvokeTool?.() === false) throw new Error('draft_read_context_closed');
+        }});
+      return createRuntimeToolResult({...diagnostic, success: diagnostic.state === 'diagnosed',
+        ...(diagnostic.state !== 'unavailable' ? {
+          diagnosticGuidance: requireToolDescription('prompt-draft-declaration-diagnostics-feedback'),
+        } : {})},
+        {isError: diagnostic.state !== 'diagnosed'});
+    }, {annotations: {readOnlyHint: true}},
+  );
+  registry.registerSdk(checkConclusionDraft, 'check_conclusion_draft', 'internal', {evidenceEffect: 'read_existing'});
+  if (readSessionHistory) registry.registerSdk(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
+  if (submitPlan) registry.registerSdk(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
+  if (updatePlanPhase) registry.registerSdk(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
+  if (revisePlan) registry.registerSdk(revisePlan, 'revise_plan', 'internal', {evidenceEffect: 'none'});
+  registry.registerSdk(lookupStrategyDetail, 'lookup_strategy_detail', 'internal', {evidenceEffect: 'none'});
+  if (submitHypothesis) registry.registerSdk(submitHypothesis, 'submit_hypothesis', 'internal', {evidenceEffect: 'none'});
+  if (resolveHypothesis) registry.registerSdk(resolveHypothesis, 'resolve_hypothesis', 'internal', {evidenceEffect: 'none'});
+  if (flagUncertainty) registry.registerSdk(flagUncertainty, 'flag_uncertainty', 'internal', {evidenceEffect: 'none'});
+  // recall_patterns stays 'internal' for one more commit. Plan 41 M1b
+  // routes the recall path through openSupersedeStoreReadOnly so it no
+  // longer mkdir's or migrates the supersede DB on first call. The
+  // public-readonly exposure flip is gated on the M1b invariant test
+  // soaking for one release cycle to catch any hidden writable code
+  // path; that flip is the M1b commit 2 follow-up.
+  registry.registerSdk(recallPatterns, 'recall_patterns', 'internal', {evidenceEffect: 'read_existing'});
+  // Comparison mode tools — only when referenceTraceId is provided.
+  if (options.conversationTraceAttached !== false && compareSkill) registry.registerSdk(compareSkill, 'compare_skill', 'internal', {evidenceEffect: 'acquire'});
+  if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
+  if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
 
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
+  const knowledgeAuthorization = describeSelectedKnowledgeBases(knowledgeSourceIds, selectedKnowledgeSources);
+  const sourceAuthorization: SourceAuthorizationPromptData = {
+    ...(selectedCodebases.length > 0
+      ? {codebases: selectedCodebases, depth: sourceDepth,
+          budget: {...sourceBudget.snapshot(), maxReadLines: sourceBudget.maxReadLines}}
+      : {codebases: []}),
+    ...(knowledgeAuthorization ? {knowledgeAuthorization} : {}),
+  };
+  // One line per run that says how deep source access may go (owner view only:
+  // strict surfaces drop progress for a private run).
+  if (emitUpdate && sourceAuthorization.budget && options.allowNewEvidence !== false) {
+    const {searchesLeft, readsLeft} = sourceAuthorization.budget;
+    const origin = options.sourceDepthDecision?.origin;
+    const [originZh, originEn] = options.sourceDepthDecision?.cap === 'metadata_only' ? ['仅元数据，上限为定位', 'metadata only, capped at locate']
+      : origin === 'requested' ? ['按你的选择', 'as you chose']
+        : origin === 'intent' ? ['智能判断', 'judged from the question']
+          : ['按分析预算', 'from the analysis budget'];
+    emitUpdate({
+      type: 'progress',
+      content: {
+        phase: 'starting',
+        message: localize(outputLanguage,
+          `本轮源码深度：${sourceDepth === 'mechanism' ? '机制分析' : '快速定位'}（${originZh}；检索 ${searchesLeft} 次、读取 ${readsLeft} 次）`,
+          `Source depth this run: ${sourceDepth === 'mechanism' ? 'mechanism' : 'locate'} (${originEn}; ${searchesLeft} searches, ${readsLeft} reads)`),
+      },
+      timestamp: Date.now(),
+    });
+  }
   runManifestAttributionSink?.recordToolAllowlist(
     toolDefinitions.map(definition => definition.name),
   );
@@ -7792,46 +7761,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     allowedTools,
     toolDefinitions,
     sourceUse,
+    sourceAuthorization,
   };
-}
-
-function evidenceHash(input: unknown): string {
-  const text = typeof input === 'string'
-    ? input
-    : JSON.stringify(input, (_key, value) => typeof value === 'bigint' ? value.toString() : value);
-  return createHash('sha256').update(text || '').digest('hex').slice(0, 12);
 }
 
 const SQL_RAW_INLINE_ROW_LIMIT = 50;
 const SQL_ARTIFACT_PAGE_SIZE = 50;
-
-function evidencePart(value: unknown, fallback = 'unknown'): string {
-  const text = String(value ?? fallback)
-    .trim()
-    .replace(/[^a-zA-Z0-9_.-]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 80);
-  return text || fallback;
-}
-
-function evidenceTracePart(traceProvenance?: TraceProcessorQueryProvenance): string {
-  if (!traceProvenance) return 'trace_unknown';
-  const side = evidencePart(traceProvenance.traceSide || 'current', 'current');
-  const trace = evidenceHash(traceProvenance.traceId);
-  return `${side}:${trace}`;
-}
-
-interface EvidenceProducerContext {
-  sourceToolCallId?: string;
-  paramsHash?: string;
-  planPhaseId?: string;
-  planPhaseTitle?: string;
-  planPhaseGoal?: string;
-  planPhaseAttribution?: 'active' | 'inferred' | 'missing' | 'ambiguous' | 'unexpected_tool' | 'none';
-  planPhaseWarning?: string;
-  toolNarration?: string;
-  producerReason?: string;
-}
 
 function storeSqlResultArtifact(
   artifactStore: ArtifactStore | undefined,
@@ -7936,24 +7871,37 @@ const waitChainIntLike = z.union([
 const WAIT_CHAIN_SEGMENT_COLUMNS = [
   'segment_index', 'start_ts', 'dur_ns', 'duration_ms', 'state', 'blocked_function', 'io_wait',
   'utid', 'process_name', 'thread_name', 'waker_kind', 'waker_thread', 'wake_source_class', 'modules',
+  'path_role',
 ] as const;
 
 /**
  * The one-row summary the tool's headline numbers are read from. `*_ns` cells
- * are the engine's exact integers; `*_ms`, the share and the count are the
+ * are the engine's exact integers; `*_ms`, the shares and the count are the
  * rounded display values and carry no semantics, so citing them never proves
- * or contradicts a claim.
+ * or contradicts a claim. The `root_wait_*` and `direct_waker_*` cells are the
+ * engine's reading of where the wait sat and what ended it: the facts an
+ * answer states in words, as cells it can cite. `attributable_*` is the headline (other threads'
+ * work, runnable and uninterruptible time); `blocking_*` is path coverage and
+ * includes the `event_wait_*` leaves.
  */
 const WAIT_CHAIN_SUMMARY_COLUMNS = [
   'utid', 'window_start_ts', 'window_end_ts', 'window_dur_ns',
+  'attributable_ns', 'event_wait_ns',
   'blocking_ns', 'self_ns', 'waiting_ns', 'chain_wait_ns', 'best_case_ns', 'max_saving_ns',
-  'window_ms', 'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
+  'sleeping_ns', 'uninterruptible_ns', 'runnable_ns', 'running_ns',
+  'root_wait_context', 'root_wait_state', 'root_wait_ns', 'root_wait_slice',
+  'direct_waker_kind', 'direct_waker_thread', 'direct_waker_process', 'direct_waker_irq_context',
+  'window_ms', 'attributable_ms', 'attributable_pct', 'event_wait_ms', 'event_wait_pct',
+  'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
   'best_case_ms', 'max_saving_ms', 'chain_segment_count',
 ] as const;
 type WaitChainSummaryColumn = typeof WAIT_CHAIN_SUMMARY_COLUMNS[number];
-type WaitChainSummaryRow = Record<WaitChainSummaryColumn, number | null>;
-
-type DeclaredFieldSemantics = Omit<CapturedFieldSemantics, 'origin'>;
+type WaitChainSummaryRow = Record<WaitChainSummaryColumn, EvidenceScalar>;
+/** The cells an answer can cite: everything but the rounded display values. */
+const WAIT_CHAIN_CITABLE_SUMMARY_COLUMNS = WAIT_CHAIN_SUMMARY_COLUMNS.filter(column =>
+  !/_(ms|pct)$/.test(column) && column !== 'chain_segment_count');
+/** One row per anomaly, under the keys the projection lists them with. */
+const WAIT_CHAIN_ANOMALY_COLUMNS = ['id', 'severity'] as const;
 
 const NS_START: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'start', clock: 'trace_monotonic'};
 const NS_END: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'end', clock: 'trace_monotonic'};
@@ -7963,37 +7911,43 @@ const UTID_IDENTITY: DeclaredFieldSemantics = {identityRole: 'utid'};
 
 /**
  * Producer semantics for one table, fingerprinted by what defines them: the
- * engine version, the table's columns and the declarations themselves. A
- * change to any of them yields a new fingerprint.
+ * engine version, the table's columns and the declarations themselves.
  */
-function nativeProducerFields(
+function waitChainFields(
   table: string,
   columns: readonly string[],
   declared: Record<string, DeclaredFieldSemantics>,
 ): Record<string, CapturedFieldSemantics> {
-  const definitionFingerprint = evidenceCaptureHash({
+  return nativeProducerFields({
     producer: 'analyze_wait_chain', table, engine: CRITICAL_PATH_ENGINE_VERSION, columns, fields: declared,
-  });
-  return Object.fromEntries(Object.entries(declared).map(([column, field]) =>
-    [column, {...field, origin: {kind: 'native_producer' as const, definitionFingerprint}}]));
+  }, declared);
 }
 
-const WAIT_CHAIN_SEGMENT_FIELDS = nativeProducerFields('wait_segments', WAIT_CHAIN_SEGMENT_COLUMNS, {
+const WAIT_CHAIN_SEGMENT_FIELDS = waitChainFields('wait_segments', WAIT_CHAIN_SEGMENT_COLUMNS, {
   start_ts: NS_START, dur_ns: NS_DURATION, utid: UTID_IDENTITY,
 });
 
-const WAIT_CHAIN_SUMMARY_FIELDS = nativeProducerFields('wait_summary', WAIT_CHAIN_SUMMARY_COLUMNS, {
+const WAIT_CHAIN_SUMMARY_FIELDS = waitChainFields('wait_summary', WAIT_CHAIN_SUMMARY_COLUMNS, {
   utid: UTID_IDENTITY,
   window_start_ts: NS_START,
   window_end_ts: NS_END,
   window_dur_ns: NS_DURATION,
+  attributable_ns: NS_TOTAL,
+  event_wait_ns: NS_TOTAL,
   blocking_ns: NS_TOTAL,
   self_ns: NS_TOTAL,
   waiting_ns: NS_TOTAL,
   chain_wait_ns: NS_TOTAL,
   best_case_ns: NS_TOTAL,
   max_saving_ns: NS_TOTAL,
+  sleeping_ns: NS_TOTAL,
+  uninterruptible_ns: NS_TOTAL,
+  runnable_ns: NS_TOTAL,
+  running_ns: NS_TOTAL,
+  root_wait_ns: NS_DURATION,
 });
+
+const WAIT_CHAIN_ANOMALY_FIELDS = waitChainFields('wait_anomalies', WAIT_CHAIN_ANOMALY_COLUMNS, {});
 
 const WAIT_CHAIN_SEGMENT_COLUMN_DEFS: ColumnDefinition[] = [
   {name: 'segment_index', type: 'number'},
@@ -8011,6 +7965,7 @@ const WAIT_CHAIN_SEGMENT_COLUMN_DEFS: ColumnDefinition[] = [
   {name: 'waker_thread', type: 'string'},
   {name: 'wake_source_class', type: 'string'},
   {name: 'modules', type: 'string'},
+  {name: 'path_role', type: 'string'},
 ];
 
 /**
@@ -8031,12 +7986,6 @@ const WAIT_CHAIN_MAX_ANOMALIES = 5;
 const WAIT_CHAIN_MAX_WARNINGS = 8;
 const WAIT_CHAIN_MAX_RECURSION = 6;
 const WAIT_CHAIN_MAX_SEGMENT_ROWS = 400;
-
-/** A sleeping or uninterruptible state, in the engine's own reading. */
-function isWaitState(state: string | null | undefined): boolean {
-  const kind = classifySlice(state);
-  return kind === 'sleeping' || kind === 'uninterruptible';
-}
 
 function flattenWaitChain(segments: readonly CriticalPathSegment[]): CriticalPathSegment[] {
   const flat: CriticalPathSegment[] = [];
@@ -8078,6 +8027,7 @@ function waitChainSegmentRows(segments: readonly CriticalPathSegment[]): unknown
       waker?.wakerThreadName ?? null,
       segment.wakeSourceClass ?? null,
       segment.modules.join(', ') || null,
+      segmentPathRole(segment),
     ];
   });
 }
@@ -8090,18 +8040,40 @@ function waitChainSegmentRows(segments: readonly CriticalPathSegment[]): unknown
 function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: number): WaitChainSummaryRow {
   const totals = analysis.totalsNs;
   const counterfactual = analysis.quantification?.counterfactual ?? null;
+  // No slices means the split was not measured, which is not zero time.
+  const states = analysis.slices ? sliceKindNs(analysis) : null;
+  const rootWait = analysis.rootWait ?? null;
+  const waker = analysis.directWaker ?? null;
   return {
     utid: analysis.task.utid,
     window_start_ts: analysis.task.startTs,
     window_end_ts: analysis.task.startTs + analysis.task.dur,
     window_dur_ns: analysis.task.dur,
+    attributable_ns: totals?.attributable ?? null,
+    event_wait_ns: totals?.eventWait ?? null,
     blocking_ns: totals?.blocking ?? null,
     self_ns: totals ? Math.max(0, analysis.task.dur - totals.blocking) : null,
     waiting_ns: totals?.waiting ?? null,
     chain_wait_ns: totals?.chainWait ?? null,
     best_case_ns: counterfactual?.bestCaseDurationNs ?? null,
     max_saving_ns: counterfactual?.maxSavingNs ?? null,
+    sleeping_ns: states?.sleeping ?? null,
+    uninterruptible_ns: states?.uninterruptible ?? null,
+    runnable_ns: states?.runnable ?? null,
+    running_ns: states?.running ?? null,
+    root_wait_context: rootWait?.context ?? null,
+    root_wait_state: rootWait?.state ?? null,
+    root_wait_ns: rootWait ? rootWait.endTs - rootWait.startTs : null,
+    root_wait_slice: rootWait?.enclosingSlice?.name ?? null,
+    direct_waker_kind: waker?.kind ?? null,
+    direct_waker_thread: waker?.threadName ?? null,
+    direct_waker_process: waker?.processName ?? null,
+    direct_waker_irq_context: waker ? waker.irqContext : null,
     window_ms: analysis.totalMs,
+    attributable_ms: analysis.attributableMs ?? null,
+    attributable_pct: analysis.attributablePercentage ?? null,
+    event_wait_ms: analysis.eventWaitMs ?? null,
+    event_wait_pct: analysis.eventWaitPercentage ?? null,
     blocking_ms: analysis.blockingMs,
     self_ms: analysis.selfMs,
     waiting_ms: totals ? nsToMs(totals.waiting) : null,
@@ -8150,7 +8122,7 @@ function waitChainRecursion(chain: readonly CriticalPathSegment[]): {entries: Wa
         omitted += 1;
         continue;
       }
-      const dominant = Object.entries(chainWaitTotals(children).waitClassTotalsMs)
+      const dominant = Object.entries(waitClassTotalsMs(children))
         .sort((a, b) => b[1] - a[1])[0];
       entries.push({
         level,
@@ -8188,7 +8160,8 @@ function projectWaitChainForModel(
     stateBreakdown[kind] = {ms: nsToMs(ns), percent: pct(ns, windowNs)};
   }
 
-  const waits = flat.filter(segment => isWaitState(segment.state));
+  // A sleeping or uninterruptible segment, in the engine's own reading: a chain leaf.
+  const waits = flat.filter(segment => isChainLeafRole(segmentPathRole(segment)));
 
   // Wait totals come from the engine over the whole chain. `wakeupChain`, and
   // so `waits`, holds only the displayed prefix, which still serves `topWaits`.
@@ -8204,6 +8177,11 @@ function projectWaitChainForModel(
         durationMs: segment.durationMs,
         state: segment.state ?? null,
         kind: classifySlice(segment.state),
+        pathRole: segmentPathRole(segment),
+        // Perfetto ends a chain at every S/I/D segment of another thread: its
+        // wake came from an interrupt, the idle task or an io_wait, so there
+        // is no further waker to follow from here.
+        terminal: true,
         blockedFunction: segment.blockedFunction ?? null,
         ioWait: segment.ioWait ?? null,
         processName: segment.processName ?? null,
@@ -8243,23 +8221,37 @@ function projectWaitChainForModel(
       windowMs: summary.window_ms,
     },
     totalMs: summary.window_ms,
+    // The headline: other threads' work, runnable and uninterruptible time,
+    // the part of the window another thread's execution accounts for.
+    attributableMs: summary.attributable_ms,
+    attributablePercentage: summary.attributable_pct,
+    // Other threads' interruptible sleeps that end the chain. Not cost by
+    // themselves: read them with rootWait and the peer_event_wait / idle_wait
+    // anomalies.
+    eventWaitMs: summary.event_wait_ms,
+    eventWaitPercentage: summary.event_wait_pct,
+    ...(analysis.rootWait ? {
+      rootWait: {
+        context: analysis.rootWait.context,
+        state: analysis.rootWait.state,
+        durationMs: analysis.rootWait.durationMs,
+        enclosingSlice: analysis.rootWait.enclosingSlice?.name ?? null,
+      },
+    } : {}),
+    ...(analysis.longestSegment ? {longestAttributable: analysis.longestSegment} : {}),
+    ...(analysis.longestEventWait ? {longestEventWait: analysis.longestEventWait} : {}),
+    // Path coverage: everything the chain covers, event-wait leaves included.
     blockingMs: summary.blocking_ms,
     selfMs: summary.self_ms,
     externalBlockingPercentage: summary.external_blocking_pct,
-    // The target thread's own S/D time, not the chain's: the chain also holds
-    // the waker tasks' waits, which belong to other threads.
+    // The target thread's own S/I/D time, not the chain's: the chain also
+    // holds the waker tasks' waits, which belong to other threads.
     waitingMs: summary.waiting_ms,
     chainWaitMs: summary.chain_wait_ms,
-    // The exact values behind the ms figures, as captured in the summary row.
-    exactNs: {
-      window: summary.window_dur_ns,
-      blocking: summary.blocking_ns,
-      self: summary.self_ns,
-      waiting: summary.waiting_ns,
-      chainWait: summary.chain_wait_ns,
-      bestCase: summary.best_case_ns,
-      maxSaving: summary.max_saving_ns,
-    },
+    // The captured summary row under its own column names: cite these cells
+    // (`column` = the key) for the exact values and for where the wait sat.
+    summaryRow: Object.fromEntries(WAIT_CHAIN_CITABLE_SUMMARY_COLUMNS
+      .filter(column => summary[column] !== null).map(column => [column, summary[column]])),
     stateBreakdown,
     waitClassSummary,
     topWaits,
@@ -8275,12 +8267,13 @@ function projectWaitChainForModel(
     recursion: recursion.entries,
     ...(recursion.omitted > 0 ? {recursionOmitted: recursion.omitted} : {}),
     anomalies: analysis.anomalies.slice(0, WAIT_CHAIN_MAX_ANOMALIES).map(anomaly => ({
+      id: anomaly.id,
       severity: anomaly.severity,
       title: anomaly.title,
       detail: anomaly.detail,
     })),
-    // Best case after removing the longest external segment, and the most that
-    // removal can save; another wait may become the bottleneck first.
+    // Best case after removing the longest attributable segment, and the most
+    // that removal can save; another wait may become the bottleneck first.
     counterfactualBestCaseMs: summary.best_case_ms,
     counterfactualMaxSavingMs: summary.max_saving_ms,
     segmentCount: summary.chain_segment_count,
@@ -8314,24 +8307,6 @@ function stableSqlEvidenceRefId(
     evidenceRefId: `data:sql_${mode}:${evidenceTracePart(traceProvenance)}:${queryHash}:${toolPart}`,
     queryHash,
   };
-}
-
-function stableSkillEvidenceRefId(
-  skillId: string,
-  stepId: string | undefined,
-  title: string | undefined,
-  data: unknown,
-  traceProvenance?: TraceProcessorQueryProvenance,
-  producer?: EvidenceProducerContext,
-  scopeProvenance?: EvidenceScopeProvenanceV1,
-): string {
-  const dataHash = evidenceHash({
-    title,
-    data,
-    scopeProvenance,
-  });
-  const toolPart = evidencePart(producer?.paramsHash || 'tool', 'tool');
-  return `data:skill:${evidencePart(skillId, 'skill')}:${evidencePart(stepId || title, 'step')}:${evidenceTracePart(traceProvenance)}:${dataHash}:${toolPart}`;
 }
 
 function sqlSummaryMarkdown(summary: SqlSummary): string {
@@ -8502,7 +8477,8 @@ function emitSqlSummaryDataEnvelope(
   const { evidenceRefId, queryHash } = stableSqlEvidenceRefId(
     sql,
     summary.columns,
-    summary.sampleRows,
+    // Hash the plain sample values, as before rows were indexed, so evidenceRefId stays stable.
+    summary.sampleRows.map(sample => sample.values),
     traceProvenance,
     producer,
     'summary',
@@ -8592,8 +8568,19 @@ interface SqlFailureToolPayloadInput {
   processIdentityWarning?: string;
   durationMs?: number;
   outputLanguage?: OutputLanguage;
+  /**
+   * What the schema diagnostic reads: the raw engine error, the SQL as the
+   * model wrote it (injected INCLUDEs arrive as `stdlibInjectedModules`), and
+   * this run's repeat memory. Required, so no failure path can omit it.
+   */
+  schemaDiagnosis: {error: string; sql: string; memory: SqlFailureRepeatMemory};
 }
 
+/**
+ * The failure, its schema facts and the no-evidence diagnostic lead the payload:
+ * the transported copy is cut at a fixed length, and provenance and the query
+ * review behind them are long.
+ */
 function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<string, unknown> {
   const outputLanguage = input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
   const queryReview = input.executableSql
@@ -8619,6 +8606,26 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     : undefined;
   return {
     success: false,
+    error: input.error,
+    schemaDiagnostic: buildSqlSchemaDiagnostic({
+      error: input.schemaDiagnosis.error,
+      sql: input.schemaDiagnosis.sql,
+      injectedModules: input.stdlibInjectedModules,
+    }, input.schemaDiagnosis.memory),
+    diagnostic: {
+      type: 'sql_execution_failed',
+      citableEvidence: false,
+      message: localize(
+        outputLanguage,
+        'SQL 执行未产出可用表格；这不是可引用的性能证据。',
+        'SQL execution did not produce a usable table; this is not citable performance evidence.',
+      ),
+      retryHint: localize(
+        outputLanguage,
+        '修正 SQL 或改用 fetch_artifact / invoke_skill 后重试。不要把失败诊断作为结论证据。',
+        'Fix the SQL or retry with fetch_artifact / invoke_skill. Do not cite failed diagnostics as conclusion evidence.',
+      ),
+    },
     ...(input.trace ? { trace: input.trace } : {}),
     traceSide: input.traceSide,
     paneSide: input.paneSide ?? input.traceProvenance.paneSide,
@@ -8637,21 +8644,6 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     ...(input.sqlRewrites && input.sqlRewrites.length > 0 ? { sqlRewrites: input.sqlRewrites } : {}),
     stdlibInjectedModules: input.stdlibInjectedModules || [],
     ...(input.processIdentityWarning ? { processIdentityWarning: input.processIdentityWarning } : {}),
-    error: input.error,
-    diagnostic: {
-      type: 'sql_execution_failed',
-      citableEvidence: false,
-      message: localize(
-        outputLanguage,
-        'SQL 执行未产出可用表格；这不是可引用的性能证据。',
-        'SQL execution did not produce a usable table; this is not citable performance evidence.',
-      ),
-      retryHint: localize(
-        outputLanguage,
-        '修正 SQL 或改用 fetch_artifact / invoke_skill 后重试。不要把失败诊断作为结论证据。',
-        'Fix the SQL or retry with fetch_artifact / invoke_skill. Do not cite failed diagnostics as conclusion evidence.',
-      ),
-    },
   };
 }
 

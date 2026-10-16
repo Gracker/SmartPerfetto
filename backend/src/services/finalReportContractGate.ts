@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {SceneType} from '../agentv3/sceneClassifier';
 import {
   analysisDeliveryFingerprint,
@@ -22,7 +23,6 @@ export interface FinalReportContractCompletenessInput {
   query?: string;
   sceneType?: SceneType;
   contractSceneId?: string;
-  caseRecommendations?: readonly unknown[];
 }
 
 export interface FinalReportContractCompletenessResult {
@@ -50,6 +50,18 @@ export interface FinalReportContractAssessmentResult {
   acceptedAssessment?: FinalReportAssessment;
 }
 
+/**
+ * The applicability the server fixes before any review; `undefined` leaves it to
+ * the semantic review. An unconditional requirement of a whole-scene report is
+ * fixed applicable, so no review can waive it.
+ */
+export function fixedReportRequirementApplicability(
+  requirement: AnalysisReportRequirement, scope: AnalysisTurnIntent['scope'],
+): 'applicable' | 'unknown' | undefined {
+  if (requirement.condition?.kind === 'unresolved') return 'unknown';
+  return scope === 'scene_wide' && !requirement.condition ? 'applicable' : undefined;
+}
+
 /** Pure evaluation of a server-supplied, whole-body semantic assessment. */
 export function assessFinalReportContract(
   input: FinalReportContractCompletenessInput,
@@ -68,14 +80,8 @@ export function assessFinalReportContract(
   }
   const required = pin.requirements.filter(requirement => requirement.required !== false);
   if (required.length === 0) return {...empty('not_applicable'), sceneType: pin.sceneId};
-  const declaredApplicability = (requirement: AnalysisReportRequirement): 'applicable' | 'not_applicable' | 'unknown' => {
-    if (requirement.condition?.kind === 'strong_case_retrieval') {
-      if (context.caseRetrieval?.status !== 'checked') return 'unknown';
-      return context.caseRetrieval.recommendations.some(hit => hit.caseId && hit.matchStrength === 'strong')
-        ? 'applicable' : 'not_applicable';
-    }
-    return intent.scope === 'scene_wide' && !requirement.condition ? 'applicable' : 'unknown';
-  };
+  const declaredApplicability = (requirement: AnalysisReportRequirement) =>
+    fixedReportRequirementApplicability(requirement, intent.scope) ?? 'unknown';
   const unknown = (status: AnalysisAssuranceStatus): FinalReportContractAssessmentResult => ({
     status,
     sceneType: pin.sceneId,
@@ -90,8 +96,6 @@ export function assessFinalReportContract(
     !sameAnalysisCandidate(assessment.binding, context.acceptedCandidate, input.conclusion) ||
     assessment.binding.registryFingerprint !== pin.registryFingerprint ||
     assessment.binding.intentFingerprint !== analysisDeliveryFingerprint(intent) ||
-    (required.some(requirement => requirement.condition?.kind === 'strong_case_retrieval') &&
-      assessment.binding.caseRetrievalFingerprint !== analysisDeliveryFingerprint(context.caseRetrieval)) ||
     assessment.binding.requirementsFingerprint !== reportRequirementsFingerprint(pin) ||
     assessment.binding.conclusionContractFingerprint !== analysisDeliveryFingerprint(input.conclusionContract) ||
     !context.evidenceFingerprint || assessment.binding.evidenceFingerprint !== context.evidenceFingerprint
@@ -113,8 +117,8 @@ export function assessFinalReportContract(
       !['covered', 'missing', 'unknown'].includes(item.coverage)) {
       return {requirementId: requirement.id, applicability: declared, coverage: 'unknown' as const};
     }
-    if (requirement.condition?.kind === 'strong_case_retrieval' || declared !== 'unknown') {
-      if (item.applicability !== declared) return {...item, applicability: declared, coverage: 'unknown' as const};
+    if (declared === 'applicable' && item.applicability !== 'applicable') {
+      return {...item, applicability: declared, coverage: 'unknown' as const};
     }
     const hasValidLocation = Boolean(item.contentLocations?.length && item.contentLocations.every(location =>
       Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) &&

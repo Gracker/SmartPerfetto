@@ -163,6 +163,47 @@ steps:
       LIMIT (SELECT max_rows FROM input)
     save_as: trace_diagnostics
 
+  # Trace Doctor only summarizes ftrace/traced_* loss. This lists every positive
+  # stat whose trace_processor severity is data_loss (e.g. perf, heapprofd and
+  # long-trace overwrite counters), so a missing event can be qualified: on a
+  # lossy trace "not found" does not prove "did not happen".
+  # traceCompletenessProber.ts DATA_LOSS_STATS_SQL reads the same rows for the
+  # prompt's trace_completeness; keep the two filters aligned.
+  - id: data_loss_stats
+    type: atomic
+    name: "数据丢失统计"
+    display:
+      level: summary
+      layer: list
+      title: "数据丢失统计"
+      columns:
+        - name: name
+          label: "统计项"
+          type: string
+        - name: idx
+          label: "索引"
+          type: number
+        - name: value
+          label: "丢失计数"
+          type: number
+        - name: source
+          label: "来源"
+          type: string
+        - name: description
+          label: "说明"
+          type: string
+          format: truncate
+    sql: |
+      WITH input AS (
+        SELECT MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 100) AS max_rows
+      )
+      SELECT name, idx, value, source, description
+      FROM stats
+      WHERE severity = 'data_loss' AND value > 0
+      ORDER BY value DESC, name, idx
+      LIMIT (SELECT max_rows FROM input)
+    save_as: data_loss_stats
+
   - id: top_long_slices
     type: skill
     name: "最长 Slice"

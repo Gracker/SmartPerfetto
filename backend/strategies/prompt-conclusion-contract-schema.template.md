@@ -1,68 +1,57 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-Answer within scope; no prescribed headings, length, plan or extra calls. Only a typed acknowledgement needs no declaration. A request for necessary input uses `mode: "need_input"` with empty claim collections when it makes no factual assertion.
+No imposed headings/length/plan/calls; stay in scope. Typed ACK: no declaration. `need_input`: empty claims only without facts.
 
-Judge abnormality by metric/scope/threshold, never latency, largest share or rows alone. ACK is not display. Check prose/table arithmetic: ns/1e6=ms; 1000/ms=fps. Cite operands; missing evidence remains unknown.
+Judge abnormality by metric/scope/threshold, not latency, largest share or rows alone. ACK is not display. Check arithmetic: ns/1e6=ms; 1000/ms=fps. Cite operands; missing evidence is unknown.
+Prefer quantities once; refer back. Authored Skill units preferred; unknown SQL units cannot certify.
 
-For factual, inferential or advisory answers, append one top-level HTML comment outside fences, quotations and examples. Declare every proposition faithfully, including unsupported, negated, uncertain, qualified, quoted and causal claims. Schema (unused arrays: `[]`):
+Compose body+declaration for every fact/table cell. One top-level HTML comment outside fences/quotes/examples. Declare facts, inference, advice, negation, uncertainty, qualifiers, quotations and causality. Unused arrays: `[]`.
 
-````text
 {{sidecarOpeningMarker}}
 ```json
-{
-  "schemaVersion": "conclusion_contract_v1",
-  "mode": "focused_answer",
-  "conclusions": [{"rank": 1, "statement": "This might explain the observed delay."}],
-  "clusters": [{"cluster": "Group from the answer"}],
-  "evidenceChain": [{"conclusionId": "C1", "text": "Evidence explanation from the answer"}],
-  "claims": [{"id": "example:statement", "text": "This might explain the observed delay.", "kind": "inference", "references": [], "semantics": {"schemaVersion": "claim_semantics@1", "predicate": "example.hypothesis", "polarity": "affirmed", "discourse": "hypothetical", "quantifier": "one", "modality": "possible", "scope": {"population": "selected_interval"}}}],
-  "relationProposals": [],
-  "uncertainties": ["Uncertainty from the answer"],
-  "nextSteps": ["Next step from the answer"]
-}
+{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[{"rank":1,"statement":"Elapsed 7.1 ms."}],"clusters":[{"cluster":"Elapsed"}],"evidenceChain":[{"conclusionId":"C1","text":"Elapsed value"}],"claims":[{"id":"elapsed","text":"Elapsed 7.1 ms.","kind":"numeric","references":[{"evidenceRefId":"data:example","rowIndex":0,"column":"elapsed_ms","value":7.123456}],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"numeric.cell","polarity":"affirmed","discourse":"asserted","quantifier":"one","modality":"certain","scope":{"population":"cited_rows","subjectRefs":[{"evidenceRefId":"data:example","rowIndex":0,"column":"elapsed_ms","value":7.123456}]},"numeric":{"operator":"eq","value":7.123456,"unit":"ms","presentation":{"schemaVersion":"numeric_presentation@1","unit":"ms","decimalPlaces":1,"rounding":"half_away_from_zero","quotes":[{"text":"7.1 ms"}]}}}},{"id":"state","text":"State is ready.","kind":"categorical","references":[{"evidenceRefId":"data:example","rowIndex":0,"column":"state","value":"ready"}],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"captured.cell","polarity":"affirmed","discourse":"asserted","quantifier":"one","modality":"certain","scope":{"population":"cited_rows","subjectRefs":[{"evidenceRefId":"data:example","rowIndex":0,"column":"state","value":"ready"}]}}}],"relationProposals":[],"uncertainties":["Uncertainty"],"nextSteps":["Next step"]}
 ```
 -->
-````
 
-`mode`: `initial_report`, `focused_answer` or `need_input`. Every `evidenceChain` item requires string `conclusionId` and `text`; `rank` is finite. Never author server status, `parseIssues`, `bindingEligibility`, `verified`, completion receipts or parser-owned `raw*` fields.
+Fence JSON only. Keep its HTML comment outside prose/fences; never print an old declaration as answer.
 
-Every claim, including inference/recommendation, declares unique `id`, faithful `text`, `kind`, `references` and `semantics`; optional: `conclusionId`, `artifactRefs`, `relationRefs`. Kinds: `numeric`, `categorical`, `time_range`, `identity`, `causal`, `comparison`, `inference`, `recommendation`. Never copy the example's hypothetical stance onto a fact.
+`mode`: `initial_report|focused_answer|need_input`. Every `evidenceChain` item requires string `conclusionId` and `text`; conclusions: finite `rank`, string `statement`. Never author status, `parseIssues`, `bindingEligibility`, `verified`, completion receipts or `raw*` fields.
 
-References may use `evidenceRefId`, `sourceToolCallId`, `sourceRef`, `artifactId`, `sourceArtifactId`, `rowIndex`, `rowSelector`, `column`, `value`. Copy emitted `sourceToolCallId` when present; `evidenceRefId` may match repeated executions. Preserve original values/types and zero-based rows or unique selectors. Never invent locators/units. Missing evidence: `[]`, preserving uncertainty. For successful empty results, cite only their emitted IDs; omit rowIndex/rowSelector/column/value (no row 0).
+Every claim requires unique `id`, faithful `text`, `kind`, `references`, `semantics`; optional: `conclusionId`, `artifactRefs`, `relationRefs`. Kinds: `numeric`, `categorical`, `time_range`, `identity`, `causal`, `comparison`, `inference`, `recommendation`. Choose each stance.
+`check_conclusion_draft`: advisory; fix real mistakes, retain uncertainty, deliver. No pass-chasing or coverage check.
+One proposition/claim; separate values, types, classifications and qualifiers. Cell predicates select one subject, no grouped row. Aggregates are one value, not `all` members. Never disguise observations as possible inferences.
 
-`sourceRef` is a Trace alias, never a source-code ID. Source-backed claims except `source.location` add `sourceClaimBindings` with issued IDs. Each binding `claimId` equals one unique claim. Nonempty `traceEvidenceRefIds` require that same claim to own the Trace reference; otherwise use `[]`. Never author `sourceUseDecision`; bindings do not prove execution or causality.
+References: evidenceRefId, sourceToolCallId, sourceRef, artifactId, sourceArtifactId, rowIndex, rowSelector, column, value. Use issued IDs, raw JSON types/full precision; unquoted numbers. Executions may share evidenceRefId. rowIndex: printed index, not page position (unindexed: 0). rowSelector: unique column map, e.g. {"dump_id":1,"c":83}. Cells need locators; totalRows is metadata. Missing: `[]`, uncertainty. For successful empty results, cite only their emitted IDs; omit rowIndex/rowSelector/column/value (no row 0).
 
-`semantics` declares meaning, never verification; without it, matching references alone leave a proposition unverified:
+`sourceRef`: Trace alias, not code. `source.*`, `codebase` population or source locations require `sourceClaimBindings` `{claimId,sourceReferenceIds,traceEvidenceRefIds}` with issued IDs. Unique `claimId`; nonempty `traceEvidenceRefIds` require that same claim to own the Trace reference, else `[]`. Never author `sourceUseDecision`/status. Bindings prove no execution/causality; server checks use.
 
-- `schemaVersion`: `claim_semantics@1`; `predicate`: rule ID, including unknown/unverified rules.
+`semantics` declares meaning, not proof:
+
+- `schemaVersion`: `claim_semantics@1`; `predicate`: rule ID (unknown/unverified allowed).
 - `polarity`: `affirmed|negated|undetermined`; `discourse`: `asserted|hypothetical|quoted|rejected_quote`.
-- `quantifier`: `one|some|all|only`; `modality`: `certain|possible|undetermined`; optional `conditions`: strings.
-- `scope.population`: `cited_rows|selected_interval|process_instance|trace|codebase`; optional `subjectRefs/objectRefs`: reference arrays; optional `timeRangeNs`: ordered decimal-nanosecond strings `{start,end}`.
-- Optional `numeric`: `{operator,value,unit}`; operator `eq|ne|lt|lte|gt|gte`, finite number or decimal-string value, proposition unit. Not the cited cell value.
-- Optional `source`: `{sourceReferenceId,filePath,lineRange:{start,end}}`, an original claimed relative location. `sourceReferenceId` copies `sourceReferences[].id`, not `referenceId`. Never infer missing lines or extend the returned range.
+- `quantifier`: `one|some|all|only`; `modality`: `certain|possible|undetermined`; `conditions`?: strings.
+- `scope.population`: `cited_rows|selected_interval|process_instance|trace|codebase`; `subjectRefs/objectRefs`: arrays; omit only if the rule permits. Optional `timeRangeNs`: ordered decimal-ns strings `{start,end}`.
+- `numeric` (`numeric.cell` requires it): `{operator,value,unit,presentation?}`; `eq|ne|lt|lte|gt|gte`, finite number or decimal-string value, unit; independent of the cited cell.
 
 Rule boundaries:
 
-- `numeric.cell`: one original cell in `scope.subjectRefs` AND an independent `numeric` proposition; references alone do not supply scope. References retain exact raw cell values and native row IDs; evidence unit metadata stays unchanged. `semantics.numeric` states the exact proposition, in the original or an exactly equivalent allowed unit. Prose may use an exact equivalent or an explicitly marked fixed-decimal approximation (`约`, `≈`, `~`, `about`, `approximately`, or stated rounding). Convert exactly, then round to displayed decimal places; never round declarations or references. Numeric proof cannot prove causes/advice.
-- `captured.cell` and `source.location`: only `identity/categorical`, `affirmed/asserted/one/certain`; no conditions, numeric proposition, scope objects or time window.
-- `captured.cell`: `cited_rows`, exactly one semantic subject with explicit column and string/boolean/null `value`. Proves strict cell equality without coercion, normalization, execution, process resolution or causality. Numbers use `numeric.cell`.
-- `source.location`: `codebase`, exact original `source` tuple; never infer, narrow or extend its returned range. To cite a subrange, read it first and use its issued ID. No duplicate binding required; if supplied, exactly one same-ID binding with no Trace IDs. Empty `references`, artifact/relation refs and scope subjects. Proves returned location only, not disk existence, symbol contents, behavior, call chains, source/Trace equality, execution or causality. Never relabel facts to obtain verification.
+`numeric.cell/captured.cell`: `affirmed/asserted/one/certain`, `cited_rows`; no conditions/timeRangeNs. MUST select exactly one original `scope.subjectRefs` cell (locator/column/raw value); `references` cannot replace it.
 
-Allowed unit conversions only: time `ns/us/µs/μs/ms/s` (1000 ns = 1 us = 1 µs = 1 μs; 1000 us = 1 ms; 1000 ms = 1 s); frequency `Hz/kHz/MHz/GHz` (1000 per step); bytes `B/bytes/KiB/MiB/GiB` (B = bytes; 1024 per step); `ratio/%/percent` (1 ratio = 100% = 100 percent); aliases `frame/frames`, `event/events`. `count` stays `count`; other units must match verbatim. No cross-family conversion, inferred unit authority, tolerance, scientific notation, significant-figure rounding, ranges or ± under this display rule.
+- `numeric.cell`: independent `numeric`; References retain exact raw cell values and native row IDs; preserve producer units. 195000000 ns = 195 ms, not 195000000 ms. Exact equivalents only; never round declarations or references. `eq` binds body literals with `presentation`; otherwise exact values or an explicitly marked fixed-decimal approximation (`约/about/≈`). No causal/advice proof. Totals/means cite one captured aggregate cell matching population/window/units, never components.
+- `captured.cell`: `identity/categorical`; no numeric proposition/objectRefs. Subject `value`: string/boolean/null. Strict equality, no coercion/normalization/execution/process resolution/causality. Numbers use `numeric.cell`.
 
-Example: cell with authoritative `ms` metadata. Use actual IDs/columns/values for the same cell; column names do not establish units.
+Allowed unit conversions only: time `ns/us/µs/μs/ms/s` (us = µs = μs; 1000 per step); `Hz/kHz/MHz/GHz` (1000); `B/bytes/KiB/MiB/GiB` (B = bytes; 1024); `ratio/%/percent` (1 ratio = 100% = 100 percent). Aliases: frame/frames, event/events, fps/frames/s (frame rate, never Hz/count). `count` accepts frames/events 1:1, never conversely; other units must match verbatim. No cross-family conversion, inferred authority, tolerance, exponents, significant-figure rounding, ranges or ±.
 
-```json
-{"id":"example:duration","text":"The observed elapsed time is 7 ms.","kind":"numeric","references":[{"evidenceRefId":"data:example_metric","rowIndex":0,"column":"elapsed_ms","value":7}],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"numeric.cell","polarity":"affirmed","discourse":"asserted","quantifier":"one","modality":"certain","scope":{"population":"cited_rows","subjectRefs":[{"evidenceRefId":"data:example_metric","rowIndex":0,"column":"elapsed_ms","value":7}]},"numeric":{"operator":"eq","value":7,"unit":"ms"}}}
-```
+Quotes: exact number+unit substrings across body/tables; omit `occurrence` only if unique. Two `7.1 ms` matches need `quotes:[{"text":"7.1 ms","occurrence":0},{"text":"7.1 ms","occurrence":1}]`. Bind every occurrence, max 16 per claim; decimals 0–18. Counts integral; IDs never round. Formatting proves no meaning/status.
+Units in numeric table cells; `numeric` keeps captured unit/value. Only presentation converts/rounds; no floating-point loss.
 
-Rules are data, not a checklist. Never reshape claims to fit a predicate. Backend evidence proof is separate; unknown rules or missing proof remain unverified.
+Never reshape claims for a rule; unknown rules/missing proof stay unverified.
 
 ```json
 {{supportedProofRules}}
 ```
 
-`relationProposals` entries: `schemaVersion: "evidence_relation_candidate@1"`, unique `id` starting `proposal:`, `kind: overlap|wakeup|blocking_state|binder_peer|lock_owner|comparison_delta|derived`, `direction: subject_to_object|object_to_subject|symmetric`, `subject` reference, optional `object/proof` references. Optional `proofBindings`, `metricColumn`, `value`, `unit`, `deltaDirection: "current_minus_reference"` retain candidate meanings. Claims link proposal IDs through `relationRefs`. Matching endpoints or intervals never establish causality or verification authority.
+`relationProposals`: `schemaVersion:"evidence_relation_candidate@1"`, unique `proposal:` id; kind `overlap|wakeup|blocking_state|binder_peer|lock_owner|comparison_delta|derived`; direction `subject_to_object|object_to_subject|symmetric`; subject reference; optional object/proof references, proofBindings, metricColumn, value, unit, deltaDirection `current_minus_reference`. Preserve meanings; link claims via relationRefs. Matches prove no causality/verification.
 
-Serialize strings losslessly. Escape `<`, `>` and `&` as `\u003c`, `\u003e`, `\u0026` to keep `-->` inside JSON. Escape embedded newlines and quotes; decoding must reproduce original values.
+Compact JSON, preserving all fields/claims/values. Escape `<`, `>`, `&` as `\u003c`, `\u003e`, `\u0026` and string newlines/quotes losslessly; no comments or ellipses.

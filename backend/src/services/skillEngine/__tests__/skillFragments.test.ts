@@ -3,25 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it} from '@jest/globals';
-import {composeFragmentSql, injectFragmentCtes, substituteSqlPlaceholders} from '../skillFragments';
-
-describe('substituteSqlPlaceholders', () => {
-  it('parses the path, the default and whether the token sits inside a string literal', () => {
-    const seen: unknown[] = [];
-    const sql = substituteSqlPlaceholders("SELECT ${a}, '${b|x}', 'it''s ${c}', ${d | 5}", (placeholder) => {
-      seen.push(placeholder);
-      return 'v';
-    });
-
-    expect(sql).toBe("SELECT v, 'v', 'it''s v', v");
-    expect(seen).toEqual([
-      {match: '${a}', path: 'a', insideQuotes: false},
-      {match: '${b|x}', path: 'b', defaultValue: 'x', insideQuotes: true},
-      {match: '${c}', path: 'c', insideQuotes: true},
-      {match: '${d | 5}', path: 'd', defaultValue: '5', insideQuotes: false},
-    ]);
-  });
-});
+import {composeFragmentSql, injectFragmentCtes} from '../skillFragments';
 
 describe('injectFragmentCtes', () => {
   it('joins bodies after an existing WITH, keeping leading comments, or opens one', () => {

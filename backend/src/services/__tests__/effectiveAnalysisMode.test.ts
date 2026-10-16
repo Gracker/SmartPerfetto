@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it} from '@jest/globals';
+import {IndexGenerationPins} from '../indexGenerationPins';
 import {
   buildSmartDeepDiveAnalysisContext,
   resolveEffectiveAnalysisMode,
@@ -11,9 +12,9 @@ import {
 import {
   AnalysisContextAuthorizationChangedError,
   analysisContextMemoryPartitionKey,
-  analysisContextUsesPrivateKnowledge,
   assertCurrentAnalysisContextAuthorization,
   buildAnalysisContextAuthorizationFingerprint,
+  readAnalysisContextRegistrations,
 } from '../resolvedAnalysisContext';
 
 describe('effective analysis mode', () => {
@@ -41,15 +42,6 @@ describe('effective analysis mode', () => {
     expect(resolveEffectiveAnalysisMode('full', context)).toBe('full');
     expect(resolveEffectiveAnalysisMode('auto', context)).toBe('auto');
     expect(resolveEffectiveAnalysisMode(undefined, context)).toBe(defaultMode);
-  });
-
-  it.each([
-    ['trace only', {}, false],
-    ['codebase only', {codebaseIds: ['app']}, true],
-    ['private RAG only', {knowledgeSourceIds: ['wiki']}, true],
-    ['source and private RAG', {codebaseIds: ['app'], knowledgeSourceIds: ['wiki']}, true],
-  ] as const)('%s identifies the cross-session privacy boundary', (_label, context, expected) => {
-    expect(analysisContextUsesPrivateKnowledge(context)).toBe(expected);
   });
 
   it.each(contexts)('$label preserves Smart deep-dive defaults, explicit fast, and exact private allowlists', ({context}) => {
@@ -150,35 +142,43 @@ describe('effective analysis mode', () => {
     )).toThrow(AnalysisContextAuthorizationChangedError);
   });
 
-  it('fails the final run boundary when a knowledge generation loses its active chunks', () => {
-    let indexedChunkCount = 3;
+  it('leaves a knowledge index losing its generation file to the run\'s generation pin, not the run boundary', () => {
+    let generationServes = true;
     const knowledgeRegistry = {
       get: () => ({
-        sourceId: 'wiki',
+        sourceId: 'docs',
+        kind: 'document_collection',
         indexGeneration: 2,
-        activeGeneration: 'knowledge_2_test',
+        activeGeneration: 'dc_' + '2'.repeat(32),
         contentFingerprint: 'c'.repeat(64),
-        indexedChunkCount,
+        indexedChunkCount: 3,
         rightsAcknowledged: true,
         sendToProvider: true,
         consentedAt: 1,
       }),
     } as any;
-    const selection = {knowledgeSourceIds: ['wiki']};
+    const selection = {knowledgeSourceIds: ['docs']};
     const scope = {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user'};
     const expected = buildAnalysisContextAuthorizationFingerprint(
       selection,
       scope,
       {knowledgeRegistry},
     );
+    const registrations = () => readAnalysisContextRegistrations(selection, scope, {knowledgeRegistry});
+    const pins = IndexGenerationPins.capture(registrations(), {countCodebaseGenerationChunks: () => 0,
+      documentCollectionServes: () => generationServes});
 
-    indexedChunkCount = 0;
+    generationServes = false;
 
+    // Index state is not authorization: the run stays current...
     expect(() => assertCurrentAnalysisContextAuthorization(
       selection,
       scope,
       expected,
       {knowledgeRegistry},
-    )).toThrow(AnalysisContextAuthorizationChangedError);
+    )).not.toThrow();
+    // ...and the knowledge tools refuse the lost generation instead of searching it.
+    expect(pins.refusal('document_collection', ['docs'], registrations())?.payload)
+      .toMatchObject({unsupportedReason: 'knowledge_index_unavailable'});
   });
 });

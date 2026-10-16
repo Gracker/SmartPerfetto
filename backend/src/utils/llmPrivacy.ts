@@ -2,17 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { createHash } from 'crypto';
-
-export const LLM_REDACTION_VERSION = '1.0.0';
-
 export interface LlmRedactionStats {
   applied: boolean;
   replacements: Record<string, number>;
-}
-
-export function hashSha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
 }
 
 type TextRule = {
@@ -74,10 +66,6 @@ function applyTextRedactionRules(text: string): { text: string; stats: LlmRedact
   };
 }
 
-export function redactTextForLLM(text: string): { text: string; stats: LlmRedactionStats } {
-  return applyTextRedactionRules(text || '');
-}
-
 function isSensitiveKey(key: string): boolean {
   const k = (key || '').toLowerCase();
   if (!k) return false;
@@ -120,17 +108,11 @@ export function redactObjectForLLM(value: unknown): { value: unknown; stats: Llm
     }
 
     if (typeof node === 'object') {
-      const obj = node as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(obj)) {
-        if (isSensitiveKey(k)) {
-          bump('sensitive_key');
-          out[k] = '<REDACTED>';
-          continue;
-        }
-        out[k] = walk(v, depth + 1);
-      }
-      return out;
+      return Object.fromEntries(Object.entries(node).map(([k, v]) => {
+        if (!isSensitiveKey(k)) return [k, walk(v, depth + 1)];
+        bump('sensitive_key');
+        return [k, '<REDACTED>'];
+      }));
     }
 
     return node;

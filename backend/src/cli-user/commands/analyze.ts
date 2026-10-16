@@ -11,15 +11,16 @@
  * (via continueSession) and the REPL.
  */
 
-import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { startSession } from '../services/turnRunner';
+import { CLI_INTERRUPTED_EXIT_CODE, isTurnInterrupted, processInterruptSource } from '../services/turnInterrupt';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { withConsoleLogToStderr } from '../io/stdio';
 import type {CodeAwareMode} from '../../services/codebase/codeAwareFeature';
 import type {CliAnalysisMode} from '../types';
+import type {RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
 export interface AnalyzeCommandArgs {
   trace: string;
@@ -33,13 +34,13 @@ export interface AnalyzeCommandArgs {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
 }
 
 export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<number> {
-  // Resolve tracePath against the *user's* cwd before bootstrap runs — bootstrap
-  // pins cwd to the backend root for consistent service-layer path resolution,
-  // which would otherwise change how a relative trace argument gets interpreted.
-  const tracePath = path.resolve(args.trace);
+  // cwd is the backend root by now (see bootstrap.ts); resolve the trace
+  // argument against the directory the user invoked the CLI from.
+  const tracePath = resolveInvocationPath(args.trace);
   const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor, format: args.format });
   const lifecycle: { service?: CliAnalyzeService } = {};
   let exitCode = 0;
@@ -50,20 +51,21 @@ export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<numbe
       const service = new CliAnalyzeService();
       lifecycle.service = service;
       assertAnalysisRuntimeReady();
-      const turn = await startSession({ paths, service, renderer }, {
+      const turn = await startSession({ paths, service, renderer, interruptSource: processInterruptSource() }, {
         tracePath,
         query: args.query,
         analysisMode: args.analysisMode,
         codeAwareMode: args.codeAwareMode,
         codebaseIds: args.codebaseIds,
         knowledgeSourceIds: args.knowledgeSourceIds,
+        sourceDepth: args.sourceDepth,
       });
       exitCode = turn.success ? 0 : 1;
     });
     return exitCode;
   } catch (err) {
     renderer.printError((err as Error).message);
-    return 1;
+    return isTurnInterrupted(err) ? CLI_INTERRUPTED_EXIT_CODE : 1;
   } finally {
     await lifecycle.service?.shutdown();
   }

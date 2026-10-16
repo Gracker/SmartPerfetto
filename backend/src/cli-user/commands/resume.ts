@@ -14,6 +14,7 @@ import { bootstrap } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { continueSession } from '../services/turnRunner';
+import { CLI_INTERRUPTED_EXIT_CODE, isTurnInterrupted, processInterruptSource } from '../services/turnInterrupt';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { withConsoleLogToStderr } from '../io/stdio';
 import { loadSession } from '../io/sessionStore';
@@ -42,7 +43,7 @@ export async function runResumeCommand(args: ResumeCommandArgs): Promise<number>
       assertAnalysisRuntimeReady(config
         ? { providerId: config.providerId, runtimeOverride: config.agentRuntimeKind, aiFeature: 'agent_resume' }
         : { aiFeature: 'agent_resume' });
-      const turn = await continueSession({ paths, service, renderer }, {
+      const turn = await continueSession({ paths, service, renderer, interruptSource: processInterruptSource() }, {
         sessionId: args.sessionId,
         query: args.query,
       });
@@ -51,7 +52,7 @@ export async function runResumeCommand(args: ResumeCommandArgs): Promise<number>
     return exitCode;
   } catch (err) {
     renderer.printError((err as Error).message);
-    return 1;
+    return isTurnInterrupted(err) ? CLI_INTERRUPTED_EXIT_CODE : 1;
   } finally {
     await lifecycle.service?.shutdown();
   }

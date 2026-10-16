@@ -15,12 +15,13 @@ import type {
 
 export type QueryRow = Record<string, unknown>;
 
-export function rowObject(columns: string[], row: unknown[]): QueryRow {
-  const out: QueryRow = {};
-  columns.forEach((column, index) => {
-    out[column] = row[index];
-  });
-  return out;
+/**
+ * One row keyed by column name. Object.fromEntries defines each key, so a
+ * column aliased `__proto__` stays a column: assigning it onto `{}` would run
+ * the inherited setter and drop it, or strip the row's prototype for NULL.
+ */
+export function rowObject(columns: readonly string[], row: readonly unknown[]): QueryRow {
+  return Object.fromEntries(columns.map((column, index) => [column, row[index]]));
 }
 
 export function rowsToObjects(result: QueryResult): QueryRow[] {

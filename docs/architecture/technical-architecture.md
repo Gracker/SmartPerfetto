@@ -21,7 +21,7 @@ SmartPerfetto 在同一分析核心上提供多种入口：
 | portable | 三平台 release asset | 内置 Node.js 24、backend、frontend、trace processor 和 runtime assets |
 | HTTP/SSE API | `/api/*` | Web、CLI 辅助服务和内部集成都复用后端 contract |
 
-因此功能修改不能只验证其中一个入口。权威产品面清单在
+功能修改先判断影响哪些入口与共享契约，再验证对应行为。权威产品面清单在
 [`.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md)。
 
 ## 2. 组件边界
@@ -35,9 +35,11 @@ flowchart LR
   M --> S["YAML Skill engine"]
   S --> T["trace_processor_shell pool"]
   O --> K["Strategies and knowledge retrieval"]
-  O --> Q["Result normalization and quality gates"]
-  Q --> D["DataEnvelope / evidence / identity"]
-  D --> X["Chat / report / CLI / snapshot / comparison"]
+  R --> Q["Product-owned finalization"]
+  O -->|"Exact result + private context"| Q
+  M --> D["DataEnvelope / capture / identity"]
+  D --> Q
+  Q --> X["Chat / report / CLI / snapshot / comparison"]
 ```
 
 主要目录：
@@ -65,21 +67,25 @@ POST /api/agent/v1/analyze
   -> 解析 workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
   -> 选择 Claude / OpenAI / Pi / OpenCode / Qoder runtime
+  -> typed intent 固定范围、证据访问、预算和交付物
+  -> 符合条件时由产品采集策略声明的场景入口证据
   -> 通过共享 MCP registry 调用 SQL、Skill、知识和计划工具
   -> 已选源码：有界 lookup 或结构化 SourceUseDecision stop
   -> DataEnvelope + evidence/claim/identity sidecar
-  -> final result normalization / report contract + source claim-binding gate
+  -> exact runtime result + private finalization context
+  -> product-owned finalizeAnalysisResult：有限证明、最多一次无工具审核、终态
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
 `options.analysisMode` 支持：
 
-- `fast`：轻量工具面和确定性 direct-evidence path；
-- `full`：完整工具、计划和质量检查；
-- `auto`：先应用不可绕过的上下文规则，再由语义分类器决定。
+- `fast`：固定 quick budget，保留本次请求已授权的能力；
+- `full`：固定 full budget；
+- `auto`：采用 typed intent 的复杂度建议，不可用时使用明确 fallback。
 
-reference trace、codebase 或私有 knowledge source 需要完整上下文时，不能为了满足
-用户传入的 `fast` 而静默丢掉能力。
+预算、调查范围、证据访问和交付物是独立维度。完整预算不自动要求计划、报告或源码查询，
+快速预算也不减少请求权限；`existing_only` 在工具处理边界禁止新采集。详见
+[Agent Runtime](agent-runtime.md#分析模式)。
 
 ### 3.1 企业身份边界
 
@@ -99,7 +105,11 @@ credentialed fetch/header 策略携带 Cookie 与必要的 CSRF Token。本地�
 tenant/user/workspace 分区，OIDC 模式不读取旧的未分区数据。
 
 Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS 本身不会阻止浏览器
-发送跨站 mutation；同时必须携带 Session 派生的 CSRF Token。回调建立 Session 后直接
+发送跨站 mutation；同时必须携带 Session 派生的 CSRF Token。Trace Processor WebSocket
+握手是 GET，且不经过 Express 中间件，所以由浏览器自动附带的凭据（Session Cookie、
+可信 SSO Header、本地免密身份）认证时，握手的 Origin 必须在 CORS 允许列表中，并在
+分配任何 lease holder 之前检查；不从 Host 推导后端自身 Origin，因为 DNS rebinding
+页面能控制 Host。本地免密模式下握手同样拒绝非回环 Host。回调建立 Session 后直接
 跳回 `FRONTEND_URL`，不使用 popup 或前端工作区选择流程。
 
 ## 4. Runtime 与 Provider
@@ -109,11 +119,11 @@ Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS
 
 | Runtime | 主要 Provider | 恢复状态 |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | Claude session id |
-| `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | history + response id |
-| `pi-agent-core` | Provider Manager custom profile / Pi model config | opaque transcript |
-| `opencode` | OpenCode SDK 与 custom provider | OpenCode session id + 隔离目录 |
-| `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | Qoder session id；私有知识运行不持久化 opaque session |
+| `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | 不跨轮保留原生状态（只保留 provider 钉定） |
+| `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | 不跨轮保留原生状态（只保留 provider 钉定） |
+| `pi-agent-core` | Provider Manager custom profile / Pi model config | 不跨轮保留原生状态（只保留 provider 钉定） |
+| `opencode` | OpenCode SDK 与 custom provider | 不跨轮保留原生 session；隔离目录由 session id 推导，每轮复用 |
+| `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | 不跨轮保留原生状态（只保留 provider 钉定） |
 
 canonical loader 和 capabilities 来自
 `backend/src/agentRuntime/runtimeDescriptors.ts`，具体实现在
@@ -133,7 +143,7 @@ Provider Manager profile 优先于 `.env` fallback。Claude Agent SDK 在所有�
 `backend/src/agentv3/mcpToolRegistry.ts` 是工具描述、exposure 和 allowlist 的注册源，
 `claudeMcpServer.ts` 提供实现与按请求组合。工具不是固定总数：
 
-- fast/full 请求暴露面不同；
+- quick budget 在非整场景调查时压缩工具目录与结果投影，权限仍由请求和处理边界决定；
 - code-aware 工具需要授权；
 - comparison 工具只在 reference trace 存在时注册；
 - artifact 工具依赖当前 session 能力；
@@ -148,7 +158,7 @@ Provider Manager profile 优先于 `.env` fallback。Claude Agent SDK 在所有�
 
 ```text
 Markdown Strategy / Template
-  -> 分类、方法、约束、final_report_contract
+  -> 分类、方法、investigation_requirements、entry_skill、final_report_contract
 
 YAML Skill
   -> SQL / iterator / conditional / composite execution
@@ -174,6 +184,12 @@ Skill 合约见 [Skill 系统指南](../reference/skill-system.md)。
 `TraceProcessorService` 管理 `trace_processor_shell` pool、端口租约、trace load 和 SQL
 RPC。源码启动、npm、Docker 和 portable 必须使用同一 pin/校验规则；显式
 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径，启动器不会替用户改权限或覆盖文件。
+
+processor 的生命周期绑定到启动它的进程。macOS 和 Linux 上以
+`server http --idle-start orphaned` 启动，owner 退出后很快自行退出，包括不执行任何清理的退出
+（SIGKILL、崩溃、`jest --forceExit`）。Windows 和以 PID 1 运行的后端以不绑定 owner 的
+`server http` 启动，没有 `server http` 的二进制用经典 `--httpd` 启动；这些情况下 owner 死后
+遗留的 processor 由下一次后端启动的孤儿清扫回收。
 
 Skill/SQL 输出经过 DataEnvelope 后会继续形成：
 
@@ -204,27 +220,32 @@ SmartPerfetto 维护两类不同对比：
 ### Code-Aware
 
 代码库先经过 `PathSecurityGate` preview/register/reindex。默认 `metadata_only` 只向
-模型提供 `CodeRef`；`provider_send` 还需要注册时同意和本次请求显式选择。原始源码
-不能写入 session、日志、SSE、报告或 export。
+模型提供 `CodeRef`；`provider_send` 还需要注册时同意和本次请求显式选择。
+经过 owner 授权的结果投影可保留分析中的源码引用，供用户界面、本地历史和报告读取；
+日志、公开及共享出口使用 strict 投影。敏感路径、凭据与授权撤销仍独立检查，具体边界见
+[私有分析上下文](private-analysis-context.md)。
 
 注册只使代码库可选，不会自动附加。live root 的 `search_codebase` /
 `read_codebase_file` 不要求 active index；reindex 只是语义/符号检索和 patch 流程
-的可选加速。full 分析在已选源码且有可查询 trace 锚点时必须查询，否则在查询前
-记录结构化 stop status。`SourceUseDecisionV1` 记录 selected/queried/used、status 和 coverage。
+的可选加速。源码访问按问题与 `sourceNeed` 需要进行，预算档不自动插入 lookup；
+`existing_only` 不允许补采集。`SourceUseDecisionV1` 记录实际 selected/queried/used、status 和 coverage。
 
-Trace/Skill/SQL 证明发生，`CodeRef` 证明机制。`SourceClaimBindingV1` 只允许
-`corroborated|compatible|ambiguous|unverified`；`corroborated` 要求同一 claim 的已验证
-trace occurrence 和 `provider_send` body/indexed 证据。`metadata_only` 只能 locate。一个
+Trace/Skill/SQL 支撑观测，源码正文支持机制分析，`CodeRef` 元数据只负责定位。
+`SourceClaimBindingV1` 声明 claim 与 source/trace 引用的关联，状态由
+`source_claim_verifier@2` 从实际账本计算：`invalid` 表示绑定无效，`unbound`、
+`location_only`、`source_only` 保持 partial；`trace_linked` 表示本轮读过正文，且已关联
+同一 claim 的已核验 Trace 证据，不单独证明一般机制或因果关系。一个
 canonical projector 负责 SSE、report、CLI、snapshot 和 API 的安全 provenance；Web 再缩减为
 当前 run 回执。
 
-### Android Internals
+### 文档知识库
 
-内置签名 Knowledge Pack 与私有 checkout 是两个来源：
-
-- 内置 Pack 随各发布形态分发，TUF channel 可更新；分析只把 provenance 当作背景知识，
-  不能伪装成当前 trace 证据；
-- 私有 checkout 需要路径 allowlist、权利确认、provider 同意和 request-level source id。
+知识只有一种来源：用户注册并逐轮选择的文档知识库（`document_collection`），包括
+Android Internals Wiki 的 `src/`。它需要路径 allowlist（或本机目录选择）、权利确认、
+provider 同意和激活索引；`search_knowledge` / `read_knowledge_section` 的结果是背景
+（`evidenceEffect: background`），用 `kref-` 引用和 `kb:` 出处，不能伪装成当前 trace 证据。
+旧版 Wiki 连接器的记录是退役 kind：可列出、可删除，启动门禁以
+`ANALYSIS_CONTEXT_SOURCE_RETIRED` 拒绝选用。
 
 统一 analysis context 会固定 codebase/knowledge generation、tenant/workspace/user、
 provider consent 和 session continuity。恢复、报告和 snapshot 不能绕过这些边界。
@@ -283,17 +304,18 @@ persisted analysis_completed + RunManifest + optional snapshot
 | HTML report | 证据、claim、identity、背景知识引用和 appendix |
 | CLI artifact | turn、report、resume state 和机器可读输出 |
 | analysis-result snapshot | 标准指标、证据引用、comparison 输入 |
-| provider session snapshot | runtime/provider-specific 恢复状态 |
+| logical session snapshot | provider/runtime 钉定与产品历史，不跨轮恢复原生 SDK 会话 |
 | source provenance | 安全 SourceUseDecision、相对 `CodeRef` 与 trace-to-mechanism binding；Web 回执不保留 `CodeRef` |
 
-`final_report_contract`、normalizer 和质量门禁负责让各 runtime 收敛到共享结果语义，
-而不是用 provider-specific 字符串补丁修某一个出口。
+产品层从 exact runtime result 取出私有上下文，再唯一调用 `finalizeAnalysisResult`。
+它保留原命题和采集来源，分别计算完成、声明、证据、源码、身份及报告状态；
+声明按条目核验，交付模型调用按剩余时间准入。细节见 [Agent Runtime](agent-runtime.md#final-result-与质量产物)。
 
 ## 12. 发布资产
 
 发布面彼此独立：
 
-- npm CLI 包含 CLI dist、Skills、Strategies、SQL、trace processor 和 Knowledge Pack；
+- npm CLI 包含 CLI dist、Skills、Strategies、SQL 和 trace processor；
 - portable 还包含 Node.js 24、原生依赖、backend、`frontend/` 和 launcher；
 - Docker 从 `main` 构建 Linux image，消费提交的 `frontend/` 和 runtime assets；
 - 源码 checkout 的普通路径也消费 `frontend/`，只有 UI 开发才构建 submodule。
@@ -322,7 +344,7 @@ npm run verify:code-aware-semantic-delta
 npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
-npm --prefix backend run verify:codebase-aware
+npm run verify:codebase-aware
 ```
 
 此外：

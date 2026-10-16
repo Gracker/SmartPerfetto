@@ -54,4 +54,5 @@ export function buildExternalIssueTriagePrompt(input: {
   });
 }
 
+/** @internal Test seam. */
 export const __testing = {TEMPLATE_NAME};

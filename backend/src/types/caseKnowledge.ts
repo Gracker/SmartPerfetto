@@ -18,6 +18,23 @@ export type CaseKnowledgeRecommendationPriority = 'P0' | 'P1' | 'P2' | 'P3';
 export type CaseEvidenceSignatureOperator = 'eq' | 'contains_any' | 'gte' | 'lte';
 export type CaseKnowledgeMatchStrength = 'strong' | 'partial' | 'background';
 
+export type CuratedCaseStatus = Extract<CaseKnowledgeStatus, 'published' | 'reviewed'>;
+
+/** Only cases a curator reviewed or published reach an analysis. */
+export const CURATED_CASE_STATUSES: readonly CuratedCaseStatus[] = ['published', 'reviewed'];
+
+/**
+ * How recall and the case background order cases: higher first. (Markdown
+ * ingest ranks statuses its own way to decide which copy wins a merge.)
+ */
+export function caseStatusRank(status: CaseKnowledgeStatus): number {
+  return status === 'published' ? 3 : status === 'reviewed' ? 2 : status === 'draft' ? 1 : 0;
+}
+
+export function caseKnowledgeQualityRank(quality: CaseKnowledgeQuality | undefined): number {
+  return quality === 'curated' ? 3 : quality === 'imported' ? 2 : quality === 'weak' ? 1 : 0;
+}
+
 export interface CaseKnowledgeValidationIssue {
   filePath: string;
   message: string;
@@ -129,11 +146,16 @@ export interface CaseKnowledgeReportRecommendation {
   primaryRootCause?: string;
   matchStrength: CaseKnowledgeMatchStrength;
   evidenceGap?: string;
+  /** Trace evidence the case's signatures were evaluated against; never signature names. */
   evidenceRefs?: string[];
+  /** Signature fields that evidence satisfied: a match, not a verified claim. */
   matchedSignatures?: string[];
   missingRequiredSignatures?: string[];
   recommendations: CaseKnowledgeFrontmatter['recommendations'];
-  /** Present only when the hit traces to a runtime-learned case. */
+  /**
+   * Only on results from before learned cases were retired; kept so their
+   * reports still show it. Nothing produces it any more.
+   */
   learnedProvenance?: {
     candidateId: string;
     supportingEvidence: number;

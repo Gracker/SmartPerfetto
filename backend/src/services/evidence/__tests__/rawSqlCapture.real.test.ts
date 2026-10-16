@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import express from 'express';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../../tests/helpers/loopbackServer';
 import {randomUUID} from 'crypto';
 import {once} from 'events';
 import {WorkingTraceProcessor, TraceProcessorFactory} from '../../workingTraceProcessor';
@@ -15,7 +16,7 @@ import {TraceProcessorService, setTraceProcessorServiceForTests} from '../../tra
 import {getPortPool, resetPortPool} from '../../portPool';
 import {getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} from '../../traceProcessorLeaseStore';
 import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorLeases} from '../../analysisRunTraceProcessorLease';
-import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../../utils/localDevIdentity';
 import {resolveRuntimeTurnPolicy} from '../../../agentRuntime/runtimeTurnPolicy';
 import {probeTraceCompleteness} from '../../../agentv3/traceCompletenessProber';
 import {detectFocusApps} from '../../../agentv3/focusAppDetector';
@@ -30,15 +31,18 @@ import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
 import {attachFinalizationContext, takeFinalizationContext} from '../../../agentRuntime/analysisFinalizationContext';
 import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/strategyLoader';
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
+import {defaultDeliveryCallEstimateMs} from '../../runtimeCallStats';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../../codebase/sourceClaimVerifier';
 import {finalizeAnalysisResult} from '../../finalizeAnalysisResult';
 import {canonicalizeAnalysisResult} from '../../canonicalAnalysisResult';
-import {projectPrivateAnalysisResult, copyAnalysisResultForSnapshot} from '../../security/privateAnalysisProjection';
+import {projectOwnerAnalysisResult, copyAnalysisResultForSnapshot} from '../../security/privateAnalysisProjection';
 import {prepareClaimEvidence} from '../claimEvidencePreparation';
 import {getCapturedAnchorFacts} from '../evidenceCapture';
 import {readRawSqlCaptureMetadata} from '../rawSqlNativeProvenance';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import type {EvidenceReadView} from '../evidenceReadView';
+
+const loopbackServers = createLoopbackServerFixture();
 
 jest.setTimeout(120_000);
 const processors: WorkingTraceProcessor[] = [];
@@ -58,7 +62,11 @@ async function finalizeCapturedNativeResult(contract: ConclusionContract, eviden
   const semanticBody = canonicalizeAnalysisResult(result).result.conclusion;
   const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'native-final'});
   const controller = new AbortController();
-  attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + 10_000,
+  // The semantic review is budget-gated: a bounded-answer review is dispatched
+  // only when the remaining deadline covers its estimate, so keep a budget
+  // derived from the same default the gate falls back to without samples.
+  const reviewBudgetMs = defaultDeliveryCallEstimateMs(undefined) + 30_000;
+  attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + reviewBudgetMs,
     strategyRegistry: registry, traceIdentity: {currentTraceId: traceSide === 'current' ? traceId : 'unused-current-trace',
       ...(traceSide === 'reference' ? {referenceTraceId: traceId} : {})}, protocolProjection: projection.protocolProjection,
     deliveryContext: projection.deliveryContext!, evidenceReadView,
@@ -76,8 +84,10 @@ async function finalizeCapturedNativeResult(contract: ConclusionContract, eviden
     query: 'What is the captured duration?', dataEnvelopes});
   expect(finalized.result.claimVerificationResult?.passed).toBe(true);
   expect(finalized.result.deliveryAssurance?.claims).toBe('passed');
-  const projected = projectPrivateAnalysisResult(result.sessionId, finalized.result, 'en');
-  expect(projectPrivateAnalysisResult(result.sessionId, projected, 'en')).toEqual(projected);
+  // The durable owner surface keeps the review trace and the verification it
+  // produced; the raw projector without an owner audience is strict-only.
+  const projected = projectOwnerAnalysisResult(result.sessionId, finalized.result, 'en');
+  expect(projectOwnerAnalysisResult(result.sessionId, projected, 'en')).toEqual(projected);
   const exported = JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(projected))) as AnalysisResult;
   expect(exported.claimVerificationResult).toEqual(finalized.result.claimVerificationResult);
   expect(exported.deliveryAssurance?.claims).toBe('passed');
@@ -113,7 +123,7 @@ function captureFixture(service: TraceProcessorService, traceId: string, toolNam
     }},
   });
   const handler = mcp.toolDefinitions.find(tool => tool.name === toolName)!.shared.handler;
-  async function execute(sql: string, column: string, expected: number, withExecutionIdentity = true, terminalProjection = false) {
+  async function execute(sql: string, column: string, expected: number, withExecutionIdentity = true, terminalProjection = false, unit = 'ns') {
     envelopes.length = 0;
     await handler({sql, ...(traceSide === 'reference' ? {trace: 'reference'} : {})}, {});
     expect(envelopes).toHaveLength(1);
@@ -123,10 +133,10 @@ function captureFixture(service: TraceProcessorService, traceId: string, toolNam
       ...(withExecutionIdentity ? {sourceToolCallId: envelope.meta.sourceToolCallId} : {})};
     const contract = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
       conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
-      claims: [{id: 'duration', text: `The returned duration is ${expected} ns.`, kind: 'numeric', references: [ref],
+      claims: [{id: 'duration', text: `The returned quantity is ${expected} ${unit}.`, kind: 'numeric', references: [ref],
         semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
           discourse: 'asserted', quantifier: 'one', modality: 'certain',
-          scope: {population: 'cited_rows', subjectRefs: [ref]}, numeric: {operator: 'eq', value: expected, unit: 'ns'}}}],
+          scope: {population: 'cited_rows', subjectRefs: [ref]}, numeric: {operator: 'eq', value: expected, unit}}}],
     }).contract!;
     const view = artifactStore.createEvidenceReadView({ownerKey: 'raw-sql-capture-test',
       allowedTraces: [{traceId, traceSide}]});
@@ -178,15 +188,38 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
     }
   });
 
-  it('does not infer units from an expression alias or revive trust after a mutation', async () => {
+  it('derives a fixed native conversion without borrowing alias units or reviving mutated trust', async () => {
     const {processor, execute} = await fixture('execute_sql');
-    const expression = await execute(`SELECT dur / 1000000 AS dur FROM slice ${filter}`, 'dur', 42);
-    expect(expression.claimVerificationResult.claimResults[0].deterministicProof?.status).not.toBe('proved');
-    expect(expression.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('unit_authority_unknown');
+    for (const alias of ['dur', 'unrelated']) {
+      const expression = await execute(`SELECT dur / 1000000 AS ${alias} FROM slice ${filter}`, alias, 42, true, false, 'ms');
+      expect(expression.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
+      expect(getCapturedAnchorFacts(expression.claimSupport[0].anchors[0])?.fields[alias]).toMatchObject({unit: 'ms'});
+    }
+    const unknown = await execute(`SELECT 42 / 1000000 AS dur_ms FROM slice ${filter}`, 'dur_ms', 0, true, false, 'ms');
+    expect(unknown.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('unit_authority_unknown');
     await processor.query('CREATE PERFETTO TABLE unit_test_taint AS SELECT 1 AS value');
     await processor.query('DROP TABLE unit_test_taint');
     const after = await execute(`SELECT dur FROM slice ${filter}`, 'dur', 42_000_000);
     expect(after.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('unit_authority_unknown');
+  });
+
+  it.each(['execute_sql', 'execute_sql_on'] as const)('retains native aggregate units through %s without manufacturing row identity', async tool => {
+    const {processor, execute} = await fixture(tool);
+    for (const expression of ['SUM(dur)', 'MIN(dur)', 'MAX(dur)', 'AVG(dur)']) {
+      const result = await execute(`SELECT ${expression} AS total FROM slice ${filter}`, 'total', 42_000_000);
+      expect(result.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
+      expect(result.claimVerificationResult.claimResults[0].deterministicProof?.nativeRows).toBeUndefined();
+      expect(getCapturedAnchorFacts(result.claimSupport[0].anchors[0])?.nativeRow).toBeUndefined();
+    }
+    const count = await execute(`SELECT COUNT(*) AS n FROM slice ${filter}`, 'n', 1, true, false, 'count');
+    expect(count.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
+    const frames = await execute(`SELECT COUNT(*) AS n FROM slice ${filter}`, 'n', 1, true, false, 'frames');
+    expect(frames.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'rejected', reason: 'unit_dimension_mismatch'});
+    const start = Number((await processor.query(`SELECT ts FROM slice ${filter}`)).rows[0][0]);
+    const clipped = await execute(`SELECT SUM(MIN(ts + dur, ${start + 30_000_000}) - MAX(ts, ${start + 10_000_000})) AS clipped
+      FROM slice ${filter}`, 'clipped', 20_000_000);
+    expect(clipped.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved'});
+    expect(getCapturedAnchorFacts(clipped.claimSupport[0].anchors[0])?.nativeRow).toBeUndefined();
   });
 
   it.each(['execute_sql', 'execute_sql_on'] as const)('retains actual canonical row identity through %s and ignores computed IDs', async tool => {
@@ -241,7 +274,8 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       const app = express();
       app.use(express.json());
       app.use('/api/traces', traceRoutes);
-      const upload = await request(app).post('/api/traces/upload').attach('file', path.resolve(process.cwd(),
+      const server = await loopbackServers.listen(app);
+      const upload = await request(server).post('/api/traces/upload').attach('file', path.resolve(process.cwd(),
         '../Trace/.generated/constructed/source-analysis-semantic/trace.pftrace'));
       expect(upload.status).toBe(200);
       expect(upload.body.success).toBe(true);
@@ -269,7 +303,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
         registryFingerprint: 'personal-native-test', taskKind: 'investigation' as const, sceneId: 'general',
         scope: 'bounded_question' as const, recommendedComplexity: 'full' as const,
         deliverable: 'answer' as const, evidenceAccess: 'read_new' as const};
-      expect(resolveRuntimeTurnPolicy(boundedIntent, 'full').allowAutomaticPrefetch).toBe(false);
+      expect(resolveRuntimeTurnPolicy(boundedIntent, 'full').allowMemoryPrefetch).toBe(false);
       await leases.run(async () => {
         for (const phase of ['before_stats', 'after_stats']) {
           const proof = await execute(`SELECT id, dur FROM slice ${filter}`, 'dur', 42_000_000);
@@ -279,7 +313,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
           expect(proof.claimVerificationResult.claimResults[0].deterministicProof?.nativeRows)
             .toMatchObject([{traceId, traceSide: 'current', relation: 'slice', idColumn: 'id', id: expect.any(Number)}]);
           if (phase === 'before_stats') {
-            const stats = await request(app).get('/api/traces/stats');
+            const stats = await request(server).get('/api/traces/stats');
             expect(stats.status).toBe(200);
             expect(stats.body.stats.processors.count).toBe(2);
             expect(stats.body.stats.processors.items.map((item: {httpPort: number}) => item.httpPort)).toEqual([sharedPort]);
@@ -295,7 +329,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
 
         // Actual full-scene preparation starts with focus detection, whose
         // ordinary stdlib INCLUDE cannot preserve native-only provenance.
-        expect(resolveRuntimeTurnPolicy({...boundedIntent, scope: 'scene_wide'}, 'full').allowAutomaticPrefetch).toBe(true);
+        expect(resolveRuntimeTurnPolicy({...boundedIntent, scope: 'scene_wide'}, 'full').allowMemoryPrefetch).toBe(true);
         await detectFocusApps(service!, traceId);
         expect(privateProcessor.getNativeProvenanceSnapshot().status).toBe('tainted');
         await probeTraceCompleteness(service!, traceId);
@@ -312,7 +346,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       expect(TraceProcessorFactory.get(privateKey)).toBeUndefined();
       expect(getPortPool().getStats().allocations.some(allocation => allocation.traceId === privateKey)).toBe(false);
       expect(TraceProcessorFactory.get(traceId)).toBe(shared);
-      const viewer = await request(app).get(`/api/traces/${traceId}`);
+      const viewer = await request(server).get(`/api/traces/${traceId}`);
       expect(viewer.status).toBe(200);
       expect(viewer.body.trace.port).toBe(sharedPort);
       const uiStatus = await fetch(`http://127.0.0.1:${sharedPort}/status`);
@@ -327,6 +361,7 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       setTraceProcessorServiceForTests(null);
       getTraceProcessorLeaseStore().close();
       setTraceProcessorLeaseStoreForTests(null);
+      await loopbackServers.close();
       for (const [key, value] of previousEnv) {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }

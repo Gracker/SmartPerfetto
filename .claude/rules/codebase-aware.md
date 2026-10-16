@@ -1,75 +1,91 @@
 # Codebase-Aware Analysis Rules
 
-Use these rules before touching code-aware analysis, codebase registry, source ingestion, symbol resolution, patch proposal, or code-aware report/UI surfaces.
+Read [Private Analysis Context](../../docs/architecture/private-analysis-context.md)
+and [Code-Aware Analysis](../../docs/getting-started/code-aware-analysis.md)
+before changing source/knowledge registration, access, symbols, patches or output.
+They own the detailed request matrix, consent, continuity, references and lifecycle.
 
-## Product Boundary
+## Selection, Consent and Continuity
 
-- Treat source code as user-owned local material. Authorized owner-facing analysis may display and retain quoted source in local history, reports, exports, and result snapshots. Do not copy raw tool payloads into logs, telemetry, opaque provider transcripts, or public artifacts. Keep private knowledge filtering separate.
-- Registration makes a codebase selectable; it never attaches source to an analysis automatically. Every run must carry an explicit selection.
-- The Web Add and use action may combine registration, disclosed provider consent, and explicit current selection. Register-only leaves selection and consent unchanged; metadata-only selections are never silently upgraded.
-- LLM-visible output should prefer `CodeRef` metadata: `referenceId` or `chunkId`, relative `filePath`, `lineRange`, `symbol`, `codebaseId`, `buildId`, `vendor`.
-- Raw excerpt inspection endpoints remain RBAC-protected. Their transient frontend caches clear on session/trace switch, panel unmount, permission revoke, reindex, and delete; authorized quotations already saved in analysis results are user artifacts.
-- `metadata_only` must never send source snippets to providers. `provider_send` still requires per-codebase `sendToProvider` consent.
-- Trace/Skill/SQL supports occurrence in the current trace through its evidence contract. `CodeRef` locates source and supplies candidate mechanism context; it cannot prove implementation behavior or raise occurrence or root-cause confidence alone. Mechanism status is `corroborated`, `compatible`, `ambiguous`, or `unverified`.
+- Registration never selects source or grants provider-send consent. Every run
+  uses explicit `effectiveAnalysisSelection`; off ignores hidden ids, ids without
+  mode mean metadata-only, no ids means off, knowledge selection is independent.
+  `metadata_only` sends no source body. Codebase provider-send requires current
+  selection/language consent bound to the server-issued disclosure token through
+  `authorizeContent`; legacy enable paths cannot bypass that disclosure.
+- Consent narrowing/widening and selected-source lifecycle changes restart under
+  a new authorization fingerprint. Identical submissions, unselected changes and
+  index rebuilds do not. The fingerprint includes authorization/rights/license,
+  never generation; old fingerprints are never re-stamped. Source-derived history
+  reaches a later prompt only for the same creator under the exact original
+  authorization. Missing scope is restricted, never inferred as public.
+- Paths go through `PathSecurityGate` and source/knowledge root gates. Native
+  picker and local CLI grants bind the registered owner/root/channel, never a
+  shared allowlist or raw path supplied by a client. Recheck identity, permissions,
+  path filters, extension/size bounds and symlink boundaries on reads.
+- Recheck authorization before every interceptable model dispatch, before tool
+  access and before delivery; a revoked source already in native context must
+  not be sent again. Fence indexed reads against the run's pinned whole generation
+  before/after reads and delivery. Incomplete/lost generations refuse, never
+  silently return fewer hits. Deletion fences/tombstones every store side first;
+  retries finish cleanup without restoring access.
+- A live authorized root supports bounded on-demand search/read without an index.
+  Depth/budgets come from shared policy and size access, never authorize it.
+  Source use comes only from actual calls; incomplete search cannot prove absence.
+  Document knowledge requires rights plus provider consent, uses selected
+  generation-pinned background tools even under existing-only, and cannot become
+  trace evidence. Retired knowledge kinds remain inaccessible, listed/deletable.
 
-- At source activation, disclose that relevant snippets go to the configured AI service, quotations can be saved with local results/exports, provider retention depends on its policy/configuration, and source search/read/model work increases analysis time. Never promise third-party zero retention.
+## Privacy and References
 
-## Backend
-
-- Register and preview paths through `PathSecurityGate`; never trust a client-supplied root directly.
-- A live registered root is sufficient for bounded `search_codebase` and `read_codebase_file`; an active index is optional acceleration, not an analysis prerequisite.
-- Explicit source selection makes authorized tools available to the primary run. The AI decides whether source lookup is needed within the runtime evidence policy and caller budgets; completion does not require a lookup or `record_source_use_decision` call. An incomplete search cannot support a source-absence claim.
-- On-demand access must enforce the registered path filters, extension/size limits, provider consent, bounded results/line ranges, secret redaction, and the private-output projection. Never return an absolute root.
-- Code-aware chunks must carry `codebaseId` and `registryOrigin='codebase_registry'`.
-- `app_source`, `kernel_source`, or registry-origin chunks missing codebase metadata must fail closed with `invalid_codebase_metadata`.
-- Indexed lookup handlers must pass through `LookupResponseFilter`; on-demand handlers must pass through `OnDemandSourceAccessService` and the same external-surface projection boundary before results leave the runtime.
-- SSE/snapshot/report/export paths use the owner-result projector; logs and public artifacts use the strict projector. Never pass raw MCP tool results directly to either audience. Keep audience scopes synchronous and exception-safe, and fix streaming audience at construction.
-- Parse native conclusion declarations before display replacement. Keep original verification values in the private finalization context and bind them to the exact run, attempt and public candidate with an issued receipt. Never verify rewritten display values or recover validation authority from serialized output. Project protocol fields structurally and serialize text values safely; preserve invalid native declarations as invalid.
-- `SourceUseDecisionV1` is actual current-run MCP state, not model-authored prose. It records selected/queried/used IDs, status, structured reason code, coverage, and safe references. `pending` and `attempted` are audit states and do not override native completion or make the answer partial by themselves. Unchecked source claims remain unverified; actual invalid bindings and private-output projection failures retain their separate verification and delivery consequences.
-- Issue model-visible `sourceReferences` before delivering lookup results; admit them into the current-run ledger before exposing associated body or authorizing patches. At reference capacity, return an explicit bound instead of silently dropping issued references. Accept safe relative Unicode and spaced paths consistently across reading, source identity, reports, and verification.
-- An explicit stop decision cannot hide subsequent actual source calls. A requested file window is not incomplete search coverage; preserve real search incompleteness while allowing bindings to positively identified source.
-- `SourceClaimBindingV1` uses only references returned by the current selected partition; any Trace references must belong to the same claim. `corroborated` requires verified trace occurrence plus `provider_send` body/indexed evidence; `metadata_only` is locate-only. Pure `source.location` claims use the exact returned `semantics.source` tuple without requiring a duplicate root binding. If provided, that claim's binding must be unique, use the same source ID and contain no Trace IDs. Location proof covers only the current returned location snapshot and still requires complete semantic review of the displayed proposition.
-- Initial/replayed SSE, HTML reports, CLI JSON/Markdown/HTML, analysis-result snapshots, and report/snapshot APIs share the canonical owner projector. Source quotations and real check diagnostics remain readable even when success is false; preserve verification/completion status. Strict source-echo capacity limits must not suppress owner output. The Web receipt remains metadata-only with no CodeRefs; do not expose registered absolute roots or credentials.
-- Owner process views retain model-provided analysis commentary and shared tool/outcome narration; raw tool payloads remain outside chat. Strict private process projections may omit model events without repetitive placeholders. Receipt mechanism status comes from the actual source-claim verifier, never a model declaration. Index failure messages must distinguish capacity failure from fresh root access checks; source access scope affects both indexed and on-demand paths.
-- Keep prompt content in `backend/strategies/` and Skills in `backend/skills/`; do not hardcode code-aware prompting in TypeScript.
+- Owner analysis may retain source/knowledge quotations in local history, reports,
+  exports and snapshots under the owner projector with credentials/canaries
+  withheld. Logs, telemetry, opaque provider transcripts and public artifacts use
+  the strict projector that replaces private material whole. Management routes
+  return metadata, not indexed source bodies or absolute roots.
+- Redact whole files before windowing/chunking and after format conversion using
+  the shared secret detector. Test both leaks and readable code plus the detector's
+  performance tier. Heuristic redaction is not complete; consent, strict projection
+  and registered-text echo guards are independent defenses. Fix audience at stream
+  construction; synchronous scopes remain exception-safe.
+- Private questions/history and drafts follow the private-context persistence
+  rules. Never resume opaque native sessions; source-derived product history
+  requires the exact original authorization fingerprint and creator.
+  Private drafts withdraw at the first projection alteration; delayed credential
+  recognition remains an owner-only live residual, never durable authority.
+  Private runs read admitted workspace learning but cannot write it.
+- Issue safe relative `CodeRef` metadata before delivering source, then admit it
+  into the current-run ledger. Capacity exhaustion is explicit. A reference id
+  locates source, not current trace occurrence or causality. Knowledge references
+  are run-bound background context, not source/trace proof. Preserve Unicode and
+  spaced relative paths consistently across readers, citations and outputs.
+- `SourceUseDecisionV1` and knowledge-use receipts reflect actual current-run
+  deliveries; missing recording is unknown, not zero. Source-claim verification
+  is server-owned: invalid/out-of-selection bindings fail, while unbound,
+  location-only, source-only and trace-linked remain short of proof. Every Trace
+  reference belongs to the same claim. Models cannot declare mechanism proof.
+- Parse native declarations before display replacement and keep exact originals
+  in private finalization context bound to run, attempt and candidate by issued
+  receipt. Never verify rewritten display values or recreate authority from JSON.
+  Source/RAG metadata lacking registered codebase identity fails closed.
+- Lookup handlers use the shared indexed/on-demand response filters and owner or
+  strict projector on all SSE/replay/report/CLI/snapshot/API paths. Preserve native
+  completion and verification state even when success is false. Source-tool
+  narration uses safe actual outcomes; raw payloads stay outside chat.
 
 ## Patch Proposals
 
-- `propose_patch` requires prior successful code lookup in `CodeLookupLedger`.
-- On-demand `referenceId` records deliberately do not authorize `propose_patch`; patch targets remain tied to previously looked-up indexed `chunkId` context.
-- Reject context from multiple codebases in Phase 1.
-- Verify target files are inside previously looked-up context.
-- Run `git apply --check` in the target codebase root before returning a `verified` patch.
-- `sketch` and `unverified` responses must not expose copyable unified diff text.
+`propose_patch` requires prior successful indexed lookup in `CodeLookupLedger`.
+Check selected owner/codebase and pinned active generation before reading bodies
+or ledger context. On-demand reference ids grant no patch authority; missing,
+collected or mixed-codebase context refuses without a path/diff. Target files
+must lie within previously looked-up context. Run `git apply --check` in the
+codebase root before returning a verified patch; sketch/unverified responses
+expose no copyable unified diff. A proposal never applies a patch automatically.
 
 ## Verification
 
-After backend changes:
-
-```bash
-cd backend
-npm run typecheck
-npm run validate:strategies
-npm run validate:skills
-npm run test:scene-trace-regression
-```
-
-After plugin UI changes:
-
-```bash
-./scripts/start-dev.sh
-# Stop the dev server after browser verification.
-(cd perfetto && tools/node ui/build.mjs)
-./scripts/update-frontend.sh
-```
-
-Before landing:
-
-```bash
-npm run verify:pr
-```
-
-For full code-aware validation:
+Use affected owner tiers from [testing](testing.md). For full source-contract work:
 
 ```bash
 npm --prefix backend run verify:codebase-aware
@@ -78,13 +94,8 @@ npm --prefix backend run test:report-contracts
 npm --prefix backend run verify:code-aware-semantic-delta
 ```
 
-This gate depends on local Heavy/Light traces plus a local
-`HighPerformanceFriendsCircle` checkout. It verifies both no-codebase
-trace-only behavior and configured-codebase reports/exports with source-level
-`CodeRef` assertions.
-
-`verify:code-aware-semantic-delta` is deterministic local evidence. It must
-cover A0 no source, A1/A2 no-index access, A3 indexed access, A4 wrong-source
-rejection, quantitative `not_needed`, source-binding strength, and the shared
-runtime finalizer. Report real-provider acceptance separately; unavailable
-credentials are `REAL PROVIDER NOT AVAILABLE`, not a pass.
+The first gate needs local Heavy/Light traces and `HighPerformanceFriendsCircle`.
+The semantic-delta gate prepares its fixture and proves deterministic no-source,
+no-index, indexed, wrong-source rejection and binding/finalizer behavior. Real
+provider parity needs separate authenticated runs; missing credentials remain
+`REAL PROVIDER NOT AVAILABLE`. A deterministic result is not provider acceptance.

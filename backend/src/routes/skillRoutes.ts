@@ -85,10 +85,11 @@ router.post('/detect-intent', skillController.detectIntent);
 /**
  * POST /api/skills/detect-vendor
  *
- * Detect the device vendor from trace content
+ * Resolve the device vendor, SoC and OS from trace metadata
  *
  * Body: { traceId: string }
- * Response: { vendor: string, confidence: string, matchedPatterns: string[] }
+ * Response: { schemaVersion: 'trace_vendor@1', vendor, brand?, confidence: number,
+ *   vendorConfidence, soc, os, source, evidence }
  */
 router.post('/detect-vendor', skillController.detectVendor);
 

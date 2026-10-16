@@ -2,13 +2,21 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it, jest, beforeEach } from '@jest/globals';
+import {afterEach,  describe, expect, it, jest, beforeEach } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { registerTeachingRoutes } from '../agentTeachingRoutes';
 import { readTraceMetadataForContext } from '../../services/traceMetadataStore';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
 import { RenderingPipelineTeachingService } from '../../services/renderingPipelineTeachingService';
+
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
+afterEach(async () => {
+  await loopbackServers.close();
+});
 
 const mockAnalyze = jest.fn<(...args: any[]) => any>();
 const mockGetTrace = jest.fn<(...args: any[]) => any>();
@@ -29,7 +37,7 @@ jest.mock('../../services/renderingPipelineTeachingService', () => ({
   })),
 }));
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use((req: any, _res, next) => {
@@ -47,7 +55,7 @@ function makeApp(): express.Express {
   const router = express.Router();
   registerTeachingRoutes(router);
   app.use('/api/agent/v1', router);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function buildTeachingResponse(): any {
@@ -173,7 +181,7 @@ describe('agent teaching pipeline route', () => {
   });
 
   it('requires traceId', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/agent/v1/teaching/pipeline')
       .send({outputLanguage: 'en'});
 
@@ -188,7 +196,7 @@ describe('agent teaching pipeline route', () => {
   it('returns 404 when trace metadata is not owned by the request context', async () => {
     (readTraceMetadataForContext as any).mockResolvedValue(null);
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/agent/v1/teaching/pipeline')
       .send({ traceId: 'trace-1' });
 
@@ -199,7 +207,7 @@ describe('agent teaching pipeline route', () => {
   it('returns 404 when the trace is not uploaded to the backend processor', async () => {
     mockGetTrace.mockReturnValue(null);
 
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/agent/v1/teaching/pipeline')
       .send({ traceId: 'trace-1' });
 
@@ -212,7 +220,7 @@ describe('agent teaching pipeline route', () => {
   });
 
   it('preserves legacy fields while returning the v2 observed-flow contract', async () => {
-    const res = await request(makeApp())
+    const res = await request(await makeApp())
       .post('/api/agent/v1/teaching/pipeline')
       .send({
         traceId: 'trace-1',

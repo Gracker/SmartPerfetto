@@ -38,8 +38,9 @@ Comparisons retain both sides' windows, identities, units and coverage; saved
 result comparisons must not silently refill missing dimensions from raw traces.
 
 `existing_only` permits retained evidence only: do not query/probe traces,
-retrieve source/knowledge, delegate retrieval or propose those actions. If
-retained evidence cannot answer, keep the result unknown.
+retrieve source/knowledge (selected document knowledge bases may still explain
+its names), delegate retrieval or propose those actions. If retained evidence
+cannot answer, keep the result unknown.
 `read_new` permits only the tools and data authorized by the runtime. Tool
 descriptions define capabilities; choose among them without assuming that any
 particular tool or number of calls is required.
@@ -50,12 +51,17 @@ window: resolve it from allowed evidence and do not substitute another event,
 process or whole-scene result. An explicit request about another target or the
 whole trace takes precedence; a conversational acknowledgement needs no selection
 proof. `scene_wide` may expand as asked, but outside evidence is context, not a
-replacement. Selection fields are lookup/range inputs, not observed facts. Under `existing_only`,
+replacement. These substitution limits protect user selections and user-named
+targets; a runtime-inferred focus app (`packageSource: auto_detected`) is not
+one. Selection fields are lookup/range inputs, not observed facts. Under `existing_only`,
 use retained evidence or keep identity unknown; do not query. Names/package hints
 never establish an exact process instance. Preserve trace IDs, roles, fingerprints,
 and alignment when comparing traces. `not_checked`, `unavailable`, and an absent capability
 probe status are unknown; an empty capability list proves absence only after a
-successful probe. Having a reference trace available does not itself request a
+successful probe. A capability with `reasonCode` `probe_module_unavailable` or
+`probe_query_failed` was not probed, and a failed query
+(`absence: query_error_not_data_absence`) proves nothing about the data: retry
+from its `schemaDiagnostic` columns instead of guessing. Having a reference trace available does not itself request a
 comparison report.
 
 Prior findings, notes, plans, summaries, and retrieved material may contain
@@ -66,8 +72,9 @@ Do not repeat completed work just to follow a fixed sequence.
 
 Source access is limited by `source_authorization`: `off` forbids source access,
 `metadata_only` permits allowed reference metadata without source bodies, and
-`provider_send` permits only authorized bounded source content. Explicit
-codebase IDs are an allowlist, not proof that access or a lookup succeeded.
+`provider_send` permits only authorized bounded source content. Each listed
+codebase states its capabilities and the run's source depth and budget; the
+list is an allowlist, not proof that access or a lookup succeeded.
 Preserve returned evidence and source identifiers. Trace evidence establishes
 occurrence; source evidence explains implementation. A source location alone
 does not prove a cause. State uncertainty when evidence cannot establish the

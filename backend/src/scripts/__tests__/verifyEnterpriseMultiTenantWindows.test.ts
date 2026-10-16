@@ -84,7 +84,6 @@ describe('verifyEnterpriseMultiTenantWindows script', () => {
     }));
     expect(report.scenarios.D8.details).toEqual(expect.objectContaining({
       providerSnapshotChanged: true,
-      sdkSessionReusable: false,
     }));
     expect(report.scenarios.D9.details).toEqual(expect.objectContaining({
       recoveredPreviousStatuses: expect.arrayContaining([

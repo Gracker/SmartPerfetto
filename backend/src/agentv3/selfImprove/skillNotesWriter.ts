@@ -25,6 +25,7 @@ import {
   type FailureCategory,
 } from './failureTaxonomy';
 import { scanContent, formatThreats } from './contentScanner';
+import { logStoredReadFailure, parseStoredJson } from '../../utils/storedData';
 
 /** Strict JSON shape emitted by the review agent. Anything else is rejected. */
 export interface ReviewAgentNoteEmission {
@@ -77,7 +78,7 @@ export type WriteRejectReason =
   | 'invalid_skill_id'
   | 'io_error';
 
-/** Match the worktreeRunner whitelist style — keeps file names safe. */
+/** Whitelisted characters only — keeps file names safe. */
 const SKILL_ID_RE = /^[a-zA-Z0-9_]{1,80}$/;
 const MAX_EVIDENCE_CHARS = 600;
 const MAX_CONSTRAINTS_CHARS = 400;
@@ -88,7 +89,11 @@ const MAX_TOOL_CHARS = 80;
 const MAX_NOTE_BYTES = 4 * 1024;
 const MAX_FILE_BYTES = 16 * 1024;
 const NOTE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_NOTES_DIR = backendLogPath('skill_notes');
+
+/** Runtime skill-notes directory, resolved on use (the CLI sets its log root after import). */
+export function runtimeSkillNotesDir(): string {
+  return backendLogPath('skill_notes');
+}
 
 export interface WriteOptions {
   /** Override notes directory — primarily for tests. */
@@ -235,7 +240,7 @@ export function writeSkillNote(raw: unknown, opts: WriteOptions = {}): WriteOutc
     return { ok: false, reason: 'capacity_exceeded', details: `note=${note.byteSize}B > ${MAX_NOTE_BYTES}B` };
   }
 
-  const dir = opts.notesDir ?? DEFAULT_NOTES_DIR;
+  const dir = opts.notesDir ?? runtimeSkillNotesDir();
   const filePath = path.join(dir, `${emission.skillId}.notes.json`);
 
   try {
@@ -299,14 +304,15 @@ export function readSkillNotesFile(filePath: string): SkillNotesFile {
     return { schemaVersion: 1, skillId: path.basename(filePath, '.notes.json'), notes: [], lastUpdated: 0, totalBytes: 0 };
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const parsed = parseStoredJson<Partial<SkillNotesFile>>(fs.readFileSync(filePath, 'utf-8'), 'skill notes');
     if (parsed && Array.isArray(parsed.notes)) return parsed as SkillNotesFile;
   } catch (err) {
-    console.warn('[skillNotesWriter] failed to parse', filePath, (err as Error).message);
+    logStoredReadFailure('[skillNotesWriter] Notes file unreadable, using empty notes', err, {path: filePath});
   }
   return { schemaVersion: 1, skillId: path.basename(filePath, '.notes.json'), notes: [], lastUpdated: 0, totalBytes: 0 };
 }
 
+/** @internal Test seam. */
 export const __testing = {
   MAX_NOTE_BYTES,
   MAX_FILE_BYTES,

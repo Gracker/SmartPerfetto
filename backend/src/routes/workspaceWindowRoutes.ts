@@ -122,7 +122,6 @@ router.post('/:windowId/heartbeat', (req, res) => {
       scope,
       {
         windowId,
-        userId: context.userId,
         traceId: optionalString(req.body?.traceId),
         backendTraceId: optionalString(req.body?.backendTraceId),
         activeSessionId: optionalString(req.body?.activeSessionId),

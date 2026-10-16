@@ -47,6 +47,8 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {logStoredReadFailure, parseStoredJson} from '../utils/storedData';
+import {KnowledgeCurationError} from './knowledgeCurationError';
 
 /** Minimum sample count enforced for `status='published'`. */
 export const BASELINE_PUBLISH_MIN_SAMPLES = 3;
@@ -105,7 +107,6 @@ export interface BaselineStoreListOptions {
 export class BaselineStore {
   private readonly storagePath: string;
   private readonly baselines = new Map<string, BaselineRecord>();
-  private loaded = false;
   private loadError: Error | undefined;
 
   constructor(storagePath: string) {
@@ -114,13 +115,12 @@ export class BaselineStore {
 
   /** Idempotently load the on-disk store into memory. */
   load(): void {
-    this.loaded = true;
     this.baselines.clear();
     this.loadError = undefined;
     if (!fs.existsSync(this.storagePath)) return;
     try {
       const raw = fs.readFileSync(this.storagePath, 'utf-8');
-      const parsed = JSON.parse(raw) as StorageEnvelope;
+      const parsed = parseStoredJson<StorageEnvelope>(raw, 'baseline store');
       if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.baselines)) {
         this.loadError = new Error('Baseline store schema is invalid');
         return;
@@ -130,9 +130,8 @@ export class BaselineStore {
       }
     } catch (error) {
       // Corrupted JSON: empty cache, file preserved for inspection.
-      this.loadError = new Error(
-        `Baseline store is unreadable: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.loadError = new Error('Baseline store is unreadable');
+      logStoredReadFailure('[BaselineStore] Baseline store unreadable, file preserved', error, {path: this.storagePath});
     }
   }
 
@@ -257,7 +256,7 @@ export class BaselineStore {
 
     const sampleCount = record.sampleCount ?? 0;
     if (sampleCount < BASELINE_PUBLISH_MIN_SAMPLES) {
-      throw new Error(
+      throw new KnowledgeCurationError('baseline_publish_rejected',
         `Baseline '${record.baselineId}' cannot be published with sampleCount=${sampleCount} (minimum ${BASELINE_PUBLISH_MIN_SAMPLES})`,
       );
     }
@@ -266,7 +265,7 @@ export class BaselineStore {
       keyHasIdentifiableInfo(record.key) &&
       record.redactionState !== 'redacted'
     ) {
-      throw new Error(
+      throw new KnowledgeCurationError('baseline_publish_rejected',
         `Baseline '${record.baselineId}' cannot be published with redactionState='${record.redactionState}' — key carries identifiable info`,
       );
     }

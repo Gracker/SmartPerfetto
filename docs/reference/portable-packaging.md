@@ -11,8 +11,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 <!-- i18n-headings: paired -->
 
 SmartPerfetto 的免安装包不是单文件二进制。启动器负责拉起包内 Node.js 24
-runtime、后端、预构建 Perfetto UI、固定版本 `trace_processor_shell` 和签名的
-Android Internals Knowledge Pack。
+runtime、后端、预构建 Perfetto UI 和固定版本 `trace_processor_shell`。
 
 当前维护的 release asset：
 
@@ -53,38 +52,54 @@ dist/windows-exe/smartperfetto-v<version>-windows-x64.zip
 
 ## 发布
 
-完整公开发布顺序见 [发布手册](release.md)。免安装包发布通常在 npm CLI
-发布和 smoke 通过后执行。
+完整公开发布顺序见 [发布手册](release.md)。先上传免安装包 draft，通过三平台
+精确归档 smoke 后公开 GitHub release；公开事件再触发 npm Trusted Publishing。
 
 正常公开发布中的 portable 步骤：
 
 ```bash
 npm run version:set -- <version>
 npm run version:sync -- --check
-git add package.json package-lock.json backend/package.json backend/package-lock.json
+npm --prefix backend run cli:pack-check
+npm --prefix backend run cli:e2e
+git add package.json package-lock.json backend/package.json backend/package-lock.json CHANGELOG.md
 git commit -m "chore: release v<version>"
 git push origin main
-npm --prefix backend run cli:pack-check
-cd backend
-npm publish --access public
-cd ..
+git tag -a v<version> -F <release-notes-file>
+git push origin v<version>
+# 公开 macOS 包须先配置下文的 Developer ID 和 Keychain 公证 profile
 npm run package:portable
-# 以下命令分别在归档匹配的 Windows x64、macOS arm64、Linux x64 上运行
-node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
-  --version <version> --commit <commit> --public-release \
-  --output-dir dist/portable/smoke-evidence/<target>
-# 没有目标机器时，从默认分支对现有 draft 运行：
+npm run release:portable -- <version> --skip-build
+# 本示例使用 hosted smoke，从默认分支对刚上传的 draft 运行：
 gh workflow run portable-exact-archive-smoke.yml \
-  -f release_id=<numeric-release-id> -f selection=all
-gh run download <run-id> \
+  --ref main -f release_id=<numeric-release-id> -f selection=all
+gh run list --workflow portable-exact-archive-smoke.yml --limit 5
+gh run watch <smoke-run-id> --exit-status
+gh run download <smoke-run-id> \
   --name portable-smoke-evidence-release-<numeric-release-id> \
   --dir <download-dir>
 npm run release:portable -- <version> --skip-build --no-draft \
   --release-commit <draft-target-full-sha> \
   --smoke-evidence-dir <download-dir>/promotion-evidence \
   --smoke-attestation <download-dir>/portable-smoke-attestation.json \
-  --smoke-run-id <run-id>
+  --smoke-run-id <smoke-run-id>
+gh run list --workflow npm-publish.yml --limit 5
+gh run watch <npm-run-id> --exit-status
+npm view @gracker/smartperfetto@<version> version dist.integrity --json
 ```
+
+如果使用本地原生 smoke 替代 hosted workflow，在每个匹配的 Windows x64、
+macOS arm64、Linux x64 上测试同一份最终归档：
+
+```bash
+node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
+  --version <version> --commit <commit> --public-release \
+  --output-dir dist/portable/smoke-evidence/<target>
+```
+
+以上 promotion 示例使用 hosted smoke 的完整证据。本地原生 smoke 的证据入口与
+npm OIDC 恢复步骤见发布手册。普通发布不需要本地 `npm publish`；交互式发布仅是
+发布手册中明确限定的应急回退。
 
 `package:portable` 会从 `scripts/node-runtime-pin.env` 读取明确的 Node.js
 版本、三平台归档 SHA-256 和可执行内容摘要，而不是在构建时动态选择最新版本。
@@ -176,9 +191,13 @@ AI 分析推荐在 UI 里配置 Provider profile。需要 env 凭证时，在对
 创建 `env` 文件后重启启动器。
 
 便携包启动时会将可写的上传目录通过 `UPLOAD_DIR` 传给后端，并在用户数据根目录下
-创建 `uploads/`。不要依赖包内的 `backend/uploads`；这可以避免 App 位于 macOS
-`AppTranslocation` 临时路径或应用包不可写时，后端因上传目录不存在而无法通过 readiness
-检查。若从下载目录启动出现 `AppTranslocation`，请将 App 移到 `/Applications` 后再打开；
+创建 `uploads/`。上传的 trace 及其元数据保存在 `uploads/traces/`，后端重启后也从这里
+重新加载；后端进程的工作目录位于包内，但默认的上传和 trace 目录都不会解析到包内。
+若在用户数据目录的 `env` 文件里设置 `UPLOAD_DIR` 或 `SMARTPERFETTO_TRACE_UPLOAD_DIR`，
+请使用包外的绝对路径：相对路径会按包内的工作目录解析。
+不要依赖包内的 `backend/uploads`；App 位于 macOS `AppTranslocation`
+临时路径或应用包不可写时，trace 上传会因目录不可写而失败。
+若从下载目录启动出现 `AppTranslocation`，请将 App 移到 `/Applications` 后再打开；
 可信的未公证包也可以移除隔离属性：
 
 ```bash
@@ -211,8 +230,7 @@ data root 时使用 `SMARTPERFETTO_PORTABLE_DATA_DIR`；它同样禁用迁移。
 ## 验证
 
 脚本会校验包结构、版本、manifest、Node runtime、目标平台 native 依赖、
-`trace_processor_shell` pin，以及 Knowledge Pack lock/manifest/database/license
-的版本和哈希。交叉编译、结构和静态签名校验不证明目标系统能启动。公开发布采用
+`trace_processor_shell` pin。交叉编译、结构和静态签名校验不证明目标系统能启动。公开发布采用
 build-once：在各目标平台解压即将上传的同一份最终归档做 smoke，通过后不再重新
 构建；macOS 必须测试公证、staple 后重新生成的 final zip。当前兼容下限是 Windows
 10 / Windows Server 2016 及以上 x64、macOS arm64 13.5+ 和 Linux x64 glibc
@@ -256,9 +274,8 @@ launcher 会自动选择下一个可用端口，并打印实际访问 URL。只�
 2. 打开 launcher 打印的前端 URL，通常是 [http://127.0.0.1:10000](http://127.0.0.1:10000)。
 3. 检查 launcher 打印的后端 health URL，通常是 [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health)。
 4. 上传一条小 trace，确认后端日志中启动了对应平台的 `trace_processor_shell`。
-5. 在包内 CLI 或后端运行 `smp knowledge-pack status --format json`，确认 bundled/active Pack 可解析且未撤回。
-6. 执行包内 Node、Claude 和 OpenCode 的版本命令（存在时）。
-7. 正常停止 launcher，确认子进程退出且前后端端口已经释放。
+5. 执行包内 Node、Claude 和 OpenCode 的版本命令（存在时）。
+6. 正常停止 launcher，确认子进程退出且前后端端口已经释放。
 
 Windows、macOS 或 Linux 任一最终归档缺少目标平台 smoke 时，GitHub release 应保持
 draft。只有用户明确接受并在 release/交付说明中公开未测试平台时才允许降级发布，

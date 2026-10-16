@@ -6,12 +6,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {ingestCaseKnowledge} from '../caseIngester';
 import {CaseGraph} from '../caseGraph';
 import {CaseLibrary} from '../caseLibrary';
 import {RagStore} from '../ragStore';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
+import {writeCaseFileWithoutAttestations} from '../../../tests/helpers/caseStoreFixture';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 let tmpDir: string;
 let casesDir: string;
@@ -47,6 +51,7 @@ function caseMarkdown(input: {
   curator?: string;
   similarRootCause?: string[];
   reasonCode?: string;
+  contextLines?: string;
 }): string {
   const title = input.title ?? `Case ${input.caseId}`;
   const status = input.status ?? 'reviewed';
@@ -67,12 +72,12 @@ taxonomy:
   responsibility: mixed
   severity: critical
 context:
-  app_architecture: android_view_standard
+  app_architecture: standard
   device_vendor: pixel
   os_version: Android 15
   refresh_rate_hz: 120
   workload: list_scroll
-evidence_signatures:
+${input.contextLines ?? ''}evidence_signatures:
   required:
     - field: reason_code
       op: eq
@@ -117,6 +122,7 @@ ${title} body.
 function ingest() {
   return ingestCaseKnowledge({
     casesDir,
+    grant: curator,
     caseLibraryPath,
     caseGraphPath,
     ragStorePath,
@@ -154,7 +160,7 @@ describe('caseIngester', () => {
       'app_precompile_shader',
     );
 
-    const graph = new CaseGraph(caseGraphPath);
+    const graph = new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath));
     expect(graph.listEdges()).toEqual([
       expect.objectContaining({
         fromCaseId: 'scroll_shader_compile_pixel8_001',
@@ -213,7 +219,7 @@ describe('caseIngester', () => {
     expect(library.getCase('scroll_scheduler_freq_mixed_001')?.title).toBe(
       'New title',
     );
-    expect(new CaseGraph(caseGraphPath).listEdges()).toEqual([]);
+    expect(new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath)).listEdges()).toEqual([]);
     expect(new RagStore(ragStorePath).listChunks({kind: 'case_library'})).toHaveLength(1);
   });
 
@@ -233,6 +239,7 @@ describe('caseIngester', () => {
     expect(() =>
       ingestCaseKnowledge({
         casesDir,
+        grant: curator,
         caseLibraryPath,
         caseGraphPath,
         ragStorePath,
@@ -241,14 +248,14 @@ describe('caseIngester', () => {
     ).toThrow(/simulated/i);
 
     expect(new CaseLibrary(caseLibraryPath).listCases()).toHaveLength(2);
-    expect(new CaseGraph(caseGraphPath).listEdges()).toEqual([]);
+    expect(new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath)).listEdges()).toEqual([]);
     expect(new RagStore(ragStorePath).listChunks({kind: 'case_library'})).toEqual([]);
 
     const result = ingest();
 
     expect(result.caseCount).toBe(2);
     expect(new CaseLibrary(caseLibraryPath).listCases()).toHaveLength(2);
-    expect(new CaseGraph(caseGraphPath).listEdges()).toHaveLength(1);
+    expect(new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath)).listEdges()).toHaveLength(1);
     expect(new RagStore(ragStorePath).listChunks({kind: 'case_library'})).toHaveLength(2);
   });
 
@@ -263,9 +270,7 @@ describe('caseIngester', () => {
     ingest();
 
     const library = new CaseLibrary(caseLibraryPath);
-    library.publishCase('scroll_shader_compile_pixel8_001', {
-      reviewer: 'runtime-curator',
-    });
+    library.publishCase('scroll_shader_compile_pixel8_001', {reviewer: 'runtime-curator'}, curator);
 
     const result = ingest();
 
@@ -275,5 +280,107 @@ describe('caseIngester', () => {
     expect(stored?.status).toBe('published');
     expect(stored?.curatedBy).toBe('runtime-curator');
     expect(result.warnings.join('\n')).toMatch(/preserved.*published/i);
+  });
+
+  it('does not keep a curation for Markdown content that changed since', () => {
+    const caseId = 'scroll_shader_compile_pixel8_001';
+    writeCase('a.md', caseMarkdown({caseId, status: 'reviewed'}));
+    ingest();
+    new CaseLibrary(caseLibraryPath).publishCase(caseId, {reviewer: 'runtime-curator'}, curator);
+
+    writeCase('a.md', caseMarkdown({caseId, status: 'reviewed', title: 'Edited after the review'}));
+    const result = ingest();
+
+    const stored = new CaseLibrary(caseLibraryPath).getCaseForCuration(caseId);
+    expect(stored).toMatchObject({status: 'reviewed', curatedBy: 'perf-team', analysisAdmitted: true});
+    expect(result.warnings.join('\n')).toMatch(/did not keep the published status.*content changed since/);
+  });
+
+  it('sees a change under an own __proto__ key in the Markdown context', () => {
+    const caseId = 'scroll_shader_compile_pixel8_001';
+    const withNote = (note: string) => caseMarkdown({caseId, status: 'reviewed', contextLines: `  __proto__:\n    note: ${note}\n`});
+    writeCase('a.md', withNote('measured'));
+    ingest();
+    new CaseLibrary(caseLibraryPath).publishCase(caseId, {reviewer: 'runtime-curator'}, curator);
+
+    writeCase('a.md', withNote('edited'));
+    const result = ingest();
+
+    expect(new CaseLibrary(caseLibraryPath).getCase(caseId)?.status).toBe('reviewed');
+    expect(result.warnings.join('\n')).toMatch(/content changed since/);
+  });
+
+  it('keeps an attested API curation when only the Markdown curator line is removed', () => {
+    const caseId = 'scroll_shader_compile_pixel8_001';
+    writeCase('a.md', caseMarkdown({caseId, status: 'reviewed'}));
+    ingest();
+    new CaseLibrary(caseLibraryPath).publishCase(caseId, {reviewer: 'runtime-curator'}, curator);
+
+    writeCase('a.md', caseMarkdown({caseId, status: 'reviewed', curator: ''}));
+    ingest();
+
+    expect(new CaseLibrary(caseLibraryPath).getCaseForCuration(caseId)).toMatchObject({
+      status: 'published',
+      curatedBy: 'runtime-curator',
+      redactionState: 'redacted',
+      analysisAdmitted: true,
+    });
+  });
+
+  it('does not keep a raised status nobody attested, such as one written before attestations', () => {
+    const caseId = 'scroll_shader_compile_pixel8_001';
+    writeCase('a.md', caseMarkdown({caseId, status: 'reviewed', curator: ''}));
+    ingest();
+    // A signed-in user raised it through the old API, which wrote whatever the body said.
+    const raised = {...new CaseLibrary(caseLibraryPath).getCase(caseId)!, status: 'published' as const,
+      redactionState: 'redacted' as const, curatedBy: 'any-user'};
+    writeCaseFileWithoutAttestations(caseLibraryPath, raised);
+
+    const result = ingest();
+
+    const stored = new CaseLibrary(caseLibraryPath).getCaseForCuration(caseId);
+    expect(stored).toMatchObject({status: 'reviewed', redactionState: 'raw', analysisAdmitted: false});
+    expect(stored?.curatedBy).toBeUndefined();
+    expect(result.warnings.join('\n')).toMatch(/did not keep the published status.*no curator attested it/);
+  });
+
+  it.each(['reviewed', 'published'] as const)(
+    'dates a %s curation from the import that brought its current content', status => {
+      const caseId = 'scroll_shader_compile_pixel8_001';
+      const now = jest.spyOn(Date, 'now').mockReturnValue(1_000);
+      try {
+        writeCase('a.md', caseMarkdown({caseId, status}));
+        ingest();
+        now.mockReturnValue(2_000);
+        ingest();
+        expect(new CaseLibrary(caseLibraryPath).getCase(caseId)?.curatedAt).toBe(1_000);
+
+        now.mockReturnValue(3_000);
+        writeCase('a.md', caseMarkdown({caseId, status, title: 'Edited after the review'}));
+        ingest();
+        expect(new CaseLibrary(caseLibraryPath).getCase(caseId)?.curatedAt).toBe(3_000);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+  it('lets analyses read an imported case only when it names a curator', () => {
+    writeCase('a.md', caseMarkdown({caseId: 'case_with_curator'}));
+    writeCase('b.md', caseMarkdown({caseId: 'case_without_curator', curator: ''}));
+    ingest();
+
+    expect(new CaseLibrary(caseLibraryPath).listAdmittedCases().map(c => c.caseId))
+      .toEqual(['case_with_curator']);
+  });
+
+  it('makes a case imported before attestations readable once imported again', () => {
+    writeCase('a.md', caseMarkdown({caseId: 'case_a'}));
+    ingest();
+    writeCaseFileWithoutAttestations(caseLibraryPath);
+    expect(new CaseLibrary(caseLibraryPath).listAdmittedCases()).toEqual([]);
+
+    ingest();
+
+    expect(new CaseLibrary(caseLibraryPath).listAdmittedCases().map(c => c.caseId)).toEqual(['case_a']);
   });
 });

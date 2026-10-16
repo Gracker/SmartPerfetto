@@ -40,7 +40,11 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "应用包名（可选，不填则分析所有应用）"
+    description: "应用包名（可选；未提供任何目标选择器时分析所有应用）"
+  - name: upid
+    type: integer
+    required: false
+    description: "证据选定的 trace 内唯一进程 ID；用于消除同名实例歧义，仍须通过身份门禁"
   - name: start_ts
     type: timestamp
     required: false
@@ -405,6 +409,7 @@ steps:
       title: "显示配置"
       columns:
         - name: refresh_rate_hz
+          unit: Hz
           label: "刷新率"
           type: number
           format: compact
@@ -417,6 +422,7 @@ steps:
           label: "来源"
           type: string
         - name: total_frames
+          unit: frames
           label: "总帧数"
           type: number
           format: compact
@@ -452,6 +458,104 @@ steps:
     save_as: environment
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
+  # ==========================================================================
+  # L1: 整个 Trace 的 FrameTimeline 帧总体（所有进程，不随 package / 时间窗收窄）
+  # ==========================================================================
+  # A frame is one (upid, FrameTimeline token) pair. Within a process the slice
+  # name is the token (surface token for app layers, display token for
+  # SurfaceFlinger), so an empty name falls back to the same token value; only
+  # the slice-id fallback is prefixed, because a slice id is not a token.
+  # jank_frames counts frames with any raw jank_type tag, Buffer Stuffing
+  # included: it is not perceived jank (see the overview for that).
+  - id: frame_timeline_population
+    type: atomic
+    name: "整个 Trace 的 FrameTimeline 帧总体"
+    display:
+      level: summary
+      layer: overview
+      title: "整个 Trace · 所有进程 · FrameTimeline 原始标签"
+      title_i18n:
+        en: "Whole trace · all processes · raw FrameTimeline tags (jank tags include Buffer Stuffing)"
+      columns:
+        - name: total_frames
+          unit: frames
+          label: "FrameTimeline 帧数（全部进程）"
+          type: number
+          format: compact
+        - name: jank_frames
+          unit: frames
+          label: "带 jank 标签的帧（含 Buffer Stuffing，非感知掉帧）"
+          type: number
+          format: compact
+        - name: process_count
+          unit: count
+          label: "有帧的进程数"
+          type: number
+        - name: unattributed_frames
+          unit: frames
+          label: "无进程归属的帧"
+          type: number
+          format: compact
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: trace_start_ts
+          label: "Trace 起点"
+          type: timestamp
+          unit: ns
+          hidden: true
+        - name: trace_end_ts
+          label: "Trace 终点"
+          type: timestamp
+          unit: ns
+          hidden: true
+        - name: frame_population_evidence
+          label: "证据状态"
+          type: string
+          hidden: true
+    process_scope:
+      role: global_context
+    sql: |
+      WITH frames AS (
+        SELECT
+          upid,
+          COALESCE(NULLIF(name, ''), CAST(surface_frame_token AS TEXT),
+            CAST(display_frame_token AS TEXT), 'slice:' || id) AS frame_key,
+          MAX(jank_type IS NOT NULL AND jank_type != 'None') AS jank_tagged
+        FROM actual_frame_timeline_slice
+        WHERE ts IS NOT NULL AND dur IS NOT NULL AND dur >= 0
+        GROUP BY upid, frame_key
+      )
+      SELECT
+        COUNT(*) AS total_frames,
+        COALESCE(SUM(jank_tagged), 0) AS jank_frames,
+        COUNT(DISTINCT upid) AS process_count,
+        COALESCE(SUM(upid IS NULL), 0) AS unattributed_frames,
+        'trace_wide_all_processes' AS evidence_scope,
+        (SELECT start_ts FROM trace_bounds) AS trace_start_ts,
+        (SELECT end_ts FROM trace_bounds) AS trace_end_ts,
+        'observed' AS frame_population_evidence
+      FROM frames
+    save_as: frame_timeline_population
+    # Authored column units and investigation metrics retain distinct quantity
+    # and population/window contracts in the issued capture.
+    investigation_evidence:
+      window: {start: trace_start_ts, end: trace_end_ts}
+      metrics:
+        - domain: frame_production
+          metric_id: render.frame.timeline.trace_frames
+          value: total_frames
+          unit: frames
+          status: frame_population_evidence
+          aggregation: trace_wide_all_processes
+        - domain: frame_production
+          metric_id: render.frame.timeline.jank_tagged_frames
+          value: jank_frames
+          unit: frames
+          status: frame_population_evidence
+          aggregation: trace_wide_all_processes
+    condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
+
   # Compare package-scoped FrameTimeline coverage with one qualified primary
   # BufferTX producer track before selecting the mutually exclusive overview.
   - id: buffer_tx_coverage_probe
@@ -483,7 +587,7 @@ steps:
           JOIN effective_target_processes p ON a.upid = p.upid
           WHERE (${start_ts} IS NULL OR a.ts >= ${start_ts})
             AND (${end_ts} IS NULL OR a.ts < ${end_ts})
-        )
+        ), probe_coverage AS (
         SELECT target_process_count,
           CASE WHEN target_process_count > 0 THEN 'found' ELSE 'not_found' END AS target_process_status,
           frame_timeline_frames,
@@ -496,6 +600,20 @@ steps:
           0 AS should_fallback,
           'unavailable_exact_upid' AS buffer_tx_status
         FROM target_presence CROSS JOIN frame_coverage
+        )
+        -- Exact-UPID scope never compares against BufferTX.
+        SELECT target_process_count, target_process_status, frame_timeline_frames,
+          buffer_tx_frames, frame_timeline_to_buffer_tx_ratio, buffer_tx_track_id,
+          frame_source_track, buffer_tx_effective_span_ns, coverage_status,
+          should_fallback, buffer_tx_status,
+          CASE coverage_status
+            WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+            WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
+            WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
+            WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
+            ELSE 'coverage_unverified'
+          END AS root_cause_evidence_scope
+        FROM probe_coverage
     sql: |
       WITH
       target_process_presence AS (
@@ -525,7 +643,8 @@ steps:
           AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
-      )
+      ),
+      probe_coverage AS (
       SELECT
         tp.target_process_count,
         CASE
@@ -565,6 +684,22 @@ steps:
       FROM frame_timeline_coverage ft
       CROSS JOIN target_process_presence tp
       LEFT JOIN selected_buffer_tx_track bt ON 1 = 1
+      )
+      -- The scope the root-cause steps may claim (not a qualifier of this
+      -- probe row): only a measured, sufficient FrameTimeline/BufferTX
+      -- comparison is full coverage; any other status leaves it unverified.
+      SELECT target_process_count, target_process_status, frame_timeline_frames,
+        buffer_tx_frames, frame_timeline_to_buffer_tx_ratio, buffer_tx_track_id,
+        frame_source_track, buffer_tx_effective_span_ns, coverage_status,
+        should_fallback,
+        CASE coverage_status
+          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+          WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
+          WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
+          WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
+          ELSE 'coverage_unverified'
+        END AS root_cause_evidence_scope
+      FROM probe_coverage
     save_as: buffer_tx_coverage
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
@@ -612,50 +747,66 @@ steps:
       title: "滑动性能概览"
       columns:
         - name: total_frames
+          unit: frames
           label: "总帧数"
           type: number
           format: compact
         - name: perceived_jank_frames
+          unit: frames
           label: "感知掉帧"
           type: number
           format: compact
         - name: jank_rate
+          unit: "%"
           label: "感知掉帧率"
           type: percentage
           format: percentage
         - name: buffer_stuffing_frames
+          unit: frames
           label: "Buffer Stuffing"
           type: number
           format: compact
         - name: buffer_stuffing_rate
+          unit: "%"
           label: "BS 占比"
           type: percentage
           format: percentage
           hidden: true
         - name: app_janky_frames
+          unit: frames
           label: "App 侧掉帧"
           type: number
           format: compact
         - name: sf_jank_count
+          unit: frames
           label: "SF 侧掉帧"
           type: number
           format: compact
         - name: actual_fps
+          unit: fps
           label: "实际 FPS"
           type: number
         - name: refresh_rate
+          unit: Hz
           label: "刷新率"
           type: number
         - name: avg_frame_dur
           label: "平均呈现间隔"
+          label_i18n:
+            en: "Mean present interval"
           type: duration
           format: duration_ms
           unit: ns
         - name: p95_frame_dur
           label: "P95 呈现间隔"
+          label_i18n:
+            en: "P95 present interval"
           type: duration
           format: duration_ms
           unit: ns
+        - name: present_interval_source
+          label: "呈现间隔来源"
+          type: string
         - name: rating
           label: "评级"
           type: string
@@ -722,8 +873,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND (a.display_frame_token IS NOT NULL OR a.surface_frame_token IS NOT NULL)
@@ -807,35 +958,22 @@ steps:
           AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6
       ),
       -- App 报告的掉帧（旧逻辑，仅供参考）
+      -- Present-interval columns come from present gaps only. Without a valid
+      -- gap they are NULL: FrameTimeline dur is start-to-present latency, and
+      -- under these labels it once read as a slow cadence.
       app_stats AS (
         SELECT
           COUNT(DISTINCT frame_key) as total,
           COUNT(DISTINCT CASE WHEN jank_type != 'None' THEN frame_key END) as app_janky_frames,
-          COALESCE(
-            (SELECT CAST(ROUND(AVG(frame_interval_ns)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(AVG(CASE WHEN dur > 0 THEN dur ELSE NULL END)) AS INTEGER),
-            0
-          ) as avg_present_interval,
-          COALESCE(
-            (SELECT CAST(MAX(frame_interval_ns) AS INTEGER) FROM valid_frame_intervals),
-            MAX(CASE WHEN dur > 0 THEN dur ELSE NULL END),
-            0
-          ) as max_present_interval,
-          COALESCE(
-            (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 50)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(PERCENTILE(CASE WHEN dur > 0 THEN dur ELSE NULL END, 50)) AS INTEGER),
-            0
-          ) as median_present_interval,
-          COALESCE(
-            (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 95)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(PERCENTILE(CASE WHEN dur > 0 THEN dur ELSE NULL END, 95)) AS INTEGER),
-            0
-          ) as p95_present_interval,
-          COALESCE(
-            (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 99)) AS INTEGER) FROM valid_frame_intervals),
-            CAST(ROUND(PERCENTILE(CASE WHEN dur > 0 THEN dur ELSE NULL END, 99)) AS INTEGER),
-            0
-          ) as p99_present_interval
+          (SELECT CAST(ROUND(AVG(frame_interval_ns)) AS INTEGER) FROM valid_frame_intervals) as avg_present_interval,
+          (SELECT CAST(MAX(frame_interval_ns) AS INTEGER) FROM valid_frame_intervals) as max_present_interval,
+          (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 50)) AS INTEGER) FROM valid_frame_intervals) as median_present_interval,
+          (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 95)) AS INTEGER) FROM valid_frame_intervals) as p95_present_interval,
+          (SELECT CAST(ROUND(PERCENTILE(frame_interval_ns, 99)) AS INTEGER) FROM valid_frame_intervals) as p99_present_interval,
+          CASE WHEN EXISTS (SELECT 1 FROM valid_frame_intervals)
+            THEN 'frametimeline_present_gaps'
+            ELSE 'unmeasured_no_valid_present_gap'
+          END as present_interval_source
         FROM app_frame_rows
       ),
       -- Per-layer 帧序列：双信号混合检测基础数据
@@ -962,6 +1100,7 @@ steps:
         (SELECT median_present_interval FROM app_stats) as median_frame_dur,
         (SELECT p95_present_interval FROM app_stats) as p95_frame_dur,
         (SELECT p99_present_interval FROM app_stats) as p99_frame_dur,
+        (SELECT present_interval_source FROM app_stats) as present_interval_source,
         ROUND((SELECT duration_ns FROM time_range) / 1e9, 2) as duration_sec,
         MIN(
           ROUND(1e9 * (SELECT total FROM app_stats) / NULLIF((SELECT duration_ns FROM time_range), 0), 1),
@@ -1058,6 +1197,7 @@ steps:
           type: number
           format: compact
         - name: actual_fps
+          unit: fps
           label: "实际 FPS"
           type: number
         - name: duration_sec
@@ -1083,6 +1223,9 @@ steps:
           type: string
         - name: evidence_status
           label: "可交付证据范围"
+          type: string
+        - name: present_interval_source
+          label: "呈现间隔来源"
           type: string
         - name: rating
           label: "证据边界"
@@ -1152,6 +1295,7 @@ steps:
         NULL as median_frame_dur,
         NULL as p95_frame_dur,
         NULL as p99_frame_dur,
+        'unmeasured_buffer_tx_fallback' as present_interval_source,
         duration_sec,
         actual_fps,
         CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM vsync_config)) AS INTEGER) as refresh_rate,
@@ -1172,11 +1316,286 @@ steps:
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && buffer_tx_coverage.data[0]?.should_fallback === 1"
 
   # ==========================================================================
+  # L1: 流畅度口径对照（每个滑动区间 × 图层）
+  # ==========================================================================
+  # Smoothness is the gap between consecutive presents against the VSync
+  # budget. FrameTimeline dur runs from the app frame's start to its present:
+  # it is latency, and a steady pipeline one buffer deep shows two-VSync dur
+  # with one-VSync presents. Raw Buffer Stuffing tags say the same thing about
+  # queue depth, not visible drops. This step puts the three side by side and
+  # names the basis a verdict may rest on.
+  # Sessions follow scroll_sessions exactly (its split period; frame-end gap
+  # over 6 VSync per process; at least 10 frames and 200ms). The budget is the
+  # shared vsync_config. cadence_status applies the rule of
+  # consumer_jank_detection.presentation_cadence_audit to each session layer,
+  # only against a measured VSYNC-sf budget; the audit itself groups by 500ms
+  # bursts and reads the unsnapped in-window median, so the two can differ at
+  # the edges. Without target FrameTimeline frames, every doFrame start gap of
+  # the main thread is aggregated and presentation is unmeasured: a start gap
+  # is start cadence only.
+  - id: smoothness_basis
+    type: atomic
+    name: "流畅度口径对照"
+    display:
+      level: summary
+      layer: overview
+      title: "流畅度口径：呈现间隔 vs 帧时长 vs Buffer Stuffing"
+      title_i18n:
+        en: "Smoothness basis: present gaps vs frame duration vs Buffer Stuffing"
+      columns:
+        - {name: process_name, label: "进程", type: string}
+        - {name: session_id, label: "区间", type: number}
+        - {name: layer_name, label: "图层", type: string}
+        - {name: verdict_basis, label: "流畅度判定依据", label_i18n: {en: "Smoothness verdict basis"}, type: string}
+        - {name: cadence_metric, label: "节奏口径", label_i18n: {en: "Cadence metric"}, type: string}
+        - {name: cadence_gap_p50_ns, label: "节奏间隔 P50", label_i18n: {en: "Cadence gap P50"}, type: duration, format: duration_ms, unit: ns}
+        - {name: cadence_gap_p95_ns, label: "节奏间隔 P95", label_i18n: {en: "Cadence gap P95"}, type: duration, format: duration_ms, unit: ns}
+        - {name: cadence_gap_max_ns, label: "节奏间隔最大", label_i18n: {en: "Cadence gap max"}, type: duration, format: duration_ms, unit: ns}
+        - {name: cadence_gaps_over_1_5x_budget, label: "超过 1.5 倍预算的间隔", label_i18n: {en: "Gaps over 1.5x budget"}, type: number, unit: events}
+        - {name: cadence_gap_count, label: "间隔数", label_i18n: {en: "Gap count"}, type: number, unit: events}
+        - {name: budget_ns, label: "VSync 预算", label_i18n: {en: "VSync budget"}, type: duration, format: duration_ms, unit: ns}
+        - {name: budget_source, label: "预算来源", label_i18n: {en: "Budget source"}, type: string}
+        - {name: budget_status, label: "预算可信度", label_i18n: {en: "Budget status"}, type: string}
+        - {name: frame_dur_metric, label: "帧时长口径", label_i18n: {en: "Frame duration metric"}, type: string}
+        - {name: frame_dur_p50_ns, label: "帧时长 P50（时延，非节奏）", label_i18n: {en: "Frame duration P50 (latency, not cadence)"}, type: duration, format: duration_ms, unit: ns}
+        - {name: frame_dur_p95_ns, label: "帧时长 P95（时延，非节奏）", label_i18n: {en: "Frame duration P95 (latency, not cadence)"}, type: duration, format: duration_ms, unit: ns}
+        - {name: frame_dur_max_ns, label: "帧时长最大（时延，非节奏）", label_i18n: {en: "Frame duration max (latency, not cadence)"}, type: duration, format: duration_ms, unit: ns}
+        - {name: buffer_stuffing_pct, label: "原始 Buffer Stuffing 标签占比", label_i18n: {en: "Raw Buffer Stuffing tag share"}, type: percentage, unit: "%", format: percentage}
+        - {name: buffer_stuffing_frames, label: "原始 Buffer Stuffing 标签帧", label_i18n: {en: "Raw Buffer Stuffing tagged frames"}, type: number, unit: frames}
+        - {name: cadence_status, label: "呈现节奏核验", label_i18n: {en: "Presentation cadence audit"}, type: string}
+        - {name: steady_late_frames, label: "匀速晚拍帧（信息性）", label_i18n: {en: "Steady late frames (informational)"}, type: number, unit: frames}
+        - {name: dropped_frames, label: "丢弃帧", label_i18n: {en: "Dropped frames"}, type: number, unit: frames}
+        - {name: presentation_status, label: "呈现数据", label_i18n: {en: "Presentation data"}, type: string}
+        - {name: frames, label: "帧数", type: number, unit: frames}
+        - {name: frame_timeline_coverage_status, label: "FrameTimeline 覆盖状态", type: string, hidden: true}
+        - {name: start_ts, label: "开始时间", type: timestamp, unit: ns, hidden: true}
+        - {name: end_ts, label: "结束时间", type: timestamp, unit: ns, hidden: true}
+        - {name: upid, label: "UPID", type: number, hidden: true}
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+      - fragments/vsync_config.sql
+      - fragments/main_thread_work.sql
+      - fragments/main_thread_work_cadence.sql
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql: |
+      WITH
+      ft_frames AS MATERIALIZED (
+        SELECT a.id, a.upid, p.name AS process_name, a.layer_name, a.ts, a.dur,
+          a.surface_frame_token, a.jank_type, a.present_type
+        FROM actual_frame_timeline_slice a
+        JOIN effective_target_processes p ON a.upid = p.upid
+        WHERE (
+            ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}'
+            OR p.name GLOB '${package}:*'
+          )
+          AND p.name NOT LIKE '/system/%'
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR a.ts < ${end_ts})
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+      ),
+      -- The split period of scroll_sessions (VSYNC-sf median in the window,
+      -- else 60Hz), so session ids and bounds match that list.
+      session_split_intervals AS (
+        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      ),
+      session_split_config AS (
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 50)
+             FROM session_split_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
+      ),
+      session_markers AS (
+        SELECT upid, ts, dur,
+          CASE WHEN ts - LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts)
+              <= (SELECT vsync_period_ns * 6 FROM session_split_config)
+            THEN 0 ELSE 1 END AS new_session
+        FROM ft_frames WHERE dur > 0
+      ),
+      session_bounds AS (
+        SELECT upid, session_id, MIN(ts) AS start_ts, MAX(ts + dur) AS end_ts
+        FROM (SELECT *, SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) AS session_id
+          FROM session_markers)
+        GROUP BY upid, session_id
+        HAVING COUNT(*) >= 10 AND MAX(ts + dur) - MIN(ts) > 200000000
+      ),
+      expected_frames AS (
+        SELECT upid, layer_name, surface_frame_token,
+          CASE WHEN COUNT(*) = 1 AND MIN(dur) > 0 THEN MAX(ts + dur) END AS expected_present_ts
+        FROM expected_frame_timeline_slice
+        WHERE upid IN (SELECT upid FROM ft_frames)
+        GROUP BY upid, layer_name, surface_frame_token
+      ),
+      session_rows AS (
+        SELECT f.*, b.session_id,
+          CASE WHEN f.dur > 0 AND f.present_type != 'Dropped Frame' THEN f.ts + f.dur END AS present_ts,
+          CASE WHEN f.dur > 0 AND f.present_type != 'Dropped Frame'
+            THEN f.ts + f.dur - e.expected_present_ts END AS lateness_ns
+        FROM ft_frames f
+        JOIN session_bounds b ON b.upid = f.upid AND f.ts >= b.start_ts AND f.ts < b.end_ts
+          AND f.layer_name IS NOT NULL
+        LEFT JOIN expected_frames e ON e.upid = f.upid AND e.layer_name = f.layer_name
+          AND e.surface_frame_token = f.surface_frame_token
+      ),
+      presented_neighbors AS (
+        SELECT *, present_ts - LAG(present_ts) OVER w AS gap_ns,
+          LEAD(present_ts) OVER w - present_ts AS next_gap_ns
+        FROM session_rows WHERE present_ts IS NOT NULL
+        WINDOW w AS (PARTITION BY upid, session_id, layer_name ORDER BY present_ts, id)
+      ),
+      gap_stats AS (
+        SELECT upid, session_id, layer_name, COUNT(gap_ns) AS gap_count,
+          CAST(PERCENTILE(gap_ns, 50) AS INTEGER) AS gap_p50_ns,
+          CAST(PERCENTILE(gap_ns, 95) AS INTEGER) AS gap_p95_ns,
+          MAX(gap_ns) AS gap_max_ns,
+          SUM(CASE WHEN gap_ns > v.vsync_period_ns * 1.5 THEN 1 ELSE 0 END) AS gaps_over_budget,
+          SUM(CASE WHEN gap_ns BETWEEN v.vsync_period_ns * 0.75 AND v.vsync_period_ns * 1.25
+            THEN 1 ELSE 0 END) AS near_budget_gaps,
+          SUM(CASE WHEN present_type = 'Late Present' AND lateness_ns >= v.vsync_period_ns * 0.5
+            AND gap_ns BETWEEN v.vsync_period_ns * 0.75 AND v.vsync_period_ns * 1.25
+            AND next_gap_ns BETWEEN v.vsync_period_ns * 0.75 AND v.vsync_period_ns * 1.25
+            THEN 1 ELSE 0 END) AS steady_late_candidates
+        FROM presented_neighbors CROSS JOIN vsync_config v
+        GROUP BY upid, session_id, layer_name
+      ),
+      layer_stats AS (
+        SELECT upid, process_name, session_id, layer_name,
+          MIN(ts) AS start_ts, MAX(ts + MAX(dur, 0)) AS end_ts, COUNT(*) AS frames,
+          CAST(PERCENTILE(CASE WHEN dur > 0 THEN dur END, 50) AS INTEGER) AS dur_p50_ns,
+          CAST(PERCENTILE(CASE WHEN dur > 0 THEN dur END, 95) AS INTEGER) AS dur_p95_ns,
+          MAX(CASE WHEN dur > 0 THEN dur END) AS dur_max_ns,
+          SUM(CASE WHEN jank_type GLOB '*Buffer Stuffing*' THEN 1 ELSE 0 END) AS buffer_stuffing_frames,
+          SUM(CASE WHEN present_type = 'Dropped Frame' THEN 1 ELSE 0 END) AS dropped_frames,
+          SUM(CASE WHEN dur IS NULL OR dur <= 0 THEN 1 ELSE 0 END) AS incomplete_frames
+        FROM session_rows
+        GROUP BY upid, session_id, layer_name
+      ),
+      -- One row per observed doFrame start, read only when the target has no
+      -- FrameTimeline frame in the window; a duration needs one complete marker.
+      doframe_starts AS (
+        SELECT f.utid, f.raw_ts - f.previous_start_ts AS gap_ns,
+          CASE WHEN f.marker_count = 1 THEN f.execution_end_ts - f.raw_ts END AS dur_ns
+        FROM mtw_frame_sequence f
+        WHERE NOT EXISTS (SELECT 1 FROM ft_frames)
+      ),
+      doframe_stats AS (
+        SELECT t.upid, t.process_name, t.window_start_ts, t.window_end_ts,
+          COUNT(*) AS frames, COUNT(d.gap_ns) AS gap_count,
+          CAST(PERCENTILE(d.gap_ns, 50) AS INTEGER) AS gap_p50_ns,
+          CAST(PERCENTILE(d.gap_ns, 95) AS INTEGER) AS gap_p95_ns,
+          MAX(d.gap_ns) AS gap_max_ns,
+          SUM(CASE WHEN d.gap_ns > v.vsync_period_ns * 1.5 THEN 1 ELSE 0 END) AS gaps_over_budget,
+          CAST(PERCENTILE(d.dur_ns, 50) AS INTEGER) AS dur_p50_ns,
+          CAST(PERCENTILE(d.dur_ns, 95) AS INTEGER) AS dur_p95_ns,
+          MAX(d.dur_ns) AS dur_max_ns
+        FROM doframe_starts d
+        JOIN mtw_threads t USING (utid)
+        CROSS JOIN vsync_config v
+        WHERE ${__process_scope.upid} IS NOT NULL OR '${package}' != ''
+          OR t.process_name NOT LIKE 'com.android.systemui%'
+        GROUP BY t.upid, t.utid
+        HAVING COUNT(d.gap_ns) > 0
+      ),
+      basis_rows AS (
+        SELECT l.upid, l.process_name, l.session_id, l.layer_name, l.start_ts, l.end_ts, l.frames,
+          'frametimeline_present_gap' AS cadence_metric,
+          g.gap_count, g.gap_p50_ns, g.gap_p95_ns, g.gap_max_ns, g.gaps_over_budget,
+          'frametimeline_actual_dur_start_to_present' AS frame_dur_metric,
+          l.dur_p50_ns, l.dur_p95_ns, l.dur_max_ns,
+          l.buffer_stuffing_frames,
+          ROUND(100.0 * l.buffer_stuffing_frames / l.frames, 2) AS buffer_stuffing_pct,
+          CASE
+            WHEN v.vsync_source NOT IN ('scoped_vsync_counter', 'trace_wide_vsync_counter')
+              OR COALESCE(g.gap_count, 0) < 5
+              THEN 'insufficient_cadence_evidence'
+            WHEN g.near_budget_gaps = g.gap_count AND l.dropped_frames = 0 AND l.incomplete_frames = 0
+              THEN CASE WHEN g.steady_late_candidates > 0 THEN 'steady_late' ELSE 'steady_cadence' END
+            WHEN g.steady_late_candidates > 0 THEN 'steady_late_with_cadence_excursions'
+            ELSE 'variable_cadence'
+          END AS cadence_status,
+          CASE WHEN COALESCE(g.gap_count, 0) >= 5 THEN g.steady_late_candidates ELSE 0 END AS steady_late_frames,
+          l.dropped_frames,
+          'measured' AS presentation_status
+        FROM layer_stats l
+        LEFT JOIN gap_stats g USING (upid, session_id, layer_name)
+        CROSS JOIN vsync_config v
+        UNION ALL
+        SELECT upid, process_name, NULL, NULL, window_start_ts, window_end_ts, frames,
+          'doframe_start_gap',
+          gap_count, gap_p50_ns, gap_p95_ns, gap_max_ns, gaps_over_budget,
+          'doframe_main_thread_execution',
+          dur_p50_ns, dur_p95_ns, dur_max_ns,
+          NULL, NULL, 'presentation_unmeasured', NULL, NULL, 'unmeasured'
+        FROM doframe_stats
+      ),
+      frame_timeline_coverage AS (
+        SELECT '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' AS status
+      ),
+      -- A cadence well faster than the budget contradicts the budget (a sparse
+      -- VSync counter), so over-budget counts against it say nothing.
+      budgeted_rows AS (
+        SELECT r.*, v.vsync_period_ns AS budget_ns, v.vsync_source AS budget_source, CASE
+            WHEN v.vsync_source = 'default_60hz_no_trace_timing' THEN 'assumed_default_no_trace_timing'
+            WHEN v.vsync_source NOT IN ('scoped_vsync_counter', 'trace_wide_vsync_counter')
+              THEN 'derived_from_expected_frames'
+            WHEN r.gap_p50_ns * 1.5 < v.vsync_period_ns THEN 'contradicted_by_observed_cadence'
+            ELSE 'measured'
+          END AS budget_status
+        FROM basis_rows r CROSS JOIN vsync_config v
+      )
+      SELECT r.upid, r.process_name, r.session_id, r.layer_name,
+        printf('%d', r.start_ts) AS start_ts, printf('%d', r.end_ts) AS end_ts, r.frames,
+        r.budget_ns, r.budget_source, r.cadence_metric,
+        r.gap_count AS cadence_gap_count, r.gap_p50_ns AS cadence_gap_p50_ns,
+        r.gap_p95_ns AS cadence_gap_p95_ns, r.gap_max_ns AS cadence_gap_max_ns,
+        r.gaps_over_budget AS cadence_gaps_over_1_5x_budget,
+        r.frame_dur_metric,
+        r.dur_p50_ns AS frame_dur_p50_ns, r.dur_p95_ns AS frame_dur_p95_ns, r.dur_max_ns AS frame_dur_max_ns,
+        r.buffer_stuffing_frames, r.buffer_stuffing_pct,
+        r.cadence_status, r.steady_late_frames, r.dropped_frames, r.presentation_status,
+        r.budget_status, c.status AS frame_timeline_coverage_status,
+        CASE
+          WHEN r.presentation_status = 'unmeasured' THEN 'doframe_start_gaps_presentation_unmeasured'
+          WHEN COALESCE(r.gap_count, 0) < 5 THEN 'insufficient_present_gaps'
+          WHEN r.budget_status != 'measured' THEN 'present_gaps_budget_unverified'
+          WHEN c.status IN ('partial_frame_timeline_coverage', 'no_frame_timeline_coverage')
+            THEN 'present_gaps_partial_frame_timeline'
+          ELSE 'present_gaps_vs_budget'
+        END AS verdict_basis
+      FROM budgeted_rows r CROSS JOIN frame_timeline_coverage c
+      ORDER BY r.upid, r.start_ts, r.layer_name
+    save_as: smoothness_basis
+    condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
+
+  # ==========================================================================
   # L1: Input Pipeline 数据源与延迟概览
   # ==========================================================================
   # android.input stdlib 将 InputDispatcher socket 传输、App ACK 与关联帧
   # 标准化为 android_input_events。这里把它作为可选证据源：缺数据不阻断
   # FrameTimeline 滑动分析，有数据时补充分发/处理/ACK/跟手度分解。
+  # 这两步不读 FrameTimeline，也不以目标进程有 FrameTimeline 帧为前提：Flutter
+  # SurfaceView 等没有 app 层帧的管线仍有精确的分发/处理/ACK 证据。
   - id: input_data_fallback_view
     type: atomic
     name: "Input 数据源回退视图"
@@ -1214,7 +1633,6 @@ steps:
         CAST(NULL AS INTEGER) as is_speculative_frame,
         CAST(NULL AS INTEGER) as event_time
       WHERE 0
-    condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
 
   - id: input_data_check
     type: atomic
@@ -1229,50 +1647,58 @@ steps:
           label: "状态"
           type: string
         - name: total_input_events
+          unit: events
           label: "输入事件"
           type: number
           format: compact
         - name: move_events
+          unit: events
           label: "MOVE事件"
           type: number
           format: compact
         - name: frame_matched_events
+          unit: events
           label: "关联帧事件"
           type: number
           format: compact
         - name: target_processes
+          unit: count
           label: "进程数"
           type: number
           format: compact
     process_scope:
       role: target
       binding: native_upid
+    # 事件数按物理事件（physical_event_key）计，只读下游实际分析的行（analyzed_for_upid，见 fragment）。
+    # 进程数只计收到应用投递的进程，范围内没有应用投递时才计全部接收进程。
+    sql_fragments:
+      - fragments/android_input_events_normalized.sql
+      - fragments/android_input_delivery_roles.sql
+      - fragments/android_input_scoped_deliveries.sql
     sql: |
-      WITH scoped_events AS (
-        SELECT *
-        FROM android_input_events
-        WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
-          AND (
+      SELECT
+        -- frame_matched_events: exact association only (see fragments/android_input_events_normalized.sql); speculative_only = frames matched only speculatively.
+        CASE
+          WHEN COUNT(*) = 0 THEN 'unavailable'
+          WHEN COUNT(exact_frame_id) > 0 THEN 'available'
+          WHEN COUNT(frame_id) > 0 THEN 'speculative_only'
+          ELSE 'no_frame_match'
+        END as input_data_status,
+        COUNT(DISTINCT physical_event_key) as total_input_events,
+        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN physical_event_key END) as move_events,
+        COUNT(DISTINCT CASE WHEN exact_frame_id IS NOT NULL THEN physical_event_key END) as frame_matched_events,
+        COALESCE(
+          NULLIF(COUNT(DISTINCT CASE WHEN monitor_observation = 0 THEN upid END), 0),
+          COUNT(DISTINCT upid)) as target_processes
+      FROM android_input_scoped_deliveries
+      WHERE analyzed_for_upid
+        AND (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
+        AND (
           ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
           OR process_name = '${package}'
           OR process_name GLOB '${package}:*'
         )
-          AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
-          AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
-      )
-      SELECT
-        CASE
-          WHEN COUNT(*) = 0 THEN 'unavailable'
-          WHEN COALESCE(SUM(CASE WHEN frame_id IS NOT NULL THEN 1 ELSE 0 END), 0) = 0 THEN 'no_frame_match'
-          ELSE 'available'
-        END as input_data_status,
-        COUNT(*) as total_input_events,
-        COALESCE(SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END), 0) as move_events,
-        COALESCE(SUM(CASE WHEN frame_id IS NOT NULL THEN 1 ELSE 0 END), 0) as frame_matched_events,
-        COUNT(DISTINCT upid) as target_processes
-      FROM scoped_events
     save_as: input_data
-    condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
 
   - id: input_latency_summary
     type: atomic
@@ -1309,10 +1735,12 @@ steps:
           label: "目标进程"
           type: string
         - name: total_input_events
+          unit: events
           label: "输入事件"
           type: number
           format: compact
         - name: move_events
+          unit: events
           label: "MOVE事件"
           type: number
           format: compact
@@ -1337,14 +1765,17 @@ steps:
           format: duration_ms
           unit: ms
         - name: slow_handling_events
+          unit: events
           label: "慢处理事件"
           type: number
           format: compact
         - name: input_backlog_frames
+          unit: frames
           label: "输入堆积帧"
           type: number
           format: compact
         - name: speculative_frame_matches
+          unit: events
           label: "推测帧关联"
           type: number
           format: compact
@@ -1356,6 +1787,10 @@ steps:
       binding: native_upid
       context_fields:
         global_context: [frame_budget_ms]
+    sql_fragments:
+      - fragments/android_input_events_normalized.sql
+      - fragments/android_input_delivery_roles.sql
+      - fragments/android_input_scoped_deliveries.sql
     sql: |
       WITH
       vsync_intervals AS (
@@ -1387,21 +1822,25 @@ steps:
       ),
       scoped_events AS (
         SELECT *
-        FROM android_input_events
+        FROM android_input_scoped_deliveries
         WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
           AND (
           ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
           OR process_name = '${package}'
           OR process_name GLOB '${package}:*'
         )
-          AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
-          AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       ),
+      -- 同一物理事件的 monitor 副本不算应用投递；显式 upid/package 已在 scoped_events 收窄候选。
+      -- 无 action 时先比本进程所属窗口上的事件：monitor 看到全屏触摸，事件数可比应用多（见 fragment）。
+      -- 目标自带的 monitor 通道只在它没有应用侧行时才计入（analyzed_for_upid）。
       ranked_processes AS (
         SELECT
           upid, process_name,
-          COUNT(*) as event_count,
-          ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, MAX(total_latency_dur) DESC) as rn
+          ROW_NUMBER() OVER (ORDER BY
+            SUM(delivery_role = 'action') DESC,
+            COUNT(DISTINCT unresolved_window_event_key) DESC,
+            COUNT(DISTINCT unresolved_event_key) DESC,
+            MAX(total_latency_dur) DESC, upid) as rn
         FROM scoped_events
         GROUP BY upid, process_name
       ),
@@ -1414,17 +1853,21 @@ steps:
         SELECT e.*
         FROM scoped_events e
         JOIN target t ON e.upid = t.upid
+        WHERE e.analyzed_for_upid
       ),
+      -- Backlog: exact association only (see fragments/android_input_events_normalized.sql).
       frame_backlog AS (
-        SELECT frame_id, COUNT(*) as event_count
+        SELECT exact_frame_id, COUNT(DISTINCT physical_event_key) as event_count
         FROM target_events
-        WHERE frame_id IS NOT NULL
-        GROUP BY frame_id
+        WHERE exact_frame_id IS NOT NULL
+        GROUP BY exact_frame_id
       )
       SELECT
         (SELECT process_name FROM target) as target_process,
-        COUNT(*) as total_input_events,
-        SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END) as move_events,
+        -- 事件计数按物理事件计，与 input_data_check 一致：只观察输入的目标可能有多个 monitor 通道。
+        -- 延迟值逐投递统计（每个接收通道各有延迟与帧关联）；"满足条件的事件数"计至少一个投递满足条件的物理事件。
+        COUNT(DISTINCT physical_event_key) as total_input_events,
+        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN physical_event_key END) as move_events,
         ROUND(AVG(dispatch_latency_dur) / 1e6, 2) as avg_dispatch_ms,
         ROUND(MAX(dispatch_latency_dur) / 1e6, 2) as max_dispatch_ms,
         ROUND(AVG(handling_latency_dur) / 1e6, 2) as avg_handling_ms,
@@ -1432,13 +1875,13 @@ steps:
         ROUND(MAX(handling_latency_dur) / 1e6, 2) as max_handling_ms,
         ROUND(AVG(ack_latency_dur) / 1e6, 2) as avg_ack_ms,
         ROUND(MAX(ack_latency_dur) / 1e6, 2) as max_ack_ms,
-        ROUND(AVG(end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
-        ROUND(MAX(end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
-        SUM(CASE
+        ROUND(AVG(exact_end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
+        ROUND(MAX(exact_end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
+        COUNT(DISTINCT CASE
           WHEN handling_latency_dur > (SELECT vsync_period_ns FROM timing_config) * ${input_handling_budget_ratio|0.5}
-          THEN 1 ELSE 0 END) as slow_handling_events,
+          THEN physical_event_key END) as slow_handling_events,
         (SELECT COUNT(*) FROM frame_backlog WHERE event_count >= ${input_event_backlog_threshold|3}) as input_backlog_frames,
-        SUM(CASE WHEN is_speculative_frame = 1 THEN 1 ELSE 0 END) as speculative_frame_matches,
+        COUNT(DISTINCT CASE WHEN frame_association = 'speculative' THEN physical_event_key END) as speculative_frame_matches,
         ROUND((SELECT vsync_period_ns FROM timing_config) / 1e6, 2) as frame_budget_ms,
         CASE
           WHEN COUNT(*) = 0 THEN '无 input 事件'
@@ -1485,8 +1928,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
@@ -1578,23 +2021,31 @@ steps:
           label: "掉帧类型"
           type: string
         - name: count
+          unit: frames
           label: "帧数"
           type: number
           format: compact
         - name: real_jank_count
+          unit: frames
           label: "实际掉帧"
           type: number
           format: compact
         - name: false_positive
           label: "假阳性"
           type: number
+        # FrameTimeline dur runs from the app frame's start to its present:
+        # latency, neither a cost nor a present interval.
         - name: total_dur
-          label: "总耗时"
+          label: "FrameTimeline 时长合计（起点→呈现）"
+          label_i18n:
+            en: "FrameTimeline duration sum (start to present)"
           type: duration
           format: duration_ms
           unit: ns
         - name: avg_dur
-          label: "平均耗时"
+          label: "FrameTimeline 平均时长（起点→呈现，非呈现间隔）"
+          label_i18n:
+            en: "Mean FrameTimeline duration (start to present, not a present interval)"
           type: duration
           format: duration_ms
           unit: ns
@@ -1606,6 +2057,7 @@ steps:
           type: string
           hidden: true
         - name: frame_timeline_to_buffer_tx_ratio
+          unit: ratio
           label: "FrameTimeline/BufferTX 帧数比"
           type: number
           hidden: true
@@ -1688,8 +2140,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -1758,15 +2210,12 @@ steps:
           WHEN jank_type = 'None' THEN '标签:None(可能漏检)'
           ELSE '标签:Other'
         END as responsibility,
-        '${buffer_tx_coverage.data[0].coverage_status}' as frame_timeline_coverage_status,
-        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio} as frame_timeline_to_buffer_tx_ratio,
-        CASE
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'partial_frame_timeline_coverage'
-            THEN 'partial_sample'
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'no_buffer_tx_candidate'
-            THEN 'frame_timeline_only_unbenchmarked'
-          ELSE 'full_frame_timeline'
-        END as evidence_scope
+        -- probe_unavailable is not a probe status: the optional probe produced no row.
+        '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' as frame_timeline_coverage_status,
+        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL} as frame_timeline_to_buffer_tx_ratio,
+        -- The scope the probe assigned; a probe that produced no row (it is optional)
+        -- leaves coverage unverified.
+        '${buffer_tx_coverage.data[0].root_cause_evidence_scope|coverage_unverified}' as evidence_scope
       FROM jank_analysis
       GROUP BY jank_type
       ORDER BY real_jank_count DESC, count DESC
@@ -1818,12 +2267,16 @@ steps:
           format: duration_ms
           unit: ns
         - name: avg_dur
-          label: "平均帧耗时"
+          label: "平均 FrameTimeline 时长（起点→呈现）"
+          label_i18n:
+            en: "Mean FrameTimeline duration (start to present)"
           type: duration
           format: duration_ms
           unit: ns
         - name: max_dur
-          label: "最大帧耗时"
+          label: "最大 FrameTimeline 时长（起点→呈现）"
+          label_i18n:
+            en: "Max FrameTimeline duration (start to present)"
           type: duration
           format: duration_ms
           unit: ns
@@ -1888,8 +2341,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -1998,8 +2451,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -2147,26 +2600,32 @@ steps:
           label: "区间"
           type: number
         - name: frame_count
+          unit: frames
           label: "总帧数"
           type: number
           format: compact
         - name: janky_count
+          unit: frames
           label: "感知掉帧"
           type: number
           format: compact
         - name: jank_rate
+          unit: "%"
           label: "感知掉帧率"
           type: percentage
           format: percentage
         - name: app_janky_count
+          unit: frames
           label: "App 掉帧"
           type: number
           format: compact
         - name: buffer_stuffing_count
+          unit: frames
           label: "Buffer Stuffing"
           type: number
           format: compact
         - name: max_vsync_missed
+          unit: count
           label: "最大跳帧"
           type: number
         - name: jank_types
@@ -2242,8 +2701,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -2431,8 +2890,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -2630,8 +3089,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
       ),
       -- GET_APP_DISPLAY_DEDUP_CTE_END
       ranked_frames AS (
@@ -2753,12 +3212,21 @@ steps:
     name: "掉帧列表（含根因分类）"
     optional: true
     sql_fragments:
+      - fragments/android_input_events_normalized.sql
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
+      - fragments/system_cpu_big_freq_coverage.sql
       - fragments/system_thread_state_spans.sql
       - fragments/effective_target_processes.sql
       - fragments/vsync_config.sql
       - fragments/root_cause_sample_cap.sql
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
+      - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
+      - fragments/thermal_signal_signatures.sql
+      - fragments/system_cpu_freq_limit_episode_verdicts.sql
+      - fragments/system_cpu_freq_limit_frame_binding.sql
     synthesize:
       role: list
       groupBy:
@@ -2808,6 +3276,7 @@ steps:
           unit: ns
           hidden: true
         - name: dur_ms
+          unit: ms
           label: "帧耗时"
           type: duration
           format: duration_ms
@@ -2815,6 +3284,7 @@ steps:
           label: "掉帧类型"
           type: string
         - name: vsync_missed
+          unit: count
           label: "跳帧数"
           type: number
         - name: present_interval_ms
@@ -2830,6 +3300,7 @@ steps:
           type: string
           hidden: true
         - name: frame_timeline_to_buffer_tx_ratio
+          unit: ratio
           label: "FrameTimeline/BufferTX 帧数比"
           type: number
           hidden: true
@@ -2838,21 +3309,25 @@ steps:
           type: string
           hidden: true
         - name: root_cause_eligible_frame_count
+          unit: frames
           label: "可分析掉帧"
           type: number
           format: compact
           hidden: true
         - name: root_cause_analyzed_frame_count
+          unit: frames
           label: "已分析掉帧"
           type: number
           format: compact
           hidden: true
         - name: root_cause_coverage_ratio
+          unit: ratio
           label: "根因分析覆盖率"
           type: percentage
           format: percentage
           hidden: true
         - name: root_cause_sample_limit_per_session
+          unit: frames
           label: "每 Session 采样上限"
           type: number
           format: compact
@@ -2874,6 +3349,7 @@ steps:
           label: "关键操作"
           type: string
         - name: top_slice_ms
+          unit: ms
           label: "操作耗时"
           type: duration
           format: duration_ms
@@ -2939,6 +3415,10 @@ steps:
           label: "升频延迟"
           type: duration
           format: duration_ms
+          hidden: true
+        - name: freq_ramp_evidence
+          label: "大核升频观测"
+          type: string
           hidden: true
         - name: top_slice_little_pct
           label: "小核占比%"
@@ -3018,6 +3498,81 @@ steps:
           hidden: true
         - name: device_peak_freq_mhz
           label: "设备峰值频率"
+          type: number
+          hidden: true
+        - name: freq_ceiling_ratio_pct
+          label: "大核峰频/设备峰值"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: freq_limit_state
+          label: "主线程限频状态"
+          type: string
+          hidden: true
+        - name: freq_limit_basis
+          label: "限频触发依据"
+          type: string
+          hidden: true
+        - name: freq_limit_onset_confirmed
+          label: "热控施加已确认"
+          type: number
+          hidden: true
+        - name: freq_limit_onset_ts
+          label: "上限值写入时间"
+          type: timestamp
+          unit: ns
+          hidden: true
+        - name: freq_limit_cooling_basis
+          label: "散热设备关联"
+          type: string
+          hidden: true
+        - name: freq_limit_policy_cpu
+          label: "限频 policy"
+          type: number
+          hidden: true
+        - name: freq_limit_mhz
+          label: "频率上限"
+          type: number
+          hidden: true
+        - name: freq_limit_depth_pct
+          label: "上限低于观测最高上限"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: freq_limit_binding_ratio
+          label: "运行频率/上限"
+          type: number
+          hidden: true
+        - name: freq_limit_onset_binding_ns
+          label: "该上限值约束运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: freq_limit_binding_ns
+          label: "跨上限值约束运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: freq_limit_run_ns
+          label: "关键操作运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: freq_limit_trace_episode_id
+          label: "限频区段"
+          type: string
+          hidden: true
+        - name: rt_freq_limit_state
+          label: "RenderThread 限频状态"
+          type: string
+          hidden: true
+        - name: rt_freq_limit_binding_ns
+          label: "RenderThread 上限约束运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: rt_freq_limit_policy_cpu
+          label: "RenderThread 限频 policy"
           type: number
           hidden: true
         - name: file_io_overlap_ms
@@ -3106,11 +3661,12 @@ steps:
       role: target
       binding: effective_target_processes
       context_fields:
-        global_context: [big_avg_freq_mhz, big_max_freq_mhz, ramp_ms, frame_budget_ms, vsync_source, device_peak_freq_mhz, cpu_freq_clusters_json, freq_timeline_json]
+        global_context: [big_avg_freq_mhz, big_max_freq_mhz, ramp_ms, freq_ramp_evidence, frame_budget_ms, vsync_source, device_peak_freq_mhz, cpu_freq_clusters_json, freq_timeline_json]
         peer_context: [binder_calls_json]
     sql: |
       -- 批量帧根因分类：对采样上限内的消费端真实掉帧执行简化版根因决策树
-      -- 与 jank_frame_detail 的 root_cause_summary 使用相同优先级 CASE 树
+      -- 与 jank_frame_detail 的 root_cause_summary 对齐的只有 direct-evidence（锁 / RT 同步）
+      -- 与限频（P4.5/P4.6，同一 frame binding fragment）两族，其余优先级各自不同
       -- 区别：jank_frame_detail 是单帧深钻，此步骤是带覆盖率的批量分类
       WITH
       -- ========== 1. VSync 配置 ==========
@@ -3124,10 +3680,11 @@ steps:
           ROUND(MAX(vsync_period_ns / 1e6 * 0.18, 1.5), 2) as binder_overlap_critical_ms
         FROM vsync_config
       ),
-      -- ========== 1b. 设备峰值频率（全 trace 大核最高频率，用于温控/限频检测）==========
-      -- 不加 start_ts/end_ts 过滤 — 求设备硬件频率上限
-      -- 用 MAX — P95 会被大量空闲低频样本主导（CPU 大部分时间低频运行）
-      -- 优先级已从 P0.6 下调到 P4.5，配合 60% 阈值足以防止误判
+      -- ========== 1b. 设备峰值频率（全 trace 大核最高观测频率，仅作观测列）==========
+      -- 不加 start_ts/end_ts 过滤；用 MAX — P95 会被大量空闲低频样本主导。
+      -- 它不是硬件上限，也不是限频证据：频率低于峰值既可能是被限频，也可能只是负载
+      -- 下降。限频根因只读 system_cpu_freq_limit_frame_binding（policy 上限轨道 ×
+      -- 线程实际运行时间），不再由这个比例判定。
       device_peak_freq AS (
         SELECT COALESCE(ROUND(MAX(c.value) / 1000, 0), 0) as device_peak_freq_mhz
         FROM counter c
@@ -3187,8 +3744,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -3352,6 +3909,7 @@ steps:
           s.dur as slice_dur_ns,
           ROUND(s.dur / 1e6, 2) as slice_dur_ms,
           ROUND((s.ts - fl.frame_start) / 1e6, 2) as slice_offset_ms,
+          ptr.utid as slice_utid,
           ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY s.dur DESC) as rn
         FROM jank_frame_list fl
         JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main'
@@ -3371,6 +3929,19 @@ steps:
       system_target_threads AS (
         SELECT ptr.frame_key AS window_id,fl.upid,ptr.utid,ptr.role
         FROM per_frame_thread_roles ptr JOIN jank_frame_list fl ON fl.frame_key=ptr.frame_key
+      ),
+      -- The interval the frequency-limit state of each role is attributed to: the
+      -- top slice clipped to the frame, on the thread that ran it (the same clip as
+      -- top_slice_states, so P4.5/P4.6 judge the work that top_slice_ms measures;
+      -- other main-role threads such as Flutter *.ui never count), and the whole
+      -- frame for RenderThread, whose state is diagnostic only.
+      system_work_intervals AS (
+        SELECT ts_top.frame_key AS window_id,'main' AS role,ts_top.slice_utid AS utid,
+          MAX(ts_top.slice_ts,fl.frame_start) AS work_start_ts,
+          MIN(ts_top.slice_ts+ts_top.slice_dur_ns,fl.frame_end) AS work_end_ts
+        FROM top_slices ts_top JOIN jank_frame_list fl ON fl.frame_key=ts_top.frame_key
+        UNION ALL
+        SELECT frame_key,'render',NULL,frame_start,frame_end FROM jank_frame_list
       ),
       frame_system_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type
@@ -3452,6 +4023,8 @@ steps:
       ),
       -- BATCH_FRAME_IDENTITY_FREQ_CTE_END
       -- ========== 8. Per-frame: 频率爬升延迟 ==========
+      -- 只对整帧每个大核都有频率观测的帧计时（fragments/system_cpu_big_freq_coverage.sql，
+      -- 与 jank_frame_detail 同一证据判定，高频阈值各自不同）；其余帧 ramp 为 NULL，不是"瞬间升到高频"的 0
       frame_peak_freq AS (
         SELECT f.window_id AS frame_key,MAX(f.freq_khz) AS peak_khz
         FROM system_cpu_frequency_spans f JOIN system_cpu_topology ct ON ct.ucpu=f.ucpu
@@ -3462,6 +4035,7 @@ steps:
           ROUND((MIN(CASE WHEN f.freq_khz>=p.peak_khz*0.7 THEN f.clipped_start_ts END)-f.window_start_ts)/1e6,2) AS ramp_to_high_ms
         FROM system_cpu_frequency_spans f JOIN system_cpu_topology ct ON ct.ucpu=f.ucpu
         JOIN frame_peak_freq p ON p.frame_key=f.window_id
+        JOIN system_cpu_big_freq_coverage cov ON cov.window_id=f.window_id AND cov.freq_ramp_evidence='observed'
         WHERE ct.core_type IN ('prime','big','medium') GROUP BY f.window_id,f.window_start_ts
       ),
       -- ========== 9. Per-frame: Binder 同步与 top slice 重叠 ==========
@@ -3895,10 +4469,12 @@ steps:
           ROUND(MAX(ie.dispatch_latency_dur) / 1e6, 2) as input_dispatch_ms,
           ROUND(MAX(ie.ack_latency_dur) / 1e6, 2) as input_ack_ms,
           ROUND(MAX(ie.total_latency_dur) / 1e6, 2) as input_total_ms,
-          ROUND(MAX(ie.end_to_end_latency_dur) / 1e6, 2) as input_e2e_ms,
-          SUM(CASE WHEN ie.is_speculative_frame = 1 THEN 1 ELSE 0 END) as input_speculative_events
+          -- Input→Present: exact association only (see fragments/android_input_events_normalized.sql); NULL = unmeasured.
+          ROUND(MAX(ie.exact_end_to_end_latency_dur) / 1e6, 2) as input_e2e_ms,
+          SUM(CASE WHEN ie.frame_association = 'speculative' THEN 1 ELSE 0 END) as input_speculative_events,
+          COUNT(ie.exact_frame_id) as input_exact_events
         FROM jank_frame_list fl
-        JOIN android_input_events ie ON ie.upid = fl.upid
+        JOIN android_input_events_normalized ie ON ie.upid = fl.upid
           AND fl.timeline_frame_id IS NOT NULL
           AND ie.frame_id = fl.timeline_frame_id
         GROUP BY fl.frame_key, fl.frame_start
@@ -3978,12 +4554,12 @@ steps:
             ROUND(ie.dispatch_latency_dur / 1e6, 2) as dispatch_ms,
             ROUND(ie.ack_latency_dur / 1e6, 2) as ack_ms,
             ROUND(ie.total_latency_dur / 1e6, 2) as total_ms,
-            ROUND(ie.end_to_end_latency_dur / 1e6, 2) as e2e_ms,
-            CASE WHEN ie.is_speculative_frame = 1 THEN 1 ELSE 0 END as speculative,
+            ROUND(ie.exact_end_to_end_latency_dur / 1e6, 2) as e2e_ms,
+            CASE WHEN ie.frame_association = 'speculative' THEN 1 ELSE 0 END as speculative,
             printf('%d', ie.dispatch_ts) as input_ts,
             ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY ie.handling_latency_dur DESC) as rn
           FROM jank_frame_list fl
-          JOIN android_input_events ie ON ie.upid = fl.upid
+          JOIN android_input_events_normalized ie ON ie.upid = fl.upid
             AND fl.timeline_frame_id IS NOT NULL
             AND ie.frame_id = fl.timeline_frame_id
         )
@@ -4057,7 +4633,8 @@ steps:
           rtq.render_q4b_pct as render_q4b_pct,
           pff.big_avg_freq_mhz as big_avg_freq_mhz,
           pff.big_max_freq_mhz as big_max_freq_mhz,
-          COALESCE(pfr.ramp_to_high_ms, 0) as ramp_to_high_ms,
+          pfr.ramp_to_high_ms,
+          cov.freq_ramp_evidence,
           COALESCE(pfb.binder_overlap_ms, 0) as binder_overlap_ms,
           COALESCE(pfgc.gc_overlap_ms, 0) as gc_overlap_ms,
           COALESCE(pfgc.gc_count, 0) as gc_count,
@@ -4089,8 +4666,9 @@ steps:
           COALESCE(pfie.input_dispatch_ms, 0) as input_dispatch_ms,
           COALESCE(pfie.input_ack_ms, 0) as input_ack_ms,
           COALESCE(pfie.input_total_ms, 0) as input_total_ms,
-          COALESCE(pfie.input_e2e_ms, 0) as input_e2e_ms,
+          pfie.input_e2e_ms as input_e2e_ms,
           COALESCE(pfie.input_speculative_events, 0) as input_speculative_events,
+          COALESCE(pfie.input_exact_events, 0) as input_exact_events,
           COALESCE(pfis.input_slice_ms, 0) as input_slice_ms,
           COALESCE(pfis.input_slice_count, 0) as input_slice_count,
           COALESCE(pfis.input_slice_max_ms, 0) as input_slice_max_ms,
@@ -4098,10 +4676,28 @@ steps:
           COALESCE(pfid.input_events_json, '[]') as input_events_json,
           COALESCE(pfisd.input_slices_json, '[]') as input_slices_json,
           COALESCE(pfse.system_evidence_json, '[]') AS system_evidence_json,
-          dpf.device_peak_freq_mhz
+          dpf.device_peak_freq_mhz,
+          flm.freq_limit_state,
+          flm.freq_limit_basis,
+          flm.freq_limit_onset_confirmed,
+          flm.freq_limit_onset_ts,
+          flm.freq_limit_cooling_basis,
+          flm.policy_cpu AS freq_limit_policy_cpu,
+          ROUND(flm.limit_khz / 1000.0, 1) AS freq_limit_mhz,
+          flm.depth_pct AS freq_limit_depth_pct,
+          flm.binding_ratio AS freq_limit_binding_ratio,
+          flm.onset_binding_ns AS freq_limit_onset_binding_ns,
+          flm.binding_ns AS freq_limit_binding_ns,
+          flm.run_ns AS freq_limit_run_ns,
+          flm.trace_episode_id AS freq_limit_trace_episode_id,
+          flr.freq_limit_state AS rt_freq_limit_state,
+          flr.binding_ns AS rt_freq_limit_binding_ns,
+          flr.policy_cpu AS rt_freq_limit_policy_cpu
         FROM jank_frame_list fl
         CROSS JOIN timing_config tc
         CROSS JOIN device_peak_freq dpf
+        LEFT JOIN system_cpu_freq_limit_frame_binding flm ON flm.window_id=fl.frame_key AND flm.role='main'
+        LEFT JOIN system_cpu_freq_limit_frame_binding flr ON flr.window_id=fl.frame_key AND flr.role='render'
         LEFT JOIN per_frame_system_evidence pfse ON pfse.frame_key=fl.frame_key
         LEFT JOIN top_slices ts ON ts.frame_key = fl.frame_key
         LEFT JOIN per_frame_cpu_mix pcm ON pcm.frame_key = fl.frame_key
@@ -4109,6 +4705,7 @@ steps:
         LEFT JOIN render_thread_quadrants rtq ON rtq.frame_key = fl.frame_key
         LEFT JOIN per_frame_freq pff ON pff.frame_key = fl.frame_key
         LEFT JOIN per_frame_ramp pfr ON pfr.frame_key = fl.frame_key
+        LEFT JOIN system_cpu_big_freq_coverage cov ON cov.window_id = fl.frame_key
         LEFT JOIN per_frame_binder pfb ON pfb.frame_key = fl.frame_key
         LEFT JOIN per_frame_gc pfgc ON pfgc.frame_key = fl.frame_key
         LEFT JOIN gpu_fence_per_frame gf ON gf.frame_key = fl.frame_key
@@ -4128,7 +4725,7 @@ steps:
         LEFT JOIN per_frame_input_detail pfid ON pfid.frame_key = fl.frame_key
         LEFT JOIN per_frame_input_slice_detail pfisd ON pfisd.frame_key = fl.frame_key
       ),
-      -- ========== 11. 根因分类（与 jank_frame_detail 相同优先级 CASE 树） ==========
+      -- ========== 11. 根因分类（direct-evidence 与限频两族与 jank_frame_detail 对齐） ==========
       classified AS (
         SELECT *,
           CASE
@@ -4159,13 +4756,14 @@ steps:
             WHEN gc_count >= 3 AND gc_overlap_ms > 0.5
               THEN 'gc_pressure_cascade'
             -- P1.7: App input stage 慢。只使用 App 责任/隐形掉帧帧；android.input
-            -- handling 或主线程 input slice 都可作为直接证据，同帧事件堆积只是辅助信号。
+            -- handling 或主线程 input slice 都可作为直接证据，同帧事件堆积只是辅助信号
+            -- （只计精确帧关联）。
             WHEN jank_responsibility IN ('APP', 'HIDDEN')
               AND (
                 input_handling_ms > frame_budget_ms * ${input_handling_budget_ratio|0.5}
                 OR input_slice_ms > frame_budget_ms * ${input_handling_budget_ratio|0.5}
                 OR (
-                  input_event_count >= ${input_event_backlog_threshold|3}
+                  input_exact_events >= ${input_event_backlog_threshold|3}
                   AND input_handling_ms > frame_budget_ms * 0.25
                 )
               )
@@ -4189,25 +4787,26 @@ steps:
             -- P4: 重度业务负载（>2× 帧预算，即使满频也会超时）
             WHEN top_slice_ms > frame_budget_ms * 2.0
               THEN 'workload_heavy'
-            -- P4.5: 温控降频 — 帧内大核最高频率显著低于设备 P95 峰值（<60%）
-            -- 放在 workload_heavy 之后：如果帧有明确的 App 侧直接原因（Binder/GC/heavy workload），
-            -- 优先归因到直接原因。温控降频是供给侧约束，仅在无更强直接原因时才作为主因
-            WHEN device_peak_freq_mhz > 0 AND big_max_freq_mhz > 0
-              AND big_max_freq_mhz < device_peak_freq_mhz * 0.60
-              AND top_slice_ms > slice_critical_ms
+            -- P4.5: 温控限频 — 主线程 top slice 的运行时间受 policy 频率上限约束
+            -- （freq_limit_state = capped_binding），且约束它的那个上限值由与该 policy
+            -- 时序关联的散热设备升档写入（该值自身的 onset verdict 为 confirmed，且不是
+            -- 靠多个上限值拼出的约束）。放在 workload_heavy 之后：供给侧约束仅在无更强
+            -- 直接原因时才作为主因。频率比设备峰值低不是限频证据，不参与判定。
+            WHEN top_slice_ms > slice_critical_ms AND freq_limit_state = 'capped_binding'
+              AND freq_limit_onset_confirmed = 1 AND freq_limit_basis <> 'mixed_limit_values_in_frame'
               THEN 'thermal_throttling'
-            -- P4.6: CPU 最大频率被限 — 中等程度限频（60%-75%）
-            WHEN device_peak_freq_mhz > 0 AND big_max_freq_mhz > 0
-              AND big_max_freq_mhz < device_peak_freq_mhz * 0.75
-              AND top_slice_ms > slice_critical_ms
+            -- P4.6: CPU 最大频率被限 — 上限约束了主线程，但该上限值的触发方未由帧内
+            -- 证据确定（放宽后的值、写入时刻不可观测、未配对的收紧、多值拼接等）。
+            WHEN top_slice_ms > slice_critical_ms AND freq_limit_state = 'capped_binding'
               THEN 'cpu_max_limited'
             -- P5: 大核低频（边际情况：slice 在 1x-2x 帧预算区间）
             WHEN top_slice_ms > slice_critical_ms AND big_run_pct >= 40
               AND big_avg_freq_mhz > 0 AND big_max_freq_mhz > 0
               AND big_avg_freq_mhz < big_max_freq_mhz * 0.55
               THEN 'big_core_low_freq'
-            -- P6: 频率爬升慢（边际情况：slice 在 1x-2x 帧预算区间）
+            -- P6: 频率爬升慢（边际情况：slice 在 1x-2x 帧预算区间），且整帧每个大核都有频率观测
             WHEN top_slice_ms > slice_critical_ms
+              AND freq_ramp_evidence = 'observed'
               AND ramp_to_high_ms > freq_ramp_critical_ms
               AND top_slice_offset_ms <= ramp_to_high_ms
               THEN 'freq_ramp_slow'
@@ -4272,15 +4871,12 @@ steps:
         pid,
         process_name,
         reason_code,
-        '${buffer_tx_coverage.data[0].coverage_status}' as frame_timeline_coverage_status,
-        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio} as frame_timeline_to_buffer_tx_ratio,
-        CASE
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'partial_frame_timeline_coverage'
-            THEN 'partial_sample'
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'no_buffer_tx_candidate'
-            THEN 'frame_timeline_only_unbenchmarked'
-          ELSE 'full_frame_timeline'
-        END as evidence_scope,
+        -- probe_unavailable is not a probe status: the optional probe produced no row.
+        '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' as frame_timeline_coverage_status,
+        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL} as frame_timeline_to_buffer_tx_ratio,
+        -- The scope the probe assigned; a probe that produced no row (it is optional)
+        -- leaves coverage unverified.
+        '${buffer_tx_coverage.data[0].root_cause_evidence_scope|coverage_unverified}' as evidence_scope,
         scope.root_cause_eligible_frame_count,
         scope.root_cause_analyzed_frame_count,
         scope.root_cause_coverage_ratio,
@@ -4293,7 +4889,7 @@ steps:
           WHEN reason_code = 'prediction_error' THEN 'FrameTimeline 预测误差: SurfaceFlinger scheduler 的预测呈现时间发生漂移；孤立事件通常不代表用户可感知 App 卡顿'
           WHEN reason_code = 'app_jank_unattributed' THEN 'App Deadline Missed 已确认，但当前帧缺少 Binder/GC/锁/Input/调度等直接证据，底层原因保持未归因'
           WHEN reason_code = 'frame_timeline_unattributed' THEN 'FrameTimeline 标记为 Unknown Jank；当前 trace 没有 App、SF 或帧内直接机制证据，异常保留但根因未归因'
-          WHEN reason_code = 'thermal_throttling' THEN '温控降频: 大核最高 ' || big_max_freq_mhz || 'MHz (设备峰值 ' || device_peak_freq_mhz || 'MHz, 仅 ' || ROUND(100.0 * big_max_freq_mhz / NULLIF(device_peak_freq_mhz, 0), 0) || '%)'
+          WHEN reason_code = 'thermal_throttling' THEN '温控限频: "' || top_slice_name || '" 运行 ' || ROUND(freq_limit_run_ns / 1e6, 2) || 'ms 中有 ' || ROUND(freq_limit_onset_binding_ns / 1e6, 2) || 'ms 受 policy' || freq_limit_policy_cpu || ' 上限 ' || freq_limit_mhz || 'MHz 约束（低于观测最高上限 ' || freq_limit_depth_pct || '%，运行频率/上限 ' || freq_limit_binding_ratio || '）；该上限值由与该 policy 时序关联的散热设备升档写入' || CASE WHEN freq_limit_binding_ns > freq_limit_onset_binding_ns THEN '；跨全部上限值共受约束 ' || ROUND(freq_limit_binding_ns / 1e6, 2) || 'ms' ELSE '' END
           WHEN reason_code = 'binder_sync_blocking' THEN '同步Binder阻塞: "' || top_slice_name || '" 中 Binder 重叠 ' || binder_overlap_ms || 'ms'
           WHEN reason_code = 'lock_contention' THEN 'Monitor锁竞争: 主线程在帧窗口内直接等待 ' || lock_contention_ms || 'ms'
           WHEN reason_code = 'render_sync_wait' THEN 'UI→RenderThread同步等待: 主线程 postAndWait/syncFrameState 重叠 ' || render_sync_wait_ms || 'ms'
@@ -4306,7 +4902,7 @@ steps:
           WHEN reason_code = 'gpu_fence_wait' THEN 'GPU Fence等待: 最长 ' || ROUND(max_fence_dur_ns / 1e6, 2) || 'ms'
           WHEN reason_code = 'render_thread_heavy' THEN 'RT负载过重: RenderThread 运行占比 ' || (render_q1_pct + render_q2_pct) || '%, 等待仅 ' || render_q4b_pct || '%'
           WHEN reason_code = 'workload_heavy' THEN '负载过重: "' || top_slice_name || '" 耗时 ' || top_slice_ms || 'ms (预算 ' || frame_budget_ms || 'ms)'
-          WHEN reason_code = 'cpu_max_limited' THEN 'CPU限频: 大核最高 ' || big_max_freq_mhz || 'MHz (设备峰值 ' || device_peak_freq_mhz || 'MHz, ' || ROUND(100.0 * big_max_freq_mhz / NULLIF(device_peak_freq_mhz, 0), 0) || '%), "' || top_slice_name || '" 耗时 ' || top_slice_ms || 'ms'
+          WHEN reason_code = 'cpu_max_limited' THEN 'CPU限频生效: "' || top_slice_name || '" 运行 ' || ROUND(freq_limit_run_ns / 1e6, 2) || 'ms 中有 ' || ROUND(freq_limit_onset_binding_ns / 1e6, 2) || 'ms 受 policy' || freq_limit_policy_cpu || ' 上限 ' || freq_limit_mhz || 'MHz 约束（低于观测最高上限 ' || freq_limit_depth_pct || '%，运行频率/上限 ' || freq_limit_binding_ratio || '）' || CASE WHEN freq_limit_binding_ns > freq_limit_onset_binding_ns THEN '；跨全部上限值共受约束 ' || ROUND(freq_limit_binding_ns / 1e6, 2) || 'ms' ELSE '' END || '；触发方未由帧内证据确定（' || COALESCE(freq_limit_basis, 'onset_unclassified') || '）'
           WHEN reason_code = 'big_core_low_freq' THEN '大核低频: 平均 ' || big_avg_freq_mhz || 'MHz (峰值 ' || big_max_freq_mhz || 'MHz)'
           WHEN reason_code = 'freq_ramp_slow' THEN '升频慢: ' || ramp_to_high_ms || 'ms 才达高频'
           WHEN reason_code = 'scheduling_delay' THEN '调度等待: Q3=' || main_q3_pct || '%'
@@ -4358,6 +4954,7 @@ steps:
         big_avg_freq_mhz,
         big_max_freq_mhz,
         ramp_to_high_ms as ramp_ms,
+        freq_ramp_evidence,
         -- Top Slice CPU 分布
         little_run_pct as top_slice_little_pct,
         big_run_pct as top_slice_big_pct,
@@ -4377,8 +4974,27 @@ steps:
         -- 帧预算参考
         frame_budget_ms,
         vsync_source,
-        -- 设备峰值频率（温控/限频参考）
+        -- 设备峰值频率（观测列，不是硬件上限，也不是限频证据）
         device_peak_freq_mhz,
+        ROUND(100.0 * big_max_freq_mhz / NULLIF(device_peak_freq_mhz, 0), 1) AS freq_ceiling_ratio_pct,
+        -- 主线程 top slice 的频率上限约束（fragments/system_cpu_freq_limit_frame_binding.sql）
+        freq_limit_state,
+        freq_limit_basis,
+        freq_limit_onset_confirmed,
+        CASE WHEN freq_limit_onset_ts IS NOT NULL THEN printf('%d', freq_limit_onset_ts) END AS freq_limit_onset_ts,
+        freq_limit_cooling_basis,
+        freq_limit_policy_cpu,
+        freq_limit_mhz,
+        freq_limit_depth_pct,
+        freq_limit_binding_ratio,
+        freq_limit_onset_binding_ns,
+        freq_limit_binding_ns,
+        freq_limit_run_ns,
+        freq_limit_trace_episode_id,
+        -- RenderThread 的同一判定，仅供诊断，不进入 reason_code
+        rt_freq_limit_state,
+        rt_freq_limit_binding_ns,
+        rt_freq_limit_policy_cpu,
         -- 文件 IO 重叠
         file_io_overlap_ms,
         -- Input pipeline 证据
@@ -4422,11 +5038,17 @@ steps:
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
       - fragments/effective_target_processes.sql
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
+      - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
+      - fragments/thermal_signal_signatures.sql
+      - fragments/system_cpu_freq_limit_episode_verdicts.sql
     process_scope:
       role: target
       binding: effective_target_processes
       context_fields:
-        global_context: [video_during_scroll, video_slice_count, trace_peak_freq_mhz, tail_min_freq_mhz, thermal_trending, frequency_decline_observed, thermal_evidence]
+        global_context: [video_during_scroll, video_slice_count, trace_peak_freq_mhz, tail_min_freq_mhz, thermal_trending, frequency_decline_observed, thermal_evidence, freq_limit_classification, freq_limit_episode_count, freq_limit_confirmed_episode_count, freq_limit_trace_summary]
         peer_context: [non_app_big_core_pct, background_cpu_heavy]
     sql: |
       WITH
@@ -4460,8 +5082,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND COALESCE(a.display_frame_token, -999) = -1
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
@@ -4500,11 +5122,29 @@ steps:
           AND th.tail_min_freq_mhz < th.trace_peak_freq_mhz * 0.70
           AND (SELECT threshold FROM cpufreq_tail_threshold) > COALESCE(${start_ts}, 0)
           THEN 1 WHEN th.trace_peak_freq_mhz IS NULL THEN NULL ELSE 0 END as frequency_decline_observed,
-        NULL AS thermal_trending,
-        'temperature_or_throttle_evidence_required' AS thermal_evidence,
+        -- Frequency-limit facts come only from the shared verdict layer. Window 0
+        -- is this analysis window: its classification is the only in-window
+        -- statement. thermal_trending is whether the limit trigger in the window
+        -- is a confirmed kernel cooling write (NULL when the trace has no valid max
+        -- limit sample); thermal_evidence keeps the window classification under
+        -- its historical name. freq_limit_trace_summary is trace-wide context and
+        -- says nothing about a limit during this window.
+        CASE WHEN fw.has_max_limit_data = 1 THEN fw.is_confirmed END AS thermal_trending,
+        fw.freq_limit_classification AS thermal_evidence,
+        fw.freq_limit_classification,
+        fw.episode_count AS freq_limit_episode_count,
+        fw.confirmed_episode_count AS freq_limit_confirmed_episode_count,
+        fw.onset_trigger_mix AS freq_limit_onset_trigger_mix,
+        fw.class_note AS freq_limit_class_note,
+        fw.limit_evidence_missing_reason AS freq_limit_evidence_missing_reason,
+        ft.freq_limit_classification AS freq_limit_trace_summary,
+        ft.classification_scope AS freq_limit_trace_summary_scope,
         bg.non_app_big_core_pct as non_app_big_core_pct,
         CASE WHEN bg.non_app_big_core_pct > 60 THEN 1 WHEN bg.non_app_big_core_pct IS NULL THEN NULL ELSE 0 END as background_cpu_heavy
       FROM video_check v, interpolation_check i, thermal_check th, background_cpu bg
+      CROSS JOIN system_cpu_freq_limit_window_summary fw
+      CROSS JOIN system_cpu_freq_limit_trace_summary ft
+      WHERE fw.window_id = 0
     save_as: global_context
 
   # ==========================================================================
@@ -4530,7 +5170,7 @@ steps:
       ),system_target_threads AS (
         SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
         FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
+        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
       ),scene_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
           COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source
@@ -4607,7 +5247,7 @@ steps:
       ),system_target_threads AS (
         SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
         FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid = p.pid OR t.name IN ('RenderThread','GPU completion','hwuiTask0','hwuiTask1'))
+        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid = p.pid OR t.name IN ('RenderThread','GPU completion','hwuiTask0','hwuiTask1'))
       ),scene_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
           COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source
@@ -4738,8 +5378,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -4803,8 +5443,8 @@ steps:
           -- flawless scrolling for an app that produced no frames at all: one
           -- device reported 31fps SystemUI frames as "优秀", another rated a
           -- 5-frame notification-shade window. Anyone analysing the system UI
-          -- deliberately names it and keeps these rows.
-          AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
+          -- deliberately names it, or selects it by UPID, and keeps these rows.
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -4826,7 +5466,7 @@ steps:
       ),system_target_threads AS (
         SELECT w.window_id,p.upid,t.utid,CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE t.name END AS role
         FROM system_windows w CROSS JOIN effective_target_processes p JOIN thread t ON t.upid=p.upid
-        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND ('${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
+        WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND p.name NOT LIKE '/system/%' AND (${__process_scope.upid} IS NOT NULL OR '${package}' != '' OR p.name NOT LIKE 'com.android.systemui%') AND (t.tid=p.pid OR t.name='RenderThread')
       ),scene_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type,
           COALESCE(ct.topology_source,'cpu_identity_unavailable') AS topology_source
@@ -5064,7 +5704,7 @@ steps:
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
-            AND '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+            AND '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN '⚠️ 目标进程不可用'
           ELSE '⚠️ 无法执行帧分析'
         END as status,
@@ -5074,7 +5714,7 @@ steps:
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
             THEN 'actual_frame_timeline_slice'
-          WHEN '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+          WHEN '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN '目标包: ${package}'
           ELSE '目标包 FrameTimeline / BufferTX 帧产出证据'
         END as missing_table,
@@ -5084,7 +5724,7 @@ steps:
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
             THEN '请确保 trace 采集时启用了 Frame Timeline (需要 Android 12+ 且开启 Choreographer tracing)'
-          WHEN '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+          WHEN '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN 'trace 未包含目标包进程；请确认包名，或在目标应用处于前台时重新采集。不能输出该目标的帧指标或任务结论'
           ELSE '已找到 FrameTimeline 表，但目标包无可用帧行，且 BufferTX 帧产出证据不足；不能输出 FPS、掉帧率或帧根因；仍可读取实际主线程任务与状态证据'
         END as suggestion
@@ -5102,7 +5742,7 @@ steps:
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
-          AND '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+          AND '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
         )
     save_as: fallback_info
 

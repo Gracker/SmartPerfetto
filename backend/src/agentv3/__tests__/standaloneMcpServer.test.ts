@@ -284,7 +284,7 @@ describe('runStdioLoop', () => {
     const registry = new McpToolRegistry();
     registry.registerSdk(
       stubSdkTool({
-        handler: async (args: unknown) => ({
+        handler: async () => ({
           content: [{type: 'text', text: 'echo'}],
         }),
       }),
@@ -331,5 +331,51 @@ describe('runStdioLoop', () => {
     expect(sink.responses).toHaveLength(2);
     expect(sink.responses[0].error?.code).toBe(RPC_ERROR_CODES.TOOL_EXECUTION_FAILED);
     expect(sink.responses[1].result).toBeDefined();
+  });
+});
+
+// ----------------------------------------------------------------------
+// Public result contract of the shared evidence tools. External hosts parse
+// these results directly, so a row-shape change must be detectable.
+// ----------------------------------------------------------------------
+
+describe('public evidence tool result shape', () => {
+  async function publicRegistry(): Promise<McpToolRegistry> {
+    const {createClaudeMcpServer} = await import('../claudeMcpServer');
+    const {ArtifactStore} = await import('../artifactStore');
+    const {SkillExecutor} = await import('../../services/skillEngine/skillExecutor');
+    const rows = Array.from({length: 60}, (_, index) => [index, `slice-${index}`, (index * 7) % 60]);
+    const traceProcessorService = {
+      query: async () => ({columns: ['id', 'slice_name', 'dur'], rows, durationMs: 1}),
+    } as never;
+    const mcp = createClaudeMcpServer({
+      traceId: 'trace-public-contract', sessionId: 'session-public-contract', traceProcessorService,
+      skillExecutor: new SkillExecutor(traceProcessorService), artifactStore: new ArtifactStore(),
+      emitUpdate: () => {},
+    });
+    const registry = new McpToolRegistry();
+    for (const definition of mcp.toolDefinitions) registry.registerShared(definition.shared);
+    return registry;
+  }
+  const callJson = async (registry: McpToolRegistry, id: number, name: string, args: Record<string, unknown>) => {
+    const resp = await dispatch(registry, {jsonrpc: '2.0', id, method: 'tools/call', params: {name, arguments: args}});
+    expect(resp!.error).toBeUndefined();
+    return (resp!.result as {structuredContent: Record<string, any>}).structuredContent;
+  };
+
+  it('lists execute_sql and fetch_artifact and returns rows that name their own artifact-wide index', async () => {
+    const registry = await publicRegistry();
+    const listed = await dispatch(registry, {jsonrpc: '2.0', id: 30, method: 'tools/list'});
+    const names = (listed!.result as {tools: Array<{name: string}>}).tools.map(tool => tool.name);
+    expect(names).toEqual(expect.arrayContaining(['execute_sql', 'fetch_artifact']));
+
+    const summary = await callJson(registry, 31, 'execute_sql', {sql: 'SELECT id, name AS slice_name, dur FROM slice'});
+    expect(summary).toMatchObject({mode: 'summary', rowShape: 'indexed_rows@1'});
+    // Samples are sorted by dur, so sample position 0 is row 17 and says so.
+    expect(summary.sampleRows[0]).toEqual({rowIndex: 17, values: [17, 'slice-17', 59]});
+    const page = await callJson(registry, 32, 'fetch_artifact',
+      {artifactId: summary.artifactId, detail: 'rows', offset: 50, limit: 2});
+    expect(page).toMatchObject({rowShape: 'indexed_rows@1'});
+    expect(page.rows[0]).toEqual({rowIndex: 50, values: [50, 'slice-50', 50]});
   });
 });

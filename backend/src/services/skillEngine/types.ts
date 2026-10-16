@@ -8,7 +8,6 @@
  * 支持：
  * - Skill 可组合（composite）
  * - Skill 可迭代（iterator）
- * - AI 协作（ai_decision, ai_summary）
  * - 诊断推理（diagnostic）
  * - 展示控制（display）
  */
@@ -36,8 +35,6 @@ export type SkillType =
   | 'deep'
   | 'iterator'
   | 'diagnostic'
-  | 'ai_decision'
-  | 'ai_summary'
   | 'conditional'
   | 'pipeline'
   | 'pipeline_definition'
@@ -81,6 +78,8 @@ export interface SynthesizeConfig {
     key: string;
     /** 显示标签 */
     label: string;
+    /** Catalog label in a language `label` is not written in, as `label_i18n` on a display column. */
+    label_i18n?: AuthoredTranslations;
     /** 格式化模板，支持 {{field}} 插值 */
     format?: string;
   }>;
@@ -114,12 +113,6 @@ export interface SkillInput {
   description?: string;
 }
 
-export interface SkillOutput {
-  name: string;
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'timestamp' | 'duration' | 'array' | 'object';
-  description?: string;
-}
-
 // =============================================================================
 // Input Validation Types
 // =============================================================================
@@ -140,15 +133,23 @@ export interface ValidatedParams {
 // 展示控制
 // =============================================================================
 
+/**
+ * A display column as a Skill authors it. `label_i18n` is a catalog label for
+ * a language the authored label is not written in, so a column keeps its
+ * stable name while each language reads an accurate label; like title_i18n it
+ * never reaches a runtime result.
+ */
+export type SkillDisplayColumn = Partial<ColumnDefinition> & {label_i18n?: AuthoredTranslations};
+
 export interface DisplayConfig {
   show?: boolean;
   level?: DisplayLevel;
   layer?: DisplayLayer;         // 分层展示层级
   title?: string;
   /** Catalog titles for named steps[] (including nested steps[]); other display locations are rejected. */
-  title_i18n?: Partial<Record<'zh-CN' | 'en', string>>;
+  title_i18n?: AuthoredTranslations;
   format?: DisplayFormat;
-  columns?: Array<string | Partial<ColumnDefinition>>; // 指定展示哪些列（支持简写或完整列定义）
+  columns?: Array<string | SkillDisplayColumn>; // 指定展示哪些列（支持简写或完整列定义）
   aggregate?: boolean;          // 是否汇总迭代结果
   highlight?: HighlightRule[];  // 高亮规则
   expandable?: boolean;         // 是否支持展开查看详细分析（用于 L2 列表关联 L4 deep 数据）
@@ -176,11 +177,6 @@ export interface DiagnosticRule {
   severity?: 'info' | 'warning' | 'critical'; // 显式严重程度（可选）
   suggestions?: string[];     // 优化建议
   evidence_fields?: string[]; // 证据字段
-}
-
-export interface DiagnosticFallback {
-  type: 'ai_decision';
-  prompt: string;
 }
 
 // =============================================================================
@@ -228,6 +224,13 @@ export interface SkillRefStep {
   optional?: boolean;
   display?: DisplayConfig | boolean;
   save_as?: string;
+  /**
+   * Top-level step id of the referenced Skill whose data `save_as` binds.
+   * Without it the engine binds a heuristic pick (the first displayed step
+   * with data). With it, a missing or failed named step leaves `save_as`
+   * unbound rather than falling back. Honoured only on a top-level step.
+   */
+  save_from?: string;
   synthesize?: boolean | SynthesizeConfig;
 }
 
@@ -269,37 +272,6 @@ export interface DiagnosticStep {
   name?: string;
   inputs: string[];           // 输入数据源
   rules: DiagnosticRule[];    // 诊断规则
-  ai_assist?: boolean;        // 是否让 AI 参与
-  fallback?: DiagnosticFallback;  // 规则无法确定时的回退
-  display?: DisplayConfig | boolean;
-  save_as?: string;
-  synthesize?: boolean | SynthesizeConfig;
-}
-
-/**
- * AI 决策步骤 - 让 AI 做出判断
- */
-export interface AIDecisionStep {
-  id: string;
-  type: 'ai_decision';
-  name?: string;
-  prompt: string;             // 提示词模板
-  inputs?: string[];          // 输入数据源
-  output_schema?: Record<string, any>;  // 期望的输出结构
-  display?: DisplayConfig | boolean;
-  save_as?: string;
-  synthesize?: boolean | SynthesizeConfig;
-}
-
-/**
- * AI 总结步骤 - 让 AI 生成总结
- */
-export interface AISummaryStep {
-  id: string;
-  type: 'ai_summary';
-  name?: string;
-  prompt: string;
-  inputs?: string[];
   display?: DisplayConfig | boolean;
   save_as?: string;
   synthesize?: boolean | SynthesizeConfig;
@@ -353,8 +325,6 @@ export type SkillStep =
   | IteratorStep
   | ParallelStep
   | DiagnosticStep
-  | AIDecisionStep
-  | AISummaryStep
   | ConditionalStep
   | PipelineStep;
 
@@ -362,9 +332,19 @@ export type SkillStep =
 // Skill 定义
 // =============================================================================
 
+/** Authored text per output language, for a language the authored text is not in. */
+export type AuthoredTranslations = Partial<Record<'zh-CN' | 'en', string>>;
+
 export interface SkillMeta {
   display_name: string;
   description: string;
+  /**
+   * Catalog translations of display_name and description, for a language the
+   * authored text is not in. Authoring metadata: the localization catalog
+   * carries them and runtime meta does not.
+   */
+  display_name_i18n?: AuthoredTranslations;
+  description_i18n?: AuthoredTranslations;
   icon?: string;
   tags?: string[];
   author?: string;
@@ -432,7 +412,8 @@ export interface SkillDefinition {
   version: string;
   type: SkillType;
   category?: string;
-  priority?: string;
+  /** Intended complexity and review tier; `validate:skills` checks the structure it implies. */
+  tier?: 'S' | 'A' | 'B';
 
   meta: SkillMeta;
   triggers?: SkillTriggers;
@@ -465,33 +446,17 @@ export interface SkillDefinition {
   // remains responsible only for bounded evidence extraction.
   batch_analysis?: SkillBatchAnalysisConfig;
 
-  // 诊断规则（diagnostic 使用）
-  rules?: DiagnosticRule[];
-
   // 输出配置
   output?: SkillOutputConfig;
 
-  // 阈值定义（用于诊断）
-  thresholds?: Record<string, {
-    unit?: string;
-    levels: Record<string, { min?: number; max?: number; label?: string }>;
-  }>;
-
   // ==========================================================================
-  // Module Expert System fields (Phase 1 - Cross-Domain Expert System)
+  // Module metadata
   // ==========================================================================
 
   /**
-   * Module metadata - identifies this skill as a module expert
-   * When present, this skill can be invoked by cross-domain experts
+   * Module metadata - the architecture layer and component this skill covers
    */
   module?: ModuleMetadata;
-
-  /**
-   * Dialogue interface - how cross-domain experts interact with this module
-   * Defines capabilities (questions it can answer), findings schemas, and suggestions
-   */
-  dialogue?: DialogueInterface;
 }
 
 // =============================================================================
@@ -519,7 +484,9 @@ export interface SkillExecutionContext {
 
   // 保存的变量（save_as）
   variables: Record<string, any>;
-  variableScopes?: Record<string, EvidenceScopeProvenanceV1 | undefined>;
+  variableScopes: Record<string, EvidenceScopeProvenanceV1 | undefined>;
+  // 每个 save_as 当前绑定来自哪个步骤（step id）
+  variableSteps: Record<string, string>;
 
   // 当前迭代项（iterator 中使用）
   currentItem?: any;
@@ -535,6 +502,8 @@ export interface StepResult extends EvidenceScopeMetadata {
   code?: string;
   /** Authored explanation for a successful query that returned no rows. */
   emptyMessage?: string;
+  /** The `condition` expression that evaluated false when code is `condition_not_met`. */
+  skippedCondition?: string;
   executionTimeMs: number;
   display?: DisplayConfig;
   sql?: string;
@@ -555,9 +524,6 @@ export interface SkillExecutionResult {
 
   // 诊断结论
   diagnostics: DiagnosticResult[];
-
-  // AI 生成的总结
-  aiSummary?: string;
 
   /**
    * Data marked via YAML step-level `synthesize:` for downstream summarization.
@@ -613,8 +579,8 @@ export interface DisplayResult extends EvidenceScopeMetadata {
       }>;
     };
   };
-  /** Public execution state; keeps successful-empty distinct from optional query failure. */
-  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable';
+  /** Public execution state; keeps successful-empty distinct from optional query failure and condition skips. */
+  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable' | 'skipped';
   executionMessage?: string;
   executionError?: string;
   highlight?: HighlightRule[];
@@ -655,7 +621,7 @@ export interface DiagnosticResult extends EvidenceScopeMetadata {
   severity: 'info' | 'warning' | 'critical';
   evidence?: Record<string, any>;
   suggestions?: string[];
-  source: 'rule' | 'ai';
+  source: 'rule';
 }
 
 // =============================================================================
@@ -668,8 +634,6 @@ export type SkillEventType =
   | 'step_completed'
   | 'display_result'
   | 'diagnostic_found'
-  | 'ai_thinking'
-  | 'ai_response'
   | 'skill_completed'
   | 'skill_error';
 
@@ -681,46 +645,8 @@ export interface SkillEvent {
   data?: any;
 }
 
-export interface DisplayResultEvent extends SkillEvent {
-  type: 'display_result';
-  data: DisplayResult;
-}
-
-export interface DiagnosticEvent extends SkillEvent {
-  type: 'diagnostic_found';
-  data: DiagnosticResult;
-}
-
-export interface AIThinkingEvent extends SkillEvent {
-  type: 'ai_thinking';
-  data: {
-    prompt: string;
-    context?: string;
-  };
-}
-
-export interface AIResponseEvent extends SkillEvent {
-  type: 'ai_response';
-  data: {
-    response: string;
-    tokens?: number;
-  };
-}
-
 // =============================================================================
-// Vendor Types
-// =============================================================================
-
-export type VendorType = 'oppo' | 'vivo' | 'xiaomi' | 'honor' | 'transsion' | 'mtk' | 'qualcomm' | 'samsung' | 'aosp' | 'unknown';
-
-export interface VendorDetectionResult {
-  vendor: VendorType;
-  confidence: ConfidenceLevel;
-  matchedPatterns?: string[];
-}
-
-// =============================================================================
-// Module Expert Types (Phase 1 - Cross-Domain Expert System)
+// Module Metadata Types
 // =============================================================================
 
 /**
@@ -738,96 +664,4 @@ export interface ModuleMetadata {
   component: string;
   /** Sub-components this module covers */
   subsystems?: string[];
-  /** Related modules that may be consulted */
-  relatedModules?: string[];
-}
-
-/**
- * Dialogue capability - a question type this module can answer
- */
-export interface DialogueCapability {
-  /** Unique capability ID */
-  id: string;
-  /** Question template with placeholders */
-  questionTemplate: string;
-  /** Required parameters for this question */
-  requiredParams: string[];
-  /** Optional parameters */
-  optionalParams?: string[];
-  /** Description of what this capability analyzes */
-  description?: string;
-}
-
-/**
- * Finding schema - structured finding output format
- */
-export interface FindingSchema {
-  /** Finding type ID */
-  id: string;
-  /** Severity level */
-  severity: 'info' | 'warning' | 'critical';
-  /** Title template with placeholders */
-  titleTemplate: string;
-  /** Description template */
-  descriptionTemplate?: string;
-  /** Fields to include as evidence */
-  evidenceFields?: string[];
-}
-
-/**
- * Suggestion schema - suggests next analysis steps
- */
-export interface SuggestionSchema {
-  /** Suggestion ID */
-  id: string;
-  /** Condition expression to trigger this suggestion */
-  condition: string;
-  /** Target module to consult */
-  targetModule: string;
-  /** Question template for the target module */
-  questionTemplate: string;
-  /** Parameter mapping from current results to target params */
-  paramsMapping?: Record<string, string>;
-  /** Priority (lower = higher priority) */
-  priority?: number;
-}
-
-/**
- * Dialogue interface - how cross-domain experts interact with this module
- */
-export interface DialogueInterface {
-  /** Questions this module can answer */
-  capabilities?: DialogueCapability[];
-  /** Structured findings this module produces */
-  findingsSchema?: FindingSchema[];
-  /** Suggestions for follow-up analysis */
-  suggestionsSchema?: SuggestionSchema[];
-}
-
-// =============================================================================
-// Loaded Skill
-// =============================================================================
-
-/**
- * Loaded Skill - unified format for both atomic and composite skills
- */
-export interface LoadedSkill {
-  id: string;
-  definition: SkillDefinition;
-  filePath: string;
-}
-
-/**
- * Simplified Skill Result - for compatibility with adapters
- */
-export interface SimplifiedSkillResult {
-  skillId: string;
-  skillName: string;
-  success: boolean;
-  sections: Record<string, any>;
-  diagnostics: DiagnosticResult[];
-  summary: string;
-  executionTimeMs: number;
-  displayResults?: DisplayResult[];
-  aiSummary?: string;
 }

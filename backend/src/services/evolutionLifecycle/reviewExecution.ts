@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {query as sdkQuery} from '@anthropic-ai/claude-agent-sdk';
+import {claudeSdkQuery as sdkQuery} from '../../agentRuntime/engines/claude/claudeSdkQuery';
 
 import {createSdkEnv, getSdkBinaryOption} from '../../agentv3/claudeConfig';
 
@@ -32,7 +32,14 @@ export async function executeStructuredReview(
   const model = input.model ??
     process.env.CLAUDE_LIGHT_MODEL ??
     input.defaultModel;
-  const sdkEnv = createSdkEnv();
+  let sdkEnv: ReturnType<typeof createSdkEnv>;
+  try {
+    // Follows the active provider, which an unreadable providers.json leaves
+    // unknown; report that as this review's failure rather than rejecting.
+    sdkEnv = createSdkEnv();
+  } catch (error) {
+    return {ok: false, reason: 'sdk_error', details: errorMessage(error)};
+  }
   const stream = sdkQuery({
     prompt: input.prompt,
     options: {

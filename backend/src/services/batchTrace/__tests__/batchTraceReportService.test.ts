@@ -128,4 +128,15 @@ describe('batch trace report domain analysis', () => {
 
     expect(parsed.domainAnalysis).toEqual(run().domainAnalysis);
   });
+  it('retains precise values, authored units, and per-trace evidence references', () => {
+    const data = run();
+    data.aggregate!.metrics = [{key: 'test', label: 'Observed', unit: 'ms', count: 1, missingCount: 0,
+      min: 0.000123456, p50: 0.000123456, mean: 0.000123456, outlierOrdinals: []}];
+    data.perTrace[0].evidenceEnvelopeIds = ['BATCH_EVIDENCE_ANCHOR'];
+    const html = renderBatchTraceHtmlReport(data, 'en');
+    expect(html).toContain('0.000123456'); expect(html).toContain('<th>Unit</th>');
+    expect(html).toContain('<td>ms</td>'); expect(html).toContain('BATCH_EVIDENCE_ANCHOR');
+    expect(html).toContain('name="viewport"'); expect(html).toContain('smartperfetto-report-document-v1');
+  });
+
 });

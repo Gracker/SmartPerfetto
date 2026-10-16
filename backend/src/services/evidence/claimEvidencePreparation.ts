@@ -55,6 +55,9 @@ export async function prepareClaimEvidence(input: PrepareClaimEvidenceInput): Pr
     refs.set(key, existing);
   };
   for (const claim of input.conclusionContract?.claims || []) {
+    // An invalid claim is never anchored or verified (plan A.5), so its
+    // references claim none of the shared read budget.
+    if (claim.valid === false) continue;
     claim.references?.forEach(ref => add(ref));
     claim.artifactRefs?.forEach(ref => add(ref as ConclusionContractClaimReference));
     claim.semantics?.scope.subjectRefs?.forEach(ref => add(ref));

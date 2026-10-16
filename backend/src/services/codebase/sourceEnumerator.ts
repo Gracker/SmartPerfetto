@@ -8,6 +8,7 @@ import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 import type {PathSecurityGate} from './pathSecurityGate';
+import {CodebaseStateError} from './codebaseRequestError';
 import {
   readBoundedMetadataFile,
   SourceMetadataDeadlineExceededError,
@@ -110,7 +111,7 @@ export class SourceEnumerator {
       ? path.resolve(value).toLocaleLowerCase('en-US')
       : path.resolve(value);
     if (normalizeIdentity(root) !== normalizeIdentity(requestedRealpath)) {
-      throw new Error('codebase_root_realpath_drift');
+      throw new CodebaseStateError('codebase_root_realpath_drift');
     }
     const timeoutMs = this.timeoutMs ?? (input.policy.includePrefixes.length > 0 ? 5_000 : 15_000);
     const deadline = Date.now() + timeoutMs;

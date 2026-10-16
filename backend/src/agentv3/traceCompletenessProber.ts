@@ -9,15 +9,25 @@
  * are available for a given trace. Cross-references with architecture detection
  * to distinguish "config not enabled" from "not applicable".
  *
- * Two-layer probing:
- *   1. Schema existence — sqlite_master check (which tables/views exist)
- *   2. Data existence — EXISTS(SELECT 1 FROM table) for tables that exist in schema
+ * Probing layers:
+ *   0. Architecture applicability — decided before any query
+ *   1. Module loading — INCLUDE each applicable capability's stdlib modules
+ *      under a total budget (a stdlib view does not exist until included)
+ *   2. Schema existence — sqlite_master check (which tables/views exist)
+ *   3. Data existence — bounded row count for tables that exist in schema
  *
  * Result categories:
  *   - available: data present, analysis possible
- *   - missing_config_suspected: schema missing or empty, likely trace config issue
+ *   - missing_config_suspected: schema missing or empty, likely trace config
+ *     issue — or, with an unprobed reason code (`probe_module_unavailable`,
+ *     `probe_query_failed`), a capability this probe could not determine
  *   - not_applicable: architecture/version mismatch, not a config issue
  *   - insufficient_or_scene_absent: sparse data, ambiguous cause
+ *
+ * Separately, `dataLoss` reads trace_processor's data-loss stats and recovery
+ * metadata. It qualifies what the present data can prove (absence is not proof
+ * on a lossy trace) and never moves a capability between the buckets above,
+ * so it stays out of the capability manifest.
  */
 
 import type { RenderingArchitectureType } from '../agent/detectors/types';
@@ -38,21 +48,40 @@ import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
 } from '../services/selfEvolution/canonicalJson';
-import type {
-  BuildCapabilityManifestInput,
-  CapabilityManifestProbeCacheObservationV1,
-  CapabilityManifestResolutionV1,
-  CapabilityManifestTraceContentIdentityV1,
-  CapabilityManifestTraceProcessorIdentityV1,
-  CapabilityManifestV1,
+import {
+  isCapabilityUnprobedReasonCode,
+  type BuildCapabilityManifestInput,
+  type CapabilityManifestProbeCacheObservationV1,
+  type CapabilityManifestResolutionV1,
+  type CapabilityManifestTraceContentIdentityV1,
+  type CapabilityManifestTraceProcessorIdentityV1,
+  type CapabilityManifestV1,
+  type CapabilityUnprobedReasonCode,
 } from '../types/capabilityManifest';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
-import type { CapabilityProbeResult, CapabilityStatus, TraceCompleteness } from './types';
+import {localize, parseOutputLanguage, type OutputLanguage} from './outputLanguage';
+import type {
+  CapabilityProbeResult,
+  TraceCompleteness,
+  TraceDataLossDiagnosis,
+  TraceDataLossStat,
+} from './types';
 
 /** Minimum row count below which data is considered "insufficient". */
 const INSUFFICIENT_THRESHOLD = 3;
+/**
+ * Probe-time bounds. A JS deadline does not abort the native statement, so each
+ * one is a point after which this probe stops waiting and reports the affected
+ * capabilities as unprobed, never as missing.
+ */
+const PROBE_MODULE_TOTAL_BUDGET_MS = 20_000;
+const PROBE_MODULE_INCLUDE_TIMEOUT_MS = 10_000;
+const PROBE_SCHEMA_QUERY_TIMEOUT_MS = 10_000;
+const PROBE_COUNT_QUERY_TIMEOUT_MS = 30_000;
+const PROBE_SINGLE_COUNT_QUERY_TIMEOUT_MS = 10_000;
 /** Table names, capability ids and SQL literals the probe builder may interpolate. */
 const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const HEAP_DUMP_COUNT_LIMIT = 16;
 const CAPABILITY_METADATA_QUERY_OPTIONS = {
   priority: 'p1',
   timeoutMs: 2000,
@@ -73,6 +102,35 @@ const TRACE_BOUNDS_SQL = [
   'LIMIT 1',
 ].join('\n');
 const CANONICAL_NON_NEGATIVE_INTEGER = /^(0|[1-9]\d*)$/;
+/**
+ * Data-loss stats are read by trace_processor severity, not by name, so stats
+ * added by newer runtimes (e.g. long_trace_mode_bytes_overwritten) are picked
+ * up without a registry change and older runtimes simply report fewer names.
+ * global_trace_sanity_check's data_loss_stats step shows the same rows as
+ * evidence; keep the two filters aligned.
+ */
+const DATA_LOSS_STAT_LIMIT = 16;
+const DATA_LOSS_STATS_SQL = [
+  'SELECT name, idx, value, COUNT(*) OVER () AS matching_rows',
+  'FROM stats',
+  "WHERE severity = 'data_loss' AND value > 0",
+  'ORDER BY value DESC, name, idx',
+  `LIMIT ${DATA_LOSS_STAT_LIMIT}`,
+].join('\n');
+const DATA_LOSS_QUERY_OPTIONS = {
+  ...CAPABILITY_METADATA_QUERY_OPTIONS,
+  maxRows: DATA_LOSS_STAT_LIMIT,
+  maxResponseBytes: 8192,
+} as const;
+// A metadata key unknown to an older runtime just yields no row.
+const TRACE_RECOVERY_REASON_SQL = [
+  'SELECT str_value AS recovery_reason',
+  'FROM metadata',
+  "WHERE name = 'trace_recovery_reason'",
+  'LIMIT 1',
+].join('\n');
+const STAT_NAME = /^[a-z][a-z0-9_]{0,127}$/;
+const RECOVERY_REASON_MAX_CHARS = 200;
 const SAFE_DETAIL_CODE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 
 export interface TraceCompletenessManifestDependencies {
@@ -99,6 +157,7 @@ interface TimelessTraceCompleteness {
   missingConfig: CapabilityProbeResult[];
   notApplicable: CapabilityProbeResult[];
   insufficient: CapabilityProbeResult[];
+  dataLoss: TraceDataLossDiagnosis;
   capabilityManifestResolution: TimelessCapabilityManifestResolution;
 }
 
@@ -133,14 +192,41 @@ interface CapabilityDef {
    * {@link boundedProbeCountSql} so the threshold stays defined once.
    */
   probeSql?: string;
-  /** Stdlib modules that must be included before probing this table. */
+  /**
+   * Stdlib modules that must be included before probing this table. Every
+   * primaryTable the generated stdlib symbol index attributes to a module must
+   * list that module here (a registry test enforces it): a stdlib view that was
+   * never INCLUDEd is absent from sqlite_master whatever the trace contains.
+   */
   requiredModules?: string[];
   /** Capture guidance appended when the table is missing or empty. */
   captureHint?: string;
+  /**
+   * The raw events a stdlib view is derived from. A view can be empty while
+   * those events exist, when the stdlib parser does not recognize their
+   * format; the capability is then available through the raw table, and its
+   * reason names that table so no reader takes the empty view for no data.
+   */
+  rawEventFallback?: {
+    table: string;
+    /** Single-integer bounded count; build it with {@link boundedProbeCountSql}. */
+    probeSql: string;
+    /** How to read the raw events, in each output language. */
+    readHint: {zh: string; en: string};
+  };
   /** Architectures where this capability is relevant (empty = all) */
   applicableArchs?: RenderingArchitectureType[];
   /** Architectures where this capability is explicitly NOT relevant */
   excludedArchs?: RenderingArchitectureType[];
+  /**
+   * A second bounded count that says how to read an available capability's
+   * rows, reported as its reason (how many heap dumps a heap graph holds).
+   */
+  availableDetail?: {
+    /** Single-integer bounded count; build it with {@link boundedProbeCountSql}. */
+    probeSql: string;
+    describe: (count: number, language: OutputLanguage) => string;
+  };
   /** Priority for reporting: CRITICAL capabilities are flagged prominently when missing */
   priority: 'critical' | 'recommended' | 'optional';
 }
@@ -152,8 +238,8 @@ interface CapabilityDef {
  * resulting string embeds the threshold, so changing it changes the manifest
  * identity rather than silently reclassifying old traces.
  */
-function boundedProbeCountSql(rowSource: string): string {
-  return `SELECT COUNT(*) AS cnt FROM (${rowSource} LIMIT ${INSUFFICIENT_THRESHOLD})`;
+function boundedProbeCountSql(rowSource: string, limit = INSUFFICIENT_THRESHOLD): string {
+  return `SELECT COUNT(*) AS cnt FROM (${rowSource} LIMIT ${limit})`;
 }
 
 /**
@@ -194,6 +280,16 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     displayName: '帧渲染/滑动分析',
     primaryTable: 'actual_frame_timeline_slice',
     excludedArchs: ['FLUTTER', 'WEBVIEW', 'GAME_ENGINE'],
+    // A systrace-era trace has no FrameTimeline but does have the frames'
+    // atrace slices; read as missing, it got a no-query "cannot judge" answer.
+    rawEventFallback: {
+      table: 'slice',
+      probeSql: boundedProbeCountSql("SELECT 1 FROM slice WHERE name GLOB 'Choreographer#doFrame*'"),
+      readHint: {
+        zh: "按 slice.name GLOB 'Choreographer#doFrame*'（及 RenderThread 'DrawFrame*'）读帧；起点间隔只是起点节奏，没有呈现数据时呈现节奏未测得",
+        en: "read frames from slice.name GLOB 'Choreographer#doFrame*' (and RenderThread 'DrawFrame*'); start gaps are start cadence only, and presentation cadence is unmeasured without present data",
+      },
+    },
     priority: 'critical',
   },
   {
@@ -203,6 +299,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     // We use android_frames as the primary probe — it's populated when frame timeline + Flutter
     // pipeline detection succeeds. Falls back to architecture detection for flutter-specific analysis.
     primaryTable: 'android_frames',
+    requiredModules: ['android.frames.timeline'],
     applicableArchs: ['FLUTTER'],
     priority: 'critical',
   },
@@ -212,6 +309,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'startup',
     displayName: '启动性能分析',
     primaryTable: 'android_startups',
+    requiredModules: ['android.startup.startups'],
     priority: 'critical',
   },
 
@@ -220,12 +318,28 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'binder_ipc',
     displayName: 'Binder/IPC 分析',
     primaryTable: 'android_binder_txns',
+    requiredModules: ['android.binder'],
     priority: 'recommended',
   },
   {
     id: 'lock_contention',
     displayName: '锁竞争分析',
     primaryTable: 'android_monitor_contention',
+    requiredModules: ['android.monitor_contention'],
+    // ART writes "monitor contention with owner ..." and "Lock contention on ..."
+    // atrace slices; the stdlib view parses only the formats it knows.
+    rawEventFallback: {
+      table: 'slice',
+      // One GLOB per branch, so each is a prefix filter trace_processor can apply itself.
+      probeSql: boundedProbeCountSql(
+        "SELECT 1 FROM slice WHERE name GLOB 'monitor contention*' " +
+        "UNION ALL SELECT 1 FROM slice WHERE name GLOB 'Lock contention on*'",
+      ),
+      readHint: {
+        zh: "按 slice.name GLOB 'monitor contention*' / 'Lock contention on*' 直接查询原始切片",
+        en: "query the raw slices directly with slice.name GLOB 'monitor contention*' / 'Lock contention on*'",
+      },
+    },
     priority: 'recommended',
   },
 
@@ -234,13 +348,42 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'gc_memory',
     displayName: 'GC/内存分析',
     primaryTable: 'android_garbage_collection_events',
+    requiredModules: ['android.garbage_collection'],
     priority: 'recommended',
   },
   {
     id: 'memory_pressure',
     displayName: '内存压力/LMK',
     primaryTable: 'android_oom_adj_intervals',
+    requiredModules: ['android.oom_adjuster'],
     priority: 'recommended',
+  },
+
+  {
+    id: 'java_heap_graph',
+    displayName: 'Java Heap Dump（heap graph）',
+    primaryTable: 'heap_graph_object',
+    captureHint: '需要 android.java_hprof 数据源（ART heap dump）',
+    // Rows are one per object per dump. Totalled across dumps, two identical
+    // reachable sets read as one dump holding two of every instance.
+    availableDetail: {
+      // Every dump has GC roots, and roots are a small fraction of a dump's objects.
+      probeSql: boundedProbeCountSql(
+        'SELECT DISTINCT upid, graph_sample_ts FROM heap_graph_object WHERE root_type IS NOT NULL',
+        HEAP_DUMP_COUNT_LIMIT,
+      ),
+      describe: (count, language) => localize(language,
+        `${count >= HEAP_DUMP_COUNT_LIMIT ? `至少 ${count}` : count} 次 heap dump（按 upid, graph_sample_ts 区分）；每行是某次 dump 中的一个对象，比较或汇总前先按 graph_sample_ts 分开`,
+        `${count >= HEAP_DUMP_COUNT_LIMIT ? `at least ${count}` : count} heap dump(s) (by upid, graph_sample_ts); each row is one object in one dump, so separate dumps by graph_sample_ts before comparing or totalling`),
+    },
+    priority: 'optional',
+  },
+  {
+    id: 'native_heap_profile',
+    displayName: 'Native/Java 分配剖析（heapprofd）',
+    primaryTable: 'heap_profile_allocation',
+    captureHint: '需要 android.heapprofd 数据源',
+    priority: 'optional',
   },
 
   // ── CPU ──
@@ -283,6 +426,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'disk_io',
     displayName: 'I/O 分析',
     primaryTable: 'linux_active_block_io_operations_by_device',
+    requiredModules: ['linux.block_io'],
     priority: 'optional',
   },
 
@@ -309,6 +453,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'cpu_profiling',
     displayName: 'CPU Profiling',
     primaryTable: 'linux_perf_samples_summary_tree',
+    requiredModules: ['linux.perf.samples'],
     priority: 'optional',
   },
 
@@ -317,6 +462,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'input_latency',
     displayName: '输入延迟分析',
     primaryTable: 'android_input_events',
+    requiredModules: ['android.input'],
     priority: 'recommended',
   },
 
@@ -325,6 +471,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'surfaceflinger',
     displayName: 'SurfaceFlinger/Display 管线',
     primaryTable: 'android_surfaceflinger_workloads',
+    requiredModules: ['android.surfaceflinger'],
     priority: 'recommended',
   },
 
@@ -333,12 +480,14 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'device_state',
     displayName: '设备状态',
     primaryTable: 'android_screen_state',
+    requiredModules: ['android.screen_state'],
     priority: 'optional',
   },
   {
     id: 'battery_power',
     displayName: '电池/功耗分析',
     primaryTable: 'android_battery_stats_state',
+    requiredModules: ['android.battery_stats'],
     priority: 'optional',
   },
 
@@ -347,6 +496,7 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'interrupts',
     displayName: 'IRQ/中断分析',
     primaryTable: 'linux_hard_irqs',
+    requiredModules: ['linux.irqs'],
     priority: 'optional',
   },
 
@@ -355,14 +505,13 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
     id: 'anr',
     displayName: 'ANR 分析',
     primaryTable: 'android_anrs',
+    requiredModules: ['android.anrs'],
     priority: 'optional',
   },
 
   // ── Wattson power-modeling prerequisites; see docs/reference/skill-system.md for Skill validation policy. ──
   // Power skills require specific capture sources. Most production traces don't enable them,
   // so the prompt must surface gaps before Claude trusts empty tables.
-  // These entries explicitly INCLUDE their stdlib modules before probing; otherwise sqlite_master
-  // reports the tables as missing even when the trace data would support them.
   {
     id: 'power_rails',
     displayName: '功耗 Rails 实测（ODPM / PowerStats）',
@@ -424,7 +573,18 @@ function isInterpolatableProbe(cap: CapabilityDef): boolean {
   if (!SQL_IDENTIFIER.test(cap.id) || !SQL_IDENTIFIER.test(cap.primaryTable)) {
     return false;
   }
-  return cap.probeSql === undefined || isSingleSelectProbeSql(cap.probeSql);
+  return (cap.probeSql === undefined || isSingleSelectProbeSql(cap.probeSql)) &&
+    (cap.rawEventFallback === undefined || (SQL_IDENTIFIER.test(cap.rawEventFallback.table) &&
+      isSingleSelectProbeSql(cap.rawEventFallback.probeSql))) &&
+    (cap.availableDetail === undefined || isSingleSelectProbeSql(cap.availableDetail.probeSql));
+}
+
+function rawFallbackProbeKey(cap: {id: string}): string {
+  return `raw:${cap.id}`;
+}
+
+function availableDetailProbeKey(cap: {id: string}): string {
+  return `detail:${cap.id}`;
 }
 
 /**
@@ -432,10 +592,11 @@ function isInterpolatableProbe(cap: CapabilityDef): boolean {
  * key so capabilities sharing a table are still counted once.
  */
 function planCapabilityProbes(
+  capabilities: readonly CapabilityDef[],
   existingTables: ReadonlySet<string>,
 ): CapabilityProbeUnit[] {
   const units = new Map<string, CapabilityProbeUnit>();
-  for (const cap of CAPABILITY_REGISTRY) {
+  for (const cap of capabilities) {
     if (!existingTables.has(cap.primaryTable)) continue;
     const key = capabilityProbeKey(cap);
     if (units.has(key)) continue;
@@ -445,39 +606,127 @@ function planCapabilityProbes(
       );
       continue;
     }
-    units.set(key, {
-      key,
-      selectSql: cap.probeSql === undefined
-        ? `SELECT '${key}' AS tbl, (${boundedProbeCountSql(`SELECT 1 FROM ${cap.primaryTable}`)}) AS cnt`
-        : `SELECT '${key}' AS tbl, (${cap.probeSql}) AS cnt`,
-    });
+    const primarySql = cap.probeSql ?? boundedProbeCountSql(`SELECT 1 FROM ${cap.primaryTable}`);
+    const add = (unitKey: string, countSql: string) =>
+      units.set(unitKey, {key: unitKey, selectSql: `SELECT '${unitKey}' AS tbl, (${countSql}) AS cnt`});
+    add(key, primarySql);
+    if (cap.availableDetail) add(availableDetailProbeKey(cap), cap.availableDetail.probeSql);
+    const fallback = cap.rawEventFallback;
+    // The raw scan only runs when the stdlib view is empty, the only case that reads it.
+    if (fallback && existingTables.has(fallback.table)) {
+      add(rawFallbackProbeKey(cap), `SELECT CASE WHEN (${primarySql}) = 0 THEN (${fallback.probeSql}) ELSE 0 END`);
+    }
   }
   return [...units.values()];
 }
 
+/**
+ * Why a module a capability depends on is not loaded. `error` is an answer
+ * from trace_processor; `interrupted` is a thrown query (the JS deadline or the
+ * transport), after which the native INCLUDE may still be running and every
+ * later statement on this serial processor would queue behind it; `skipped`
+ * means the load budget was spent or an earlier load was interrupted.
+ */
+type ProbeModuleFailure = 'error' | 'interrupted' | 'skipped';
+
+/**
+ * Load the stdlib modules the applicable capabilities read, one at a time,
+ * under a total budget. Views are cheap to INCLUDE, but modules that build
+ * PERFETTO TABLEs are not: on a 95 MB trace `android.garbage_collection` alone
+ * took 2.2 s. This is the 9d313df risk (22 preloaded modules hung large traces),
+ * so the loader stops at the first interrupted load rather than stacking more
+ * statements behind one it can no longer cancel.
+ */
 async function loadProbeModules(
   tps: TraceProcessorService,
   traceId: string,
-): Promise<void> {
+  capabilities: readonly CapabilityDef[],
+): Promise<Map<string, ProbeModuleFailure>> {
+  const failures = new Map<string, ProbeModuleFailure>();
   const modules = Array.from(new Set(
-    CAPABILITY_REGISTRY.flatMap(cap => cap.requiredModules ?? []),
+    capabilities.flatMap(cap => cap.requiredModules ?? []),
   ));
-  if (modules.length === 0) return;
-
+  const deadline = Date.now() + PROBE_MODULE_TOTAL_BUDGET_MS;
+  let stopped = false;
   for (const module of modules) {
+    const remaining = deadline - Date.now();
+    if (stopped || remaining <= 0) {
+      failures.set(module, 'skipped');
+      continue;
+    }
     try {
-      const result = await tps.query(traceId, `INCLUDE PERFETTO MODULE ${module};`);
-      if ((result as any)?.error) {
-        console.warn(`[TraceCompleteness] Failed to load probe module ${module}: ${(result as any).error}`);
+      const result = await tps.query(
+        traceId,
+        `INCLUDE PERFETTO MODULE ${module};`,
+        {timeoutMs: Math.min(PROBE_MODULE_INCLUDE_TIMEOUT_MS, remaining), suppressErrorLog: true},
+      );
+      if (result?.error) {
+        failures.set(module, 'error');
+        console.warn(`[TraceCompleteness] Probe module ${module} failed to load`);
       }
-    } catch (err) {
-      console.warn(`[TraceCompleteness] Failed to load probe module ${module}:`, (err as Error).message);
+    } catch {
+      failures.set(module, 'interrupted');
+      stopped = true;
+      console.warn(`[TraceCompleteness] Probe module ${module} load was interrupted; later modules are left unprobed`);
     }
   }
+  return failures;
 }
 
 function appendCaptureHint(reason: string, cap: CapabilityDef): string {
   return cap.captureHint ? `${reason}；${cap.captureHint}` : reason;
+}
+
+function probeLanguage(): OutputLanguage {
+  return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+}
+
+/**
+ * A capability whose presence this probe could not determine. It stays in
+ * `missingConfig` (the manifest needs every definition in one bucket) but with
+ * an unprobed reason code, and its text says absence is undetermined, so no
+ * reader can take it as a successful probe that found nothing.
+ */
+function unprobedResult(
+  cap: CapabilityDef,
+  reasonCode: CapabilityUnprobedReasonCode,
+  reason: string,
+): CapabilityProbeResult {
+  return {
+    id: cap.id,
+    displayName: cap.displayName,
+    status: 'missing_config_suspected',
+    primaryTable: cap.primaryTable,
+    reasonCode,
+    reason,
+  };
+}
+
+function moduleUnavailableReason(module: string, failure: ProbeModuleFailure): string {
+  const language = probeLanguage();
+  const cause = {
+    error: localize(language, `stdlib 模块 ${module} 加载失败`, `stdlib module ${module} failed to load`),
+    interrupted: localize(language,
+      `stdlib 模块 ${module} 加载超时或被中断`,
+      `loading stdlib module ${module} timed out or was interrupted`),
+    skipped: localize(language,
+      `探测预算内未加载 stdlib 模块 ${module}`,
+      `stdlib module ${module} was not loaded within the probe budget`),
+  }[failure];
+  return localize(language,
+    `${cause}，未能探测该能力；不能据此判断 trace 缺少这类数据`,
+    `${cause}, so this capability was not probed; this does not show the trace lacks the data`);
+}
+
+function probeQueryFailedReason(cap: CapabilityDef): string {
+  return localize(probeLanguage(),
+    `能力探测查询未完成，未能判断 ${cap.primaryTable} 是否有数据；不能据此判断 trace 缺少这类数据`,
+    `the capability probe query did not complete, so whether ${cap.primaryTable} has data is undetermined; this does not show the trace lacks the data`);
+}
+
+function hasUnprobedResult(template: TimelessTraceCompleteness): boolean {
+  return template.missingConfig.some(result =>
+    isCapabilityUnprobedReasonCode(result.reasonCode));
 }
 
 function hasExactColumns(
@@ -488,30 +737,35 @@ function hasExactColumns(
     columns.every((column, index) => column === expected[index]);
 }
 
-async function probeReportedVersion(
+/** Read one string metadata value; any malformed or failed read yields undefined. */
+async function probeMetadataString<T>(
   tps: TraceProcessorService,
   traceId: string,
-): Promise<string | undefined> {
+  sql: string,
+  column: string,
+  sanitize: (value: unknown) => T | undefined,
+): Promise<T | undefined> {
   try {
-    const result = await tps.queryBounded(
-      traceId,
-      TRACE_PROCESSOR_VERSION_SQL,
-      CAPABILITY_METADATA_QUERY_OPTIONS,
-    );
-    if (
-      result.error ||
-      !hasExactColumns(result.columns, ['reported_version']) ||
-      result.rows.length > 1
-    ) {
+    const result = await tps.queryBounded(traceId, sql, CAPABILITY_METADATA_QUERY_OPTIONS);
+    if (result.error || !hasExactColumns(result.columns, [column]) || result.rows.length !== 1) {
       return undefined;
     }
-    if (result.rows.length === 0) return undefined;
     const row = result.rows[0];
     if (!Array.isArray(row) || row.length !== 1) return undefined;
-    return sanitizeCapabilityTraceProcessorReportedVersion(row[0]);
+    return sanitize(row[0]);
   } catch {
     return undefined;
   }
+}
+
+function probeReportedVersion(
+  tps: TraceProcessorService,
+  traceId: string,
+): Promise<string | undefined> {
+  return probeMetadataString(
+    tps, traceId, TRACE_PROCESSOR_VERSION_SQL, 'reported_version',
+    sanitizeCapabilityTraceProcessorReportedVersion,
+  );
 }
 
 async function probeClockRange(
@@ -548,6 +802,74 @@ async function probeClockRange(
   } catch {
     return undefined;
   }
+}
+
+function readDataLossStats(
+  result: {columns: string[]; rows: unknown[]; error?: string},
+): {stats: TraceDataLossStat[]; rowCount: number} | undefined {
+  if (
+    result.error ||
+    !hasExactColumns(result.columns, ['name', 'idx', 'value', 'matching_rows']) ||
+    result.rows.length > DATA_LOSS_STAT_LIMIT
+  ) {
+    return undefined;
+  }
+  const stats: TraceDataLossStat[] = [];
+  let rowCount = 0;
+  for (const row of result.rows) {
+    if (!Array.isArray(row) || row.length !== 4) return undefined;
+    const [name, idx, value, matchingRows] = row;
+    if (
+      typeof name !== 'string' || !STAT_NAME.test(name) ||
+      !(idx === null || Number.isSafeInteger(idx)) ||
+      typeof value !== 'number' || !Number.isFinite(value) || value <= 0 ||
+      !Number.isSafeInteger(matchingRows)
+    ) {
+      return undefined;
+    }
+    stats.push({name, idx: idx as number | null, value});
+    rowCount = matchingRows as number;
+  }
+  return {stats, rowCount};
+}
+
+// Trace-authored text reaches the prompt as data: strip control characters and
+// bound it rather than trusting the producer.
+function sanitizeRecoveryReason(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const reason = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
+    .slice(0, RECOVERY_REASON_MAX_CHARS);
+  return reason.length > 0 ? reason : undefined;
+}
+
+/**
+ * Read capture loss recorded by trace_processor. A trace without data loss is
+ * the only one where "the event is absent" can be read as "it did not happen".
+ */
+async function probeDataLoss(
+  tps: TraceProcessorService,
+  traceId: string,
+): Promise<TraceDataLossDiagnosis> {
+  const [loss, recoveryReason] = await Promise.all([
+    tps.queryBounded(traceId, DATA_LOSS_STATS_SQL, DATA_LOSS_QUERY_OPTIONS)
+      .then(readDataLossStats, () => undefined),
+    probeMetadataString(
+      tps, traceId, TRACE_RECOVERY_REASON_SQL, 'recovery_reason', sanitizeRecoveryReason,
+    ),
+  ]);
+  const lossStats = loss?.rowCount ? loss : undefined;
+  if (!lossStats && recoveryReason === undefined) {
+    // Unreadable stats are not a clean bill of health.
+    return {status: loss === undefined ? 'unknown' : 'none_detected'};
+  }
+  // A recovered trace was not finalized cleanly, so it is lossy even when the
+  // stats themselves could not be read.
+  return {
+    status: 'data_loss_detected',
+    absenceEvidence: 'not_proof',
+    ...(lossStats ? {lossStats: lossStats.stats, lossStatRowCount: lossStats.rowCount} : {}),
+    ...(recoveryReason === undefined ? {} : {recoveryReason}),
+  };
 }
 
 function unavailableTraceResolution(
@@ -597,6 +919,9 @@ async function resolveCapabilityManifestShadow(
         ...(capability.probeSql === undefined
           ? {}
           : {probeSql: capability.probeSql}),
+        ...(capability.rawEventFallback === undefined ? {} : {rawEventFallback: {
+          table: capability.rawEventFallback.table, probeSql: capability.rawEventFallback.probeSql}}),
+        ...(capability.availableDetail === undefined ? {} : {availableDetailSql: capability.availableDetail.probeSql}),
       })),
       legacyProbe: legacyResult,
       traceProcessor,
@@ -748,83 +1073,137 @@ async function probeTimelessTraceCompleteness(
 ): Promise<TimelessTraceCompleteness> {
   const t0 = Date.now();
 
-  await loadProbeModules(tps, traceId);
-
-  // ── Layer 1: Schema existence check ──────────────────────────────────────
-  // Query sqlite_master for all table/view names relevant to our capabilities.
-  const schemaResult = await tps.query(
-    traceId,
-    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')",
-  ).catch(() => null);
-
-  const existingTables = new Set<string>();
-  if (schemaResult?.rows) {
-    for (const row of schemaResult.rows) {
-      existingTables.add(row[0] as string);
-    }
-  }
-
-  // ── Layer 2: Data existence check (only for tables that exist in schema) ──
-  // Build a single UNION ALL query for efficiency.
-  const probeUnits = planCapabilityProbes(existingTables);
-
-  const dataPresence = new Map<string, number>(); // probe key → approximate row count
-
-  if (probeUnits.length > 0) {
-    // COUNT with LIMIT ${INSUFFICIENT_THRESHOLD} — only need to distinguish: 0 / 1..threshold / >threshold.
-    const countSql = probeUnits.map(unit => unit.selectSql).join(' UNION ALL ');
-
-    try {
-      const countResult = await tps.query(traceId, countSql);
-      if (countResult?.rows) {
-        for (const row of countResult.rows) {
-          dataPresence.set(row[0] as string, row[1] as number);
-        }
-      }
-    } catch (err) {
-      // If the batch query fails (rare — e.g., one table has incompatible schema),
-      // fall back to individual probes.
-      console.warn('[TraceCompleteness] Batch count failed, falling back to individual probes:', (err as Error).message);
-      await Promise.all(probeUnits.map(async (unit) => {
-        try {
-          const r = await tps.query(traceId, unit.selectSql);
-          dataPresence.set(unit.key, r?.rows?.[0]?.[1] as number ?? 0);
-        } catch {
-          dataPresence.set(unit.key, 0);
-        }
-      }));
-    }
-  }
-
   // ── Classify each capability ─────────────────────────────────────────────
   const available: CapabilityProbeResult[] = [];
   const missingConfig: CapabilityProbeResult[] = [];
   const notApplicable: CapabilityProbeResult[] = [];
   const insufficient: CapabilityProbeResult[] = [];
 
+  // ── Layer 0: Architecture applicability ──────────────────────────────────
+  // Decided before any query, so an inapplicable capability loads no module.
+  const applicable: CapabilityDef[] = [];
   for (const cap of CAPABILITY_REGISTRY) {
-    // Architecture applicability check
-    if (architectureType) {
-      if (cap.applicableArchs && !cap.applicableArchs.includes(architectureType)) {
-        notApplicable.push({
-          id: cap.id,
-          displayName: cap.displayName,
-          status: 'not_applicable',
-          primaryTable: cap.primaryTable,
-          reason: `当前架构 ${architectureType} 不适用`,
-        });
-        continue;
+    const notApplicableReason = !architectureType ? undefined
+      : cap.applicableArchs && !cap.applicableArchs.includes(architectureType) ? `当前架构 ${architectureType} 不适用`
+      : cap.excludedArchs?.includes(architectureType) ? `${architectureType} 架构使用专用分析管线`
+      : undefined;
+    if (notApplicableReason === undefined) {
+      applicable.push(cap);
+      continue;
+    }
+    notApplicable.push({
+      id: cap.id,
+      displayName: cap.displayName,
+      status: 'not_applicable',
+      primaryTable: cap.primaryTable,
+      reason: notApplicableReason,
+    });
+  }
+
+  // ── Layer 1: Module loading ──────────────────────────────────────────────
+  // A stdlib view is absent from sqlite_master until its module is included,
+  // so a capability whose module did not load was not probed at all.
+  const moduleFailures = await loadProbeModules(tps, traceId, applicable);
+  const unprobed = new Map<string, CapabilityProbeResult>();
+  for (const cap of applicable) {
+    const failedModule = cap.requiredModules?.find(module => moduleFailures.has(module));
+    if (failedModule !== undefined) {
+      unprobed.set(cap.id, unprobedResult(
+        cap,
+        'probe_module_unavailable',
+        moduleUnavailableReason(failedModule, moduleFailures.get(failedModule)!),
+      ));
+    }
+  }
+  const probeable = applicable.filter(cap => !unprobed.has(cap.id));
+
+  // ── Layer 2: Schema existence check ──────────────────────────────────────
+  // trace_processor answers a failed statement with `error` rather than a
+  // throw; either way no schema was read, and nothing may be called missing.
+  const existingTables = new Set<string>();
+  let schemaRead = false;
+  if (probeable.length > 0) {
+    try {
+      const schemaResult = await tps.query(
+        traceId,
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')",
+        {timeoutMs: PROBE_SCHEMA_QUERY_TIMEOUT_MS, suppressErrorLog: true},
+      );
+      if (!schemaResult?.error && Array.isArray(schemaResult?.rows)) {
+        schemaRead = true;
+        for (const row of schemaResult.rows) {
+          existingTables.add(row[0] as string);
+        }
       }
-      if (cap.excludedArchs?.includes(architectureType)) {
-        notApplicable.push({
-          id: cap.id,
-          displayName: cap.displayName,
-          status: 'not_applicable',
-          primaryTable: cap.primaryTable,
-          reason: `${architectureType} 架构使用专用分析管线`,
-        });
-        continue;
+    } catch {
+      // Thrown (deadline or transport): no schema was read.
+    }
+  }
+  if (!schemaRead) {
+    for (const cap of probeable) {
+      unprobed.set(cap.id, unprobedResult(cap, 'probe_query_failed', probeQueryFailedReason(cap)));
+    }
+  }
+
+  // ── Layer 3: Data existence check (only for tables that exist in schema) ──
+  // Build a single UNION ALL query for efficiency.
+  const probeUnits = schemaRead ? planCapabilityProbes(probeable, existingTables) : [];
+
+  const dataPresence = new Map<string, number>(); // probe key → approximate row count
+
+  if (probeUnits.length > 0) {
+    // COUNT with LIMIT ${INSUFFICIENT_THRESHOLD} — only need to distinguish: 0 / 1..threshold / >threshold.
+    const countSql = probeUnits.map(unit => unit.selectSql).join(' UNION ALL ');
+    const readCounts = (rows: unknown[][] | undefined) => {
+      for (const row of rows ?? []) {
+        if (typeof row[0] === 'string' && typeof row[1] === 'number') {
+          dataPresence.set(row[0], row[1]);
+        }
       }
+    };
+
+    // Only an `{error}` answer is worth splitting: one table with an
+    // incompatible schema fails the whole batch, so the units are counted one
+    // at a time and only that capability stays unprobed. A thrown batch (the JS
+    // deadline or the transport) may still be running on this serial
+    // processor, and every per-unit query would queue behind it, so every unit
+    // stays unprobed instead — the same rule `loadProbeModules` follows.
+    let splitBatch = false;
+    try {
+      const countResult = await tps.query(
+        traceId,
+        countSql,
+        {timeoutMs: PROBE_COUNT_QUERY_TIMEOUT_MS, suppressErrorLog: true},
+      );
+      if (countResult?.error) splitBatch = true;
+      else readCounts(countResult?.rows);
+    } catch {
+      console.warn('[TraceCompleteness] Batch count was interrupted; its capabilities are left unprobed');
+    }
+    if (splitBatch) {
+      console.warn('[TraceCompleteness] Batch count failed, falling back to individual probes');
+      for (const unit of probeUnits) {
+        try {
+          const result = await tps.query(
+            traceId,
+            unit.selectSql,
+            {timeoutMs: PROBE_SINGLE_COUNT_QUERY_TIMEOUT_MS, suppressErrorLog: true},
+          );
+          if (!result?.error) readCounts(result?.rows);
+        } catch {
+          // Interrupted: this and every later unit are reported as unprobed below.
+          console.warn('[TraceCompleteness] Individual count was interrupted; later capabilities are left unprobed');
+          break;
+        }
+      }
+    }
+  }
+
+  for (const cap of applicable) {
+    const unprobedEntry = unprobed.get(cap.id);
+    if (unprobedEntry) {
+      missingConfig.push(unprobedEntry);
+      continue;
     }
 
     // Schema existence
@@ -840,8 +1219,26 @@ async function probeTimelessTraceCompleteness(
     }
 
     // Data existence
-    const rowCount = dataPresence.get(capabilityProbeKey(cap)) ?? 0;
-    if (rowCount === 0) {
+    const rowCount = dataPresence.get(capabilityProbeKey(cap));
+    const fallback = cap.rawEventFallback;
+    const rawRowCount = fallback ? dataPresence.get(rawFallbackProbeKey(cap)) : undefined;
+    if (rowCount === 0 && fallback && rawRowCount) {
+      const reason = localize(probeLanguage(),
+        `stdlib 视图 ${cap.primaryTable} 为空（未解析该 trace 的事件格式），但原始表 ${fallback.table} 中有对应事件：${fallback.readHint.zh}`,
+        `stdlib view ${cap.primaryTable} is empty (it does not parse this trace's event format), but raw table ${fallback.table} has the events: ${fallback.readHint.en}`);
+      const sparse = rawRowCount < INSUFFICIENT_THRESHOLD;
+      (sparse ? insufficient : available).push({
+        id: cap.id,
+        displayName: cap.displayName,
+        status: sparse ? 'insufficient_or_scene_absent' : 'available',
+        primaryTable: cap.primaryTable,
+        rowEstimate: rawRowCount,
+        reason,
+        rowSource: 'raw_event_fallback',
+      });
+    } else if (rowCount === undefined) {
+      missingConfig.push(unprobedResult(cap, 'probe_query_failed', probeQueryFailedReason(cap)));
+    } else if (rowCount === 0) {
       missingConfig.push({
         id: cap.id,
         displayName: cap.displayName,
@@ -867,21 +1264,27 @@ async function probeTimelessTraceCompleteness(
         reason: `仅 ${rowCount} 行数据 — trace 时长可能不够或场景未充分发生`,
       });
     } else {
+      const detail = cap.availableDetail;
+      const detailCount = detail ? dataPresence.get(availableDetailProbeKey(cap)) : undefined;
       available.push({
         id: cap.id,
         displayName: cap.displayName,
         status: 'available',
         primaryTable: cap.primaryTable,
         rowEstimate: rowCount,
+        ...(detail && detailCount ? {reason: detail.describe(detailCount, probeLanguage())} : {}),
       });
     }
   }
+
+  const dataLoss = await probeDataLoss(tps, traceId);
 
   const elapsed = Date.now() - t0;
   console.log(
     `[TraceCompleteness] Probed ${CAPABILITY_REGISTRY.length} capabilities in ${elapsed}ms: ` +
     `available=${available.length}, missing=${missingConfig.length}, ` +
-    `n/a=${notApplicable.length}, insufficient=${insufficient.length}`,
+    `n/a=${notApplicable.length}, insufficient=${insufficient.length}, ` +
+    `dataLoss=${dataLoss.status}`,
   );
 
   const legacyResult: Omit<TraceCompleteness, 'capabilityManifestResolution'> = {
@@ -911,6 +1314,7 @@ async function probeTimelessTraceCompleteness(
     missingConfig,
     notApplicable,
     insufficient,
+    dataLoss,
     capabilityManifestResolution,
   });
 }
@@ -975,6 +1379,7 @@ function materializeTraceCompleteness(
     notApplicable: cloneResults(template.notApplicable),
     insufficient: cloneResults(template.insufficient),
     diagnosedAt,
+    dataLoss: structuredClone(template.dataLoss),
     capabilityManifestResolution,
   };
 }
@@ -1004,6 +1409,7 @@ function recordCapabilityManifestAttribution(
   }
 }
 
+/** @internal Test seam. */
 export function clearTraceCompletenessProbeCache(): void {
   traceCompletenessProbeCache.clear();
 }
@@ -1067,11 +1473,17 @@ export async function probeTraceCompleteness(
         if (oldest === undefined) break;
         traceCompletenessProbeCache.delete(oldest);
       }
-      void created.catch(() => {
+      // A rejected probe, or one that left capabilities unprobed (a module or
+      // query did not finish), describes this attempt rather than the trace:
+      // callers already waiting share it, the next run probes again.
+      const evict = () => {
         if (traceCompletenessProbeCache.get(keyHash) === created) {
           traceCompletenessProbeCache.delete(keyHash);
         }
-      });
+      };
+      void created.then(template => {
+        if (hasUnprobedResult(template)) evict();
+      }, evict);
       templatePromise = created;
     }
   }

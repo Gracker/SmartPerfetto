@@ -12,7 +12,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 SmartPerfetto portable packages are not single-file binaries. The launcher starts
 the bundled Node.js 24 runtime, backend, pre-built Perfetto UI, and pinned
-`trace_processor_shell`, plus the signed Android Internals Knowledge Pack.
+`trace_processor_shell`.
 
 Current release assets:
 
@@ -54,37 +54,55 @@ dist/windows-exe/smartperfetto-v<version>-windows-x64.zip
 ## Release
 
 See the [Release Runbook](release.en.md) for the full public release sequence.
-Portable publishing normally happens after the npm CLI is published and smoked.
+Upload the portable draft first, smoke its exact archives on all three platforms,
+then publish the GitHub release. That public event triggers npm Trusted Publishing.
 
 Portable steps in a normal public release:
 
 ```bash
 npm run version:set -- <version>
 npm run version:sync -- --check
-git add package.json package-lock.json backend/package.json backend/package-lock.json
+npm --prefix backend run cli:pack-check
+npm --prefix backend run cli:e2e
+git add package.json package-lock.json backend/package.json backend/package-lock.json CHANGELOG.md
 git commit -m "chore: release v<version>"
 git push origin main
-npm --prefix backend run cli:pack-check
-cd backend
-npm publish --access public
-cd ..
+git tag -a v<version> -F <release-notes-file>
+git push origin v<version>
+# Configure the Developer ID and Keychain notarization profile below before a public macOS build.
 npm run package:portable
-# Run this command once on each matching Windows x64, macOS arm64, and Linux x64 target.
-node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
-  --version <version> --commit <commit> --public-release \
-  --output-dir dist/portable/smoke-evidence/<target>
-# When a target machine is unavailable, run against the existing draft from the default branch:
+npm run release:portable -- <version> --skip-build
+# This example uses hosted smoke against the uploaded draft from the default branch:
 gh workflow run portable-exact-archive-smoke.yml \
-  -f release_id=<numeric-release-id> -f selection=all
-gh run download <run-id> \
+  --ref main -f release_id=<numeric-release-id> -f selection=all
+gh run list --workflow portable-exact-archive-smoke.yml --limit 5
+gh run watch <smoke-run-id> --exit-status
+gh run download <smoke-run-id> \
   --name portable-smoke-evidence-release-<numeric-release-id> \
   --dir <download-dir>
 npm run release:portable -- <version> --skip-build --no-draft \
   --release-commit <draft-target-full-sha> \
   --smoke-evidence-dir <download-dir>/promotion-evidence \
   --smoke-attestation <download-dir>/portable-smoke-attestation.json \
-  --smoke-run-id <run-id>
+  --smoke-run-id <smoke-run-id>
+gh run list --workflow npm-publish.yml --limit 5
+gh run watch <npm-run-id> --exit-status
+npm view @gracker/smartperfetto@<version> version dist.integrity --json
 ```
+
+To use local-native smoke instead of the hosted workflow, test the same final
+archives on each matching Windows x64, macOS arm64, and Linux x64 machine:
+
+```bash
+node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
+  --version <version> --commit <commit> --public-release \
+  --output-dir dist/portable/smoke-evidence/<target>
+```
+
+This promotion example uses the complete hosted smoke evidence. See the runbook
+for local-native evidence and npm OIDC recovery. Normal releases do not require
+local `npm publish`; interactive publishing is limited to the runbook's explicit
+emergency fallback.
 
 `package:portable` reads the exact Node.js version, target archive SHA-256
 values, and executable-content digests from `scripts/node-runtime-pin.env`
@@ -202,9 +220,15 @@ restart the launcher.
 
 At startup, the portable package passes the writable upload directory to the
 backend through `UPLOAD_DIR` and creates `uploads/` under the user data root.
-Do not rely on package-local `backend/uploads`; this avoids readiness failures
-when the app is launched from a macOS `AppTranslocation` path or the app bundle
-is not writable. If a downloaded app starts under `AppTranslocation`, move it
+Uploaded traces and their metadata live in `uploads/traces/`, which is also
+where the backend reloads them after a restart. The backend's working directory
+is inside the package, but the default upload and trace directories never
+resolve there. If you set `UPLOAD_DIR` or `SMARTPERFETTO_TRACE_UPLOAD_DIR` in the
+user-data `env` file, use an absolute path outside the package: a relative path
+resolves against the package-internal working directory.
+Do not rely on package-local `backend/uploads`; trace uploads would fail when
+the app is launched from a macOS `AppTranslocation` path or the app bundle is
+not writable. If a downloaded app starts under `AppTranslocation`, move it
 to `/Applications` before opening it. For a trusted, non-notarized package, you
 can also remove its quarantine attribute:
 
@@ -251,8 +275,7 @@ configured ports fail fast when unavailable.
 ## Verification
 
 The scripts verify package structure, version, manifest, Node runtime, target
-native dependencies, the `trace_processor_shell` pin, and Knowledge Pack
-lock/manifest/database/license versions and hashes. Cross-compilation,
+native dependencies, and the `trace_processor_shell` pin. Cross-compilation,
 structure checks, and static signature verification do not prove target-OS
 startup. Public release uses a build-once rule: extract and smoke the same final
 archive bytes that will be uploaded, and do not rebuild after smoke. macOS must
@@ -301,10 +324,8 @@ notary receipt on macOS. Omit it only for draft-package smoke.
 3. Check the printed backend health URL, usually [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health).
 4. Upload a small trace and confirm the platform `trace_processor_shell` starts
    in backend logs.
-5. Run `smp knowledge-pack status --format json` through the bundled CLI/backend
-   and confirm the bundled/active Pack is readable and not revoked.
-6. Run the bundled Node.js, Claude, and OpenCode version commands when present.
-7. Stop the launcher normally and confirm child processes exit and both ports
+5. Run the bundled Node.js, Claude, and OpenCode version commands when present.
+6. Stop the launcher normally and confirm child processes exit and both ports
    are released.
 
 Keep the GitHub release as a draft if the final Windows, macOS, or Linux archive

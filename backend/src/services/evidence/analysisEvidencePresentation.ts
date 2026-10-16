@@ -9,11 +9,18 @@ import type {
   ConclusionBindingEligibility,
   ConclusionContractClaimItem,
 } from '../../agent/core/conclusionContract';
-import type {SafeSourceProvenanceProjection} from '../codebase/sourceClaimVerifier';
+import {SOURCE_CLAIM_STATUS_VALUES, type SafeSourceProvenanceProjection, type SourceClaimStatusV1} from '../codebase/sourceClaimVerifier';
+import {SOURCE_CITATION_STATUS_VALUES, type SourceCitationV1} from '../codebase/sourceCitations';
+import {sanitizeKnowledgeUse, type KnowledgeUseV1} from '../knowledge/knowledgeUse';
 import type {ClaimSupportV1} from '../../types/evidenceContract';
 import type {ClaimVerificationResult} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
-import type {SourceClaimBindingV1, SourceReferenceV1, SourceUseDecisionV1} from '../codebase/sourceUseDecision';
+import {
+  SOURCE_LOOKUP_KIND_VALUES,
+  type SourceClaimBindingV1,
+  type SourceReferenceV1,
+  type SourceUseDecisionV1,
+} from '../codebase/sourceUseDecision';
 
 type FormalConclusionClaim = Omit<ConclusionContractClaimItem,
   'rawSemantics' | 'rawReferences' | 'semanticsParseIssues'>;
@@ -29,11 +36,17 @@ export interface AnalysisEvidencePresentation {
   sourceUseDecision: SourceUseDecisionV1 | null;
   sourceReferences: SourceReferenceV1[];
   sourceClaimBindings: SourceClaimBindingV1[];
+  /** The current verifier's standing per source-dependent claim; absent in historical bundles. */
+  sourceClaimStatuses?: SourceClaimStatusV1[];
+  /** Source locations the answer cites; absent in historical bundles. */
+  sourceCitations?: SourceCitationV1[];
+  /** Selected knowledge delivered and the answer's knowledge citations; absent when not recorded. */
+  knowledgeUse?: KnowledgeUseV1;
 }
 
 export type AnalysisEvidencePresentationInput = Pick<AnalysisResult,
   'claimSupport' | 'claimVerificationResult' | 'identityResolutions' |
-  'investigationAssessment' | 'deliveryAssurance'> & {conclusionContract?: unknown};
+  'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse'> & {conclusionContract?: unknown};
 
 const scalar = z.union([z.string(), z.number().finite(), z.boolean()]);
 const nullableScalar = scalar.nullable();
@@ -62,7 +75,11 @@ function schemas(strict: boolean) {
       timeRangeNs: object({start: z.string(), end: z.string()}).optional(),
     }),
     numeric: object({operator: z.enum(['eq', 'ne', 'lt', 'lte', 'gt', 'gte']),
-      value: z.union([z.number().finite(), z.string()]), unit: z.string()}).optional(),
+      value: z.union([z.number().finite(), z.string()]), unit: z.string(),
+      presentation: object({schemaVersion: z.literal('numeric_presentation@1'), unit: z.string(),
+        decimalPlaces: z.number().int().min(0).max(18), rounding: z.literal('half_away_from_zero'),
+        quotes: z.array(object({text: z.string(), occurrence: z.number().int().nonnegative().optional()})).min(1).max(16),
+      }).optional()}).optional(),
     source: object({sourceReferenceId: z.string(), filePath: z.string(),
       lineRange: object({start: z.number().int().positive(), end: z.number().int().positive()})}).optional(),
   });
@@ -106,6 +123,8 @@ function schemas(strict: boolean) {
     rowSelector: scalarRecord.optional(), column: z.string(), value: nullableScalar.optional(),
     actualValue: nullableScalar.optional(), isSqlNull: z.boolean().optional(), displayValue: z.string().optional(),
     unit: z.string().optional(),
+    producer: object({skillId: z.string(), stepId: z.string(), metricId: z.string(),
+      aggregation: z.string().optional()}).optional(),
   });
   const evidenceIdentity = object({
     packageName: z.string().optional(), processName: z.string().optional(), threadName: z.string().optional(),
@@ -136,8 +155,9 @@ function schemas(strict: boolean) {
       'relation_anchor_missing', 'relation_endpoint_value_mismatch', 'trace_context_missing', 'trace_context_mismatch',
       'identity_conflict', 'identity_evidence_missing', 'proof_anchor_missing', 'proof_binding_missing',
       'proof_binding_mismatch', 'binary_proof_verified', 'overlap_range_missing', 'overlap_range_invalid',
-      'overlap_disjoint', 'overlap_verified', 'comparison_side_mismatch', 'comparison_metric_missing',
-      'comparison_metric_invalid', 'comparison_delta_mismatch', 'comparison_delta_verified', 'derived_not_verified',
+      'overlap_disjoint', 'overlap_verified', 'comparison_side_mismatch', 'comparison_not_cross_trace',
+      'comparison_metric_missing', 'comparison_metric_invalid', 'comparison_delta_mismatch', 'comparison_delta_verified',
+      'derived_not_verified',
     ]),
     subjectAnchorId: z.string(), objectAnchorId: z.string().optional(), proofAnchorId: z.string().optional(),
     relationAnchorId: z.string().optional(), directEvidenceAnchorIds: z.array(z.string()), proofBindings: proofBindings.optional(),
@@ -174,6 +194,16 @@ function schemas(strict: boolean) {
     }).optional(),
     propositionCoverage: object({status: z.enum(['complete', 'partial', 'none']), covered: z.array(z.string()),
       uncovered: z.array(z.string()), reason: z.string()}).optional(),
+    semanticReview: object({consistency: z.enum(['consistent', 'inconsistent', 'unknown']),
+      contentLocations: z.array(object({start: z.number().int().nonnegative(), end: z.number().int().nonnegative(),
+        textHash: z.string()}))}).optional(),
+    numericPresentation: object({schemaVersion: z.literal('numeric_presentation_assessment@1'),
+      status: z.enum(['matched', 'mismatch', 'not_checked']), reason: z.string(),
+      binding: object({candidate: object({runId: z.string(), attemptId: z.string(), candidateRef: z.string(),
+        conclusionFingerprint: z.string()}), claimFingerprint: z.string()}),
+      source: object({anchorId: z.string(), captureId: z.string(), rowIndex: z.number().int().nonnegative(), column: z.string()}).optional(),
+      locations: z.array(object({start: z.number().int().nonnegative(), end: z.number().int().nonnegative()})),
+    }).optional(),
   });
   // Keyed by the result type: a field missing here would be stripped on write and rejected on read.
   const claimVerification = object({
@@ -263,7 +293,7 @@ function schemas(strict: boolean) {
     id: z.string(), chunkId: z.string().optional(), referenceId: z.string().optional(), codebaseId: z.string(),
     filePath: z.string(), lineRange: object({start: z.number().int().positive(), end: z.number().int().positive()}).optional(),
     symbol: z.string().optional(), buildId: z.string().optional(), commitHash: z.string().optional(),
-    sourceGeneration: z.string().optional(), lookupKind: z.enum(['metadata', 'body', 'indexed', 'graph']),
+    sourceGeneration: z.string().optional(), lookupKind: z.enum(SOURCE_LOOKUP_KIND_VALUES),
   });
   const sourceUseDecision = object({
     schemaVersion: z.literal('source_use_decision@1'), codeAwareMode: z.enum(['metadata_only', 'provider_send']),
@@ -275,9 +305,27 @@ function schemas(strict: boolean) {
     attemptedTools: z.array(z.string()), queriedCodebaseIds: z.array(z.string()), usedCodebaseIds: z.array(z.string()),
     coverageComplete: z.boolean().optional(), incompleteReasons: z.array(z.string()).optional(), references: z.array(sourceReference),
   });
+  // `mechanismStatus` appears only in historical bundles.
   const sourceBinding = object({
-    claimId: z.string(), mechanismStatus: z.enum(['corroborated', 'compatible', 'ambiguous', 'unverified']),
+    claimId: z.string(), mechanismStatus: z.enum(['corroborated', 'compatible', 'ambiguous', 'unverified']).optional(),
     sourceReferenceIds: z.array(z.string()), traceEvidenceRefIds: z.array(z.string()),
+  });
+  const sourceClaimStatus = object({
+    claimId: z.string(), status: z.enum(SOURCE_CLAIM_STATUS_VALUES),
+    sourceReferenceIds: z.array(z.string()), traceEvidenceRefIds: z.array(z.string()),
+  });
+  const sourceCitation = object({
+    citation: z.string(), filePath: z.string(),
+    lineRange: object({start: z.number().int().positive(), end: z.number().int().positive()}),
+    status: z.enum(SOURCE_CITATION_STATUS_VALUES), sourceReferenceId: z.string().optional(),
+    candidateReferenceIds: z.array(z.string()).optional(),
+  });
+  // Its one closed shape check is sanitizeKnowledgeUse, which returns a fresh copy.
+  const knowledgeUse = z.unknown().transform((value, context): KnowledgeUseV1 => {
+    const record = sanitizeKnowledgeUse(value);
+    if (record) return record;
+    context.addIssue({code: 'custom', message: 'invalid knowledge_use@1'});
+    return z.NEVER;
   });
 
   return object({
@@ -286,6 +334,8 @@ function schemas(strict: boolean) {
     identityResolutions: z.array(identityResolution), investigationAssessment: investigationAssessment.nullable(),
     deliveryAssurance: deliveryAssurance.nullable(), sourceUseDecision: sourceUseDecision.nullable(),
     sourceReferences: z.array(sourceReference), sourceClaimBindings: z.array(sourceBinding),
+    sourceClaimStatuses: z.array(sourceClaimStatus).optional(), sourceCitations: z.array(sourceCitation).optional(),
+    knowledgeUse: knowledgeUse.optional(),
   });
 }
 
@@ -316,7 +366,15 @@ export function projectAnalysisEvidenceForDisplay(input: {
       sourceUseDecision,
       sourceReferences: isObject(rawDecision) ? ownDataValue(rawDecision, 'references') ?? [] : [],
       sourceClaimBindings: rawProvenance ? ownDataValue(rawProvenance, 'sourceClaimBindings') ?? [] : [],
+      // Present only on current results.
+      ...Object.fromEntries((['sourceClaimStatuses', 'sourceCitations'] as const).flatMap(key => {
+        const value = rawProvenance ? ownDataValue(rawProvenance, key) : undefined;
+        return value === undefined ? [] : [[key, value]];
+      })),
     };
+    // A malformed record is dropped by itself; it reads as not recorded.
+    const knowledgeUse = sanitizeKnowledgeUse(ownDataValue(input.result, 'knowledgeUse'));
+    if (knowledgeUse) Object.assign(candidate, {knowledgeUse});
     const prepared = prepareWriterTree(candidate);
     return deepFreeze(writeSchema.parse(prepared)) as AnalysisEvidencePresentation;
   } catch {
@@ -367,6 +425,7 @@ function assertPlainDataTree(value: unknown, active = new Set<object>()): void {
     } else if (!isPlainObjectPrototype(prototype)) {
       throw new Error('analysis_evidence_non_plain_object');
     }
+    rejectOwnProtoKey(value);
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
@@ -402,6 +461,7 @@ function prepareWriterTree(value: unknown, active = new Set<object>(), dynamicRe
     if (Object.getOwnPropertyNames(value).length !== Object.keys(value).length) {
       throw new Error('analysis_evidence_hidden_property');
     }
+    rejectOwnProtoKey(value);
     const output: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -422,6 +482,15 @@ function prepareWriterTree(value: unknown, active = new Set<object>(), dynamicRe
   } finally {
     active.delete(value);
   }
+}
+
+/**
+ * JSON.parse and js-yaml keep `__proto__` as an own key, but zod skips it in
+ * every object and record schema (strictObject included, without an issue), so
+ * a parsed presentation would silently differ from the claim it displays.
+ */
+function rejectOwnProtoKey(value: object): void {
+  if (Object.prototype.hasOwnProperty.call(value, '__proto__')) throw new Error('analysis_evidence_proto_key');
 }
 
 function deepFreeze<T>(value: T): T {

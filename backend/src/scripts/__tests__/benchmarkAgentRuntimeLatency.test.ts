@@ -430,6 +430,25 @@ describe('agent runtime latency benchmark contracts', () => {
       performance: undefined,
     })).toThrow('benchmark_cell_terminal_before_accept');
     expect(() => parseRuntimeBenchmarkCell({...cell(), apiKey: 'secret'})).toThrow('benchmark_cell_unknown_field');
+    // Per-call model records and the review decision are accepted, and dropped from scoring input.
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      modelCalls: [{purpose: 'answer_turn', startOffsetMs: 0, durationMs: 10, outcome: 'ok'}],
+      finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}}})).toEqual(cell());
+    // The scene entry evidence phase and its closed receipt are accepted and kept.
+    const sceneEvidence = {skillId: 'scrolling_analysis', status: 'ran', durationMs: 4, artifactCount: 24, captureCount: 23};
+    const scenePhase = {name: 'scene_evidence', startOffsetMs: 1, durationMs: 4, outcome: 'ok'};
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      phases: [...basePerformance.phases, scenePhase], sceneEvidence}}).performance)
+      .toEqual({...basePerformance, phases: [...basePerformance.phases, scenePhase], sceneEvidence});
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, sceneEvidence:
+      {skillId: 'anr_analysis', status: 'not_run', reason: 'identity_ambiguous', durationMs: 900, artifactCount: 0, captureCount: 0}}})
+      .performance?.sceneEvidence).toMatchObject({status: 'not_run', reason: 'identity_ambiguous'});
+    for (const invalid of [{...sceneEvidence, status: 'not_run'}, {...sceneEvidence, reason: 'timeout'},
+      {...sceneEvidence, status: 'not_run', reason: 'free text'}, {...sceneEvidence, artifactCount: -1}]) {
+      expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, sceneEvidence: invalid}})).toThrow();
+    }
+    expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      sceneEvidence: {...sceneEvidence, sql: 'SELECT 1'}}})).toThrow('benchmark_runtime_scene_evidence_unknown_field');
     expect(() => parseRuntimeBenchmarkCell({
       ...cell(),
       performance: {
@@ -445,6 +464,26 @@ describe('agent runtime latency benchmark contracts', () => {
       ...parsedArtifact,
       executionProvenance: 'synthetic_scorer',
     })).toThrow('benchmark_artifact_provenance_mismatch');
+  });
+
+  it.each(['not_requested', 'accepted', 'rejected', 'budget_skipped', 'cancelled', 'error', 'not_completed'] as const)(
+    'keeps the closed declaration repair outcome %s as diagnostic metadata', repair => {
+      const declaration = {status: 'partially_valid', declaredClaimCount: 4, repair};
+      expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, declaration}}).performance)
+        .toEqual({...basePerformance, declaration});
+    });
+
+  it.each([
+    null,
+    {status: 'SECRET_PROVIDER_TEXT', declaredClaimCount: 0, repair: 'not_requested'},
+    {status: 'valid', declaredClaimCount: 0, repair: 'SECRET_PROVIDER_TEXT'},
+    {status: 'valid', declaredClaimCount: -1, repair: 'accepted'},
+    {status: 'valid', declaredClaimCount: 0.5, repair: 'accepted'},
+    {status: 'valid', declaredClaimCount: Number.MAX_SAFE_INTEGER + 1, repair: 'accepted'},
+    {status: 'valid', declaredClaimCount: 1, repair: 'accepted', raw: 'SECRET_PROVIDER_TEXT'},
+    {status: 'valid', declaredClaimCount: 1},
+  ])('rejects malformed or open declaration receipt fields: %#', declaration => {
+    expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, declaration}})).toThrow();
   });
 
   it('rejects provider/model/snapshot/runtime/trace/query/mode mismatches before scoring', () => {

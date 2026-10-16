@@ -4,7 +4,7 @@
 
 import type {CaseKnowledgeRecommendation, CaseKnowledgeReportRecommendation} from '../../types/caseKnowledge';
 import {sanitizeSourceUseDecision, sanitizeSourceReferences, sanitizeSourceClaimBindings, isSourceClaimBindingsDeclaration,
-  MAX_SOURCE_REFERENCE_ID_LENGTH, MAX_SOURCE_REFERENCE_PATH_LENGTH} from '../../services/codebase/sourceUseDecision';
+  canonicalSourceClaimBindingDeclarations} from '../../services/codebase/sourceUseDecision';
 import type {EvidenceRelationCandidateV1} from '../../types/evidenceContract';
 import type {
   SourceClaimBindingV1,
@@ -80,12 +80,31 @@ export interface ConclusionContractClaimItem {
   /** Model-produced hint only; visible verdicts come from verifier output. */
   supportLevel?: ConclusionClaimSupportLevel;
   semantics?: ClaimSemanticsV1;
+  /**
+   * Parser-owned per-claim validity: present only when this claim failed its own
+   * item validation while the declaration root stayed valid. Verification,
+   * proof and anchoring consumers skip such a claim; display and fingerprint
+   * consumers keep it.
+   */
+  valid?: false;
+  /** Closed per-claim parse issue codes when `valid` is false; parser-owned. */
+  invalidCodes?: ConclusionContractParseIssue['code'][];
   /** Original invalid model declaration; never a verified interpretation. */
   rawSemantics?: unknown;
   /** Malformed references remain available for diagnosis and lossless reparse. */
   rawReferences?: unknown;
   /** Parser-owned diagnostics, not accepted from model JSON. */
   semanticsParseIssues?: ConclusionContractParseIssue[];
+}
+
+/** A proposed display binding, never a proof or a replacement for the exact proposition. */
+export interface NumericPresentationDeclaration {
+  schemaVersion: 'numeric_presentation@1';
+  unit: string;
+  decimalPlaces: number;
+  rounding: 'half_away_from_zero';
+  /** Exact numeric literal including unit; occurrence is zero-based when repeated. */
+  quotes: Array<{text: string; occurrence?: number}>;
 }
 
 export interface ClaimSemanticsV1 {
@@ -104,9 +123,8 @@ export interface ClaimSemanticsV1 {
     timeRangeNs?: {start: string; end: string};
   };
   /** The proposition value is distinct from a cited cell's value. */
-  numeric?: {operator: 'eq' | 'ne' | 'lt' | 'lte' | 'gt' | 'gte'; value: number | string; unit: string};
-  /** Original claimed location, not metadata filled from a later lookup. */
-  source?: {sourceReferenceId: string; filePath: string; lineRange: {start: number; end: number}};
+  numeric?: {operator: 'eq' | 'ne' | 'lt' | 'lte' | 'gt' | 'gte'; value: number | string; unit: string;
+    presentation?: NumericPresentationDeclaration};
 }
 
 export interface ConclusionContractParseIssue {
@@ -129,7 +147,7 @@ const CLAIM_DIAGNOSTIC_FIELDS_BY_CODE = {
   invalid_semantics: ['semantics', 'semantics.unknown_field', 'semantics.schemaVersion', 'semantics.predicate',
     'semantics.polarity', 'semantics.discourse', 'semantics.quantifier', 'semantics.modality', 'semantics.conditions',
     'semantics.scope', 'semantics.scope.unknown_field', 'semantics.scope.population', 'semantics.scope.subjectRefs',
-    'semantics.scope.objectRefs', 'semantics.scope.timeRangeNs', 'semantics.numeric', 'semantics.source'],
+    'semantics.scope.objectRefs', 'semantics.scope.timeRangeNs', 'semantics.numeric'],
   duplicate_claim_id: ['id'],
   untrusted_parser_metadata: ['parser_metadata'],
 } as const;
@@ -138,21 +156,38 @@ export type ConclusionClaimDiagnosticCode = keyof typeof CLAIM_DIAGNOSTIC_FIELDS
 export type ConclusionClaimDiagnosticField =
   typeof CLAIM_DIAGNOSTIC_FIELDS_BY_CODE[ConclusionClaimDiagnosticCode][number];
 
+const CLAIM_NUMERIC_SUBREASONS = ['shape', 'operator', 'value', 'unit'] as const;
+
+/** The failing part of `semantics.numeric`: its object shape or keys, `operator`, `value` or `unit`. */
+export type ConclusionClaimNumericSubreason = typeof CLAIM_NUMERIC_SUBREASONS[number];
+
 /** One failing claim: its 1-based position in `claims`, the parse issue and the schema field. */
 export interface ConclusionClaimDiagnostic {
   readonly ordinal: number;
   readonly code: ConclusionClaimDiagnosticCode;
   readonly field: ConclusionClaimDiagnosticField;
+  /** Only for `semantics.numeric`; absent in older diagnostics. */
+  readonly subreason?: ConclusionClaimNumericSubreason;
 }
 
 export const MAX_CLAIM_DIAGNOSTICS = 24;
 
+/** The whole claim diagnostic shape; validation and every copy read this one list. */
+const CLAIM_DIAGNOSTIC_KEYS = ['ordinal', 'code', 'field', 'subreason'] as const;
+
 /** Only a code/field pair a parser can actually produce is a claim diagnostic. */
 export function isConclusionClaimDiagnostic(value: unknown): value is ConclusionClaimDiagnostic {
-  return record(value) && keysWithin(value, ['ordinal', 'code', 'field']) &&
+  return record(value) && keysWithin(value, CLAIM_DIAGNOSTIC_KEYS) &&
     Number.isSafeInteger(value.ordinal) && Number(value.ordinal) >= 1 && typeof value.code === 'string' &&
     hasOwn(CLAIM_DIAGNOSTIC_FIELDS_BY_CODE, value.code) &&
-    (CLAIM_DIAGNOSTIC_FIELDS_BY_CODE[value.code as ConclusionClaimDiagnosticCode] as readonly unknown[]).includes(value.field);
+    (CLAIM_DIAGNOSTIC_FIELDS_BY_CODE[value.code as ConclusionClaimDiagnosticCode] as readonly unknown[]).includes(value.field) &&
+    (value.subreason === undefined || (value.code === 'invalid_semantics' && value.field === 'semantics.numeric' &&
+      oneOf(value.subreason, CLAIM_NUMERIC_SUBREASONS)));
+}
+
+/** A detached copy of a validated claim diagnostic with exactly its schema keys. */
+export function copyConclusionClaimDiagnostic(detail: ConclusionClaimDiagnostic): ConclusionClaimDiagnostic {
+  return declaredFields(detail, CLAIM_DIAGNOSTIC_KEYS);
 }
 
 export type ConclusionRelationProposalItemReason =
@@ -244,8 +279,44 @@ export function isConclusionRelationProposalDiagnostic(value: unknown): value is
 
 export type ConclusionBindingEligibility = 'eligible' | 'ineligible' | 'legacy_unchecked';
 
+/**
+ * Root-level parse issues reject the whole declaration (`ineligible`, framing
+ * aside): framing failures, root schema failures, duplicate claim or proposal
+ * ids (an ambiguous id poisons every id-keyed join), a non-array relation
+ * proposal collection, `sourceClaimBindings` reference failures, and root
+ * parser metadata. Every other issue invalidates only its own claim or
+ * proposal entry: those declarations are `partially_valid` and stay `eligible`.
+ */
+export function isConclusionRootParseIssue(issue: ConclusionContractParseIssue): boolean {
+  switch (issue.code) {
+    case 'invalid_framing':
+    case 'duplicate_marker':
+    case 'invalid_json':
+    case 'invalid_contract':
+    case 'duplicate_claim_id':
+    case 'duplicate_proposal_id':
+      return true;
+    case 'invalid_reference':
+      return !issue.path.startsWith('claims[');
+    case 'untrusted_parser_metadata':
+      return issue.path === '$';
+    case 'invalid_relation_proposal':
+      return issue.path === 'relationProposals';
+    default:
+      return false;
+  }
+}
+
+/** Closed per-claim issue codes a claim item can carry as `invalidCodes`. */
+const CLAIM_INVALID_CODES: readonly ConclusionContractParseIssue['code'][] =
+  ['invalid_claim', 'invalid_reference', 'invalid_semantics', 'untrusted_parser_metadata'];
+
+export function isConclusionClaimInvalidCode(code: string): code is ConclusionContractParseIssue['code'] {
+  return (CLAIM_INVALID_CODES as readonly string[]).includes(code);
+}
+
 export interface ConclusionContractDeclarationParseResult {
-  status: 'absent' | 'valid' | 'invalid';
+  status: 'absent' | 'valid' | 'partially_valid' | 'invalid';
   raw: string;
   rawPayload?: unknown;
   contract?: ConclusionContract;
@@ -308,6 +379,10 @@ export interface ConclusionContract {
 
 const SIDECAR_MARKER = '<!-- smartperfetto:conclusion-contract@1';
 const SIDECAR_PREFIX = '<!-- smartperfetto:conclusion-contract@';
+const RESERVED_COMMENT_PREFIX = '<!-- smartperfetto:';
+// Temporary recognition bound only, matching the existing 64 KiB declaration
+// output budget. This neither changes runtime caps nor admits marker aliases.
+const RESERVED_COMMENT_QUARANTINE_MAX_BYTES = 64 * 1024;
 /** Shared prompt framing; injected only after developer comments are stripped. */
 export const CONCLUSION_CONTRACT_SIDECAR_MARKER = SIDECAR_MARKER;
 const ROOT_PARSER_FIELDS = [
@@ -315,6 +390,7 @@ const ROOT_PARSER_FIELDS = [
 ] as const;
 const CLAIM_PARSER_FIELDS = [
   'parseIssues', 'bindingEligibility', 'verified', 'rawSemantics', 'semanticsParseIssues', 'rawReferences', 'rawDeclaration',
+  'valid', 'invalidCodes',
 ] as const;
 
 function hasOwn(value: object, key: string): boolean {
@@ -440,58 +516,126 @@ function referenceList(value: unknown): value is ConclusionContractClaimReferenc
   return Array.isArray(value) && value.every(claimReference);
 }
 
-/** The first schema field a semantics declaration fails on; undefined when it is valid. */
-function claimSemanticsFailure(raw: unknown): ConclusionClaimDiagnosticField | undefined {
-  if (!record(raw)) return 'semantics';
-  if (!keysWithin(raw, ['schemaVersion', 'predicate', 'polarity', 'discourse',
-    'quantifier', 'modality', 'conditions', 'scope', 'numeric', 'source'])) return 'semantics.unknown_field';
-  if (raw.schemaVersion !== CONCLUSION_PROTOCOL_VALUES.semanticsSchemaVersion) return 'semantics.schemaVersion';
-  if (typeof raw.predicate !== 'string' || !raw.predicate.trim() || /\s/.test(raw.predicate)) return 'semantics.predicate';
-  if (!oneOf(raw.polarity, CONCLUSION_PROTOCOL_VALUES.polarity)) return 'semantics.polarity';
-  if (!oneOf(raw.discourse, CONCLUSION_PROTOCOL_VALUES.discourse)) return 'semantics.discourse';
-  if (!oneOf(raw.quantifier, CONCLUSION_PROTOCOL_VALUES.quantifier)) return 'semantics.quantifier';
-  if (!oneOf(raw.modality, CONCLUSION_PROTOCOL_VALUES.modality)) return 'semantics.modality';
-  if (raw.conditions !== undefined && !stringList(raw.conditions)) return 'semantics.conditions';
-  const scope = raw.scope;
-  if (!record(scope)) return 'semantics.scope';
-  if (!keysWithin(scope, ['subjectRefs', 'objectRefs', 'population', 'timeRangeNs'])) return 'semantics.scope.unknown_field';
-  if (!oneOf(scope.population, CONCLUSION_PROTOCOL_VALUES.population)) return 'semantics.scope.population';
-  if (scope.subjectRefs !== undefined && !referenceList(scope.subjectRefs)) return 'semantics.scope.subjectRefs';
-  if (scope.objectRefs !== undefined && !referenceList(scope.objectRefs)) return 'semantics.scope.objectRefs';
-  if (scope.timeRangeNs !== undefined) {
-    const range = scope.timeRangeNs;
-    if (!record(range) || !keysWithin(range, ['start', 'end']) || typeof range.start !== 'string' ||
-      typeof range.end !== 'string' || !/^-?\d+$/.test(range.start) || !/^-?\d+$/.test(range.end) ||
-      BigInt(range.start) > BigInt(range.end)) return 'semantics.scope.timeRangeNs';
-  }
-  if (raw.numeric !== undefined) {
-    const numeric = raw.numeric;
-    if (!record(numeric) || !keysWithin(numeric, ['operator', 'value', 'unit']) ||
-      !oneOf(numeric.operator, CONCLUSION_PROTOCOL_VALUES.operator) ||
-      !((typeof numeric.value === 'number' && Number.isFinite(numeric.value)) ||
-        (typeof numeric.value === 'string' && /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(numeric.value))) ||
-      typeof numeric.unit !== 'string' || !numeric.unit.trim()) return 'semantics.numeric';
-  }
-  if (raw.source !== undefined) {
-    const source = raw.source;
-    if (!record(source) || !keysWithin(source, ['sourceReferenceId', 'filePath', 'lineRange']) ||
-      typeof source.sourceReferenceId !== 'string' || !source.sourceReferenceId.trim() ||
-      source.sourceReferenceId.length > MAX_SOURCE_REFERENCE_ID_LENGTH || typeof source.filePath !== 'string' ||
-      !source.filePath.trim() || source.filePath.length > MAX_SOURCE_REFERENCE_PATH_LENGTH || !record(source.lineRange) ||
-      !keysWithin(source.lineRange, ['start', 'end']) || !Number.isSafeInteger(source.lineRange.start) ||
-      !Number.isSafeInteger(source.lineRange.end) || Number(source.lineRange.start) < 1 ||
-      Number(source.lineRange.end) < Number(source.lineRange.start)) return 'semantics.source';
-  }
+/**
+ * A decimal-nanosecond string, or a safe integer that `claimSemanticsResult`
+ * writes back as its decimal string. An unsafe number may already have lost
+ * digits in JSON.parse, so it stays invalid.
+ */
+function decimalNanoseconds(value: unknown): value is string | number {
+  return typeof value === 'string' ? /^-?\d+$/.test(value) : Number.isSafeInteger(value);
+}
+
+/** The first failing part of a numeric proposition, in the order the schema lists it. */
+function numericFailure(numeric: unknown): ConclusionClaimNumericSubreason | undefined {
+  if (!record(numeric) || !keysWithin(numeric, ['operator', 'value', 'unit', 'presentation'])) return 'shape';
+  if (!oneOf(numeric.operator, CONCLUSION_PROTOCOL_VALUES.operator)) return 'operator';
+  if (!((typeof numeric.value === 'number' && Number.isFinite(numeric.value)) ||
+    (typeof numeric.value === 'string' && /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(numeric.value)))) return 'value';
+  if (typeof numeric.unit !== 'string' || !numeric.unit.trim()) return 'unit';
+  if (hasOwn(numeric, 'presentation') && !validNumericPresentation(numeric.presentation)) return 'shape';
   return undefined;
+}
+
+function validNumericPresentation(value: unknown): value is NumericPresentationDeclaration {
+  return record(value) && keysWithin(value, ['schemaVersion', 'unit', 'decimalPlaces', 'rounding', 'quotes']) &&
+    value.schemaVersion === 'numeric_presentation@1' && value.rounding === 'half_away_from_zero' &&
+    typeof value.unit === 'string' && value.unit.length > 0 && value.unit.length <= 64 && value.unit === value.unit.trim() &&
+    Number.isSafeInteger(value.decimalPlaces) && Number(value.decimalPlaces) >= 0 && Number(value.decimalPlaces) <= 18 &&
+    Array.isArray(value.quotes) && value.quotes.length > 0 && value.quotes.length <= 16 && Array.from(value.quotes).every(quote =>
+      record(quote) && keysWithin(quote, ['text', 'occurrence']) &&
+      typeof quote.text === 'string' && quote.text.length > 0 && quote.text.length <= 256 &&
+      (!hasOwn(quote, 'occurrence') || (Number.isSafeInteger(quote.occurrence) && Number(quote.occurrence) >= 0)));
+}
+
+interface ClaimSemanticsFailure {
+  field: ConclusionClaimDiagnosticField;
+  subreason?: ConclusionClaimNumericSubreason;
+}
+
+/**
+ * The first schema field a semantics declaration fails on; undefined when it is valid.
+ * `schemaVersion` has one supported value, so it may be omitted; a present value must be it.
+ */
+function claimSemanticsFailure(raw: unknown): ClaimSemanticsFailure | undefined {
+  if (!record(raw)) return {field: 'semantics'};
+  if (!keysWithin(raw, ['schemaVersion', 'predicate', 'polarity', 'discourse',
+    'quantifier', 'modality', 'conditions', 'scope', 'numeric', 'source'])) return {field: 'semantics.unknown_field'};
+  if (hasOwn(raw, 'schemaVersion') && raw.schemaVersion !== CONCLUSION_PROTOCOL_VALUES.semanticsSchemaVersion) {
+    return {field: 'semantics.schemaVersion'};
+  }
+  if (typeof raw.predicate !== 'string' || !raw.predicate.trim() || /\s/.test(raw.predicate)) return {field: 'semantics.predicate'};
+  if (!oneOf(raw.polarity, CONCLUSION_PROTOCOL_VALUES.polarity)) return {field: 'semantics.polarity'};
+  if (!oneOf(raw.discourse, CONCLUSION_PROTOCOL_VALUES.discourse)) return {field: 'semantics.discourse'};
+  if (!oneOf(raw.quantifier, CONCLUSION_PROTOCOL_VALUES.quantifier)) return {field: 'semantics.quantifier'};
+  if (!oneOf(raw.modality, CONCLUSION_PROTOCOL_VALUES.modality)) return {field: 'semantics.modality'};
+  if (raw.conditions !== undefined && !stringList(raw.conditions)) return {field: 'semantics.conditions'};
+  const scope = raw.scope;
+  if (!record(scope)) return {field: 'semantics.scope'};
+  if (!keysWithin(scope, ['subjectRefs', 'objectRefs', 'population', 'timeRangeNs',
+    ...(nestedScopeConditions(raw) ? ['conditions'] : [])])) {
+    return {field: 'semantics.scope.unknown_field'};
+  }
+  if (!oneOf(scope.population, CONCLUSION_PROTOCOL_VALUES.population)) return {field: 'semantics.scope.population'};
+  if (scope.subjectRefs !== undefined && !referenceList(scope.subjectRefs)) return {field: 'semantics.scope.subjectRefs'};
+  if (scope.objectRefs !== undefined && !referenceList(scope.objectRefs)) return {field: 'semantics.scope.objectRefs'};
+  if (scope.timeRangeNs !== undefined) {
+    const range = timeRangeBounds(scope.timeRangeNs);
+    if (!range || !decimalNanoseconds(range.start) || !decimalNanoseconds(range.end) ||
+      BigInt(range.start) > BigInt(range.end)) return {field: 'semantics.scope.timeRangeNs'};
+  }
+  const numeric = raw.numeric === undefined ? undefined : numericFailure(raw.numeric);
+  if (numeric) return {field: 'semantics.numeric', subreason: numeric};
+  // `source` (a retired model-declared location) is accepted and dropped: source
+  // claims are judged from the run's issued references, never from a declaration.
+  return undefined;
+}
+
+/**
+ * A time window's bounds: the `{start, end}` the schema declares, or the same
+ * ordered pair written as a two-item array (`["start", "end"]`), which has no
+ * other reading. Anything else is not a window.
+ */
+function timeRangeBounds(range: unknown): {start: unknown; end: unknown} | undefined {
+  if (Array.isArray(range)) return range.length === 2 ? {start: range[0], end: range[1]} : undefined;
+  return record(range) && keysWithin(range, ['start', 'end']) ? {start: range.start, end: range.end} : undefined;
+}
+
+/**
+ * `conditions` written inside `scope` rather than beside it: the claim's own
+ * conditions one level too deep. Only a string list, and only when the
+ * semantics declare no conditions of their own, so there is one reading.
+ */
+function nestedScopeConditions(raw: Record<string, unknown>): string[] | undefined {
+  const scope = raw.scope;
+  return raw.conditions === undefined && record(scope) && hasOwn(scope, 'conditions') && stringList(scope.conditions)
+    ? scope.conditions : undefined;
 }
 
 type ClaimSemanticsResult = {semantics?: ClaimSemanticsV1; rawSemantics?: unknown;
   semanticsParseIssues?: ConclusionContractParseIssue[]};
 
-/** The claim item's own semantics fields; the failing field is reported to the caller separately. */
-function claimSemanticsResult(raw: unknown, path: string, failure: ConclusionClaimDiagnosticField | undefined): ClaimSemanticsResult {
-  return failure ? {rawSemantics: raw, semanticsParseIssues: [{code: 'invalid_semantics', path}]}
-    : {semantics: structuredClone(raw) as unknown as ClaimSemanticsV1};
+/**
+ * The claim item's own semantics fields; the failing field is reported to the caller separately.
+ * Valid semantics are canonical and equal the verbose declaration: an omitted `schemaVersion` is
+ * inserted as the first key, where the verbose form writes it, and a safe-integer time window
+ * becomes the decimal strings the schema declares. Invalid semantics stay exactly as written.
+ */
+function claimSemanticsResult(raw: unknown, path: string, failure: ClaimSemanticsFailure | undefined): ClaimSemanticsResult {
+  if (failure) return {rawSemantics: raw, semanticsParseIssues: [{code: 'invalid_semantics', path}]};
+  const clone = structuredClone(raw) as Record<string, unknown>;
+  delete clone.source;
+  // Nested conditions move to where the verbose declaration writes them, before `scope`:
+  // key order is part of the canonical bytes `analysisDeliveryFingerprint` hashes.
+  const nestedConditions = nestedScopeConditions(clone);
+  const placed = nestedConditions ? Object.fromEntries(Object.entries(clone).flatMap(([key, value]) => key === 'scope'
+    ? [['conditions', nestedConditions], [key, value]] : [[key, value]])) : clone;
+  if (nestedConditions) delete (placed.scope as Record<string, unknown>).conditions;
+  const semantics = (hasOwn(placed, 'schemaVersion') ? placed
+    : {schemaVersion: CONCLUSION_PROTOCOL_VALUES.semanticsSchemaVersion, ...placed}) as unknown as ClaimSemanticsV1;
+  const scope = semantics.scope as ClaimSemanticsV1['scope'] & {timeRangeNs?: unknown};
+  const range = timeRangeBounds(scope.timeRangeNs);
+  if (range) scope.timeRangeNs = {start: String(range.start), end: String(range.end)};
+  return {semantics};
 }
 
 /** Schema validation only; it does not infer meaning from a claim's wording. */
@@ -499,7 +643,12 @@ export function parseClaimSemanticsDeclaration(raw: unknown, path = 'semantics')
   return claimSemanticsResult(raw, path, claimSemanticsFailure(raw));
 }
 
-/** Preserve array order and duplicate IDs so binding validation can reject ambiguity. */
+/**
+ * Preserve array order and duplicate IDs so binding validation can reject ambiguity.
+ * A claim whose own item validation failed keeps its place with `valid: false`
+ * and the closed issue codes, provided the item still parsed into a claim
+ * (an item that is not a record or lacks string text cannot).
+ */
 export function parseDeclaredConclusionClaims(raw: unknown): {
   claims: ConclusionContractClaimItem[];
   rawClaims?: unknown;
@@ -511,9 +660,11 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
   const ids = new Set<string>();
   raw.forEach((item, index) => {
     const path = `claims[${index}]`;
+    const issuesBefore = issues.length;
     // A new issue object per claim location: claim items keep their own semantics issues untouched.
-    const fail = (code: ConclusionClaimDiagnosticCode, field: ConclusionClaimDiagnosticField, issuePath = path) =>
-      issues.push({code, path: issuePath, claimDiagnostic: {ordinal: index + 1, code, field}});
+    const fail = (code: ConclusionClaimDiagnosticCode, field: ConclusionClaimDiagnosticField, issuePath = path,
+      subreason?: ConclusionClaimNumericSubreason) =>
+      issues.push({code, path: issuePath, claimDiagnostic: {ordinal: index + 1, code, field, ...(subreason ? {subreason} : {})}});
     if (!record(item) || typeof item.text !== 'string') {
       fail('invalid_claim', record(item) ? 'text' : 'claim');
       return;
@@ -529,7 +680,7 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
     const semanticsFailure = hasOwn(item, 'semantics') ? claimSemanticsFailure(item.semantics) : undefined;
     const semantics = hasOwn(item, 'semantics')
       ? claimSemanticsResult(item.semantics, `${path}.semantics`, semanticsFailure) : {};
-    if (semanticsFailure) fail('invalid_semantics', semanticsFailure, `${path}.semantics`);
+    if (semanticsFailure) fail('invalid_semantics', semanticsFailure.field, `${path}.semantics`, semanticsFailure.subreason);
     if (typeof item.id === 'string') {
       if (ids.has(item.id)) fail('duplicate_claim_id', 'id', `${path}.id`);
       ids.add(item.id);
@@ -543,6 +694,7 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
     if (!validArtifactRefs || (item.relationRefs !== undefined && !stringList(item.relationRefs))) {
       fail('invalid_reference', validArtifactRefs ? 'relationRefs' : 'artifactRefs');
     }
+    const itemIssues = issues.slice(issuesBefore).filter(issue => !isConclusionRootParseIssue(issue));
     claims.push({
       ...(typeof item.id === 'string' ? {id: item.id} : {}),
       ...(typeof item.conclusionId === 'string' ? {conclusionId: item.conclusionId} : {}),
@@ -555,17 +707,20 @@ export function parseDeclaredConclusionClaims(raw: unknown): {
       ...(oneOf(item.supportLevel, CONCLUSION_PROTOCOL_VALUES.supportLevel)
         ? {supportLevel: item.supportLevel as ConclusionClaimSupportLevel} : {}),
       ...semantics,
+      ...(itemIssues.length ? {valid: false as const, invalidCodes: [...new Set(itemIssues.map(issue => issue.code))]} : {}),
     });
   });
-  return {claims, ...(issues.some(issue => issue.code === 'invalid_claim' || issue.code === 'untrusted_parser_metadata' ||
-    (issue.code === 'invalid_reference' && !issue.path.endsWith('.references'))) ? {rawClaims: structuredClone(raw)} : {}), issues};
+  return {claims, ...(issues.length ? {rawClaims: structuredClone(raw)} : {}), issues};
 }
 
-function relationProposalFailure(value: unknown): ConclusionRelationProposalItemReason | undefined {
+export function relationProposalFailure(value: unknown): ConclusionRelationProposalItemReason | undefined {
   if (!record(value)) return 'item_not_object';
   if (!keysWithin(value, ['schemaVersion', 'id', 'kind', 'direction', 'subject', 'object',
     'proof', 'proofBindings', 'metricColumn', 'value', 'unit', 'deltaDirection'])) return 'unknown_field';
-  if (value.schemaVersion !== CONCLUSION_PROTOCOL_VALUES.relationSchemaVersion) return 'invalid_schema_version';
+  // One supported version: it may be omitted, and a present value must be it.
+  if (hasOwn(value, 'schemaVersion') && value.schemaVersion !== CONCLUSION_PROTOCOL_VALUES.relationSchemaVersion) {
+    return 'invalid_schema_version';
+  }
   if (typeof value.id !== 'string' || !/^proposal:[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value.id)) return 'invalid_id';
   if (!oneOf(value.kind, CONCLUSION_PROTOCOL_VALUES.relationKind)) return 'invalid_kind';
   if (!oneOf(value.direction, CONCLUSION_PROTOCOL_VALUES.direction)) return 'invalid_direction';
@@ -615,7 +770,9 @@ export function parseDeclaredRelationProposals(raw: unknown): {
     }
     if (ids.has(item.id)) issues.push({code: 'duplicate_proposal_id', path: `relationProposals[${index}].id`});
     ids.add(item.id);
-    relationProposals.push(structuredClone(item));
+    // An omitted version is inserted as the first key, where the verbose declaration writes it.
+    relationProposals.push(hasOwn(item, 'schemaVersion') ? structuredClone(item)
+      : {schemaVersion: CONCLUSION_PROTOCOL_VALUES.relationSchemaVersion, ...structuredClone(item)});
   });
   return {relationProposals, ...(issues.length ? {rawRelationProposals: structuredClone(raw)} : {}), issues};
 }
@@ -641,9 +798,10 @@ export function parseTypedConclusionContractJson(raw: string): ConclusionContrac
   if (!record(rawPayload) || rawPayload.schemaVersion !== 'conclusion_contract_v1' ||
     !hasConclusionContractDeclarations(rawPayload)) return absent;
   const projected = parseConclusionContractDeclaration(rawPayload);
-  const status = projected.issues.length ? 'invalid' : 'valid';
+  const status: ConclusionContractDeclarationParseResult['status'] = projected.issues.some(isConclusionRootParseIssue)
+    ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
   return {raw, rawPayload, ...projected, status,
-    bindingEligibility: status === 'valid' ? 'eligible' : 'ineligible'};
+    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible'};
 }
 
 /** Sidecar JSON uses canonical v1 field names. Legacy aliases stay in the legacy parser. */
@@ -714,7 +872,7 @@ export function parseConclusionContractDeclaration(raw: unknown): {contract?: Co
       const owner = owners.length === 1 ? owners[0] : undefined;
       const hasTraceReference = owner && [owner.references, owner.artifactRefs, owner.relationRefs,
         owner.semantics?.scope.subjectRefs, owner.semantics?.scope.objectRefs].some(refs => refs && refs.length > 0);
-      if (!owner || (binding.traceEvidenceRefIds.length > 0 && !hasTraceReference)) {
+      if (!owner || ((binding.traceEvidenceRefIds ?? []).length > 0 && !hasTraceReference)) {
         sourceBindingLinksValid = false;
         issues.push({code: 'invalid_reference', path: `sourceClaimBindings[${index}].${owner ? 'traceEvidenceRefIds' : 'claimId'}`});
       }
@@ -734,10 +892,11 @@ export function parseConclusionContractDeclaration(raw: unknown): {contract?: Co
     ...(record(raw.sourceUseDecision) ? {sourceUseDecision: structuredClone(raw.sourceUseDecision) as unknown as SourceUseDecisionV1} : {}),
     ...(Array.isArray(raw.sourceReferences) ? {sourceReferences: structuredClone(raw.sourceReferences) as SourceReferenceV1[]} : {}),
     ...(sourceBindingsValid && hasOwn(raw, 'sourceClaimBindings')
-      ? {sourceClaimBindings: structuredClone(raw.sourceClaimBindings) as SourceClaimBindingV1[]} : {}),
+      ? {sourceClaimBindings: canonicalSourceClaimBindingDeclarations(raw.sourceClaimBindings as SourceClaimBindingV1[])} : {}),
     ...(rejectedRootMetadata || !sourceBindingsValid || !sourceBindingLinksValid ? {rawDeclaration: structuredClone(raw)} : {}),
     parseIssues: issues,
-    bindingEligibility: issues.length ? 'ineligible' : 'eligible',
+    // Per-item issues invalidate only their own entry; the declaration root decides eligibility.
+    bindingEligibility: issues.some(isConclusionRootParseIssue) ? 'ineligible' : 'eligible',
   };
   return {contract, issues};
 }
@@ -748,6 +907,18 @@ export interface ConclusionSidecarMachineSegment {
   startLine: number;
   /** -1 means the explicit machine segment was interrupted. */
   endLine: number;
+  /** A quarantined declaration remains invalid until strict canonical repair. */
+  quarantinedPayload?: unknown;
+}
+
+function reservedCommentDeclaration(text: string): unknown {
+  const match = /^<!-- smartperfetto:([A-Za-z0-9_@.-]+)[ \t]*\r?\n([\s\S]*)\r?\n-->$/.exec(text);
+  if (!match || match[1].startsWith('conversation-control')) return undefined;
+  try {
+    const payload: unknown = JSON.parse(match[2]);
+    return payload && typeof payload === 'object' && !Array.isArray(payload) &&
+      (payload as {schemaVersion?: unknown}).schemaVersion === 'conclusion_contract_v1' ? payload : undefined;
+  } catch {return undefined;}
 }
 
 function newSidecarLineState() {
@@ -761,8 +932,9 @@ function newSidecarLineState() {
 
 /**
  * The shared framing grammar for final parsing and live narrative projection.
- * Only a possible line-start marker and one CR are withheld. Machine payloads
- * and visible prose are never retained; line/fence recognition uses counters.
+ * Canonical markers use constant state and never retain their machine payload.
+ * An ambiguous reserved comment is withheld only within a bounded temporary
+ * buffer until its entire JSON declaration is confirmed; otherwise it is prose.
  */
 export class ConclusionSidecarFramingScanner {
   private line = newSidecarLineState();
@@ -775,6 +947,7 @@ export class ConclusionSidecarFramingScanner {
   private pendingCr = false;
   private ended = false;
   private markers = 0;
+  private reservedComment: {text: string; bytes: number; start: number; startLine: number} | undefined;
 
   constructor(private readonly onMachineSegment?: (segment: ConclusionSidecarMachineSegment) => void) {}
 
@@ -782,7 +955,7 @@ export class ConclusionSidecarFramingScanner {
 
   /** Diagnostic of text awaiting disambiguation, independent of answer length. */
   get bufferedCharacterCount(): number {
-    return this.line.pendingPrefix.length + (this.pendingCr ? 1 : 0);
+    return this.line.pendingPrefix.length + (this.reservedComment?.text.length ?? 0) + (this.pendingCr ? 1 : 0);
   }
 
   write(text: string): string {
@@ -814,6 +987,10 @@ export class ConclusionSidecarFramingScanner {
       visible += this.consumeCharacter('\r');
     }
     visible += this.endLine('');
+    if (this.reservedComment) {
+      visible += this.reservedComment.text;
+      this.reservedComment = undefined;
+    }
     if (this.machineStart) this.emitSegment(this.offset, -1);
     this.ended = true;
     return visible;
@@ -823,6 +1000,7 @@ export class ConclusionSidecarFramingScanner {
     this.line = newSidecarLineState();
     this.offset = this.lineStart = this.lineIndex = this.markers = 0;
     this.fence = this.machineStart = undefined;
+    this.reservedComment = undefined;
     this.htmlComment = this.pendingCr = this.ended = false;
   }
 
@@ -837,6 +1015,10 @@ export class ConclusionSidecarFramingScanner {
       this.consumeFenceCharacter(character);
     }
 
+    if (this.reservedComment) {
+      line.prefixIndex = -1;
+      return this.consumeReservedComment(character);
+    }
     if (this.fence || this.htmlComment) return character;
     if (line.prefixIndex >= 0) {
       if (character === SIDECAR_PREFIX[line.prefixIndex]) {
@@ -849,12 +1031,48 @@ export class ConclusionSidecarFramingScanner {
         } else if (!this.machineStart) line.pendingPrefix += character;
         return '';
       }
+      if (!this.machineStart && line.pendingPrefix.startsWith(RESERVED_COMMENT_PREFIX)) {
+        const text = line.pendingPrefix;
+        this.reservedComment = {text, bytes: Buffer.byteLength(text, 'utf8'), start: this.lineStart, startLine: this.lineIndex};
+        line.pendingPrefix = '';
+        line.prefixIndex = -1;
+        return this.consumeReservedComment(character);
+      }
       line.prefixIndex = -1;
     }
     if (this.machineStart) return '';
     const visible = line.pendingPrefix + character;
     line.pendingPrefix = '';
     return visible;
+  }
+
+  private consumeReservedComment(text: string): string {
+    const candidate = this.reservedComment!;
+    candidate.text += text;
+    // UTF-16 surrogate halves conservatively cost three UTF-8 bytes each.
+    // The bound is independent of chunking and never retains more than 64 KiB.
+    for (let index = 0; index < text.length; index++) {
+      const code = text.charCodeAt(index);
+      candidate.bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : 3;
+    }
+    if (candidate.bytes > RESERVED_COMMENT_QUARANTINE_MAX_BYTES) {
+      this.reservedComment = undefined;
+      this.htmlComment = true; // Do not recognize a nested marker after overflow.
+      return candidate.text;
+    }
+    return '';
+  }
+
+  private finishReservedComment(): string {
+    const candidate = this.reservedComment!;
+    this.reservedComment = undefined;
+    const payload = this.line.length === 3 && this.line.equalsTerminator
+      ? reservedCommentDeclaration(candidate.text) : undefined;
+    if (payload === undefined) return candidate.text;
+    this.markers++;
+    this.onMachineSegment?.({start: candidate.start, end: this.lineStart + this.line.length, startLine: candidate.startLine,
+      endLine: this.lineIndex, quarantinedPayload: payload});
+    return '';
   }
 
   private consumeFenceCharacter(character: string): void {
@@ -879,8 +1097,12 @@ export class ConclusionSidecarFramingScanner {
 
   private endLine(newline: string): string {
     const line = this.line;
+    const reservedWasPending = this.reservedComment !== undefined;
     let visible = line.pendingPrefix;
-    if (this.machineStart) {
+    if (this.reservedComment) {
+      // Only a complete line can establish that --> has no trailing prose.
+      visible += line.hasCommentClose ? this.finishReservedComment() + newline : this.consumeReservedComment(newline);
+    } else if (this.machineStart) {
       if (line.length === 3 && line.equalsTerminator) {
         this.emitSegment(this.lineStart + line.length, this.lineIndex);
       }
@@ -895,7 +1117,7 @@ export class ConclusionSidecarFramingScanner {
     } else if (/^ {0,3}<!--/.test(line.startText) && !line.hasCommentClose) {
       this.htmlComment = true;
     }
-    if (!this.machineStart) visible += newline;
+    if (!this.machineStart && !reservedWasPending) visible += newline;
     this.line = newSidecarLineState();
     this.lineStart = this.offset;
     this.lineIndex++;
@@ -912,10 +1134,10 @@ export class ConclusionSidecarFramingScanner {
 /** Recognize explicit top-level sidecars without interpreting ordinary prose. */
 export function parseConclusionContractSidecar(raw: string): ConclusionContractSidecarParseResult {
   const lines = raw.split(/\r?\n/);
-  const markers: Array<{start: number; end: number}> = [];
+  const markers: Array<{start: number; end: number; quarantinedPayload?: unknown}> = [];
   const machineSegments: Array<{start: number; end: number}> = [];
   const scanner = new ConclusionSidecarFramingScanner(segment => {
-    markers.push({start: segment.startLine, end: segment.endLine});
+    markers.push({start: segment.startLine, end: segment.endLine, quarantinedPayload: segment.quarantinedPayload});
     machineSegments.push({start: segment.start, end: segment.end});
   });
   const narrative = scanner.write(raw) + scanner.finish();
@@ -925,6 +1147,8 @@ export function parseConclusionContractSidecar(raw: string): ConclusionContractS
   if (markerCount !== 1) return {...base, status: 'invalid', bindingEligibility: 'ineligible',
     issues: [{code: 'duplicate_marker', path: '$'}]};
   const marker = markers[0];
+  if (marker.quarantinedPayload !== undefined) return {...base, rawPayload: marker.quarantinedPayload,
+    status: 'invalid', bindingEligibility: 'ineligible', issues: [{code: 'invalid_framing', path: '$'}]};
   if (marker.end < 0 || lines[marker.start] !== SIDECAR_MARKER || lines[marker.start + 1] !== '```json' ||
     lines[marker.end - 1] !== '```') return {...base, status: 'invalid', bindingEligibility: 'ineligible',
     issues: [{code: 'invalid_framing', path: '$'}]};
@@ -935,9 +1159,10 @@ export function parseConclusionContractSidecar(raw: string): ConclusionContractS
   try { rawPayload = JSON.parse(payload); }
   catch { return {...base, status: 'invalid', bindingEligibility: 'ineligible', issues: [{code: 'invalid_json', path: '$'}]}; }
   const projected = parseConclusionContractDeclaration(rawPayload);
-  const status = projected.issues.length ? 'invalid' : 'valid';
+  const status: ConclusionContractSidecarParseResult['status'] = projected.issues.some(isConclusionRootParseIssue)
+    ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
   return {...base, rawPayload, ...projected, status,
-    bindingEligibility: status === 'valid' ? 'eligible' : 'ineligible',
+    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible',
   };
 }
 
@@ -957,7 +1182,15 @@ export function renderConclusionContractSidecar(contract: ConclusionContract): s
   };
   const serialized = JSON.stringify(declaration, null, 2);
   if (serialized === undefined) throw new Error('Cannot serialize an unavailable conclusion declaration');
-  const payload = serialized.replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+  return wrapConclusionContractSidecarPayload(serialized);
+}
+
+/**
+ * Frame serialized declaration JSON as a sidecar. `<`, `>` and `&` only occur
+ * inside JSON strings, so their `\u` escapes keep `-->` out of the payload.
+ */
+export function wrapConclusionContractSidecarPayload(serializedJson: string): string {
+  const payload = serializedJson.replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
   return `${SIDECAR_MARKER}\n\`\`\`json\n${payload}\n\`\`\`\n-->`;
 }
 
@@ -1024,14 +1257,37 @@ export function declaredContractForResult(contract: ConclusionContract | undefin
     item && typeof item.conclusionId === 'string' && typeof item.text === 'string'
       ? [{conclusionId: item.conclusionId, text: item.text}] : []);
   if (Array.isArray(typed.claims)) {
-    const declarations = typed.claims.map(claim => declaredFields(claim,
+    const originalClaims = typed.claims;
+    const declarations = originalClaims.map(claim => declaredFields(claim,
       ['id', 'conclusionId', 'text', 'kind', 'references', 'artifactRefs', 'relationRefs', 'supportLevel', 'semantics']));
-    typed.claims = parseDeclaredConclusionClaims(declarations).claims.map(claim => {
+    const parsedClaims = parseDeclaredConclusionClaims(declarations).claims;
+    // Only a malformed input can shift positions between the typed claims and
+    // their re-parse; unique ids still re-attach per-claim validity then.
+    const invalidById = new Map<string, ConclusionContractClaimItem>();
+    if (parsedClaims.length !== originalClaims.length) {
+      const ids = originalClaims.flatMap(claim => typeof claim?.id === 'string' ? [claim.id] : []);
+      for (const claim of originalClaims) {
+        // Bounded privacy projection can retain array length with omitted slots.
+        if (claim?.valid === false && typeof claim.id === 'string' && ids.filter(id => id === claim.id).length === 1) {
+          invalidById.set(claim.id, claim);
+        }
+      }
+    }
+    typed.claims = parsedClaims.map((claim, index) => {
       const {rawReferences: _references, rawSemantics: _semantics, semanticsParseIssues: _issues, ...projected} = claim;
       if (projected.artifactRefs) projected.artifactRefs = projected.artifactRefs.map(reference => ({
         ...reference, ...(reference.rowSelector ? {rowSelector: Object.fromEntries(Object.entries(reference.rowSelector)
           .filter(([, item]) => typeof item === 'string' || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)))} : {}),
       }));
+      // Parser-owned per-claim validity survives this re-projection: the re-parse
+      // above re-validates fields, not the claim's standing in its own declaration.
+      const source = parsedClaims.length === originalClaims.length
+        ? originalClaims[index] : claim.id !== undefined ? invalidById.get(claim.id) : undefined;
+      if (source?.valid === false) {
+        projected.valid = false;
+        const codes = (source.invalidCodes ?? []).filter(isConclusionClaimInvalidCode);
+        if (codes.length) projected.invalidCodes = [...new Set(codes)];
+      }
       return projected;
     });
   } else delete typed.claims;

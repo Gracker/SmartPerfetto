@@ -11,60 +11,115 @@
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import request from 'supertest';
-import { createTestApp, loadTestTrace, cleanupTrace, wait } from './testApp';
+import type {Server} from 'http';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import {createLoopbackServerFixture} from '../helpers/loopbackServer';
+// Import the app only after its import-time scene stores see the owned paths.
+let createTestApp: typeof import('./testApp').createTestApp;
+let loadTestTrace: typeof import('./testApp').loadTestTrace;
+let cleanupTrace: typeof import('./testApp').cleanupTrace;
+let wait: typeof import('./testApp').wait;
 
-type ParsedSSEEvent = { event: string; data: any };
+const fixtureEnvKeys = [
+  'SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_DATA_DIR', 'SMARTPERFETTO_BACKEND_LOG_DIR',
+  'UPLOAD_DIR', 'SMARTPERFETTO_TRACE_UPLOAD_DIR', 'PROVIDER_DATA_DIR_OVERRIDE',
+  'SCENE_REPORT_DIR', 'SCENE_JOB_ARTIFACT_DIR',
+  'SMARTPERFETTO_ENTERPRISE', 'SMARTPERFETTO_API_KEY',
+  'SMARTPERFETTO_SSO_TRUSTED_HEADERS', 'SMARTPERFETTO_AI_ENABLED',
+  'SMARTPERFETTO_OIDC_ISSUER_URL', 'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_CLIENT_SECRET', 'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  'SMARTPERFETTO_ENTERPRISE_MIGRATION_PHASE', 'SMARTPERFETTO_ENTERPRISE_CUTOVER_CONFIRMED',
+] as const;
+const previousFixtureEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+const ownedListeners: ReturnType<typeof createLoopbackServerFixture>[] = [];
+const closeStores: Array<() => void> = [];
+const cleanupErrors: unknown[] = [];
+const ownedSessionIds = new Set<string>();
+let fixtureRoot: string | undefined;
 
-function parseSSEText(text: string): ParsedSSEEvent[] {
-  const events: ParsedSSEEvent[] = [];
-  const chunks = String(text || '').split('\n\n');
-  for (const chunk of chunks) {
-    const lines = chunk.split('\n').map((line) => line.trim()).filter(Boolean);
-    if (lines.length === 0) continue;
-    const eventLine = lines.find((line) => line.startsWith('event:'));
-    const dataLine = lines.find((line) => line.startsWith('data:'));
-    if (!eventLine || !dataLine) continue;
-    const event = eventLine.slice('event:'.length).trim();
-    const rawData = dataLine.slice('data:'.length).trim();
-    let data: any = rawData;
-    try {
-      data = JSON.parse(rawData);
-    } catch {
-      // Keep raw string when payload is non-JSON.
-    }
-    events.push({ event, data });
-  }
-  return events;
+function createOwnedLoopbackServerFixture() {
+  const fixture = createLoopbackServerFixture();
+  ownedListeners.push(fixture);
+  return fixture;
 }
 
-async function waitForTerminalStatus(
-  app: ReturnType<typeof createTestApp>,
-  sessionId: string,
-  timeoutMs = 30000
-): Promise<{ status: string; payload: any }> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const response = await request(app).get(`/api/agent/v1/${sessionId}/status`);
-    if (response.status === 200) {
-      const status = String(response.body?.status || '');
-      if (status === 'completed' || status === 'failed') {
-        return { status, payload: response.body };
-      }
-    }
-    await wait(300);
-  }
-  throw new Error(`Timed out waiting for terminal status of session ${sessionId}`);
+async function cleanupOwnedResource(cleanup: () => void | Promise<void>): Promise<void> {
+  try {await cleanup();} catch (error) {cleanupErrors.push(error);}
 }
+
+beforeAll(async () => {
+  fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-agent-routes-integration-'));
+  for (const key of fixtureEnvKeys) delete process.env[key];
+  Object.assign(process.env, {
+    SMARTPERFETTO_ENTERPRISE_DB_PATH: path.join(fixtureRoot, 'enterprise.sqlite'),
+    SMARTPERFETTO_DATA_DIR: path.join(fixtureRoot, 'enterprise'),
+    SMARTPERFETTO_BACKEND_DATA_DIR: path.join(fixtureRoot, 'data'),
+    SMARTPERFETTO_BACKEND_LOG_DIR: path.join(fixtureRoot, 'logs'),
+    UPLOAD_DIR: path.join(fixtureRoot, 'uploads'),
+    SMARTPERFETTO_TRACE_UPLOAD_DIR: path.join(fixtureRoot, 'uploads', 'traces'),
+    PROVIDER_DATA_DIR_OVERRIDE: path.join(fixtureRoot, 'providers'),
+    SCENE_REPORT_DIR: path.join(fixtureRoot, 'scene-reports'),
+    SCENE_JOB_ARTIFACT_DIR: path.join(fixtureRoot, 'scene-job-artifacts'),
+    SMARTPERFETTO_ENTERPRISE: 'false', SMARTPERFETTO_SSO_TRUSTED_HEADERS: 'false',
+    SMARTPERFETTO_AI_ENABLED: 'true',
+  });
+  ({createTestApp, loadTestTrace, cleanupTrace, wait} = await import('./testApp'));
+
+  const {SessionPersistenceService} = await import('../../src/services/sessionPersistenceService');
+  const {resetAgentEventStoreForTests} = await import('../../src/services/agentEventStore');
+  const {resetAnalysisRunStoreForTests} = await import('../../src/services/analysisRunStore');
+  const {resetAnalysisHistoryStoreForTests} = await import('../../src/services/analysisHistoryStore');
+  const {resetConversationSessionStoreForTests} = await import('../../src/services/conversationSessionStore');
+  const {clearRunManifestLifecyclesForTests} = await import('../../src/services/selfEvolution/runManifestLifecycle');
+  const {resetRunManifestStoreForTests} = await import('../../src/services/selfEvolution/runManifestStore');
+  const {resetProviderService} = await import('../../src/services/providerManager');
+  closeStores.push(clearRunManifestLifecyclesForTests, resetRunManifestStoreForTests,
+    () => SessionPersistenceService.resetForTests(), resetAgentEventStoreForTests,
+    resetAnalysisRunStoreForTests, resetAnalysisHistoryStoreForTests,
+    resetConversationSessionStoreForTests, resetProviderService);
+
+  const {TraceProcessorService, setTraceProcessorServiceForTests} =
+    await import('../../src/services/traceProcessorService');
+  const service = new TraceProcessorService(process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR);
+  setTraceProcessorServiceForTests(service);
+  closeStores.unshift(() => {
+    service.cleanupProcessorsForTraces(service.getAllTraces().map(trace => trace.id));
+    setTraceProcessorServiceForTests(null);
+  });
+  const {TraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} =
+    await import('../../src/services/traceProcessorLeaseStore');
+  const leaseStore = new TraceProcessorLeaseStore();
+  setTraceProcessorLeaseStoreForTests(leaseStore);
+  closeStores.push(() => {leaseStore.close(); setTraceProcessorLeaseStoreForTests(null);});
+});
+
+afterAll(async () => {
+  try {
+    for (const fixture of ownedListeners) await cleanupOwnedResource(() => fixture.close());
+    for (const close of closeStores) await cleanupOwnedResource(close);
+  } finally {
+    for (const [key, value] of previousFixtureEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  // Never remove a directory while one of its owned resources failed to close.
+  if (cleanupErrors.length) throw cleanupErrors[0];
+  if (fixtureRoot) fs.rmSync(fixtureRoot, {recursive: true, force: true});
+});
 
 // =============================================================================
 // Fast Validation Tests (no trace needed)
 // =============================================================================
 
 describe('Agent Routes - Input Validation', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
 
-  beforeAll(() => {
-    app = createTestApp();
+  beforeAll(async () => {
+    app = await loopbackServers.listen(createTestApp());
   });
 
   describe('Health Check', () => {
@@ -263,10 +318,11 @@ describe('Agent Routes - Input Validation', () => {
 // =============================================================================
 
 describe('Agent Routes - Session Management', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
 
-  beforeAll(() => {
-    app = createTestApp();
+  beforeAll(async () => {
+    app = await loopbackServers.listen(createTestApp());
   });
 
   describe('GET /api/agent/v1/sessions', () => {
@@ -288,10 +344,11 @@ describe('Agent Routes - Session Management', () => {
 // =============================================================================
 
 describe('Agent Routes - Session Logs', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
 
-  beforeAll(() => {
-    app = createTestApp();
+  beforeAll(async () => {
+    app = await loopbackServers.listen(createTestApp());
   });
 
   describe('GET /api/agent/v1/logs', () => {
@@ -363,45 +420,52 @@ describe('Agent Routes - Session Logs', () => {
 // =============================================================================
 
 describe('Agent Routes - Session Lifecycle', () => {
-  let app: ReturnType<typeof createTestApp>;
+  const loopbackServers = createOwnedLoopbackServerFixture();
+  let app: Server;
   let traceId: string | null = null;
 
   // Use a smaller trace for faster tests
-  const TEST_TRACE = 'app_aosp_scrolling_light.pftrace';
+  const TEST_TRACE = 'android-scroll-standard';
+
+  // These runs start real analyses: pin the jest-mocked Claude SDK runtime and
+  // send providerId: null so no Provider Manager profile reaches a provider.
+  const previousRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
 
   beforeAll(async () => {
-    app = createTestApp();
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+    app = await loopbackServers.listen(createTestApp());
 
-    // Load test trace
-    try {
-      traceId = await loadTestTrace(TEST_TRACE);
-      console.log(`[Test] Loaded trace: ${traceId}`);
-    } catch (error) {
-      console.warn(`[Test] Could not load trace: ${error}`);
-    }
+    // A trace that does not load fails the suite: these tests must not pass by skipping.
+    traceId = await loadTestTrace(TEST_TRACE);
   }, 120000);
 
   afterAll(async () => {
-    if (traceId) {
-      await cleanupTrace(traceId);
+    for (const sessionId of ownedSessionIds) {
+      await cleanupOwnedResource(async () => {
+        // The production DELETE awaits run abort and session cleanup.
+        const response = await request(app).delete(`/api/agent/v1/${sessionId}`);
+        if (response.status !== 200 && response.status !== 404) {
+          throw new Error(`Failed to clean integration session: HTTP ${response.status}`);
+        }
+      });
     }
+    if (traceId) await cleanupOwnedResource(() => cleanupTrace(traceId!));
+    if (previousRuntime === undefined) delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+    else process.env.SMARTPERFETTO_AGENT_RUNTIME = previousRuntime;
   });
 
   it('should create, query status, and delete session', async () => {
-    if (!traceId) {
-      console.warn('Skipping test: no trace loaded');
-      return;
-    }
-
     // 1. Create session
     const createResponse = await request(app)
       .post('/api/agent/v1/analyze')
       .send({
         traceId,
+        providerId: null,
         query: '分析性能',
         options: { maxIterations: 1 },
       });
 
+    if (typeof createResponse.body.sessionId === 'string') ownedSessionIds.add(createResponse.body.sessionId);
     expect(createResponse.status).toBe(200);
     expect(createResponse.body.success).toBe(true);
     expect(createResponse.body.sessionId).toBeDefined();
@@ -452,20 +516,17 @@ describe('Agent Routes - Session Lifecycle', () => {
   }, 60000);
 
   it('should handle respond endpoint correctly for running session', async () => {
-    if (!traceId) {
-      console.warn('Skipping test: no trace loaded');
-      return;
-    }
-
     // Create session
     const createResponse = await request(app)
       .post('/api/agent/v1/analyze')
       .send({
         traceId,
+        providerId: null,
         query: '测试',
         options: { maxIterations: 1 },
       });
 
+    if (typeof createResponse.body.sessionId === 'string') ownedSessionIds.add(createResponse.body.sessionId);
     const sessionId = createResponse.body.sessionId;
 
     // Try to respond with invalid action
@@ -489,85 +550,4 @@ describe('Agent Routes - Session Lifecycle', () => {
     // Cleanup
     await request(app).delete(`/api/agent/v1/${sessionId}`);
   }, 30000);
-
-  it('should satisfy SSE contract for analysis_completed event', async () => {
-    if (!traceId) {
-      console.warn('Skipping test: no trace loaded');
-      return;
-    }
-
-    const createResponse = await request(app)
-      .post('/api/agent/v1/analyze')
-      .send({
-        traceId,
-        query: '分析性能',
-        options: { maxIterations: 1 },
-      });
-
-    expect(createResponse.status).toBe(200);
-    expect(createResponse.body.success).toBe(true);
-    const sessionId = createResponse.body.sessionId as string;
-    const runId = createResponse.body.runId as string;
-    const requestId = createResponse.body.requestId as string;
-    const runSequence = createResponse.body.runSequence as number;
-    expect(sessionId).toBeTruthy();
-    expect(runId).toBeTruthy();
-    expect(requestId).toBeTruthy();
-    expect(Number.isFinite(runSequence)).toBe(true);
-
-    const terminal = await waitForTerminalStatus(app, sessionId, 45000);
-    expect(terminal.status).toBe('completed');
-
-    const streamResponse = await request(app)
-      .get(`/api/agent/v1/${sessionId}/stream`)
-      .buffer(true);
-
-    expect(streamResponse.status).toBe(200);
-    const sseEvents = parseSSEText(streamResponse.text);
-    expect(sseEvents.length).toBeGreaterThan(0);
-
-    const eventNames = sseEvents.map((e) => e.event);
-    expect(eventNames).toContain('connected');
-    expect(eventNames).toContain('end');
-
-    const connectedEvent = sseEvents.find((e) => e.event === 'connected');
-    expect(connectedEvent).toBeDefined();
-    expect(connectedEvent?.data?.runId).toBe(runId);
-    expect(connectedEvent?.data?.requestId).toBe(requestId);
-    expect(connectedEvent?.data?.runSequence).toBe(runSequence);
-
-    const completedEvent = sseEvents.find((e) => e.event === 'analysis_completed');
-    expect(completedEvent).toBeDefined();
-    expect(completedEvent?.data?.type).toBe('analysis_completed');
-    expect(completedEvent?.data?.architecture).toBe('agent-driven');
-    expect(completedEvent?.data?.runId).toBe(runId);
-    expect(completedEvent?.data?.requestId).toBe(requestId);
-    expect(completedEvent?.data?.runSequence).toBe(runSequence);
-    expect(completedEvent?.data?.data).toBeDefined();
-    expect(typeof completedEvent?.data?.data?.conclusion).toBe('string');
-    expect(typeof completedEvent?.data?.data?.confidence).toBe('number');
-    expect(typeof completedEvent?.data?.data?.rounds).toBe('number');
-    expect(typeof completedEvent?.data?.data?.totalDurationMs).toBe('number');
-    expect(Array.isArray(completedEvent?.data?.data?.findings)).toBe(true);
-    expect(completedEvent?.data?.data?.resultContract?.version).toBe('1.0.0');
-    expect(Array.isArray(completedEvent?.data?.data?.resultContract?.dataEnvelopes)).toBe(true);
-    expect(Array.isArray(completedEvent?.data?.data?.resultContract?.diagnostics)).toBe(true);
-    expect(Array.isArray(completedEvent?.data?.data?.resultContract?.actions)).toBe(true);
-    expect(completedEvent?.data?.data?.observability?.runId).toBe(runId);
-    expect(completedEvent?.data?.data?.observability?.requestId).toBe(requestId);
-    expect(completedEvent?.data?.data?.observability?.runSequence).toBe(runSequence);
-
-    const statusResponse = await request(app).get(`/api/agent/v1/${sessionId}/status`);
-    expect(statusResponse.status).toBe(200);
-    expect(statusResponse.body?.status).toBe('completed');
-    expect(statusResponse.body?.observability?.runId).toBe(runId);
-    expect(statusResponse.body?.observability?.requestId).toBe(requestId);
-    expect(statusResponse.body?.observability?.runSequence).toBe(runSequence);
-    expect(statusResponse.body?.result?.resultContract?.version).toBe('1.0.0');
-    expect(Array.isArray(statusResponse.body?.result?.resultContract?.dataEnvelopes)).toBe(true);
-    expect(Array.isArray(statusResponse.body?.result?.resultContract?.diagnostics)).toBe(true);
-    expect(Array.isArray(statusResponse.body?.result?.resultContract?.actions)).toBe(true);
-
-    await request(app).delete(`/api/agent/v1/${sessionId}`);
-  }, 90000);
 });

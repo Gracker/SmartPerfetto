@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "0cc319a1b4190ed157b1e8a6f940152f1daf11c862e27ca923c233e22b3b0086",
+    "sha256": "5e74fed5a771569d53ac036b9c2541eaefc7bdc6e14911ec6baff0cb63552cca",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "input-interaction-latency-v1",
     "output": "Trace/.generated/constructed/input-interaction-latency/trace.pftrace",
-    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
   },
   "coverage": {
     "skills": [
@@ -206,6 +206,7 @@
           "init_cpu_topology",
           "event_info",
           "input_dispatch_breakdown",
+          "input_app_receive",
           "input_pipeline_lifecycle",
           "cpu_core_analysis",
           "quadrant_analysis"
@@ -214,6 +215,7 @@
           "system_context_window",
           "event_info",
           "input_dispatch_breakdown",
+          "input_app_receive",
           "input_pipeline_lifecycle",
           "cpu_core_analysis",
           "quadrant_analysis"
@@ -297,6 +299,7 @@
           "ack_latency_ms",
           "total_latency_ms",
           "e2e_latency_ms",
+          "frame_association",
           "process_name",
           "normalized_channel",
           "dispatch_status"
@@ -506,33 +509,20 @@
         ],
         "forced_sql_steps": [
           "screen_state_changes",
+          "top_app_changes",
           "user_gestures",
           "scroll_initiation",
           "navigation_keys",
+          "anr_events",
           "inertial_scrolls",
           "idle_periods",
+          "app_launches",
           "jank_events",
+          "clean_timeline",
           "merged_timeline"
         ],
         "isolated_sql_probes": [],
-        "expected_condition_skips": [
-          {
-            "step": "top_app_changes",
-            "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-          },
-          {
-            "step": "anr_events",
-            "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-          },
-          {
-            "step": "app_launches",
-            "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-          },
-          {
-            "step": "clean_timeline",
-            "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-          }
-        ],
+        "expected_condition_skips": [],
         "semantic_step": "trace_time_range",
         "required_columns": [
           "start_ts_str",
@@ -579,15 +569,11 @@
           "device_state_lane_fallback",
           "input_state_lane_frames",
           "input_state_lane_fallback",
+          "app_state_lane",
           "app_state_lane_fallback"
         ],
         "isolated_sql_probes": [],
-        "expected_condition_skips": [
-          {
-            "step": "app_state_lane",
-            "reason": "This conditional SQL remains exercised on its production branch; the contract analyzer does not classify it as an independently forceable read-only probe."
-          }
-        ],
+        "expected_condition_skips": [],
         "semantic_step": "device_state_lane",
         "required_columns": [
           "lane",

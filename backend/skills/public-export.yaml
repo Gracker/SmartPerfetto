@@ -18,10 +18,10 @@ official_perfetto:
   official_skill_role: gap_check_only
 runtime_perfetto:
   repository: https://github.com/google/perfetto
-  reported_version: v58.2
-  revision: add693d8b338ba9599dbcbc3e300b1ab8c000897
+  reported_version: v58.3
+  revision: 99234d73fe356bf7edf6b2cb7afcf2a9eefc5368
   rpc_api_version: 14
-  stdlib_tree: 54fc9f0b5c8dedb8772283b6786753fbb918da0d
+  stdlib_tree: c4ed7bdb0dfc5c21fb00e3982220d39abe2911bf
 sql_fragments:
   backend/skills/fragments/scene_response_marker_facts.sql:
     disposition: exported
@@ -32,6 +32,18 @@ sql_fragments:
   backend/skills/fragments/scene_device_state_facts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/scene_device_state_facts.sql
+  backend/skills/fragments/android_input_events_normalized.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/android_input_events_normalized.sql
+  backend/skills/fragments/android_input_delivery_roles.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/android_input_delivery_roles.sql
+  backend/skills/fragments/android_input_scoped_deliveries.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/android_input_scoped_deliveries.sql
+  backend/skills/fragments/android_input_target_deliveries.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/android_input_target_deliveries.sql
   backend/skills/fragments/scene_input_facts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/scene_input_facts.sql
@@ -47,6 +59,9 @@ sql_fragments:
   backend/skills/fragments/system_cpu_frequency_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_frequency_spans.sql
+  backend/skills/fragments/system_cpu_big_freq_coverage.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/system_cpu_big_freq_coverage.sql
   backend/skills/fragments/system_cpu_freq_limit_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_freq_limit_spans.sql
@@ -56,6 +71,9 @@ sql_fragments:
   backend/skills/fragments/thermal_cooling_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/thermal_cooling_spans.sql
+  backend/skills/fragments/thermal_cdev_policy_association.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/thermal_cdev_policy_association.sql
   backend/skills/fragments/thermal_signal_signatures.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/thermal_signal_signatures.sql
@@ -68,6 +86,9 @@ sql_fragments:
   backend/skills/fragments/system_cpu_freq_limit_episode_verdicts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_freq_limit_episode_verdicts.sql
+  backend/skills/fragments/system_cpu_freq_limit_frame_binding.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/system_cpu_freq_limit_frame_binding.sql
   backend/skills/fragments/effective_target_processes.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/effective_target_processes.sql
@@ -101,6 +122,36 @@ sql_fragments:
   backend/skills/fragments/sleep_wake_source_labels.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/sleep_wake_source_labels.sql
+  backend/skills/fragments/art_gc_names.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/art_gc_names.sql
+  backend/skills/fragments/anr_matched.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/anr_matched.sql
+  backend/skills/fragments/anr_classified.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/anr_classified.sql
+  backend/skills/fragments/memory_gc_events.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/memory_gc_events.sql
+  backend/skills/fragments/gpu_frequency_intervals.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_intervals.sql
+  backend/skills/fragments/gpu_frequency_window.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_window.sql
+  backend/skills/fragments/gpu_frequency_summary.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_summary.sql
+  backend/skills/fragments/gpu_frequency_by_ugpu.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_by_ugpu.sql
+  backend/skills/fragments/gpu_descriptor_frequency_tracks.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_descriptor_frequency_tracks.sql
+  backend/skills/fragments/file_io_slice_names.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/file_io_slice_names.sql
   backend/skills/fragments/io_blocked_function_families.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/io_blocked_function_families.sql
@@ -134,6 +185,24 @@ sql_fragments:
   backend/skills/fragments/thermal_sample_quality.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/thermal_sample_quality.sql
+  backend/skills/fragments/heap_target_process.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/heap_target_process.sql
+  backend/skills/fragments/heap_graph_dump_scope.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/heap_graph_dump_scope.sql
+  backend/skills/fragments/heap_graph_selected_dumps.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/heap_graph_selected_dumps.sql
+  backend/skills/fragments/process_state_scoped_intervals.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/process_state_scoped_intervals.sql
+  backend/skills/fragments/heap_profile_scope.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/heap_profile_scope.sql
+  backend/skills/fragments/cpu_cluster_load.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/cpu_cluster_load.sql
 vendor_overrides:
   backend/skills/vendors/honor/startup.override.yaml:
     disposition: exported
@@ -188,6 +257,11 @@ skills:
     workflow: cpu-scheduling
     disposition: exported
     destination: references/generated/skills/thread_cpu_placement_timeline.md
+  android_app_background_power_state:
+    source: backend/skills/atomic/android_app_background_power_state.skill.yaml
+    workflow: power-thermal
+    disposition: exported
+    destination: references/generated/skills/android_app_background_power_state.md
   android_bitmap_memory_per_process:
     source: backend/skills/atomic/android_bitmap_memory_per_process.skill.yaml
     workflow: memory
@@ -203,6 +277,11 @@ skills:
     workflow: gpu-rendering
     disposition: exported
     destination: references/generated/skills/android_gpu_work_period_track.md
+  android_heap_graph_class_growth:
+    source: backend/skills/atomic/android_heap_graph_class_growth.skill.yaml
+    workflow: memory
+    disposition: exported
+    destination: references/generated/skills/android_heap_graph_class_growth.md
   android_heap_graph_leak_candidates:
     source: backend/skills/atomic/android_heap_graph_leak_candidates.skill.yaml
     workflow: memory
@@ -213,6 +292,11 @@ skills:
     workflow: memory
     disposition: exported
     destination: references/generated/skills/android_heap_graph_summary.md
+  android_process_state_residency:
+    source: backend/skills/atomic/android_process_state_residency.skill.yaml
+    workflow: memory
+    disposition: exported
+    destination: references/generated/skills/android_process_state_residency.md
   android_job_scheduler_events:
     source: backend/skills/atomic/android_job_scheduler_events.skill.yaml
     workflow: cpu-scheduling
@@ -1441,6 +1525,9 @@ strategies:
   backend/strategies/prompt-scene-reconstruction-query-en.template.md:
     disposition: product-only
     reason: SmartPerfetto scene button task input
+  backend/strategies/prompt-scene-evidence.template.md:
+    disposition: product-only
+    reason: SmartPerfetto product-owned scene entry evidence prompt segment
   backend/strategies/prompt-analysis-correction-en.template.md:
     disposition: product-only
     reason: SmartPerfetto structured candidate recovery protocol
@@ -1450,6 +1537,9 @@ strategies:
   backend/strategies/prompt-analysis-turn-intent.template.md:
     disposition: product-only
     reason: SmartPerfetto native runtime intent classification protocol
+  backend/strategies/prompt-analysis-turn-intent-source-need.template.md:
+    disposition: product-only
+    reason: SmartPerfetto intent classification of the source depth a codebase-aware run needs
   backend/strategies/prompt-conclusion-contract-schema.template.md:
     disposition: product-only
     reason: SmartPerfetto conclusion declarations and captured evidence identifiers
@@ -1462,18 +1552,12 @@ strategies:
   backend/strategies/prompt-turn-policy.template.md:
     disposition: product-only
     reason: SmartPerfetto resolved turn policy and source authorization
-  backend/strategies/report-runtime-delivery-appendix-en.template.md:
+  backend/strategies/source-anchor-normalization.yaml:
     disposition: product-only
-    reason: SmartPerfetto incomplete delivery projection
-  backend/strategies/report-runtime-delivery-appendix-zh.template.md:
+    reason: SmartPerfetto trace-anchor normalization and ranking for its source locate tool
+  backend/strategies/source-depth-policy.yaml:
     disposition: product-only
-    reason: SmartPerfetto incomplete delivery projection
-  backend/strategies/analysis-source-activation-policy.yaml:
-    disposition: product-only
-    reason: SmartPerfetto request-scoped private source authorization and runtime budget orchestration
-  backend/strategies/analysis-source-deep-supplement.template.md:
-    disposition: product-only
-    reason: SmartPerfetto provider follow-up and private source supplement orchestration
+    reason: SmartPerfetto per-run source tool budgets by requested depth
   backend/strategies/anr.strategy.md:
     workflow: anr-blocking
     disposition: exported
@@ -1488,9 +1572,6 @@ strategies:
     disposition: product-only
     reason: SmartPerfetto Case Library retrieval and runtime localization
   backend/strategies/case-background-context.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
-  backend/strategies/case-candidate-review.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
   backend/strategies/comparison-conclusion.template.md:
@@ -1608,10 +1689,6 @@ strategies:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/overview.strategy.md
-  backend/strategies/phase_hint_templates/misdiagnosis_vsync_vrr.template.yaml:
-    workflow: trace-overview
-    disposition: exported
-    destination: references/generated/strategies/misdiagnosis_vsync_vrr.template.yaml.md
   backend/strategies/pipeline.strategy.md:
     workflow: rendering-pipeline
     disposition: exported
@@ -1629,6 +1706,15 @@ strategies:
   backend/strategies/prompt-analyze-wait-chain-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto analyze_wait_chain MCP tool contract
+  backend/strategies/prompt-artifact-sql-misuse-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql refusal of artifact pseudo-tables (English)
+  backend/strategies/prompt-artifact-sql-misuse-hint.template.md:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql hint toward fetch_artifact for artifact references
+  backend/strategies/prompt-artifact-sql-misuse-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql refusal of artifact pseudo-tables (Chinese)
   backend/strategies/prompt-critical-path-summary-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto critical-path route one-shot summary over its engine payload
@@ -1647,30 +1733,57 @@ strategies:
   backend/strategies/prompt-investigation-findings.template.md:
     disposition: product-only
     reason: SmartPerfetto typed-turn finding presentation and runtime strategy discovery
+  backend/strategies/prompt-reasoning-nudge-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto MCP data-tool result reasoning reminder (English)
+  backend/strategies/prompt-reasoning-nudge-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto MCP data-tool result reasoning reminder (Chinese)
+  backend/strategies/prompt-draft-declaration-diagnostics-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto draft diagnostic MCP tool over authorized product evidence captures
+  backend/strategies/prompt-draft-declaration-diagnostics-feedback.template.md:
+    disposition: product-only
+    reason: SmartPerfetto draft diagnostic result guidance over authorized product evidence captures
   backend/strategies/prompt-invoke-skill-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP artifact projection and exact process handoff guidance
   backend/strategies/prompt-strategy-detail-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP strategy catalog and detail tool description
-  backend/strategies/prompt-source-finding-binding.template.md:
+  backend/strategies/prompt-submit-plan-tool-description.template.md:
     disposition: product-only
-    reason: SmartPerfetto current-run source reference binding and visible finding contract
+    reason: SmartPerfetto submit_plan MCP tool description
+  backend/strategies/prompt-source-recipe-locate.template.md:
+    disposition: product-only
+    reason: SmartPerfetto locate-depth source recipe for its codebase-aware tools
+  backend/strategies/prompt-source-recipe-mechanism.template.md:
+    disposition: product-only
+    reason: SmartPerfetto mechanism-depth source recipe for its codebase-aware tools
   backend/strategies/prompt-code-reference-contract-en.template.md:
     disposition: product-only
     reason: SmartPerfetto source lookup tools and codebase-aware report orchestration
   backend/strategies/prompt-code-reference-contract-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto source lookup tools and codebase-aware report orchestration
-  backend/strategies/prompt-source-use-decision-en.template.md:
+  backend/strategies/prompt-source-use-en.template.md:
     disposition: product-only
-    reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
-  backend/strategies/prompt-source-use-decision-zh.template.md:
+    reason: SmartPerfetto selected-codebase capabilities, provider consent, and codebase-aware orchestration
+  backend/strategies/prompt-source-use-zh.template.md:
     disposition: product-only
-    reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
-  backend/strategies/prompt-source-activation-reset.template.md:
+    reason: SmartPerfetto selected-codebase capabilities, provider consent, and codebase-aware orchestration
+  backend/strategies/prompt-knowledge-use-en.template.md:
     disposition: product-only
-    reason: SmartPerfetto provider session reset after private source activation changes
+    reason: SmartPerfetto selected document knowledge bases, their tools and citation contract
+  backend/strategies/prompt-knowledge-use-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto selected document knowledge bases, their tools and citation contract
+  backend/strategies/prompt-search-knowledge-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto document knowledge base search MCP tool contract
+  backend/strategies/prompt-read-knowledge-section-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto document knowledge base section read MCP tool contract
   backend/strategies/prompt-final-report-correction-system-en.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
@@ -1683,9 +1796,27 @@ strategies:
   backend/strategies/prompt-native-declaration-completion-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto native conclusion declaration delivery orchestration
+  backend/strategies/prompt-native-output-completion-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto native output-limit delivery recovery orchestration
+  backend/strategies/prompt-native-output-completion-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto native output-limit delivery recovery orchestration
   backend/strategies/prompt-propose-patch-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto provider-consented codebase patch proposal tool contract
+  backend/strategies/prompt-locate-trace-anchor-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto trace-anchor source locate MCP tool contract
+  backend/strategies/prompt-search-codebase-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto on-demand codebase search MCP tool contract
+  backend/strategies/prompt-read-codebase-file-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto on-demand codebase read MCP tool contract
+  backend/strategies/prompt-find-codebase-files-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto on-demand codebase file-find MCP tool contract
   backend/strategies/prompt-relation-proposal-recovery-en.template.md:
     disposition: product-only
     reason: SmartPerfetto native evidence relation candidate recovery protocol
@@ -1716,12 +1847,6 @@ strategies:
   backend/strategies/prompt-final-report-quality-issue-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
-  backend/strategies/prompt-plan-completion-continuation-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime plan-completion orchestration
-  backend/strategies/prompt-plan-completion-continuation-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime plan-completion orchestration
   backend/strategies/prompt-recent-sql-results.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
@@ -1755,6 +1880,12 @@ strategies:
   backend/strategies/prompt-runtime-history-tool-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime session tool-history projection
+  backend/strategies/prompt-runtime-empty-body-continuation-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime empty-body delivery continuation
+  backend/strategies/prompt-runtime-empty-body-continuation-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime empty-body delivery continuation
   backend/strategies/prompt-runtime-turn-closeout-en.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime turn completion and session continuity orchestration
@@ -1780,9 +1911,6 @@ strategies:
     workflow: scene-reconstruction
     disposition: exported
     destination: references/generated/strategies/prompt-scene-stage3-summary.template.md
-  backend/strategies/prompt-session-continuity-break.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
   backend/strategies/report-runtime-recovery-contract-section-en.template.md:
     disposition: product-only
     reason: SmartPerfetto report rendering and runtime recovery surface
@@ -1861,16 +1989,10 @@ strategies:
   backend/strategies/selfevolve-proposal.template.md:
     disposition: product-only
     reason: SmartPerfetto self-evolution proposal generation, persistence, and gated overlay lifecycle
-  backend/strategies/golden-trace-eval.registry.json:
-    disposition: product-only
-    reason: SmartPerfetto golden trace evaluation corpus and gated overlay lifecycle
   backend/strategies/smart.strategy.md:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/smart.strategy.md
-  backend/strategies/source-investigation-policy.yaml:
-    disposition: product-only
-    reason: SmartPerfetto private codebase and kernel source investigation routing
   backend/strategies/startup.strategy.md:
     workflow: startup
     disposition: exported
@@ -1890,6 +2012,9 @@ strategies:
   backend/strategies/prompt-artifact-result-guidance.template.md:
     disposition: product-only
     reason: Runtime artifact access policy and preview interpretation
+  backend/strategies/knowledge-focus-app-context.template.md:
+    disposition: product-only
+    reason: Interprets the runtime trace_context.focusApp hypothesis, package source and default Skill scoping
   backend/strategies/knowledge-trace-comparison.template.md:
     workflow: trace-comparison
     disposition: exported

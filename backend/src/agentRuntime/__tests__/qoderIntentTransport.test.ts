@@ -52,6 +52,24 @@ describe('Qoder intent transport', () => {
   beforeEach(() => {jest.useFakeTimers({now: 1000});});
   afterEach(() => {jest.useRealTimers();});
 
+  it('checks the run authorization at the query boundary, after auth resolved', async () => {
+    const {input, sdk, resolveAuth} = fixture();
+    let releaseAuth!: (auth: unknown) => void;
+    resolveAuth.mockReturnValue(new Promise(resolve => { releaseAuth = resolve; }));
+    let revoked = false;
+    const beforeQuery = jest.fn(() => {
+      if (revoked) throw new Error('analysis_context_changed_restart_required');
+    });
+    const pending = runQoderIntentTransport({...input, deadlineMs: Date.now() + 5_000, beforeQuery});
+    await jest.advanceTimersByTimeAsync(0);
+    expect(resolveAuth).toHaveBeenCalledTimes(1);
+    revoked = true; // Consent is withdrawn while auth resolves.
+    releaseAuth({type: 'test-auth'});
+    await pending;
+    expect(beforeQuery).toHaveBeenCalledTimes(1);
+    expect(sdk.query).not.toHaveBeenCalled();
+  });
+
   it('dispatches one isolated tool-free query with fixed same-provider BYOK selection', async () => {
     const {input, query, sdk, auth, resolveAuth} = fixture();
     await expect(runQoderIntentTransport(input)).resolves.toEqual({
@@ -145,6 +163,15 @@ describe('Qoder intent transport', () => {
     ]);
     await expect(runQoderIntentTransport(input)).resolves.toEqual({status: 'unavailable', reason: 'tool_use'});
     expect(query.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{type: 'result', subtype: 'success', is_error: true, result: 'API Error'}, 'provider_error'],
+    [{type: 'result', subtype: 'error_during_execution', is_error: true}, 'provider_error'],
+    [{type: 'result', subtype: 'error_max_turns', is_error: true}, 'invalid_response'],
+  ] as const)('reports SDK result %# as its own failure reason', async (message, reason) => {
+    const {input} = fixture([message]);
+    await expect(runQoderIntentTransport(input)).resolves.toEqual({status: 'unavailable', reason});
   });
 
   it.each(['pause_turn', 'refusal', 'model_context_window_exceeded', 'future_reason', ''])('rejects incomplete or unknown explicit stop reason %s', async stopReason => {

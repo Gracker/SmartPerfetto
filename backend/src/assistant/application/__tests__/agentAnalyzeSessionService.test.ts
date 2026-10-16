@@ -48,9 +48,13 @@ function createLogger(): SessionLogger {
   } as unknown as SessionLogger;
 }
 
+/** The authorization every request in this suite runs under unless a test changes it. */
+const FINGERPRINT = 'fingerprint-public';
+
 function createSession(sessionId: string, traceId: string): AnalyzeManagedSession {
   return {
     sessionId,
+    analysisContextFingerprint: FINGERPRINT,
     status: 'running',
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
@@ -155,11 +159,25 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     resetProviderService();
   }
 
+  test.each([undefined, '', '   '])('refuses to prepare a session without the request fingerprint (%p)', fingerprint => {
+    const existing = createSession('agent-session-unstated', 'trace-1');
+    assistantAppService.setSession(existing.sessionId, existing);
+    expect(() => service.prepareSession({traceId: 'trace-1', query: 'follow-up',
+      requestedSessionId: existing.sessionId, options: {}, analysisContextFingerprint: fingerprint as any}))
+      .toThrow(expect.objectContaining({name: 'AnalyzeSessionPreparationError',
+        code: 'ANALYSIS_CONTEXT_FINGERPRINT_REQUIRED'}));
+    // Nothing was decided: the session is neither continued nor replaced.
+    expect(assistantAppService.getSession(existing.sessionId)).toBe(existing);
+    expect(existing.query).toBe('old query');
+    expect(mockCreateAgentOrchestrator).not.toHaveBeenCalled();
+  });
+
   test('reuses existing in-memory session for same trace', () => {
     const existing = createSession('agent-session-1', 'trace-1');
     assistantAppService.setSession(existing.sessionId, existing);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'new follow-up question',
       requestedSessionId: existing.sessionId,
@@ -184,6 +202,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
     const canary = 'PRIVATE_LOG_QUERY_CANARY';
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-private-log',
       query: canary,
       options: {
@@ -199,6 +218,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     prepared.session.codeAwareMode = 'provider_send';
     prepared.session.codebaseIds = ['codebase-private'];
     service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-private-log',
       query: `${canary}-follow-up`,
       requestedSessionId: prepared.sessionId,
@@ -317,6 +337,30 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(prepared.sessionId).not.toBe(existing.sessionId);
   });
 
+  test('rebuilds a session stamped with a pre-acf2 fingerprint instead of continuing it', () => {
+    const securityCleanup = jest.fn();
+    service = new AgentAnalyzeSessionService<AnalyzeManagedSession>({
+      assistantAppService,
+      createSessionLogger: () => createLogger(),
+      sessionPersistenceService,
+      sessionContextManager: {set: jest.fn(), remove: jest.fn()},
+      buildRecoveredResultFromContext: () => null,
+      onSessionSecurityCleanup: securityCleanup,
+    });
+    const existing = createSession('agent-session-legacy', 'trace-1');
+    // The upgrade's one-time effect: the stored record is never re-stamped.
+    existing.analysisContextFingerprint = 'c'.repeat(64);
+    existing.orchestrator = {cleanupSession: jest.fn()} as any;
+    assistantAppService.setSession(existing.sessionId, existing);
+    const prepared = service.prepareSession({
+      traceId: 'trace-1', query: 'same selection after the upgrade', requestedSessionId: existing.sessionId,
+      analysisContextFingerprint: `acf2:${'c'.repeat(64)}`, options: {},
+    });
+    expect(securityCleanup).toHaveBeenCalledWith(existing.sessionId);
+    expect(prepared.isNewSession).toBe(true);
+    expect(existing.analysisContextFingerprint).toBe('c'.repeat(64));
+  });
+
   test('inherits reference trace identity when continuing an in-memory comparison session', () => {
     const existing = createSession('agent-session-1', 'trace-1');
     existing.referenceTraceId = 'ref-trace-1';
@@ -324,6 +368,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     assistantAppService.setSession(existing.sessionId, existing);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'follow up without explicit reference',
       requestedSessionId: existing.sessionId,
@@ -343,6 +388,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     try {
       service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-1',
         query: 'compare against another reference',
         requestedSessionId: existing.sessionId,
@@ -364,6 +410,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     try {
       service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-1',
         query: 'start compare inside old single session',
         requestedSessionId: existing.sessionId,
@@ -380,6 +427,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
   });
 
   test('throws TRACE_ID_MISMATCH when requested persisted session belongs to another trace', () => {
+    sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({analysisContextFingerprint: FINGERPRINT});
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-1',
       traceId: 'trace-other',
@@ -391,6 +439,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     try {
       service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-expected',
         query: 'follow-up',
         requestedSessionId: 'persisted-1',
@@ -408,6 +457,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
   test('throws PROVIDER_NOT_FOUND when explicit providerId is invalid', () => {
     try {
       service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-expected',
         query: 'new analysis',
         providerId: 'missing-provider',
@@ -436,6 +486,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     getProviderService().activate(provider.id);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'new analysis',
       options: {},
@@ -451,6 +502,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
   test('pins a new session to env fallback when no provider is active', () => {
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'new analysis',
       options: {},
@@ -513,6 +565,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     const nextHash = providerSnapshotHash(provider.id);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'new follow-up question',
       requestedSessionId: existing.sessionId,
@@ -561,6 +614,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
     const firstHash = providerSnapshotHash(provider.id);
     const first = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'first follow-up',
       requestedSessionId: existing.sessionId,
@@ -572,6 +626,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       models: { primary: 'gpt-provider-model-v3' },
     });
     const second = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'second follow-up',
       requestedSessionId: first.sessionId,
@@ -588,7 +643,6 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(second.session.continuityBreaks).toBeUndefined();
     expect(second.session.conversationSteps).toEqual([]);
     expect(second.session.query).toBe('second follow-up');
-    expect(second.session.agentQuery).toBe('second follow-up');
   });
 
   test('reuses an in-memory session with its pinned provider when active provider changed elsewhere', () => {
@@ -621,6 +675,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     assistantAppService.setSession(existing.sessionId, existing);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'new follow-up question',
       requestedSessionId: existing.sessionId,
@@ -663,6 +718,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     getProviderService().delete(removedProvider.id);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'continue after provider deletion',
       requestedSessionId: existing.sessionId,
@@ -673,6 +729,91 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(prepared.sessionId).not.toBe(existing.sessionId);
     expect(prepared.session.providerId).toBe(replacementProvider.id);
     expect(existing.orchestrator.cleanupSession).toHaveBeenCalledWith(existing.sessionId);
+  });
+
+  describe('while providers.json is unreadable', () => {
+    let warnSpy: ReturnType<typeof jest.spyOn>;
+
+    function createActiveOpenAiProvider(): string {
+      const provider = getProviderService().create({
+        name: 'Gateway',
+        category: 'official',
+        type: 'openai',
+        models: {primary: 'gpt-gateway', light: 'gpt-gateway-light'},
+        connection: {agentRuntime: 'openai-agents-sdk', openaiApiKey: 'sk-gateway-openai'},
+      });
+      getProviderService().activate(provider.id);
+      return provider.id;
+    }
+
+    async function breakProvidersFile(): Promise<void> {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await fs.writeFile(path.join(providerDataDir, 'providers.json'), '[{"id":');
+    }
+
+    function expectStoreUnreadableRefusal(prepare: () => unknown): void {
+      let caught: unknown;
+      try {
+        prepare();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AnalyzeSessionPreparationError);
+      expect(caught).toMatchObject({code: 'provider_store_unreadable', httpStatus: 409});
+    }
+
+    afterEach(() => warnSpy?.mockRestore());
+
+    test('refuses a new session that follows the active provider instead of pinning env', async () => {
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      expectStoreUnreadableRefusal(() => service.prepareSession({analysisContextFingerprint: FINGERPRINT, traceId: 'trace-1', query: 'q', options: {}}));
+      expect(mockCreateAgentOrchestrator).not.toHaveBeenCalled();
+    });
+
+    test('still pins env when the request chooses it explicitly', async () => {
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      const prepared = service.prepareSession({analysisContextFingerprint: FINGERPRINT, traceId: 'trace-1', query: 'q', providerId: null, options: {}});
+      expect(prepared.isNewSession).toBe(true);
+      expect(prepared.session.providerId).toBeNull();
+    });
+
+    test('continues a live env-pinned session without reading the active provider', async () => {
+      const existing = createSession('agent-session-env', 'trace-1');
+      existing.providerId = null;
+      existing.providerSnapshotHash = providerSnapshotHash(null);
+      assistantAppService.setSession(existing.sessionId, existing);
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      const prepared = service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
+        traceId: 'trace-1', query: 'follow-up', requestedSessionId: existing.sessionId, options: {},
+      });
+      expect(prepared.isNewSession).toBe(false);
+      expect(prepared.sessionId).toBe(existing.sessionId);
+    });
+
+    test('keeps a provider-pinned live session instead of retiring it as deleted', async () => {
+      const providerId = createActiveOpenAiProvider();
+      const existing = createSession('agent-session-pinned', 'trace-1');
+      existing.orchestrator = {cleanupSession: jest.fn()} as any;
+      existing.providerId = providerId;
+      existing.providerSnapshotHash = providerSnapshotHash(providerId);
+      existing.runtimeKind = 'openai-agents-sdk';
+      assistantAppService.setSession(existing.sessionId, existing);
+      await breakProvidersFile();
+
+      expectStoreUnreadableRefusal(() => service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
+        traceId: 'trace-1', query: 'follow-up', requestedSessionId: existing.sessionId, options: {},
+      }));
+      expect(existing.orchestrator.cleanupSession).not.toHaveBeenCalled();
+      expect(assistantAppService.getSession(existing.sessionId)).toBe(existing);
+    });
   });
 
   test('keeps live sessions pinned when workspace default provider changes', () => {
@@ -698,6 +839,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     getProviderService().activate(workspaceProviderA.id, workspaceScope);
 
     const first = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'first analysis',
       options: {},
@@ -720,6 +862,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     getProviderService().activate(workspaceProviderB.id, workspaceScope);
 
     const followUp = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'follow up',
       requestedSessionId: first.sessionId,
@@ -727,6 +870,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       providerScope: userScope,
     });
     const newSession = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-2',
       query: 'new analysis',
       options: {},
@@ -746,11 +890,13 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'zh-CN';
     try {
       const first = service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-language',
         query: 'first turn',
         options: {outputLanguage: 'en'},
       });
       const followUp = service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-language',
         query: 'follow up',
         requestedSessionId: first.sessionId,
@@ -768,11 +914,13 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
   test('starts a fresh runtime conversation when language changes explicitly', () => {
     const first = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-language-change',
       query: 'first turn',
       options: {outputLanguage: 'en'},
     });
     const replacement = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-language-change',
       query: '切换语言',
       requestedSessionId: first.sessionId,
@@ -817,6 +965,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     assistantAppService.setSession(existing.sessionId, existing);
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'new follow-up question',
       requestedSessionId: existing.sessionId,
@@ -881,6 +1030,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: FINGERPRINT,
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -900,6 +1050,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'follow-up with another provider',
       requestedSessionId: 'persisted-1',
@@ -936,6 +1087,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue({} as any);
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: FINGERPRINT,
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -958,6 +1110,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     try {
       service.prepareSession({
+        analysisContextFingerprint: FINGERPRINT,
         traceId: 'trace-1',
         query: 'follow-up',
         requestedSessionId: 'persisted-1',
@@ -1009,6 +1162,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: FINGERPRINT,
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -1043,6 +1197,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'follow-up',
       requestedSessionId: 'persisted-1',
@@ -1063,13 +1218,21 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       reason: 'provider_snapshot_hash_mismatch',
       at: expect.any(Number),
     }));
-    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
-    expect(prepared.session.agentQuery).toContain('follow-up');
     expect(prepared.session.tenantId).toBe('tenant-a');
-    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-1',
+      'trace-1',
+      expect.objectContaining({
+        // Restored as persisted: no runtime reads a legacy engine payload.
+        engineState: expect.objectContaining({
+          kind: 'openai-agents-sdk',
+          provider: {providerId: provider.id, providerSnapshotHash: originalHash},
+        }),
+      }),
+    );
   });
 
-  test('skips Pi opaque snapshot restore after a scoped API-key rotation', () => {
+  test('restores Pi product state but not a legacy stored transcript after a scoped API-key rotation', () => {
     const provider = getProviderService().create({
       name: 'Pi Provider',
       category: 'custom',
@@ -1091,6 +1254,8 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       custom: {envOverrides: {DEEPSEEK_API_KEY: 'second-pi-secret'}},
     });
     const nextHash = providerSnapshotHash(provider.id);
+    const piNote = {section: 'finding', content: 'main thread blocked on binder', priority: 'high', timestamp: 1};
+    const piArtifacts = [{id: 'art-1', skillId: 'startup_analysis', createdAt: 1}];
 
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-pi',
@@ -1104,6 +1269,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: FINGERPRINT,
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-pi',
       traceId: 'trace-pi',
@@ -1114,10 +1280,11 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       agentResponses: [],
       dataEnvelopes: [],
       hypotheses: [],
-      analysisNotes: [],
+      analysisNotes: [piNote],
       analysisPlan: null,
       planHistory: [],
       uncertaintyFlags: [],
+      artifacts: piArtifacts,
       engineState: {
         kind: 'pi-agent-core',
         provider: {
@@ -1138,6 +1305,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-pi',
       query: 'follow-up',
       requestedSessionId: 'persisted-pi',
@@ -1148,8 +1316,18 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(nextHash).not.toBe(originalHash);
     expect(prepared.session.providerSnapshotHash).toBe(nextHash);
     expect(prepared.session.providerSnapshotChanged).toBe(true);
-    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
-    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-pi',
+      'trace-pi',
+      expect.objectContaining({
+        analysisNotes: [piNote],
+        artifacts: piArtifacts,
+        engineState: expect.objectContaining({
+          kind: 'pi-agent-core',
+          provider: {providerId: provider.id, providerSnapshotHash: originalHash},
+        }),
+      }),
+    );
   });
 
   test('restores a persisted env-fallback session without reading the active provider', () => {
@@ -1181,6 +1359,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: FINGERPRINT,
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -1208,6 +1387,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'follow-up',
       requestedSessionId: 'persisted-1',
@@ -1227,6 +1407,37 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     );
   });
 
+  const gateRun = (privateContext: unknown) => ({runId: 'run-1', requestId: 'req-1', sequence: 1, query: 'q',
+    startedAt: 1, status: 'completed', privateContext});
+  test.each([
+    ['recorded public selection', {analysisContextFingerprint: FINGERPRINT}, true],
+    // Written before the selection was recorded in full, so nothing proves it.
+    ['no fingerprint', {}, false],
+    ['recorded private selection', {analysisContextFingerprint: FINGERPRINT, codeAwareMode: 'provider_send', codebaseIds: ['app']}, false],
+    ['public run marker', {analysisContextFingerprint: FINGERPRINT, lastRun: gateRun({codebase: false, knowledge: false})}, true],
+    // The current request's authorization is compared with the recorded one; none recorded is a mismatch.
+    ['public run marker without a recorded fingerprint', {lastRun: gateRun({codebase: false, knowledge: false})}, false],
+    ['restricted run marker', {analysisContextFingerprint: FINGERPRINT, lastRun: gateRun({codebase: true, knowledge: false})}, false],
+    ['malformed run marker', {analysisContextFingerprint: FINGERPRINT, lastRun: gateRun({})}, false],
+    // One public run cannot vouch for another whose marker is missing.
+    ['mixed run markers', {analysisContextFingerprint: FINGERPRINT, lastRun: gateRun({codebase: false, knowledge: false}),
+      activeRun: {runId: 'run-2', requestId: 'req-2', sequence: 2, query: 'q', startedAt: 2, status: 'running'}}, false],
+    ['a run that is not an object', {analysisContextFingerprint: FINGERPRINT, lastRun: 'run-1'}, false],
+  ])('restores runtime state only from a record that proves it read no private material: %s', (_label, fields, restorable) => {
+    sessionPersistenceService.getSession.mockReturnValue({id: 'persisted-gate', traceId: 'trace-1', question: '',
+      createdAt: 1, updatedAt: 1, metadata: {tenantId: 't', workspaceId: 'w', userId: 'u'}, messages: []});
+    sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
+    sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({version: 1, snapshotTimestamp: 1,
+      sessionId: 'persisted-gate', traceId: 'trace-1', conversationSteps: [], queryHistory: [], conclusionHistory: [],
+      agentDialogue: [], agentResponses: [], dataEnvelopes: [], hypotheses: [], analysisNotes: [], analysisPlan: null,
+      planHistory: [], uncertaintyFlags: [], runSequence: 1, conversationOrdinal: 0, ...fields});
+    const prepared = service.prepareSession({analysisContextFingerprint: FINGERPRINT, traceId: 'trace-1', query: 'follow-up',
+      requestedSessionId: 'persisted-gate', options: {}});
+    expect(prepared.isNewSession).toBe(!restorable);
+    // A record that cannot prove it is public has nothing loaded or restored.
+    if (!restorable) expect(sessionPersistenceService.loadSessionContext).not.toHaveBeenCalled();
+  });
+
   test('inherits reference trace identity from a persisted comparison snapshot', () => {
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-compare-1',
@@ -1242,6 +1453,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: FINGERPRINT,
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-compare-1',
       traceId: 'trace-1',
@@ -1265,6 +1477,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     });
 
     const prepared = service.prepareSession({
+      analysisContextFingerprint: FINGERPRINT,
       traceId: 'trace-1',
       query: 'follow-up without explicit reference',
       requestedSessionId: 'persisted-compare-1',

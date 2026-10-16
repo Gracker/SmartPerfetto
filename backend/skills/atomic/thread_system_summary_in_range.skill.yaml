@@ -103,7 +103,7 @@ display:
     - {name: placement_mode, label: "placement_mode", type: string}
     - {name: topology_source, label: "topology_source", type: string}
     - {name: placement_evidence, label: "placement_evidence", type: string}
-    - {name: avg_freq_khz, label: "avg_freq_khz", type: number}
+    - {name: avg_freq_khz, label: "avg_freq_khz", type: number, unit: kHz}
     - {name: frequency_covered_ns, label: "frequency_covered_ns", type: duration, unit: ns}
     - {name: frequency_evidence, label: "frequency_evidence", type: string}
     - {name: priority_min, label: "priority_min", type: number}

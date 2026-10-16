@@ -11,12 +11,12 @@ import Database from 'better-sqlite3';
 import { applyEnterpriseMinimalSchema } from '../services/enterpriseSchema';
 import type { EnterpriseRepositoryScope } from '../services/enterpriseRepository';
 import {
-  getTracesDir,
   listTraceMetadata,
   readTraceMetadataForContext,
   writeTraceMetadata,
 } from '../services/traceMetadataStore';
-import { TraceProcessorLeaseStore } from '../services/traceProcessorLeaseStore';
+import { getTracesDir } from '../services/traceUploadPaths';
+import { frontendHolderInput, frontendHolderRef, TraceProcessorLeaseStore } from '../services/traceProcessorLeaseStore';
 import {
   TP_ADMISSION_CONTROL_ENV,
   TP_ESTIMATE_MULTIPLIER_ENV,
@@ -92,7 +92,7 @@ const DEFAULT_TRACE_CANDIDATES = [
 ];
 
 function printUsage(): void {
-  console.log('Usage: npx tsx src/scripts/verifyEnterpriseMultiTenantWindows.ts [options]');
+  console.log('Usage: npm run enterprise:multi-tenant-windows -- [options]');
   console.log('');
   console.log('Options:');
   console.log('  --trace <path>         Fixture trace path. Defaults to the cataloged android-startup-light case.');
@@ -190,6 +190,10 @@ function leaseScope(wc: WindowContext): EnterpriseRepositoryScope {
     workspaceId: wc.context.workspaceId,
     userId: wc.context.userId,
   };
+}
+
+function frontendWindowIdentity(wc: WindowContext): {userId: string; windowId: string} {
+  return {userId: wc.context.userId, windowId: wc.context.windowId ?? wc.label};
 }
 
 function seedIdentity(db: Database.Database, wc: WindowContext): void {
@@ -563,19 +567,16 @@ async function scenarioD3(
   const store = new TraceProcessorLeaseStore(db);
   const aScope = leaseScope(userAWindow1);
   const bScope = leaseScope(userBWindow1);
-  const frontendHolderRef = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
 
-  let frontendLease = store.acquireHolder(aScope, aUpload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: frontendHolderRef,
-    windowId: frontendHolderRef,
+  let frontendLease = store.acquireHolder(aScope, aUpload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       scenario: 'D3',
       workload: 'timeline',
       priority: 'p0',
     },
-  });
+  }));
   store.markStarting(aScope, frontendLease.id);
   frontendLease = store.markReady(aScope, frontendLease.id);
 
@@ -759,22 +760,20 @@ async function scenarioD4(
   const upload = await simulateUpload(db, userAWindow1, tracePath, 'd4-user-a-crash.pftrace');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const windowId = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
+  const windowHolderRef = frontendHolderRef(frontendWindow);
   const runId = `run-${crypto.randomUUID()}`;
   const startedAt = 1_777_100_000_000;
   const oldInternalPort: number = 9810;
   const newInternalPort: number = 9811;
 
-  let lease = store.acquireHolder(scope, upload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  let lease = store.acquireHolder(scope, upload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       scenario: 'D4',
       internalPort: oldInternalPort,
     },
-  }, { now: startedAt });
+  }), { now: startedAt });
   store.markStarting(scope, lease.id);
   lease = store.markReady(scope, lease.id);
   lease = store.acquireHolderForLease(scope, lease.id, {
@@ -794,18 +793,15 @@ async function scenarioD4(
   const crashedLease = store.markCrashed(scope, lease.id);
   const restartingLease = store.markRestarting(scope, lease.id);
   const readyLease = store.markReady(scope, lease.id);
-  const recoveredLease = store.acquireHolderForLease(scope, readyLease.id, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  const recoveredLease = store.acquireHolderForLease(scope, readyLease.id, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       scenario: 'D4',
       recovery: 'processor-restart',
       internalPort: newInternalPort,
     },
-  }, { now: startedAt + 2 });
-  const frontendHolder = recoveredLease.holders.find(holder => holder.holderRef === windowId);
+  }), { now: startedAt + 2 });
+  const frontendHolder = recoveredLease.holders.find(holder => holder.holderRef === windowHolderRef);
   const agentHolder = recoveredLease.holders.find(holder => holder.holderRef === runId);
 
   const checks = {
@@ -850,33 +846,28 @@ async function scenarioD5(
   const upload = await simulateUpload(db, userAWindow1, tracePath, 'd5-user-a-sleep.pftrace');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const holderRef = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
+  const holderRef = frontendHolderRef(frontendWindow);
   const startedAt = 1_777_000_000_000;
   const offlineAt = startedAt + 30_000;
   const insideGraceAt = offlineAt + 30 * 60 * 1000 - 1;
   const afterGraceAt = offlineAt + 30 * 60 * 1000 + 1;
   const recoveredAt = afterGraceAt + 1_000;
 
-  let lease = store.acquireHolder(scope, upload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: holderRef,
+  let lease = store.acquireHolder(scope, upload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: { scenario: 'D5' },
-  }, { now: startedAt });
+  }), { now: startedAt });
   store.markStarting(scope, lease.id);
   lease = store.markReady(scope, lease.id);
 
-  lease = store.acquireHolderForLease(scope, lease.id, {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: holderRef,
+  lease = store.acquireHolderForLease(scope, lease.id, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'offline',
     metadata: {
       heartbeat: 'frontend',
       scenario: 'D5',
     },
-  }, { now: offlineAt });
+  }), { now: offlineAt });
   const offlineHolder = lease.holders.find(holder => holder.holderRef === holderRef);
 
   const insideGraceSweep = store.sweepExpired(insideGraceAt);
@@ -885,17 +876,14 @@ async function scenarioD5(
   const afterGraceSweep = store.sweepExpired(afterGraceAt);
   const afterGraceLease = store.getLeaseById(scope, lease.id);
 
-  const recoveredLease = store.acquireHolderForLease(scope, lease.id, {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: holderRef,
+  const recoveredLease = store.acquireHolderForLease(scope, lease.id, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       heartbeat: 'frontend',
       scenario: 'D5',
       recovery: 'pageshow',
     },
-  }, { now: recoveredAt });
+  }), { now: recoveredAt });
   const recoveredHolder = recoveredLease.holders.find(holder => holder.holderRef === holderRef);
 
   const checks = {
@@ -1044,16 +1032,13 @@ async function scenarioD7(
   const run = createAnalysisRun(db, userAWindow1, upload, 'running');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const windowId = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
   const reportId = `report-${crypto.randomUUID()}`;
 
-  let lease = store.acquireHolder(scope, upload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  let lease = store.acquireHolder(scope, upload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: { scenario: 'D7' },
-  });
+  }));
   store.markStarting(scope, lease.id);
   lease = store.markReady(scope, lease.id);
   lease = store.acquireHolderForLease(scope, lease.id, {
@@ -1194,9 +1179,6 @@ async function scenarioD8(
 
   const sessionId = `session-${crypto.randomUUID()}`;
   const originalRunId = `run-${crypto.randomUUID()}`;
-  const followUpRunId = `run-${crypto.randomUUID()}`;
-  const oldSdkSessionId = 'sdk-response-d8-old';
-  const freshSdkSessionId = 'sdk-response-d8-fresh';
 
   db.prepare(`
     INSERT INTO analysis_sessions
@@ -1240,8 +1222,6 @@ async function scenarioD8(
       agentRuntimeKind: 'openai-agents-sdk',
       agentRuntimeProviderId: providerId,
       agentRuntimeProviderSnapshotHash: originalHash,
-      sdkSessionId: oldSdkSessionId,
-      openAILastResponseId: oldSdkSessionId,
       runSequence: 1,
     }),
     now + 20,
@@ -1285,71 +1265,13 @@ async function scenarioD8(
   const originalRuntimeSnapshot = JSON.parse(originalRuntimeRow?.snapshot_json ?? '{}') as {
     agentRuntimeProviderId?: string;
     agentRuntimeProviderSnapshotHash?: string;
-    sdkSessionId?: string;
-    openAILastResponseId?: string;
   };
   const providerSnapshotChanged = Boolean(
     originalRuntimeSnapshot.agentRuntimeProviderSnapshotHash
     && latestProviderSnapshot?.snapshot_hash
     && originalRuntimeSnapshot.agentRuntimeProviderSnapshotHash !== latestProviderSnapshot.snapshot_hash,
   );
-  const sdkSessionReusable = Boolean(
-    !providerSnapshotChanged
-    && originalRuntimeSnapshot.sdkSessionId
-    && originalRuntimeSnapshot.agentRuntimeProviderId === providerId,
-  );
 
-  db.prepare(`
-    INSERT INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at)
-    VALUES (?, ?, ?, ?, 'followup', 'completed', ?, ?, ?)
-  `).run(
-    followUpRunId,
-    userAWindow1.context.tenantId,
-    userAWindow1.context.workspaceId,
-    sessionId,
-    'follow-up turn after provider config changed',
-    now + 30,
-    now + 40,
-  );
-  db.prepare(`
-    INSERT INTO runtime_snapshots
-      (id, tenant_id, workspace_id, session_id, run_id, runtime_type, snapshot_json, created_at)
-    VALUES (?, ?, ?, ?, ?, 'openai-agents-sdk', ?, ?)
-  `).run(
-    `runtime-snapshot-d8-followup-${crypto.randomUUID()}`,
-    userAWindow1.context.tenantId,
-    userAWindow1.context.workspaceId,
-    sessionId,
-    followUpRunId,
-    JSON.stringify({
-      agentRuntimeKind: 'openai-agents-sdk',
-      agentRuntimeProviderId: providerId,
-      agentRuntimeProviderSnapshotHash: changedHash,
-      sdkSessionId: freshSdkSessionId,
-      openAILastResponseId: freshSdkSessionId,
-      previousProviderSnapshotHash: originalHash,
-      providerSnapshotChangeReason: 'provider_snapshot_hash_mismatch',
-      runSequence: 2,
-    }),
-    now + 50,
-  );
-  const followUpRuntimeRow = db.prepare<unknown[], { snapshot_json: string }>(`
-    SELECT snapshot_json
-    FROM runtime_snapshots
-    WHERE tenant_id = ? AND workspace_id = ? AND session_id = ? AND run_id = ?
-  `).get(
-    userAWindow1.context.tenantId,
-    userAWindow1.context.workspaceId,
-    sessionId,
-    followUpRunId,
-  );
-  const followUpRuntimeSnapshot = JSON.parse(followUpRuntimeRow?.snapshot_json ?? '{}') as {
-    agentRuntimeProviderSnapshotHash?: string;
-    sdkSessionId?: string;
-    openAILastResponseId?: string;
-    previousProviderSnapshotHash?: string;
-  };
   const pinnedConfigJson = pinnedSnapshot?.resolved_config_json ?? '';
   const latestConfigJson = latestProviderSnapshot?.resolved_config_json ?? '';
 
@@ -1361,13 +1283,6 @@ async function scenarioD8(
       && latestProviderSnapshot.snapshot_hash === changedHash
       && latestProviderSnapshot.snapshot_hash !== pinnedSnapshot?.snapshot_hash,
     resumeDetectsProviderSnapshotHashMismatch: providerSnapshotChanged,
-    oldSdkSessionIsNotReusableAfterMismatch: !sdkSessionReusable
-      && originalRuntimeSnapshot.sdkSessionId === oldSdkSessionId,
-    followUpRuntimeUsesFreshSdkSession: followUpRuntimeSnapshot.agentRuntimeProviderSnapshotHash === changedHash
-      && followUpRuntimeSnapshot.previousProviderSnapshotHash === originalHash
-      && followUpRuntimeSnapshot.sdkSessionId === freshSdkSessionId
-      && followUpRuntimeSnapshot.openAILastResponseId === freshSdkSessionId
-      && followUpRuntimeSnapshot.sdkSessionId !== originalRuntimeSnapshot.sdkSessionId,
     providerSnapshotsDoNotPersistPlaintextSecret: !pinnedConfigJson.includes('sk-')
       && !latestConfigJson.includes('sk-')
       && pinnedSnapshot?.secret_version === 'secret-v1'
@@ -1380,16 +1295,12 @@ async function scenarioD8(
       traceId: upload.traceId,
       sessionId,
       originalRunId,
-      followUpRunId,
       providerId,
       originalSnapshotId,
       changedSnapshotId,
       originalHash,
       changedHash,
-      oldSdkSessionId,
-      freshSdkSessionId,
       providerSnapshotChanged,
-      sdkSessionReusable,
     },
   };
 }
@@ -1583,18 +1494,15 @@ async function scenarioD10(
   const candidateUpload = await simulateUpload(db, userAWindow1, tracePath, 'd10-rejected-new-lease.pftrace');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const windowId = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
   const activeRssBytes = 448 * mib;
   const budgetBytes = 512 * mib;
   const minEstimateBytes = 128 * mib;
 
-  let activeLease = store.acquireHolder(scope, activeUpload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  let activeLease = store.acquireHolder(scope, activeUpload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: { scenario: 'D10' },
-  });
+  }));
   store.markStarting(scope, activeLease.id);
   activeLease = store.markReady(scope, activeLease.id);
   activeLease = store.recordRss(scope, activeLease.id, activeRssBytes);
@@ -1708,7 +1616,10 @@ export async function runEnterpriseWindowRegression(
     ? path.resolve(input.uploadRoot)
     : await fsp.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-enterprise-window-'));
   const previousUploadRoot = process.env.UPLOAD_DIR;
+  const previousTraceUploadDir = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR;
   process.env.UPLOAD_DIR = uploadRoot;
+  // An inherited trace-dir override would move traces out of the temp root.
+  delete process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR;
 
   const db = new Database(':memory:');
   applyEnterpriseMinimalSchema(db);
@@ -1785,7 +1696,7 @@ export async function runEnterpriseWindowRegression(
         'D5 covers TraceProcessorLease holder grace and pageshow-style reacquire semantics after offline heartbeat expiry; frontend stale-lease reload signaling is covered by HttpRpcEngine unit tests.',
         'D6 covers the persisted AgentEvent replay contract after a conclusion cursor; the live stream route path is covered by agentRoutesRbac tests.',
         'D7 covers running run, active lease, report_generation holder, and draining rejection invariants; actual route blocking is covered by enterpriseTraceMetadataRoutes tests.',
-        'D8 covers the DB ProviderSnapshot pin/hash-mismatch invariant in the enterprise window regression; AgentAnalyzeSessionService tests cover actual in-memory and persisted SDK session non-reuse.',
+        'D8 covers the DB ProviderSnapshot pin/hash-mismatch invariant in the enterprise window regression; AgentAnalyzeSessionService tests cover restoring a session after its provider snapshot changed.',
         'D9 covers file-backed DB close/reopen recovery for trace metadata, run states, and AgentEvent replay; enterpriseRestartPersistence tests cover the route-level restart recovery path.',
         'D10 covers RAM-admission rejection without creating a new lease or cleaning up existing active holders; TraceProcessorFactory tests cover pre-spawn rejection before a real processor starts.',
         'Production backend proxy and queue behavior remain future §0.7 D1/D2/D3/D4/D5/D6/D7/D8/D9/D10 final-acceptance work against a live browser and trace_processor_shell.',
@@ -1812,6 +1723,9 @@ export async function runEnterpriseWindowRegression(
       delete process.env.UPLOAD_DIR;
     } else {
       process.env.UPLOAD_DIR = previousUploadRoot;
+    }
+    if (previousTraceUploadDir !== undefined) {
+      process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR = previousTraceUploadDir;
     }
     if (createdUploadRoot && !input.keepTemp) {
       await fsp.rm(uploadRoot, { recursive: true, force: true });

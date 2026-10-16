@@ -11,7 +11,7 @@ import {
 } from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity} from '../../types/analysisDelivery';
-import {sanitizeSourceClaimBindings} from '../codebase/sourceUseDecision';
+import {isSourceMechanismStatus} from '../codebase/sourceUseDecision';
 import {
   issueCodeAwareStructuredProjectionReceipt, projectCodeAwareProtocolLiteral, projectCodeAwareSemanticInputStructure,
   projectCodeAwareAuthorizedInputText,
@@ -83,14 +83,14 @@ function literal(path: string[], value: string): boolean {
     'claims.*.semantics.modality': CONCLUSION_PROTOCOL_VALUES.modality,
     'claims.*.semantics.scope.population': CONCLUSION_PROTOCOL_VALUES.population,
     'claims.*.semantics.numeric.operator': CONCLUSION_PROTOCOL_VALUES.operator,
+    'claims.*.semantics.numeric.presentation.schemaVersion': ['numeric_presentation@1'],
+    'claims.*.semantics.numeric.presentation.rounding': ['half_away_from_zero'],
     'relationProposals.*.schemaVersion': [CONCLUSION_PROTOCOL_VALUES.relationSchemaVersion],
     'relationProposals.*.kind': CONCLUSION_PROTOCOL_VALUES.relationKind,
     'relationProposals.*.direction': CONCLUSION_PROTOCOL_VALUES.direction,
     'relationProposals.*.deltaDirection': CONCLUSION_PROTOCOL_VALUES.deltaDirection,
   };
-  if (key === 'sourceClaimBindings.*.mechanismStatus') return sanitizeSourceClaimBindings([{
-    claimId: 'literal-validation', mechanismStatus: value, sourceReferenceIds: [], traceEvidenceRefIds: [],
-  }]).length === 1;
+  if (key === 'sourceClaimBindings.*.mechanismStatus') return isSourceMechanismStatus(value);
   if (key === 'claims.*.semantics.predicate') return SUPPORTED_DETERMINISTIC_CLAIM_RULES.some(rule => rule.id === value);
   return values[key]?.includes(value) ?? false;
 }
@@ -122,6 +122,23 @@ export function projectConclusionContractForDisplay(sessionId: string | undefine
   return preserveProjectedFieldOrder(contract, projected);
 }
 
+/**
+ * The owner's live protocol projection of a `partially_valid` declaration shows
+ * its valid claims plus one closed marker per invalid entry `{id, status:
+ * 'invalid', codes}` (plan A.4): nothing from the invalid entry's raw payload
+ * is echoed, and the marker cannot be mistaken for a verified claim. The
+ * durable stored contract keeps the typed invalid entries with `valid: false`.
+ */
+function markInvalidClaimsForDisplay(contract: ConclusionContract | undefined): ConclusionContract | undefined {
+  const claims = contract?.claims;
+  if (!contract || !claims?.some(claim => claim.valid === false)) return contract;
+  const {rawClaims: _rawClaims, ...withoutRaw} = contract;
+  const marked = claims.map(claim => claim.valid === false
+    ? {id: claim.id, status: 'invalid' as const, codes: claim.invalidCodes ?? []}
+    : claim);
+  return {...withoutRaw, claims: marked} as unknown as ConclusionContract;
+}
+
 /** Parse the native declaration before applying any output echo replacement. */
 export function projectConclusionProtocol(sessionId: string | undefined, raw: string): CodeAwareTextProjectionReceipt {
   // Keep the established size/eviction/revocation limits before parsing untrusted JSON.
@@ -131,7 +148,7 @@ export function projectConclusionProtocol(sessionId: string | undefined, raw: st
   const typed = sidecar.status === 'absent' ? parseTypedConclusionContractJson(raw) : undefined;
   const parsed = sidecar.status !== 'absent' ? sidecar : typed;
   if (!parsed || parsed.status === 'absent') return fallback;
-  if (parsed.status !== 'valid' || !parsed.contract) {
+  if ((parsed.status !== 'valid' && parsed.status !== 'partially_valid') || !parsed.contract) {
     // Preserve failure qualification without persisting arbitrary fields from malformed JSON.
     // The original parse remains in the run-bound private declaration, never in this marker.
     const narrative = sidecar.status !== 'absent'
@@ -139,7 +156,9 @@ export function projectConclusionProtocol(sessionId: string | undefined, raw: st
     const invalid = `${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\nnull\n\`\`\`\n-->`;
     return issueCodeAwareStructuredProjectionReceipt(raw, `${invalid}${/^[\r\n]/.test(narrative) ? '' : '\n'}${narrative}`);
   }
-  const contract = projectConclusionContractForDisplay(sessionId, parsed.contract);
+  const contract = parsed.status === 'partially_valid'
+    ? markInvalidClaimsForDisplay(projectConclusionContractForDisplay(sessionId, parsed.contract))
+    : projectConclusionContractForDisplay(sessionId, parsed.contract);
   if (!contract) return issueCodeAwareStructuredProjectionReceipt(raw, '', true);
   let text: string;
   if (sidecar.status !== 'absent') {
@@ -347,16 +366,6 @@ export function projectConclusionSemanticInput(input: {
   for (const claim of contract?.claims ?? []) {
     maskList(claim.references); maskList(claim.artifactRefs);
     maskList(claim.semantics?.scope.subjectRefs); maskList(claim.semantics?.scope.objectRefs);
-    const source = claim.semantics?.source;
-    // This exact location was already returned under the current authorization.
-    // Restoring its input role grants no proof to the declaration or its binding.
-    if (source && input.snapshot.sourceUse?.references.some(reference =>
-      reference.id === source.sourceReferenceId && reference.filePath === source.filePath &&
-      reference.lineRange?.start === source.lineRange.start && reference.lineRange?.end === source.lineRange.end)) {
-      const target = claim.semantics as unknown as Record<string, unknown>;
-      replacements.set(target, new Map([['source', trusted(source)]]));
-      target.source = null;
-    }
   }
   for (const relation of contract?.relationProposals ?? []) {
     for (const key of ['subject', 'object', 'proof']) maskReference(relation as unknown as Record<string, unknown>, key);

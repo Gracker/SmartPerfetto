@@ -19,7 +19,6 @@ import type { CliPaths, SessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionIndexEntry } from '../types';
 import type { RunTurnOutput } from './cliAnalyzeService';
-import type {AnalysisSourceSupplementOutcome} from '../../services/codebase/analysisSourceSupplement';
 import {
   writeConfig,
   writeConclusion,
@@ -31,11 +30,12 @@ import {
 import { upsertSession } from '../io/indexJson';
 import { appendTranscriptTurn } from '../io/transcriptWriter';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
-import {localize, parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
+import {projectToolResultAuditForPrivateRun} from '../../agentRuntime/runtimeToolResultAudit';
+import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {
   projectOwnerAnalysisError,
-  privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
+  projectOwnerQuestion,
 } from '../../services/security/privateAnalysisProjection';
 import {sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 import {
@@ -47,12 +47,10 @@ import {deriveDeliveryVerdict, summarizeClaimVerification} from '../../services/
 import {
   buildCliAnalysisEvidenceBundle,
   latestCliAnalysisEvidencePath,
-  rebindCliAnalysisEvidenceTurnMarkdown,
   turnCliAnalysisEvidencePath,
-  type CliAnalysisEvidenceOutput,
 } from './analysisResultPresentation';
 import {buildCliSceneReportBundle, cliSceneReportMetadata, latestCliSceneReportPath, loadedCliSceneReport,
-  rebindCliSceneReportTurnMarkdown, turnCliSceneReportPath} from './sceneReportReference';
+  turnCliSceneReportPath} from './sceneReportReference';
 
 export interface CommitTurnInput {
   paths: CliPaths;
@@ -78,7 +76,7 @@ export interface CommitTurnInput {
   indexEntry: CliSessionIndexEntry;
 }
 
-export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOutput {
+export function commitTurnOutputs(input: CommitTurnInput): void {
   const { paths, sp, renderer, sessionId, turn, query, config, reportAppendix } = input;
   const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const rawConclusion = input.result.result.conclusion || '';
@@ -90,21 +88,16 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
         reportError: input.result.reportError
           ? projectOwnerAnalysisError(sessionId, input.result.reportError, outputLanguage)
           : undefined,
+        ...(input.result.toolResultAudit
+          ? {toolResultAudit: projectToolResultAuditForPrivateRun(input.result.toolResultAudit)}
+          : {}),
       }
     : input.result;
-  const durableQuery = result.privateKnowledge
-    ? privateAnalysisQueryMessage(outputLanguage)
-    : query;
-  const baseTurnMarkdown = result.privateKnowledge
-    ? sanitizeOwnerCodeAwareText(
-        sessionId,
-        replaceExact(
-          replaceExact(input.turnMarkdown, query, durableQuery),
-          rawConclusion,
-          result.result.conclusion || '',
-        ),
-      )
-    : input.turnMarkdown;
+  const conclusion = result.result.conclusion || '';
+  // The creator's local files keep the question: the transcript is resume
+  // history for the model, and displayed copies pass the owner guard.
+  const ownerView = (text: string) => sanitizeOwnerCodeAwareText(sessionId, replaceExact(text, rawConclusion, conclusion));
+  const baseTurnMarkdown = result.privateKnowledge ? ownerView(input.turnMarkdown) : input.turnMarkdown;
   const sourceProvenance = inputSourceProvenance ?? sourceProvenanceForResult(result);
   const turnMarkdown = reportAppendix?.markdown
     ? `${baseTurnMarkdown}\n\n${reportAppendix.markdown}`
@@ -116,11 +109,9 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
     result.result.partial && input.indexEntry.status === 'completed'
       ? 'partial'
       : input.indexEntry.status;
-  const indexEntry = result.privateKnowledge
-    ? {...input.indexEntry, status: statusForIndex, firstQuery: durableQuery}
-    : {...input.indexEntry, status: statusForIndex};
+  const indexEntry = {...input.indexEntry, status: statusForIndex,
+    firstQuery: projectOwnerQuestion(result.privateKnowledge === true, sessionId, input.indexEntry.firstQuery)};
 
-  const conclusion = result.result.conclusion || '';
   const turnPrefix = path.join(sp.turnsDir, String(turn).padStart(3, '0'));
   const cliTurnPath = `${turnPrefix}.md`;
   const evidenceBundle = buildCliAnalysisEvidenceBundle({
@@ -137,16 +128,7 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
   writeTurnMarkdown(sp, turn, turnMarkdown);
 
   let turnReportPath: string | undefined;
-  const privateSafeReportHtml = result.privateKnowledge && result.reportHtml
-    ? sanitizeOwnerCodeAwareText(
-        sessionId,
-        replaceExact(
-          replaceExact(result.reportHtml, query, durableQuery),
-          rawConclusion,
-          result.result.conclusion || '',
-        ),
-      )
-    : result.reportHtml;
+  const privateSafeReportHtml = result.privateKnowledge && result.reportHtml ? ownerView(result.reportHtml) : result.reportHtml;
   const reportHtml = privateSafeReportHtml && reportAppendix?.html
     ? appendHtmlToBody(privateSafeReportHtml, reportAppendix.html)
     : privateSafeReportHtml;
@@ -168,12 +150,12 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
   appendTranscriptTurn(sp.transcript, {
     turn,
     timestamp: config.lastTurnAt,
-    question: durableQuery,
+    question: query,
     conclusionMd: conclusion,
     history: toAnalysisHistoryTurn({
       id: result.result.completion?.runId ?? `${sessionId}:turn:${turn}`,
       turnIndex: turn - 1,
-      query: durableQuery,
+      query,
       traceId: result.traceId,
       timestamp: config.lastTurnAt,
       result: result.result,
@@ -214,51 +196,9 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
     deliveryVerdict: deriveDeliveryVerdict(result.result),
     ...cliSceneReportMetadata(loadedCliSceneReport(sceneBundle)),
   });
-  return evidenceBundle;
 }
 
-export function commitSourceSupplementOutput(input: {
-  sp: SessionPaths;
-  renderer: Renderer;
-  sessionId: string;
-  turn: number;
-  supplement: AnalysisSourceSupplementOutcome;
-  analysisEvidence: CliAnalysisEvidenceOutput;
-}): void {
-  const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-  const safeSupplement = {
-    message: sanitizeOwnerCodeAwareText(input.sessionId, input.supplement.message),
-    metrics: {...input.supplement.metrics},
-  };
-  const turnPrefix = path.join(input.sp.turnsDir, String(input.turn).padStart(3, '0'));
-  const turnPath = `${turnPrefix}.md`;
-  const previousTurnMarkdown = fs.existsSync(turnPath) ? fs.readFileSync(turnPath, 'utf8') : '';
-  const current = previousTurnMarkdown.trimEnd();
-  const heading = localize(outputLanguage, '源码补充', 'Source supplement');
-  const metrics = localize(
-    outputLanguage,
-    `${safeSupplement.metrics.searchCalls} 次搜索 / ${safeSupplement.metrics.readCalls} 次读取 / ${safeSupplement.metrics.durationMs}ms`,
-    `${safeSupplement.metrics.searchCalls} searches / ${safeSupplement.metrics.readCalls} reads / ${safeSupplement.metrics.durationMs}ms`,
-  );
-  const turnMarkdown = `${current}\n\n## ${heading}\n\n${safeSupplement.message}\n\n_${metrics}_\n`;
-  const reboundEvidence = rebindCliAnalysisEvidenceTurnMarkdown(
-    input.analysisEvidence,
-    turnMarkdown,
-  );
-  rebindCliSceneReportTurnMarkdown({sp: input.sp, sessionId: input.sessionId, turn: input.turn,
-    turnMarkdown: previousTurnMarkdown, nextMarkdown: turnMarkdown});
-  writeTurnMarkdown(input.sp, input.turn, turnMarkdown);
-  writeJsonFile(input.sp, turnCliAnalysisEvidencePath(input.sp, input.turn), reboundEvidence);
-  // Latest remains a pointer-by-value and is written after the per-turn pair.
-  writeJsonFile(input.sp, latestCliAnalysisEvidencePath(input.sp), reboundEvidence);
-  writeJsonFile(input.sp, path.join(input.sp.dir, 'source-supplement.json'), safeSupplement);
-  writeJsonFile(input.sp, `${turnPrefix}.source-supplement.json`, safeSupplement);
-  input.renderer.onEvent({
-    type: 'analysis_source_enrichment_completed',
-    content: safeSupplement,
-    timestamp: Date.now(),
-  });
-}
+const CLI_DELIVERY_BUDGET_ESTIMATE = Object.freeze({source: 'default', note: 'stats NOT CONFIGURED for CLI'});
 
 function writeAnalysisQualitySidecars(
   sp: SessionPaths,
@@ -280,6 +220,16 @@ function writeAnalysisQualitySidecars(
   writeJsonFile(sp, `${turnPrefix}.analysis-receipt.json`, result.result.analysisReceipt || null);
   writeJsonFile(sp, path.join(sp.dir, 'ui-action-proposals.json'), result.result.uiActionProposals || []);
   writeJsonFile(sp, `${turnPrefix}.ui-action-proposals.json`, result.result.uiActionProposals || []);
+  // Internal timing receipt only (no content): the CLI manifest store is not durable, so
+  // its delivery calls were budgeted with the fixed defaults (runtimeCallStats.ts).
+  if (result.runtimePerformance) {
+    writeJsonFile(sp, `${turnPrefix}.runtime-performance.json`, {...result.runtimePerformance,
+      budgetEstimate: CLI_DELIVERY_BUDGET_ESTIMATE});
+  }
+  // Handoff facts only (no payload values); the stream copy is transport-truncated.
+  if (result.toolResultAudit) {
+    writeJsonFile(sp, `${turnPrefix}.tool-results.json`, result.toolResultAudit);
+  }
   writeSourceProvenanceSidecars(sp, turnPrefix, sourceProvenance);
 }
 
@@ -293,6 +243,7 @@ function sourceProvenanceForResult(
   );
   return projectSafeSourceProvenance({
     conclusionContract: resultValue.conclusionContract,
+    sourceClaimVerificationResult: resultValue.sourceClaimVerificationResult,
     ...(hasActualDecision
       ? {actualSourceUseDecision: resultValue.sourceUseDecision}
       : {}),
@@ -320,7 +271,6 @@ function writeSourceProvenanceSidecars(
 }
 
 function assertCliReceiptPath(result: RunTurnOutput, cliTurnPath: string): void {
-  if (result.privateKnowledge) return;
   const receipt = result.result.analysisReceipt;
   if (!receipt) return;
   if (receipt.outputs.cliTurnPath !== cliTurnPath) {

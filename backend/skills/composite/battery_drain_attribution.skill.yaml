@@ -16,7 +16,7 @@ tier: S
 
 meta:
   display_name: "掉电归因分析"
-  description: "组合 battery、Doze、wakelock、job、network、suspend/wakeup 证据，分析掉电和待机耗电原因"
+  description: "组合 battery、Doze、kernel/app wakelock、standby bucket、freezer、job、network、suspend/wakeup 证据，分析掉电和待机耗电原因"
   icon: "battery_alert"
   tags: [battery, drain, wakelock, doze, network, job, composite]
 
@@ -117,6 +117,21 @@ steps:
     display:
       level: summary
     save_as: wakeup_frequency
+    optional: true
+
+  # App-level layers (app wakelocks, standby bucket, freezer), each enabled by
+  # its own data and runtime capability inside the Skill.
+  - id: app_background_power
+    type: skill
+    name: "应用后台功耗状态"
+    skill: android_app_background_power_state
+    params:
+      package: "${package || process_name || ''}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+    display:
+      level: detail
+    save_as: app_background_power
     optional: true
 
   - id: screen_off_cpu

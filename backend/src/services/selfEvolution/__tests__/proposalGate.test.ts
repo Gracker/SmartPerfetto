@@ -21,6 +21,7 @@ import {
 } from '../proposalContainmentGate';
 import {
   assertProposalEligibleForApply,
+  createProposalCandidateMaterializationV1,
   createProposalPairedReplayProofV1,
   createProposalMaterializationPlanV1,
   parseProposalMaterializationPlanV1,
@@ -35,6 +36,19 @@ import {proposalPairedReplayGateTesting} from '../proposalPairedReplayGate';
 import {proposalSqlRegressionTesting} from '../proposalSqlRegression';
 import {ProposalStore} from '../proposalStore';
 import {serializeProposalCandidateContent} from '../proposalSemanticGate';
+import {validateProposalStatic} from '../proposalStaticGate';
+import {composeEffectiveSkills} from '../effectiveSkillComposer';
+import {buildSkillRegistryAttribution, fingerprintSkillDefinition} from '../skillFingerprint';
+import type {SkillDefinition} from '../../skillEngine/types';
+import {
+  buildStrategyRegistrySnapshot,
+  fingerprintStrategyDefinition,
+  type StrategyRegistryContribution,
+} from '../../../agentv3/strategyLoader';
+import {
+  extractStrategySkillCalls,
+  strategySkillCallTexts,
+} from '../../../agentv3/strategySkillCalls';
 
 const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a'};
 const baseContentHash = canonicalContentHash('skill-a');
@@ -354,6 +368,63 @@ describe('M7 proposal gate contracts and store transition', () => {
     }
   });
 
+  it('fails an inert phase-hint target at the schema check, before any base snapshot or replay', async () => {
+    for (const proposal of inertPhaseHintProposals()) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-inert-'));
+      const databasePath = path.join(directory, 'proposals.db');
+      const root = path.join(directory, 'root');
+      fs.mkdirSync(root, {recursive: true, mode: 0o700});
+      createM6Database(databasePath, proposal);
+      const store = new ProposalStore({databasePath});
+      let reachedMaterialization = false;
+      try {
+        const result = await new ProposalGateService({
+          store,
+          planner: testPlanner(root),
+          resolveBaseSnapshot: () => {
+            reachedMaterialization = true;
+            throw new Error('must_not_run');
+          },
+          staticValidation: staticValidation(),
+          runPairedReplay: async () => {
+            reachedMaterialization = true;
+            throw new Error('must_not_run');
+          },
+        }).gate({scope, proposalId: proposal.proposalId});
+        expect(result).toMatchObject({status: 'draft', revision: 1});
+        expect(reachedMaterialization).toBe(false);
+        const checks = store.getLatestGateAttempt(scope, proposal.proposalId)
+          ?.gateResult?.checks;
+        expect(checks?.[0]).toMatchObject({
+          gateId: 'schema',
+          verdict: 'failed',
+          reasonCodes: ['inert_injection_target'],
+        });
+        expect(checks?.slice(1).every(check => check.verdict === 'not_run'))
+          .toBe(true);
+      } finally {
+        store.close();
+        fs.rmSync(directory, {recursive: true, force: true});
+      }
+    }
+  });
+
+  it('does not accept a new draft whose target is an inert phase hint', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-inert-draft-'));
+    const store = new ProposalStore({databasePath: path.join(directory, 'proposals.db')});
+    try {
+      for (const proposal of inertPhaseHintProposals()) {
+        expect(() => store.completeDraft(
+          {scope} as never,
+          proposal,
+        )).toThrow('inert_injection_target');
+      }
+    } finally {
+      store.close();
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+  });
+
   it('keeps T5a drafts policy-inconclusive without scheduling replay', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'proposal-t5a-'));
     const databasePath = path.join(directory, 'proposals.db');
@@ -602,24 +673,8 @@ describe('M7 containment', () => {
     })).toThrow('proposal_materialization_plan_invalid');
   });
 
-  it('defines a closed materialization policy for every proposal kind', () => {
+  it('defines a closed materialization policy for every live proposal kind', () => {
     const variants: CurationProposalV1[] = [
-      draftProposal({
-        kind: 'phase_hint',
-        tier: 'T0',
-        deltas: [{
-          op: 'add',
-          targetKind: 'injection',
-          targetId: 'hint-a',
-          operationId: 'hint-a',
-          anchor: 'injections.phaseHints[scene="startup"][id="hint-a"]',
-          baseContentHash,
-          after: canonicalJsonString({
-            id: 'hint-a',
-            text: 'Inspect the bounded startup window.',
-          }),
-        }],
-      }),
       draftProposal(),
       draftProposal({
         kind: 'strategy_section',
@@ -678,22 +733,21 @@ describe('M7 containment', () => {
       }),
       draftProposal({
         kind: 'retire_injection',
-        tier: 'T0',
+        tier: 'T1',
         deltas: [{
           op: 'remove',
           targetKind: 'injection',
-          targetId: 'hint-a',
-          operationId: 'retire-hint-a',
-          anchor: 'injections.phaseHints[id="hint-a"]',
+          targetId: 'note-a',
+          operationId: 'retire-note-a',
+          anchor: 'injections.skillNotes[id="note-a"]',
           baseContentHash,
-          before: 'Retired hint',
+          before: 'Retired note',
         }],
       }),
     ];
-    expect(variants).toHaveLength(7);
+    expect(variants).toHaveLength(6);
     expect(new Set(variants.map(proposal =>
       planner.plan(proposal).proposalKind))).toEqual(new Set([
-      'phase_hint',
       'skill_note',
       'strategy_section',
       'skill_overlay_delta',
@@ -701,6 +755,393 @@ describe('M7 containment', () => {
       'new_skill_draft',
       'retire_injection',
     ]));
+  });
+
+  it('refuses to plan an inert phase-hint target but keeps the registry identity of earlier plans', () => {
+    for (const proposal of inertPhaseHintProposals()) {
+      expect(() => planner.plan(proposal)).toThrow('inert_injection_target');
+    }
+    // Plans gated before phase hints were removed bind this registry hash.
+    expect(planner.registry.policyFor('phase_hint')).toMatchObject({
+      directory: 'injections/phase-hints',
+    });
+  });
+});
+
+describe('M7 static gate strategy_section Skill calls', () => {
+  const base = buildStrategyRegistrySnapshot({
+    scope,
+    overlayGeneration: 'builtin:registry-a',
+  });
+  // Declare every key the shipped strategies pass: they are held to the same
+  // rule by validate:strategies, so this registry isolates the candidate.
+  const skills = new Map<string, {inputs: Array<{name: string; type: 'string'; required: boolean}>}>();
+  for (const definition of base.getAllStrategies()) {
+    for (const [, content] of strategySkillCallTexts(definition)) {
+      for (const call of extractStrategySkillCalls(content)) {
+        const inputs = skills.get(call.skillId)?.inputs ?? [];
+        for (const name of call.argKeys) {
+          if (!inputs.some(input => input.name === name)) {
+            inputs.push({name, type: 'string', required: false});
+          }
+        }
+        skills.set(call.skillId, {inputs});
+      }
+    }
+  }
+  skills.set('probe_skill', {inputs: [{name: 'package', type: 'string', required: false}]});
+
+  function contribution(
+    scene: string,
+    content: string,
+  ): StrategyRegistryContribution {
+    return {
+      contributionId: `contribution-${scene}`,
+      scope,
+      scene,
+      baseStrategyFingerprint:
+        fingerprintStrategyDefinition(base.getStrategy(scene)!),
+      createdAt: '2026-09-24T00:00:00.000Z',
+      operations: [{op: 'append_core', operationId: `append-${scene}`, content}],
+    };
+  }
+
+  async function gate(
+    candidate: StrategyRegistryContribution,
+    existingContributions: StrategyRegistryContribution[] = [],
+  ) {
+    const proposal = draftProposal({
+      kind: 'strategy_section',
+      tier: 'T2',
+      deltas: [{
+        op: 'add',
+        targetKind: 'strategy_overlay',
+        targetId: 'general',
+        operationId: 'append-general',
+        anchor:
+          'strategies[scene="general"].sections[operationId="append-general"]',
+        baseContentHash,
+        after: canonicalJsonString(candidate),
+      }],
+    });
+    const existing = buildStrategyRegistrySnapshot({
+      scope,
+      overlayGeneration: proposal.expectedOverlayGeneration,
+      contributions: existingContributions,
+    });
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-general',
+        targetKind: 'strategy_overlay',
+        serializedContent: canonicalJsonString(candidate),
+      }),
+      base: {
+        targetId: 'general',
+        contentHash: baseContentHash,
+        registryFingerprint,
+        skillRegistryFingerprint: registryFingerprint,
+        strategyRegistryFingerprint: existing.registryFingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration,
+      },
+      gateAttempt: {
+        attemptId: 'attempt-1',
+        ordinal: 1,
+        gatePolicyFingerprint: canonicalContentHash('gate-policy'),
+      },
+      options: {
+        ...staticValidation(),
+        strategySnapshot: {existingContributions, skills},
+      },
+    });
+  }
+
+  it('rejects an invoke_skill example key the Skill does not declare', async () => {
+    const proof = await gate(contribution(
+      'general',
+      'invoke_skill("probe_skill", { process_name: "com.example" })',
+    ));
+    expect(proof.verdict).toBe('failed');
+    expect(proof.validatorCodes).toEqual(['strategy_skill_param_undeclared']);
+  });
+
+  it('rejects a contribution that appends phase hints as an inert target', async () => {
+    const proof = await gate({
+      ...contribution('general', 'unused'),
+      operations: [{
+        op: 'append_phase_hints',
+        operationId: 'append-general',
+        hints: [],
+      }],
+    } as never);
+    expect(proof.verdict).toBe('failed');
+    expect(proof.validatorCodes).toEqual(['inert_injection_target']);
+  });
+
+  it('does not charge a published contribution in another scene to the candidate', async () => {
+    const proof = await gate(
+      contribution('general', 'invoke_skill("probe_skill", { package: "com.example" })'),
+      [contribution('startup', 'invoke_skill("probe_skill", { process_name: "legacy" })')],
+    );
+    expect(proof.validatorCodes).toEqual([]);
+    expect(proof.verdict).toBe('passed');
+  });
+});
+
+describe('M7 static gate saved-result path reads', () => {
+  const reader = (name: string, sql: string): SkillDefinition => ({
+    name, version: '1', type: 'composite', meta: {display_name: name, description: name},
+    steps: [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'reader', type: 'atomic', sql},
+    ],
+  } as SkillDefinition);
+  const undecided = "SELECT '${cov.data[0].status}' AS s";
+  // A Skill already in the effective registry that predates the rule.
+  const legacy = reader('legacy_reader', undecided);
+
+  async function gate(candidateSql: string) {
+    const yamlText = [
+      'name: new_reader', 'version: "1"', 'type: composite',
+      'meta:', '  display_name: New Reader', '  description: Bounded test skill',
+      'steps:',
+      '  - id: probe', '    type: atomic', '    sql: SELECT 1 AS status', '    save_as: cov',
+      '  - id: reader', '    type: atomic', `    sql: ${JSON.stringify(candidateSql)}`, '',
+    ].join('\n');
+    const proposal = draftProposal({
+      kind: 'new_skill_draft',
+      tier: 'T5a',
+      deltas: [{
+        op: 'add', targetKind: 'skill_overlay', targetId: 'new_reader', operationId: 'new_reader',
+        anchor: 'skills[id="new_reader"]', baseContentHash, after: yamlText,
+      }],
+    });
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-new-reader',
+        targetKind: 'skill_overlay',
+        serializedContent: yamlText,
+      }),
+      base: {
+        targetId: 'new_reader', contentHash: baseContentHash, registryFingerprint,
+        skillRegistryFingerprint: registryFingerprint, strategyRegistryFingerprint: registryFingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration,
+      },
+      gateAttempt: {attemptId: 'attempt-1', ordinal: 1, gatePolicyFingerprint: canonicalContentHash('gate-policy')},
+      options: {...staticValidation(), skillSnapshot: {definitions: [legacy]}},
+    });
+  }
+
+  it('rejects the read in the Skill the candidate defines, not in one it did not touch', async () => {
+    const clean = await gate("SELECT '${cov.data[0].status|}' AS s");
+    expect(clean.validatorCodes).toEqual([]);
+    expect(clean.warningCodes).toEqual(['result_path_read_undecided']);
+    const offending = await gate(undecided);
+    expect(offending.validatorCodes).toEqual(['result_path_read_undecided']);
+    expect(offending.verdict).toBe('failed');
+  });
+});
+
+describe('M7 static gate SQL fragments', () => {
+  async function gate(fragmentPath: string, fragments?: ReadonlyMap<string, string>) {
+    const yamlText = [
+      'name: fragment_reader', 'version: "1"', 'type: composite',
+      'meta:', '  display_name: Fragment Reader', '  description: Bounded test skill',
+      'steps:',
+      '  - id: reader', '    type: atomic', '    sql: SELECT 1 AS s',
+      `    sql_fragments: [${JSON.stringify(fragmentPath)}]`, '',
+    ].join('\n');
+    const proposal = draftProposal({
+      kind: 'new_skill_draft',
+      tier: 'T5a',
+      deltas: [{
+        op: 'add', targetKind: 'skill_overlay', targetId: 'fragment_reader', operationId: 'fragment_reader',
+        anchor: 'skills[id="fragment_reader"]', baseContentHash, after: yamlText,
+      }],
+    });
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-fragment-reader',
+        targetKind: 'skill_overlay',
+        serializedContent: yamlText,
+      }),
+      base: {
+        targetId: 'fragment_reader', contentHash: baseContentHash, registryFingerprint,
+        skillRegistryFingerprint: registryFingerprint, strategyRegistryFingerprint: registryFingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration,
+      },
+      gateAttempt: {attemptId: 'attempt-1', ordinal: 1, gatePolicyFingerprint: canonicalContentHash('gate-policy')},
+      options: {...staticValidation(), skillSnapshot: {definitions: [], ...(fragments ? {fragments} : {})}},
+    });
+  }
+
+  it('rejects a candidate referencing a fragment the snapshot does not have', async () => {
+    const present = new Map([['fragments/present.sql', 'present AS (SELECT 1 AS x)']]);
+    expect((await gate('fragments/present.sql', present)).validatorCodes).toEqual([]);
+    const missing = await gate('fragments/missing.sql', present);
+    expect(missing.validatorCodes).toEqual(['fragment_reference_missing']);
+    expect(missing.verdict).toBe('failed');
+    // A snapshot without fragments holds none: the reference cannot resolve.
+    expect((await gate('fragments/present.sql')).validatorCodes).toEqual(['fragment_reference_missing']);
+  });
+
+  it('checks the stdlib reads inside a referenced fragment', async () => {
+    const fragments = new Map([['fragments/raw_input.sql', 'raw AS (SELECT * FROM android_input_events)']]);
+    expect((await gate('fragments/raw_input.sql', fragments)).validatorCodes).toEqual(['normalized_stdlib_read']);
+  });
+});
+
+describe('M7 static gate saved-result path reads in changed Skills', () => {
+  const undecided = "SELECT '${cov.data[0].status}' AS s";
+  const decided = "SELECT '${cov.data[0].status|}' AS s";
+  const target = (sql = 'SELECT 1 AS s', condition?: string): SkillDefinition => ({
+    name: 'target_reader', version: '1', type: 'composite', meta: {display_name: 'Target', description: 'Target'},
+    steps: [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'reader', type: 'atomic', sql, ...(condition ? {condition} : {})},
+    ],
+  } as SkillDefinition);
+  // A Skill already in the effective registry that predates the rule.
+  const legacy: SkillDefinition = {...target(undecided), name: 'legacy_reader'};
+
+  function fingerprintOf(definitions: SkillDefinition[]): string {
+    const composition = composeEffectiveSkills({
+      scope: draftProposal().scope, baseSkills: definitions, overlays: [],
+    });
+    if (composition.validationState !== 'passed') throw new Error('test registry does not compose');
+    return buildSkillRegistryAttribution({
+      getAllSkills: () => [...composition.skills],
+      getSkillOrigin: () => undefined,
+      getFragmentCache: () => new Map(),
+      getAppliedOverlayIds: () => [],
+    }).registryFingerprint;
+  }
+
+  async function gate(proposal: CurationProposalV1, serializedContent: string, definitions: SkillDefinition[]) {
+    const fingerprint = fingerprintOf(definitions);
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-target-reader',
+        targetKind: 'skill_overlay',
+        serializedContent,
+      }),
+      base: {
+        targetId: 'target_reader', contentHash: baseContentHash, registryFingerprint: fingerprint,
+        skillRegistryFingerprint: fingerprint, strategyRegistryFingerprint: fingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration, anchorContent: 'SELECT 1 AS s',
+      },
+      gateAttempt: {attemptId: 'attempt-1', ordinal: 1, gatePolicyFingerprint: canonicalContentHash('gate-policy')},
+      options: {...staticValidation(), skillSnapshot: {definitions}},
+    });
+  }
+
+  async function overlayGate(stepSql: string) {
+    const base = target();
+    const proposal = draftProposal({
+      kind: 'skill_overlay_delta', tier: 'T3',
+      deltas: [{
+        op: 'add', targetKind: 'skill_overlay', targetId: base.name, operationId: 'append-reader',
+        anchor: `skills[id="${base.name}"].overlays[operationId="append-reader"]`, baseContentHash, after: '{}',
+      }],
+    });
+    const overlay = canonicalJsonString({
+      schemaVersion: 1, overlayId: 'overlay_reader', baseSkillId: base.name,
+      baseFingerprint: fingerprintSkillDefinition(base), proposalId: proposal.proposalId,
+      createdAt: '2026-10-03T00:00:00.000Z', scope: proposal.scope,
+      operations: [{op: 'append_steps', operationId: 'append-reader',
+        steps: [{id: 'ovl_overlay_reader_read', type: 'atomic', sql: stepSql}]}],
+    });
+    return gate(proposal, overlay, [legacy, base]);
+  }
+
+  function skillSqlProposal(stepId = 'reader') {
+    return draftProposal({
+      kind: 'skill_sql', tier: 'T4',
+      deltas: [{
+        op: 'modify', targetKind: 'skill_overlay', targetId: 'target_reader', operationId: stepId,
+        anchor: `skills[id="target_reader"].sql[stepId="${stepId}"]`, baseContentHash,
+        before: 'SELECT 1 AS s', after: 'SELECT 1 AS s',
+      }],
+    });
+  }
+
+  it('charges an overlay with the read it appends to its base Skill, not the reads it did not write', async () => {
+    const clean = await overlayGate(decided);
+    expect(clean.validatorCodes).toEqual([]);
+    expect(clean.warningCodes).toContain('result_path_read_undecided');
+    const offending = await overlayGate(undecided);
+    expect(offending.validatorCodes).toEqual(['result_path_read_undecided']);
+    expect(offending.verdict).toBe('failed');
+  });
+
+  it('charges an overlay with the cause wording it adds, and only warns about wording it did not write', async () => {
+    const wording = "SELECT '限频导致卡顿' AS note";
+    const legacyWording: SkillDefinition = {...target(wording), name: 'legacy_wording'};
+    const appended = async (stepSql: string) => {
+      const base = target();
+      const proposal = draftProposal({
+        kind: 'skill_overlay_delta', tier: 'T3',
+        deltas: [{
+          op: 'add', targetKind: 'skill_overlay', targetId: base.name, operationId: 'append-reader',
+          anchor: `skills[id="${base.name}"].overlays[operationId="append-reader"]`, baseContentHash, after: '{}',
+        }],
+      });
+      const overlay = canonicalJsonString({
+        schemaVersion: 1, overlayId: 'overlay_reader', baseSkillId: base.name,
+        baseFingerprint: fingerprintSkillDefinition(base), proposalId: proposal.proposalId,
+        createdAt: '2026-10-03T00:00:00.000Z', scope: proposal.scope,
+        operations: [{op: 'append_steps', operationId: 'append-reader',
+          steps: [{id: 'ovl_overlay_reader_read', type: 'atomic', sql: stepSql}]}],
+      });
+      return gate(proposal, overlay, [legacyWording, base]);
+    };
+    const clean = await appended('SELECT 1 AS s');
+    expect(clean.validatorCodes).toEqual([]);
+    expect(clean.warningCodes).toContain('cause_wording_without_evidence');
+    const offending = await appended(wording);
+    expect(offending.validatorCodes).toEqual(['cause_wording_without_evidence']);
+    expect(offending.verdict).toBe('failed');
+  });
+
+  it('checks skill_sql candidate SQL in the step it replaces, under that step condition', async () => {
+    const codes = async (sql: string, base = target()) =>
+      (await gate(skillSqlProposal(), sql, [legacy, base])).validatorCodes;
+    // No SQL regression runs in this test; only the Skill validation is under test.
+    expect(await codes(decided)).not.toContain('result_path_read_undecided');
+    expect(await codes(undecided)).toContain('result_path_read_undecided');
+    // The step's own condition still decides the read when it requires rows.
+    expect(await codes(undecided, target('SELECT 1 AS s', 'cov.data?.length > 0')))
+      .not.toContain('result_path_read_undecided');
+    expect((await gate(skillSqlProposal('no_such_step'), decided, [legacy, target()])).validatorCodes)
+      .toContain('static_skill_sql_target_step_missing');
+    // The step must still run the SQL the proposal replaces.
+    expect((await gate(skillSqlProposal(), decided, [legacy, target('SELECT 2 AS s')])).validatorCodes)
+      .toContain('static_skill_sql_anchor_stale');
+    // Step `root` is an atomic Skill's top-level SQL, as the Trace corpus names it.
+    const atomic = {name: 'target_reader', version: '1', type: 'atomic',
+      meta: {display_name: 'Target', description: 'Target'}, sql: 'SELECT 1 AS s'} as SkillDefinition;
+    const rootGate = async (sql: string) => (await gate(skillSqlProposal('root'), sql, [legacy, atomic])).validatorCodes;
+    expect(await rootGate('SELECT 2 AS s')).not.toContain('static_skill_sql_target_step_missing');
+    expect(await rootGate('SELECT 2 AS s')).not.toContain('static_skill_sql_anchor_stale');
   });
 });
 
@@ -837,6 +1278,57 @@ function draftProposal(
     createdAt: '2026-07-29T00:00:00.000Z',
     ...overrides,
   };
+}
+
+/** Stored drafts that target phase hints, which no analysis reads. */
+function inertPhaseHintProposals(): CurationProposalV1[] {
+  return [
+    draftProposal({
+      proposalId: 'proposal-inert-phase-hint',
+      kind: 'phase_hint',
+      tier: 'T0',
+      deltas: [{
+        op: 'add',
+        targetKind: 'injection',
+        targetId: 'hint-a',
+        operationId: 'hint-a',
+        anchor: 'injections.phaseHints[scene="startup"][id="hint-a"]',
+        baseContentHash,
+        after: canonicalJsonString({id: 'hint-a', constraints: 'Inspect startup.'}),
+      }],
+    }),
+    draftProposal({
+      proposalId: 'proposal-inert-retire',
+      kind: 'retire_injection',
+      tier: 'T0',
+      deltas: [{
+        op: 'remove',
+        targetKind: 'injection',
+        targetId: 'hint-a',
+        operationId: 'retire-hint-a',
+        anchor: 'injections.phaseHints[id="hint-a"]',
+        baseContentHash,
+        before: 'Retired hint',
+      }],
+    }),
+    draftProposal({
+      proposalId: 'proposal-inert-strategy-section',
+      kind: 'strategy_section',
+      tier: 'T2',
+      deltas: [{
+        op: 'add',
+        targetKind: 'strategy_overlay',
+        targetId: 'startup',
+        operationId: 'append-hints',
+        anchor:
+          'strategies[scene="startup"].sections[operationId="append-hints"]',
+        baseContentHash,
+        after: canonicalJsonString({
+          operations: [{op: 'append_phase_hints', operationId: 'append-hints', hints: []}],
+        }),
+      }],
+    }),
+  ];
 }
 
 function testPlanner(root: string): ProposalMaterializationPlanner {

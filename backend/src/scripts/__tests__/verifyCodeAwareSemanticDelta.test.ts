@@ -8,6 +8,8 @@ import path from 'node:path';
 
 import {
   buildFollowUpVerificationChecks,
+  evaluateAgentSseExpectation,
+  parseAgentSseExpectation,
   parseArgs as parseAgentSseArgs,
   setupAnalysisContext,
 } from '../verifyAgentSseScrolling';
@@ -19,6 +21,7 @@ import {
 
 const repoRoot = path.resolve(__dirname, '../../../..');
 const sourceRoot = path.join(repoRoot, 'backend/tests/e2e/context-fixtures/app');
+const backendRoot = path.join(repoRoot, 'backend');
 
 describe('register-only Agent SSE setup', () => {
   it('applies non-partial, verifier, and degraded checks to follow-up runs', () => {
@@ -96,10 +99,14 @@ describe('register-only Agent SSE setup', () => {
     const request = jest.fn(async (
       _baseUrl: string,
       route: string,
-      _body?: Record<string, unknown>,
-      method?: 'GET' | 'POST',
+      body?: Record<string, unknown>,
+      method?: 'GET' | 'POST' | 'PATCH',
     ) => {
       routes.push(`${method ?? 'POST'} ${route}`);
+      if (route.endsWith('/register')) expect(body).not.toHaveProperty('sendToProvider');
+      if (route.endsWith('/consent')) {
+        expect(body).toEqual({authorizeContent: true, contentDisclosureToken: 'cd1:1:disclosed'});
+      }
       if (route.endsWith('/audit')) {
         return {
           success: true,
@@ -110,13 +117,14 @@ describe('register-only Agent SSE setup', () => {
           },
         };
       }
-      return {success: true, codebase: {codebaseId: 'cb-register-only'}};
+      return {success: true, codebase: {codebaseId: 'cb-register-only', contentDisclosure: {token: 'cd1:1:disclosed'}}};
     });
 
     const result = await setupAnalysisContext('http://127.0.0.1:1', options, request);
 
     expect(routes).toEqual([
       'POST /api/rag/codebases/register',
+      'PATCH /api/rag/codebases/cb-register-only/consent',
       'GET /api/rag/codebases/cb-register-only/audit',
     ]);
     expect(routes.some(route => route.includes('/reindex'))).toBe(false);
@@ -137,7 +145,7 @@ describe('register-only Agent SSE setup', () => {
       _baseUrl: string,
       route: string,
       _body?: Record<string, unknown>,
-      _method?: 'GET' | 'POST',
+      _method?: 'GET' | 'POST' | 'PATCH',
     ) => {
       if (route.endsWith('/reindex')) {
         return {success: true, result: {chunksAdded: 7, generation: 'claimed-active'}};
@@ -152,7 +160,7 @@ describe('register-only Agent SSE setup', () => {
           },
         };
       }
-      return {success: true, codebase: {codebaseId: 'cb-indexed'}};
+      return {success: true, codebase: {codebaseId: 'cb-indexed', contentDisclosure: {token: 'cd1:1:disclosed'}}};
     });
 
     await expect(setupAnalysisContext('http://127.0.0.1:1', options, request))
@@ -203,14 +211,14 @@ describe('constructed source/trace ground truth', () => {
     expect(groundTruth.trace.outputSha256).toMatch(/^[a-f0-9]{64}$/);
   });
 
-  it('registers clean-checkout preparation and the existing Task 7 runtime gate', () => {
+  it('registers clean-checkout preparation and the owning source verification gates', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'backend/package.json'), 'utf8')) as {
       scripts: Record<string, string>;
     };
     expect(pkg.scripts['prepare:code-aware-semantic-delta']).toBe(
       'npm run trace-processor:ensure && npm run trace:materialize',
     );
-    expect(pkg.scripts['test:code-aware-semantic-delta']).toContain(
+    expect(pkg.scripts['test:source-claim-contract']).toContain(
       'src/agentRuntime/__tests__/sourceUseResultAttachment.test.ts',
     );
     expect(pkg.scripts['test:code-aware-semantic-delta']).toContain(
@@ -219,9 +227,17 @@ describe('constructed source/trace ground truth', () => {
     expect(pkg.scripts['verify:code-aware-semantic-delta']).toContain(
       'npm run prepare:code-aware-semantic-delta',
     );
-    expect(pkg.scripts['verify:code-aware-semantic-delta']).toContain(
+    expect(pkg.scripts['test:report-contracts']).toContain(
       'src/services/__tests__/sourceProvenanceSurfaces.test.ts',
     );
+    for (const gate of [
+      'test:source-claim-contract',
+      'test:report-contracts',
+      'test:code-aware-semantic-delta',
+      'verify:code-aware-semantic-delta',
+    ]) {
+      expect(pkg.scripts['test:gate'].split(' && ')).toContain(`npm run ${gate}`);
+    }
   });
 });
 
@@ -338,7 +354,7 @@ describe('deterministic code-aware semantic delta', () => {
 });
 
 describe('real-provider semantic delta wrapper contract', () => {
-  const wrapper = require('../../../scripts/run-deepseek-agent-e2e.cjs') as {
+  const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs') as {
     parseArgs?: (argv: string[]) => Record<string, unknown>;
     semanticDeltaQueries?: () => Array<Record<string, unknown>>;
     semanticConditionArgs?: (
@@ -470,7 +486,7 @@ describe('real-provider semantic delta wrapper contract', () => {
 
   it('writes unavailable preflight evidence without starting a provider or claiming full acceptance', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-preflight-unavailable-'));
-    const environment = jest.replaceProperty(process, 'env', {...process.env, DEEPSEEK_API_KEY: '', OPENAI_API_KEY: ''});
+    const environment = jest.replaceProperty(process, 'env', {...process.env, GLM_API_KEY: '', OPENAI_API_KEY: ''});
     const output = jest.spyOn(console, 'log').mockImplementation(() => {});
     try {
       const options = wrapper.parseArgs!(['--suite', 'code-aware-semantic-delta', '--runtime', 'openai', '--preflight',
@@ -740,7 +756,7 @@ describe('real-provider semantic delta wrapper contract', () => {
           analysisCompletedSourceReferenceCount: 1,
           analysisCompletedSourceBindingCount: 1,
           analysisCompletedSourceClaimVerifierStatus: 'failed',
-          analysisCompletedSourceMechanismStatuses: ['corroborated'],
+          analysisCompletedSourceClaimStatuses: ['invalid'],
           analysisCompletedSourceReferenceMembershipPassed: false,
           toolCallCounts: {search_codebase: 1, read_codebase_file: 1},
         },
@@ -753,13 +769,13 @@ describe('real-provider semantic delta wrapper contract', () => {
     expect(wrapper.realProviderAvailability?.('qoder-agent-sdk', {})).toEqual({
       available: false,
       reason:
-        'DEEPSEEK_API_KEY_OR_OPENAI_API_KEY_MISSING;QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING',
+        'GLM_CODING_PLAN_API_KEY_MISSING;QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING',
     });
   });
 });
 
 describe('real-provider task fact configuration', () => {
-  const wrapper = require('../../../scripts/run-deepseek-agent-e2e.cjs');
+  const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
 
   it('allows scrolling to choose its tools while declaring independently queried frame facts', () => {
     const args: string[] = wrapper.suites.scrolling.args;
@@ -775,7 +791,44 @@ describe('real-provider task fact configuration', () => {
     expect(wrapper.suites.startup.args).not.toContain('--require-text');
     expect(wrapper.suites.startup.args).not.toContain('--forbid-text');
     const expectation = parseAgentSseArgs(wrapper.suites.startup.args).expectation;
-    expect(expectation?.facts.find(fact => fact.id === 'startup_type')?.verification).toBe('reference_only');
+    expect(expectation?.facts.find(fact => fact.id === 'startup_type')?.verification).toBe('proved');
+  });
+
+  it('reads both flagship expectations from files and judges startup_type against android_startups, not a literal', () => {
+    for (const [suite, file] of [['startup', 'startup-heavy'], ['scrolling', 'scrolling-customer']]) {
+      const args: string[] = wrapper.suites[suite].args;
+      const value = args[args.indexOf('--expectation-json') + 1];
+      expect(value).toBe(`@tests/e2e/flagship/${file}.expectation.json`);
+      expect(args.filter(arg => arg.includes('"schemaVersion"'))).toEqual([]);
+      expect(parseAgentSseArgs(args).expectation).toEqual(parseAgentSseExpectation(
+        JSON.parse(fs.readFileSync(path.join(backendRoot, value.slice(1)), 'utf8'))));
+      expect(parseAgentSseArgs(args).expectation?.intent).toMatchObject({sceneId: suite, scope: 'scene_wide', deliverable: 'report'});
+    }
+    const startupType = parseAgentSseArgs(wrapper.suites.startup.args).expectation?.facts.find(fact => fact.id === 'startup_type');
+    expect(startupType).not.toHaveProperty('value');
+    expect(startupType?.oracle).toMatchObject({column: 'startup_type', anchorMatch: {startTs: 'start_ts', upid: 'upid'}});
+    expect(startupType?.oracle?.sql).toMatch(/SELECT s\.startup_type, s\.ts AS start_ts, sp\.upid FROM android_startups s JOIN android_startup_processes sp USING \(startup_id\)/);
+    // Same population oracle as the quick frame gate; only the declared cell columns differ.
+    const scrolling = parseAgentSseArgs(wrapper.suites.scrolling.args).expectation!;
+    for (const fact of wrapper.frameFactExpectation({withJank: true}).facts) {
+      expect(scrolling.facts.find(item => item.id === fact.id)?.oracle).toEqual(fact.oracle);
+    }
+  });
+
+  it('keeps overallTaskChecksPassed on the flat union: a value-only fact match stays a hard failure', () => {
+    const query = wrapper.semanticDeltaQueries().find((item: any) => item.kind === 'quantitative-only');
+    const expectation = parseAgentSseArgs(wrapper.semanticConditionArgs(query, 'A0', 'a0.json', 1000)).expectation!;
+    const report = (proved: boolean) => {
+      const facts = {source_marker_duration: {matched: true, tier: proved ? 'proved' : 'value',
+        proposition: proved ? 'proved' : 'unknown', matchedClaimIds: ['duration'], matchedAnchorIds: ['anchor-duration']}};
+      const task = evaluateAgentSseExpectation({expectation, traceId: 'trace'});
+      const checks = Object.fromEntries(Object.keys(task.checks).map(key => [key, key !== 'fact:source_marker_duration:proved' || proved]));
+      return {traceId: 'trace', taskVerification: {checks, facts, uncoveredFacets: []}, summary: {}};
+    };
+    const unproved = wrapper.evaluateSemanticConditionReport({query, report: report(false), condition: 'A0', sourceRoot});
+    expect(unproved).toMatchObject({overallTaskChecksPassed: false, traceFactPassed: false});
+    expect(wrapper.evaluateSemanticConditionReport({query, report: report(true), condition: 'A0', sourceRoot}).overallTaskChecksPassed)
+      .toBe(true);
   });
 
   it('reports source action semantics as uncovered instead of requiring an English sentence', () => {
@@ -821,8 +874,8 @@ describe('real-provider task fact configuration', () => {
         matchedClaimIds: ['trace-duration'], matchedAnchorIds: ['anchor-marker']}}, uncoveredFacets: []},
       summary: {analysisCompletedSourceUseStatus: 'located', analysisCompletedSourceReferenceCount: 1,
         analysisCompletedSourceBindingCount: 1, analysisCompletedSourceClaimVerifierStatus: 'passed',
-        analysisCompletedSourceReferenceMembershipPassed: true, analysisCompletedSourceMechanismStatuses: ['compatible'],
-        analysisCompletedVerifiedSourceBindings: [{claimId: 'trace-duration', mechanismStatus: 'compatible',
+        analysisCompletedSourceReferenceMembershipPassed: true, analysisCompletedSourceClaimStatuses: ['trace_linked'],
+        analysisCompletedVerifiedSourceBindings: [{claimId: 'trace-duration', status: 'trace_linked',
           sourceReferenceIds: ['source-ref-v1-issued'], traceEvidenceRefIds: ['data-marker']}],
         terminalAnalysis: {claimSupport: [{claimId: 'trace-duration', anchors: [{anchorId: 'anchor-marker',
           evidenceRefId: 'data-marker', context: {traceId: 'trace', traceSide: 'current'},
@@ -845,7 +898,7 @@ describe('real-provider task fact configuration', () => {
       expect(wrapper.evaluateSemanticConditionReport({query, report: invalid, condition: 'A2', sourceRoot}).sourceIdentityPassed).toBe(false);
     }
     for (const changed of [{sourceReferenceIds: ['source-ref-v1-unrelated']}, {claimId: 'unrelated-claim'},
-      {traceEvidenceRefIds: ['data-unrelated']}, {mechanismStatus: 'unverified'}]) {
+      {traceEvidenceRefIds: ['data-unrelated']}, {status: 'location_only'}]) {
       const invalid = structuredClone(report);
       invalid.summary.analysisCompletedVerifiedSourceBindings[0] = {
         ...invalid.summary.analysisCompletedVerifiedSourceBindings[0], ...changed};

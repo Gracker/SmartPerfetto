@@ -4,13 +4,14 @@
 
 import * as path from 'path';
 
-import {bootstrap} from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
+import {writeCliInputError, writeCliOperationError} from '../io/operationErrors';
 import {withConsoleLogToStderr} from '../io/stdio';
+import {cliCodebaseRegistry} from '../services/cliCodebaseRegistry';
 import {backendLogPath} from '../../runtimePaths';
 import {RagStore} from '../../services/ragStore';
 import {
   codebaseRegistrationRequirements,
-  CodebaseRegistry,
   resolveCodebaseScope,
   type CodebaseScope,
 } from '../../services/codebase/codebaseRegistry';
@@ -28,7 +29,6 @@ import {KernelSourceIngester} from '../../services/rag/kernelSourceIngester';
 import {SymbolResolver} from '../../services/symbol/symbolResolver';
 import type {CodebaseKind} from '../../services/codebase/codebaseRegistry';
 
-const registryPath = () => backendLogPath('codebase_registry.json');
 const ragStorePath = () => backendLogPath('rag_store.json');
 
 export interface CodebaseCommandBaseArgs {
@@ -46,7 +46,7 @@ function managementContext(
 ): {service: CodebaseManagementService; scope: Required<CodebaseScope>} {
   const scope = resolveCodebaseScope();
   const service = args.managementService ?? new CodebaseManagementService({
-    registry: new CodebaseRegistry(registryPath()),
+    registry: cliCodebaseRegistry(),
     store: new RagStore(ragStorePath()),
     gate: allowlistRoot
       ? new PathSecurityGate({allowlistRoots: [allowlistRoot]})
@@ -56,57 +56,13 @@ function managementContext(
   return {service, scope};
 }
 
-function managementExitCode(error: CodebaseManagementError): number {
-  if (
-    error.code === 'CODEBASE_SELECTION_EMPTY' ||
-    error.code === 'CODEBASE_SELECTION_INVALID' ||
-    error.code === 'CODEBASE_SELECTION_UNCHANGED' ||
-    error.code === 'CODEBASE_ROOT_DRIFT' ||
-    error.code === 'CODEBASE_PREVIEW_FAILED'
-  ) return 2;
-  if (error.code === 'CODEBASE_NOT_FOUND') return 3;
-  if (
-    error.code === 'CODEBASE_BUSY' ||
-    error.code === 'CODEBASE_CONSENT_REQUIRED' ||
-    error.code === 'CODEBASE_DELETING' ||
-    error.code.startsWith('PENDING_GENERATION_')
-  ) return 4;
-  return 5;
+function writeManagementError(format: CodebaseOutputFormat, error: unknown): number {
+  return writeCliOperationError(format === 'json', error instanceof CodebaseManagementError ? error : undefined,
+    {code: 'CODEBASE_OPERATION_FAILED', message: 'Codebase management operation failed'});
 }
 
-function writeManagementError(
-  format: CodebaseOutputFormat,
-  error: unknown,
-): number {
-  const managementError = error instanceof CodebaseManagementError
-    ? error
-    : new CodebaseManagementError(
-        'CODEBASE_OPERATION_FAILED',
-        500,
-        'Codebase management operation failed',
-      );
-  const payload = {
-    success: false,
-    code: managementError.code,
-    error: managementError.message,
-    ...(managementError.details ? {details: managementError.details} : {}),
-  };
-  if (format === 'json') console.log(JSON.stringify(payload, null, 2));
-  else console.error(`${payload.code}: ${payload.error}`);
-  return managementExitCode(managementError);
-}
-
-function writeInputError(
-  format: CodebaseOutputFormat,
-  code: string,
-  message: string,
-): number {
-  if (format === 'json') {
-    console.log(JSON.stringify({success: false, code, error: message}, null, 2));
-  } else {
-    console.error(`${code}: ${message}`);
-  }
-  return 2;
+function writeInputError(format: CodebaseOutputFormat, code: string, message: string): number {
+  return writeCliInputError(format === 'json', code, message);
 }
 
 function printCodebaseTableRow(ref: RegisteredCodebase | Awaited<ReturnType<CodebaseManagementService['list']>>[number]): void {
@@ -157,7 +113,7 @@ export async function runCodebasePreviewCommand(args: CodebaseCommandBaseArgs & 
   pathFilters?: string[];
   excludeGlobs?: string[];
 }): Promise<number> {
-  const rootPath = path.resolve(args.rootPath);
+  const rootPath = resolveInvocationPath(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const kind = args.kind ?? 'app_source';
   const {service, scope} = managementContext(args, rootPath);
@@ -188,7 +144,17 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
   licenseTag?: string;
   dryRun?: boolean;
 }): Promise<number> {
-  const rootPath = path.resolve(args.rootPath);
+  // Registration grants no provider-send consent; `authorize-content` shows
+  // the exact scope and grants it with the printed token.
+  if (args.sendToProvider) {
+    console.error([
+      'CODEBASE_CONSENT_DISCLOSURE_REQUIRED: registration cannot grant provider-send consent.',
+      'Register without --send-to-provider, then run `smp codebase authorize-content <codebaseId>` to see the scope',
+      'and grant it with `--confirm <token>`.',
+    ].join(' '));
+    return 1;
+  }
+  const rootPath = resolveInvocationPath(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const kind = args.kind ?? 'app_source';
   const requirements = codebaseRegistrationRequirements(kind);
@@ -239,13 +205,14 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
     }, null, 2));
     return 0;
   }
-  const registry = new CodebaseRegistry(registryPath());
+  const registry = cliCodebaseRegistry();
   const ref = registry.register({
     kind,
     displayName: args.name ?? path.basename(rootPath),
     rootPath,
     rootRealpath,
-    sendToProvider: Boolean(args.sendToProvider),
+    sendToProvider: false,
+    rootAuthorization: 'local_cli',
     pathFilters: args.pathFilters,
     excludeGlobs: args.excludeGlobs,
     ...(args.vendor ? {vendor: args.vendor} : {}),
@@ -261,6 +228,10 @@ export async function runCodebaseSelectionCommand(args: CodebaseCommandBaseArgs 
   codebaseId: string;
   pathFilters?: string[];
   excludeGlobs?: string[];
+  /** Enumerate what the replacement would admit and print it without saving. */
+  preview?: boolean;
+  /** The `selectionPolicyRevision` a preview printed; a save against a newer one is refused. */
+  expectedRevision?: number;
 }): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const format = args.format ?? 'table';
@@ -268,7 +239,18 @@ export async function runCodebaseSelectionCommand(args: CodebaseCommandBaseArgs 
   const input = {
     ...(args.pathFilters !== undefined ? {pathFilters: args.pathFilters} : {}),
     ...(args.excludeGlobs !== undefined ? {excludeGlobs: args.excludeGlobs} : {}),
+    ...(args.expectedRevision !== undefined ? {expectedSelectionPolicyRevision: args.expectedRevision} : {}),
   };
+  if (args.preview) {
+    try {
+      const selectionPreview = await withConsoleLogToStderr(true,
+        async () => service.previewSelection(args.codebaseId, input, scope));
+      console.log(JSON.stringify({success: true, selectionPreview}, null, 2));
+      return selectionPreview.status === 'unavailable' ? 2 : 0;
+    } catch (error) {
+      return writeManagementError('json', error);
+    }
+  }
   try {
     const codebase = await withConsoleLogToStderr(
       format === 'json',
@@ -310,17 +292,92 @@ export async function runCodebaseConsentCommand(args: CodebaseCommandBaseArgs & 
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const {service, scope} = managementContext(args);
   try {
-    const enabled = Boolean(args.enable);
+    // --enable is refused by the service (CODEBASE_CONSENT_DISCLOSURE_REQUIRED):
+    // `authorize-content` shows the scope and grants it with its token.
     const codebase = await withConsoleLogToStderr(
       format === 'json',
-      async () => service.setConsent(args.codebaseId, enabled, scope.userId, scope),
+      async () => service.setConsent(args.codebaseId, Boolean(args.enable), scope.userId, scope),
     );
     if (format === 'json') {
-      console.log(JSON.stringify({success: true, action: enabled ? 'enabled' : 'disabled', codebase}, null, 2));
+      console.log(JSON.stringify({success: true, action: 'disabled', codebase}, null, 2));
     } else {
-      console.log(enabled
-        ? `Provider-send consent enabled for ${codebase.codebaseId}; source text is sent only in provider_send sessions.`
-        : `Provider-send consent disabled for ${codebase.codebaseId}; future provider source text is blocked.`);
+      console.log(`Provider-send consent disabled for ${codebase.codebaseId}; future provider source text is blocked.`);
+    }
+    return 0;
+  } catch (error) {
+    return writeManagementError(format, error);
+  }
+}
+
+/**
+ * What a provider-send grant means, as the Web source activation discloses it
+ * (`source_analysis_disclosure.ts`).
+ */
+const SOURCE_SEND_DISCLOSURE =
+  'Relevant source snippets are sent to the configured AI service, including an internal company service. ' +
+  'Analysis results and quoted source may be saved in local history and exported reports; retention by the ' +
+  'AI service depends on its configuration and policy. Source searches, reads, and additional model analysis ' +
+  'make the workflow longer and increase analysis time.';
+
+/** Runs one consent action and reports the resulting codebase. */
+async function runConsentAction(
+  args: CodebaseCommandBaseArgs & {codebaseId: string},
+  action: string,
+  apply: (service: CodebaseManagementService, scope: Required<CodebaseScope>) => Promise<RegisteredCodebase>,
+  describe: (codebase: RegisteredCodebase) => string,
+): Promise<number> {
+  bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
+  const format = args.format ?? 'table';
+  const {service, scope} = managementContext(args);
+  try {
+    const codebase = await withConsoleLogToStderr(format === 'json', async () => apply(service, scope));
+    if (format === 'json') {
+      console.log(JSON.stringify({success: true, action, codebase}, null, 2));
+    } else {
+      console.log(describe(codebase));
+      if (codebase.reindexRequired) console.log(`Reindex required: ${codebase.reindexRequired}.`);
+    }
+    return 0;
+  } catch (error) {
+    return writeManagementError(format, error);
+  }
+}
+
+/**
+ * Without `confirm`, prints exactly what the combined grant would cover (the
+ * relative include prefixes, exclusions and languages, what sending means)
+ * and the token that grants exactly that, and grants nothing. With the token,
+ * grants it; a selection edit or a newly available language since the
+ * disclosure refuses the grant.
+ */
+export async function runCodebaseAuthorizeContentCommand(args: CodebaseCommandBaseArgs & {
+  codebaseId: string;
+  confirm?: string;
+}): Promise<number> {
+  if (args.confirm) {
+    const token = args.confirm;
+    return runConsentAction(args, 'authorized_content',
+      (service, scope) => service.authorizeContent(args.codebaseId, scope.userId, token, scope),
+      codebase => `Source text may be sent for the disclosed selection and languages of ${codebase.codebaseId} ` +
+        `(grant revision ${codebase.grantRevision}); it is sent only in provider_send sessions.`);
+  }
+  bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
+  const format = args.format ?? 'table';
+  const {service, scope} = managementContext(args);
+  try {
+    const codebase = await withConsoleLogToStderr(format === 'json', async () => service.get(args.codebaseId, scope));
+    // The service's disclosure: the lists its token names, which is what the grant takes.
+    const disclosure = {...codebase.contentDisclosure, codebaseId: codebase.codebaseId, notice: SOURCE_SEND_DISCLOSURE};
+    if (format === 'json') {
+      console.log(JSON.stringify({success: true, action: 'disclosure', granted: false, disclosure}, null, 2));
+    } else {
+      console.log(`Granting provider-send for ${codebase.codebaseId} would cover:`);
+      console.log(`  include: ${disclosure.includePrefixes.length ? disclosure.includePrefixes.join(', ') : '(whole registered root)'}`);
+      console.log(`  exclude: ${disclosure.excludeGlobs.length ? disclosure.excludeGlobs.join(', ') : '(none)'}`);
+      console.log(`  languages: ${disclosure.extensions.join(' ')}`);
+      console.log(disclosure.notice);
+      console.log('Nothing was granted. To grant exactly this scope, run:');
+      console.log(`  smp codebase authorize-content ${codebase.codebaseId} --confirm ${disclosure.token}`);
     }
     return 0;
   } catch (error) {
@@ -331,48 +388,17 @@ export async function runCodebaseConsentCommand(args: CodebaseCommandBaseArgs & 
 export async function runCodebaseAuthorizeExtensionsCommand(args: CodebaseCommandBaseArgs & {
   codebaseId: string;
 }): Promise<number> {
-  bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
-  const format = args.format ?? 'table';
-  const {service, scope} = managementContext(args);
-  try {
-    const codebase = await withConsoleLogToStderr(
-      format === 'json',
-      async () => service.authorizeAvailableExtensions(args.codebaseId, scope.userId, scope),
-    );
-    if (format === 'json') {
-      console.log(JSON.stringify({success: true, action: 'authorized_extensions', codebase}, null, 2));
-    } else {
-      console.log(`Available source extensions authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
-      if (codebase.reindexRequired) {
-        console.log(`Reindex required: ${codebase.reindexRequired}.`);
-      }
-    }
-    return 0;
-  } catch (error) {
-    return writeManagementError(format, error);
-  }
+  return runConsentAction(args, 'authorized_extensions',
+    (service, scope) => service.authorizeAvailableExtensions(args.codebaseId, scope.userId, scope),
+    codebase => `Available source extensions authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
 }
 
 export async function runCodebaseAuthorizeSelectionCommand(args: CodebaseCommandBaseArgs & {
   codebaseId: string;
 }): Promise<number> {
-  bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
-  const format = args.format ?? 'table';
-  const {service, scope} = managementContext(args);
-  try {
-    const codebase = await withConsoleLogToStderr(
-      format === 'json',
-      async () => service.authorizeCurrentSelection(args.codebaseId, scope.userId, scope),
-    );
-    if (format === 'json') {
-      console.log(JSON.stringify({success: true, action: 'authorized_selection', codebase}, null, 2));
-    } else {
-      console.log(`Current source selection authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
-    }
-    return 0;
-  } catch (error) {
-    return writeManagementError(format, error);
-  }
+  return runConsentAction(args, 'authorized_selection',
+    (service, scope) => service.authorizeCurrentSelection(args.codebaseId, scope.userId, scope),
+    codebase => `Current source selection authorized for ${codebase.codebaseId} (grant revision ${codebase.grantRevision}).`);
 }
 
 export async function runCodebasePendingCommand(args: CodebaseCommandBaseArgs & {
@@ -480,7 +506,7 @@ export async function runCodebaseDeleteCommand(args: CodebaseCommandBaseArgs & {
 
 export async function runCodebaseReindexCommand(args: CodebaseCommandBaseArgs & {codebaseId: string}): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
-  const registry = new CodebaseRegistry(registryPath());
+  const registry = cliCodebaseRegistry();
   const ref = registry.get(args.codebaseId);
   if (!ref) {
     console.error(`Codebase not found: ${args.codebaseId}`);
@@ -502,7 +528,7 @@ export async function runCodebaseSymbolsCommand(args: CodebaseCommandBaseArgs & 
   symbol: string;
 }): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
-  const registry = new CodebaseRegistry(registryPath());
+  const registry = cliCodebaseRegistry();
   const ref = args.codebaseId ? registry.get(args.codebaseId) : undefined;
   const resolver = new SymbolResolver(
     new RagStore(ragStorePath()),

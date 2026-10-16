@@ -7,22 +7,22 @@ import { SessionPersistenceService } from '../services/sessionPersistenceService
 import { requireRequestContext } from '../middleware/auth';
 import { isOwnedByContext, sendResourceNotFound } from '../services/resourceOwnership';
 import {copyAnalysisDeliveryFields} from '../services/security/analysisDeliveryProjection';
+import {withClientSourceUseCounts} from '../services/codebase/sourceUseDecision';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
-  privateAnalysisQueryMessage,
-  projectOwnerAnalysisResult,
-  copyAnalysisResultForSnapshot,
-  projectOwnerConclusion,
+  projectOwnerReportError,
+  projectStoredAnalysisResultForOwner,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
-  sessionUsesPrivateKnowledge,
+  projectOwnerQuestion,
 } from '../services/security/privateAnalysisProjection';
+import {sessionRunHasPrivateContext} from '../assistant/application/agentAnalyzeSessionService';
+import {projectReportSessionState} from '../services/agentReportData';
 
 interface AgentReportRoutesDeps {
   getSession: (sessionId: string) => any;
   recoverResultForSessionIfNeeded: (sessionId: string, session: any) => any;
-  normalizeNarrativeForClient: (narrative: string) => string;
   buildClientFindings: (findings: any[], scenes: any[]) => any[];
   buildSessionResultContract: (session: any, clientFindings: any[]) => unknown;
   getCompletedPayload?: (session: any) => any;
@@ -58,12 +58,10 @@ export function registerAgentReportRoutes(
     }
 
     const completedPayload = deps.getCompletedPayload?.(session);
-    const privateKnowledge = sessionUsesPrivateKnowledge(session);
+    const privateKnowledge = sessionRunHasPrivateContext(session);
     const outputLanguage = session.outputLanguage
       ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-    const result = privateKnowledge
-      ? projectOwnerAnalysisResult(sessionId, storedResult, outputLanguage)
-      : copyAnalysisResultForSnapshot(storedResult);
+    const result = projectStoredAnalysisResultForOwner(privateKnowledge, sessionId, storedResult, outputLanguage);
     const conclusion = result.conclusion;
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const rawClientFindings = deps.buildClientFindings(findings, session.scenes || []);
@@ -78,24 +76,12 @@ export function registerAgentReportRoutes(
     const hypotheses = privateKnowledge
       ? projectOwnerStructuredValue(sessionId, rawHypotheses)
       : rawHypotheses;
-    const conversationTimeline = Array.isArray(session.conversationSteps)
-      ? session.conversationSteps
-      : [];
-
-    // Use snapshot as single source of truth for agentv3-specific state.
-    // Falls back to live getters for active sessions where snapshot hasn't been taken yet.
-    const snapshot = privateKnowledge
-      ? undefined
-      : SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId);
-    const analysisNotes = privateKnowledge ? [] : snapshot?.analysisNotes
-      ?? (typeof session.orchestrator?.getSessionNotes === 'function'
-        ? session.orchestrator.getSessionNotes(sessionId) : []);
-    const analysisPlan = privateKnowledge ? null : snapshot?.analysisPlan
-      ?? (typeof session.orchestrator?.getSessionPlan === 'function'
-        ? session.orchestrator.getSessionPlan(sessionId) : null);
-    const uncertaintyFlags = privateKnowledge ? [] : snapshot?.uncertaintyFlags
-      ?? (typeof session.orchestrator?.getSessionUncertaintyFlags === 'function'
-        ? session.orchestrator.getSessionUncertaintyFlags(sessionId) : []);
+    const {conversationTimeline, queryHistory, conclusionHistory, analysisNotes, analysisPlan, uncertaintyFlags} =
+      projectReportSessionState({
+        session,
+        privateKnowledge,
+        loadSnapshot: () => SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId),
+      });
     const rawClaimSupport = result.claimSupport;
     const rawClaimVerification = result.claimVerificationResult;
     const rawIdentityResolutions = result.identityResolutions;
@@ -105,7 +91,7 @@ export function registerAgentReportRoutes(
     const report = {
       sessionId,
       traceId: session.traceId,
-      query: privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : session.query,
+      query: projectOwnerQuestion(privateKnowledge, sessionId, session.query),
       createdAt: session.createdAt,
       completedAt: Date.now(),
       ...copyAnalysisDeliveryFields(result),
@@ -127,7 +113,8 @@ export function registerAgentReportRoutes(
           : result.terminationMessage,
       },
       reportUrl: completedPayload?.finalArtifacts?.reportUrl,
-      reportError: privateKnowledge ? undefined : completedPayload?.finalArtifacts?.reportError,
+      reportError: projectOwnerReportError(privateKnowledge, sessionId,
+        completedPayload?.finalArtifacts?.reportError, outputLanguage),
       resultSnapshotId: completedPayload?.finalArtifacts?.resultSnapshotId,
       conclusionContract: rawConclusionContract,
       claimSupport: rawClaimSupport,
@@ -149,7 +136,7 @@ export function registerAgentReportRoutes(
         status: h.status,
         confidence: h.confidence,
       })),
-      conversationTimeline: (privateKnowledge ? projectOwnerStructuredValue(sessionId, conversationTimeline) : conversationTimeline).map((step: any) => ({
+      conversationTimeline: conversationTimeline.map(step => ({
         eventId: step.eventId,
         ordinal: step.ordinal,
         phase: step.phase,
@@ -158,18 +145,19 @@ export function registerAgentReportRoutes(
         timestamp: step.timestamp,
         sourceEventType: step.sourceEventType,
       })),
-      queryHistory: privateKnowledge ? [] : session.queryHistory || [],
-      conclusionHistory: privateKnowledge ? projectOwnerStructuredValue(sessionId, session.conclusionHistory || []) : session.conclusionHistory || [],
+      queryHistory,
+      conclusionHistory,
       analysisNotes,
       analysisPlan,
       uncertaintyFlags,
       resultContract,
-      logFile: privateKnowledge ? undefined : session.logger.getLogFilePath(),
+      logFile: session.logger.getLogFilePath(),
     };
 
     return res.json({
       success: true,
-      report,
+      // A client read: decision copies carry their derived counts; the stored result does not.
+      report: withClientSourceUseCounts(report),
     });
   });
 }

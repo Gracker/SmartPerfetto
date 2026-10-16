@@ -34,7 +34,11 @@ export interface SqliteTraceProcessorOptions {
 // `process.pid`, and CPU competition on `sched`) and the frame-impact join.
 const SCHEMA = `
   CREATE TABLE process(upid INTEGER PRIMARY KEY, name TEXT, pid INTEGER);
-  CREATE TABLE thread(utid INTEGER PRIMARY KEY, tid INTEGER, upid INTEGER, name TEXT);
+  -- Fixture convention: a thread named 'main' is its process's main thread.
+  CREATE TABLE thread(
+    utid INTEGER PRIMARY KEY, tid INTEGER, upid INTEGER, name TEXT,
+    is_main_thread INTEGER GENERATED ALWAYS AS (CASE WHEN name = 'main' THEN 1 ELSE 0 END) VIRTUAL
+  );
   CREATE TABLE thread_state(
     id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT,
     blocked_function TEXT, io_wait INTEGER, cpu INTEGER,
@@ -65,6 +69,11 @@ const SCHEMA = `
   CREATE TABLE actual_frame_timeline_slice(
     display_frame_token INTEGER, upid INTEGER, jank_type TEXT, present_type TEXT
   );
+  CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+  CREATE TABLE slice(id INTEGER PRIMARY KEY, ts INTEGER, dur INTEGER, depth INTEGER, name TEXT, track_id INTEGER);
+  CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
+  -- A setup that needs a real trace end (open thread_state rows) updates this row.
+  INSERT INTO trace_bounds VALUES (0, 9000000000000000);
 `;
 
 /**

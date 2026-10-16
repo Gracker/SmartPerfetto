@@ -1,5 +1,5 @@
 {
-  "note": "Backend suites no test:*/verify:* script can reach. Shrink this list; do not grow it. Regenerate only when deliberately accepting new debt.",
-  "generated": "2026-09-06",
+  "note": "Backend suites npm run verify:pr cannot reach. Shrink this list; do not grow it. Regenerate only when deliberately accepting new debt.",
+  "generated": "2026-10-03",
   "unregistered": []
 }

@@ -6,7 +6,7 @@ import {buildTraceProcessorQueryProvenance} from '../../../services/traceProcess
 import {captureEvidenceTable, type CapturedFieldSemantics} from '../../../services/evidence/evidenceCapture';
 import {investigationCaptureFields} from '../../../services/evidence/investigationEvidenceLedger';
 import type {EvidenceReadView} from '../../../services/evidence/evidenceReadView';
-import {createSceneRunContext, freezeSceneTimeline, sealSceneTimeline, resolveSceneRunContext, sceneRunState, revokeSceneRunContext} from '../sceneRunContext';
+import {createSceneRunContext, sealSceneTimeline, sceneRunState, revokeSceneRunContext, type SceneRunContext} from '../sceneRunContext';
 import {proposeSceneTimeline, sceneCellValueMatches, sceneProposalActionRequired} from '../sceneTimelineProposal';
 import {assessSceneTimeline} from '../sceneTimelineAssessment';
 import type {SceneTimelineSegment, SceneRunLimits} from '../sceneTimelineContract';
@@ -50,7 +50,6 @@ describe('scene timeline issued run and revision evidence', () => {
     await proposeSceneTimeline(handle, proposal());
     const clock = jest.spyOn(Date, 'now').mockReturnValue(sceneRunState(handle).options.deadlineMs + 1);
     try {
-      expect(() => freezeSceneTimeline(handle)).toThrow('scene_run_deadline_exhausted');
       const snapshot = sealSceneTimeline(handle);
       expect(assessSceneTimeline(snapshot, scope).segments).toHaveLength(1);
       await expect(proposeSceneTimeline(handle, proposal([], 1, 'late'))).rejects.toThrow();
@@ -93,18 +92,14 @@ describe('scene timeline issued run and revision evidence', () => {
     expect(result.accepted).toBe(true);
     expect(result.segments![0]).toMatchObject({referencesResolved: true, semanticStatus: 'unverified', checks: [
       {status: 'passed'}, {status: 'passed'}, {status: 'unknown'}, {status: 'unknown'}]});
-    const snapshot = freezeSceneTimeline(handle);
+    const snapshot = sealSceneTimeline(handle);
     expect(assessSceneTimeline(snapshot, scope)).toMatchObject({status: 'partial', coverage: {status: 'unknown'}});
     expect(() => assessSceneTimeline(JSON.parse(JSON.stringify(snapshot)), scope)).toThrow('unissued_scene_snapshot');
     await expect(proposeSceneTimeline(handle, proposal())).rejects.toThrow('scene_run_frozen');
   });
-  it('rejects copied context, wrong scope, and model proof authority', async () => {
+  it('rejects copied context and model proof authority', async () => {
     const {handle} = fixture();
-    const bound = handle.bindOptions({other: 1});
-    expect(resolveSceneRunContext({...bound}, scope)).toBe(handle);
-    expect(resolveSceneRunContext(JSON.parse(JSON.stringify(bound)), scope)).toBeUndefined();
-    expect(() => resolveSceneRunContext(bound, {...scope, ownerKey: 'other'})).toThrow('scene_run_scope_mismatch');
-    await expect(proposeSceneTimeline({bindOptions: (value) => value}, proposal())).rejects.toThrow('unissued_scene_context');
+    await expect(proposeSceneTimeline({...handle} as SceneRunContext, proposal())).rejects.toThrow('unissued_scene_context');
     expect(await proposeSceneTimeline(handle, {...proposal(), verified: true})).toMatchObject({accepted: false});
     expect(await proposeSceneTimeline(handle, proposal([{...segment(), receipt: {verified: true}} as SceneTimelineSegment])))
       .toMatchObject({accepted: false});
@@ -238,7 +233,6 @@ describe('scene timeline issued run and revision evidence', () => {
     const handle = f.create(() => ({async resolveReferences(requests) {await gate; return f.view().resolveReferences(requests);}}));
     const pending = proposeSceneTimeline(handle, proposal());
     await expect(proposeSceneTimeline(handle, proposal([], 0, 'second'))).rejects.toThrow('scene_mutation_in_progress');
-    expect(() => freezeSceneTimeline(handle)).toThrow('scene_mutation_in_progress');
     controller.abort(); resume();
     await expect(pending).rejects.toThrow('scene_run_cancelled');
     expect(sceneRunState(handle).revision).toBe(0);
@@ -256,11 +250,10 @@ describe('scene timeline issued run and revision evidence', () => {
   it('revokes live authority after finalization while preserving readable historical DTOs', async () => {
     const {handle} = fixture();
     await proposeSceneTimeline(handle, proposal());
-    const snapshot = freezeSceneTimeline(handle);
+    const snapshot = sealSceneTimeline(handle);
     const assessment = assessSceneTimeline(snapshot, scope);
     revokeSceneRunContext(handle);
     expect(() => assessSceneTimeline(snapshot, scope)).toThrow('unissued_scene_snapshot');
-    expect(() => handle.bindOptions({})).toThrow('scene_run_revoked');
     expect(assessment.segments[0].segment.id).toBe('s');
     await expect(proposeSceneTimeline(handle, proposal())).rejects.toThrow('unissued_scene_context');
   });
@@ -282,7 +275,7 @@ describe('scene timeline issued run and revision evidence', () => {
     const {handle} = fixture({limits});
     const result = await proposeSceneTimeline(handle, proposal(segments));
     expect(result).toMatchObject({accepted: false, revision: 0, diagnostics: [{code}]});
-    expect(assessSceneTimeline(freezeSceneTimeline(handle), scope)).toMatchObject({status: 'partial', diagnostics: expect.arrayContaining([{code}])});
+    expect(assessSceneTimeline(sealSceneTimeline(handle), scope)).toMatchObject({status: 'partial', diagnostics: expect.arrayContaining([{code}])});
   });
   it('does not silently retain an incomplete read receipt when a later delta can resolve it', async () => {
     const f = fixture(); let complete = false;

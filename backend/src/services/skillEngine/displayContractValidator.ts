@@ -2,7 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { DisplayConfig, SkillDefinition, SkillStep } from './types';
+import type { DisplayConfig, SkillDefinition } from './types';
+import { stepNodesOf } from './skillSteps';
 import {
   VALID_CLICK_ACTIONS,
   VALID_COLUMN_FORMATS,
@@ -11,6 +12,7 @@ import {
   VALID_DISPLAY_LAYERS,
   VALID_DISPLAY_LEVELS,
   isValidDisplayLayer,
+  isValidColumnUnit,
 } from '../../types/dataContract';
 
 export interface DisplayContractIssue {
@@ -27,7 +29,6 @@ export interface ValidateDisplayContractOptions {
   filePath?: string;
 }
 
-const VALID_TIME_UNITS = ['ns', 'us', 'ms', 's'] as const;
 const VALID_WIDTHS = ['narrow', 'medium', 'wide', 'auto'] as const;
 
 export function isDisplayTitleTranslations(value: unknown): value is NonNullable<DisplayConfig['title_i18n']> {
@@ -57,6 +58,20 @@ function pushIssue(
   });
 }
 
+/** A label's `label_i18n`, when present, maps en or zh-CN to non-empty strings. */
+function validateLabelTranslations(
+  issues: DisplayContractIssue[],
+  skillName: string,
+  translations: unknown,
+  path: string,
+  options: ValidateDisplayContractOptions,
+  stepId: string | undefined,
+): void {
+  if (translations === undefined || isDisplayTitleTranslations(translations)) return;
+  pushIssue(issues, skillName, `${path}.label_i18n`, `${path}.label_i18n`,
+    'label_i18n must map en or zh-CN to non-empty strings', translations, options, stepId);
+}
+
 function validateColumnDefinition(
   issues: DisplayContractIssue[],
   skillName: string,
@@ -78,6 +93,7 @@ function validateColumnDefinition(
   }
 
   const col = column as Record<string, unknown>;
+  validateLabelTranslations(issues, skillName, col.label_i18n, path, options, stepId);
   if (!col.name || typeof col.name !== 'string') {
     pushIssue(
       issues,
@@ -130,13 +146,13 @@ function validateColumnDefinition(
     );
   }
 
-  if (col.unit && !VALID_TIME_UNITS.includes(col.unit as any)) {
+  if (col.unit && !isValidColumnUnit(col.type, col.unit)) {
     pushIssue(
       issues,
       skillName,
       `${path}.unit`,
       `${path}.unit`,
-      `Invalid time unit. Valid values: ${VALID_TIME_UNITS.join(', ')}`,
+      `Invalid unit for column type ${col.type}`,
       col.unit,
       options,
       stepId,
@@ -266,6 +282,7 @@ function validateDisplayConfig(
   }
 }
 
+/** One step's own display and synthesize labels; validateSkillDisplayContract walks the steps. */
 function validateStepDisplay(
   issues: DisplayContractIssue[],
   skillName: string,
@@ -278,27 +295,10 @@ function validateStepDisplay(
   const stepObj = step as Record<string, unknown>;
   const stepId = typeof stepObj.id === 'string' ? stepObj.id : undefined;
   validateDisplayConfig(issues, skillName, stepObj.display, `${path}.display`, options, stepId);
-
-  if (Array.isArray(stepObj.steps)) {
-    stepObj.steps.forEach((nestedStep, index) => {
-      validateStepDisplay(issues, skillName, nestedStep, `${path}.steps[${index}]`, options);
-    });
-  }
-
-  if (stepObj.then) {
-    validateStepDisplay(issues, skillName, stepObj.then, `${path}.then`, options);
-  }
-
-  if (Array.isArray(stepObj.conditions)) {
-    stepObj.conditions.forEach((condition, index) => {
-      if (!condition || typeof condition !== 'object') return;
-      const thenStep = (condition as Record<string, unknown>).then;
-      validateStepDisplay(issues, skillName, thenStep, `${path}.conditions[${index}].then`, options);
-    });
-  }
-
-  if (stepObj.else) {
-    validateStepDisplay(issues, skillName, stepObj.else, `${path}.else`, options);
+  const synthesize = stepObj.synthesize as {fields?: unknown} | undefined;
+  if (synthesize && typeof synthesize === 'object' && Array.isArray(synthesize.fields)) {
+    synthesize.fields.forEach((field, index) => validateLabelTranslations(issues, skillName,
+      (field as {label_i18n?: unknown} | null)?.label_i18n, `${path}.synthesize.fields[${index}]`, options, stepId));
   }
 }
 
@@ -319,11 +319,17 @@ export function validateSkillDisplayContract(
 
   validateOnce((skill as any).display, 'display');
   validateOnce((skill as any).output?.display, 'output.display');
+  // The catalog translations of the Skill's own name and description.
+  for (const field of ['display_name_i18n', 'description_i18n'] as const) {
+    const translations = (skill as any).meta?.[field];
+    if (translations !== undefined && !isDisplayTitleTranslations(translations)) {
+      pushIssue(issues, skillName, `meta.${field}`, `meta.${field}`,
+        `${field} must map en or zh-CN to non-empty strings`, translations, options);
+    }
+  }
 
-  if (Array.isArray((skill as any).steps)) {
-    (skill as any).steps.forEach((step: SkillStep, index: number) => {
-      validateStepDisplay(issues, skillName, step, `steps[${index}]`, options);
-    });
+  for (const {node, at} of stepNodesOf(skill)) {
+    validateStepDisplay(issues, skillName, node, at, options);
   }
 
   return issues;
@@ -443,6 +449,7 @@ export function sanitizeDisplayConfigForRuntime(
         }
 
         const cleanColumn: Record<string, unknown> = { ...rawColumn };
+        delete cleanColumn.label_i18n; // Authoring metadata belongs to the localization catalog.
         if (cleanColumn.type && !VALID_COLUMN_TYPES.includes(cleanColumn.type as any)) {
           pushIssue(
             issues,
@@ -485,13 +492,13 @@ export function sanitizeDisplayConfigForRuntime(
           delete cleanColumn.clickAction;
         }
 
-        if (cleanColumn.unit && !VALID_TIME_UNITS.includes(cleanColumn.unit as any)) {
+        if (cleanColumn.unit && !isValidColumnUnit(cleanColumn.type, cleanColumn.unit)) {
           pushIssue(
             issues,
             skillName,
             `${path}.unit`,
             `${path}.unit`,
-            `Invalid time unit. Valid values: ${VALID_TIME_UNITS.join(', ')}`,
+            `Invalid unit for column type ${cleanColumn.type}`,
             cleanColumn.unit,
             options,
             stepId,

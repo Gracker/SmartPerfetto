@@ -129,8 +129,8 @@ sql: |
     FROM linux_systemd_journald_logs
     WHERE (${start_ts} IS NULL OR ts >= ${start_ts})
       AND (${end_ts} IS NULL OR ts < ${end_ts})
-      AND ('${unit|}' = '' OR LOWER(COALESCE(systemd_unit, '')) GLOB '*' || LOWER('${unit|}') || '*')
-      AND ('${tag|}' = '' OR LOWER(COALESCE(tag, '')) GLOB '*' || LOWER('${tag|}') || '*')
+      AND ('${unit|}' = '' OR instr(LOWER(COALESCE(systemd_unit, '')), LOWER('${unit|}')) > 0)
+      AND ('${tag|}' = '' OR instr(LOWER(COALESCE(tag, '')), LOWER('${tag|}')) > 0)
   ),
   selected AS (
     SELECT

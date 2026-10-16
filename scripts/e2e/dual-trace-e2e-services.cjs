@@ -65,6 +65,36 @@ function dotenvLine(key, value) {
   return `${key}='${text}'`;
 }
 
+function resolveRealProvider(environment = process.env) {
+  const apiKey = environment.GLM_API_KEY?.trim();
+  if (!apiKey) throw new Error('GLM_API_KEY is required for --real-provider');
+  const baseUrl = environment.GLM_BASE_URL || 'https://open.bigmodel.cn/api/coding/paas/v4';
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new Error('--real-provider requires the official GLM Coding Plan endpoint');
+  }
+  if (url.origin !== 'https://open.bigmodel.cn' ||
+      url.pathname.replace(/\/+$/, '') !== '/api/coding/paas/v4' ||
+      url.username || url.password || url.search || url.hash) {
+    throw new Error('--real-provider requires the official GLM Coding Plan endpoint');
+  }
+  const model = environment.GLM_MODEL || 'glm-5.3';
+  const lightModel = environment.GLM_LIGHT_MODEL || 'glm-5.3-flash';
+  if (![model, lightModel].every((name) => /^glm-[a-z0-9.-]+$/.test(name))) {
+    throw new Error('--real-provider requires GLM model IDs for both main and light models');
+  }
+  return {
+    baseUrl: `${url.origin}/api/coding/paas/v4`,
+    apiKey,
+    model,
+    lightModel,
+    maxOutputTokens: 16384,
+    maxTurns: 100,
+  };
+}
+
 async function getAvailablePort() {
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -117,7 +147,6 @@ async function configureServices(workspace, providerOptions) {
     OPENAI_AGENTS_PROTOCOL: "chat_completions",
     OPENAI_BASE_URL: provider.baseUrl,
     OPENAI_API_KEY: provider.apiKey,
-    DEEPSEEK_API_KEY: provider.apiKey,
     OPENAI_MODEL: provider.model,
     OPENAI_LIGHT_MODEL: provider.lightModel,
     OPENAI_MAX_OUTPUT_TOKENS: provider.maxOutputTokens,
@@ -276,5 +305,6 @@ module.exports = {
   childEnvironments,
   configureServices,
   fetchBackendDiagnostics,
+  resolveRealProvider,
   validateBackendHealth,
 };

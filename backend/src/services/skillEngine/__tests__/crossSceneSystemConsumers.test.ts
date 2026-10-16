@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 import { SkillExecutor } from '../skillExecutor';
 import { normalizeSkillDefinition } from '../skillLoader';
 import { validateSkillInputs } from '../skillValidator';
+import { withStepFragments } from '../../../../tests/helpers/skillFragmentSql';
 
 function load(name: string, id: string): any {
   const skill = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills', name.startsWith('atomic/') ? '' : 'composite', `${name}.skill.yaml`), 'utf8')) as any;
@@ -15,10 +16,8 @@ function load(name: string, id: string): any {
 
 function query(db: Database.Database, name: string, id: string, extra: Record<string, string> = {}): any[] {
   const step = load(name, id);
-  let sql = step.sql as string;
-  for (const fragment of step.sql_fragments || []) {
-    sql = sql.replace(/\bWITH\s+/i, `WITH ${fs.readFileSync(path.join(process.cwd(), 'skills', fragment), 'utf8')}\n,\n`);
-  }
+  // Fragments injected as the executor injects them.
+  let sql = withStepFragments(step.sql as string, step.sql_fragments);
   const params: Record<string, string> = {
     start_ts: '10000000', end_ts: '40000000', main_start_ts: 'NULL', main_end_ts: 'NULL',
     render_start_ts: 'NULL', render_end_ts: 'NULL', event_ts: '10000000', event_end_ts: '40000000',
@@ -228,10 +227,12 @@ describe('cross-scene canonical system consumers', () => {
     } finally { db.close(); }
   });
 
+  // The startup graph's named run selects by package, `:*` children included,
+  // so its rows are read unscoped; an exact run keeps UPID 42 alone (below).
   it.each([
-    ['atomic/startup_thread_blocking_graph', 'root'],
-    ['atomic/anr_main_thread_blocking', 'wakeup_chain'],
-  ])('%s keeps native wait/wakeup identity and clipping without inventing blockers', (name, step) => {
+    ['atomic/startup_thread_blocking_graph', 'root', {'__process_scope.upid': 'NULL'}],
+    ['atomic/anr_main_thread_blocking', 'wakeup_chain', {}],
+  ] as Array<[string, string, Record<string, string>]>)('%s keeps native wait/wakeup identity and clipping without inventing blockers', (name, step, scope) => {
     const db = fixture();
     try {
       db.exec(`ALTER TABLE process ADD COLUMN uid INTEGER;
@@ -260,7 +261,8 @@ describe('cross-scene canonical system consumers', () => {
           (63,4,15000000,1000000,'R',NULL,3,0),
           (64,5,10000000,5000000,'S',NULL,NULL,NULL),
           (65,6,10000000,5000000,'S',NULL,NULL,NULL);`);
-      const rows = query(db,name,step);
+      const run = (extra: Record<string, string> = {}) => query(db,name,step,{...scope,...extra});
+      const rows = run();
       const wait = (id: number) => rows.find(row=>row.thread_state_id===id);
       expect(wait(50)).toMatchObject({upid:42,utid:1,raw_start_ts:'5000000',raw_end_ts:'20000000',
         start_ts:'10000000',end_ts:'20000000',left_censored:1,right_censored:0,is_unfinished:0,
@@ -281,16 +283,19 @@ describe('cross-scene canonical system consumers', () => {
         expect(wait(52)).toMatchObject({waker_current_slice:'-',waker_slice_status:'not_observed'});
         expect(wait(59).total_block_ms).toBe(4);
         expect(wait(64).utid).not.toBe(wait(65).utid);
+        const exact = query(db,name,step);
+        expect(exact.length).toBeGreaterThan(0);
+        expect(exact.every(row => row.upid === 42)).toBe(true);
         db.exec("INSERT INTO slice VALUES(4,1,20000000,3000000,1,'ambiguous_task')");
-        expect(query(db,name,step).find(row=>row.thread_state_id===50)).toMatchObject({
+        expect(run().find(row=>row.thread_state_id===50)).toMatchObject({
           waker_current_slice:'-',waker_slice_id:null,waker_slice_status:'ambiguous_deepest'});
       } else {
         expect(wait(50)).toMatchObject({ts:'20000000',sleep_dur_ms:10,wait_span_count:1});
         expect(wait(59)).toMatchObject({ts:null,sleep_dur_ms:4});
       }
-      expect(query(db,name,step,{end_ts:'20000000'}).find(row=>row.thread_state_id===50))
+      expect(run({end_ts:'20000000'}).find(row=>row.thread_state_id===50))
         .toMatchObject({wakeup_count:0,wakeup_status:'no_in_window_wakeup',end_ts:'20000000'});
-      expect(query(db,name,step,{end_ts:'60000000'}).find(row=>row.thread_state_id===59))
+      expect(run({end_ts:'60000000'}).find(row=>row.thread_state_id===59))
         .toMatchObject({end_ts:'50000000',is_unfinished:1,wakeup_count:0});
       const declared = new Set(load(name,step).display.columns.map((column: any)=>column.name));
       for (const field of Object.keys(rows[0])) expect(declared.has(field)).toBe(true);
@@ -391,10 +396,17 @@ describe('cross-scene canonical system consumers', () => {
         CREATE TABLE thread_track(id INTEGER,utid INTEGER);
         CREATE TABLE slice(track_id INTEGER,ts INTEGER,dur INTEGER,name TEXT);
         CREATE TABLE actual_frame_timeline_slice(ts INTEGER,upid INTEGER,display_frame_token INTEGER);
+        CREATE TABLE cpu_counter_track(id INTEGER,cpu INTEGER,type TEXT,name TEXT);
+        CREATE TABLE counter_track(id INTEGER,type TEXT,name TEXT,dimension_arg_set_id INTEGER);
+        CREATE TABLE counter(id INTEGER,track_id INTEGER,ts INTEGER,value REAL);
+        CREATE TABLE args(arg_set_id INTEGER,key TEXT,string_value TEXT);
       `);
+      // The decline stays an observation; with no max-limit track the only
+      // frequency-limit statement is that the evidence is missing.
       expect(query(db, 'scrolling_analysis', 'global_context_flags', {start_ts:'0',end_ts:'10000000000'}))
         .toEqual([expect.objectContaining({frequency_decline_observed:1,thermal_trending:null,
-          thermal_evidence:'temperature_or_throttle_evidence_required'})]);
+          thermal_evidence:'LIMIT_EVIDENCE_MISSING',freq_limit_classification:'LIMIT_EVIDENCE_MISSING',
+          freq_limit_trace_summary:'LIMIT_EVIDENCE_MISSING'})]);
     } finally { db.close(); }
   });
 
@@ -408,5 +420,48 @@ describe('cross-scene canonical system consumers', () => {
       expect(step.sql).not.toContain("state = 'R'");
       expect(step.sql).not.toContain("core_type NOT IN ('prime', 'big')");
     }
+  });
+});
+
+// Totals a diagnosis cites are computed in SQL: the portable runtime that also
+// renders these templates has no rounding or ternary.
+describe('SQL-computed values cited by diagnostic templates', () => {
+  it('jank GC total sums the per-type overlaps as displayed, so rounding cannot cross the threshold', () => {
+    const db = fixture();
+    try {
+      // Two GC types each overlap the 10-40ms window by 1.504ms: 1.5 + 1.5, not round(3.008).
+      db.exec(`CREATE TABLE android_garbage_collection_events(tid INTEGER,upid INTEGER,gc_type TEXT,gc_ts INTEGER,gc_dur INTEGER);
+        INSERT INTO android_garbage_collection_events VALUES
+          (100,42,'young',38496000,2000000),(100,42,'full',9000000,2504000),
+          (101,43,'young',20000000,5000000),(100,42,'young',45000000,1000000);`);
+      const rows = query(db, 'jank_frame_detail', 'gc_in_frame');
+      expect(rows).toEqual([
+        expect.objectContaining({gc_type: expect.any(String), overlap_ms: 1.5, total_overlap_ms: 3}),
+        expect.objectContaining({gc_type: expect.any(String), overlap_ms: 1.5, total_overlap_ms: 3}),
+      ]);
+    } finally { db.close(); }
+  });
+
+  it('startup critical tasks total only the threads it returns, after the top_k cut', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO thread_state VALUES(8,2,10000000,3000000,'Running',1,1,NULL,NULL,NULL,NULL);`);
+      const all = query(db, 'atomic/startup_critical_tasks', 'root');
+      expect(all.map(row => row.utid)).toEqual([1, 2]);
+      expect(all.map(row => row.returned_total_cpu_ms)).toEqual([13, 13]);
+      const top = query(db, 'atomic/startup_critical_tasks', 'root', {top_k: '1'});
+      expect(top).toEqual([expect.objectContaining({utid: 1, total_cpu_ms: 10, returned_total_cpu_ms: 10, total_observed_threads: 2})]);
+    } finally { db.close(); }
+  });
+
+  it('ANR context gives the exact integer window start of its decimal-string timestamps', () => {
+    const db = fixture();
+    try {
+      db.exec(`CREATE TABLE android_anrs(ts INTEGER,process_name TEXT,pid INTEGER,upid INTEGER,anr_type TEXT,error_id TEXT,default_anr_dur_ms INTEGER,anr_dur_ms INTEGER);
+        INSERT INTO android_anrs VALUES(9007199254742101,'com.example.app',100,42,'INPUT_DISPATCHING_TIMEOUT','e1',5000,0);`);
+      const rows = query(db, 'atomic/anr_context_in_range', 'root', {anr_type: ''});
+      expect(rows).toEqual([expect.objectContaining({
+        anr_ts: '9007199254742101', timeout_ns: '5000000000', window_start_ts: '9007194254742101'})]);
+    } finally { db.close(); }
   });
 });

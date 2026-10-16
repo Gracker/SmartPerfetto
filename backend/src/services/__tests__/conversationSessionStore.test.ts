@@ -11,12 +11,16 @@ import {ConversationSessionStore, type ConversationSessionDescriptor} from '../c
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {openEnterpriseDb, ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../analysisRunStore';
+import {buildReviewNotFinishedResult} from '../reviewStopHandle';
+import {createAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../agentRuntime/analysisHistory';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 let tmpDir: string;
 let db: Database.Database;
 const owner = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
-const scope = {...owner, sessionId: 'conversation-a', traceId: 'trace-a', runId: 'run-a'};
+const scope = {...owner, sessionId: 'conversation-a', traceId: 'trace-a', runId: 'run-a',
+  privateContext: NO_PRIVATE_CONTEXT};
 function descriptor(): ConversationSessionDescriptor {
   return {version: 1, ...owner, sessionId: scope.sessionId, traceContext: {kind: 'attached', traceId: scope.traceId},
     providerId: 'provider-a', providerFollowsActive: false, runtimeKind: 'openai-agents-sdk', providerSnapshotHash: 'hash-a',
@@ -43,6 +47,33 @@ afterEach(() => {
 });
 
 describe('logical conversation durability', () => {
+  it('writes one terminal turn per run and keeps a review-not-finished body incomplete for later readers', () => {
+    const store = new ConversationSessionStore(db);
+    store.save(descriptor(), turn());
+    const done = {...descriptor(), status: 'completed' as const, lastActivityAt: 200,
+      lastRun: {...descriptor().lastRun, status: 'completed' as const, completedAt: 200}};
+    const partial = toAnalysisHistoryTurn({id: 'run-a', turnIndex: 0, query: 'why?', traceId: 'trace-a', timestamp: 200,
+      analysisContextFingerprint: 'auth-a', result: buildReviewNotFinishedResult({sessionId: scope.sessionId,
+        conclusion: 'Main thread waited 80 ms on binder.', outputLanguage: 'en'})});
+    store.save(done, partial);
+    expect(() => store.save(done, {...partial, answer: 'a second terminal write'}))
+      .toThrow('conversation_recovery_turn_already_terminal');
+
+    const restored = store.listTurns(store.load(owner, scope.sessionId)!);
+    expect(restored).toEqual([expect.objectContaining({answer: 'Main thread waited 80 ms on binder.', partial: true,
+      completionStatus: 'incomplete', terminationReason: 'review_not_finished',
+      terminationMessage: 'The semantic review did not finish: this answer is unverified.',
+      analysisContextFingerprint: 'auth-a'})]);
+    const reader = createAnalysisHistoryReader({getTurns: () => restored, assertActive: () => undefined});
+    expect(reader.read({})).toMatchObject({entries: [expect.objectContaining({partial: true,
+      completionStatus: 'incomplete', terminationReason: 'review_not_finished'})]});
+    expect(reader.read({turnId: 'run-a'})).toMatchObject({partial: true, completionStatus: 'incomplete',
+      text: expect.stringContaining('this answer is unverified')});
+    const preview = renderAnalysisHistoryContext(restored, {outputLanguage: 'en'})!;
+    expect(preview).toContain('"completionStatus":"incomplete"');
+    expect(preview).toContain('"terminationReason":"review_not_finished"');
+  });
+
   it('holds the write lock across its owner and descriptor reads', () => {
     // A deferred save lost its read snapshot to any commit before its first write
     // and failed at once with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot wait out.
@@ -70,6 +101,14 @@ describe('logical conversation durability', () => {
     expect(stored.lastRun.status).toBe('running');
     expect(restarted.listTurns(stored)).toEqual([expect.objectContaining({query: 'why?', answer: '', partial: true})]);
     expect(JSON.stringify(stored)).not.toMatch(/runtimeSessionId|evidenceWitness|sdkTranscript/);
+  });
+
+  it('keeps a valid requested source depth across a restart and drops anything else', () => {
+    new ConversationSessionStore(db).save({...descriptor(), sourceDepth: 'mechanism'}, turn());
+    expect(new ConversationSessionStore(db).load(owner, scope.sessionId)?.sourceDepth).toBe('mechanism');
+
+    new ConversationSessionStore(db).save({...descriptor(), sourceDepth: 'deep' as never}, turn());
+    expect(new ConversationSessionStore(db).load(owner, scope.sessionId)).not.toHaveProperty('sourceDepth');
   });
 
   it('atomically recovers finalized body, partial status, uncertainty, and logical clarification', () => {
@@ -116,6 +155,13 @@ describe('logical conversation durability', () => {
       turn('LATE_OLD_ANSWER'))).toThrow('stale_run');
     expect(store.load(owner, scope.sessionId)?.lastRun.runId).toBe('run-b');
     expect(store.listTurns(newer).some(entry => entry.answer === 'LATE_OLD_ANSWER')).toBe(false);
+  });
+
+  it('refuses an unparsable descriptor with its fixed code, quoting none of it', () => {
+    const store = new ConversationSessionStore(db);
+    store.save(descriptor(), turn());
+    db.prepare('UPDATE runtime_snapshots SET snapshot_json = ?').run('{"lastRun":[CONVERSATION-CANARY-1b4 x]}');
+    expect(() => store.load(owner, scope.sessionId)).toThrow(/^conversation_recovery_descriptor_invalid$/);
   });
 
   it('stores only the descriptor allowlist even when a caller passes private runtime fields', () => {

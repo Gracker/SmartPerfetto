@@ -42,6 +42,21 @@ describe('experimental runtime selection', () => {
     });
   });
 
+  it('reads the opt-in switch with the shared on/off spelling set', () => {
+    for (const enabled of ['1', 'true', 'yes', 'on', 'enabled', ' ON ']) {
+      expect(resolveExperimentalAgentRuntimeSelection({
+        [EXPERIMENTAL_AGENT_RUNTIME_ENABLED_ENV]: enabled,
+        [EXPERIMENTAL_AGENT_RUNTIME_ENV]: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+      })).toEqual({kind: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND, source: 'env'});
+    }
+    for (const disabled of ['0', 'false', 'no', 'off', 'disabled', 'maybe', '']) {
+      expect(() => resolveExperimentalAgentRuntimeSelection({
+        [EXPERIMENTAL_AGENT_RUNTIME_ENABLED_ENV]: disabled,
+        [EXPERIMENTAL_AGENT_RUNTIME_ENV]: EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+      })).toThrow(`${EXPERIMENTAL_AGENT_RUNTIME_ENV} requires ${EXPERIMENTAL_AGENT_RUNTIME_ENABLED_ENV}=1`);
+    }
+  });
+
   it('derives experimental runtime predicates from the shared kind list', () => {
     expect(listExperimentalRuntimeKinds()).toEqual([
       EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,

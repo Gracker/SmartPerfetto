@@ -5,7 +5,7 @@
  * callable through the composite memory_analysis entrypoint.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 const TRACE_FILE = 'launch_light.pftrace';

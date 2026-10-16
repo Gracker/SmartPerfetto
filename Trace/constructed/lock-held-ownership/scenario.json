@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "holder",
+        "process": "app",
+        "name": "binder:fixture_2"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "18000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::lock-held-ownership"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "100000000",
+      "duration_ns": "300000000",
+      "process": "app",
+      "thread": "holder",
+      "name": "ProviderLock_lock_held"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "150000000",
+      "duration_ns": "50000000",
+      "process": "app",
+      "thread": "holder",
+      "name": "ProviderLock_lock_held"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "120000000",
+      "duration_ns": "280000000",
+      "process": "app",
+      "thread": "main",
+      "name": "ProviderLock_lock_acquire"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "130000000",
+      "duration_ns": "265000000",
+      "process": "app",
+      "thread": "main",
+      "name": "monitor contention with owner binder:fixture_2 ({tid:holder}) at void com.smartperfetto.fixture.ContentStore.flush()(ContentStore.java:88) waiters=0 blocking from void com.smartperfetto.fixture.MainActivity.onResume()(MainActivity.java:42)"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "400000000",
+      "duration_ns": "50000000",
+      "process": "app",
+      "thread": "main",
+      "name": "ProviderLock_lock_held"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "600000000",
+      "duration_ns": "20000000",
+      "process": "app",
+      "thread": "holder",
+      "name": "ProviderLock_lock_held"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "700000000",
+      "duration_ns": "12000000",
+      "process": "app",
+      "thread": "main",
+      "name": "WindowLock_lock_held"
+    }
+  ]
+}

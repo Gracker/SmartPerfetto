@@ -8,7 +8,7 @@ import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
 import {computePaths, ensureSessionLayout, sessionPaths} from '../../io/paths';
 import {writeJsonFile} from '../../io/sessionStore';
-import {buildCliSceneReportBundle, latestCliSceneReportPath, loadCliSceneReport, rebindCliSceneReportTurnMarkdown,
+import {buildCliSceneReportBundle, latestCliSceneReportPath, loadCliSceneReport,
   renderCliSceneReport, turnCliSceneReportPath} from '../sceneReportReference';
 
 function result(): AnalysisResult {
@@ -94,11 +94,5 @@ describe('CLI scene report reference', () => {
     expect(loadCliSceneReport({...request, latest: true}).status).toBe('unavailable');
     expect(loadCliSceneReport(request).status).toBe('available');
   });
-  it('rebinds only an existing matched locator after source supplementation', () => {
-    const {request} = fixture(); const nextMarkdown = `${request.turnMarkdown}\nSource supplement`;
-    rebindCliSceneReportTurnMarkdown({...request, nextMarkdown});
-    expect(loadCliSceneReport({...request, turnMarkdown: nextMarkdown}).status).toBe('available');
-    expect(loadCliSceneReport({...request, turnMarkdown: nextMarkdown, latest: true}).status).toBe('available');
-    expect(loadCliSceneReport(request).status).toBe('unavailable');
-  });
+
 });

@@ -12,7 +12,9 @@ import test from 'node:test';
 import {
   collectGateTargets,
   findUnreachable,
+  gateScriptNames,
   listTestFiles,
+  parseNpmRun,
 } from '../check-test-registration.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -21,6 +23,7 @@ test('suite discovery uses regular files and stable portable paths', t => {
   const backend = mkdtempSync(join(tmpdir(), 'test-registration-'));
   t.after(() => rmSync(backend, { recursive: true, force: true }));
   mkdirSync(join(backend, 'src', 'nested space', 'decoy.test.ts'), { recursive: true });
+  mkdirSync(join(backend, 'tests'), { recursive: true });
   writeFileSync(join(backend, 'src', 'z.test.ts'), '');
   writeFileSync(join(backend, 'src', 'nested space', 'a_unittest.ts'), '');
   writeFileSync(join(backend, 'src', 'nested space', 'decoy.test.ts', 'inner.test.ts'), '');
@@ -30,6 +33,90 @@ test('suite discovery uses regular files and stable portable paths', t => {
     'src/nested space/decoy.test.ts/inner.test.ts',
     'src/z.test.ts',
   ]);
+});
+
+test('suite discovery covers tests/ and every name Jest runs as a suite', t => {
+  const backend = mkdtempSync(join(tmpdir(), 'test-registration-tests-'));
+  t.after(() => rmSync(backend, { recursive: true, force: true }));
+  mkdirSync(join(backend, 'src'), { recursive: true });
+  mkdirSync(join(backend, 'tests', 'skill-eval'), { recursive: true });
+  mkdirSync(join(backend, 'tests', 'node_modules', 'pkg'), { recursive: true });
+  writeFileSync(join(backend, 'tests', 'skill-eval', 'anr.eval.ts'), '');
+  writeFileSync(join(backend, 'tests', 'skill-eval', 'runner.ts'), '');
+  writeFileSync(join(backend, 'tests', 'node_modules', 'pkg', 'x.test.ts'), '');
+  writeFileSync(join(backend, 'src', 'a.spec.ts'), '');
+  assert.deepEqual(listTestFiles(backend), ['src/a.spec.ts', 'tests/skill-eval/anr.eval.ts']);
+});
+
+test('only scripts verify:pr runs are gates', () => {
+  const root = {'verify:pr': 'npm run test:governance && npm --prefix backend run verify:pr', 'test:governance': 'node x.mjs'};
+  const backend = {
+    'verify:pr': 'npm run validate:skills && npm run test:gate',
+    'test:gate': 'npm run -s test:core && npm run test:analysis-accuracy',
+    'test:core': 'jest src/a/__tests__/core.test.ts',
+    'test:analysis-accuracy': 'npm run trace:materialize && jest tests/skill-eval/batch.eval.ts',
+    'trace:materialize': 'node materialize.cjs',
+    'validate:skills': 'tsx src/cli/index.ts validate',
+    'test:unit': 'jest src/tests',
+  };
+  const gates = gateScriptNames(backend, root);
+  assert.deepEqual([...gates].sort(), ['test:analysis-accuracy', 'test:core', 'test:gate', 'trace:materialize', 'validate:skills', 'verify:pr']);
+  const targets = collectGateTargets(backend, gates);
+  assert.deepEqual(
+    findUnreachable(['src/a/__tests__/core.test.ts', 'tests/skill-eval/batch.eval.ts', 'src/tests/b.test.ts'], targets),
+    ['src/tests/b.test.ts'],
+  );
+});
+
+test('a script chain names only Jest commands, through cd backend and npm test', () => {
+  const root = {'verify:pr': 'cd backend && npm run check && npm test'};
+  const backend = {
+    check: 'tsc -p tsconfig.json src/a/__tests__/typed.test.ts && npx jest src/a/__tests__/run.test.ts',
+    test: 'jest tests/skill-eval/x.eval.ts && tsx tests/runner.ts',
+  };
+  const targets = collectGateTargets(backend, gateScriptNames(backend, root));
+  assert.deepEqual(
+    findUnreachable(['src/a/__tests__/typed.test.ts', 'src/a/__tests__/run.test.ts', 'tests/skill-eval/x.eval.ts'], targets),
+    ['src/a/__tests__/typed.test.ts'],
+  );
+});
+
+test('npm run is read in every spelling the scripts may use', () => {
+  const cases = [
+    ['npm run test:core', { script: 'test:core' }],
+    ['npm run -s test:core', { script: 'test:core' }],
+    ['npm run --silent test:core', { script: 'test:core' }],
+    ['npm --prefix backend run verify:pr', { prefix: 'backend', script: 'verify:pr' }],
+    ['npm --prefix=backend run verify:pr', { prefix: 'backend', script: 'verify:pr' }],
+    ['npm --prefix ./backend run verify:pr', { prefix: './backend', script: 'verify:pr' }],
+    ['NODE_OPTIONS=--max-old-space-size=4096 X=1 npm run test:core', { script: 'test:core' }],
+    ['npm test', { script: 'test' }],
+    ['npm --prefix backend test', { prefix: 'backend', script: 'test' }],
+    ['npx jest src/x.test.ts', undefined],
+    ['npm ci', undefined],
+  ];
+  for (const [command, expected] of cases) assert.deepEqual(parseNpmRun(command), expected, command);
+});
+
+test('cd and --prefix resolve from the package a command runs in', () => {
+  const root = {
+    'verify:pr': 'cd backend && npm run a && cd .. && npm run b && cd backend && npm --prefix .. run d',
+    b: 'npm --prefix=backend run c',
+    d: 'npm --prefix ./backend/ run e',
+    // Another package's scripts are not ours, whatever their names.
+    x: 'cd scripts && npm run a',
+  };
+  const backend = {
+    a: 'jest src/a.test.ts', c: 'jest src/c.test.ts', e: 'jest src/e.test.ts',
+    f: 'npm --prefix scripts run g', g: 'jest src/g.test.ts',
+  };
+  assert.deepEqual([...gateScriptNames(backend, root)].sort(), ['a', 'c', 'e']);
+  assert.deepEqual([...gateScriptNames(backend, {'verify:pr': 'npm --prefix backend run f'})].sort(), ['f']);
+});
+
+test('a chain that runs a script no package defines is an error', () => {
+  assert.throws(() => gateScriptNames({}, {'verify:pr': 'npm --prefix backend run test:gone'}),
+    /verify:pr runs scripts that do not exist: backend:test:gone/);
 });
 
 test('suite discovery fails when the source root cannot be read', t => {
@@ -96,7 +183,8 @@ test('the committed baseline still matches the repository', () => {
   const scripts = JSON.parse(
     readFileSync(join(REPO_ROOT, 'backend', 'package.json'), 'utf8'),
   ).scripts;
-  const unreachable = findUnreachable(listTestFiles(), collectGateTargets(scripts));
+  const rootScripts = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).scripts;
+  const unreachable = findUnreachable(listTestFiles(), collectGateTargets(scripts, gateScriptNames(scripts, rootScripts)));
 
   const newDebt = unreachable.filter(file => !baseline.unregistered.includes(file));
   assert.deepEqual(newDebt, [], 'new unregistered suites must be registered, not baselined');

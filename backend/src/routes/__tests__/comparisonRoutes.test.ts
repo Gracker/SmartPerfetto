@@ -14,9 +14,8 @@ import {
 } from '../../types/multiTraceComparison';
 import {
   authenticate,
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
 } from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID} from '../../utils/localDevIdentity';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
@@ -25,9 +24,15 @@ import { openEnterpriseDb } from '../../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../../services/analysisResultSnapshotStore';
 import comparisonRoutes from '../comparisonRoutes';
 import { reportStore } from '../reportRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import { backendLogPath } from '../../runtimePaths';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalComparisonAiDisabled = process.env.SMARTPERFETTO_COMPARISON_AI_DISABLED;
+const originalLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
 
 let tempDir: string;
 let dbPath: string;
@@ -40,7 +45,7 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function app(): express.Express {
+async function app() {
   const server = express();
   server.use(express.json());
   server.use(
@@ -50,7 +55,7 @@ function app(): express.Express {
     requireWorkspaceRouteContext,
     comparisonRoutes,
   );
-  return server;
+  return loopbackServers.listen(server);
 }
 
 function metrics(values: {
@@ -118,6 +123,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSna
     runId: 'run-a',
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze startup',
@@ -198,20 +204,57 @@ beforeEach(async () => {
   dbPath = path.join(tempDir, 'enterprise.db');
   process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = dbPath;
   process.env.SMARTPERFETTO_COMPARISON_AI_DISABLED = 'true';
+  // Comparison reports land in the backend log directory; keep them in this test's directory.
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(tempDir, 'logs');
   reportStore.clear();
   seedGraph();
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   restoreEnvValue('SMARTPERFETTO_ENTERPRISE_DB_PATH', originalDbPath);
   restoreEnvValue('SMARTPERFETTO_COMPARISON_AI_DISABLED', originalComparisonAiDisabled);
+  restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalLogDir);
   reportStore.clear();
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
 describe('comparison routes', () => {
+  test('carries a private input snapshot\'s audience to the comparison and its report', async () => {
+    const db = openEnterpriseDb(dbPath);
+    try {
+      createAnalysisResultSnapshotRepository(db).createSnapshot(snapshot({
+        id: 'snapshot-private',
+        traceId: 'trace-b',
+        sessionId: 'session-b',
+        runId: 'run-b',
+        privateContext: {codebase: false, knowledge: true},
+        metrics: metrics({ startupMs: 900, fps: 60, jankRate: 3 }),
+      }));
+    } finally {
+      db.close();
+    }
+
+    const createResponse = await request(await app())
+      .post('/api/workspaces/workspace-a/comparisons')
+      .set('x-tenant-id', DEFAULT_TENANT_ID)
+      .send({baselineSnapshotId: 'snapshot-a', candidateSnapshotIds: ['snapshot-private'], query: 'compare'})
+      .expect(201);
+
+    const comparison = createResponse.body.comparison;
+    expect(comparison.privateContext).toEqual({codebase: false, knowledge: true});
+    expect(reportStore.get(comparison.result.reportId)?.privateContext).toEqual({codebase: false, knowledge: true});
+    const stored = openEnterpriseDb(dbPath);
+    try {
+      expect(stored.prepare('SELECT private_context FROM multi_trace_comparison_runs WHERE id = ?')
+        .get(comparison.id)).toEqual({private_context: 2});
+    } finally {
+      stored.close();
+    }
+  });
+
   test('creates completed startup/fps/jank comparison result for two readable snapshots', async () => {
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -256,7 +299,7 @@ describe('comparison routes', () => {
     expect(reportStore.get(createResponse.body.comparison.result.reportId)?.html).toContain('Metric Delta Matrix');
 
     const comparisonId = createResponse.body.comparison.id;
-    const readResponse = await request(app())
+    const readResponse = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${comparisonId}`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -267,7 +310,7 @@ describe('comparison routes', () => {
   });
 
   test('rejects missing candidate snapshots', async () => {
-    await request(app())
+    await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -302,7 +345,7 @@ describe('comparison routes', () => {
     );
     db.close();
 
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -332,7 +375,7 @@ describe('comparison routes', () => {
   });
 
   test('creates comparison for more than two snapshots', async () => {
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -375,7 +418,7 @@ describe('comparison routes', () => {
   });
 
   test('switches baseline and recalculates deltas for an existing comparison', async () => {
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -388,7 +431,7 @@ describe('comparison routes', () => {
 
     const comparisonId = createResponse.body.comparison.id;
     const originalReportId = createResponse.body.comparison.result.reportId;
-    const updateResponse = await request(app())
+    const updateResponse = await request(await app())
       .patch(`/api/workspaces/workspace-a/comparisons/${comparisonId}/baseline`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -452,7 +495,7 @@ describe('comparison routes', () => {
     );
     db.close();
 
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -468,7 +511,7 @@ describe('comparison routes', () => {
       'custom.render_latency_ms',
     ]);
 
-    const filteredResponse = await request(app())
+    const filteredResponse = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${comparisonId}?significantOnly=true`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -476,7 +519,7 @@ describe('comparison routes', () => {
       'startup.total_ms',
     ]);
 
-    const fullResponse = await request(app())
+    const fullResponse = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${comparisonId}`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -502,7 +545,7 @@ describe('comparison routes', () => {
     );
     db.close();
 
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -514,7 +557,7 @@ describe('comparison routes', () => {
 
     expect(createResponse.body.comparison.result.significantChanges).toHaveLength(0);
 
-    const filteredResponse = await request(app())
+    const filteredResponse = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${createResponse.body.comparison.id}?significantOnly=true`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -543,7 +586,7 @@ describe('comparison routes', () => {
     );
     db.close();
 
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -555,7 +598,7 @@ describe('comparison routes', () => {
     const reportId = createResponse.body.comparison.result.reportId;
     expect(reportStore.get(reportId)?.html).toContain('custom.render_latency_ms');
 
-    const exportResponse = await request(app())
+    const exportResponse = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${createResponse.body.comparison.id}/report/export?significantOnly=true`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -565,7 +608,7 @@ describe('comparison routes', () => {
   });
 
   test('exports comparison report from persisted result when artifact cache is empty', async () => {
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -579,7 +622,7 @@ describe('comparison routes', () => {
     const comparisonId = createResponse.body.comparison.id;
     reportStore.clear();
 
-    const exportResponse = await request(app())
+    const exportResponse = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${comparisonId}/report/export`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);
@@ -593,8 +636,43 @@ describe('comparison routes', () => {
     expect(exportResponse.text).toContain('export this comparison');
   });
 
+  test('completes the comparison without a report when the report cannot be saved', async () => {
+    // The module object itself: reportRoutes reads its namespace binding at call time.
+    const nodeFs = require('fs') as typeof import('fs');
+    const realOpen = nodeFs.openSync;
+    const spy = jest.spyOn(nodeFs, 'openSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+      if (/comparison-report-.*\.html$/u.test(String(file))) throw new Error('disk full');
+      return (realOpen as (...args: unknown[]) => number)(file, ...rest);
+    }) as typeof nodeFs.openSync);
+    let createResponse: request.Response;
+    try {
+      createResponse = await request(await app())
+        .post('/api/workspaces/workspace-a/comparisons')
+        .set('x-tenant-id', DEFAULT_TENANT_ID)
+        .send({baselineSnapshotId: 'snapshot-a', candidateSnapshotIds: ['snapshot-b'], query: 'compare without report'})
+        .expect(201);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const comparison = createResponse.body.comparison;
+    expect(comparison.status).toBe('completed');
+    expect(comparison.result.matrix.rows.length).toBeGreaterThan(0);
+    expect(comparison.result).not.toHaveProperty('reportId');
+    expect(comparison.result).not.toHaveProperty('reportUrl');
+    // The failed write left nothing claiming a report id.
+    expect(nodeFs.readdirSync(backendLogPath('reports'))
+      .filter(file => file.startsWith(`comparison-report-${comparison.id}-`))).toEqual([]);
+
+    const exportResponse = await request(await app())
+      .get(`/api/workspaces/workspace-a/comparisons/${comparison.id}/report/export`)
+      .set('x-tenant-id', DEFAULT_TENANT_ID)
+      .expect(200);
+    expect(exportResponse.text).toContain('compare without report');
+  });
+
   test('rejects baseline switch outside comparison inputs', async () => {
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -603,7 +681,7 @@ describe('comparison routes', () => {
       })
       .expect(201);
 
-    await request(app())
+    await request(await app())
       .patch(`/api/workspaces/workspace-a/comparisons/${createResponse.body.comparison.id}/baseline`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -613,7 +691,7 @@ describe('comparison routes', () => {
   });
 
   test('streams the current comparison state as SSE', async () => {
-    const createResponse = await request(app())
+    const createResponse = await request(await app())
       .post('/api/workspaces/workspace-a/comparisons')
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .send({
@@ -622,7 +700,7 @@ describe('comparison routes', () => {
       })
       .expect(201);
 
-    const response = await request(app())
+    const response = await request(await app())
       .get(`/api/workspaces/workspace-a/comparisons/${createResponse.body.comparison.id}/stream`)
       .set('x-tenant-id', DEFAULT_TENANT_ID)
       .expect(200);

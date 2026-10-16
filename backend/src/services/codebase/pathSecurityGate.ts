@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import {CodebaseStateError} from './codebaseRequestError';
 
 const DEFAULT_EXCLUDES = [
   '.git',
@@ -78,6 +79,17 @@ export interface PathSecurityGateOptions {
   platform?: NodeJS.Platform;
 }
 
+/**
+ * A well-formed relative source path the configured policy does not admit.
+ * The caller can choose another path, so source tools answer it as a policy
+ * refusal; a malformed path stays a thrown `source_path_invalid`.
+ */
+export type SourcePathPolicyRefusal = 'source_path_excluded' | 'source_extension_not_allowed';
+
+export type SourcePathAdmission =
+  | {admitted: true; path: string}
+  | {admitted: false; reason: SourcePathPolicyRefusal};
+
 export interface PathPreviewFile {
   relativePath: string;
   sizeBytes: number;
@@ -145,7 +157,11 @@ async function safeRealpathAsync(target: string): Promise<string | null> {
 
 export function isWithinAllowlist(target: string, allowlist: string[]): boolean {
   const realTarget = safeRealpath(target);
-  if (!realTarget) return false;
+  return realTarget !== null && canonicalWithinAllowlist(realTarget, allowlist);
+}
+
+/** `isWithinAllowlist` for a target that is already a canonical real path. */
+function canonicalWithinAllowlist(realTarget: string, allowlist: readonly string[]): boolean {
   for (const root of allowlist) {
     const realRoot = safeRealpath(root);
     if (!realRoot) continue;
@@ -198,7 +214,9 @@ export function readOpenedTextFileBoundedSync(
   opened: fs.Stats,
   maxFileBytes: number,
 ): string {
-  const buffer = Buffer.allocUnsafe(maxFileBytes + 1);
+  // Size the buffer by the file, not the limit: one byte past the size it had
+  // at open detects growth, and the fstat comparison below rejects it.
+  const buffer = Buffer.allocUnsafe(Math.min(maxFileBytes, opened.size) + 1);
   let bytesRead = 0;
   while (bytesRead < buffer.length) {
     const count = fs.readSync(
@@ -211,7 +229,8 @@ export function readOpenedTextFileBoundedSync(
     if (count === 0) break;
     bytesRead += count;
   }
-  if (bytesRead > maxFileBytes) throw new Error('source_file_changed_or_too_large');
+  // Only growth after the size check can exceed the bound here.
+  if (bytesRead > maxFileBytes) throw new Error('source_file_changed_during_read');
   const after = fs.fstatSync(descriptor);
   if (
     !after.isFile() ||
@@ -228,19 +247,48 @@ export function readOpenedTextFileBoundedSync(
 /**
  * Revalidate and read one previewed file without following a swapped symlink.
  * Callers should keep the portable relative path returned by preview().
+ *
+ * Every failure is a path-free code. Native filesystem messages name the
+ * registered absolute root, and these reads feed model-facing tool results
+ * and persisted ingest status.
  */
 export function readAcceptedTextFileSync(
   rootRealpath: string,
   relativePath: string,
   maxFileBytes = DEFAULT_SOURCE_MAX_FILE_BYTES,
 ): string {
-  const canonicalRoot = fs.realpathSync(rootRealpath);
+  try {
+    return readRevalidatedTextFileSync(rootRealpath, relativePath, maxFileBytes);
+  } catch (error) {
+    // The checks below throw their own codes; only native errors carry one.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (typeof code !== 'string') throw error;
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error('source_file_not_found');
+    if (code === 'EACCES' || code === 'EPERM') throw new Error('source_file_unreadable');
+    throw new Error('source_read_failed');
+  }
+}
+
+function realpathOfRegisteredRootSync(rootRealpath: string): string {
+  try {
+    return fs.realpathSync(rootRealpath);
+  } catch {
+    throw new Error('codebase_root_unavailable');
+  }
+}
+
+function readRevalidatedTextFileSync(
+  rootRealpath: string,
+  relativePath: string,
+  maxFileBytes: number,
+): string {
+  const canonicalRoot = realpathOfRegisteredRootSync(rootRealpath);
   const normalizedRegisteredRoot = path.resolve(rootRealpath);
   const normalizeIdentity = (value: string): string => process.platform === 'win32'
     ? value.toLocaleLowerCase('en-US')
     : value;
   if (normalizeIdentity(canonicalRoot) !== normalizeIdentity(normalizedRegisteredRoot)) {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   const portablePath = relativePath.replace(/\\/g, '/');
   const segments = portablePath.split('/').filter(Boolean);
@@ -265,16 +313,17 @@ export function readAcceptedTextFileSync(
   }
   try {
     const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile() || stat.size > maxFileBytes) throw new Error('source_file_changed_or_too_large');
+    if (!stat.isFile()) throw new Error('source_path_not_regular_file');
+    if (stat.size > maxFileBytes) throw new Error('source_file_too_large');
     const identityError = openedFileIdentityError(before, stat, noFollowUsed);
     if (identityError) throw new Error(identityError);
     // Never read to EOF without a hard bound. A writable checkout can grow
     // after fstat; reading at most max+1 both caps allocation and detects that
     // race before any source text reaches the indexing pipeline.
     const content = readOpenedTextFileBoundedSync(descriptor, stat, maxFileBytes);
-    const afterRootRealPath = fs.realpathSync(rootRealpath);
+    const afterRootRealPath = realpathOfRegisteredRootSync(rootRealpath);
     if (normalizeIdentity(afterRootRealPath) !== normalizeIdentity(canonicalRoot)) {
-      throw new Error('codebase_root_realpath_drift');
+      throw new CodebaseStateError('codebase_root_realpath_drift');
     }
     const afterRealPath = fs.realpathSync(candidate);
     if (afterRealPath !== realPath) throw new Error('source_path_changed_during_read');
@@ -282,6 +331,18 @@ export function readAcceptedTextFileSync(
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+/** Whether two real paths name the same location: case-insensitively only on win32. */
+export function sameCanonicalPath(
+  left: string,
+  right: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const identity = (value: string): string => platform === 'win32'
+    ? path.resolve(value).toLocaleLowerCase('en-US')
+    : path.resolve(value);
+  return identity(left) === identity(right);
 }
 
 export class PathSecurityGate {
@@ -344,24 +405,37 @@ export class PathSecurityGate {
     rootPath: string,
     options: PathPreviewOptions = {},
   ): Promise<string> {
-    const configuredRoots = this.allowlistRootsOverride ??
-      configuredAllowlistRoots(this.allowlistEnvironmentVariable);
-    const allowlistRoots = [
-      ...configuredRoots,
-      ...(options.additionalAllowlistRoots ?? []),
-    ];
     const rootRealpath = await safeRealpathAsync(rootPath);
     if (!rootRealpath) throw new Error('root_not_found');
-    if (allowlistRoots.length === 0 || !isWithinAllowlist(rootRealpath, allowlistRoots)) {
+    if (!this.rootWithinAllowlist(rootRealpath, options)) {
       throw new Error('root_outside_allowlist');
     }
     return rootRealpath;
+  }
+
+  /** The allowlist half of `validateRoot`, for an already canonical root. */
+  rootWithinAllowlist(rootRealpath: string, options: PathPreviewOptions = {}): boolean {
+    const allowlistRoots = [
+      ...(this.allowlistRootsOverride ?? configuredAllowlistRoots(this.allowlistEnvironmentVariable)),
+      ...(options.additionalAllowlistRoots ?? []),
+    ];
+    return allowlistRoots.length > 0 && canonicalWithinAllowlist(rootRealpath, allowlistRoots);
   }
 
   validateRelativeSourcePath(
     relativePath: string,
     options: {enforceConfiguredExcludes?: boolean} = {},
   ): string {
+    const admission = this.admitRelativeSourcePath(relativePath, options);
+    if (!admission.admitted) throw new Error(admission.reason);
+    return admission.path;
+  }
+
+  /** Like `validateRelativeSourcePath`, but returns a policy refusal instead of throwing it. */
+  admitRelativeSourcePath(
+    relativePath: string,
+    options: {enforceConfiguredExcludes?: boolean} = {},
+  ): SourcePathAdmission {
     if (
       typeof relativePath !== 'string' ||
       !relativePath ||
@@ -384,16 +458,16 @@ export class PathSecurityGate {
       (options.enforceConfiguredExcludes ?? true) &&
       shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')
     ) {
-      throw new Error('source_path_excluded');
+      return {admitted: false, reason: 'source_path_excluded'};
     }
     const rawExtension = path.posix.extname(basename);
     const extension = this.platform === 'win32'
       ? rawExtension.toLocaleLowerCase('en-US')
       : rawExtension;
     if (!this.allowedExtensions.has(extension)) {
-      throw new Error('source_extension_not_allowed');
+      return {admitted: false, reason: 'source_extension_not_allowed'};
     }
-    return normalized;
+    return {admitted: true, path: normalized};
   }
 
   validateRelativeSourcePrefix(

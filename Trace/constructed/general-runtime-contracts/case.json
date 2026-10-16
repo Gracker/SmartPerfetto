@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "fe8dec58d44538d30e2652dffd3eb8275a5304cda150f7e3e2a86ea3058937c5",
+    "sha256": "a2238f46757b1e038af323e1fc9debe739cc91d310f3bef3096d25d2a96b52d9",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "general-runtime-contracts-v1",
     "output": "Trace/.generated/constructed/general-runtime-contracts/trace.pftrace",
-    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
   },
   "coverage": {
     "skills": [
@@ -165,6 +165,7 @@
         "required_steps": [
           "trace_window",
           "trace_diagnostics",
+          "data_loss_stats",
           "top_long_slices",
           "top_d_state_threads",
           "top_runnable_waits",
@@ -174,6 +175,7 @@
         "required_sql_steps": [
           "trace_window",
           "trace_diagnostics",
+          "data_loss_stats",
           "top_d_state_threads",
           "top_runnable_waits",
           "runqueue_pressure",
@@ -256,7 +258,17 @@
           "percent",
           "self_percent"
         ],
-        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 1
+            }
+          ]
+        }
       },
       {
         "id": "execute-main_thread_states_in_range",
@@ -290,7 +302,17 @@
           "pct",
           "count"
         ],
-        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 1
+            }
+          ]
+        }
       },
       {
         "id": "definition-multi_trace_result_comparison",
@@ -412,7 +434,17 @@
           "scheduling_policy_evidence",
           "evidence_scope"
         ],
-        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-thread_system_summary_in_range",
@@ -482,7 +514,17 @@
           "migrations",
           "evidence_scope"
         ],
-        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+        "required_marker": "SmartPerfetto::CASE::general-runtime-contracts",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "strategy-general",

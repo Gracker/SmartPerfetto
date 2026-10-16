@@ -4,6 +4,8 @@
 
 import os from 'os';
 
+import {parseFlagValue} from '../utils/envFlag';
+
 export const TP_ADMISSION_CONTROL_ENV = 'SMARTPERFETTO_TP_ADMISSION_CONTROL';
 export const TP_RAM_BUDGET_BYTES_ENV = 'SMARTPERFETTO_TP_RAM_BUDGET_BYTES';
 export const TP_RAM_BUDGET_FACTOR_ENV = 'SMARTPERFETTO_TP_RAM_BUDGET_FACTOR';
@@ -52,14 +54,6 @@ function parsePositiveNumber(value: string | undefined): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function parseFeatureFlag(value: string | undefined): boolean | null {
-  if (value === undefined) return null;
-  const normalized = value.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
-  return null;
-}
-
 export function resolveTraceProcessorMachineFactor(
   totalMemoryBytes = os.totalmem(),
   env: NodeJS.ProcessEnv = process.env,
@@ -82,9 +76,7 @@ export function estimateTraceProcessorRssBytes(
 }
 
 export function traceProcessorAdmissionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const configured = parseFeatureFlag(env[TP_ADMISSION_CONTROL_ENV]);
-  if (configured !== null) return configured;
-  return true;
+  return parseFlagValue(env[TP_ADMISSION_CONTROL_ENV]) ?? true;
 }
 
 export function getTraceProcessorRamBudgetStats(

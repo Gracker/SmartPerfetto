@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-25T05:54:06.134Z",
-  "generatedFrom": "add693d8b338ba9599dbcbc3e300b1ab8c000897",
-  "sourceDocs": "git:add693d8b338ba9599dbcbc3e300b1ab8c000897:src/trace_processor/perfetto_sql/stdlib",
+  "generatedAt": "2026-09-24T00:32:57.559Z",
+  "generatedFrom": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368",
+  "sourceDocs": "git:99234d73fe356bf7edf6b2cb7afcf2a9eefc5368:src/trace_processor/perfetto_sql/stdlib",
   "sourceDocsMode": "runtime-revision-source-generator",
   "pfsqlLineage": {
     "status": "unavailable"
   },
   "stats": {
-    "moduleCount": 257,
-    "entryCount": 458,
+    "moduleCount": 269,
+    "entryCount": 474,
     "byType": {
       "function": 72,
-      "table": 192,
-      "table_function": 30,
-      "view": 143,
+      "table": 198,
+      "table_function": 31,
+      "view": 152,
       "macro": 21
     }
   },
@@ -72,6 +72,44 @@
       "transitiveIncludes": [
         "slices.with_context",
         "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.app_wakelocks",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.battery_stats"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/app_wakelocks.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_app_wakelocks",
+        "android_app_wakelocks_batterystats",
+        "android_app_wakelocks_sdk"
+      ],
+      "transitiveIncludes": [
+        "android.battery_stats"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.audio",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.keyvalue_lookup"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/audio.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_audio_track_state"
+      ],
+      "transitiveIncludes": [
+        "android.keyvalue_lookup"
       ]
     },
     {
@@ -312,6 +350,24 @@
     },
     {
       "package": "android",
+      "module": "android.codec",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.keyvalue_lookup"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/codec.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_codec_events"
+      ],
+      "transitiveIncludes": [
+        "android.keyvalue_lookup"
+      ]
+    },
+    {
+      "package": "android",
       "module": "android.cpu.cluster_type",
       "moduleDoc": "",
       "tags": [
@@ -328,6 +384,31 @@
         "android_cpu_cluster_mapping"
       ],
       "transitiveIncludes": [
+        "intervals.intersect",
+        "intervals.overlap",
+        "std.metasql.unparenthesize"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.cpu.cluster_utilization",
+      "moduleDoc": "",
+      "tags": [
+        "android",
+        "cpu"
+      ],
+      "includes": [
+        "android.cpu.cluster_type",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cpu/cluster_utilization.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_cpu_cluster_utilization_in_interval"
+      ],
+      "transitiveIncludes": [
+        "android.cpu.cluster_type",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -545,22 +626,36 @@
         "ui"
       ],
       "includes": [
+        "android.critical_blocking_calls",
         "android.cujs.base",
-        "android.frames.timeline"
+        "android.frames.timeline",
+        "android.render_thread"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/sysui_cujs.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [
+        "android_cuj_blocking_calls",
         "android_jank_latency_cujs",
         "android_sysui_jank_cujs",
         "android_sysui_latency_cujs"
       ],
       "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.fill_gaps",
+        "slices.flow",
         "slices.with_context",
+        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -831,7 +926,8 @@
       "missingIncludes": [],
       "errors": [],
       "symbols": [
-        "android_freezer_events"
+        "android_freezer_events",
+        "android_freezer_state_statsd"
       ],
       "transitiveIncludes": []
     },
@@ -1026,6 +1122,8 @@
       ],
       "includes": [
         "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
         "android.screen_state",
         "intervals.intersect"
       ],
@@ -1033,17 +1131,37 @@
       "missingIncludes": [],
       "errors": [],
       "symbols": [
+        "android_job_scheduler",
+        "android_job_scheduler_batterystats",
+        "android_job_scheduler_sdk",
         "android_job_scheduler_states",
+        "android_job_scheduler_statsd",
         "android_job_scheduler_with_screen_charging_states"
       ],
       "transitiveIncludes": [
         "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
         "intervals.fill_gaps",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ]
+    },
+    {
+      "package": "android",
+      "module": "android.job_scheduler_states_track_events",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states_track_events.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_job_scheduler_states_track_events"
+      ],
+      "transitiveIncludes": []
     },
     {
       "package": "android",
@@ -1069,6 +1187,49 @@
         "counters.intervals",
         "intervals.fill_gaps",
         "std.metasql.unparenthesize"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.keyvalue_lookup",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/keyvalue_lookup.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "android",
+      "module": "android.lock_held",
+      "moduleDoc": "",
+      "tags": [
+        "android",
+        "performance"
+      ],
+      "includes": [
+        "android.monitor_contention",
+        "intervals.intersect",
+        "intervals.overlap",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/lock_held.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_lock_held"
+      ],
+      "transitiveIncludes": [
+        "android.monitor_contention",
+        "android.suspend",
+        "intervals.fill_gaps",
+        "intervals.intersect",
+        "intervals.overlap",
+        "slices.with_context",
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1149,8 +1310,7 @@
         "memory"
       ],
       "includes": [
-        "android.memory.heap_graph.class_tree",
-        "graphs.scan"
+        "android.memory.heap_graph.class_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/class_summary_tree.sql",
       "missingIncludes": [],
@@ -1220,8 +1380,7 @@
         "memory"
       ],
       "includes": [
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.scan"
+        "android.memory.heap_graph.raw_dominator_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/dominator_tree.sql",
       "missingIncludes": [],
@@ -1232,8 +1391,7 @@
       "transitiveIncludes": [
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree",
-        "graphs.scan"
+        "graphs.dominator_tree"
       ]
     },
     {
@@ -1250,6 +1408,26 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": []
+    },
+    {
+      "package": "android",
+      "module": "android.memory.heap_graph.experimental_flamegraph",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.memory.heap_graph.class_tree"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/experimental_flamegraph.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": [
+        "android.memory.heap_graph.class_tree",
+        "android.memory.heap_graph.excluded_refs",
+        "android.memory.heap_graph.helpers",
+        "graphs.scan",
+        "graphs.search"
+      ]
     },
     {
       "package": "android",
@@ -1274,8 +1452,7 @@
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.raw_dominator_tree",
         "graphs.dominator_tree",
-        "graphs.partition",
-        "graphs.scan"
+        "graphs.partition"
       ]
     },
     {
@@ -1331,8 +1508,7 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "android.memory.heap_graph.class_tree",
-        "graphs.scan"
+        "android.memory.heap_graph.class_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/object_tree.sql",
       "missingIncludes": [],
@@ -1399,7 +1575,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -1425,8 +1600,7 @@
         "memory"
       ],
       "includes": [
-        "callstacks.stack_profile",
-        "graphs.scan"
+        "callstacks.stack_profile"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_profile/summary_tree.sql",
       "missingIncludes": [],
@@ -1437,7 +1611,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -1666,6 +1839,41 @@
     },
     {
       "package": "android",
+      "module": "android.process_state",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.process_metadata",
+        "intervals.overlap"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/process_state.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": [
+        "android.process_metadata",
+        "android.user_list",
+        "intervals.intersect",
+        "intervals.overlap",
+        "std.metasql.unparenthesize"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.process_uid_state",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/process_uid_state.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_process_uid_state"
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "android",
       "module": "android.profiling_manager.startup",
       "moduleDoc": "",
       "tags": [],
@@ -1799,6 +2007,20 @@
     },
     {
       "package": "android",
+      "module": "android.standby_bucket",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/standby_bucket.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "android_standby_bucket"
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "android",
       "module": "android.startup.startup_breakdowns",
       "moduleDoc": "",
       "tags": [
@@ -1905,6 +2127,7 @@
       ],
       "includes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -2309,7 +2532,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -2321,7 +2543,6 @@
       "tags": [],
       "includes": [
         "graphs.hierarchy",
-        "graphs.scan",
         "v8.jit"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/callstacks/stack_profile.sql",
@@ -2330,7 +2551,6 @@
       "symbols": [],
       "transitiveIncludes": [
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -3705,7 +3925,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -4640,7 +4859,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -4650,21 +4868,12 @@
       "module": "stacks.symbolization_candidates",
       "moduleDoc": "",
       "tags": [],
-      "includes": [
-        "stacks.cpu_profiling"
-      ],
+      "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/stacks/symbolization_candidates.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [],
-      "transitiveIncludes": [
-        "callstacks.stack_profile",
-        "graphs.hierarchy",
-        "graphs.scan",
-        "graphs.search",
-        "stacks.cpu_profiling",
-        "v8.jit"
-      ]
+      "transitiveIncludes": []
     },
     {
       "package": "std",
@@ -4692,6 +4901,30 @@
       "symbols": [
         "metasql_unparenthesize_exprlist"
       ],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "std",
+      "module": "std.stack_sample.flamechart",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/stack_sample/flamechart.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "std",
+      "module": "std.stack_sample.mapping",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/stack_sample/mapping.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
       "transitiveIncludes": []
     },
     {
@@ -4807,24 +5040,6 @@
         "v8_wasm_script"
       ],
       "transitiveIncludes": []
-    },
-    {
-      "package": "viz",
-      "module": "viz.flamegraph",
-      "moduleDoc": "",
-      "tags": [],
-      "includes": [
-        "graphs.scan",
-        "std.metasql.unparenthesize"
-      ],
-      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/viz/flamegraph.sql",
-      "missingIncludes": [],
-      "errors": [],
-      "symbols": [],
-      "transitiveIncludes": [
-        "graphs.scan",
-        "std.metasql.unparenthesize"
-      ]
     },
     {
       "package": "viz",
@@ -4981,10 +5196,10 @@
       "tags": [],
       "includes": [
         "intervals.intersect",
-        "wattson.cpu.idle",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
+        "wattson.tasks.task_slices",
         "wattson.utils"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/aggregation.sql",
@@ -5136,7 +5351,6 @@
         "wattson.cpu.freq",
         "wattson.cpu.hotplug",
         "wattson.cpu.idle",
-        "wattson.curves.utils",
         "wattson.device_infos",
         "wattson.utils"
       ],
@@ -5156,12 +5370,6 @@
         "wattson.cpu.freq",
         "wattson.cpu.hotplug",
         "wattson.cpu.idle",
-        "wattson.curves.cpu_1d",
-        "wattson.curves.cpu_2d",
-        "wattson.curves.gpu",
-        "wattson.curves.l3",
-        "wattson.curves.tpu",
-        "wattson.curves.utils",
         "wattson.device_infos",
         "wattson.utils"
       ]
@@ -5219,6 +5427,7 @@
       "includes": [
         "intervals.intersect",
         "wattson.cpu.arm_dsu",
+        "wattson.cpu.freq",
         "wattson.cpu.freq_idle",
         "wattson.cpu.hotplug",
         "wattson.curves.utils",
@@ -5478,6 +5687,7 @@
       "includes": [
         "intervals.intersect",
         "wattson.device_infos",
+        "wattson.estimates",
         "wattson.gpu.estimates",
         "wattson.tasks.gpu_active_regions",
         "wattson.tasks.gpu_tasks",
@@ -6448,6 +6658,263 @@
       ]
     },
     {
+      "id": "stdlib.android.app_wakelocks.android_app_wakelocks",
+      "name": "android_app_wakelocks",
+      "type": "view",
+      "category": "android",
+      "subcategory": "app_wakelocks",
+      "module": "android.app_wakelocks",
+      "package": "android",
+      "description": "Unified view for App Wakelocks",
+      "fullDescription": "Unified view for App Wakelocks. Prioritizes SDK over BatteryStats. If SDK events exist in the trace, only SDK events will be returned. Otherwise, it falls back to BatteryStats.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.app_wakelocks;",
+      "moduleIncludes": [
+        "android.battery_stats"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/app_wakelocks.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the wakelock."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the wakelock. If unfinished in trace, clamped to trace end."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Wakelock name/tag."
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "Overall UID."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery_stats"
+      ]
+    },
+    {
+      "id": "stdlib.android.app_wakelocks.android_app_wakelocks_batterystats",
+      "name": "android_app_wakelocks_batterystats",
+      "type": "table",
+      "category": "android",
+      "subcategory": "app_wakelocks",
+      "module": "android.app_wakelocks",
+      "package": "android",
+      "description": "Table for app wakelocks sourced from BatteryStats",
+      "fullDescription": "Table for app wakelocks sourced from BatteryStats. This is a fallback for traces that do not contain the SDK events. Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"power\" } } }",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.app_wakelocks;",
+      "moduleIncludes": [
+        "android.battery_stats"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/app_wakelocks.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the wakelock."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the wakelock. If unfinished in trace, clamped to trace end."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Wakelock name/tag."
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "UID of the app that owns the wakelock (resolved to work_uid or owner_uid at source)."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery_stats"
+      ]
+    },
+    {
+      "id": "stdlib.android.app_wakelocks.android_app_wakelocks_sdk",
+      "name": "android_app_wakelocks_sdk",
+      "type": "table",
+      "category": "android",
+      "subcategory": "app_wakelocks",
+      "module": "android.app_wakelocks",
+      "package": "android",
+      "description": "Table for app wakelocks sourced from SDK trace events",
+      "fullDescription": "Table for app wakelocks sourced from SDK trace events. This is the preferred source. Suggested minimal config: data_sources: { config: { name: \"android.app_wakelocks\" } }",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.app_wakelocks;",
+      "moduleIncludes": [
+        "android.battery_stats"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/app_wakelocks.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the wakelock."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the wakelock. If unfinished in trace, clamped to trace end."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Wakelock name/tag."
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "Overall UID (prefers work_uid, falls back to owner_uid)."
+        },
+        {
+          "name": "owner_uid",
+          "type": "LONG",
+          "description": "UID of the app that owns the wakelock."
+        },
+        {
+          "name": "owner_pid",
+          "type": "LONG",
+          "description": "PID of the process that owns the wakelock."
+        },
+        {
+          "name": "work_uid",
+          "type": "LONG",
+          "description": "UID of app on behalf of which work is being done."
+        },
+        {
+          "name": "flags",
+          "type": "LONG",
+          "description": "PowerManager wakelock flags."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery_stats"
+      ]
+    },
+    {
+      "id": "stdlib.android.audio.android_audio_track_state",
+      "name": "android_audio_track_state",
+      "type": "view",
+      "category": "android",
+      "subcategory": "audio",
+      "module": "android.audio",
+      "package": "android",
+      "description": "View to get audio track usage intervals Suggested minimal config: data_sources: { config: { name: \"linux",
+      "fullDescription": "View to get audio track usage intervals Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"audio\" } } }",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.audio;",
+      "moduleIncludes": [
+        "android.keyvalue_lookup"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/audio.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of audio state change."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of audio state."
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "UID of process."
+        },
+        {
+          "name": "pid",
+          "type": "LONG",
+          "description": "PID of process."
+        },
+        {
+          "name": "track_name",
+          "type": "STRING",
+          "description": "Unique identifier for the audio stream."
+        },
+        {
+          "name": "content_type",
+          "type": "STRING",
+          "description": "Content type of audio."
+        },
+        {
+          "name": "usage",
+          "type": "STRING",
+          "description": "Usage of audio."
+        },
+        {
+          "name": "devices",
+          "type": "STRING",
+          "description": "Devices used for audio."
+        },
+        {
+          "name": "flags",
+          "type": "STRING",
+          "description": "Audio flags."
+        },
+        {
+          "name": "format",
+          "type": "STRING",
+          "description": "Audio format."
+        },
+        {
+          "name": "sample_rate",
+          "type": "LONG",
+          "description": "Audio sample rate."
+        },
+        {
+          "name": "channel_mask",
+          "type": "LONG",
+          "description": "Audio channel mask."
+        },
+        {
+          "name": "frame_count",
+          "type": "LONG",
+          "description": "Audio frame count."
+        },
+        {
+          "name": "thread_type",
+          "type": "STRING",
+          "description": "Thread type."
+        },
+        {
+          "name": "thread_id",
+          "type": "LONG",
+          "description": "Thread ID."
+        },
+        {
+          "name": "thread_sample_rate",
+          "type": "LONG",
+          "description": "Thread sample rate."
+        },
+        {
+          "name": "thread_format",
+          "type": "STRING",
+          "description": "Thread format."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.keyvalue_lookup"
+      ]
+    },
+    {
       "id": "stdlib.android.auto.multiuser.android_auto_multiuser_timing",
       "name": "android_auto_multiuser_timing",
       "type": "table",
@@ -6729,6 +7196,13 @@
           "description": "The same as `dur`, but extends to trace end for incomplete slices."
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine that emitted the battery event.",
+          "table": "machine",
+          "column": "id"
+        },
+        {
           "name": "track_name",
           "type": "STRING",
           "description": "The name of the counter track."
@@ -6780,6 +7254,13 @@
           "name": "safe_dur",
           "type": "DURATION",
           "description": "The same as `dur`, but extends to trace end for incomplete slices."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine that emitted the battery state.",
+          "table": "machine",
+          "column": "id"
         },
         {
           "name": "track_name",
@@ -7254,6 +7735,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -7777,6 +8259,13 @@
           "description": "Duration of the device charging state."
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose charging state is described.",
+          "table": "machine",
+          "column": "id"
+        },
+        {
           "name": "short_charging_state",
           "type": "STRING",
           "description": "One of: charging, discharging, not_charging, full, unknown."
@@ -7811,6 +8300,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -7879,6 +8369,104 @@
       ]
     },
     {
+      "id": "stdlib.android.codec.android_codec_events",
+      "name": "android_codec_events",
+      "type": "table",
+      "category": "android",
+      "subcategory": "codec",
+      "module": "android.codec",
+      "package": "android",
+      "description": "Parsed codec track events",
+      "fullDescription": "Parsed codec track events. Track names are expected to follow the format: `codec.track.<track_event_type>.<codec_name>.<unique_no>` E.g.: `codec.track.state.c2.android.aac.decoder.0` `codec.track.action.c2.google.av1.decoder.1` Suggested minimal config: data_sources: { config { name: \"linux.ftrace\" ftrace_config { atrace_categories: \"video\" atrace_apps: \"*\" } } }",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.codec;",
+      "moduleIncludes": [
+        "android.keyvalue_lookup"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/codec.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of codec event."
+        },
+        {
+          "name": "track_name",
+          "type": "STRING",
+          "description": "Full track name"
+        },
+        {
+          "name": "track_event_type",
+          "type": "STRING",
+          "description": "From track name: state or action"
+        },
+        {
+          "name": "codec_name",
+          "type": "STRING",
+          "description": "From track name: e.g., c2.google.av1.decoder"
+        },
+        {
+          "name": "unique_no",
+          "type": "STRING",
+          "description": "From track name: Unique instance number"
+        },
+        {
+          "name": "atrace_payload",
+          "type": "STRING",
+          "description": "Raw atrace payload"
+        },
+        {
+          "name": "event",
+          "type": "STRING",
+          "description": "Parsed from atrace_payload: The type of codec event"
+        },
+        {
+          "name": "metadata",
+          "type": "STRING",
+          "description": "Parsed from atrace_payload: e.g., inputFormat, outputFormat"
+        },
+        {
+          "name": "info",
+          "type": "STRING",
+          "description": "Parsed from atrace_payload: Further details for 'configured' events"
+        },
+        {
+          "name": "pid",
+          "type": "LONG",
+          "description": "Parsed from atrace_payload: Process ID"
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "Parsed from atrace_payload: User ID"
+        },
+        {
+          "name": "render",
+          "type": "STRING",
+          "description": "Keep as STRING, can be CAST to BOOLEAN if needed Parsed from atrace_payload: true/false"
+        },
+        {
+          "name": "interval_ms",
+          "type": "LONG",
+          "description": "Parsed from atrace_payload: Milliseconds"
+        },
+        {
+          "name": "count",
+          "type": "LONG",
+          "description": "Parsed from atrace_payload: Buffer count"
+        },
+        {
+          "name": "ctr",
+          "type": "LONG",
+          "description": "Parsed from atrace_payload: Counter (from example)"
+        }
+      ],
+      "transitiveIncludes": [
+        "android.keyvalue_lookup"
+      ]
+    },
+    {
       "id": "stdlib.android.cpu.cluster_type.android_cpu_cluster_mapping",
       "name": "android_cpu_cluster_mapping",
       "type": "table",
@@ -7905,6 +8493,13 @@
           "description": "Alias of `cpu.ucpu`."
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine containing the CPU.",
+          "table": "machine",
+          "column": "id"
+        },
+        {
           "name": "cpu",
           "type": "LONG",
           "description": "Alias of `cpu.cpu`."
@@ -7916,6 +8511,69 @@
         }
       ],
       "transitiveIncludes": [
+        "intervals.intersect",
+        "intervals.overlap",
+        "std.metasql.unparenthesize"
+      ]
+    },
+    {
+      "id": "stdlib.android.cpu.cluster_utilization.android_cpu_cluster_utilization_in_interval",
+      "name": "android_cpu_cluster_utilization_in_interval",
+      "type": "table_function",
+      "category": "android",
+      "subcategory": "cpu.cluster_utilization",
+      "module": "android.cpu.cluster_utilization",
+      "package": "android",
+      "description": "CPU utilization broken down by cluster over a given interval",
+      "fullDescription": "CPU utilization broken down by cluster over a given interval. Returns one row per cluster. Clusters which ran nothing during the interval are still reported, with zero active time and zero utilization. Durations are measured on the monotonic clock, so time spent with the device suspended is excluded.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "cpu"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.cpu.cluster_utilization;",
+      "moduleIncludes": [
+        "android.cpu.cluster_type",
+        "intervals.intersect"
+      ],
+      "returnDescription": "",
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cpu/cluster_utilization.sql",
+      "params": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start of the interval."
+        },
+        {
+          "name": "dur",
+          "type": "LONG",
+          "description": "Duration of the interval."
+        }
+      ],
+      "columns": [
+        {
+          "name": "cluster_type",
+          "type": "STRING",
+          "description": "Cluster name ('little', 'medium', 'big', 'unknown')."
+        },
+        {
+          "name": "core_count",
+          "type": "LONG",
+          "description": "Number of cores in the cluster."
+        },
+        {
+          "name": "active_dur",
+          "type": "DURATION",
+          "description": "Active core-time in the interval, summed across the cluster's cores."
+        },
+        {
+          "name": "utilization",
+          "type": "DOUBLE",
+          "description": "Fraction of the cluster's available core-time spent running, in [0.0, 1.0]: active_dur / (awake_dur * core_count). 1.0 means every core in the cluster was busy for the whole interval."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.cpu.cluster_type",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -8087,6 +8745,111 @@
       ]
     },
     {
+      "id": "stdlib.android.cujs.sysui_cujs.android_cuj_blocking_calls",
+      "name": "android_cuj_blocking_calls",
+      "type": "table",
+      "category": "android",
+      "subcategory": "cujs.sysui_cujs",
+      "module": "android.cujs.sysui_cujs",
+      "package": "android",
+      "description": "Slices corresponding to critical blocking calls that occurred during a CUJ, clipped to the CUJ time boundaries",
+      "fullDescription": "Slices corresponding to critical blocking calls that occurred during a CUJ, clipped to the CUJ time boundaries.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "ui"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.cujs.sysui_cujs;",
+      "moduleIncludes": [
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.frames.timeline",
+        "android.render_thread"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/sysui_cujs.sql",
+      "columns": [
+        {
+          "name": "slice_id",
+          "type": "JOINID(slice.id)",
+          "description": "Unique slice id.",
+          "table": "slice",
+          "column": "id"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Standardized name of the blocking call."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the blocking call, clamped to the CUJ start timestamp."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the blocking call within the CUJ boundaries."
+        },
+        {
+          "name": "ts_end",
+          "type": "TIMESTAMP",
+          "description": "End timestamp of the blocking call, clamped to the CUJ end timestamp."
+        },
+        {
+          "name": "cuj_id",
+          "type": "LONG",
+          "description": "CUJ ID."
+        },
+        {
+          "name": "cuj_name",
+          "type": "STRING",
+          "description": "Name of the CUJ."
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Process name."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process upid.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "Thread utid.",
+          "table": "thread",
+          "column": "id"
+        },
+        {
+          "name": "cuj_type",
+          "type": "STRING",
+          "description": "Type of CUJ, i.e. jank or latency."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
+        "android.cujs.base",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.fill_gaps",
+        "slices.flow",
+        "slices.with_context",
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
+      ]
+    },
+    {
       "id": "stdlib.android.battery.doze.android_deep_idle_state",
       "name": "android_deep_idle_state",
       "type": "table",
@@ -8121,6 +8884,13 @@
           "name": "dur",
           "type": "DURATION",
           "description": "Duration."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose deep idle state is described.",
+          "table": "machine",
+          "column": "id"
         },
         {
           "name": "deep_idle_state",
@@ -9659,6 +10429,64 @@
       "transitiveIncludes": []
     },
     {
+      "id": "stdlib.android.freezer.android_freezer_state_statsd",
+      "name": "android_freezer_state_statsd",
+      "type": "view",
+      "category": "android",
+      "subcategory": "freezer",
+      "module": "android.freezer",
+      "package": "android",
+      "description": "View to get app freezer state intervals from StatsD",
+      "fullDescription": "View to get app freezer state intervals from StatsD",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "app-lifecycle"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.freezer;",
+      "moduleIncludes": [],
+      "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM slice WHERE name GLOB 'Freeze *' LIMIT 1) AS has_data",
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/freezer.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of app freeze state change."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of app freeze state."
+        },
+        {
+          "name": "pid",
+          "type": "LONG",
+          "description": "PID of process."
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Process name."
+        },
+        {
+          "name": "freezer_state",
+          "type": "STRING",
+          "description": "Freezer state."
+        },
+        {
+          "name": "time_unfrozen_millis",
+          "type": "LONG",
+          "description": "Time unfrozen in millis."
+        },
+        {
+          "name": "unfreeze_reason",
+          "type": "STRING",
+          "description": "Reason for unfreezing."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
       "id": "stdlib.prelude.after_eof.views.android_game_intervention_list",
       "name": "android_game_intervention_list",
       "type": "view",
@@ -10157,8 +10985,7 @@
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.raw_dominator_tree",
         "graphs.dominator_tree",
-        "graphs.partition",
-        "graphs.scan"
+        "graphs.partition"
       ]
     },
     {
@@ -10211,8 +11038,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.class_summary_tree;",
       "moduleIncludes": [
-        "android.memory.heap_graph.class_tree",
-        "graphs.scan"
+        "android.memory.heap_graph.class_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/class_summary_tree.sql",
       "columns": [
@@ -10460,8 +11286,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.memory.heap_profile.summary_tree;",
       "moduleIncludes": [
-        "callstacks.stack_profile",
-        "graphs.scan"
+        "callstacks.stack_profile"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_profile/summary_tree.sql",
       "columns": [
@@ -10519,7 +11344,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -10745,6 +11569,11 @@
           "name": "event_time",
           "type": "TIMESTAMP",
           "description": "Timestamp when the input event actually occurred."
+        },
+        {
+          "name": "frame_event_time",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the input event that the frame receives. This can differ from event_time due to resampling."
         }
       ],
       "transitiveIncludes": [
@@ -11387,15 +12216,17 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.cujs.sysui_cujs;",
       "moduleIncludes": [
+        "android.critical_blocking_calls",
         "android.cujs.base",
-        "android.frames.timeline"
+        "android.frames.timeline",
+        "android.render_thread"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/sysui_cujs.sql",
       "columns": [
         {
           "name": "cuj_id",
           "type": "LONG",
-          "description": "Unique incremental ID for each CUJ."
+          "description": "CUJ ID inherited directly from the underlying jank/latency source without remapping. Note that this ID is not globally unique across this table (jank and latency CUJs can share the same numeric ID)."
         },
         {
           "name": "id",
@@ -11422,7 +12253,7 @@
         {
           "name": "cuj_name",
           "type": "STRING",
-          "description": "Name of the CUJ without the 'J<' prefix."
+          "description": "Name of the CUJ without the 'J<' or 'L<' prefix."
         },
         {
           "name": "slice_id",
@@ -11480,11 +12311,136 @@
         }
       ],
       "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.fill_gaps",
+        "slices.flow",
         "slices.with_context",
+        "std.metasql.unparenthesize",
         "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.job_scheduler_states.android_job_scheduler",
+      "name": "android_job_scheduler",
+      "type": "view",
+      "category": "android",
+      "subcategory": "job_scheduler_states",
+      "module": "android.job_scheduler_states",
+      "package": "android",
+      "description": "Provides unified access to Android JobScheduler events",
+      "fullDescription": "Provides unified access to Android JobScheduler events. Prioritizes SDK > StatsD > BatteryStats. If a higher-priority source exists in the trace, only its events will be returned.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "app-lifecycle"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states;",
+      "moduleIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the job start."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the job."
+        },
+        {
+          "name": "job_name",
+          "type": "STRING",
+          "description": "Name of the job."
+        },
+        {
+          "name": "package_name",
+          "type": "STRING",
+          "description": "Package name of the app running the job."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "counters.intervals",
+        "intervals.fill_gaps",
+        "intervals.intersect",
+        "std.metasql.unparenthesize"
+      ]
+    },
+    {
+      "id": "stdlib.android.job_scheduler_states.android_job_scheduler_batterystats",
+      "name": "android_job_scheduler_batterystats",
+      "type": "view",
+      "category": "android",
+      "subcategory": "job_scheduler_states",
+      "module": "android.job_scheduler_states",
+      "package": "android",
+      "description": "View for BatteryStats sourced JobScheduler events",
+      "fullDescription": "View for BatteryStats sourced JobScheduler events. Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"power\" } } }",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "app-lifecycle"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states;",
+      "moduleIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the job start."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the job."
+        },
+        {
+          "name": "job_name",
+          "type": "STRING",
+          "description": "Name of the job."
+        },
+        {
+          "name": "package_name",
+          "type": "STRING",
+          "description": "Package name of the app running the job."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "counters.intervals",
+        "intervals.fill_gaps",
+        "intervals.intersect",
+        "std.metasql.unparenthesize"
       ]
     },
     {
@@ -11552,6 +12508,63 @@
       "transitiveIncludes": []
     },
     {
+      "id": "stdlib.android.job_scheduler_states.android_job_scheduler_sdk",
+      "name": "android_job_scheduler_sdk",
+      "type": "view",
+      "category": "android",
+      "subcategory": "job_scheduler_states",
+      "module": "android.job_scheduler_states",
+      "package": "android",
+      "description": "View for SDK sourced JobScheduler events",
+      "fullDescription": "View for SDK sourced JobScheduler events. Suggested minimal config: data_sources: { config: { name: \"linux.ftrace\" ftrace_config: { atrace_apps: \"*\" atrace_categories: \"jobscheduler\" } } }",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "app-lifecycle"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states;",
+      "moduleIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the job start."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the job."
+        },
+        {
+          "name": "job_name",
+          "type": "STRING",
+          "description": "Name of the job."
+        },
+        {
+          "name": "package_name",
+          "type": "STRING",
+          "description": "Package name of the app running the job."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "counters.intervals",
+        "intervals.fill_gaps",
+        "intervals.intersect",
+        "std.metasql.unparenthesize"
+      ]
+    },
+    {
       "id": "stdlib.android.job_scheduler_states.android_job_scheduler_states",
       "name": "android_job_scheduler_states",
       "type": "table",
@@ -11569,6 +12582,8 @@
       "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states;",
       "moduleIncludes": [
         "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
         "android.screen_state",
         "intervals.intersect"
       ],
@@ -11749,6 +12764,301 @@
       ],
       "transitiveIncludes": [
         "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "counters.intervals",
+        "intervals.fill_gaps",
+        "intervals.intersect",
+        "std.metasql.unparenthesize"
+      ]
+    },
+    {
+      "id": "stdlib.android.job_scheduler_states_track_events.android_job_scheduler_states_track_events",
+      "name": "android_job_scheduler_states_track_events",
+      "type": "table",
+      "category": "android",
+      "subcategory": "job_scheduler_states_track_events",
+      "module": "android.job_scheduler_states_track_events",
+      "package": "android",
+      "description": "This table returns all running jobs from job scheduler track events",
+      "fullDescription": "This table returns all running jobs from job scheduler track events. Values in this table are derived from job scheduler track events. To populate this table, the `jobscheduler` category must be enabled in the `track_event` data source.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states_track_events;",
+      "moduleIncludes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states_track_events.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for job scheduler state."
+        },
+        {
+          "name": "slice_id",
+          "type": "JOINID(slice.id)",
+          "description": "Id of the slice.",
+          "table": "slice",
+          "column": "id"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of job state slice."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of job state slice."
+        },
+        {
+          "name": "is_rescheduled",
+          "type": "BOOL",
+          "description": "True if the job was rescheduled to run again."
+        },
+        {
+          "name": "job_name",
+          "type": "STRING",
+          "description": "Name of the job (as named by the app)."
+        },
+        {
+          "name": "package_name",
+          "type": "STRING",
+          "description": "Package that the job belongs (ex: associated app)."
+        },
+        {
+          "name": "job_namespace",
+          "type": "STRING",
+          "description": "Namespace of job."
+        },
+        {
+          "name": "job_id",
+          "type": "LONG",
+          "description": "Id of job."
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "Uid associated with the job."
+        },
+        {
+          "name": "proxy_uid",
+          "type": "LONG",
+          "description": "Uid associated with proxy job."
+        },
+        {
+          "name": "filtered_trace_tag",
+          "type": "STRING",
+          "description": "Trace tag set via JobInfo.Builder.setTraceTag()."
+        },
+        {
+          "name": "standby_bucket",
+          "type": "STRING",
+          "description": "The job's standby bucket."
+        },
+        {
+          "name": "requested_priority",
+          "type": "STRING",
+          "description": "The requested priority at which the job should run."
+        },
+        {
+          "name": "effective_priority",
+          "type": "STRING",
+          "description": "The effective priority at which the job ran."
+        },
+        {
+          "name": "num_previous_attempts",
+          "type": "LONG",
+          "description": "Number of previous attempts at running job."
+        },
+        {
+          "name": "deadline_ms",
+          "type": "LONG",
+          "description": "Deadline that job has requested."
+        },
+        {
+          "name": "delay_ms",
+          "type": "LONG",
+          "description": "The delay that the Job has requested."
+        },
+        {
+          "name": "job_start_latency_ms",
+          "type": "LONG",
+          "description": "The latency in ms between scheduling and starting."
+        },
+        {
+          "name": "num_uncompleted_work_items",
+          "type": "LONG",
+          "description": "Number of uncompleted job work items."
+        },
+        {
+          "name": "proc_state",
+          "type": "STRING",
+          "description": "Process state of the process responsible for running the job."
+        },
+        {
+          "name": "periodic_job_interval_ms",
+          "type": "LONG",
+          "description": "Interval for the job to recur when it is set as periodic."
+        },
+        {
+          "name": "periodic_job_flex_interval_ms",
+          "type": "LONG",
+          "description": "Flex interval for the periodic job."
+        },
+        {
+          "name": "num_reschedules_due_to_abandonment",
+          "type": "LONG",
+          "description": "Number of reschedules due to job being abandoned."
+        },
+        {
+          "name": "back_off_policy_type",
+          "type": "STRING",
+          "description": "Back off policy applied to the job that gets rescheduled."
+        },
+        {
+          "name": "internal_stop_reason",
+          "type": "STRING",
+          "description": "Internal stop reason for a job."
+        },
+        {
+          "name": "public_stop_reason",
+          "type": "STRING",
+          "description": "Public stop reason for a job."
+        },
+        {
+          "name": "has_charging_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job should run when the device is charging."
+        },
+        {
+          "name": "has_battery_not_low_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job should run when the device battery is not low."
+        },
+        {
+          "name": "has_storage_not_low_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job should run when device storage is not low."
+        },
+        {
+          "name": "has_timing_delay_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job has a timing delay."
+        },
+        {
+          "name": "has_deadline_constraint",
+          "type": "BOOL",
+          "description": "True if app requested there is a deadline by which the job should run."
+        },
+        {
+          "name": "has_idle_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job should run when device is idle."
+        },
+        {
+          "name": "has_connectivity_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job should run when device has connectivity."
+        },
+        {
+          "name": "has_content_trigger_constraint",
+          "type": "BOOL",
+          "description": "True if app requested job should run when there is a content trigger."
+        },
+        {
+          "name": "is_requested_expedited_job",
+          "type": "BOOL",
+          "description": "True if app requested that the job is run as an expedited job."
+        },
+        {
+          "name": "is_running_as_expedited_job",
+          "type": "BOOL",
+          "description": "The job is run as an expedited job."
+        },
+        {
+          "name": "is_prefetch",
+          "type": "BOOL",
+          "description": "True if app requested job should run within hours of app launch."
+        },
+        {
+          "name": "is_requested_as_user_initiated_job",
+          "type": "BOOL",
+          "description": "True is app has requested that a job be run as a user initiated job."
+        },
+        {
+          "name": "is_running_as_user_initiated_job",
+          "type": "BOOL",
+          "description": "True if job is running as a user initiated job."
+        },
+        {
+          "name": "is_periodic",
+          "type": "BOOL",
+          "description": "Job should run in intervals."
+        },
+        {
+          "name": "has_flexibility_constraint",
+          "type": "BOOL",
+          "description": "True if the job should run as a flex job."
+        },
+        {
+          "name": "can_apply_transport_affinities",
+          "type": "BOOL",
+          "description": "Whether transport preference logic can be applied to this job."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "id": "stdlib.android.job_scheduler_states.android_job_scheduler_statsd",
+      "name": "android_job_scheduler_statsd",
+      "type": "view",
+      "category": "android",
+      "subcategory": "job_scheduler_states",
+      "module": "android.job_scheduler_states",
+      "package": "android",
+      "description": "View for StatsD sourced JobScheduler events",
+      "fullDescription": "View for StatsD sourced JobScheduler events. Suggested minimal config: data_sources: { config: { name: \"android.statsd\" statsd_config: { push_atom_id: ATOM_SCHEDULED_JOB_STATE_CHANGED } } }",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "app-lifecycle"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states;",
+      "moduleIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
+        "android.screen_state",
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the job start."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the job."
+        },
+        {
+          "name": "job_name",
+          "type": "STRING",
+          "description": "Name of the job."
+        },
+        {
+          "name": "package_name",
+          "type": "STRING",
+          "description": "Package name of the app running the job."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
         "intervals.fill_gaps",
@@ -11774,6 +13084,8 @@
       "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states;",
       "moduleIncludes": [
         "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
         "android.screen_state",
         "intervals.intersect"
       ],
@@ -11964,6 +13276,8 @@
       ],
       "transitiveIncludes": [
         "android.battery.charging_states",
+        "android.battery_stats",
+        "android.job_scheduler_states_track_events",
         "android.screen_state",
         "counters.intervals",
         "intervals.fill_gaps",
@@ -12155,6 +13469,13 @@
           "description": "Duration."
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose light idle state is described.",
+          "table": "machine",
+          "column": "id"
+        },
+        {
           "name": "light_idle_state",
           "type": "STRING",
           "description": "Description of the light idle state."
@@ -12227,6 +13548,81 @@
         "android.oom_adjuster",
         "counters.intervals",
         "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.lock_held.android_lock_held",
+      "name": "android_lock_held",
+      "type": "table",
+      "category": "android",
+      "subcategory": "lock_held",
+      "module": "android.lock_held",
+      "package": "android",
+      "description": "Intervals during which a named lock was held by a thread",
+      "fullDescription": "Intervals during which a named lock was held by a thread. Overlapping holds on the same thread (recursive locks) are merged. Holds on exclusive locks are truncated when acquired by a successor thread.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "performance"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.lock_held;",
+      "moduleIncludes": [
+        "android.monitor_contention",
+        "intervals.intersect",
+        "intervals.overlap",
+        "slices.with_context"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/lock_held.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "JOINID(slice.id)",
+          "description": "Slice id of the slice starting this hold.",
+          "table": "slice",
+          "column": "id"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp at which the lock was acquired."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration for which the lock was held."
+        },
+        {
+          "name": "is_incomplete",
+          "type": "BOOL",
+          "description": "Whether this hold was unreleased before the end of the trace."
+        },
+        {
+          "name": "lock_name",
+          "type": "STRING",
+          "description": "Name of the lock (matching android_monitor_contention.lock_name)."
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "Thread holding the lock.",
+          "table": "thread",
+          "column": "id"
+        },
+        {
+          "name": "blocking_method",
+          "type": "STRING",
+          "description": "Java method executed by the holding thread during contention, if any."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.monitor_contention",
+        "android.suspend",
+        "intervals.fill_gaps",
+        "intervals.intersect",
+        "intervals.overlap",
+        "slices.with_context",
+        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -13855,6 +15251,45 @@
       ]
     },
     {
+      "id": "stdlib.android.process_uid_state.android_process_uid_state",
+      "name": "android_process_uid_state",
+      "type": "view",
+      "category": "android",
+      "subcategory": "process_uid_state",
+      "module": "android.process_uid_state",
+      "package": "android",
+      "description": "View to get process UID state intervals, showing how long each process stayed in each state",
+      "fullDescription": "View to get process UID state intervals, showing how long each process stayed in each state.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.process_uid_state;",
+      "moduleIncludes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/process_uid_state.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of process state change."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of process state."
+        },
+        {
+          "name": "uid",
+          "type": "LONG",
+          "description": "UID of process."
+        },
+        {
+          "name": "process_state_name",
+          "type": "STRING",
+          "description": "Process state name."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
       "id": "stdlib.android.profiling_manager.startup.android_profiling_manager_cold_startup",
       "name": "android_profiling_manager_cold_startup",
       "type": "table",
@@ -13933,6 +15368,13 @@
           "name": "dur",
           "type": "DURATION",
           "description": "Duration."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose screen state is described.",
+          "table": "machine",
+          "column": "id"
         },
         {
           "name": "simple_screen_state",
@@ -14179,6 +15621,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -14312,6 +15755,60 @@
       "transitiveIncludes": []
     },
     {
+      "id": "stdlib.android.standby_bucket.android_standby_bucket",
+      "name": "android_standby_bucket",
+      "type": "view",
+      "category": "android",
+      "subcategory": "standby_bucket",
+      "module": "android.standby_bucket",
+      "package": "android",
+      "description": "View to get standby bucket intervals for each package",
+      "fullDescription": "View to get standby bucket intervals for each package",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.standby_bucket;",
+      "moduleIncludes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/standby_bucket.sql",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of standby bucket change."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of standby bucket state."
+        },
+        {
+          "name": "package_name",
+          "type": "STRING",
+          "description": "Package name of the app."
+        },
+        {
+          "name": "user_id",
+          "type": "LONG",
+          "description": "User ID of the app."
+        },
+        {
+          "name": "bucket",
+          "type": "STRING",
+          "description": "Standby bucket name."
+        },
+        {
+          "name": "main_reason",
+          "type": "STRING",
+          "description": "Main reason for bucket change."
+        },
+        {
+          "name": "sub_reason",
+          "type": "LONG",
+          "description": "Sub reason for bucket change."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
       "id": "stdlib.android.startup.startup_breakdowns.android_startup_opinionated_breakdown",
       "name": "android_startup_opinionated_breakdown",
       "type": "table",
@@ -14410,6 +15907,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -14475,6 +15973,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -14638,6 +16137,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -14665,6 +16165,11 @@
           "name": "dur",
           "type": "DURATION",
           "description": "Startup duration."
+        },
+        {
+          "name": "dur_without_trampoline",
+          "type": "DURATION",
+          "description": "Duration of the launch excluding a preceding trampoline. Equals `dur` when there is no trampoline."
         },
         {
           "name": "package",
@@ -14799,6 +16304,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -14853,6 +16359,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -15399,8 +16906,10 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.cujs.sysui_cujs;",
       "moduleIncludes": [
+        "android.critical_blocking_calls",
         "android.cujs.base",
-        "android.frames.timeline"
+        "android.frames.timeline",
+        "android.render_thread"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/sysui_cujs.sql",
       "columns": [
@@ -15482,10 +16991,21 @@
         }
       ],
       "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.fill_gaps",
+        "slices.flow",
         "slices.with_context",
+        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -15506,8 +17026,10 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.cujs.sysui_cujs;",
       "moduleIncludes": [
+        "android.critical_blocking_calls",
         "android.cujs.base",
-        "android.frames.timeline"
+        "android.frames.timeline",
+        "android.render_thread"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/sysui_cujs.sql",
       "columns": [
@@ -15567,10 +17089,21 @@
         }
       ],
       "transitiveIncludes": [
+        "android.binder",
+        "android.critical_blocking_calls",
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.process_metadata",
+        "android.render_thread",
+        "android.slices",
+        "android.suspend",
+        "android.user_list",
+        "graphs.search",
+        "intervals.fill_gaps",
+        "slices.flow",
         "slices.with_context",
+        "std.metasql.unparenthesize",
         "std.thread.with_context"
       ]
     },
@@ -15592,6 +17125,7 @@
       "include": "INCLUDE PERFETTO MODULE android.startup.startups;",
       "moduleIncludes": [
         "android.process_metadata",
+        "android.startup.startup_events",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
@@ -16447,7 +17981,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -21488,6 +23021,11 @@
           "name": "gesture_scroll_end_ts",
           "type": "TIMESTAMP",
           "description": "The earliest timestamp of the EventLatency slice of the GESTURE_SCROLL_END type / the latest timestamp of the EventLatency slice of the GESTURE_SCROLL_UPDATE type for the corresponding scroll id."
+        },
+        {
+          "name": "is_fully_captured",
+          "type": "BOOL",
+          "description": "Whether the scroll is fully captured in the trace (i.e. did not start or end mid-scroll). For the first scroll in the trace, this requires FIRST_GESTURE_SCROLL_UPDATE to be present; for the last scroll, this requires a corresponding gesture scroll end event to be present."
         }
       ],
       "transitiveIncludes": [
@@ -24566,7 +26104,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -24636,7 +26173,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -26359,6 +27895,11 @@
           "name": "heap_size",
           "type": "LONG",
           "description": "Total bytes allocated in the heap as reported by the VM."
+        },
+        {
+          "name": "truncated",
+          "type": "BOOL",
+          "description": "True if the heap dump was incomplete (missing packets)."
         }
       ],
       "transitiveIncludes": [
@@ -26556,8 +28097,7 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.dominator_tree;",
       "moduleIncludes": [
-        "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.scan"
+        "android.memory.heap_graph.raw_dominator_tree"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/dominator_tree.sql",
       "columns": [
@@ -26595,8 +28135,7 @@
       "transitiveIncludes": [
         "android.memory.heap_graph.excluded_refs",
         "android.memory.heap_graph.raw_dominator_tree",
-        "graphs.dominator_tree",
-        "graphs.scan"
+        "graphs.dominator_tree"
       ]
     },
     {
@@ -28052,7 +29591,6 @@
       "transitiveIncludes": [
         "callstacks.stack_profile",
         "graphs.hierarchy",
-        "graphs.scan",
         "graphs.search",
         "v8.jit"
       ]
@@ -29160,7 +30698,7 @@
         {
           "name": "id",
           "type": "ID(track.id)",
-          "description": "Unique identifier for this thread counter track.",
+          "description": "Unique identifier for this perf counter track.",
           "table": "track",
           "column": "id"
         },
@@ -29212,6 +30750,13 @@
           "name": "cpu",
           "type": "LONG",
           "description": "The CPU the counter is associated with. Can be null if the counter is not associated with any CPU."
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "The thread the counter is associated with. Can be null if the counter is not associated with any thread.",
+          "table": "thread",
+          "column": "id"
         },
         {
           "name": "is_timebase",
@@ -30755,6 +32300,13 @@
           "description": "Timestamp when the number of active CPU changed."
         },
         {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose active CPUs are counted.",
+          "table": "machine",
+          "column": "id"
+        },
+        {
           "name": "active_cpu_count",
           "type": "LONG",
           "description": "Number of active CPUs, covering the range from this timestamp to the next row's timestamp."
@@ -30957,6 +32509,13 @@
           "name": "ts",
           "type": "TIMESTAMP",
           "description": "Timestamp when the runnable thread count changed to the current value."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose runnable threads are counted.",
+          "table": "machine",
+          "column": "id"
         },
         {
           "name": "runnable_thread_count",
@@ -31371,6 +32930,13 @@
           "name": "ts",
           "type": "TIMESTAMP",
           "description": "Timestamp when the thread count changed to the current value."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine whose threads are counted.",
+          "table": "machine",
+          "column": "id"
         },
         {
           "name": "uninterruptible_sleep_thread_count",
@@ -35013,10 +36579,10 @@
       "include": "INCLUDE PERFETTO MODULE wattson.aggregation;",
       "moduleIncludes": [
         "intervals.intersect",
-        "wattson.cpu.idle",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
+        "wattson.tasks.task_slices",
         "wattson.utils"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/aggregation.sql",
@@ -35034,7 +36600,7 @@
         {
           "name": "is_crude_estimate",
           "type": "BOOL",
-          "description": "Wattson estimation will be crude if missing cpu/idle counter"
+          "description": "Deprecated: always 0"
         }
       ],
       "transitiveIncludes": [
@@ -35097,10 +36663,10 @@
       "include": "INCLUDE PERFETTO MODULE wattson.aggregation;",
       "moduleIncludes": [
         "intervals.intersect",
-        "wattson.cpu.idle",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
+        "wattson.tasks.task_slices",
         "wattson.utils"
       ],
       "returnType": "TableOrSubquery",
@@ -35173,10 +36739,10 @@
       "include": "INCLUDE PERFETTO MODULE wattson.aggregation;",
       "moduleIncludes": [
         "intervals.intersect",
-        "wattson.cpu.idle",
         "wattson.estimates",
         "wattson.tasks.attribution",
         "wattson.tasks.idle_transitions_attribution",
+        "wattson.tasks.task_slices",
         "wattson.utils"
       ],
       "returnType": "TableOrSubquery",
@@ -35616,6 +37182,10 @@
     "android_app_process_starts": "android.app_process_starts",
     "android_app_to_sf_frame_timeline_match": "android.surfaceflinger",
     "android_app_vsync_delay_per_frame": "android.frames.per_frame_metrics",
+    "android_app_wakelocks": "android.app_wakelocks",
+    "android_app_wakelocks_batterystats": "android.app_wakelocks",
+    "android_app_wakelocks_sdk": "android.app_wakelocks",
+    "android_audio_track_state": "android.audio",
     "android_auto_multiuser_timing": "android.auto.multiuser",
     "android_auto_multiuser_timing_with_previous_user_resource_usage": "android.auto.multiuser",
     "android_battery_charge": "android.battery",
@@ -35636,10 +37206,13 @@
     "android_bitmap_memory": "android.bitmaps",
     "android_charging_states": "android.battery.charging_states",
     "android_class_loading_for_startup": "android.startup.startups",
+    "android_codec_events": "android.codec",
     "android_cpu_cluster_mapping": "android.cpu.cluster_type",
+    "android_cpu_cluster_utilization_in_interval": "android.cpu.cluster_utilization",
     "android_cpu_per_uid_counter": "android.cpu.cpu_per_uid",
     "android_cpu_per_uid_track": "android.cpu.cpu_per_uid",
     "android_cpu_time_per_frame": "android.frames.per_frame_metrics",
+    "android_cuj_blocking_calls": "android.cujs.sysui_cujs",
     "android_deep_idle_state": "android.battery.doze",
     "android_desktop_mode_windows": "android.desktop_mode",
     "android_device_name": "android.device",
@@ -35669,6 +37242,7 @@
     "android_frames_overrun": "android.frames.per_frame_metrics",
     "android_frames_ui_time": "android.frames.per_frame_metrics",
     "android_freezer_events": "android.freezer",
+    "android_freezer_state_statsd": "android.freezer",
     "android_game_intervention_list": "prelude.after_eof.views",
     "android_garbage_collection_events": "android.garbage_collection",
     "android_gpu_frequency": "android.gpu.frequency",
@@ -35695,13 +37269,19 @@
     "android_jank_cuj_render_thread": "android.cujs.threads",
     "android_jank_cuj_slice_summary": "android.cujs.frames",
     "android_jank_latency_cujs": "android.cujs.sysui_cujs",
+    "android_job_scheduler": "android.job_scheduler_states",
+    "android_job_scheduler_batterystats": "android.job_scheduler_states",
     "android_job_scheduler_events": "android.job_scheduler",
+    "android_job_scheduler_sdk": "android.job_scheduler_states",
     "android_job_scheduler_states": "android.job_scheduler_states",
+    "android_job_scheduler_states_track_events": "android.job_scheduler_states_track_events",
+    "android_job_scheduler_statsd": "android.job_scheduler_states",
     "android_job_scheduler_with_screen_charging_states": "android.job_scheduler_states",
     "android_kernel_wakelocks": "android.kernel_wakelocks",
     "android_key_events": "android.input",
     "android_light_idle_state": "android.battery.doze",
     "android_lmk_events": "android.memory.lmk",
+    "android_lock_held": "android.lock_held",
     "android_logs": "prelude.after_eof.views",
     "android_mali_gpu_power_state": "android.gpu.mali_power_state",
     "android_memory_cumulative_dmabuf": "android.memory.dmabuf",
@@ -35724,6 +37304,7 @@
     "android_process_memory_intervals": "android.memory.memory_breakdown",
     "android_process_memory_intervals_by_oom_bucket": "android.memory.memory_breakdown",
     "android_process_metadata": "android.process_metadata",
+    "android_process_uid_state": "android.process_uid_state",
     "android_profiling_manager_cold_startup": "android.profiling_manager.startup",
     "android_screen_state": "android.screen_state",
     "android_screenshots": "android.screenshots",
@@ -35731,6 +37312,7 @@
     "android_slices_for_startup_and_slice_name": "android.startup.startups",
     "android_standardize_slice_name": "android.slices",
     "android_standardize_thread_name": "android.thread",
+    "android_standby_bucket": "android.standby_bucket",
     "android_startup_opinionated_breakdown": "android.startup.startup_breakdowns",
     "android_startup_processes": "android.startup.startups",
     "android_startup_threads": "android.startup.startups",

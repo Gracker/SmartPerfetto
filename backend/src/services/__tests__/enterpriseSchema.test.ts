@@ -911,6 +911,8 @@ describe('enterprise core schema', () => {
       { version: 15 },
       { version: 16 },
       { version: 17 },
+      { version: 18 },
+      { version: 19 },
     ]);
   });
 
@@ -946,6 +948,121 @@ describe('enterprise core schema', () => {
     expect(db!.prepare<[], {count: number}>(`
       SELECT COUNT(*) AS count FROM enterprise_schema_migrations WHERE version = 17
     `).get()?.count).toBe(1);
+  });
+
+  test('adds a nullable private-context marker to existing runs, reports, snapshots and comparisons', () => {
+    db!.exec(`
+      CREATE TABLE enterprise_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      CREATE TABLE analysis_runs (id TEXT PRIMARY KEY);
+      CREATE TABLE report_artifacts (id TEXT PRIMARY KEY);
+      CREATE TABLE analysis_result_snapshots (id TEXT PRIMARY KEY);
+      CREATE TABLE multi_trace_comparison_runs (id TEXT PRIMARY KEY);
+      INSERT INTO analysis_runs(id) VALUES ('legacy-run');
+      INSERT INTO report_artifacts(id) VALUES ('legacy-report');
+      INSERT INTO analysis_result_snapshots(id) VALUES ('legacy-snapshot');
+      INSERT INTO multi_trace_comparison_runs(id) VALUES ('legacy-comparison');
+    `);
+    const markMigration = db!.prepare(`
+      INSERT INTO enterprise_schema_migrations(version, applied_at) VALUES (?, 1)
+    `);
+    for (let version = 1; version <= 17; version += 1) markMigration.run(version);
+
+    applyEnterpriseMinimalSchema(db!);
+
+    for (const table of ['analysis_runs', 'report_artifacts', 'analysis_result_snapshots',
+      'multi_trace_comparison_runs']) {
+      expect(columnNames(db!, table).has('private_context')).toBe(true);
+      // Pre-existing rows stay unknown, which readers restrict like marked rows.
+      expect(db!.prepare(`SELECT private_context FROM ${table}`).get()).toEqual({private_context: null});
+    }
+  });
+
+  test('skips the private-context marker for tables a focused store never created', () => {
+    db!.exec(`
+      CREATE TABLE enterprise_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+    `);
+    const markMigration = db!.prepare(`
+      INSERT INTO enterprise_schema_migrations(version, applied_at) VALUES (?, 1)
+    `);
+    for (let version = 1; version <= 17; version += 1) markMigration.run(version);
+
+    applyEnterpriseMinimalSchema(db!);
+
+    expect(db!.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'report_artifacts'
+    `).get()).toBeUndefined();
+    expect(db!.prepare<[], {count: number}>(`
+      SELECT COUNT(*) AS count FROM enterprise_schema_migrations WHERE version = 18
+    `).get()?.count).toBe(1);
+  });
+
+  test('re-keys window state by owner and keeps live owned rows of a schema-v17 table', () => {
+    applyEnterpriseMinimalSchema(db!);
+    seedCoreGraph(db!);
+    // Restore the migration-8 table shape: keyed by window id alone.
+    db!.exec(`
+      DROP TABLE analysis_result_window_states;
+      CREATE TABLE analysis_result_window_states (
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        window_id TEXT NOT NULL,
+        user_id TEXT,
+        trace_id TEXT,
+        backend_trace_id TEXT,
+        active_session_id TEXT,
+        latest_snapshot_id TEXT,
+        trace_title TEXT,
+        scene_type TEXT,
+        metadata_json TEXT,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (tenant_id, workspace_id, window_id)
+      );
+      DELETE FROM enterprise_schema_migrations WHERE version = 19;
+    `);
+    const live = Date.now() + 60_000;
+    db!.prepare(`
+      INSERT INTO analysis_result_window_states
+        (tenant_id, workspace_id, window_id, user_id, latest_snapshot_id, updated_at, expires_at)
+      VALUES
+        ('tenant-a', 'workspace-a', 'window-owned', 'user-a', 'snapshot-a', 1, @live),
+        ('tenant-a', 'workspace-a', 'window-unowned', NULL, 'snapshot-x', 1, @live),
+        ('tenant-a', 'workspace-a', 'window-expired', 'user-a', 'snapshot-old', 1, 2)
+    `).run({ live });
+
+    applyEnterpriseMinimalSchema(db!);
+
+    expect(db!.prepare(`
+      SELECT name, pk FROM pragma_table_info('analysis_result_window_states')
+      WHERE pk > 0 ORDER BY pk
+    `).all()).toEqual([
+      { name: 'tenant_id', pk: 1 },
+      { name: 'workspace_id', pk: 2 },
+      { name: 'user_id', pk: 3 },
+      { name: 'window_id', pk: 4 },
+    ]);
+    expect(db!.prepare(`
+      SELECT window_id, user_id, latest_snapshot_id FROM analysis_result_window_states
+    `).all()).toEqual([
+      { window_id: 'window-owned', user_id: 'user-a', latest_snapshot_id: 'snapshot-a' },
+    ]);
+    const indexes = new Set(db!.prepare<[], { name: string }>(`
+      SELECT name FROM pragma_index_list('analysis_result_window_states')
+    `).all().map(row => row.name));
+    for (const index of [
+      'idx_analysis_result_window_states_workspace',
+      'idx_analysis_result_window_states_trace',
+      'idx_analysis_result_window_states_snapshot',
+    ]) {
+      expect(indexes.has(index)).toBe(true);
+    }
+    expect(db!.prepare('PRAGMA foreign_key_check(analysis_result_window_states)').all()).toEqual([]);
   });
 
   test('enforces the full tenant workspace session run event chain', () => {

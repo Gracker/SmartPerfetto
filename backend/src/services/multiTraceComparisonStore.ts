@@ -15,6 +15,12 @@ import {
 } from '../types/multiTraceComparison';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
+import { restrictableArtifactAudienceParams, restrictableArtifactAudienceSql } from './resourceOwnership';
+import {
+  decodePrivateContextColumn,
+  encodePrivateContextColumn,
+  unionPrivateContexts,
+} from './security/analysisPrivateContext';
 
 interface ComparisonRunRow {
   id: string;
@@ -30,6 +36,7 @@ interface ComparisonRunRow {
   schema_version: typeof MULTI_TRACE_COMPARISON_RUN_SCHEMA_VERSION;
   created_at: number;
   completed_at: number | null;
+  private_context: number | null;
 }
 
 interface ComparisonInputRow {
@@ -74,6 +81,7 @@ function mapRun(row: ComparisonRunRow, inputRows: ComparisonInputRow[]): MultiTr
     ...(row.created_by ? { createdBy: row.created_by } : {}),
     inputSnapshotIds: orderedInputs.map(input => input.snapshot_id),
     ...(row.baseline_snapshot_id ? { baselineSnapshotId: row.baseline_snapshot_id } : {}),
+    privateContext: decodePrivateContextColumn(row.private_context),
     query: row.query,
     status: row.status,
     ...(row.result_json ? { result: parseJson<ComparisonResult | undefined>(row.result_json, undefined) } : {}),
@@ -84,6 +92,9 @@ function mapRun(row: ComparisonRunRow, inputRows: ComparisonInputRow[]): MultiTr
     ...(row.completed_at ? { completedAt: row.completed_at } : {}),
   };
 }
+
+/** An unowned comparison stays readable only while it is unrestricted. */
+const READABLE_RUN_SQL = restrictableArtifactAudienceSql('', 'created_by IS NULL');
 
 function uniqueSnapshotIds(baselineSnapshotId: string | undefined, candidates: string[]): string[] {
   const seen = new Set<string>();
@@ -116,14 +127,26 @@ export class MultiTraceComparisonRunRepository {
     }
 
     const write = this.db.transaction(() => {
+      // The result embeds its inputs, so it takes the union of their markers;
+      // an input this scope does not hold contributes an unknown one.
+      const inputMarkers = new Map(this.db.prepare<unknown[], {id: string; private_context: number | null}>(`
+        SELECT id, private_context
+        FROM analysis_result_snapshots
+        WHERE tenant_id = ? AND workspace_id = ?
+          AND id IN (${inputSnapshotIds.map(() => '?').join(', ')})
+      `).all(scope.tenantId, scope.workspaceId, ...inputSnapshotIds)
+        .map(row => [row.id, decodePrivateContextColumn(row.private_context)]));
+      const privateContext = unionPrivateContexts(
+        inputSnapshotIds.map(snapshotId => inputMarkers.get(snapshotId) ?? 'unknown'),
+      );
       this.db.prepare(`
         INSERT INTO multi_trace_comparison_runs
           (id, tenant_id, workspace_id, created_by, baseline_snapshot_id,
            query, status, result_json, report_id, error, schema_version,
-           created_at, completed_at)
+           created_at, completed_at, private_context)
         VALUES
           (@id, @tenantId, @workspaceId, @createdBy, @baselineSnapshotId,
-           @query, @status, NULL, NULL, NULL, @schemaVersion, @createdAt, NULL)
+           @query, @status, NULL, NULL, NULL, @schemaVersion, @createdAt, NULL, @privateContext)
       `).run({
         id,
         tenantId: scope.tenantId,
@@ -134,6 +157,7 @@ export class MultiTraceComparisonRunRepository {
         status: input.status ?? 'pending',
         schemaVersion: MULTI_TRACE_COMPARISON_RUN_SCHEMA_VERSION,
         createdAt: now,
+        privateContext: encodePrivateContextColumn(privateContext),
       });
 
       const insertInput = this.db.prepare(`
@@ -181,12 +205,12 @@ export class MultiTraceComparisonRunRepository {
       WHERE tenant_id = @tenantId
         AND workspace_id = @workspaceId
         AND id = @comparisonId
-        AND (created_by = @userId OR created_by IS NULL)
+        AND ${READABLE_RUN_SQL}
       LIMIT 1
     `).get({
       tenantId: scope.tenantId,
       workspaceId: scope.workspaceId,
-      userId: scope.userId ?? null,
+      ...restrictableArtifactAudienceParams(scope),
       comparisonId,
     });
     if (!row) return null;
@@ -225,11 +249,11 @@ export class MultiTraceComparisonRunRepository {
         WHERE tenant_id = @tenantId
           AND workspace_id = @workspaceId
           AND id = @comparisonId
-          AND (created_by = @userId OR created_by IS NULL)
+          AND ${READABLE_RUN_SQL}
       `).run({
         tenantId: scope.tenantId,
         workspaceId: scope.workspaceId,
-        userId: scope.userId ?? null,
+        ...restrictableArtifactAudienceParams(scope),
         comparisonId,
         status: input.status,
         hasBaselineSnapshotId: hasBaselineSnapshotId ? 1 : 0,

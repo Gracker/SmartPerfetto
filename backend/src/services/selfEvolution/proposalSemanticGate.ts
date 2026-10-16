@@ -7,7 +7,7 @@ import type {
   ProposalCandidateMaterializationV1,
   ProposalMaterializationPlanV1,
 } from '../../types/selfEvolution';
-import {canonicalContentHash, canonicalJsonString} from './canonicalJson';
+import {canonicalJsonString} from './canonicalJson';
 import {
   createProposalCandidateMaterializationV1,
   parseProposalMaterializationPlanV1,

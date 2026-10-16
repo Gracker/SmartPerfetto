@@ -14,13 +14,13 @@ import {
   normalizeCodeAwareMode,
   type CodeAwareMode,
 } from '../services/codebase/codeAwareFeature';
+import { effectiveAnalysisSelection } from '../services/effectiveAnalysisSelection';
 import type { KnowledgeScope } from '../services/scopedKnowledgeStore';
 import type { ProviderScope } from '../services/providerManager';
 import type { RuntimeSelection } from './runtimeSelection';
 import type { EngineCapabilities } from './runtimeDescriptorTypes';
 import { getProductionEngineCapabilities } from './runtimeDescriptors';
 import {
-  buildRuntimeSessionMapKey,
   formatTraceContext,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
@@ -53,7 +53,6 @@ export interface RuntimeBudgetInputs {
   fullPathPerTurnMs?: number;
   quickPathPerTurnMs?: number;
   classifierTimeoutMs?: number;
-  verifierTimeoutMs?: number;
 }
 
 export type AnalysisRunSelection =
@@ -74,7 +73,6 @@ export interface AnalysisRunSpec {
     sessionId: string;
     traceId: string;
     referenceTraceId?: string;
-    sessionMapKey: string;
   };
   query: {
     text: string;
@@ -310,7 +308,7 @@ export interface CreateAnalysisRunSpecInput {
 }
 
 function compactAuthorizationIds(ids: string[] | undefined, label: string, maxItems: number): string[] {
-  const compacted = Array.from(new Set(ids ?? [])).filter(Boolean);
+  const compacted = ids ?? [];
   if (compacted.length > maxItems) {
     throw new Error(`${label} exceeds the maximum of ${maxItems} unique ids`);
   }
@@ -342,14 +340,16 @@ export function canonicalRuntimeKind(value: string): AgentRuntimeKind {
 export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): AnalysisRunSpec {
   const options = input.options ?? {};
   const engineCapabilities = resolveEngineCapabilities(input);
-  const codeAwareMode = normalizeCodeAwareMode(options.codeAwareMode);
+  // The effective selection, then the backend's feature switch on its own.
+  const selection = effectiveAnalysisSelection(options);
+  const codeAwareMode = normalizeCodeAwareMode(selection.codeAwareMode);
   const codebaseIds = compactAuthorizationIds(
-    options.codebaseIds,
+    codeAwareMode === 'off' ? undefined : selection.codebaseIds,
     'codebaseIds',
     MAX_CODEBASE_IDS_PER_ANALYSIS,
   );
   const knowledgeSourceIds = compactAuthorizationIds(
-    options.knowledgeSourceIds,
+    selection.knowledgeSourceIds,
     'knowledgeSourceIds',
     MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS,
   );
@@ -412,7 +412,6 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
       sessionId: input.sessionId,
       traceId: input.traceId,
       referenceTraceId: options.referenceTraceId,
-      sessionMapKey: buildRuntimeSessionMapKey(input.sessionId, options.referenceTraceId),
     },
     query: {
       text: input.query,

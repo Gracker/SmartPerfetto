@@ -7,28 +7,55 @@
  *
  * 加载 skill 文件，包括普通 skills 和 module expert skills
  *
- * Module Expert Skills:
- * - 位于 skills/modules/ 目录下
- * - 包含 module 和 dialogue 字段
- * - 可以被跨领域专家调用
+ * Module Expert Skills 位于 skills/modules/ 目录下，用 module 字段标明所属层级和组件。
  */
 
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
 import { validateProcessScopeDeclarations } from './skillValidator';
-import { SkillDefinition, ModuleLayer, DialogueCapability } from './types';
+import { SkillDefinition } from './types';
 import { generateRenderingPipelineDetectionSkill } from '../renderingPipelineDetectionSkillGenerator';
 import logger from '../../utils/logger';
+import { parseStoredYaml, StoredDataError } from '../../utils/storedData';
 import { validateSkillConditions, validateFragmentReferences } from './skillValidator';
 import { validateSkillBatchAnalysis } from './skillBatchAnalysis';
+import {
+  unknownSkillTopLevelKeys, unknownVendorOverrideKeys, type LegacySkillSpellings, type VendorOverrideSource,
+} from './skillTopLevelKeys';
 import { builtInSkillsDir, readSkillFragmentFile, skillFragmentKey } from './skillFragments';
+import { listSkillFiles, SKILL_LAYOUT, type SkillFile } from './skillLayout';
+import { PublicRequestError } from '../../utils/publicRequestError';
 import {
   DisplayContractIssue,
   formatDisplayContractIssue,
   validateSkillDisplayContract,
 } from './displayContractValidator';
 import type { SkillOriginMetadata, SkillPackTrustState } from '../skillPacks/skillPackTypes';
+
+/** A skill file can come from a workspace's pack; its author gets a position, never a quote. */
+function loadSkillYaml(content: string): unknown {
+  return parseStoredYaml(content, 'skill file', {authored: true});
+}
+
+/** A pack's author reads this, so it names the pack's own file. */
+function packLoadError(file: string, error: unknown): unknown {
+  return error instanceof StoredDataError ? new Error(`${file}: ${error.message}`) : error;
+}
+
+/**
+ * An external pack Skill, SQL fragment or vendor override that the registry
+ * refuses: a collision with one already loaded (409) or a definition that fails
+ * validation (400). The pack author resolves it; the message names the Skill
+ * id, the fragment's pack-relative key or the invalid field.
+ */
+export class SkillRegistryRejectionError extends PublicRequestError {
+  constructor(
+    code: 'fragment_key_collision' | 'skill_id_collision' | 'skill_validation_failed' | 'vendor_override_schema_invalid',
+    subject: string,
+  ) {
+    super(code, `${code}:${subject}`, code.endsWith('_collision') ? 409 : 400);
+  }
+}
 
 // =============================================================================
 // Skill Normalization (Backward Compatibility)
@@ -105,30 +132,33 @@ export function normalizeSkillDefinition(raw: any, filePath: string): SkillDefin
     }
   }
 
+  // Legacy spellings are read only through this view; skillTopLevelKeys admits exactly these.
+  const legacy: LegacySkillSpellings = skill;
+
   // Normalize legacy root-level display to output.display (executor reads output.display)
-  if (skill.display && typeof skill.display === 'object') {
+  if (legacy.display && typeof legacy.display === 'object') {
     if (!skill.output || typeof skill.output !== 'object') {
       skill.output = {};
     }
     if (!skill.output.display) {
-      skill.output.display = skill.display;
+      skill.output.display = legacy.display;
     }
   }
 
   // Fill meta if missing (best-effort)
   if (!skill.meta || typeof skill.meta !== 'object') {
     const fallbackDisplayName =
-      (typeof skill.display_name === 'string' && skill.display_name.trim()) ||
-      (typeof skill.displayName === 'string' && skill.displayName.trim()) ||
+      (typeof legacy.display_name === 'string' && legacy.display_name.trim()) ||
+      (typeof legacy.displayName === 'string' && legacy.displayName.trim()) ||
       (typeof skill.name === 'string' && skill.name.trim()) ||
       path.basename(filePath).replace(/\.skill\.ya?ml$/i, '');
 
     const fallbackDescription =
-      (typeof skill.description === 'string' && firstNonEmptyLine(skill.description)) ||
+      (typeof legacy.description === 'string' && firstNonEmptyLine(legacy.description)) ||
       `Skill: ${fallbackDisplayName}`;
 
-    const tags = Array.isArray(skill.tags) ? skill.tags.map(String) : undefined;
-    const icon = typeof skill.icon === 'string' && skill.icon.trim() ? String(skill.icon) : undefined;
+    const tags = Array.isArray(legacy.tags) ? legacy.tags.map(String) : undefined;
+    const icon = typeof legacy.icon === 'string' && legacy.icon.trim() ? String(legacy.icon) : undefined;
 
     skill.meta = {
       display_name: fallbackDisplayName,
@@ -142,15 +172,15 @@ export function normalizeSkillDefinition(raw: any, filePath: string): SkillDefin
       skill.meta.display_name = skill.name;
     }
     if (!skill.meta.description) {
-      const fromTop = typeof skill.description === 'string' ? firstNonEmptyLine(skill.description) : '';
+      const fromTop = typeof legacy.description === 'string' ? firstNonEmptyLine(legacy.description) : '';
       skill.meta.description = fromTop || `Skill: ${skill.meta.display_name || skill.name || 'unknown'}`;
     }
     // Backfill tags/icon from legacy fields
-    if (!Array.isArray(skill.meta.tags) && Array.isArray(skill.tags)) {
-      skill.meta.tags = skill.tags.map(String);
+    if (!Array.isArray(skill.meta.tags) && Array.isArray(legacy.tags)) {
+      skill.meta.tags = legacy.tags.map(String);
     }
-    if (!skill.meta.icon && typeof skill.icon === 'string') {
-      skill.meta.icon = String(skill.icon);
+    if (!skill.meta.icon && typeof legacy.icon === 'string') {
+      skill.meta.icon = String(legacy.icon);
     }
   }
 
@@ -304,7 +334,6 @@ export interface VendorOverride {
   description?: string;
   detection: { signatures: VendorOverrideSignature[] };
   additionalSteps: any[];
-  overrideParams?: Record<string, any>;
 }
 
 export interface VendorOverrideLoadIssue {
@@ -334,7 +363,6 @@ export interface SkillRootDescriptor {
 
 export class SkillRegistry {
   private skills: Map<string, SkillDefinition> = new Map();
-  private moduleSkills: Map<string, SkillDefinition> = new Map();  // Skills with module metadata
   private fragmentCache: Map<string, string> = new Map();  // SQL fragment path → content
   /** Vendor overrides keyed by base skill ID (from `extends` field) */
   private vendorOverrides: Map<string, VendorOverride[]> = new Map();
@@ -361,7 +389,7 @@ export class SkillRegistry {
     }
     for (const root of roots) {
       if (root.origin !== 'built_in') continue;
-      const vendorsDir = path.join(root.rootPath, 'vendors');
+      const vendorsDir = path.join(root.rootPath, SKILL_LAYOUT.vendorsDir);
       if (fs.existsSync(vendorsDir)) {
         this.loadVendorOverrides(vendorsDir);
       }
@@ -369,7 +397,7 @@ export class SkillRegistry {
 
     this.initialized = true;
     this.logDisplayContractSummary();
-    logger.info('SkillLoader', `Loaded ${this.skills.size} skills (${this.moduleSkills.size} module experts, ${this.vendorOverrides.size} vendor-overridden skills)`);
+    logger.info('SkillLoader', `Loaded ${this.skills.size} skills (${this.getAllSkills().filter(skill => skill.module).length} module experts, ${this.vendorOverrides.size} vendor-overridden skills)`);
   }
 
   private async loadSkillRoot(root: SkillRootDescriptor): Promise<void> {
@@ -378,30 +406,9 @@ export class SkillRegistry {
 
     this.loadFragments(skillsDir, root);
 
-    for (const dirName of ['atomic', 'composite', 'deep', 'system', 'comparison']) {
-      const skillDir = path.join(skillsDir, dirName);
-      if (fs.existsSync(skillDir)) {
-        await this.loadSkillsFromDir(skillDir, root);
-      }
+    for (const file of listSkillFiles(skillsDir, {includeCustom: root.origin === 'built_in'})) {
+      await this.loadSkillFile(file, root);
     }
-
-    if (root.origin === 'built_in') {
-      const customDir = path.join(skillsDir, 'custom');
-      if (fs.existsSync(customDir)) {
-        await this.loadSkillsFromDir(customDir, root);
-      }
-    }
-
-    const modulesDir = path.join(skillsDir, 'modules');
-    if (fs.existsSync(modulesDir)) {
-      await this.loadModuleSkillsRecursively(modulesDir, root);
-    }
-
-    const pipelinesDir = path.join(skillsDir, 'pipelines');
-    if (fs.existsSync(pipelinesDir)) {
-      await this.loadPipelineSkills(pipelinesDir, root);
-    }
-
   }
 
   /**
@@ -409,7 +416,7 @@ export class SkillRegistry {
    * Fragments are reusable CTE definitions that can be injected into step SQL.
    */
   private loadFragments(skillsDir: string, root?: SkillRootDescriptor): void {
-    const fragmentsDir = path.join(skillsDir, 'fragments');
+    const fragmentsDir = path.join(skillsDir, SKILL_LAYOUT.fragmentsDir);
     if (!fs.existsSync(fragmentsDir)) return;
 
     const files = fs.readdirSync(fragmentsDir);
@@ -420,7 +427,7 @@ export class SkillRegistry {
         const key = skillFragmentKey(file);
         const existing = this.fragmentCache.get(key);
         if (root?.origin === 'external_pack' && existing !== undefined && existing !== content) {
-          throw new Error(`fragment_key_collision:${key}`);
+          throw new SkillRegistryRejectionError('fragment_key_collision', key);
         }
         this.fragmentCache.set(key, content);
         logger.debug('SkillLoader', `Loaded SQL fragment: ${key}`);
@@ -457,6 +464,7 @@ export class SkillRegistry {
     conditionIssueCount: number;
     fragmentIssueCount: number;
     batchAnalysisIssueCount: number;
+    unknownTopLevelKeyCount: number;
   } {
     const displayWarnings = this.validateAndLogDisplayWarnings(skill, filePath);
 
@@ -478,11 +486,17 @@ export class SkillRegistry {
       logger.warn('SkillLoader', `[${skill.name}.${validationIssue.path}] ${validationIssue.message}`);
     }
 
+    const unknownKeys = unknownSkillTopLevelKeys(skill);
+    if (unknownKeys.length > 0) {
+      logger.warn('SkillLoader', `[${skill.name}] Top-level keys no loader reads: ${unknownKeys.join(', ')}`);
+    }
+
     return {
       displayIssues: displayWarnings,
       conditionIssueCount: condWarnings.length,
       fragmentIssueCount: fragWarnings.length,
       batchAnalysisIssueCount: batchAnalysisIssues.length,
+      unknownTopLevelKeyCount: unknownKeys.length,
     };
   }
 
@@ -505,7 +519,7 @@ export class SkillRegistry {
     root?: SkillRootDescriptor,
   ): void {
     if (root?.origin === 'external_pack' && this.skills.has(skill.name)) {
-      throw new Error(`skill_id_collision:${skill.name}`);
+      throw new SkillRegistryRejectionError('skill_id_collision', skill.name);
     }
     const validation = this.validateAndLogWarnings(skill, filePath);
     if (
@@ -515,18 +529,13 @@ export class SkillRegistry {
         || validation.conditionIssueCount > 0
         || validation.fragmentIssueCount > 0
         || validation.batchAnalysisIssueCount > 0
+        || validation.unknownTopLevelKeyCount > 0
       )
     ) {
-      throw new Error(`skill_validation_failed:${skill.name}`);
+      throw new SkillRegistryRejectionError('skill_validation_failed', skill.name);
     }
     this.skills.set(skill.name, skill);
     this.skillOrigins.set(skill.name, this.originForRoot(root));
-
-    if (skill.module) {
-      this.moduleSkills.set(skill.name, skill);
-    } else {
-      this.moduleSkills.delete(skill.name);
-    }
   }
 
   /**
@@ -577,72 +586,33 @@ export class SkillRegistry {
   }
 
   /**
-   * 递归加载 modules 目录下的 skills
-   * modules/
-   *   ├── app/
-   *   ├── framework/
-   *   ├── kernel/
-   *   └── hardware/
+   * Load one Skill file (listSkillFiles): a Skill or module expert Skill is
+   * normalized; a pipeline file is registered only as a pipeline definition.
    */
-  private async loadModuleSkillsRecursively(dir: string, root?: SkillRootDescriptor): Promise<void> {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        await this.loadModuleSkillsRecursively(fullPath, root);
-      } else if (entry.name.endsWith('.skill.yaml') || entry.name.endsWith('.skill.yml')) {
-        try {
-          const content = fs.readFileSync(fullPath, 'utf-8');
-          const loaded = yaml.load(content) as any;
-          const skill = normalizeSkillDefinition(loaded, fullPath);
-
-          if (skill && skill.name) {
-            this.registerLoadedSkill(skill, fullPath, root);
-            if (skill.module) {
-              logger.debug('SkillLoader', `Loaded module skill: ${skill.name} (${skill.module.layer}/${skill.module.component})`);
-            } else {
-              logger.debug('SkillLoader', `Loaded skill: ${skill.name} (${skill.type})`);
-            }
-          }
-        } catch (error: any) {
-          if (root?.origin === 'external_pack') {
-            throw error;
-          }
-          logger.error('SkillLoader', `Failed to load ${fullPath}:`, error.message);
-        }
-      }
-    }
-  }
-
-  /**
-   * 加载 pipeline skills
-   * Pipeline skills are a special type that define rendering pipeline configurations
-   */
-  private async loadPipelineSkills(dir: string, root?: SkillRootDescriptor): Promise<void> {
-    const files = fs.readdirSync(dir);
-
-    for (const file of files) {
-      // Skip non-skill files and template files
-      if (!file.endsWith('.skill.yaml') && !file.endsWith('.skill.yml')) continue;
-      if (file.startsWith('_')) continue;
-
-      const filePath = path.join(dir, file);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const skill = yaml.load(content) as SkillDefinition;
-
+  private async loadSkillFile(file: SkillFile, root?: SkillRootDescriptor): Promise<void> {
+    const name = path.basename(file.path);
+    try {
+      const content = fs.readFileSync(file.path, 'utf-8');
+      if (file.kind === 'pipeline') {
+        const skill = loadSkillYaml(content) as SkillDefinition;
         if (skill && skill.name && skill.type === 'pipeline_definition') {
-          this.registerLoadedSkill(skill, filePath, root);
+          this.registerLoadedSkill(skill, file.path, root);
           logger.debug('SkillLoader', `Loaded pipeline skill: ${skill.name}`);
         }
-      } catch (error: any) {
-        if (root?.origin === 'external_pack') {
-          throw error;
-        }
-        logger.error('SkillLoader', `Failed to load pipeline ${file}:`, error.message);
+        return;
       }
+      const skill = normalizeSkillDefinition(loadSkillYaml(content) as any, file.path);
+      if (skill && skill.name) {
+        this.registerLoadedSkill(skill, file.path, root);
+        logger.debug('SkillLoader', skill.module
+          ? `Loaded module skill: ${skill.name} (${skill.module.layer}/${skill.module.component})`
+          : `Loaded skill: ${skill.name} (${skill.type})`);
+      }
+    } catch (error: any) {
+      if (root?.origin === 'external_pack') {
+        throw packLoadError(name, error);
+      }
+      logger.error('SkillLoader', `Failed to load ${file.kind === 'pipeline' ? 'pipeline ' : ''}${file.kind === 'module' ? file.path : name}:`, error.message);
     }
   }
 
@@ -666,7 +636,7 @@ export class SkillRegistry {
         const filePath = path.join(vendorDir, file);
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
-          const raw = parseVendorOverrideSource(yaml.load(content));
+          const raw = parseVendorOverrideSource(loadSkillYaml(content));
 
           // Normalize the base skill ID: "composite/startup_analysis" → "startup_analysis"
           const baseSkillId = raw.extends.includes('/')
@@ -713,10 +683,9 @@ export class SkillRegistry {
                 : [],
             },
             additionalSteps: Array.isArray(raw.additional_steps) ? raw.additional_steps : [],
-            overrideParams: raw.override_params,
           };
 
-          if (override.additionalSteps.length > 0 || raw.output?.display) {
+          if (override.additionalSteps.length > 0) {
             this.validateAndLogDisplayWarnings({
               name: `${baseSkillId}@${override.vendor}:${path.basename(file, path.extname(file))}`,
               version: String(raw.version || '1'),
@@ -724,7 +693,6 @@ export class SkillRegistry {
                 display_name: raw.meta?.display_name || `${baseSkillId} ${override.vendor} override`,
                 description: raw.meta?.description || `Vendor override for ${baseSkillId}`,
               },
-              output: raw.output,
               steps: override.additionalSteps,
             } as any, filePath);
           }
@@ -777,6 +745,11 @@ export class SkillRegistry {
     return this.vendorOverrides.get(skillId) || [];
   }
 
+  /** Whether any vendor override extends this Skill, keyed like `getVendorOverride`. */
+  hasVendorOverrides(skillId: string): boolean {
+    return (this.vendorOverrides.get(skillId)?.length ?? 0) > 0;
+  }
+
   /**
    * 获取所有已加载的 vendor override 数量
    */
@@ -801,36 +774,6 @@ export class SkillRegistry {
   }
 
   /**
-   * 从目录加载 skills
-   */
-  private async loadSkillsFromDir(dir: string, root?: SkillRootDescriptor): Promise<void> {
-    const files = fs.readdirSync(dir);
-
-    for (const file of files) {
-      if (!file.endsWith('.skill.yaml') && !file.endsWith('.skill.yml')) {
-        continue;
-      }
-
-      const filePath = path.join(dir, file);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const loaded = yaml.load(content) as any;
-        const skill = normalizeSkillDefinition(loaded, filePath);
-
-        if (skill && skill.name) {
-          this.registerLoadedSkill(skill, filePath, root);
-          logger.debug('SkillLoader', `Loaded skill: ${skill.name} (${skill.type})`);
-        }
-      } catch (error: any) {
-        if (root?.origin === 'external_pack') {
-          throw error;
-        }
-        logger.error('SkillLoader', `Failed to load ${file}:`, error.message);
-      }
-    }
-  }
-
-  /**
    * Load one YAML skill into this registry without marking the registry fully
    * initialized. This is used by latency-sensitive runtime pre-evidence paths
    * that need one deterministic Skill while the full registry initializes in
@@ -846,7 +789,7 @@ export class SkillRegistry {
       : path.join(skillsDir, relativeSkillPath);
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
-      const loaded: unknown = yaml.load(content);
+      const loaded = loadSkillYaml(content);
       const skill = normalizeSkillDefinition(loaded, filePath);
 
       if (!skill?.name) {
@@ -891,86 +834,9 @@ export class SkillRegistry {
     this.skills.set(skill.name, skill);
     this.skillOrigins.set(skill.name, { origin: 'built_in' });
 
-    // Keep moduleSkills map consistent
-    if (skill.module) {
-      this.moduleSkills.set(skill.name, skill);
-    } else {
-      this.moduleSkills.delete(skill.name);
-    }
-
     if (this.initialized && validation.displayIssues.length > 0) {
       this.logDisplayContractSummary();
     }
-  }
-
-  /**
-   * 获取所有模块专家 skills
-   */
-  getAllModuleSkills(): SkillDefinition[] {
-    return Array.from(this.moduleSkills.values());
-  }
-
-  /**
-   * 根据模块层级查找 skills
-   */
-  findSkillsByLayer(layer: ModuleLayer): SkillDefinition[] {
-    return Array.from(this.moduleSkills.values()).filter(
-      (skill) => skill.module?.layer === layer
-    );
-  }
-
-  /**
-   * 根据组件名查找 skill
-   */
-  findSkillByComponent(component: string): SkillDefinition | undefined {
-    return Array.from(this.moduleSkills.values()).find(
-      (skill) => skill.module?.component.toLowerCase() === component.toLowerCase()
-    );
-  }
-
-  /**
-   * 根据层级和组件查找 skill
-   */
-  findModuleSkill(layer: ModuleLayer, component: string): SkillDefinition | undefined {
-    return Array.from(this.moduleSkills.values()).find(
-      (skill) =>
-        skill.module?.layer === layer &&
-        skill.module?.component.toLowerCase() === component.toLowerCase()
-    );
-  }
-
-  /**
-   * 根据对话能力查找 skill
-   * 查找能够回答特定问题类型的模块
-   */
-  findSkillByCapability(capabilityId: string): SkillDefinition | undefined {
-    return Array.from(this.moduleSkills.values()).find((skill) =>
-      skill.dialogue?.capabilities?.some((cap) => cap.id === capabilityId)
-    );
-  }
-
-  /**
-   * 获取所有可用的对话能力
-   */
-  getAllCapabilities(): Array<{ skillName: string; capability: DialogueCapability }> {
-    const capabilities: Array<{ skillName: string; capability: DialogueCapability }> = [];
-
-    for (const skill of this.moduleSkills.values()) {
-      if (skill.dialogue?.capabilities) {
-        for (const cap of skill.dialogue.capabilities) {
-          capabilities.push({ skillName: skill.name, capability: cap });
-        }
-      }
-    }
-
-    return capabilities;
-  }
-
-  /**
-   * 检查 skill 是否为模块专家
-   */
-  isModuleSkill(skillName: string): boolean {
-    return this.moduleSkills.has(skillName);
   }
 
   /**
@@ -1033,7 +899,6 @@ export class SkillRegistry {
    */
   async reload(): Promise<void> {
     this.skills.clear();
-    this.moduleSkills.clear();
     this.fragmentCache.clear();
     this.vendorOverrides.clear();
     this.vendorOverrideLoadIssues = [];
@@ -1050,27 +915,16 @@ export class SkillRegistry {
   }
 }
 
-interface ParsedVendorOverrideSource {
-  extends: string;
-  version?: unknown;
-  meta?: Record<string, unknown>;
-  vendor_detection?: {
-    signatures?: Array<{
-      pattern: string;
-      confidence: 'high' | 'medium' | 'low';
-    }>;
-  };
-  additional_steps?: unknown[];
-  override_params?: Record<string, unknown>;
-  output?: Record<string, unknown>;
-}
-
-function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
+function parseVendorOverrideSource(value: unknown): VendorOverrideSource {
   if (!isPlainRecord(value) || !isNonEmptyString(value.extends)) {
-    throw new Error('vendor_override_schema_invalid:extends');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'extends');
+  }
+  const [unknownKey] = unknownVendorOverrideKeys(value);
+  if (unknownKey !== undefined) {
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', unknownKey);
   }
   if (value.meta !== undefined && !isPlainRecord(value.meta)) {
-    throw new Error('vendor_override_schema_invalid:meta');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'meta');
   }
   if (isPlainRecord(value.meta)) {
     for (const field of ['vendor', 'display_name', 'description']) {
@@ -1078,7 +932,7 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
         value.meta[field] !== undefined
         && !isNonEmptyString(value.meta[field])
       ) {
-        throw new Error(`vendor_override_schema_invalid:meta.${field}`);
+        throw new SkillRegistryRejectionError('vendor_override_schema_invalid', `meta.${field}`);
       }
     }
   }
@@ -1086,32 +940,19 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
     value.additional_steps !== undefined
     && !Array.isArray(value.additional_steps)
   ) {
-    throw new Error('vendor_override_schema_invalid:additional_steps');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'additional_steps');
   }
-  if (
-    value.override_params !== undefined
-    && !isPlainRecord(value.override_params)
-  ) {
-    throw new Error('vendor_override_schema_invalid:override_params');
-  }
-  if (value.output !== undefined && !isPlainRecord(value.output)) {
-    throw new Error('vendor_override_schema_invalid:output');
-  }
-  let vendorDetection: ParsedVendorOverrideSource['vendor_detection'];
+  let vendorDetection: VendorOverrideSource['vendor_detection'];
   if (value.vendor_detection !== undefined) {
     if (!isPlainRecord(value.vendor_detection)) {
-      throw new Error('vendor_override_schema_invalid:vendor_detection');
+      throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection');
     }
     const signatures = value.vendor_detection.signatures;
     if (signatures !== undefined && !Array.isArray(signatures)) {
-      throw new Error(
-        'vendor_override_schema_invalid:vendor_detection.signatures',
-      );
+      throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection.signatures');
     }
     if (Array.isArray(signatures) && signatures.length === 0) {
-      throw new Error(
-        'vendor_override_schema_invalid:vendor_detection.signatures',
-      );
+      throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection.signatures');
     }
     vendorDetection = {
       ...(signatures === undefined
@@ -1125,9 +966,7 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
                   String(entry.confidence),
                 )
               ) {
-                throw new Error(
-                  `vendor_override_schema_invalid:signature[${index}]`,
-                );
+                throw new SkillRegistryRejectionError('vendor_override_schema_invalid', `signature[${index}]`);
               }
               return {
                 pattern: entry.pattern,
@@ -1148,12 +987,6 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
     ...(value.additional_steps === undefined
       ? {}
       : {additional_steps: value.additional_steps}),
-    ...(value.override_params === undefined
-      ? {}
-      : {override_params: value.override_params as Record<string, unknown>}),
-    ...(value.output === undefined
-      ? {}
-      : {output: value.output as Record<string, unknown>}),
   };
 }
 

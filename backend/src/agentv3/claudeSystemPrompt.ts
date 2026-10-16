@@ -2,14 +2,17 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {ClaudeAnalysisContext} from './types';
-import {getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
-import {loadSourceUseDecisionPrompt} from '../services/codebase/sourceUseDecision';
+import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
+import {defaultStrategyDetail, getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
+import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
+import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
+import {knowledgeUsePrompt} from '../services/knowledge/knowledgePrompt';
 import {DEFAULT_OUTPUT_LANGUAGE} from './outputLanguage';
 import {resolveRuntimeTurnPolicy, type RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER} from '../agent/core/conclusionContract';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
+import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
 
 /**
  * Rough token estimate for mixed Chinese/English text.
@@ -124,6 +127,19 @@ function narrowerPreflight(
 }
 
 /**
+ * The capability buckets and capture loss the model reasons with. The probe's
+ * shadow capability manifest and its diagnosis time stay out: the manifest is
+ * a provenance snapshot consumers intentionally ignore (hashes, lease and
+ * processor identity, RPC endpoint), and both change between calls on the same
+ * trace, which would make this cacheable prompt tier differ on every run.
+ */
+function traceCompletenessForPrompt(completeness: TraceCompleteness | undefined) {
+  if (!completeness) return undefined;
+  const {capabilityManifestResolution: _manifest, diagnosedAt: _diagnosedAt, ...forPrompt} = completeness;
+  return forPrompt;
+}
+
+/**
  * The typed path has one presentation contract for every runtime budget. Pinned
  * investigation evidence obligations apply within the question and access scope;
  * legacy scene prose, quick-answer recipes, and lexical plan triggers stay out.
@@ -185,10 +201,10 @@ function buildTypedTurnSystemPromptParts(
     sceneId: intent.sceneId, registryFingerprint: registry.registryFingerprint, onDemandContext,
     preflight,
   });
-  data(3, 'source_authorization', {
-    mode: context.codeAwareMode ?? 'off', codebaseIds: context.codebaseIds ?? [],
-    evidenceAccess: intent.evidenceAccess,
-  });
+  data(3, 'source_authorization', sourceAuthorizationPayload({...context, evidenceAccess: intent.evidenceAccess}));
+  // Selected knowledge bases are background the owner chose, independent of
+  // source access; an `existing_only` turn may still consult them.
+  const knowledge = knowledgeUsePrompt(context.sourceAuthorization, language);
 
   // Scene meaning is a trace fact, not a scene-wide budget: a bounded question
   // still has to be read against the scene it is about. Only a run that read no
@@ -212,6 +228,11 @@ function buildTypedTurnSystemPromptParts(
         ({detailRef: ref, title})));
     }
   }
+  // The author-designated default detail is the scene's methodology for a first
+  // turn. It is the most expendable segment: pushed last, it is the first to go
+  // under budget pressure, leaving the detail list above to look it up.
+  const defaultDetail = (intent.taskKind === 'investigation' || intent.taskKind === 'comparison')
+    && intent.status === 'resolved' ? defaultStrategyDetail(strategy) : undefined;
   if (intent.status === 'resolved' && policy.requiresReport) {
     const contract = getFinalReportContract(intent.sceneId, registry);
     data(3, 'report_requirements', {
@@ -223,27 +244,44 @@ function buildTypedTurnSystemPromptParts(
 
   if (context.codeAwareMode && context.codeAwareMode !== 'off' && context.codebaseIds?.length) {
     if (policy.allowNewEvidence) {
-      const sourceUseDecision = loadSourceUseDecisionPrompt({
+      const sourceUse = loadSourceUsePrompt({
         codeAwareMode: context.codeAwareMode, codebaseIds: context.codebaseIds, outputLanguage: language,
       });
-      if (sourceUseDecision) push(3, 'source_use_decision', stripTemplateComments(sourceUseDecision));
+      if (sourceUse) push(3, 'source_use', sourceUse);
     }
     push(3, 'code_reference_contract', requiredAsset(language === 'en'
       ? 'prompt-code-reference-contract-en' : 'prompt-code-reference-contract-zh'));
-    if (context.codeAwareMode === 'provider_send' &&
-        (intent.taskKind === 'investigation' || intent.taskKind === 'comparison')) {
-      push(3, 'source_finding_binding', requiredAsset('prompt-source-finding-binding'));
+    // The recipe follows the run's source depth: locating code, or explaining how
+    // it behaves (a body under provider_send). An answer the intent says needs
+    // no source gets none; the tools stay authorized.
+    if (policy.sourceNeed !== 'none') {
+      const mechanism = context.sourceAuthorization?.depth === 'mechanism' && context.codeAwareMode === 'provider_send';
+      push(3, 'source_recipe', requiredAsset(mechanism ? 'prompt-source-recipe-mechanism' : 'prompt-source-recipe-locate'));
     }
   }
 
   // No architecture guidance, focus-app default target, or probe suggestion is
   // inferred from missing data. These are facts/hints already supplied by the run.
+  // The package carries its provenance: only `user` binds the target; an
+  // auto-detected package is a ranked hypothesis, and an ambiguous detection
+  // renders candidates without any package in effect.
+  // Product-run evidence for this turn: never dropped whole, and bounded at its
+  // source (buildSceneEvidencePromptData) so it cannot evict other context.
+  if (context.sceneEvidence) {
+    push(2, 'scene_evidence', `${requiredAsset('prompt-scene-evidence')}\n\n${JSON.stringify({
+      context: 'scene_evidence', data: context.sceneEvidence})}`);
+  }
+  const focusApp = buildFocusAppPromptData(context.focusTarget);
+  const currentPackage = packageProvenance(context.packageName, context.focusTarget);
   data(2, 'trace_context', {
-    packageName: context.packageName, architecture: context.architecture,
-    focusApps: context.focusApps, focusMethod: context.focusMethod,
-    traceOs: context.traceOs, traceFormat: context.traceFormat,
+    packageName: context.packageName, packageSource: currentPackage.source,
+    packageConfidence: currentPackage.confidence, architecture: context.architecture,
+    focusApp, traceOs: context.traceOs, traceFormat: context.traceFormat,
   }, true);
-  data(2, 'trace_completeness', context.traceCompleteness, true);
+  if (focusApp || currentPackage.source === 'auto_detected') {
+    push(2, 'focus_app_guidance', requiredAsset('knowledge-focus-app-context'), true);
+  }
+  data(2, 'trace_completeness', traceCompletenessForPrompt(context.traceCompleteness), true);
   data(2, 'knowledge_base', context.knowledgeBaseContext, true);
   data(3, 'available_agents', context.availableAgents, true);
 
@@ -253,6 +291,8 @@ function buildTypedTurnSystemPromptParts(
   if (context.comparison) {
     const comparison = context.comparison;
     const pair = comparison.tracePairContext;
+    const referencePackage = packageProvenance(comparison.referencePackageName, comparison.referenceFocusTarget,
+      {userMayName: false});
     data(4, 'comparison_identity', {
       referenceTraceId: comparison.referenceTraceId,
       tracePairContext: pair && {
@@ -266,8 +306,11 @@ function buildTypedTurnSystemPromptParts(
       capabilityProbeStatus: comparison.capabilityProbeStatus ?? 'not_checked',
     });
     data(4, 'comparison_details', {
-      currentPackageName: context.packageName, referencePackageName: comparison.referencePackageName,
-      referenceArchitecture: comparison.referenceArchitecture, referenceFocusApps: comparison.referenceFocusApps,
+      currentPackageName: context.packageName, currentPackageSource: currentPackage.source,
+      referencePackageName: comparison.referencePackageName,
+      referencePackageSource: referencePackage.source, referencePackageConfidence: referencePackage.confidence,
+      referenceArchitecture: comparison.referenceArchitecture,
+      referenceFocusApp: buildFocusAppPromptData(comparison.referenceFocusTarget),
       commonCapabilities: comparison.commonCapabilities, capabilityDiff: comparison.capabilityDiff,
       traceNames: pair?.panes.map(({traceSide, traceName}) => ({traceSide, traceName})),
       workspaceOpen: pair?.workspaceOpen, splitPercent: pair?.splitPercent,
@@ -289,13 +332,49 @@ function buildTypedTurnSystemPromptParts(
   data(4, 'pattern_context', context.patternContext, true);
   data(4, 'negative_pattern_context', context.negativePatternContext, true);
   data(4, 'case_background_context', context.caseBackgroundContext, true);
+  // Explicitly selected knowledge must remain discoverable under budget
+  // pressure. Drop optional context and visibly trim history instead of
+  // silently removing the owner's selection or its use/citation boundaries.
+  if (knowledge) {
+    data(4, 'knowledge_authorization', knowledge.authorization);
+    push(4, 'knowledge_use', knowledge.guidance);
+  }
+  if (defaultDetail) {
+    push(3, 'scene_default_detail', `${JSON.stringify({context: 'scene_default_detail', detailRef: defaultDetail.ref,
+      title: defaultDetail.title})}\n${stripTemplateComments(defaultDetail.content)}`, true);
+  }
 
   const droppedLabels: string[] = [];
   const truncatedLabels: string[] = [];
   const tokenCount = () => estimatePromptTokens(joinSegments(segments));
   for (let index = segments.length - 1; index >= 0 && tokenCount() > maxTokens; index -= 1) {
-    if (!segments[index].droppable) continue;
-    droppedLabels.push(segments[index].label);
+    const segment = segments[index];
+    // Compact optional owner metadata before sacrificing trace context. Keep
+    // every selected id, index state and the use/citation guidance intact.
+    if (knowledge && segment.label === 'knowledge_authorization') {
+      let bases = knowledge.authorization.knowledgeBases.map(base => ({...base}));
+      segment.originalCharCount = segment.charCount;
+      segment.originalEstimatedTokens = segment.estimatedTokens;
+      for (const field of ['description', 'displayName'] as const) {
+        if (tokenCount() <= maxTokens) break;
+        bases = bases.map(base => {
+          const copy = {...base};
+          delete copy[field];
+          return copy;
+        });
+        segment.content = JSON.stringify({context: segment.label, data: {
+          knowledgeBases: bases, metadataOmitted: true,
+        }});
+      }
+      segment.charCount = segment.content.length;
+      segment.estimatedTokens = estimatePromptTokens(segment.content);
+      segment.truncated = true;
+      truncatedLabels.push(segment.label);
+    }
+    // Keep trace facts while optional background/history can still release
+    // budget. Default strategy details remain available through their tool.
+    if (!segment.droppable || (knowledge && segment.tier <= 3 && segment.label !== 'scene_default_detail')) continue;
+    droppedLabels.push(segment.label);
     segments.splice(index, 1);
   }
   for (let index = segments.length - 1; index >= 0 && tokenCount() > maxTokens; index -= 1) {
@@ -324,6 +403,11 @@ function buildTypedTurnSystemPromptParts(
     segment.estimatedTokens = estimatePromptTokens(best);
     segment.truncated = true;
     truncatedLabels.push(segment.label);
+  }
+  for (let index = segments.length - 1; index >= 0 && tokenCount() > maxTokens; index -= 1) {
+    if (!segments[index].droppable) continue;
+    droppedLabels.push(segments[index].label);
+    segments.splice(index, 1);
   }
   if (tokenCount() > maxTokens) {
     throw new Error(`[SystemPrompt] Typed turn context exceeds hard budget: ~${tokenCount()} tokens (budget: ${maxTokens})`);

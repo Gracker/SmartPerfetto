@@ -91,7 +91,7 @@ const WAIT_CLASS_TEXT: Record<string, [zh: string, en: string]> = {
   unknown: ['未知', 'unknown'],
 };
 
-function waitClassText(waitClass: string, language: OutputLanguage): string {
+export function waitClassText(waitClass: string, language: OutputLanguage): string {
   const entry = WAIT_CLASS_TEXT[waitClass];
   return entry ? localize(language, entry[0], entry[1]) : waitClass;
 }
@@ -144,15 +144,31 @@ export function evidenceText(item: CriticalPathEvidence, language: OutputLanguag
     case 'longest_segment':
       return localize(
         language,
-        `最长外部段=${item.process ?? '-'} / ${item.thread ?? '-'} ${item.ms.toFixed(2)} ms`,
-        `longest external segment=${item.process ?? '-'} / ${item.thread ?? '-'} ${item.ms.toFixed(2)} ms`,
+        `最长可归因段=${item.process ?? '-'} / ${item.thread ?? '-'} ${item.ms.toFixed(2)} ms`,
+        `longest attributable segment=${item.process ?? '-'} / ${item.thread ?? '-'} ${item.ms.toFixed(2)} ms`,
+      );
+    case 'leaf_wait': {
+      const wake = item.waitClass
+        ? localize(language, `，唤醒来源：${waitClassText(item.waitClass, language)}`, `, wake: ${waitClassText(item.waitClass, language)}`)
+        : '';
+      return localize(
+        language,
+        `链路末端等待=${item.process ?? '-'} / ${item.thread ?? '-'} ${item.ms.toFixed(2)} ms${wake}`,
+        `chain-end wait=${item.process ?? '-'} / ${item.thread ?? '-'} ${item.ms.toFixed(2)} ms${wake}`,
+      );
+    }
+    case 'root_wait':
+      return localize(
+        language,
+        `选中线程自身等待=${stateText(item.state, language)} ${item.ms.toFixed(2)} ms`,
+        `selected thread's own wait=${stateText(item.state, language)} ${item.ms.toFixed(2)} ms`,
       );
     case 'duration':
       return `${item.ms.toFixed(2)} ms`;
     case 'selected_task':
       return localize(language, `选中 task=${item.ms.toFixed(2)} ms`, `selected task=${item.ms.toFixed(2)} ms`);
-    case 'external_path':
-      return localize(language, `外部 critical path=${item.ms.toFixed(2)} ms`, `external critical path=${item.ms.toFixed(2)} ms`);
+    case 'attributable_path':
+      return localize(language, `可归因外部链路=${item.ms.toFixed(2)} ms`, `attributable external path=${item.ms.toFixed(2)} ms`);
     case 'task_duration':
       return `task=${item.ms.toFixed(2)} ms`;
     case 'utid':
@@ -187,15 +203,31 @@ const ANOMALY_TEXT: Record<CriticalPathAnomalyId, {title: Render; detail: Render
     ),
   },
   external_share_high: {
-    title: fixed('外部 critical path 占比过高', 'External critical-path share is high'),
+    title: fixed('外部线程可归因耗时占比过高', 'Attributable external time is high'),
     detail: (p, l) => localize(
       l,
-      `外部线程/模块贡献 ${ms(p, 'ms')} ms，占选中区间 ${ms(p, 'percent')}%。这通常不是单点函数慢，而是等待链或调度链拖慢。`,
-      `External threads or modules contribute ${ms(p, 'ms')} ms (${ms(p, 'percent')}% of the selected range), indicating a wait or scheduling chain rather than one slow function.`,
+      `其他线程的运行、可运行与不可中断等待在 critical path 上累计 ${ms(p, 'ms')} ms，占选中区间 ${ms(p, 'percent')}%。这通常不是单点函数慢，而是等待链或调度链拖慢。`,
+      `Other threads' running, runnable and uninterruptible time on the critical path adds up to ${ms(p, 'ms')} ms (${ms(p, 'percent')}% of the selected range), indicating a wait or scheduling chain rather than one slow function.`,
+    ),
+  },
+  peer_event_wait: {
+    title: fixed('等待链终止于其他线程的外部事件等待', 'The wait chain ends in another thread waiting for an external event'),
+    detail: (p, l) => localize(
+      l,
+      `链路末端的可中断睡眠累计 ${ms(p, 'ms')} ms（占选中区间 ${ms(p, 'percent')}%），最长的是 ${str(p, 'process')} / ${str(p, 'thread')} 的 ${ms(p, 'leafMs')} ms，唤醒来源：${waitClassText(str(p, 'waitClass'), l)}。选中线程在做 slice 内的工作时等它，所以这个线程在等的外部事件（网络、定时器或设备）就是要报告的阻塞点；唤醒来源只是候选，需结合该线程的 slice 与网络/定时器证据确认。`,
+      `Interruptible sleeps at the end of the chain add up to ${ms(p, 'ms')} ms (${ms(p, 'percent')}% of the selected range); the longest is ${ms(p, 'leafMs')} ms on ${str(p, 'process')} / ${str(p, 'thread')}, wake: ${waitClassText(str(p, 'waitClass'), l)}. The selected thread waited for it during traced work, so the external event that thread waited for (network, timer or device) is the blocker to report. The wake source is a candidate; confirm it with that thread's slices and network or timer evidence.`,
+    ),
+  },
+  idle_wait: {
+    title: fixed('选中等待位于两个 slice 之间，更像空闲', 'The selected wait sits between slices and reads as idle'),
+    detail: (p, l) => localize(
+      l,
+      `选中线程的 ${stateText(str(p, 'state'), l)} 等待持续 ${ms(p, 'ms')} ms，不在任何 slice 内，前后都有 slice；链路上可归因的外部耗时只占 ${ms(p, 'percent')}%，直接唤醒来源为 ${str(p, 'waker')}（${str(p, 'wakerThread')}）。这通常是线程空闲（如 Looper 等消息），不是卡顿耗时；除非问题本身是空闲时长，应改选场景窗口内（启动、掉帧、输入到响应）的等待再分析。`,
+      `The selected thread's ${stateText(str(p, 'state'), l)} wait lasts ${ms(p, 'ms')} ms outside any slice, with slices before and after it; attributable external time is only ${ms(p, 'percent')}% of the window, and the direct waker is ${str(p, 'waker')} (${str(p, 'wakerThread')}). This usually means the thread was idle (for example a Looper waiting for a message), not slow. Unless the question is about idle time, analyze a wait inside the scene window (startup, janky frame, input to response) instead.`,
     ),
   },
   long_segment: {
-    title: fixed('存在长 critical path 段', 'A long critical-path segment exists'),
+    title: fixed('存在长的可归因 critical path 段', 'A long attributable critical-path segment exists'),
     detail: (p, l) => localize(
       l,
       `${str(p, 'process')} / ${str(p, 'thread')} 在 critical path 上持续 ${ms(p, 'ms')} ms。`,
@@ -283,6 +315,20 @@ const ANOMALY_TEXT: Record<CriticalPathAnomalyId, {title: Render; detail: Render
       'Perfetto returned no critical-path wait chain for the selected task. The trace may lack sched_wakeup or thread_state data, or the selected range may have no traceable wait chain.',
     ),
   },
+  no_thread_state_in_window: {
+    title: fixed('该线程在选区内没有调度数据', 'The thread has no scheduling data in the selection'),
+    detail: fixed(
+      '选中区间内该线程没有任何 thread_state 行：它可能不在这段时间内存在，或 trace 没有记录它的 sched 事件。这不代表线程空闲，需要换一个在该区间有调度数据的线程。',
+      'The thread has no thread_state row in the selected range: it may not exist then, or the trace did not record its sched events. This does not mean the thread was idle; choose a thread with scheduling data in the range.',
+    ),
+  },
+  wait_open_at_trace_end: {
+    title: fixed('等待直到 trace 结束都没有结束', 'The wait did not end before the trace did'),
+    detail: fixed(
+      '选中等待一直持续到 trace 结束，没有唤醒记录，也就没有可追的等待链。对 ANR 来说这本身就是结论：线程到录制结束仍被阻塞，需要看它在等什么（锁持有者、binder 对端或 IO）。',
+      'The selected wait lasted until the end of the trace with no recorded wakeup, so there is no wait chain to follow. For an ANR this is itself the finding: the thread was still blocked when recording stopped; inspect what it waited on (lock owner, binder peer or I/O).',
+    ),
+  },
 };
 
 export function anomalyText(
@@ -322,8 +368,24 @@ const RECOMMENDATION_TEXT: Record<CriticalPathRecommendationId, [zh: string, en:
     'Inspect GC type and frequency, especially whether mark-compact GC blocked mutators and whether heap pressure or explicit System.gc triggered it.',
   ],
   start_longest_segment: [
-    '优先从最长 critical path 段入手，而不是只看选中线程自己的 slice；等待链上的外部线程才可能是直接原因。',
-    'Start with the longest critical-path segment instead of only the selected thread; an external thread on the wait chain may be the direct cause.',
+    '优先从最长的可归因 critical path 段入手，而不是只看选中线程自己的 slice；等待链上的外部线程才可能是直接原因。',
+    'Start with the longest attributable critical-path segment instead of only the selected thread; an external thread on the wait chain may be the direct cause.',
+  ],
+  follow_peer_event_wait: [
+    '查看链路末端那个线程在睡眠前做的 slice 和它的唤醒来源（网络收包、定时器、设备中断），确认它在等哪个外部事件；它持有的锁或 binder 回复才是选中线程等待的原因。',
+    'Inspect the slices the chain-end thread ran before it slept and its wake source (network receive, timer, device interrupt) to confirm which external event it waited for; the lock or binder reply it held is why the selected thread waited.',
+  ],
+  choose_active_window: [
+    '改选场景窗口内的等待（启动用 android_startups 窗口、掉帧用卡顿帧窗口、ANR 用输入分发到 ANR 的区间、交互用输入到上屏），按可归因耗时而不是最长睡眠来挑选。',
+    'Pick a wait inside the scene window instead (android_startups for startup, the janky frame for jank, input dispatch to ANR for an ANR, input to present for an interaction), ranked by attributable time rather than the longest sleep.',
+  ],
+  choose_thread_with_sched_data: [
+    '换一个在该区间有 thread_state 数据的线程（同进程线程优先），或确认录制配置包含 sched/sched_switch。',
+    'Choose a thread that has thread_state data in the range (same-process threads first), or confirm the recording includes sched/sched_switch.',
+  ],
+  inspect_unfinished_wait: [
+    '对未结束的等待，查它在等的对象：同时间的 android_monitor_contention（锁持有者与方法）、未完成的 binder 事务、D 态的 blocked_function；等待链本身无法给出唤醒者。',
+    'For an unfinished wait, inspect what it waits on: overlapping android_monitor_contention (lock owner and method), an unfinished binder transaction, or the D-state blocked_function; the wait chain itself cannot name a waker.',
   ],
   running_selection: [
     '对于 Running 状态的选区，推荐查 perf/简单采样的 callstack、CPU 占用与频率，而非 critical path。',
@@ -397,6 +459,21 @@ const WARNING_TEXT: Record<CriticalPathWarningCode, Render> = {
     l,
     `frame timeline 查询失败：${str(p, 'message')}`,
     `frame timeline query failed: ${str(p, 'message')}`,
+  ),
+  wait_open_at_trace_end: (p, l) => localize(
+    l,
+    `选中等待直到 trace 结束都没有结束，已按 trace 结束截断为 ${ms(p, 'ms')} ms 分析`,
+    `The selected wait never ended before the trace did; it was analyzed up to the end of the trace (${ms(p, 'ms')} ms)`,
+  ),
+  root_wait_query_failed: (p, l) => localize(
+    l,
+    `无法判断选中等待是否位于 slice 内：${str(p, 'message')}`,
+    `could not tell whether the selected wait sat inside a slice: ${str(p, 'message')}`,
+  ),
+  thread_state_id_ignored_conflict: (p, l) => localize(
+    l,
+    `thread_state_id ${str(p, 'threadStateId')} 属于 utid ${str(p, 'ownerUtid')}，与指定的线程或区间不一致，已忽略它并按指定线程和区间分析`,
+    `thread_state_id ${str(p, 'threadStateId')} belongs to utid ${str(p, 'ownerUtid')} and disagrees with the requested thread or window; it was ignored and the requested thread and window were analyzed`,
   ),
 };
 
@@ -489,8 +566,8 @@ const NOTE_TEXT: Record<CriticalPathNoteCode, Render> = {
   non_mark_compact: fixed('非 mark-compact', 'non-mark-compact'),
   cpu_max_freq: (p, l) => localize(l, `该段内 CPU 最高频率：${str(p, 'khz')} kHz`, `CPU max freq during segment: ${str(p, 'khz')} kHz`),
   best_case_only: fixed(
-    '仅为最好情况——bestCaseDurationMs 是最长外部段耗时为零时剩下的任务时长；节省至多为 maxSavingMs，原本更短的路径可能成为新的关键路径，所以任务实际缩短可能更少。',
-    'BEST CASE ONLY — bestCaseDurationMs is the task duration left if the longest external segment took no time; the saving is at most maxSavingMs, and a previously shorter path may become critical, so the task may shrink by less.',
+    '仅为最好情况——bestCaseDurationMs 是最长可归因段（其他线程的运行、可运行或不可中断等待）耗时为零时剩下的任务时长；节省至多为 maxSavingMs，原本更短的路径可能成为新的关键路径，所以任务实际缩短可能更少。',
+    'BEST CASE ONLY — bestCaseDurationMs is the task duration left if the longest attributable segment (another thread running, runnable or in uninterruptible wait) took no time; the saving is at most maxSavingMs, and a previously shorter path may become critical, so the task may shrink by less.',
   ),
 };
 

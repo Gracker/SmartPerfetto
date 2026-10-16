@@ -74,10 +74,8 @@ export interface ProviderTuning {
   effort?: 'low' | 'medium' | 'high' | 'max';
   fullPerTurnMs?: number;
   quickPerTurnMs?: number;
-  verifierTimeoutMs?: number;
   classifierTimeoutMs?: number;
   enableSubAgents?: boolean;
-  enableVerification?: boolean;
 }
 
 export interface ProviderCustom {
@@ -129,10 +127,6 @@ export interface ProviderTemplate {
   availableModels: ModelOption[];
   defaultConnection?: Partial<ProviderConnection>;
 }
-
-export type OfficialProviderTemplate = ProviderTemplate & {
-  type: Exclude<ProviderType, 'custom'>;
-};
 
 export interface TestResult {
   success: boolean;

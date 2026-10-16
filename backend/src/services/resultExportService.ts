@@ -230,5 +230,3 @@ export interface AnalysisSessionExport {
   notes?: AnalysisNote[];
   uncertaintyFlags?: UncertaintyFlag[];
 }
-
-export default ResultExportService;

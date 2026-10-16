@@ -4,15 +4,17 @@
 This directory is the source-controlled trace test and reference corpus.
 
 - [Real trace cases](./real/README.md): 6
-- [Constructed trace cases](./constructed/README.md): 17
+- [Constructed trace cases](./constructed/README.md): 28
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Evidence tiers: R1=6, R2=0, R3=17.
+Evidence tiers: R1=6, R2=0, R3=28.
 
-Pinned Perfetto SQL source: `add693d8b338ba9599dbcbc3e300b1ab8c000897`. The generated coverage ledger contains 249 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
+Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 229 source-column-backed semantic, 4 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 264 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+
+Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 27 semantic, 127 execution-only.
 
 ## Commands
 
@@ -20,7 +22,7 @@ Skill execution quality: 229 source-column-backed semantic, 4 execution-only com
 
 `npm run trace:build` deterministically materializes every base-plus-overlay case under ignored `Trace/.generated/` and reparses it with the pinned trace processor.
 
-`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, and source-provenance results stay separate; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
+`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every exact unit (each `exact_sql`, and each target step whose own SQL binds the scope's UPID through `native_upid` or `effective_target_processes`, in every Skill the executor admits to an exact run) under the exact UPID of the process its expectation binds (`exact_scope`: a unique name, or one instance of a shared name picked by `instance`) and checks that its rows depend on that UPID alone, and not on the process name when another instance shares it, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
 
 `npm run trace:regression` validates, builds, and executes the complete corpus. Per-case evidence is written below `Trace/.generated/<real|constructed>/<case-id>/`.
 
@@ -38,6 +40,8 @@ The command copies evidence atomically into ignored `Trace/real/.private/<id>/`.
 
 Constructed cases keep source scenarios and overlay protobufs in Git; combined traces are generated. Copy [the scenario template](./constructed/_templates/scenario.example.json), declare Android compatibility in `case.json`, assign each target explicitly, then run `npm run trace:regression`. Adding a Skill or Strategy without a current expectation fails validation. Use separate case ids with non-overlapping API ranges when Android behavior differs.
 
+Every constructed case is an analysis scenario unless its `case.json` declares `"purpose": "fixture"`. A fixture case carries data for a non-analysis test only (for example device identity metadata over a borrowed base) and has no Skill or Strategy coverage.
+
 ## Real cases
 
 | Case | Scene | Android | Publication | Analysis | Canonical SQL |
@@ -53,20 +57,31 @@ Constructed cases keep source scenarios and overlay protobufs in Git; combined t
 
 | Case | Scene | Android | Base | Coverage |
 | --- | --- | --- | --- | --- | --- |
+| [App background power state layers](./constructed/app-background-power/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Binder, lock, and I/O blocking](./constructed/binder-io-blocking/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 25 target(s) |
+| [HONOR 300 Pro device identity metadata](./constructed/device-identity-honor-300-pro/) | general | Android 16 / API 36 | android-startup-light | 0 target(s) |
+| [OUKITEL WP62 device identity metadata](./constructed/device-identity-oukitel-wp62/) | general | Android 15 / API 35 | android-scroll-standard | 0 target(s) |
+| [Google Pixel 6 Pro device identity metadata](./constructed/device-identity-pixel-6-pro/) | general | Android CinnamonBun / API 37 | android-scroll-customer | 0 target(s) |
+| [vivo X300 Pro device identity metadata](./constructed/device-identity-vivo-x300-pro/) | general | Android 16 / API 36 | android-startup-heavy | 0 target(s) |
 | [Framework rendering pipeline signatures](./constructed/framework-pipelines/) | pipeline | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 33 target(s) |
 | [General analysis and runtime contracts](./constructed/general-runtime-contracts/) | general | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 17 target(s) |
 | [GPU workload and frequency](./constructed/gpu-workload/) | gpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 11 target(s) |
+| [Java heap dump class growth](./constructed/heap-dump-class-growth/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Input and interaction latency](./constructed/input-interaction-latency/) | interaction | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 14 target(s) |
 | [Linux and Android system state](./constructed/linux-system-state/) | linux | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
+| [Lock holder intervals (android.lock_held)](./constructed/lock-held-ownership/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 1 target(s) |
 | [Main-thread work between animation frames](./constructed/main-thread-frame-work/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Media, network, and camera pipeline](./constructed/media-network-camera/) | media | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 8 target(s) |
 | [Memory and GC pressure](./constructed/memory-gc-pressure/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 20 target(s) |
 | [Power and thermal throttling](./constructed/power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
-| [Rendering pipeline jank](./constructed/rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 46 target(s) |
+| [Process restart: two instances of one package](./constructed/process-restart-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 9 target(s) |
+| [Process scope isolation across same-package and peer processes](./constructed/process-scope-isolation/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 16 target(s) |
+| [Framework process state residency](./constructed/process-state-residency/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
+| [Rendering pipeline jank](./constructed/rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 47 target(s) |
 | [Scene observation and device state contracts](./constructed/scene-observation-contracts/) | scene_reconstruction | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
 | [Scheduler and CPU contention](./constructed/scheduler-cpu-contention/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 38 target(s) |
+| [Per-frame CPU frequency-limit binding in scrolling](./constructed/scrolling-frequency-limit-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 2 target(s) |
 | [Source analysis semantic ground truth](./constructed/source-analysis-semantic/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-light | 0 target(s) |
 | [Startup and process lifecycle](./constructed/startup-lifecycle/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 24 target(s) |
 | [System scheduling evidence with explicit handoffs](./constructed/system-scheduling-evidence/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 5 target(s) |
-| [Thermal and userspace CPU frequency limit attribution](./constructed/thermal-frequency-limit/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 7 target(s) |
+| [Thermal and userspace CPU frequency limit attribution](./constructed/thermal-frequency-limit/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 10 target(s) |

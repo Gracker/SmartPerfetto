@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
+  TRIGGERS,
   classify,
   collectChangedPaths,
   evaluate,
@@ -27,7 +28,6 @@ test('covers dotfile rules and shared runtime/report surfaces', () => {
     'backend/src/services/processIdentity/identityGate.ts',
     'backend/src/services/perfettoService.ts',
     'backend/src/services/renderingPipelineDetectionSkillGenerator.ts',
-    'backend/src/agent/decision/skillExecutorAdapter.ts',
     'backend/data/perfettoStdlibSymbols.json',
     'perfetto',
   ]) {
@@ -35,6 +35,15 @@ test('covers dotfile rules and shared runtime/report surfaces', () => {
   }
   assert.throws(() => classify(['../outside.ts']), /unsafe/);
   assert.throws(() => classify(['/tmp/outside.ts']), /unsafe/);
+});
+
+test('every trigger names a tracked path', () => {
+  // A trigger for a deleted module matches nothing and silently stops
+  // guarding the contract it was listed for.
+  const repoRoot = resolve(import.meta.dirname, '../..');
+  const tracked = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' }).split('\n');
+  const stale = TRIGGERS.filter(trigger => !tracked.some(path => path.startsWith(trigger)));
+  assert.deepEqual(stale, []);
 });
 
 test('requires a semantic decision for triggered changes', () => {
@@ -173,12 +182,14 @@ test('collects branch, staged, unstaged, and untracked paths', () => {
   ]);
 });
 
-test('Claude imports the canonical rules exposing the impact gate and decision states', () => {
+test('agent entrypoints import the canonical rules exposing the impact gate and decision states', () => {
   const agents = readFileSync(new URL('../../AGENTS.md', import.meta.url), 'utf8');
-  const claude = readFileSync(new URL('../../CLAUDE.md', import.meta.url), 'utf8');
-  assert.deepEqual(claude.match(/^@\S+$/gm), ['@AGENTS.md']);
-  assert.doesNotMatch(claude, /^```|^~~~|^##\s|^<!-- gitnexus:start -->/m);
-  assert.doesNotMatch(agents, /^@CLAUDE\.md$/m);
+  for (const entrypoint of ['CLAUDE.md', 'GEMINI.md']) {
+    const adapter = readFileSync(new URL(`../../${entrypoint}`, import.meta.url), 'utf8');
+    assert.deepEqual(adapter.match(/^@\S+$/gm), ['@AGENTS.md'], entrypoint);
+    assert.doesNotMatch(adapter, /^```|^~~~|^##\s|^- |^<!-- gitnexus:start -->/m, entrypoint);
+    assert.ok(!agents.split('\n').includes(`@${entrypoint}`), entrypoint);
+  }
   for (const token of [
     'check:perfetto-skills-impact',
     'required',

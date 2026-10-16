@@ -16,6 +16,10 @@ import {
   createCaseRetriever,
   evaluateCaseEvidenceSignature,
 } from '../caseRecommendationRetriever';
+import {caseCurationGrantForMarkdownIngest} from '../../security/caseCuration';
+import {writeCaseFileWithoutAttestations} from '../../../../tests/helpers/caseStoreFixture';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 let tmpDir: string;
 let library: CaseLibrary;
@@ -31,22 +35,25 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function addCase(input: {
+type CaseInput = {
   caseId: string;
   status?: CaseKnowledgeStatus;
   quality?: CaseKnowledgeQuality;
+  redactionState?: CaseNode['redactionState'];
   required?: Array<{ field: string; op: 'eq' | 'contains_any' | 'gte' | 'lte'; value: unknown }>;
   supportive?: Array<{ field: string; op: 'eq' | 'contains_any' | 'gte' | 'lte'; value: unknown }>;
-  supported?: boolean;
-}) {
-  const record: CaseNode = {
+  appArchitecture?: string | string[];
+};
+
+function caseRecord(input: CaseInput): CaseNode {
+  return {
     schemaVersion: 1,
-    source: input.quality === 'imported' ? 'runtime_analysis_candidate' : 'curated_markdown_case',
+    source: 'curated_markdown_case',
     createdAt: 1,
     caseId: input.caseId,
     title: input.caseId,
     status: input.status ?? 'published',
-    redactionState: 'redacted',
+    redactionState: input.redactionState ?? 'redacted',
     tags: ['scrolling', 'shader_compile'],
     findings: [],
     knowledge: {
@@ -61,9 +68,7 @@ function addCase(input: {
         responsibility: 'app',
         severity: 'warning',
       },
-      context: input.supported
-        ? {'caseEvolution.v1': { candidateId: 'cand-supported', supportingEvidence: 3, contradictingEvidence: 0, supported: true }}
-        : {},
+      context: {app_architecture: input.appArchitecture ?? 'any'},
       evidenceSignatures: {
         required: input.required ?? [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }],
         supportive: input.supportive ?? [],
@@ -74,16 +79,20 @@ function addCase(input: {
       },
     },
   };
+}
+
+function addCase(input: CaseInput) {
+  const record = caseRecord(input);
   if (record.status === 'published') {
-    library.saveCase({ ...record, status: 'reviewed' });
-    library.publishCase(record.caseId, { reviewer: 'test' });
+    library.saveCase({ ...record, status: 'reviewed' }, curator);
+    library.publishCase(record.caseId, {reviewer: 'test'}, curator);
   } else {
-    library.saveCase(record);
+    library.saveCase(record, curator);
   }
   const chunk: RagChunk = {
     chunkId: `case:${input.caseId}:summary`,
     kind: 'case_library',
-    uri: input.quality === 'imported' ? `case://learned/${input.caseId}` : `case://${input.caseId}`,
+    uri: `case://${input.caseId}`,
     title: input.caseId,
     snippet: `${input.caseId} shader compile makePipeline`,
     indexedAt: 1,
@@ -110,6 +119,7 @@ describe('caseRecommendationRetriever', () => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       responsibility: 'app',
       audiences: ['app'],
       evidenceSignatures: { reason_code: 'shader_compile', render_slices: ['makePipeline'] },
@@ -125,50 +135,104 @@ describe('caseRecommendationRetriever', () => {
     expect(hits[2].missingRequiredSignatures).toEqual(['reason_code']);
   });
 
-  it('honors includeStatuses and ranks curated above imported at equal strength', () => {
-    addCase({ caseId: 'learned-draft', status: 'draft', quality: 'imported', supported: true });
-    addCase({ caseId: 'curated-reviewed', status: 'reviewed', quality: 'curated' });
-
-    const publishedOnly = createCaseRetriever({ library, ragStore }).retrieve({
+  it('cites the trace evidence the signatures were read from, and signature names only as matches', () => {
+    addCase({ caseId: 'case-strong', supportive: [{ field: 'render_slices', op: 'contains_any', value: ['makePipeline'] }] });
+    const query = {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
-      audiences: ['app'],
-      evidenceSignatures: { reason_code: 'shader_compile' },
-      includeStatuses: ['published'],
-    });
-    expect(publishedOnly).toEqual([]);
+      architectureType: undefined,
+      audiences: ['app' as const],
+      evidenceSignatures: { reason_code: 'shader_compile', render_slices: ['makePipeline'] },
+      includeStatuses: ['published' as const],
+    };
+    const retriever = createCaseRetriever({ library, ragStore });
 
-    const withDrafts = createCaseRetriever({ library, ragStore }).retrieve({
-      scene: 'scrolling',
-      domainPack: 'scrolling.v1',
-      rootCause: 'shader_compile',
-      audiences: ['app'],
-      evidenceSignatures: { reason_code: 'shader_compile' },
-      includeStatuses: ['draft', 'reviewed'],
+    const [fromTrace] = retriever.retrieve({ ...query, evidenceRefIds: ['data:scrolling:root-causes'] });
+    expect(fromTrace).toMatchObject({
+      evidenceRefs: ['data:scrolling:root-causes'],
+      matchedSignatures: ['reason_code', 'render_slices'],
     });
-    expect(withDrafts.map(hit => hit.caseId)).toEqual(['curated-reviewed', 'learned-draft']);
-    expect(withDrafts[1].learnedProvenance).toMatchObject({ candidateId: 'cand-supported', supported: true });
+    // Values a caller typed in are matched, but they are no trace evidence.
+    const [supplied] = retriever.retrieve(query);
+    expect(supplied.matchedSignatures).toEqual(['reason_code', 'render_slices']);
+    expect(supplied).not.toHaveProperty('evidenceRefs');
   });
 
-  // MAJOR-3 regression: at EQUAL matchStrength AND EQUAL status, a curated
-  // case must outrank a supported learned case. The original comparator ran
-  // learnedSupported before quality, letting a supported learned published
-  // case outrank a curated published case — contrary to §4.2 Stage C.
-  it('ranks a curated published case above a supported learned published case at equal strength', () => {
-    addCase({ caseId: 'curated-pub', status: 'published', quality: 'curated' });
-    addCase({ caseId: 'learned-pub', status: 'published', quality: 'imported', supported: true });
+  it('recalls only cases analyses may read', () => {
+    writeCaseFileWithoutAttestations(path.join(tmpDir, 'case_library.json'), caseRecord({ caseId: 'legacy', status: 'reviewed' }));
+    addCase({ caseId: 'attested', status: 'reviewed' });
+    addCase({ caseId: 'undeclared', status: 'reviewed', redactionState: 'raw' });
 
     const hits = createCaseRetriever({ library, ragStore }).retrieve({
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
+      audiences: ['app'],
+      evidenceSignatures: { reason_code: 'shader_compile' },
+      includeStatuses: ['reviewed'],
+    });
+    expect(hits.map(hit => hit.caseId)).toEqual(['attested']);
+  });
+
+  it('honors includeStatuses, never recalls a draft, and ranks curated above imported at equal strength', () => {
+    addCase({ caseId: 'imported-reviewed', status: 'reviewed', quality: 'imported' });
+    addCase({ caseId: 'curated-reviewed', status: 'reviewed', quality: 'curated' });
+    addCase({ caseId: 'curated-draft', status: 'draft', quality: 'curated' });
+    const query = {
+      scene: 'scrolling',
+      domainPack: 'scrolling.v1',
+      rootCause: 'shader_compile',
+      architectureType: undefined,
+      audiences: ['app' as const],
+      evidenceSignatures: { reason_code: 'shader_compile' },
+    };
+
+    expect(createCaseRetriever({ library, ragStore }).retrieve({ ...query, includeStatuses: ['published'] })).toEqual([]);
+    const reviewed = createCaseRetriever({ library, ragStore }).retrieve({
+      ...query,
+      includeStatuses: ['published', 'reviewed'],
+    });
+    expect(reviewed.map(hit => hit.caseId)).toEqual(['curated-reviewed', 'imported-reviewed']);
+    // Learned cases are retired: no hit carries learned provenance.
+    expect(reviewed.some(hit => 'learnedProvenance' in hit)).toBe(false);
+  });
+
+  it('ranks a curated published case above an imported published case at equal strength', () => {
+    addCase({ caseId: 'imported-pub', status: 'published', quality: 'imported' });
+    addCase({ caseId: 'curated-pub', status: 'published', quality: 'curated' });
+
+    const hits = createCaseRetriever({ library, ragStore }).retrieve({
+      scene: 'scrolling',
+      domainPack: 'scrolling.v1',
+      rootCause: 'shader_compile',
+      architectureType: undefined,
       responsibility: 'app',
       audiences: ['app'],
       evidenceSignatures: { reason_code: 'shader_compile' },
       includeStatuses: ['published'],
     });
 
-    expect(hits.map(hit => hit.caseId)).toEqual(['curated-pub', 'learned-pub']);
+    expect(hits.map(hit => hit.caseId)).toEqual(['curated-pub', 'imported-pub']);
+  });
+
+  it('retrieves only cases declared for the trace architecture, and every case when it is unknown', () => {
+    addCase({ caseId: 'case-view', appArchitecture: 'standard' });
+    addCase({ caseId: 'case-flutter', appArchitecture: ['flutter'] });
+    addCase({ caseId: 'case-any', appArchitecture: 'any' });
+    const retriever = createCaseRetriever({ library, ragStore });
+    const retrieve = (architectureType?: string) => retriever.retrieve({
+      scene: 'scrolling',
+      domainPack: 'scrolling.v1',
+      rootCause: 'shader_compile',
+      audiences: ['app'],
+      architectureType,
+      evidenceSignatures: { reason_code: 'shader_compile' },
+    }).map(hit => hit.caseId).sort();
+
+    expect(retrieve('FLUTTER')).toEqual(['case-any', 'case-flutter']);
+    expect(retrieve('STANDARD')).toEqual(['case-any', 'case-view']);
+    expect(retrieve(undefined)).toEqual(['case-any', 'case-flutter', 'case-view']);
   });
 });

@@ -75,7 +75,7 @@ Perfetto stdlib, trace processor, or official Perfetto AI Skill identity.
 | `perfetto-workflow-android-heap-dump` | `android_heap_graph_summary`, `android_heap_dominator_path_extract`, `android_bitmap_memory_per_process`, memory strategy heap graph guidance | Implemented |
 | `perfetto` v57 Agent Skill: `workflows/gpu/gpu_info.md` | `gpu_v57_ai_diagnostics` inventory step; complements existing `gpu_analysis` and `gpu_metrics` | Implemented |
 | `perfetto` v57 Agent Skill: `workflows/gpu/timeline_occupancy.md` | `gpu_v57_ai_diagnostics` timeline occupancy and idle-gap steps | Implemented |
-| `perfetto` v57 Agent Skill: `workflows/gpu/frequency_residency.md` | `gpu_v57_ai_diagnostics` busy-frequency residency, DVFS ramp, and sustained throttle steps | Implemented |
+| `perfetto` v57 Agent Skill: `workflows/gpu/frequency_residency.md` | `gpu_v57_ai_diagnostics` busy-frequency residency, DVFS ramp, and below-target-clock busy steps (upstream gpu_sustained_throttle.sql; no frequency-cap evidence) | Implemented |
 | `perfetto` v57 Agent Skill: vendor-neutral GPU compute workflow | `gpu_compute_kernel_analysis`; `gpu-workload` contains real compute-category GPU slices and producer-provided launch arguments | Implemented |
 | `perfetto` v57 Agent Skill: NVIDIA counter workflows | Not promoted without an owned producer-counter schema and data-present fixture; generic kernel timing and launch arguments are not NVIDIA Speed-of-Light or counter-derived occupancy evidence | Deferred |
 | `perfetto` v57 Agent Skill: Android memory heap dump/caching scripts | `android_heap_graph_summary`, `android_heap_graph_leak_candidates`, `android_bitmap_memory_per_process`, `android_memory_v57_ai_diagnostics` repeated-object and size-frequency steps | Implemented |

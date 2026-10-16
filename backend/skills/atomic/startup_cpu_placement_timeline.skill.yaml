@@ -53,6 +53,7 @@ display:
     - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
     - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
     - {name: unknown_core_ms, label: "unknown_core_ms", type: number, hidden: true}
+    - {name: unknown_core_ns, label: "unknown_core_ns", type: duration, unit: ns, hidden: true}
     - {name: used_ucpus, label: "used_ucpus", type: number, hidden: true}
     - {name: sched_covered_ns, label: "sched_covered_ns", type: duration, unit: ns, hidden: true}
     - {name: sched_evidence, label: "sched_evidence", type: string, hidden: true}
@@ -115,6 +116,7 @@ sql: |
    SUM(CASE WHEN s.core_type IN ('prime','big','medium') THEN MIN(s.clipped_end_ts,b.bucket_end)-MAX(s.clipped_start_ts,b.bucket_start) ELSE 0 END)/1e6 AS big_core_ms,
    SUM(CASE WHEN s.core_type='little' THEN MIN(s.clipped_end_ts,b.bucket_end)-MAX(s.clipped_start_ts,b.bucket_start) ELSE 0 END)/1e6 AS little_core_ms,
    SUM(CASE WHEN s.core_type='unknown' THEN MIN(s.clipped_end_ts,b.bucket_end)-MAX(s.clipped_start_ts,b.bucket_start) ELSE 0 END)/1e6 AS unknown_core_ms,
+   SUM(CASE WHEN s.core_type='unknown' THEN MIN(s.clipped_end_ts,b.bucket_end)-MAX(s.clipped_start_ts,b.bucket_start) ELSE 0 END) AS unknown_core_ns,
    SUM(CASE WHEN s.core_type IN ('prime','big','medium') THEN MIN(s.clipped_end_ts,b.bucket_end)-MAX(s.clipped_start_ts,b.bucket_start) ELSE 0 END)*100.0/
      NULLIF(SUM(MIN(s.clipped_end_ts,b.bucket_end)-MAX(s.clipped_start_ts,b.bucket_start)),0) AS big_core_pct,
    GROUP_CONCAT(DISTINCT s.cpu) AS used_cpus,GROUP_CONCAT(DISTINCT s.ucpu) AS used_ucpus,

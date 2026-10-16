@@ -52,11 +52,70 @@ describe('analysis turn intent protocol', () => {
     expect(parseAnalysisTurnIntentDecision(JSON.stringify(value), registry)).toBeUndefined();
   });
 
+  describe('source need', () => {
+    const sourceRun = {options: {codeAwareMode: 'provider_send' as const, codebaseIds: ['app']}, runId: 'run',
+      sessionId: 'session', traceId: 'trace'};
+    const withSchema = async (productRun: typeof sourceRun | undefined, answer: unknown) => {
+      let schema!: Record<string, any>;
+      const run = createAnalysisTurnIntentResolver({context, strategyRegistry: registry, productRun,
+        deadlineMs: Date.now() + 10_000, template: '{{decisionSchema}}', dispatch: async input => {
+          schema = JSON.parse(input.prompt);
+          return response(answer);
+        }});
+      return {intent: await run.resolve(), schema};
+    };
+
+    it('is asked, and parsed, only when the run selects source', async () => {
+      const selected = await withSchema(sourceRun, {...decision, sourceNeed: 'mechanism'});
+      expect(selected.intent).toMatchObject({status: 'resolved', sourceNeed: 'mechanism'});
+      expect(selected.schema.required).toContain('sourceNeed');
+      expect(selected.schema.properties.sourceNeed).toEqual({type: 'string', enum: ['none', 'locate', 'mechanism']});
+      const unselected = await withSchema(undefined, {...decision, sourceNeed: 'mechanism'});
+      expect(unselected.schema.properties).not.toHaveProperty('sourceNeed');
+      expect(unselected.intent).toMatchObject({status: 'unavailable', unavailableReason: 'invalid_response'});
+      const off = await withSchema({...sourceRun, options: {codeAwareMode: 'off' as never, codebaseIds: ['app']}}, decision);
+      expect(off.schema.properties).not.toHaveProperty('sourceNeed');
+    });
+
+    it('keeps the rest of the decision when the source need is omitted, and rejects an unknown one', () => {
+      expect(parseAnalysisTurnIntentDecision(JSON.stringify(decision), registry, {sourceSelected: true})).toEqual(decision);
+      expect(parseAnalysisTurnIntentDecision(JSON.stringify({...decision, sourceNeed: 'deep'}), registry,
+        {sourceSelected: true})).toBeUndefined();
+      const acknowledgement = {...decision, taskKind: 'acknowledgement', scope: 'bounded_question',
+        recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'existing_only'};
+      expect(parseAnalysisTurnIntentDecision(JSON.stringify({...acknowledgement, sourceNeed: 'none'}), registry,
+        {sourceSelected: true})).toMatchObject({sourceNeed: 'none'});
+      expect(parseAnalysisTurnIntentDecision(JSON.stringify({...acknowledgement, sourceNeed: 'locate'}), registry,
+        {sourceSelected: true})).toBeUndefined();
+    });
+
+    it('explains the dimension in the prompt only when source is selected', () => {
+      const template = loadPromptTemplate('prompt-analysis-turn-intent')!;
+      const guidance = loadPromptTemplate('prompt-analysis-turn-intent-source-need')!;
+      expect(guidance).toContain('sourceNeed');
+      const withSource = buildAnalysisTurnIntentPrompt({context, strategyRegistry: registry, template,
+        decisionSchema: {}, sourceNeedGuidance: guidance});
+      expect(withSource).toContain('sourceNeed');
+      expect(buildAnalysisTurnIntentPrompt({context, strategyRegistry: registry, template, decisionSchema: {}}))
+        .not.toContain('sourceNeed');
+    });
+  });
+
   it('rejects prose that quotes a decision, concatenated objects, and oversized content', () => {
     const json = JSON.stringify(decision);
     for (const text of ['The response is ' + json, json + json, json + '\nExplanation', 'x'.repeat(8193)]) {
       expect(parseAnalysisTurnIntentDecision(text, registry)).toBeUndefined();
     }
+  });
+
+  it('rejects an OpenCode last-step summary that wraps a fenced decision', () => {
+    // GLM via OpenCode when the classifier's only request was the agent's last step (2026-10-05 E2E).
+    const text = 'Maximum steps for this agent have been reached; responding with text only.\n\n'
+      + 'Accomplished: parsed the intent of the request.\n\nIntent classification result:\n\n'
+      + '```json\n' + JSON.stringify(decision, null, 2) + '\n```\n\n'
+      + 'Remaining tasks: none — the only required output was this classification JSON.\n\n'
+      + 'Recommendation: use this JSON as the intent signal for downstream analysis.';
+    expect(parseAnalysisTurnIntentDecision(text, registry)).toBeUndefined();
   });
 
   it('sends a closed JSON Schema whose enum fields require scalar strings', async () => {

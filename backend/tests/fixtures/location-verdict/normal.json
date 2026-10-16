@@ -1,0 +1,188 @@
+{
+  "provenance": {
+    "session": "agent-1791778147377-m6h6qz9t",
+    "source": "sfix-startup_cold_heavy__normal_a1",
+    "sha256": "62f86e63242d2e486142bcbadab013c37ad78c5385cbeeb89c40a167f35f25e9",
+    "note": "Original body excerpts, declarations and prior verifier rows. Raw semantic transport/captures were not persisted; review responses and live test captures are explicitly reconstructed by tests."
+  },
+  "body": "meric\":{\"operator\":\"eq\",\"value\":0.06,\"unit\":\"ms\"}}},{\"id\":\"a31\",\"text\":\"attachApplication client 合计 69.94 ms。\",\"kind\":\"numeric\",\"references\":[{\"evidenceRefId\":\"data:skill:startup_analysis:main_thread_",
+  "claims": [
+    {
+      "id": "a31",
+      "text": "attachApplication client 合计 69.94 ms。",
+      "kind": "numeric",
+      "references": [
+        {
+          "evidenceRefId": "data:skill:startup_analysis:main_thread_slices:current:a6658144f774:815e4440f23d:bdb4a0ef",
+          "rowIndex": 2,
+          "column": "total_dur_ms",
+          "value": 69.94
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "numeric.cell",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "subjectRefs": [
+            {
+              "evidenceRefId": "data:skill:startup_analysis:main_thread_slices:current:a6658144f774:815e4440f23d:bdb4a0ef",
+              "rowIndex": 2,
+              "column": "total_dur_ms",
+              "value": 69.94
+            }
+          ],
+          "population": "cited_rows"
+        },
+        "numeric": {
+          "operator": "eq",
+          "value": 69.94,
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": "a77",
+      "text": "2441.25ms 处 CPU6 频率样本 2527000 kHz。",
+      "kind": "numeric",
+      "references": [
+        {
+          "evidenceRefId": "data:sql_table:current:a6658144f774:fc9a15376288:3100ac9d",
+          "rowIndex": 11,
+          "column": "value",
+          "value": 2527000
+        }
+      ],
+      "semantics": {
+        "schemaVersion": "claim_semantics@1",
+        "predicate": "numeric.cell",
+        "polarity": "affirmed",
+        "discourse": "asserted",
+        "quantifier": "one",
+        "modality": "certain",
+        "scope": {
+          "subjectRefs": [
+            {
+              "evidenceRefId": "data:sql_table:current:a6658144f774:fc9a15376288:3100ac9d",
+              "rowIndex": 11,
+              "column": "value",
+              "value": 2527000
+            }
+          ],
+          "population": "cited_rows"
+        },
+        "numeric": {
+          "operator": "eq",
+          "value": 2527000,
+          "unit": "kHz"
+        }
+      }
+    }
+  ],
+  "priorResults": [
+    {
+      "claimId": "a31",
+      "status": "unsupported",
+      "referenceResults": [
+        {
+          "anchorId": "anchor:0df8297c9981",
+          "evidenceRefId": "data:skill:startup_analysis:main_thread_slices:current:a6658144f774:815e4440f23d:bdb4a0ef",
+          "artifactId": "art-5",
+          "sourceToolCallId": "scene-entry:startup_analysis:bdb4a0ef",
+          "column": "total_dur_ms",
+          "status": "matched"
+        }
+      ],
+      "referenceCells": [
+        {
+          "anchorId": "anchor:0df8297c9981",
+          "evidenceRefId": "data:skill:startup_analysis:main_thread_slices:current:a6658144f774:815e4440f23d:bdb4a0ef",
+          "artifactId": "art-5",
+          "sourceToolCallId": "scene-entry:startup_analysis:bdb4a0ef",
+          "column": "total_dur_ms",
+          "status": "matched"
+        }
+      ],
+      "deterministicProof": {
+        "kind": "numeric_cell",
+        "status": "proved",
+        "reason": "numeric_operator_proved",
+        "anchorIds": [
+          "anchor:0df8297c9981"
+        ],
+        "evidenceRefIds": [
+          "data:skill:startup_analysis:main_thread_slices:current:a6658144f774:815e4440f23d:bdb4a0ef"
+        ]
+      },
+      "propositionCoverage": {
+        "status": "complete",
+        "covered": [
+          "predicate",
+          "polarity",
+          "discourse",
+          "quantifier",
+          "modality",
+          "conditions",
+          "scope",
+          "numeric"
+        ],
+        "uncovered": [],
+        "reason": "complete_typed_proposition_proved"
+      },
+      "semanticReview": {
+        "consistency": "inconsistent",
+        "contentLocations": []
+      }
+    },
+    {
+      "claimId": "a77",
+      "status": "unsupported",
+      "referenceResults": [
+        {
+          "anchorId": "anchor:e89b3cca7058",
+          "evidenceRefId": "data:sql_table:current:a6658144f774:fc9a15376288:3100ac9d",
+          "sourceToolCallId": "execute_sql:27:3100ac9d",
+          "column": "value",
+          "status": "matched"
+        }
+      ],
+      "referenceCells": [
+        {
+          "anchorId": "anchor:e89b3cca7058",
+          "evidenceRefId": "data:sql_table:current:a6658144f774:fc9a15376288:3100ac9d",
+          "sourceToolCallId": "execute_sql:27:3100ac9d",
+          "column": "value",
+          "status": "matched"
+        }
+      ],
+      "deterministicProof": {
+        "kind": "numeric_cell",
+        "status": "candidate",
+        "reason": "unit_authority_unknown",
+        "anchorIds": [
+          "anchor:e89b3cca7058"
+        ],
+        "evidenceRefIds": [
+          "data:sql_table:current:a6658144f774:fc9a15376288:3100ac9d"
+        ]
+      },
+      "propositionCoverage": {
+        "status": "partial",
+        "covered": [
+          "reference_cells"
+        ],
+        "uncovered": [
+          "typed_proposition"
+        ],
+        "reason": "unit_authority_unknown"
+      },
+      "semanticReview": {
+        "consistency": "inconsistent",
+        "contentLocations": []
+      }
+    }
+  ]
+}

@@ -5,6 +5,8 @@
 import {
   analyzeSqlStdlibDependencySequence,
   analyzeSqlStdlibDependencies,
+  extractExternalTableBindings,
+  extractExternalTableReferences,
   extractLocalSqlSymbols,
   moduleCoveredByStdlibDeclaration,
 } from '../sqlStdlibDependencyAnalyzer';
@@ -262,6 +264,31 @@ describe('sqlStdlibDependencyAnalyzer', () => {
     expect(analyses[0].dependencies).toEqual([]);
     expect(analyses[1].dependencies).toEqual([
       { symbol: 'slice_self_dur', module: 'slices.self_dur', usage: 'table' },
+    ]);
+  });
+
+  it('binds external tables to the aliases they are read under', () => {
+    expect(extractExternalTableBindings(`
+      WITH recent AS (SELECT * FROM slice)
+      SELECT b.client_ts
+      FROM android_binder_txns AS b, "process"
+      JOIN thread t ON t.utid = b.client_utid
+      LEFT JOIN recent r USING (ts)
+    `)).toEqual([
+      {table: 'slice'},
+      {table: 'android_binder_txns', alias: 'b'},
+      {table: 'process'},
+      {table: 'thread', alias: 't'},
+    ]);
+    expect(extractExternalTableReferences('SELECT * FROM slice s JOIN slice p ON p.id = s.parent_id'))
+      .toEqual(['slice']);
+  });
+
+  it('reports literal schema introspection only when asked', () => {
+    const sql = "SELECT name FROM pragma_table_info('android_monitor_contention')";
+    expect(analyzeSqlStdlibDependencies(sql).dependencies).toEqual([]);
+    expect(analyzeSqlStdlibDependencies(sql, {includeIntrospectedNames: true}).dependencies).toEqual([
+      {symbol: 'android_monitor_contention', module: 'android.monitor_contention', usage: 'introspection'},
     ]);
   });
 });

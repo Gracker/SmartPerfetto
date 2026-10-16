@@ -20,7 +20,3 @@ export function requireCodebaseScope(scope: CodebaseScope) {
   };
 }
 
-export function hasCodebaseScope(req: Request, scope: CodebaseScope): boolean {
-  return hasRbacPermission(requireRequestContext(req), scope);
-}
-

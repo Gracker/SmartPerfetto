@@ -4,6 +4,7 @@
 
 import { describe, expect, it, jest, beforeEach } from '@jest/globals';
 import type {CodeAwareTextProjectionReceipt} from '../../../../services/security/codeAwareOutputRegistry';
+import {expectRuntimeVendorHintParity} from '../../../__tests__/vendorHintParityFixture';
 
 const mockInterrupt = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
 const mockClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -161,14 +162,6 @@ jest.mock('../../../../agentv3/traceCompletenessProber', () => ({
   }),
 }));
 
-jest.mock('../../../../services/finalResultQualityGate', () => ({
-  applyFinalResultQualityGate: jest.fn(),
-}));
-
-jest.mock('../../claude/claudeVerifier', () => ({
-  verifyConclusion: jest.fn<(...args: any[]) => any>().mockResolvedValue({ heuristicIssues: [], llmIssues: [] }),
-}));
-
 jest.mock('../../../../services/security/codeAwareOutputRegistry', () => {
   const actual = jest.requireActual<typeof import('../../../../services/security/codeAwareOutputRegistry')>(
     '../../../../services/security/codeAwareOutputRegistry',
@@ -203,6 +196,8 @@ import { detectFocusApps } from '../../../../agentv3/focusAppDetector';
 import { probeTraceCompleteness } from '../../../../agentv3/traceCompletenessProber';
 import {analysisDeliveryFingerprint} from '../../../../types/analysisDelivery';
 import {takeFinalizationContext} from '../../../analysisFinalizationContext';
+import {DEFAULT_RUNTIME_CACHE_LIMIT} from '../../../runtimeCache';
+import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../../../tests/helpers/runtimeDraftTerminalState';
 import type {AnalysisOptions} from '../../../../agent/core/orchestratorTypes';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../../../services/scopedKnowledgeStore';
@@ -216,6 +211,7 @@ import {
   SOURCE_FINALIZATION_CANARY,
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from '../../../__tests__/sourceFinalizationFixture';
+import {resolveFocusPackageCell} from '../../../__tests__/focusEvidenceFixture';
 import {createRuntimePerformanceRecorder} from '../../../runtimePerformance';
 import type {RunManifestAttributionSink} from '../../../../types/selfEvolution';
 import {McpToolRegistry} from '../../../../agentv3/mcpToolRegistry';
@@ -223,12 +219,20 @@ import type {AnalysisPlanTracker} from '../../../../agentv3/planToolCallRecorder
 import type {ClaudeSdkToolLike} from '../../../runtimeToolSpec';
 import type {RuntimeToolInvocationEvent, RuntimeToolObserver} from '../../../runtimeToolObserver';
 import {createRuntimeToolResult} from '../../../runtimeToolResult';
-import {getSourceLookupCodeReferences} from '../../../../services/codebase/sourceLookupTools';
 import {projectCodeAwareStreamingUpdate} from '../../../../services/security/codeAwareStreamingUpdateProjection';
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../../../tests/helpers/conclusionDeclarationFixture';
+import * as analysisPatternMemory from '../../../../agentv3/analysisPatternMemory';
+import * as caseBackgroundContext from '../../../../services/caseEvolution/caseBackgroundContext';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../../../services/security/durableLearning';
+import type {ClaudeMcpServerOptions} from '../../../../agentv3/claudeMcpServer';
+import {NO_PRIVATE_CONTEXT} from '../../../../services/security/analysisPrivateContext';
+import * as contextAuthorization from '../../../../services/resolvedAnalysisContext';
+import * as analysisHistory from '../../../analysisHistory';
+import * as sceneEntryEvidence from '../../../sceneEntryEvidence';
+import {admitted} from '../../../../../tests/helpers/admittedAnalysisOptions';
 
 function createRuntime(
   env: Record<string, string | undefined> = {},
@@ -331,10 +335,6 @@ describe('QoderRuntime', () => {
 
   describe('shared tool observation', () => {
     it.each([false, true])('keeps pending exploration advisory after native completion or failure: failed=%s', async nativeError => {
-      const verifier = jest.requireMock('../../claude/claudeVerifier') as {verifyConclusion: jest.Mock};
-      const actualVerifier = jest.requireActual<typeof import('../../claude/claudeVerifier')>('../../claude/claudeVerifier');
-      const previousVerifier = verifier.verifyConclusion.getMockImplementation();
-      verifier.verifyConclusion.mockImplementation(actualVerifier.verifyConclusion as any);
       mockQuery.mockReset();
       let tracker!: AnalysisPlanTracker;
       const hypothesis = {id: 'open-hypothesis', statement: 'A separate cause may exist.', status: 'formed', formedAt: 1};
@@ -358,15 +358,9 @@ describe('QoderRuntime', () => {
         expect(result.success).toBe(!nativeError);
         expect(result.partial).toBe(nativeError);
         expect(result.terminationReason).toBe(nativeError ? 'execution_error' : undefined);
-        const verification = await verifier.verifyConclusion.mock.results[0].value;
-        expect(verification).toMatchObject({heuristicIssues: expect.arrayContaining([
-          expect.objectContaining({type: 'plan_deviation', severity: 'error'}),
-          expect.objectContaining({type: 'unresolved_hypothesis', severity: 'error'}),
-        ])});
         expect(tracker.current?.phases).toEqual([expect.objectContaining({id: 'explore', status: 'pending'})]);
         expect(hypothesis.status).toBe('formed');
       } finally {
-        verifier.verifyConclusion.mockImplementation(previousVerifier!);
         mockQuery.mockReset();
       }
     });
@@ -379,6 +373,21 @@ describe('QoderRuntime', () => {
       expect(mockCreateClaudeMcpServer.mock.calls[0][0]).toEqual(expect.objectContaining({
         toolObserver: expect.any(Function),
       }));
+    });
+
+    // The same options carry the run's own learning grant, under which
+    // execute_sql learns fixes.
+    it('gives the shared MCP tools the vendor hint from its own options, and the run grant', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
+      ]));
+      await createRuntime().analyze('分析启动性能', 'session-1', 'trace-1',
+        withDurableLearningPermission({analysisMode: 'full' as const, runId: 'run-qoder-mcp'}, NO_PRIVATE_CONTEXT));
+      const runtimeOptions = mockCreateClaudeMcpServer.mock.calls[0][0] as Partial<ClaudeMcpServerOptions>;
+      expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-qoder-mcp');
+      const actualMcp = jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>('../../../../agentv3/claudeMcpServer');
+      await expectRuntimeVendorHintParity({
+        createMcpServer: actualMcp.createClaudeMcpServer, runtimeOptions});
     });
 
     it('records actual SDK descriptor outcomes once with intact receipts and auto-phase events', async () => {
@@ -431,7 +440,6 @@ describe('QoderRuntime', () => {
       // active phase at the later time when the exception is observed.
       expect(records.map(record => record.matchedPhaseId)).toEqual(['p1', 'p2', 'p2', undefined]);
       expect(new Set(records.map(record => record.toolCallId)).size).toBe(4);
-      expect(tracker.dispatchedToolCallCount).toBe(4);
       expect(tracker.current!.phases.map(phase => phase.status)).toEqual(['completed', 'in_progress']);
       expect(updates.filter(update => update.type === 'plan_phase_updated')).toEqual([
         expect.objectContaining({content: expect.objectContaining({phaseId: 'p1', status: 'completed', origin: 'auto'})}),
@@ -481,7 +489,6 @@ describe('QoderRuntime', () => {
 
       expect(result).toMatchObject({success: true, rounds: 1});
       expect(handler).toHaveBeenCalledTimes(8);
-      expect(tracker.dispatchedToolCallCount).toBe(6);
       const starts = updates.filter(update => update.type === 'agent_task_dispatched');
       const results = updates.filter(update => update.type === 'agent_response');
       expect(starts).toHaveLength(6);
@@ -565,10 +572,7 @@ describe('QoderRuntime', () => {
         .resolves.toMatchObject({success: true});
 
       const record = tracker.prePlanToolCallLog![0];
-      expect(record).toMatchObject({success: true, returnedCodeReferences: true});
-      expect(getSourceLookupCodeReferences(record)).toEqual([
-        {referenceId: reference.referenceId, codebaseId: reference.codebaseId, filePath: rawPath, lineRange: reference.lineRange},
-      ]);
+      expect(record).toMatchObject({success: true});
       const publicResult = updates.find(update => update.type === 'agent_response').content;
       expect(publicResult.result).toContain('filePathHash');
       expect(JSON.stringify({updates, tracker})).not.toContain(rawText);
@@ -616,7 +620,6 @@ describe('QoderRuntime', () => {
       if (ending !== 'request-cancelled') {
         options.emitUpdate({type: 'progress', content: 'late MCP update', timestamp: 1});
       }
-      expect(options.analysisPlan.dispatchedToolCallCount).toBe(0);
       expect(options.analysisPlan.prePlanToolCallLog).toEqual([]);
       expect(updates).toHaveLength(previousUpdateCount);
       releaseStream.resolve();
@@ -678,7 +681,6 @@ describe('QoderRuntime', () => {
 
       expect(handler).toHaveBeenCalledTimes(2);
       expect(trackers[1]).toBe(trackers[0]);
-      expect(trackers[1].dispatchedToolCallCount).toBe(1);
       expect(trackers[1].prePlanToolCallLog).toEqual([
         expect.objectContaining({toolCallId: 'reused-id', success: true}),
       ]);
@@ -715,7 +717,6 @@ describe('QoderRuntime', () => {
         .resolves.toMatchObject({success: true});
       const newOptions = mockCreateClaudeMcpServer.mock.calls[1][0] as {analysisPlan: AnalysisPlanTracker};
       expect(newOptions.analysisPlan).toBe(oldOptions.analysisPlan);
-      expect(newOptions.analysisPlan.dispatchedToolCallCount).toBe(0);
       expect(newOptions.analysisPlan.prePlanToolCallLog).toEqual([]);
     });
   });
@@ -930,6 +931,75 @@ describe('QoderRuntime', () => {
 
   });
 
+  describe('authorization at every dispatch and observed message', () => {
+    const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+
+    it('interrupts the query when authorization changes after a body read, at the next streamed message', async () => {
+      let revoked = false;
+      let continued = false;
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield {type: 'assistant', message: {content: [{type: 'tool_use', id: 'read-1', name: 'read_codebase_file', input: {}}]}};
+          revoked = true; // The body was returned; consent is withdrawn before the SDK continues.
+          yield {type: 'user', message: {content: [{type: 'tool_result', tool_use_id: 'read-1', content: 'body'}]}};
+          continued = true;
+          yield {type: 'result', subtype: 'success', is_error: false, result: 'Must never be requested.'};
+        },
+        interrupt: mockInterrupt, close: mockClose,
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', admitted({analysisMode: 'full', ...PRIVATE})))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(continued).toBe(false);
+        expect(mockInterrupt).toHaveBeenCalled();
+        expect(mockCreateClaudeMcpServer.mock.calls[0][0]).toMatchObject({runAuthorization: expect.any(Object)});
+      } finally {authorization.mockRestore();}
+    });
+
+    it('gives every SDK text dispatch the run fence at its query boundary', async () => {
+      let revoked = false;
+      let classifierBoundary: unknown;
+      mockIntentTransport.mockImplementationOnce(async (input: {beforeQuery?: () => void}) => {
+        revoked = true; // Withdrawn while the classifier resolves its SDK and auth.
+        try { input.beforeQuery?.(); } catch (error) { classifierBoundary = error; }
+        return {status: 'unavailable', reason: 'provider_error'};
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', admitted({analysisMode: 'full', ...PRIVATE})))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(classifierBoundary).toBeInstanceOf(contextAuthorization.AnalysisContextAuthorizationChangedError);
+        expect(mockQuery).not.toHaveBeenCalled();
+      } finally {authorization.mockRestore();}
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the query', async () => {
+      let revoked = false;
+      const realRender = analysisHistory.renderAnalysisHistoryContext;
+      const render = jest.spyOn(analysisHistory, 'renderAnalysisHistoryContext').mockImplementation((...args) => {
+        const rendered = realRender(...args);
+        // The main prompt's history (the classifier renders a bounded one first).
+        if (args[1]?.maxBytes === undefined) revoked = true;
+        return rendered;
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', admitted({analysisMode: 'full', ...PRIVATE})))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(render).toHaveBeenCalled();
+        expect(mockQuery).not.toHaveBeenCalled();
+      } finally {authorization.mockRestore(); render.mockRestore();}
+    });
+  });
+
   describe('SkillExecutor wiring', () => {
     it('calls createSkillExecutor with traceProcessorService directly and registers skills', async () => {
       const messages = [
@@ -982,6 +1052,65 @@ describe('QoderRuntime', () => {
         conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
     });
 
+    it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => {
+      respondWithIntent({taskKind: 'investigation', scope: 'scene_wide', recommendedComplexity: 'full', deliverable: 'answer'});
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: 'Conversation answer', num_turns: 1},
+      ]));
+      jest.mocked(createArchitectureDetector).mockClear(); jest.mocked(detectFocusApps).mockClear();
+      jest.mocked(probeTraceCompleteness).mockClear();
+      const trace = {query: jest.fn(async () => undefined)};
+      const result = await createRuntime({}, trace).analyze('A question', 'qoder-no-trace',
+        'conversation-no-trace:qoder-no-trace', {assistantSurface: 'conversation', conversationTraceAttached: false,
+          analysisMode: 'full'});
+      expect(createArchitectureDetector).not.toHaveBeenCalled();
+      expect(detectFocusApps).not.toHaveBeenCalled();
+      expect(probeTraceCompleteness).not.toHaveBeenCalled();
+      expect(trace.query).not.toHaveBeenCalled();
+      expect(mockCreateClaudeMcpServer).toHaveBeenLastCalledWith(expect.objectContaining({conversationTraceAttached: false}));
+      const context = takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({});
+      context?.dispose();
+    });
+
+    it('keeps detected and restored architectures within the shared LRU bound', () => {
+      const runtime = createRuntime() as any;
+      const architecture = {type: 'STANDARD', confidence: 0.9, evidence: []};
+      for (let index = 0; index <= DEFAULT_RUNTIME_CACHE_LIMIT; index++) {
+        runtime.restoreArchitectureCache(`trace-${index}`, architecture);
+      }
+      expect(runtime.architectureCache.size).toBe(DEFAULT_RUNTIME_CACHE_LIMIT);
+      expect(runtime.getCachedArchitecture('trace-0')).toBeUndefined();
+    });
+
+    it('captures Skill display entities into the session entity store, as every runtime does', async () => {
+      let onSkillResult: ((result: any) => void) | undefined;
+      mockCreateClaudeMcpServer.mockImplementationOnce((options: any) => {
+        onSkillResult = options.onSkillResult;
+        return {server: {name: 'smartperfetto'}, allowedTools: [], toolDefinitions: []};
+      });
+      const skillResult = (frameId: number) => ({displayResults: [{stepId: 'jank_frames', data: [{frame_id: frameId}]}]});
+      const stream = createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: 'Entity answer', num_turns: 1},
+      ]);
+      mockQuery.mockReturnValueOnce({...stream, [Symbol.asyncIterator]() {
+        // A Skill returns while the run is live.
+        onSkillResult!(skillResult(7));
+        return stream[Symbol.asyncIterator]();
+      }});
+      const sessionId = 'qoder-entities';
+      try {
+        const result = await createRuntime().analyze('A question', sessionId, 'trace-1');
+        takeFinalizationContext(result)?.dispose();
+        const frames = () => sessionContextManager.get(sessionId, 'trace-1')!.getEntityStore().getAllFrames()
+          .map((frame: {frame_id: string}) => frame.frame_id);
+        expect(frames()).toEqual(['7']);
+        // A result that arrives after the run settled is not this run's evidence.
+        onSkillResult!(skillResult(8));
+        expect(frames()).toEqual(['7']);
+      } finally {sessionContextManager.remove(sessionId);}
+    });
+
     it.each(['Analyze everything in detail', '谢谢，这个指标呢？'])('uses a bounded semantic decision with full budget: %s', async query => {
       respondWithIntent({taskKind: 'fact', scope: 'bounded_question', recommendedComplexity: 'quick'});
       mockQuery.mockReturnValue(createMockSdkStream([
@@ -1008,10 +1137,10 @@ describe('QoderRuntime', () => {
         {type: 'result', subtype: 'success', is_error: false, result: 'Comparison answer', num_turns: 2},
       ]));
       const result = await createRuntime({QODER_MAX_TURNS: '12', QODER_QUICK_MAX_TURNS: '3'})
-        .analyze('Compare the selected metric', 'fast-pair', 'trace-1', {
+        .analyze('Compare the selected metric', 'fast-pair', 'trace-1', admitted({
           analysisMode: 'fast', referenceTraceId: 'trace-2',
           codeAwareMode: 'metadata_only', codebaseIds: ['source-1'], knowledgeSourceIds: ['knowledge-1'],
-        });
+        }));
       expect(mockBuildComparisonContext).not.toHaveBeenCalled();
       expect(mockCreateClaudeMcpServer).toHaveBeenCalledWith(expect.objectContaining({
         lightweight: true, allowNewEvidence: true, userQuery: 'Compare the selected metric',
@@ -1030,10 +1159,10 @@ describe('QoderRuntime', () => {
       mockQuery.mockReturnValue(createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: 'Previously observed fact', num_turns: 1},
       ]));
-      const result = await createRuntime({}, {query: queryTrace}).analyze('Use the existing observation', 'existing-only', 'trace-1', {
+      const result = await createRuntime({}, {query: queryTrace}).analyze('Use the existing observation', 'existing-only', 'trace-1', admitted({
         analysisMode: 'full', referenceTraceId: 'trace-2',
         codeAwareMode: 'metadata_only', codebaseIds: ['source-1'], knowledgeSourceIds: ['knowledge-1'],
-      });
+      }));
       expect(queryTrace).not.toHaveBeenCalled();
       expect(createArchitectureDetector).not.toHaveBeenCalled();
       expect(detectFocusApps).not.toHaveBeenCalled();
@@ -1051,7 +1180,7 @@ describe('QoderRuntime', () => {
       mockQuery.mockImplementation(() => createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: 'Previously captured metric', num_turns: 1},
       ]));
-      const options = {analysisMode: 'fast' as const, codeAwareMode: 'metadata_only' as const, codebaseIds: ['source-1']};
+      const options = admitted({analysisMode: 'fast' as const, codeAwareMode: 'metadata_only' as const, codebaseIds: ['source-1']});
       const evidence = createRuntimeEvidenceContext({logicalSessionId: 'private-conversation', traceId: 'trace-1', options});
       const firstController = new AbortController();
       const first = evidence.bind(options, {runtimeSessionId: 'private-conversation:first', runId: 'first',
@@ -1074,7 +1203,7 @@ describe('QoderRuntime', () => {
         try {
           const secondStore = (mockCreateClaudeMcpServer.mock.calls[1][0] as {artifactStore: ArtifactStore}).artifactStore;
           expect(secondStore).not.toBe(firstStore);
-          expect(secondStore.fetch(artifactId, 'rows')).toMatchObject({rows: [[7]]});
+          expect(secondStore.fetch(artifactId, 'rows')).toMatchObject({rows: [{rowIndex: 0, values: [7]}]});
           expect(() => firstStore.clear()).toThrow();
           const reads = await finalization!.resolveReferences([
             {key: 'prior', reference: {artifactId, rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']},
@@ -1131,7 +1260,6 @@ describe('QoderRuntime', () => {
       await Promise.resolve();
       expect(mockQuery).not.toHaveBeenCalled();
       expect(mockCreateClaudeMcpServer).not.toHaveBeenCalled();
-      expect(runtime.getSdkSessionId('cancel-intent')).toBeUndefined();
     });
 
     it('applies the main wall budget even while the shared SDK module load never settles', async () => {
@@ -1205,6 +1333,7 @@ describe('QoderRuntime', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context).toMatchObject({runId: 'final-context-run', sessionId: 'final-context',
         traceIdentity: {currentTraceId: 'trace-1', referenceTraceId: 'trace-2'}, hasSemanticTransport: true});
+      expect(context.deliveryCall?.model).toEqual(expect.any(String));
       expect(context.deliveryContext).toMatchObject({completion: result.completion,
         acceptedCandidate: {conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
       expect(context.deadlineMs).toBeGreaterThanOrEqual(startedAt + 2000);
@@ -1274,8 +1403,11 @@ describe('QoderRuntime', () => {
     it.each([true, false])('keeps cancellation context and current source execution scope: current=%s', async current => {
       const scope = {codeAwareMode: 'off' as const, selectedCodebaseIds: [], hasCodebaseAccess: false,
         analysisContextFingerprint: 'qoder-source-scope'};
+      const knowledgeUse = {sources: [{knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection' as const,
+        generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}], locations: []};
       mockCreateClaudeMcpServer.mockReturnValue({server: {name: 'smartperfetto'}, allowedTools: [], toolDefinitions: [],
-        sourceUse: {getSourceUseDecision: () => undefined, getSourceExecutionScope: () => current ? scope : undefined}});
+        sourceUse: {getSourceUseDecision: () => undefined, getSourceExecutionScope: () => current ? scope : undefined,
+          getKnowledgeUse: () => knowledgeUse}});
       const late = createDeferred<void>();
       mockQuery.mockReturnValue({async *[Symbol.asyncIterator]() {await late.promise;}, interrupt: mockInterrupt, close: mockClose});
       const runtime = createRuntime({QODER_MODEL: 'main-model'});
@@ -1286,6 +1418,8 @@ describe('QoderRuntime', () => {
       const context = takeFinalizationContext(result)!;
       expect(context.hasSemanticTransport).toBe(false);
       expect(context.sourceScope).toEqual(current ? scope : undefined);
+      // What was delivered before the stop stays with the cancelled result.
+      expect(context.knowledgeUse).toEqual(knowledgeUse);
       expect(context.deliveryContext).toMatchObject({completion: {status: 'cancelled'}});
       late.resolve();
       context.dispose();
@@ -1303,6 +1437,51 @@ describe('QoderRuntime', () => {
   });
 
   describe('MCP context passing', () => {
+    it('renders an issued current-side focus-app evidence locator the run store resolves', async () => {
+      (detectFocusApps as jest.Mock<(...args: any[]) => any>).mockResolvedValueOnce({
+        method: 'oom_adj', confidence: 'high', primaryApp: 'com.example.qoder',
+        apps: [{packageName: 'com.example.qoder', totalDurationNs: 10, switchCount: 1, score: 40}],
+      });
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: 'done'},
+      ]));
+      await createRuntime().analyze('which app', 'session-focus-evidence', 'trace-1', {analysisMode: 'full'});
+      const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
+      expect((readPromptContext(systemPrompt, 'trace_context') as any)?.focusApp?.evidence).toMatchObject({rowIndex: 0,
+        row: {package_name: 'com.example.qoder', detection_method: 'oom_adj', detection_confidence: 'high'}});
+      const resolution = await resolveFocusPackageCell((mockCreateClaudeMcpServer.mock.calls[0][0] as any).artifactStore,
+        systemPrompt, 'trace-1');
+      expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.qoder'}});
+    });
+
+    // Product-owned scene entry evidence settles before the run's MCP server is
+    // built, and its segment data reaches the shared prompt.
+    it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+      const order: string[] = [];
+      const evidence = {status: 'not_run' as const, skillId: 'scrolling_analysis', reason: 'timeout' as const};
+      const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+        order.push('scene_evidence');
+        return evidence;
+      });
+      const mcpCallsBefore = mockCreateClaudeMcpServer.mock.calls.length;
+      mockCreateClaudeMcpServer.mockImplementationOnce((options: any) => {
+        order.push('mcp_server');
+        return jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>(
+          '../../../../agentv3/claudeMcpServer').createClaudeMcpServer(options);
+      });
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: 'done'},
+      ]));
+      try {
+        await createRuntime().analyze('分析滑动卡顿', 'session-scene-entry', 'trace-1', {analysisMode: 'full'});
+        expect(order).toEqual(['scene_evidence', 'mcp_server']);
+        expect(mockCreateClaudeMcpServer.mock.calls.length).toBe(mcpCallsBefore + 1);
+        expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-1', turnIntent: expect.any(Object)});
+        const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
+        expect(readPromptContext(systemPrompt, 'scene_evidence')).toEqual(evidence);
+      } finally { scene.mockRestore(); }
+    });
+
     it('passes full context in full mode', async () => {
       mockBuildComparisonContext.mockResolvedValueOnce({
         referenceTraceId: 'ref-trace',
@@ -1370,23 +1549,11 @@ describe('QoderRuntime', () => {
       const runtime = createRuntime();
       await runtime.analyze('test', 'session-1', 'trace-1', {
         analysisMode: 'fast',
-        sourceUsePolicy: {
-          phase: 'explicit',
-          maxSearchCalls: 1,
-          maxReadCalls: 2,
-          maxDurationMs: 6_000,
-        },
       });
 
       expect(mockCreateClaudeMcpServer).toHaveBeenCalledWith(
         expect.objectContaining({
           lightweight: false,
-          sourceUsePolicy: {
-            phase: 'explicit',
-            maxSearchCalls: 1,
-            maxReadCalls: 2,
-            maxDurationMs: 6_000,
-          },
         }),
       );
       const callArgs = mockCreateClaudeMcpServer.mock.calls[0][0] as any;
@@ -1400,17 +1567,18 @@ describe('QoderRuntime', () => {
         {type: 'result', subtype: 'success', is_error: false, result: 'done'},
       ]));
 
-      await createRuntime().analyze('quick source lookup', 'session-1', 'trace-1', {
+      await createRuntime().analyze('quick source lookup', 'session-1', 'trace-1', admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: ['cb-qoder-quick'],
-      });
+      }));
 
       const callArgs = mockQuery.mock.calls[0][0] as any;
       expect(readPromptContext(callArgs.options.systemPrompt, 'source_authorization')).toEqual({
-        mode: 'provider_send', codebaseIds: ['cb-qoder-quick'], evidenceAccess: 'read_new',
+        mode: 'provider_send', evidenceAccess: 'read_new',
+        codebases: [expect.objectContaining({id: 'cb-qoder-quick'})],
       });
     });
   });
@@ -1466,6 +1634,68 @@ describe('QoderRuntime', () => {
       takeFinalizationContext(result)?.dispose();
     });
 
+    describe('empty answer body', () => {
+      const declarationOnly = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
+        uncertainties: [], nextSteps: []} as ConclusionContract);
+      const mainRun = (withData: boolean) => mockQuery.mockImplementation(() => ({
+        async *[Symbol.asyncIterator]() {
+          if (withData) {
+            const mcp = mockCreateClaudeMcpServer.mock.calls.slice(-1)[0]![0] as any;
+            await mcp.toolObserver({phase: 'started', toolCallId: 'anr-1', toolName: 'execute_sql', params: {}, extra: {}});
+            await mcp.toolObserver({phase: 'completed', toolCallId: 'anr-1', toolName: 'execute_sql', params: {}, extra: {},
+              result: {content: [{type: 'text', text: JSON.stringify({columns: ['anr_type'], rows: [['input']]})}]}});
+          }
+          yield {type: 'result', subtype: 'success', is_error: false, result: declarationOnly, num_turns: 1};
+        }, interrupt: mockInterrupt, close: mockClose,
+      }));
+
+      it('retires acquisition and spends the delivery call on the body, with no declaration repair after it', async () => {
+        mockIntentTransport
+          .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+          .mockResolvedValueOnce({status: 'ok', text: 'The input ANR is recorded.', finishReason: 'end_turn'});
+        mainRun(true);
+        mockClose.mockClear();
+        const result = await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body', 'trace-1',
+          {analysisMode: 'full', runId: 'qoder-empty-body'});
+        // Its declaration is missing, which alone would ask for a repair; the call is already spent.
+        expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+        const continuation = mockIntentTransport.mock.calls[1][0] as any;
+        expect(continuation.prompt).toContain('Any ANR here?');
+        expect(continuation.prompt).toContain('execute_sql');
+        expect(continuation.prompt).not.toContain('missing_declaration');
+        expect(mockClose).toHaveBeenCalled();
+        expect(mockClose.mock.invocationCallOrder[0]).toBeLessThan(mockIntentTransport.mock.invocationCallOrder[1]);
+        expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('The input ANR is recorded.');
+        expect(result.completion).toMatchObject({status: 'completed', attemptId: 'empty-body-continuation:1'});
+        takeFinalizationContext(result)?.dispose();
+      });
+
+      it.each([
+        ['fails', {status: 'unavailable', reason: 'provider_error'}],
+        ['also has no body', {status: 'ok', text: declarationOnly, finishReason: 'end_turn'}],
+      ])('keeps the original candidate when the continuation %s', async (_name, reply) => {
+        mockIntentTransport
+          .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+          .mockResolvedValueOnce(reply as any);
+        mainRun(true);
+        const result = await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body-kept', 'trace-1',
+          {analysisMode: 'full'});
+        expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+        expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('');
+        expect(result.completion?.attemptId).toBe('main');
+        takeFinalizationContext(result)?.dispose();
+      });
+
+      it('does not continue without returned data to answer from', async () => {
+        mockIntentTransport.mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)});
+        mainRun(false);
+        await createRuntime({QODER_MAX_TURNS: '4'}).analyze('Any ANR here?', 'qoder-empty-body-no-data', 'trace-1',
+          {analysisMode: 'full'});
+        expect(mockIntentTransport).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('uses one no-tools delivery turn for an unchanged full native declaration candidate', async () => {
       const body = `${'启动正文保持完整。'.repeat(850)}\n${'Native body remains unchanged. '.repeat(170)}`.trimEnd();
       expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
@@ -1495,6 +1725,27 @@ describe('QoderRuntime', () => {
       finally {context.dispose();}
     });
 
+    it('records the declaration completion as a declaration_repair model call', async () => {
+      const body = 'Native body remains unchanged.';
+      const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'The authored body is preserved.'}], clusters: [], evidenceChain: [],
+        claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
+      mockIntentTransport
+        .mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+        .mockResolvedValueOnce({status: 'ok', text: `${body}\n${sidecar}`, finishReason: 'end_turn'});
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: body, num_turns: 1},
+      ]));
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      await createRuntime().analyze('test', 'qoder-repair-record', 'trace-1', {
+        runId: 'qoder-repair-record', runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      });
+      expect(mockIntentTransport).toHaveBeenCalledTimes(2);
+      const calls = runtimePerformanceRecorder.seal().modelCalls ?? [];
+      expect(calls.filter(call => call.purpose === 'declaration_repair'))
+        .toEqual([expect.objectContaining({trigger: 'missing_declaration', outcome: 'ok'})]);
+    });
+
     it('does not dispatch declaration completion when the original body cannot fit the Qoder output cap', async () => {
       const body = 'x'.repeat(128 * 1024);
       mockQuery.mockReturnValue(createMockSdkStream([
@@ -1506,7 +1757,7 @@ describe('QoderRuntime', () => {
       expect(result.completion).toMatchObject({status: 'completed', attemptId: 'main'});
     });
 
-    it('retains the original Qoder attempt when a dispatched declaration completion changes the body', async () => {
+    it('keeps the original Qoder body and takes the declaration when a completion changes the body', async () => {
       const body = 'Original bounded answer.';
       const changed = `Changed bounded answer.\n${renderConclusionContractSidecar({
         schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
@@ -1529,10 +1780,10 @@ describe('QoderRuntime', () => {
 
       expect(mockQuery).toHaveBeenCalledTimes(1);
       expect(mockIntentTransport).toHaveBeenCalledTimes(2);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'main',
-        conclusionFingerprint: analysisDeliveryFingerprint(body)});
-      expect(runtime.getSdkSessionId('qoder-declaration-rejected')).toBe('sdk-original-session');
+      // The completion's declaration is delivered; its edited prose never is.
+      expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+      expect(result.completion).toMatchObject({status: 'completed', attemptId: 'declaration-completion:1'});
       expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
     });
 
@@ -1565,10 +1816,10 @@ describe('QoderRuntime', () => {
           {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
         ]));
 
-        const result = await createRuntime().analyze('test', 'session-1', 'trace-1', {
+        const result = await createRuntime().analyze('test', 'session-1', 'trace-1', admitted({
           codeAwareMode: 'provider_send',
           codebaseIds: [fixture.codebaseId],
-        });
+        }));
 
         expect(result).toMatchObject({
           success: true,
@@ -1610,18 +1861,18 @@ describe('QoderRuntime', () => {
           ]));
         const runtime = createRuntime();
 
-        const terminal = await runtime.analyze('source run', 'session-1', 'trace-1', {
+        const terminal = await runtime.analyze('source run', 'session-1', 'trace-1', admitted({
           codeAwareMode: 'provider_send',
           codebaseIds: [fixture.codebaseId],
-        });
+        }));
         const context = takeFinalizationContext(terminal)!;
         try {
           expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
           expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
         } finally {context.dispose();}
-        const next = await runtime.analyze('public run', 'session-1', 'trace-1', {
+        const next = await runtime.analyze('public run', 'session-1', 'trace-1', admitted({
           codeAwareMode: 'off',
-        });
+        }));
 
         expect(terminal.success).toBe(true);
         expect(terminal.sourceUseDecision).toEqual(decision);
@@ -1660,11 +1911,11 @@ describe('QoderRuntime', () => {
           'source timeout run',
           'session-qoder-source-timeout',
           'trace-1',
-          {
+          admitted({
             analysisMode: 'full',
             codeAwareMode: 'provider_send',
             codebaseIds: [fixture.codebaseId],
-          },
+          }),
         );
 
         expect(result).toMatchObject({
@@ -1700,10 +1951,10 @@ describe('QoderRuntime', () => {
       const runtime = createRuntime();
       runtime.on('update', update => updates.push(update));
 
-      await runtime.analyze('test', 'session-1', 'trace-1', {
+      await runtime.analyze('test', 'session-1', 'trace-1', admitted({
         codeAwareMode: 'metadata_only',
         codebaseIds: ['private-codebase'],
-      });
+      }));
 
       const tokens = updates.filter(update => update.type === 'answer_token');
       expect(tokens).toEqual([
@@ -1818,14 +2069,6 @@ describe('QoderRuntime', () => {
           message: { content: [{ type: 'text', text: 'late-answer-canary' }] },
         },
       },
-      {
-        label: 'opaque init and progress',
-        lateMessage: {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'late-opaque-canary',
-        },
-      },
       {label: 'provider error', lateMessage: new Error('Late provider failure')},
     ])('fences late $label from a timed-out iterator after same-session reuse', async ({ lateMessage }) => {
       const releaseLateIterator = createDeferred<void>();
@@ -1871,7 +2114,6 @@ describe('QoderRuntime', () => {
         success: false,
         terminationReason: 'timeout',
       });
-      expect(runtime.getSdkSessionId('session-qoder-timeout-late-iterator')).toBeUndefined();
       await expect(runtime.analyze(
         'second',
         'session-qoder-timeout-late-iterator',
@@ -1889,7 +2131,6 @@ describe('QoderRuntime', () => {
       expect(newClose).toHaveBeenCalledTimes(1);
       expect(mockProjectionWrite).not.toHaveBeenCalledWith('late-answer-canary');
       expect(JSON.stringify(updates)).not.toContain('late-answer-canary');
-      expect(runtime.getSdkSessionId('session-qoder-timeout-late-iterator')).toBe('new-run-opaque');
       expect(runtime.getSessionNotes('session-qoder-timeout-late-iterator')).toEqual([{
         section: 'observation', content: 'Evidence collected by the new run', priority: 'low', timestamp: 1,
       }]);
@@ -1905,13 +2146,12 @@ describe('QoderRuntime', () => {
       const runtime = createRuntime();
       runtime.on('update', update => updates.push(update));
 
-      await expect(runtime.analyze('private', 'session-qoder-private-tail', 'trace-1', {
+      await expect(runtime.analyze('private', 'session-qoder-private-tail', 'trace-1', admitted({
         knowledgeSourceIds: ['private-wiki'],
-      })).resolves.toMatchObject({ success: true });
+      }))).resolves.toMatchObject({ success: true });
 
       expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(updates)).not.toContain('private-tail-canary');
-      expect(runtime.getSdkSessionId('session-qoder-private-tail')).toBeUndefined();
     });
 
     it('returns hypotheses written through the shared MCP state', async () => {
@@ -2013,14 +2253,36 @@ describe('QoderRuntime', () => {
               status: 'unknown', runId: 'replacement-run', conclusionFingerprint: receipt.outputFingerprint,
             }});
           expect(result.completion?.candidateRef).not.toBe('replacement-run:qoder:main');
-          const verifier = jest.requireMock('../../claude/claudeVerifier') as {verifyConclusion: jest.Mock};
-          const context = (verifier.verifyConclusion.mock.calls[0][2] as any).deliveryContext;
+          const finalization = takeFinalizationContext(result);
+          const context = finalization?.deliveryContext as any;
+          finalization?.dispose();
           expect(context.outputOrigin).toBe('runtime_fallback');
           expect(context.completion).toEqual(result.completion);
           expect(context.acceptedCandidate.conclusionFingerprint).toBe(receipt.outputFingerprint);
           expect(JSON.stringify(result)).not.toContain(receipt.inputFingerprint);
         } finally {api.clearCodeAwareOutputGuards('whole-replacement');}
       });
+
+    it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => {
+      const api = privacyProjectionApi();
+      api.revokeCodeAwareOutputGuards('replaced-terminal-state');
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, stop_reason: null, result: 'Native answer', num_turns: 1},
+      ]));
+      try {
+        const runtime = createRuntime(); const updates: any[] = [];
+        runtime.on('update', (update: any) => updates.push(update));
+        const result = await runtime.analyze('any request', 'replaced-terminal-state', 'trace-1',
+          {runId: 'replaced-terminal-run', analysisMode: 'fast'});
+        expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+        expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+          recordedTurn: sessionContextManager.get('replaced-terminal-state', 'trace-1')?.getAllTurns().slice(-1)[0]?.result});
+        takeFinalizationContext(result)?.dispose();
+      } finally {
+        api.clearCodeAwareOutputGuards('replaced-terminal-state');
+        sessionContextManager.remove('replaced-terminal-state');
+      }
+    });
 
     it.each(['A normal answer', '正常模型回答', '[PRIVATE_OUTPUT_SUPPRESSED]'])
       ('does not infer replacement from a preserved native body: %s', async nativeBody => {
@@ -2045,8 +2307,9 @@ describe('QoderRuntime', () => {
       expect(result).toMatchObject({success: true, partial: false, conclusion: receipt.text,
         outputOrigin: 'sdk_final', completion: {status: 'completed', conclusionFingerprint: receipt.outputFingerprint}});
       expect(result.completion?.candidateRef).not.toBe('redaction-run-id:qoder:main');
-      const verifier = jest.requireMock('../../claude/claudeVerifier') as {verifyConclusion: jest.Mock};
-      const context = (verifier.verifyConclusion.mock.calls[0][2] as any).deliveryContext;
+      const finalization = takeFinalizationContext(result);
+      const context = finalization?.deliveryContext as any;
+      finalization?.dispose();
       expect(context.completion).toEqual(result.completion);
       expect(context.acceptedCandidate.conclusionFingerprint).toBe(receipt.outputFingerprint);
       api.clearCodeAwareOutputGuards('redaction-run');
@@ -2325,102 +2588,6 @@ describe('QoderRuntime', () => {
       ]));
     });
 
-    it('invalidates Qoder opaque state when cancelled after SDK init before provider completion', async () => {
-      const initObserved = createDeferred<void>();
-      const releaseStream = createDeferred<void>();
-      mockQuery.mockReturnValue({
-        async *[Symbol.asyncIterator]() {
-          yield { type: 'system', subtype: 'init', session_id: 'sdk-qoder-cancel-after-init' };
-          initObserved.resolve();
-          await releaseStream.promise;
-          yield { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\nlate result' };
-        },
-        interrupt: mockInterrupt,
-        close: mockClose,
-      });
-
-      const runtime = createRuntime();
-      const analysis = runtime.analyze('test', 'session-qoder-init-cancel', 'trace-1', {
-        analysisMode: 'full',
-      });
-      await initObserved.promise;
-      await runtime.abortSession('session-qoder-init-cancel');
-      releaseStream.resolve();
-      await expect(analysis).resolves.toMatchObject({
-        sessionId: 'session-qoder-init-cancel',
-        success: false,
-      });
-
-      const snapshot = runtime.takeSnapshot('session-qoder-init-cancel', 'trace-1', {
-        agentRuntimeProviderId: 'prov-1',
-        agentRuntimeProviderSnapshotHash: 'hash-1',
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      } as any);
-
-      if (snapshot.engineState?.kind !== 'qoder-agent-sdk') {
-        throw new Error('expected qoder snapshot engine state');
-      }
-      expect(snapshot.engineState.qoder.opaque).toEqual({
-        version: 1,
-        degradedReason: 'state_unavailable',
-      });
-    });
-
-    it('invalidates Qoder opaque state before abortSession returns while the provider stream is unsettled', async () => {
-      const initObserved = createDeferred<void>();
-      const releaseStream = createDeferred<void>();
-      mockQuery.mockReturnValue({
-        async *[Symbol.asyncIterator]() {
-          yield { type: 'system', subtype: 'init', session_id: 'sdk-qoder-immediate-abort' };
-          initObserved.resolve();
-          await releaseStream.promise;
-          yield { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\nlate result' };
-        },
-        interrupt: mockInterrupt,
-        close: mockClose,
-      });
-
-      const runtime = createRuntime();
-      const analysis = runtime.analyze('test', 'session-qoder-immediate-abort', 'trace-1', {
-        analysisMode: 'full',
-      });
-      await initObserved.promise;
-      await runtime.abortSession('session-qoder-immediate-abort');
-
-      const snapshot = runtime.takeSnapshot('session-qoder-immediate-abort', 'trace-1', {
-        agentRuntimeProviderId: 'prov-1',
-        agentRuntimeProviderSnapshotHash: 'hash-1',
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      } as any);
-
-      if (snapshot.engineState?.kind !== 'qoder-agent-sdk') {
-        throw new Error('expected qoder snapshot engine state');
-      }
-      expect(snapshot.engineState.qoder.opaque).toEqual({
-        version: 1,
-        degradedReason: 'state_unavailable',
-      });
-
-      releaseStream.resolve();
-      await expect(analysis).resolves.toMatchObject({
-        sessionId: 'session-qoder-immediate-abort',
-        success: false,
-      });
-    });
   });
 
   describe('session resume', () => {
@@ -2458,19 +2625,6 @@ describe('QoderRuntime', () => {
       expect(planState.current).toBeNull();
       expect(planState.history).toEqual([previousPlan]);
       expect(planState.prePlanToolCallLog).toEqual([]);
-    });
-
-    it('captures session ID from system init message', async () => {
-      const messages = [
-        { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },
-        { type: 'result', subtype: 'success', is_error: false, result: 'done' },
-      ];
-      mockQuery.mockReturnValue(createMockSdkStream(messages));
-
-      const runtime = createRuntime();
-      await runtime.analyze('test', 'session-1', 'trace-1');
-
-      expect(runtime.getSdkSessionId('session-1')).toBe('sdk-session-abc');
     });
 
     it('starts a fresh provider session and inherits product history on subsequent calls', async () => {
@@ -2511,7 +2665,7 @@ describe('QoderRuntime', () => {
 
       const runtime = createRuntime();
       await runtime.analyze('first', 'session-1', 'trace-1');
-      await runtime.analyze('second', 'session-1', 'trace-1', { codeAwareMode: 'off' });
+      await runtime.analyze('second', 'session-1', 'trace-1', admitted({ codeAwareMode: 'off' }));
 
       const secondCallArgs = mockQuery.mock.calls[1][0] as any;
       expect(secondCallArgs.options.resume).toBeUndefined();
@@ -2531,68 +2685,21 @@ describe('QoderRuntime', () => {
         ]));
 
       const runtime = createRuntime();
-      await runtime.analyze('private', 'session-1', 'trace-1', privateOptions);
-      expect(runtime.getSdkSessionId('session-1')).toBeUndefined();
+      await runtime.analyze('private', 'session-1', 'trace-1', admitted(privateOptions));
 
       await runtime.analyze('public', 'session-1', 'trace-1');
       const publicCallArgs = mockQuery.mock.calls[1][0] as any;
       expect(publicCallArgs.options.resume).toBeUndefined();
     });
 
-    it('discards an existing public opaque session before a private run', async () => {
-      mockQuery
-        .mockReturnValueOnce(createMockSdkStream([
-          { type: 'system', subtype: 'init', session_id: 'public-sdk-session' },
-          { type: 'result', subtype: 'success', is_error: false, result: 'done' },
-        ]))
-        .mockReturnValueOnce(createMockSdkStream([
-          { type: 'system', subtype: 'init', session_id: 'private-sdk-session' },
-          { type: 'result', subtype: 'success', is_error: false, result: 'private done' },
-        ]))
-        .mockReturnValueOnce(createMockSdkStream([
-          { type: 'result', subtype: 'success', is_error: false, result: 'public again' },
-        ]));
-
-      const runtime = createRuntime();
-      await runtime.analyze('public', 'session-qoder-private-discard', 'trace-1');
-      expect(runtime.getSdkSessionId('session-qoder-private-discard')).toBe('public-sdk-session');
-
-      await runtime.analyze('private', 'session-qoder-private-discard', 'trace-1', {
-        knowledgeSourceIds: ['private-wiki'],
-      });
-      expect(runtime.getSdkSessionId('session-qoder-private-discard')).toBeUndefined();
-
-      await runtime.analyze('public again', 'session-qoder-private-discard', 'trace-1');
-      expect((mockQuery.mock.calls[2][0] as any).options.resume).toBeUndefined();
-    });
-
-    it('clears stale session on missing-conversation error', async () => {
-      const messages1 = [
-        { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },
-        { type: 'result', subtype: 'success', is_error: false, result: 'done' },
-      ];
-      mockQuery
-        .mockReturnValueOnce(createMockSdkStream(messages1))
-        .mockImplementationOnce(() => {
-          throw new Error('No conversation found with session ID sdk-session-abc');
-        });
-
-      const runtime = createRuntime();
-      await runtime.analyze('first', 'session-1', 'trace-1');
-      expect(runtime.getSdkSessionId('session-1')).toBe('sdk-session-abc');
-
-      await runtime.analyze('second', 'session-1', 'trace-1');
-      expect(runtime.getSdkSessionId('session-1')).toBeUndefined();
-    });
   });
 
   describe('snapshot round-trip', () => {
-    it('preserves session state through snapshot/restore', async () => {
-      const messages = [
+    it('keeps no native session across snapshot/restore, even from a legacy snapshot', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
         { type: 'system', subtype: 'init', session_id: 'sdk-session-xyz' },
         { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone' },
-      ];
-      mockQuery.mockReturnValue(createMockSdkStream(messages));
+      ]));
 
       const runtime = createRuntime();
       await runtime.analyze('test', 'session-1', 'trace-1');
@@ -2612,11 +2719,31 @@ describe('QoderRuntime', () => {
       const snapshot = runtime.takeSnapshot('session-1', 'trace-1', sessionFields as any);
 
       expect(snapshot.agentRuntimeKind).toBe('qoder-agent-sdk');
+      expect(snapshot.engineState).toEqual({
+        kind: 'qoder-agent-sdk',
+        provider: {providerId: 'prov-1', providerSnapshotHash: 'hash-1'},
+        qoder: {},
+      });
+      expect(JSON.stringify(snapshot)).not.toContain('sdk-session-xyz');
 
+      // A snapshot written before native state was dropped still carries the SDK
+      // session id; restoring it must neither resume that session nor save it again.
+      const legacySnapshot = {
+        ...snapshot,
+        engineState: {
+          kind: 'qoder-agent-sdk' as const,
+          provider: {providerId: 'prov-1', providerSnapshotHash: 'hash-1'},
+          qoder: {opaque: {version: 1 as const, sdkSessionId: 'sdk-session-legacy'}},
+        },
+      };
       const runtime2 = createRuntime();
-      runtime2.restoreFromSnapshot('session-2', 'trace-1', snapshot);
+      runtime2.restoreFromSnapshot('session-2', 'trace-1', legacySnapshot);
+      await runtime2.analyze('follow-up', 'session-2', 'trace-1');
 
-      expect(runtime2.getSdkSessionId('session-2')).toBe('sdk-session-xyz');
+      expect((mockQuery.mock.calls[1][0] as any).options.resume).toBeUndefined();
+      expect(JSON.stringify(mockQuery.mock.calls[1][0])).not.toContain('sdk-session-legacy');
+      expect(JSON.stringify(runtime2.takeSnapshot('session-2', 'trace-1', sessionFields as any)))
+        .not.toContain('sdk-session-legacy');
     });
 
     it('does not persist opaque SDK or intermediate state for private knowledge', async () => {
@@ -2625,9 +2752,9 @@ describe('QoderRuntime', () => {
         { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone' },
       ]));
       const runtime = createRuntime();
-      await runtime.analyze('test', 'session-1', 'trace-1', {
+      await runtime.analyze('test', 'session-1', 'trace-1', admitted({
         knowledgeSourceIds: ['private-wiki'],
-      });
+      }));
 
       const snapshot = runtime.takeSnapshot('session-1', 'trace-1', {
         agentRuntimeProviderId: 'prov-1',
@@ -2644,10 +2771,68 @@ describe('QoderRuntime', () => {
       } as any);
 
       expect(snapshot.engineState?.kind).toBe('qoder-agent-sdk');
-      expect(snapshot.engineState?.kind === 'qoder-agent-sdk' && snapshot.engineState.qoder.opaque).toBeUndefined();
+      expect(snapshot.engineState?.kind === 'qoder-agent-sdk' && snapshot.engineState.qoder).toEqual({});
       expect(snapshot.conversationSteps).toEqual([]);
       expect(snapshot.agentDialogue).toEqual([]);
       expect(snapshot.agentResponses).toEqual([]);
+    });
+
+    it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
+      const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+      const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+      const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
+      ]));
+      try {
+        await createRuntime().analyze('private question', 'session-1', 'trace-1', admitted({
+          analysisMode: 'full', knowledgeSourceIds: ['private-wiki'],
+        }));
+        expect(patterns).toHaveBeenCalledTimes(1);
+        expect(negative).toHaveBeenCalledTimes(1);
+        const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
+        expect(systemPrompt).toContain('PATTERN_MEMORY_SECTION');
+        expect(systemPrompt).toContain('NEGATIVE_MEMORY_SECTION');
+        expect(systemPrompt).toContain('CASE_BACKGROUND_SECTION');
+      } finally { patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); }
+    });
+
+    it('keeps a private run\'s turn and session state in memory like the other runtimes', async () => {
+      // The MCP context is built before the SDK query starts; each run writes into its own context.
+      mockQuery.mockImplementation(() => {
+        const context = mockCreateClaudeMcpServer.mock.calls.slice(-1)[0][0] as any;
+        const run = mockCreateClaudeMcpServer.mock.calls.length;
+        context.analysisNotes.push({section: 'observation', content: `Private run ${run} note`, priority: 'low', timestamp: run});
+        context.uncertaintyFlags.push({topic: 'wiki', assumption: `Private run ${run} assumption`, question: 'Confirm?'});
+        return createMockSdkStream([
+          {type: 'system', subtype: 'init', session_id: 'private-sdk-session'},
+          {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
+        ]);
+      });
+      const runtime = createRuntime();
+      await runtime.analyze('private question', 'session-1', 'trace-1', admitted({knowledgeSourceIds: ['private-wiki']}));
+
+      // The creator's report and follow-ups read this state.
+      expect(runtime.getSessionNotes('session-1')).toEqual([expect.objectContaining({content: 'Private run 1 note'})]);
+      expect(runtime.getSessionUncertaintyFlags('session-1')).toEqual([expect.objectContaining({
+        assumption: 'Private run 1 assumption'})]);
+      const turns = sessionContextManager.getOrCreate('session-1', 'trace-1').getAllTurns();
+      expect(turns).toHaveLength(1);
+      expect(turns[0].result).toMatchObject({sourceDerived: true});
+
+      // Notes carry over within the session; uncertainty flags belong to their own turn.
+      await runtime.analyze('private follow-up', 'session-1', 'trace-1', admitted({knowledgeSourceIds: ['private-wiki']}));
+      expect(runtime.getSessionNotes('session-1').map(note => note.content)).toEqual(['Private run 1 note', 'Private run 2 note']);
+      expect(runtime.getSessionUncertaintyFlags('session-1')).toEqual([expect.objectContaining({
+        assumption: 'Private run 2 assumption'})]);
+
+      const snapshot = runtime.takeSnapshot('session-1', 'trace-1', {
+        conversationSteps: [], queryHistory: [], conclusionHistory: [], agentDialogue: [], agentResponses: [],
+        dataEnvelopes: [], knowledgeSourceIds: ['private-wiki'], runSequence: 1, conversationOrdinal: 1,
+      } as any);
+      expect(snapshot.analysisNotes).toEqual([]);
+      expect(snapshot.uncertaintyFlags).toEqual([]);
+      expect(snapshot.artifacts).toBeUndefined();
     });
   });
 

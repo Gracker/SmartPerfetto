@@ -16,7 +16,6 @@
  * than a truncated JSON dump.
  */
 
-import { DataEnvelope } from '../../types/dataContract';
 import { localize, type parseOutputLanguage } from '../../agentv3/outputLanguage';
 import { formatToolCallNarration, looksLikeGenericToolMessage } from '../../agentv3/toolNarration';
 import { formatPlanPhaseTransition, readPlanPhaseUpdateOrigin } from '../../agentv3/planPhaseEvents';

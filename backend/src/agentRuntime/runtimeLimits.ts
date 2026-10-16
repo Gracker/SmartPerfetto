@@ -94,6 +94,8 @@ export interface ProgressAwareRunDeadline {
   extendIfStreaming(now?: number): boolean;
   /** Window a delivery call may use from now, keeping the finalization reserve. */
   deliveryWindowMs(now?: number): number;
+  /** One completed-answer protocol repair may use the delivery reserve, never the finalization reserve. */
+  completedOutputRepairDeadlineAt(now?: number): number;
   /**
    * Deadline handed to finalization; never past the hard deadline. When no
    * delivery call ran, the unused delivery reserve funds finalization (at most
@@ -178,6 +180,13 @@ export function createProgressAwareRunDeadline(input: {
     },
     deliveryWindowMs(now = Date.now()) {
       return Math.max(0, Math.min(deliveryReserveMs, hardDeadlineAt - now) - finalizationReserveMs);
+    },
+    completedOutputRepairDeadlineAt(now = Date.now()) {
+      // Preserve an already longer investigation window. A late protocol repair
+      // gets the same bounded delivery reserve as a no-tool timeout closeout;
+      // this does not move the investigation or hard deadline.
+      return Math.min(hardDeadlineAt - finalizationReserveMs,
+        Math.max(current(), now + deliveryReserveMs - finalizationReserveMs));
     },
     finalizationDeadlineAt(now = Date.now(), deliveryDeadlineAt?: number, options: FinalizationBudgetOptions = {}) {
       // A delivery window already excluded the reserve. Without a delivery call the

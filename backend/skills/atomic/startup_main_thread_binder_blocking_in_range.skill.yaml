@@ -61,6 +61,7 @@ display:
       label: "耗时"
       type: duration
       format: duration_ms
+      unit: ms
     - name: state
       label: "阻塞状态"
       type: string

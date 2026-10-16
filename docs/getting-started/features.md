@@ -19,10 +19,10 @@ SmartPerfetto 在 Perfetto UI 中内置 AI Assistant 面板。用户加载 `.pft
 
 入口：
 
-- 打开 `http://localhost:10000`。
+- 打开运行入口给出的地址（`./start.sh` 与 Docker 默认 `http://127.0.0.1:10000`）。
 - 加载 Trace。
 - 打开 SmartPerfetto AI Assistant 面板。
-- 选择 `fast`、`full` 或 `auto` 分析模式。
+- 选择分析模式：`对话`（默认）、`快速`、`完整` 或 `智能`。
 - 输入问题并发送。
 
 效果：
@@ -31,7 +31,8 @@ SmartPerfetto 在 Perfetto UI 中内置 AI Assistant 面板。用户加载 `.pft
 - UI 会流式展示进度、SQL/Skill 证据、表格结果和最终结论。
 - 每轮的分析过程和步骤位于本轮结论上方，结论是该轮最后的内容；各轮独立排列。
 - 结论应能追溯到具体时间段、线程、slice、SQL 行或 Skill 结果。
-- 服务器核验详情默认折叠，点击可查看完整证据和源码引用；核验警告仍直接显示。
+- 服务器核验详情默认折叠，点击可查看完整证据和源码引用；核验警告仍直接显示。已完成的分析正常交付，核验疑点或未覆盖项会单独标注，供用户结合证据判断。
+- 使用 Claude 或 OpenAI runtime 时，回答会边生成边显示为草稿；回答写完后先完整显示，并标注“正在核验”，核验结论随后给出。此时第一次停止只结束核验，已显示的回答会保留。Pi、OpenCode、Qoder runtime 不显示草稿，回答写完后一次性显示。选用了源码或知识库的会话同样显示草稿，但草稿只发给本人，并先经过与最终回答相同的脱敏投影；一旦某段草稿需要脱敏，本轮草稿整体撤回，回答写完后再显示投影后的正文。
 
 ### 浏览器 Trace 工具与本地 WASM
 
@@ -45,8 +46,21 @@ SmartPerfetto 在 Perfetto UI 中内置 AI Assistant 面板。用户加载 `.pft
 
 这些能力属于浏览器本地时间线和 Perfetto 插件。原始多 trace 打开/合并不同于
 SmartPerfetto 的双 Trace AI 对比；WASM 新能力也不会自动扩展后端 AI、Skill、CLI 或
-HTML 报告。后者继续使用发布包固定的 native `trace_processor_shell`，只有完成独立
-升级与五平台验证后才会吸收同名能力。
+HTML 报告。后者使用发布包固定的 native `trace_processor_shell`，它与前端来自同一
+Perfetto 上游修订（`scripts/trace-processor-pin.env`）；浏览器里的新查看能力要等后端
+Skill、策略或工具接入后才会进入 AI 分析。
+
+### Critical path 等待链与火焰图
+
+- **Critical path 分析**：在时间线上选中一个 `thread_state` task 后，AI Assistant 预置问题旁
+  会出现 `Critical path 分析` 按钮，打开抽屉展示唤醒链、异常判断、关联模块、下一步和可复制的
+  验证 SQL；“在对话中继续追问”把结果交给对话。
+- **火焰图**：AI Assistant 视图中的 `火焰图` 页签自动读取当前 Trace，检查是否含 CPU 调用栈采样，
+  再给出自占/累计热点、热点路径和归类。
+
+两者的 AI 总结使用当前 Provider，要求调用方有 `agent:run` 权限；AI 被关闭、权限或凭证不足、
+Provider 不是 Claude runtime 时返回规则兜底总结，分析本身照常返回。结果不写入报告、快照或对话。
+操作说明见 [Critical path 与火焰图](critical-path-and-flamegraph.md)。
 
 ### 智能分析模式
 
@@ -127,6 +141,10 @@ AI 分析完成后，后端会生成 HTML report。
 
 - 把本次分析的问题、证据、结论和建议整理成可阅读报告。
 - 适合分享给团队、贴到 issue、保存为回归分析记录。
+- 指标以表格展示原始数值和已声明单位；警告、严重问题使用文字标签，普通观测值不显示绿色健康标记。不从字段名称猜测单位。
+- 完整表格、嵌套值、更多原始列、案例匹配和对话时间线可展开查看；同名或共用引用的不同数据不会被去重丢弃。
+- 点击“保存 HTML 报告”通过浏览器本地下载保存当前页面，可离线重开；打印会展开已采集的详情和折叠行。
+- 打开历史报告时会更新布局及保存控件。旧文件生成时已经遗漏的单位或数据无法从页面恢复，需要重新生成报告。
 
 ## 6. Trace 实时对比
 
@@ -184,45 +202,44 @@ Trace 实时对比用于在同一个 AI 对话中，从当前 workspace 任意�
 
 完整说明见 [多 Trace 分析结果对比](multi-trace-result-comparison.md)。
 
-## 8. Android Internals 知识
+## 8. 文档知识库与 Android Internals Wiki
 
-SmartPerfetto 把 Android Internals 背景知识分成两个明确来源：
-
-- 随 npm、Docker、源码和 portable 分发的签名 Knowledge Pack，离线可用，并可通过
-  TUF stable channel 检查或安装更新；
-- 用户显式允许的私有 checkout，受路径、权利、provider 同意和请求级 source id
-  约束。
+用户可以把任意文档目录（`.md .markdown .mdx .txt .rst .adoc .html .htm`）注册为文档知识库，
+包括自己的设备 tag 定义、Trace 片段说明、团队文档和公开的 Android Internals Wiki 的
+`src/` 目录。知识库按轮显式选择，模型用
+`search_knowledge` / `read_knowledge_section` 按需检索，并以 `kb:路径#L起-L止` 引用出处。
 
 入口：
 
-- CLI：`smp knowledge-pack status`、`smp knowledge-pack update --check`。
-- AI 分析：内置 Pack 由 runtime 在需要时检索；私有 source 必须在本次请求显式选择。
-- 管理 API：`/api/rag/android-internals/*` 只管理私有 checkout。
+- AI Assistant 对话框的上下文控件 →“管理…”→“文档知识库”：预览、注册、重建索引、试检索、删除。
+- CLI：`smp knowledge preview/register/reindex/list/search/remove`，分析时用 `--knowledge-source-id`。
 
 效果：
 
-- Pack/私有知识只作为 background knowledge，不能伪装成当前 trace 的 SQL/Skill 证据。
-- 报告保留来源、版本、fingerprint 和 snippet hash；日志/SSE 不投影正文片段。
-- 更新不会让运行中的 session 静默换版本；撤回会要求创建新分析上下文。
+- 知识库只作为背景，不能代替当前 trace 的 SQL/Skill 证据；只依据知识库的说法会被标明。
+- 报告、快照和 CLI 产物记录交付了哪些知识库引用（`knowledge_use@1`）以及答案中每条引用是否对得上。
+- Web 回答下方的“知识库使用”分别显示检索交付数与答案引用数，未引用也明确显示。
 
-完整说明见 [Android Internals 知识包与私有知识库](android-internals-knowledge.md)。
+完整说明见[私有知识库](private-knowledge.md)和
+[把 Android Internals Wiki 作为知识库使用](android-internals-knowledge.md)。
 
 ## 9. Code-Aware 本机源码分析
 
-Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码注册给 SmartPerfetto。注册只创建可选数据源，不会自动附加到 session。分析时模型默认只看到 `CodeRef` 元数据，不直接接触源码正文；不建索引也可以对 live root 做有界按需搜索/读取。
+Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码注册给 SmartPerfetto。注册只创建可选数据源，不会自动附加到 session；每轮在输入框旁的“本轮分析上下文”中选择 `仅定位`（模型只看到 `CodeRef` 元数据）或 `发送正文`（模型可按需读取已授权范围内的脱敏源码片段）。不建索引也可以对 live root 做有界按需搜索/读取。
 
 入口：
 
-- AI Assistant 设置面板中的 `Codebases` 页：preview/register、selection 与 provider consent、当前范围/新语言授权、pending accept/reject、reindex、audit 和 delete。
-- CLI：`smp codebase list/preview/register/selection/consent/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`。
-- 分析时显式传入 `--code-aware metadata_only` 和 `--codebase-id <id>`，或在 UI 中选择已注册代码库。
+- AI Assistant 设置中的 `源码库` 页：预览并添加（`仅添加，不用于分析` 或 `添加并用于分析`）、编辑范围、`允许发送正文`（审阅服务端给出的包含范围、排除规则和语言后 `确认允许`）与撤销、受限索引候选的接受/丢弃、构建可选索引、审计和删除。
+- 输入框旁的“本轮分析上下文”弹层：按轮选择源码模式、源码库、源码深度和知识库。
+- CLI：`smp codebase list/preview/register/selection/consent/authorize-content/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`。
+- CLI 分析时显式传入 `--codebase-id <id>`（默认 `metadata_only`，模型只看到 `CodeRef`）；`--code-aware provider_send` 还需要先授予正文：`smp codebase authorize-content <id>` 显示披露范围与 token，再用 `--confirm <token>` 授予。Web 的“添加并用于分析”在你确认披露范围后即授予正文。
 
 效果：
 
 - 把调用栈、native frame 或 kernel symbol 映射到相对文件路径、行号和 symbol。
-- 有可查询 trace 锚点时执行有界源码 lookup，否则保留结构化 non-use 原因；纯数量问题可为 `not_needed`。
+- 选中源码只把已授权的源码工具交给模型，是否检索由模型按问题决定；源码回执按本轮实际调用记录状态，不能取得新证据的回合为 `not_needed`。
 - Trace/Skill/SQL 证明发生，`CodeRef` 证明实现机制；结论用 `corroborated|compatible|ambiguous|unverified` 显示绑定强度。
-- Web 显示安全源码回执；HTML report、CLI、snapshot 和 API 共用同一 provenance 投影。源码正文只通过受控 excerpt endpoint 临时读取。
+- Web 显示安全源码回执；HTML report、CLI、snapshot 和 API 共用同一 provenance 投影。源码正文只以授权分析随结果保存的引用出现，没有 API 返回已索引的源码正文。
 - 未给 session 配置 codebase 时，普通 trace-only 分析路径保持不变。
 
 完整说明见 [Code-Aware Analysis](code-aware-analysis.md)。
@@ -331,7 +348,7 @@ SmartPerfetto 支持多种运行方式：
 | 生成可分享的分析结论 | HTML report |
 | 当前对话中临时对比 reference Trace | `compare_arrows` Trace 实时对比 |
 | 跨窗口/跨用户对比已完成结果 | `fact_check` 多 Trace 分析结果对比 |
-| 查询 Android Internals 背景 | 内置 Knowledge Pack；私有资料用显式 knowledge source |
+| 查询 Android Internals 或团队文档背景 | 注册并选择文档知识库 |
 | 把结论映射到本机源码文件和行号 | Code-Aware Analysis |
 | 判断一次分析是否值得反馈、能贡献什么 | 结果下方“让 Agent 帮我判断是否应反馈” |
 | 审阅并应用经过门控的分析改进 | 设置 → 自进化 / Evolution |

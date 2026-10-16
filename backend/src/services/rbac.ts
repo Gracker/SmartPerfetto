@@ -2,13 +2,23 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { Response } from 'express';
-import type { RequestContext } from '../middleware/auth';
+import type { RequestHandler, Response } from 'express';
+import { requireRequestContext, type RequestContext } from '../middleware/auth';
 import {
   isOwnedByContext,
+  isRecordedCreatorOf,
   normalizeResourceOwner,
   type ResourceOwnerFields,
 } from './resourceOwnership';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
+
+/** A derived artifact whose audience its analysis's private context may restrict. */
+type PrivateContextResourceFields = ResourceOwnerFields & {
+  privateContext: AnalysisPrivateContextMarker;
+};
 
 export type RbacPermission =
   | 'trace:read'
@@ -181,10 +191,12 @@ export function canDeleteTraceResource(
 }
 
 export function canReadReportResource(
-  resource: ResourceOwnerFields | null | undefined,
+  resource: PrivateContextResourceFields | null | undefined,
   context: RequestContext,
 ): boolean {
-  return sharesWorkspaceWithContext(resource, context) && hasRbacPermission(context, 'report:read');
+  if (!sharesWorkspaceWithContext(resource, context)) return false;
+  if (!hasRbacPermission(context, 'report:read')) return false;
+  return !privateContextRestrictsAudience(resource?.privateContext) || isRecordedCreatorOf(resource, context);
 }
 
 export function canDeleteReportResource(
@@ -194,16 +206,6 @@ export function canDeleteReportResource(
   if (!sharesWorkspaceWithContext(resource, context)) return false;
   if (hasRbacPermission(context, 'report:delete')) return true;
   return isOwnedByContext(resource, context) && hasRbacPermission(context, 'report:delete');
-}
-
-export function canReadAnalysisResultResource(
-  resource: (ResourceOwnerFields & { visibility?: string | null }) | null | undefined,
-  context: RequestContext,
-): boolean {
-  if (!sharesWorkspaceWithContext(resource, context)) return false;
-  if (!hasRbacPermission(context, 'analysis_result:read')) return false;
-  if (resource?.visibility === 'workspace') return true;
-  return isOwnedByContext(resource, context);
 }
 
 export function canCreateAnalysisResultResource(context: RequestContext): boolean {
@@ -220,13 +222,20 @@ export function canShareAnalysisResultResource(
   return hasRbacPermission(context, 'analysis_result:delete');
 }
 
-export function canDeleteAnalysisResultResource(
-  resource: ResourceOwnerFields | null | undefined,
-  context: RequestContext,
-): boolean {
-  if (!sharesWorkspaceWithContext(resource, context)) return false;
-  if (hasRbacPermission(context, 'analysis_result:delete')) return true;
-  return false;
+/**
+ * Route middleware for an operation one permission gates: the shared 403 body
+ * unless the authenticated caller holds it. Mount it per route, never with
+ * `router.use` on a router shared by a path prefix: that would gate every
+ * router mounted after it on the same prefix.
+ */
+export function requireRbacPermission(permission: RbacPermission, details: string): RequestHandler {
+  return (req, res, next) => {
+    if (!hasRbacPermission(requireRequestContext(req), permission)) {
+      sendForbidden(res, details);
+      return;
+    }
+    next();
+  };
 }
 
 export function sendForbidden(res: Response, details = 'Forbidden'): Response {

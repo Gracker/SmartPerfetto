@@ -5,8 +5,8 @@
 # =============================================================================
 # Kernel FileSystem Module Expert
 # =============================================================================
-# Provides file system and I/O analysis capabilities for cross-domain experts.
-# Answers questions about block I/O, file operations, database access, and I/O latency.
+# Provides file system and I/O analysis capabilities.
+# Covers block I/O, file operations, database access, and I/O latency.
 #
 # Key Analysis Areas:
 # - Block I/O latency and throughput
@@ -35,80 +35,6 @@ module:
     - file_operations
     - database
     - shared_preferences
-  relatedModules:
-    - kernel_scheduler
-    - framework_ams
-    - app_third_party
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: io_during_startup
-      questionTemplate: "What IO operations delayed startup for package {package}?"
-      requiredParams: [package]
-      description: "Analyze IO operations during app startup"
-
-    - id: main_thread_io
-      questionTemplate: "What IO operations happened on main thread for package {package}?"
-      requiredParams: [package]
-      description: "Find synchronous IO on main thread"
-
-    - id: database_operations
-      questionTemplate: "What database operations happened for package {package}?"
-      requiredParams: [package]
-      optionalParams: [start_ts, end_ts]
-      description: "Analyze SQLite/Room database operations"
-
-    - id: io_latency_analysis
-      questionTemplate: "What is the IO latency distribution for package {package}?"
-      requiredParams: [package]
-      description: "Analyze IO latency patterns"
-
-    - id: block_io_summary
-      questionTemplate: "What is the block IO activity during {start_ts} to {end_ts}?"
-      requiredParams: [start_ts, end_ts]
-      description: "Summarize block IO activity in time range"
-
-  findingsSchema:
-    - id: main_thread_io
-      severity: critical
-      titleTemplate: "Main thread IO: {io_type} took {dur_ms}ms"
-      descriptionTemplate: "Synchronous IO on main thread blocked UI for {dur_ms}ms"
-      evidenceFields: [io_type, dur_ms, file_path, thread_name]
-
-    - id: slow_database_query
-      severity: warning
-      titleTemplate: "Slow database query: {query_ms}ms"
-      descriptionTemplate: "Database query took {query_ms}ms, consider optimization"
-      evidenceFields: [query_ms, table_name, operation_type]
-
-    - id: excessive_io_operations
-      severity: warning
-      titleTemplate: "Excessive IO: {io_count} operations totaling {total_ms}ms"
-      descriptionTemplate: "High number of IO operations may cause performance issues"
-      evidenceFields: [io_count, total_ms, avg_ms]
-
-    - id: io_wait_causing_delay
-      severity: critical
-      titleTemplate: "IO wait causing delay: {wait_ms}ms"
-      descriptionTemplate: "Thread spent {wait_ms}ms waiting for IO operations"
-      evidenceFields: [wait_ms, thread_name, io_type]
-
-  suggestionsSchema:
-    - id: check_scheduler_during_io
-      condition: "io_wait_ms > 50"
-      targetModule: scheduler_module
-      questionTemplate: "Why was thread blocked during IO at {ts}?"
-      paramsMapping:
-        ts: io_start_ts
-      priority: 1
-
-    - id: check_memory_pressure
-      condition: "io_type == 'page_fault'"
-      targetModule: memory_module
-      questionTemplate: "Is memory pressure causing page faults?"
-      paramsMapping: {}
-      priority: 2
 
 prerequisites:
   required_tables:
@@ -138,40 +64,44 @@ steps:
   - id: io_overview
     type: atomic
     name: "I/O 操作概览"
+    sql_fragments:
+      - fragments/file_io_slice_names.sql
     sql: |
+      WITH
+      candidates AS (
+        SELECT s.id, s.name, s.dur
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
+          AND s.dur > 100000  -- > 0.1ms
+          AND EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(s.name), w.stem) > 0)
+          AND EXISTS (SELECT 1 FROM file_io_slice_name_patterns n WHERE s.name GLOB n.pattern)
+          AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE s.name GLOB x.pattern)
+      ),
+      -- One type per slice, in this order, when its name names several.
+      io_slices AS (
+        SELECT
+          c.dur,
+          CASE MIN(CASE n.io_type
+            WHEN 'read' THEN 1 WHEN 'write' THEN 2 WHEN 'database' THEN 3
+            WHEN 'shared_prefs' THEN 4 WHEN 'open' THEN 5 WHEN 'sync' THEN 6 ELSE 7
+          END)
+            WHEN 1 THEN 'read' WHEN 2 THEN 'write' WHEN 3 THEN 'database'
+            WHEN 4 THEN 'shared_prefs' WHEN 5 THEN 'open' WHEN 6 THEN 'sync' ELSE 'other'
+          END AS io_type
+        FROM candidates c
+        JOIN file_io_slice_name_patterns n ON c.name GLOB n.pattern
+        GROUP BY c.id
+      )
       SELECT
-        CASE
-          WHEN s.name GLOB '*read*' OR s.name GLOB '*Read*' THEN 'read'
-          WHEN s.name GLOB '*write*' OR s.name GLOB '*Write*' THEN 'write'
-          WHEN s.name GLOB '*sqlite*' OR s.name GLOB '*SQLite*' OR s.name GLOB '*database*' THEN 'database'
-          WHEN s.name GLOB '*SharedPreferences*' OR s.name GLOB '*sharedpref*' THEN 'shared_prefs'
-          WHEN s.name GLOB '*open*' OR s.name GLOB '*Open*' THEN 'open'
-          WHEN s.name GLOB '*flush*' OR s.name GLOB '*sync*' THEN 'sync'
-          ELSE 'other'
-        END AS io_type,
+        io_type,
         COUNT(*) AS operation_count,
-        CAST(SUM(s.dur) / 1e6 AS INTEGER) AS total_ms,
-        CAST(AVG(s.dur) / 1e6 AS REAL) AS avg_ms,
-        CAST(MAX(s.dur) / 1e6 AS REAL) AS max_ms
-      FROM slice s
-      JOIN thread_track tt ON s.track_id = tt.id
-      JOIN thread t ON tt.utid = t.utid
-      JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
-        AND (s.name GLOB '*read*'
-             OR s.name GLOB '*Read*'
-             OR s.name GLOB '*write*'
-             OR s.name GLOB '*Write*'
-             OR s.name GLOB '*sqlite*'
-             OR s.name GLOB '*SQLite*'
-             OR s.name GLOB '*database*'
-             OR s.name GLOB '*SharedPreferences*'
-             OR s.name GLOB '*open*'
-             OR s.name GLOB '*flush*'
-             OR s.name GLOB '*sync*'
-             OR s.name GLOB '*File*'
-             OR s.name GLOB '*IO*')
-        AND s.dur > 100000  -- > 0.1ms
+        CAST(SUM(dur) / 1e6 AS INTEGER) AS total_ms,
+        CAST(AVG(dur) / 1e6 AS REAL) AS avg_ms,
+        CAST(MAX(dur) / 1e6 AS REAL) AS max_ms
+      FROM io_slices
       GROUP BY io_type
       ORDER BY total_ms DESC
     display:
@@ -194,6 +124,8 @@ steps:
   - id: main_thread_io
     type: atomic
     name: "主线程 I/O"
+    sql_fragments:
+      - fragments/file_io_slice_names.sql
     sql: |
       SELECT
         s.ts,
@@ -205,18 +137,11 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND t.tid = p.pid  -- Main thread: tid == pid
-        AND (s.name GLOB '*read*'
-             OR s.name GLOB '*Read*'
-             OR s.name GLOB '*write*'
-             OR s.name GLOB '*Write*'
-             OR s.name GLOB '*sqlite*'
-             OR s.name GLOB '*SQLite*'
-             OR s.name GLOB '*SharedPreferences*'
-             OR s.name GLOB '*File*'
-             OR s.name GLOB '*open*'
-             OR s.name GLOB '*flush*')
+        AND EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(s.name), w.stem) > 0)
+        AND EXISTS (SELECT 1 FROM file_io_slice_name_patterns n WHERE s.name GLOB n.pattern)
+        AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE s.name GLOB x.pattern)
         AND s.dur > 1000000  -- > 1ms
       ORDER BY s.dur DESC
       LIMIT 30
@@ -245,7 +170,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         -- Slice names are heuristic attribution only. Require a database
         -- namespace/product signal; generic "query"/"transaction" names are
         -- common outside storage and must not be promoted as DB evidence.
@@ -279,7 +204,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         -- apply/commit are generic method names; only accept an explicit
         -- SharedPreferences namespace in the trace slice.
         AND (LOWER(s.name) GLOB '*sharedpreferences*'
@@ -309,7 +234,7 @@ steps:
       FROM thread_state ts
       JOIN thread t USING (utid)
       JOIN process p USING (upid)
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND ts.state IN ('D', 'DK')  -- Uninterruptible sleep; io_wait/function pattern required for IO attribution
         AND (
           COALESCE(ts.io_wait, 0) = 1
@@ -328,10 +253,12 @@ steps:
     synthesize: true
 
   # Step 6: Slow slices with I/O-like names (> 10ms). Name matching is a
-  # candidate signal only; generic app methods can contain these substrings.
+  # candidate signal only; a generic app method can carry an I/O word.
   - id: slow_io_operations
     type: atomic
     name: "疑似慢 I/O 命名切片"
+    sql_fragments:
+      - fragments/file_io_slice_names.sql
     sql: |
       SELECT
         s.ts,
@@ -346,13 +273,10 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
-        AND (s.name GLOB '*read*'
-             OR s.name GLOB '*write*'
-             OR s.name GLOB '*sqlite*'
-             OR s.name GLOB '*File*'
-             OR s.name GLOB '*IO*'
-             OR s.name GLOB '*flush*')
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
+        AND EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(s.name), w.stem) > 0)
+        AND EXISTS (SELECT 1 FROM file_io_slice_name_patterns n WHERE s.name GLOB n.pattern)
+        AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE s.name GLOB x.pattern)
         AND s.dur > 10000000  -- > 10ms
       ORDER BY s.dur DESC
       LIMIT 20

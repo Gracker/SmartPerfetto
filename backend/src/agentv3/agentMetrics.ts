@@ -41,11 +41,6 @@ export interface ToolExecution {
   error?: string;
 }
 
-export interface TurnInfo {
-  turnNumber: number;
-  timestamp: number;
-}
-
 export interface CacheMetrics {
   inputTokens: number;
   outputTokens: number;
@@ -275,8 +270,9 @@ export class AgentMetricsCollector {
 // Metrics Persistence
 // =============================================================================
 
-export const METRICS_DIR = backendLogPath('metrics');
-const METRICS_RETENTION_DAYS = 7;
+export function metricsDir(): string {
+  return backendLogPath('metrics');
+}
 
 /** Keep operational counts for private runs without retaining provider errors. */
 export function projectSessionMetricsForPersistence(
@@ -296,36 +292,18 @@ export function persistSessionMetrics(
   privateAnalysisContext = false,
 ): void {
   try {
-    if (!fs.existsSync(METRICS_DIR)) {
-      fs.mkdirSync(METRICS_DIR, { recursive: true });
+    const dir = metricsDir();
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
     const fileName = `session_${metrics.sessionId}_metrics.json`;
-    const filePath = path.join(METRICS_DIR, fileName);
+    const filePath = path.join(dir, fileName);
     const tmpPath = filePath + '.tmp';
     const projected = projectSessionMetricsForPersistence(metrics, privateAnalysisContext);
     fs.writeFileSync(tmpPath, JSON.stringify(projected, null, 2));
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     console.warn('[AgentMetrics] Failed to persist metrics:', (err as Error).message);
-  }
-}
-
-/** Clean up old metrics files (called at backend startup). */
-export function cleanupOldMetrics(): void {
-  try {
-    if (!fs.existsSync(METRICS_DIR)) return;
-    const cutoff = Date.now() - METRICS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    const files = fs.readdirSync(METRICS_DIR);
-    for (const file of files) {
-      if (!file.endsWith('_metrics.json')) continue;
-      const filePath = path.join(METRICS_DIR, file);
-      const stat = fs.statSync(filePath);
-      if (stat.mtimeMs < cutoff) {
-        fs.unlinkSync(filePath);
-      }
-    }
-  } catch (err) {
-    console.warn('[AgentMetrics] Failed to cleanup old metrics:', (err as Error).message);
   }
 }
 

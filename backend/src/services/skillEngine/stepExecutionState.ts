@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2024-2026 Gracker (Chris)
+// This file is part of SmartPerfetto. See LICENSE for details.
+
+import { localize, parseOutputLanguage } from '../../agentv3/outputLanguage';
+import type { DisplayResult, SkillStep, StepResult } from './types';
+
+export type StepExecutionState = Pick<DisplayResult, 'executionStatus' | 'executionMessage' | 'executionError'>;
+
+/**
+ * Public execution state for a step that produced no observation: the exact
+ * scope was unavailable, an optional query failed, or the step's condition was
+ * not met so its query never ran. Returns undefined for an executed step, whose
+ * state (`observed` / `empty`) depends on the rows it returned.
+ */
+export function nonObservedStepState(stepResult: StepResult): StepExecutionState | undefined {
+  switch (stepResult.code) {
+    case 'exact_scope_unavailable':
+      return { executionStatus: 'unavailable', executionMessage: stepResult.error };
+    case 'optional_query_error':
+      return { executionStatus: 'optional_error', executionError: stepResult.error };
+    case 'condition_not_met':
+      return { executionStatus: 'skipped', executionMessage: conditionSkippedMessage(stepResult.skippedCondition) };
+    default:
+      return undefined;
+  }
+}
+
+/** Whether a step result carries an observation: it succeeded, holds data, and was not a non-observed outcome. */
+export function isObservedStepResult(stepResult: StepResult): boolean {
+  return stepResult.success !== false && Object.prototype.hasOwnProperty.call(stepResult, 'data')
+    && !nonObservedStepState(stepResult);
+}
+
+/**
+ * A query or Skill result (a conditional returns its branch's). Its failure is
+ * recorded under the step id and ends the Skill unless the step is optional.
+ * exact_scope_unavailable results are atomic.
+ */
+export function isQueryOrSkillResult(stepResult: StepResult): boolean {
+  return stepResult.stepType === 'skill' || stepResult.stepType === 'atomic';
+}
+
+/** Whether the Skill declares the step optional, so that its failure does not fail the Skill. */
+export function isOptionalStep(step: SkillStep): boolean {
+  return 'optional' in step && Boolean(step.optional);
+}
+
+function conditionSkippedMessage(condition: string | undefined): string {
+  const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+  const text = condition?.trim() || '?';
+  return localize(language,
+    `该步骤未执行：条件不满足（${text}），查询没有运行，不代表数据为空。`,
+    `Step skipped: its condition was not met (${text}); the query did not run, so this is not an empty result.`);
+}

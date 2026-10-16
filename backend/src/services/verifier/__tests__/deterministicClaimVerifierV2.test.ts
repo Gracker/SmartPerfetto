@@ -18,6 +18,7 @@ import {
 import {evidenceReferenceKey, prepareClaimEvidence, preparedReferenceResolution} from '../../evidence/claimEvidencePreparation';
 import {buildEvidenceContract} from '../../evidence/evidenceContractBuilder';
 import {runDeterministicClaimVerifier, SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../deterministicClaimVerifier';
+import anrReferenceTypes from '../../../../tests/fixtures/pifix/anr-reference-types.json';
 
 const literal = (overrides: Partial<CapturedFieldSemantics> = {}): CapturedFieldSemantics => ({
   origin: {kind: 'skill_literal', definitionFingerprint: 'pinned-definition', skillId: 'test_skill', stepId: 'metric'},
@@ -93,6 +94,39 @@ function claim(anchors: EvidenceAnchorV1[], overrides: Partial<ClaimSupportV1> =
 const verify = (item: ClaimSupportV1) => runDeterministicClaimVerifier({claimSupport: [item]}).claimResults[0];
 const metric = (overrides: Partial<AnchorInput> = {}) => anchor({row: {value: 1}, fields: {value: literal()}, column: 'value', expected: 1, ...overrides});
 
+describe('pifix actual ANR reference types', () => {
+  it.each(anrReferenceTypes)('resolves $claimId only with original captured JSON types', async sample => {
+    const row = sample.actualRow as unknown as Record<string, EvidenceScalar>;
+    const column = sample.reference.column;
+    const envelope = createDataEnvelope({columns: Object.keys(row), rows: [Object.values(row)]}, {
+      type: 'sql_result', source: 'execute_sql', title: 'Historical ANR query',
+      evidenceRefId: sample.reference.evidenceRefId, sourceToolCallId: sample.reference.sourceToolCallId,
+      traceId: 'trace-current', traceSide: 'current', executionStatus: 'observed',
+    });
+    const store = new ArtifactStore();
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data),
+      {meta: envelope.meta, display: envelope.display})).toBe(true);
+    const inspect = async (ref: ConclusionContractClaimReference) => {
+      const parsed = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+        claims: [{id: sample.claimId, text: 'Observed native numeric cell', kind: 'numeric', references: [ref]}]});
+      const prepared = await prepareClaimEvidence({conclusionContract: parsed.contract, bindingEligibility: 'eligible',
+        evidenceReadView: store.createEvidenceReadView({ownerKey: 'pifix-test', allowedTraces: [{traceId: 'trace-current', traceSide: 'current'}]})});
+      const built = buildEvidenceContract({conclusionContract: parsed.contract, preparedEvidence: prepared,
+        bindingEligibility: 'eligible', dataEnvelopes: [envelope]});
+      return runDeterministicClaimVerifier({claimSupport: built.claimSupport}).claimResults[0];
+    };
+    const wrong = sample.reference as unknown as ConclusionContractClaimReference;
+    const failed = await inspect(wrong);
+    expect(failed.referenceCells.some(cell => cell.status === 'matched')).toBe(false);
+    const typed = {...wrong, rowSelector: Object.fromEntries(Object.keys(wrong.rowSelector!).map(key => [key, row[key]])),
+      value: row[column]} as ConclusionContractClaimReference;
+    const corrected = await inspect(typed);
+    expect(corrected.referenceCells).toEqual(expect.arrayContaining([expect.objectContaining({status: 'matched'})]));
+    expect(sample.reference.value).toEqual(wrong.value); // Never normalize model declarations inside the verifier.
+  });
+});
+
 describe('captured.cell finite proof', () => {
   function captured(value: EvidenceScalar, declared: EvidenceScalar = value): ClaimSupportV1 {
     const evidence = anchor({row: {value}, column: 'value', expected: value});
@@ -112,10 +146,17 @@ describe('captured.cell finite proof', () => {
   it.each([
     {actual: 'main', expected: 'Main'}, {actual: 'main', expected: ' main'},
     {actual: true, expected: 'true'}, {actual: null, expected: 'null'},
-    {actual: 1, expected: '1'},
+    {actual: 1, expected: '2'},
   ])('does not coerce or normalize $actual to $expected', ({actual, expected}) => {
     expect(verify(captured(actual, expected)).deterministicProof).toMatchObject({status: 'rejected'});
   });
+
+  it.each([{actual: 1, expected: '1'}, {actual: 858, expected: '858.0'}])(
+    'neither proves nor rejects the same number declared as string $expected', ({actual, expected}) => {
+      const output = verify(captured(actual, expected));
+      expect(output.deterministicProof).toMatchObject({status: 'candidate', reason: 'captured_value_type_mismatch'});
+      expect(output.status).not.toBe('unsupported');
+    });
 
   it('cannot use an observed reference value as an omitted proposition or bypass numeric units', () => {
     const missing = captured(null);
@@ -285,6 +326,10 @@ describe('finite numeric.cell proof', () => {
     {nanoseconds: 8_040_000, milliseconds: 804, status: 'rejected'},
     {nanoseconds: 16_700_000, milliseconds: 16.7, status: 'proved'},
     {nanoseconds: 16_700_000, milliseconds: 167, status: 'rejected'},
+    {nanoseconds: 50_000_000, milliseconds: 50, status: 'proved'},
+    {nanoseconds: 50_000_000, milliseconds: 50_000, status: 'rejected'},
+    {nanoseconds: 195_000_000, milliseconds: 195, status: 'proved'},
+    {nanoseconds: 195_000_000, milliseconds: 195_000_000, status: 'rejected'},
   ])('checks the declared conversion $nanoseconds ns to $milliseconds ms', ({nanoseconds, milliseconds, status}) => {
     const evidence = metric({row: {value: nanoseconds}, expected: nanoseconds, fields: {value: literal({unit: 'ns'})}});
     const result = verify(claim([evidence], {semantics: semantics(evidence, {
@@ -348,6 +393,28 @@ describe('finite numeric.cell proof', () => {
     expect(verify(claim([nullValue], {semantics: semantics(nullValue)})).deterministicProof.reason).toBe('exact_numeric_value_unavailable');
   });
 
+  it.each([
+    {producerUnit: 'frames', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'events', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'frame', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'event', declaredUnit: 'count', status: 'proved'},
+    {producerUnit: 'count', declaredUnit: 'frames', status: 'rejected'},
+    {producerUnit: 'events', declaredUnit: 'frames', status: 'rejected'},
+    {producerUnit: 'frames', declaredUnit: 'events', status: 'rejected'},
+    {producerUnit: 'count', declaredUnit: 'events', status: 'rejected'},
+    {producerUnit: 'ns', declaredUnit: 'count', status: 'rejected'},
+    {producerUnit: 'bytes', declaredUnit: 'count', status: 'rejected'},
+    {producerUnit: 'Hz', declaredUnit: 'count', status: 'rejected'},
+    {producerUnit: '%', declaredUnit: 'count', status: 'rejected'},
+  ])('keeps declared $declaredUnit against producer $producerUnit one-directional at 1:1', ({producerUnit, declaredUnit, status}) => {
+    const evidence = metric({row: {value: 42}, expected: 42, fields: {value: literal({unit: producerUnit})}});
+    const result = verify(claim([evidence], {semantics: semantics(evidence, {
+      numeric: {operator: 'eq', value: 42, unit: declaredUnit},
+    })}));
+    expect(result.deterministicProof.status).toBe(status);
+    if (status === 'rejected') expect(result.deterministicProof.reason).toBe('unit_dimension_mismatch');
+  });
+
   it('does not guess rounding and handles decimal exponents with exact arithmetic', () => {
     const precise = metric({row: {value: '0.000001'}, expected: '0.000001'});
     expect(verify(claim([precise], {semantics: semantics(precise, {numeric: {operator: 'eq', value: '1e-3', unit: 'us'}})})).status)
@@ -405,6 +472,22 @@ describe('finite numeric.cell proof', () => {
       const declaration = semantics(evidence, {scope: {population: 'cited_rows', subjectRefs: [invalid]}});
       expect(verify(claim([evidence], {semantics: declaration})).deterministicProof.reason).toBe('semantic_reference_missing');
     }
+  });
+
+  it('requires an actual typed and unique heap-dump row selector', () => {
+    const first = anchor({id: 'heap', row: {dump_id: 1, c: 83}, column: 'c', expected: 83,
+      fields: {c: literal({unit: 'count'})}});
+    const second = anchor({id: 'heap', row: {dump_id: 2, c: 83}, column: 'c', expected: 83,
+      fields: {c: literal({unit: 'count'})}});
+    const inspect = (rowSelector: ConclusionContractClaimReference['rowSelector']) => verify(claim([first, second], {
+      semantics: semantics(first, {scope: {population: 'cited_rows', subjectRefs: [{
+        evidenceRefId: first.evidenceRefId, column: 'c', rowSelector,
+      }]}, numeric: {operator: 'eq', value: 83, unit: 'count'}}),
+    }));
+    expect(inspect({dump_id: 1, c: 83}).deterministicProof.status).toBe('proved');
+    expect(inspect({c: 83}).deterministicProof.reason).toBe('semantic_reference_ambiguous');
+    expect(inspect({dump_id: 1, c: '83'}).deterministicProof.status).not.toBe('proved');
+    expect(inspect({returnedColumn: 'c', value: '83'}).deterministicProof.status).not.toBe('proved');
   });
 
   it('rejects ambiguous capture bindings and permits two anchors of the same captured row', () => {
@@ -558,12 +641,57 @@ describe('finite comparison.delta proof', () => {
     expect(verify(comparison(prior, current)).deterministicProof.reason).toBe('comparison_side_mismatch');
   });
 
+  it('keeps a within-trace difference of two current cells candidate, never a contradiction', () => {
+    const [current] = pair();
+    const sibling = metric({id: 'sibling', fields: {value: comparable()}});
+    const output = verify(comparison(current, sibling));
+    expect(output.deterministicProof).toMatchObject({kind: 'comparison_delta', status: 'candidate',
+      reason: 'comparison_not_cross_trace'});
+    expect(output.status).not.toBe('unsupported');
+  });
+
+  it('rejects current cells of two different traces as a side contradiction', () => {
+    const [current] = pair();
+    const otherTrace = metric({id: 'other', trace: 'trace-other', fields: {value: comparable()}});
+    expect(verify(comparison(current, otherTrace)).deterministicProof).toMatchObject({status: 'rejected',
+      reason: 'comparison_side_mismatch'});
+  });
+
+  it('rejects a cross-trace delta that disagrees with the cited values', () => {
+    const [current, prior] = pair();
+    const mismatch = comparison(current, prior);
+    mismatch.semantics!.numeric = {operator: 'eq', value: 2000, unit: 'us'};
+    expect(verify(mismatch).deterministicProof).toMatchObject({status: 'rejected', reason: 'comparison_delta_rejected'});
+  });
+
   it('does not rely on matching params hashes or column names when field semantics are absent', () => {
     const sameParams = (result: EvidenceAnchorV1) => {result.context.paramsHash = 'same';};
     const current = metric({id: 'current', fields: {}, beforeCapture: sameParams});
     const prior = metric({id: 'prior', side: 'reference', fields: {}, beforeCapture: sameParams});
     expect(verify(comparison(current, prior)).deterministicProof.reason).toBe('comparison_metric_authority_unknown');
   });
+
+  it.each([
+    // Producer sides stay strictly same-dimension; only a generic declared
+    // `count` widens to the counted producer dimension, at 1:1.
+    {leftUnit: 'frames', rightUnit: 'frames', declaredUnit: 'count', status: 'proved'},
+    {leftUnit: 'events', rightUnit: 'events', declaredUnit: 'count', status: 'proved'},
+    {leftUnit: 'frames', rightUnit: 'events', declaredUnit: 'count', status: 'rejected'},
+    {leftUnit: 'events', rightUnit: 'frames', declaredUnit: 'count', status: 'rejected'},
+    {leftUnit: 'count', rightUnit: 'frames', declaredUnit: 'count', status: 'rejected'},
+    {leftUnit: 'frames', rightUnit: 'frames', declaredUnit: 'events', status: 'rejected'},
+    {leftUnit: 'frames', rightUnit: 'frames', declaredUnit: 'count', mismatch: true, status: 'rejected'},
+  ])('keeps cited delta units strict between producers while declared $declaredUnit only widens generically',
+    ({leftUnit, rightUnit, declaredUnit, mismatch, status}) => {
+      const current = metric({id: 'current', row: {value: 2}, expected: 2, fields: {value: comparable({unit: leftUnit})}});
+      const prior = metric({id: 'prior', side: 'reference', row: {value: 1}, expected: 1, fields: {value: comparable({unit: rightUnit})}});
+      const result = verify(claim([current, prior], {kind: 'comparison', semantics: semantics(current, {
+        predicate: 'comparison.delta', numeric: {operator: 'eq', value: mismatch ? 5 : 1, unit: declaredUnit},
+        scope: {population: 'cited_rows', subjectRefs: [reference(current, 'value')], objectRefs: [reference(prior, 'value')]},
+      })}));
+      expect(result.deterministicProof.status).toBe(status);
+      if (status === 'rejected' && !mismatch) expect(result.deterministicProof.reason).toBe('unit_dimension_mismatch');
+    });
 });
 
 describe('supported deterministic rule catalog', () => {
@@ -617,6 +745,7 @@ describe('mechanism and empty results', () => {
 describe('prepared reference outcomes across capture, builder and verifier', () => {
   async function preparedFixture(options: {
     reference?: ConclusionContractClaimReference;
+    subjectReference?: ConclusionContractClaimReference;
     rows?: EvidenceScalar[][];
     declaredNumber?: number;
     readBudget?: number;
@@ -639,7 +768,7 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
         ...(options.declaredNumber === undefined && !options.categorical ? {} : {semantics: {
           schemaVersion: 'claim_semantics@1' as const, predicate: options.categorical ? 'captured.cell' : 'numeric.cell', polarity: 'affirmed' as const,
           discourse: 'asserted' as const, quantifier: 'one' as const, modality: 'certain' as const,
-          scope: {population: 'cited_rows' as const, subjectRefs: [ref]},
+          scope: {population: 'cited_rows' as const, subjectRefs: [options.subjectReference ?? ref]},
           ...(options.categorical ? {} : {numeric: {operator: 'eq' as const, value: options.declaredNumber!, unit: 'count'}}),
         }}),
       }],
@@ -650,6 +779,7 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
     if (!parsed.contract) throw new Error('Prepared fixture requires a valid declaration');
     const envelope = createDataEnvelope({columns: ['value'], rows: options.rows ?? [[54]]}, {
       type: 'sql_result', source: 'execute_sql', title: 'Count', evidenceRefId: 'data:prepared',
+      sourceToolCallId: 'execute_sql:prepared',
       traceId: 'trace-current', traceSide: 'current', executionStatus: 'observed',
       ...(options.invalidScope ? {scopeProvenance: {version: 'process_scope_evidence@1' as const, entries: [], invalid: true}} : {}),
     });
@@ -686,17 +816,34 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
     expect(getCapturedAnchorFacts(built.anchors[0])?.row.value).toBe(54);
   });
 
-  it.each([
-    {evidenceRefId: 'data:invented', rowIndex: 0, column: 'value', value: 54},
-    {evidenceRefId: 'data:prepared', rowIndex: 9, column: 'value', value: 54},
-    {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'absent', value: 54},
-  ])('watermarks a live lookup binding failure without changing the failed reference: %j', async reference => {
-    const {output, built} = await preparedFixture({reference, currentRunId: 'run-current', declaredNumber: 54});
+  const unboundLocators: {reason: string; reference: ConclusionContractClaimReference}[] = [
+    {reason: 'evidence_not_retained', reference: {evidenceRefId: 'data:invented', rowIndex: 0, column: 'value', value: 54}},
+    {reason: 'row_index_out_of_range', reference: {evidenceRefId: 'data:prepared', rowIndex: 9, column: 'value', value: 54}},
+    {reason: 'required_column_missing', reference: {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'absent', value: 54}},
+    // The selector forms of the same failures, and a slip in a redundant identifier.
+    {reason: 'row_selector_not_found', reference: {evidenceRefId: 'data:prepared', rowSelector: {value: 99}, column: 'value', value: 54}},
+    {reason: 'invalid_row_selector', reference: {evidenceRefId: 'data:prepared', rowSelector: {absent: 54}, column: 'value', value: 54}},
+    {reason: 'row_index_selector_conflict',
+      reference: {evidenceRefId: 'data:prepared', rowIndex: 1, rowSelector: {value: 54}, column: 'value', value: 54}},
+    {reason: 'identifier_conflict',
+      reference: {evidenceRefId: 'data:prepared', sourceToolCallId: 'wrong-source', rowIndex: 0, column: 'value', value: 54}},
+  ];
+
+  it.each(unboundLocators)('watermarks a live lookup binding failure without changing the failed reference: $reason', async ({reason, reference}) => {
+    const {output, built} = await preparedFixture({reference, currentRunId: 'run-current', declaredNumber: 54,
+      rows: [[54], [55]]});
     expect(output.status).not.toBe('failed');
-    expect(output.claimResults[0].referenceCells[0].status).toBe('missing');
+    expect(output.unsupportedClaimCount).toBe(0);
+    expect(output.claimResults[0].referenceCells[0]).toMatchObject({status: 'missing', message: reason});
     expect(output.claimResults[0].deterministicProof.status).not.toBe('proved');
     expect(output.issues.every(issue => issue.severity === 'warning')).toBe(true);
     expect(runDeterministicClaimVerifier({claimSupport: structuredClone(built.claimSupport)}).status).toBe('failed');
+  });
+
+  it.each(unboundLocators)('keeps an unbound identity locator hard: $reason', async ({reference}) => {
+    const {built} = await preparedFixture({reference, currentRunId: 'run-current', declaredNumber: 54, rows: [[54], [55]]});
+    expect(runDeterministicClaimVerifier({claimSupport: built.claimSupport.map(claim => ({...claim, kind: 'identity' as const}))})
+      .issues.some(issue => issue.severity === 'error' && issue.code === 'claim_reference_missing')).toBe(true);
   });
 
   it('does not grant advisory authority to copied read receipts or readers without a run', async () => {
@@ -722,6 +869,54 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
     expect(output.status).toBe(declaredNumber === 54 ? 'partial' : 'failed');
   });
 
+  it.each(['value', 'absent'])('keeps duplicate live %s references advisory across declaration and typed scope', async column => {
+    // batch20 video c30 / wechat rt_attributable: the declaration repeated the
+    // same locator in subjectRefs but omitted its redundant sourceToolCallId.
+    const subjectReference = {evidenceRefId: 'data:prepared', rowIndex: 0, column, value: 99};
+    const {output, built} = await preparedFixture({currentRunId: 'run-current', declaredNumber: 54,
+      reference: {...subjectReference, sourceToolCallId: 'execute_sql:prepared'}, subjectReference});
+    const anchors = built.claimSupport[0].anchors;
+    expect(anchors).toHaveLength(2);
+    expect(anchors[0]).not.toBe(anchors[1]);
+    expect(anchors[0].anchorId).toBe(anchors[1].anchorId);
+    expect(output.claimResults[0].referenceCells).toHaveLength(2);
+    expect(output.claimResults[0].referenceCells.every(cell => cell.status ===
+      (column === 'value' ? 'value_mismatch' : 'missing'))).toBe(true);
+    expect(output.claimResults[0].status).toBe('partial');
+    expect(output.claimResults[0].deterministicProof.status).toBe('candidate');
+    expect(output.issues.every(issue => issue.severity === 'warning')).toBe(true);
+    const identity = runDeterministicClaimVerifier({claimSupport: [{...built.claimSupport[0], kind: 'identity'}]});
+    expect(identity.claimResults[0].status).toBe('unsupported');
+    expect(identity.issues.some(issue => issue.severity === 'error')).toBe(true);
+  });
+
+  it.each(['copied', 'unbound', 'denied', 'invalidScope'] as const)(
+    'does not let a live advisory anchor authorize a same-ID %s anchor', async kind => {
+      const reference = {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'value', value: 99};
+      const {built} = await preparedFixture({currentRunId: 'run-current', reference});
+      const live = built.claimSupport[0];
+      const other = kind === 'copied' ? structuredClone(live.anchors[0]) :
+        (await preparedFixture({reference, ...(kind === 'unbound' ? {} :
+          {currentRunId: 'run-current', [kind]: true})})).built.claimSupport[0].anchors[0];
+      expect(other.anchorId).toBe(live.anchors[0].anchorId);
+      const output = runDeterministicClaimVerifier({claimSupport: [{...live, anchors: [...live.anchors, other]}]});
+      expect(output.claimResults[0].status).toBe('unsupported');
+      expect(output.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({code: 'claim_reference_value_mismatch', severity: 'error'}),
+      ]));
+    });
+
+  it('retains a numeric contradiction when both same-ID references have live read authority', async () => {
+    const subjectReference = {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'value', value: 99};
+    const {output} = await preparedFixture({currentRunId: 'run-current', declaredNumber: 55,
+      reference: {...subjectReference, sourceToolCallId: 'execute_sql:prepared'}, subjectReference});
+    expect(output.claimResults[0].deterministicProof).toMatchObject({status: 'rejected', reason: 'numeric_operator_rejected'});
+    expect(output.claimResults[0].status).toBe('unsupported');
+    expect(output.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'numeric_operator_rejected', severity: 'error'}),
+    ]));
+  });
+
   it.each([54, 55])('an extra absent citation cannot prove or hide proposition %s', async declaredNumber => {
     const {output} = await preparedFixture({currentRunId: 'run-current', declaredNumber,
       reference: {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'value', value: 54},
@@ -743,8 +938,24 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
   });
 
   it.each([
+    {declared: '858', status: 'candidate', reason: 'captured_value_type_mismatch', verdict: 'partial'},
+    {declared: '858.0', status: 'candidate', reason: 'captured_value_type_mismatch', verdict: 'partial'},
+    {declared: '859', status: 'rejected', reason: 'captured_cell_value_rejected', verdict: 'failed'},
+    {declared: '858 ms', status: 'rejected', reason: 'captured_cell_value_rejected', verdict: 'failed'},
+  ] as const)('treats captured string $declared against integer 858 by value, not by JSON type', async ({declared, status, reason, verdict}) => {
+    // rooted_lowmem_monkey_a1: a declared '858' against a captured 858 was the sole contradiction.
+    const {output} = await preparedFixture({categorical: true, rows: [[858]],
+      reference: {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'value', value: declared}});
+    expect(output.claimResults[0].referenceCells[0].status).toBe('not_checked');
+    expect(output.claimResults[0].deterministicProof).toMatchObject({status, reason});
+    expect(output.status).toBe(verdict);
+    expect(output.issues.find(issue => issue.code === reason)?.severity).toBe(status === 'rejected' ? 'error' : 'warning');
+  });
+
+  it.each([
     {denied: true}, {invalidScope: true},
-    {reference: {evidenceRefId: 'data:prepared', sourceToolCallId: 'wrong-source', rowIndex: 0, column: 'value', value: 54}},
+    // No issued identifier names the record: a title match cannot stand in for the cited id.
+    {reference: {evidenceRefId: 'data:invented', sourceRef: 'Count', rowIndex: 0, column: 'value', value: 54}},
     {unavailableTable: 'execution_witness_mismatch'},
   ])('keeps scope, identity-source and integrity failures hard in a current reader: %j', async options => {
     expect((await preparedFixture({...options, currentRunId: 'run-current'})).output.status).toBe('failed');

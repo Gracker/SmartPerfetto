@@ -7,8 +7,19 @@ import fs from 'fs';
 import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import {describe, it, expect} from '@jest/globals';
+import {androidInputEventsTableDdl, completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
+import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
+import {diagnoseRuleStep} from '../../../../tests/helpers/skillRuleHarness';
+import {builtInSkillFragment} from '../skillFragments';
+import {absentPlaceholderSql, substituteSqlPlaceholders} from '../sqlTemplate';
+import {SCROLLING_V1_REASON_CODES} from '../../caseDomainPacks';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
+// fragments/system_cpu_big_freq_coverage.sql: a ramp over the P6 threshold, and
+// every evidence state under which it must not name freq_ramp_slow.
+const SLOW_RAMP = {ramp_to_high_ms: 5, top_slice_offset_ms: 1};
+const UNOBSERVED_RAMP_EVIDENCE = ['big_core_topology_unknown', 'big_core_freq_incomplete', 'machine_scope_ambiguous', null];
+
 function createScopedSqlFixture(): Database.Database {
   const db = new Database(':memory:');
   const prepare = db.prepare.bind(db);
@@ -70,7 +81,7 @@ describe('scrolling_analysis skill schema', () => {
   };
 
   const renderScrollingSql = (stepId: string, packageName = 'com.example.app') =>
-    String(getStep(stepId).sql)
+    withStepFragments(String(getStep(stepId).sql), getStep(stepId).sql_fragments)
       .split('${package}').join(packageName)
       .split('${start_ts}').join('NULL')
       .split('${end_ts}').join('NULL')
@@ -367,6 +378,452 @@ describe('scrolling_analysis skill schema', () => {
     const rtWorkColumn = getColumn(step, 'render_sync_rt_work_ms');
     expect(rtWorkColumn.type).toBe('duration');
     expect(rtWorkColumn.unit).toBe('ms');
+  });
+
+  describe('frequency-limit reason branches', () => {
+    const batchSql = () => String(getStep('batch_frame_root_cause').sql);
+    // The maintained reason CASE of the `classified` CTE, placeholders bound to their defaults.
+    const reasonCase = () => {
+      const sql = batchSql();
+      const start = sql.indexOf('CASE', sql.indexOf('classified AS ('));
+      const end = sql.indexOf('END as reason_code', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      return sql.slice(start, end + 3).replace(/\$\{[^}|]+\|([^}]+)\}/g, '$1');
+    };
+
+    it('keeps P4 workload_heavy < thermal_throttling < cpu_max_limited < big_core_low_freq and the fallback last', () => {
+      const tree = reasonCase();
+      const at = (code: string, from = 0) => tree.indexOf(`THEN '${code}'`, from);
+      const p4 = at('workload_heavy');
+      expect(p4).toBeGreaterThan(0);
+      expect(at('thermal_throttling')).toBeGreaterThan(p4);
+      expect(at('cpu_max_limited')).toBeGreaterThan(at('thermal_throttling'));
+      expect(at('big_core_low_freq')).toBeGreaterThan(at('cpu_max_limited'));
+      const fallback = at('workload_heavy', p4 + 1);
+      expect(fallback).toBeGreaterThan(at('small_core_placement', at('big_core_low_freq')));
+      expect(at('app_jank_unattributed')).toBeGreaterThan(fallback);
+    });
+
+    it('derives no reason from the device-peak frequency ratio', () => {
+      const tree = reasonCase();
+      expect(tree).not.toMatch(/device_peak_freq_mhz/);
+      // The two frequency-limit branches read only the binding state and the onset verdict.
+      const limitBranches = tree.slice(tree.indexOf("THEN 'workload_heavy'"), tree.indexOf("THEN 'cpu_max_limited'"));
+      expect(limitBranches).not.toMatch(/freq_mhz/);
+      expect(limitBranches.match(/freq_limit_state = 'capped_binding'/g)).toHaveLength(2);
+      expect(getColumn(getStep('batch_frame_root_cause'), 'device_peak_freq_mhz').hidden).toBe(true);
+      expect(getColumn(getStep('batch_frame_root_cause'), 'freq_ceiling_ratio_pct').type).toBe('percentage');
+    });
+
+    it('classifies frames from the main thread\'s binding state and its onset verdict only', () => {
+      const tree = reasonCase();
+      const columns = [...new Set(tree.replace(/'[^']*'/g, "''").match(/\b[a-z_][a-z0-9_]*\b/g) ?? [])];
+      const db = new Database(':memory:');
+      try {
+        const evaluate = (overrides: Record<string, unknown>) => {
+          const row: Record<string, unknown> = Object.fromEntries(columns.map(name => [name, 0]));
+          Object.assign(row, {jank_responsibility: 'APP', jank_type: 'App Deadline Missed', input_stage: '',
+            vsync_period_ns: 8_333_333, frame_budget_ms: 8.33, slice_critical_ms: 4.17, freq_ramp_critical_ms: 2.92,
+            binder_overlap_critical_ms: 1.5, dur_ms: 20, top_slice_ms: 6, freq_limit_state: null,
+            freq_limit_basis: null, freq_limit_onset_confirmed: 0, ...overrides});
+          const projection = columns.map(name => `@${name} AS ${name}`).join(', ');
+          return (db.prepare(`SELECT ${tree} AS reason_code FROM (SELECT ${projection})`).get(
+            Object.fromEntries(columns.map(name => [name, row[name] as any]))) as any).reason_code;
+        };
+        const binding = {freq_limit_state: 'capped_binding'};
+        expect(evaluate({})).toBe('workload_heavy');
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, freq_limit_basis: 'THERMAL_LIMIT_CONFIRMED'}))
+          .toBe('thermal_throttling');
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, freq_limit_basis: 'mixed_limit_values_in_frame'}))
+          .toBe('cpu_max_limited');
+        expect(evaluate({...binding, freq_limit_basis: 'LIMIT_RELAXED'})).toBe('cpu_max_limited');
+        expect(evaluate({...binding, freq_limit_basis: 'LIMIT_ONSET_UNKNOWN'})).toBe('cpu_max_limited');
+        // Before P5: a binding cap outranks a low average frequency.
+        expect(evaluate({...binding, big_run_pct: 50, big_avg_freq_mhz: 900, big_max_freq_mhz: 2000}))
+          .toBe('cpu_max_limited');
+        // After P4: a slice over 2x budget stays workload_heavy; under the critical share nothing names a cap.
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, top_slice_ms: 20})).toBe('workload_heavy');
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, top_slice_ms: 3})).toBe('app_jank_unattributed');
+        for (const state of ['capped_not_binding', 'limit_state_unknown', 'limit_track_unavailable',
+          'threads_not_on_limited_policy', 'insufficient_running', 'frequency_unavailable', 'at_observed_max_limit']) {
+          expect({state, reason: evaluate({freq_limit_state: state, freq_limit_onset_confirmed: 1})})
+            .toEqual({state, reason: 'workload_heavy'});
+        }
+        // The old heuristic's inputs alone never name a frequency reason.
+        expect(evaluate({big_max_freq_mhz: 500, device_peak_freq_mhz: 3000})).toBe('workload_heavy');
+        // RenderThread binding is diagnostic only.
+        expect(evaluate({freq_limit_state: 'threads_not_on_limited_policy', rt_freq_limit_state: 'capped_binding'}))
+          .toBe('workload_heavy');
+        // A ramp names freq_ramp_slow only when every big CPU was observed for the frame.
+        expect(evaluate({...SLOW_RAMP, freq_ramp_evidence: 'observed'})).toBe('freq_ramp_slow');
+        for (const evidence of UNOBSERVED_RAMP_EVIDENCE) {
+          expect({evidence, reason: evaluate({...SLOW_RAMP, freq_ramp_evidence: evidence})})
+            .toEqual({evidence, reason: 'workload_heavy'});
+        }
+      } finally { db.close(); }
+    });
+
+    it('cites the selected limit value with its own binding time, the cumulative time only as across values', () => {
+      const sql = batchSql();
+      expect(sql).toContain('flm.onset_binding_ns AS freq_limit_onset_binding_ns');
+      const start = sql.search(/CASE\s+WHEN reason_code = 'buffer_stuffing' THEN '原始/);
+      const end = sql.indexOf('END as primary_cause', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const text = sql.slice(start, end + 3);
+      const columns = [...new Set(text.replace(/'[^']*'/g, "''").match(/\b[a-z_][a-z0-9_]*\b/g) ?? [])];
+      const db = new Database(':memory:');
+      try {
+        const cause = (overrides: Record<string, unknown>) => {
+          const row: Record<string, unknown> = Object.fromEntries(columns.map(name => [name, 0]));
+          Object.assign(row, {top_slice_name: 'Work', freq_limit_run_ns: 10_000_000, freq_limit_policy_cpu: 6n,
+            freq_limit_mhz: 1800.0, freq_limit_depth_pct: 25.0, freq_limit_binding_ratio: 1.0, ...overrides});
+          return (db.prepare(`SELECT ${text} AS cause FROM (SELECT ${columns.map(n => `@${n} AS ${n}`).join(', ')})`)
+            .get(Object.fromEntries(columns.map(n => [n, row[n] as any]))) as any).cause as string;
+        };
+        // Confirmed 1800 MHz binds 3 ms, an unconfirmed 1500 MHz value 2 ms: never "5 ms under 1800 MHz".
+        const mixed = cause({reason_code: 'cpu_max_limited', freq_limit_basis: 'mixed_limit_values_in_frame',
+          freq_limit_onset_binding_ns: 3_000_000, freq_limit_binding_ns: 5_000_000});
+        expect(mixed).toContain('运行 10.0ms 中有 3.0ms 受 policy6 上限 1800.0MHz 约束');
+        expect(mixed).toContain('跨全部上限值共受约束 5.0ms');
+        expect(mixed).not.toMatch(/5\.0ms 受 policy/);
+        expect(mixed).toContain('mixed_limit_values_in_frame');
+        // Confirmed 1800 MHz binds 6 ms, a later value 2 ms.
+        const thermal = cause({reason_code: 'thermal_throttling', freq_limit_basis: 'THERMAL_LIMIT_CONFIRMED',
+          freq_limit_onset_binding_ns: 6_000_000, freq_limit_binding_ns: 8_000_000});
+        expect(thermal).toContain('运行 10.0ms 中有 6.0ms 受 policy6 上限 1800.0MHz 约束');
+        expect(thermal).toContain('跨全部上限值共受约束 8.0ms');
+        expect(thermal).not.toMatch(/8\.0ms 受 policy/);
+        // One value only: no cross-value clause.
+        const single = cause({reason_code: 'thermal_throttling', freq_limit_onset_binding_ns: 10_000_000,
+          freq_limit_binding_ns: 10_000_000});
+        expect(single).toContain('中有 10.0ms 受 policy6');
+        expect(single).not.toContain('跨全部上限值');
+      } finally { db.close(); }
+    });
+
+    it('attributes main-thread state to the clipped top slice and RenderThread state to the frame', () => {
+      const sql = batchSql();
+      // The main interval belongs to the thread that ran the top slice, not to every main-role thread.
+      expect(sql).toMatch(/system_work_intervals AS \(\s*SELECT ts_top\.frame_key AS window_id,'main' AS role,ts_top\.slice_utid AS utid,\s*MAX\(ts_top\.slice_ts,fl\.frame_start\) AS work_start_ts,\s*MIN\(ts_top\.slice_ts\+ts_top\.slice_dur_ns,fl\.frame_end\) AS work_end_ts/);
+      expect(sql).toMatch(/ptr\.utid as slice_utid,\s*ROW_NUMBER\(\) OVER \(PARTITION BY fl\.frame_key ORDER BY s\.dur DESC\) as rn\s*FROM jank_frame_list fl\s*JOIN per_frame_thread_roles ptr ON ptr\.frame_key = fl\.frame_key AND ptr\.role = 'main'/);
+      expect(sql).toContain("SELECT frame_key,'render',NULL,frame_start,frame_end FROM jank_frame_list");
+      expect(sql).toContain("flm.window_id=fl.frame_key AND flm.role='main'");
+      expect(sql).toContain("flr.window_id=fl.frame_key AND flr.role='render'");
+    });
+  });
+
+  // SQL expression helpers for the reason and label CASEs below.
+  // The CASE that ends with `END as <alias>` after `from`, nested CASEs included.
+  const caseAs = (sql: string, alias: string, from = 0) => {
+    const end = sql.indexOf(`END as ${alias}`, from);
+    expect(end).toBeGreaterThan(from);
+    // Literals and comments blanked in place, so token offsets stay offsets into `sql`.
+    const code = sql.slice(0, end).replace(/'[^']*'|--[^\n]*/g, text => ' '.repeat(text.length));
+    const tokens = [...code.matchAll(/\b(CASE|END)\b/g)];
+    let depth = 1;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      depth += tokens[i][1] === 'END' ? 1 : -1;
+      if (depth === 0) return sql.slice(tokens[i].index, end + 3);
+    }
+    throw new Error(`unbalanced CASE for ${alias}`);
+  };
+  // Bind every lowercase identifier of `expression` (0 unless given) and evaluate it in SQLite.
+  const evaluateSql = (db: Database.Database, expression: string, values: Record<string, unknown>) => {
+    const bound = expression
+      .replace(/--[^\n]*/g, '')
+      .split("'${jank_responsibility}'").join('jank_responsibility')
+      .replace(/\$\{[^}|]+\|([^}]+)\}/g, '$1');
+    const columns = [...new Set(bound.replace(/'[^']*'/g, "''").match(/\b[a-z_][a-z0-9_]*\b/g) ?? [])];
+    const row: Record<string, unknown> = {...Object.fromEntries(columns.map(name => [name, 0])), ...values};
+    const projection = columns.map(name => `@${name} AS ${name}`).join(', ');
+    return (db.prepare(`SELECT ${bound} AS value FROM (SELECT ${projection})`)
+      .get(Object.fromEntries(columns.map(name => [name, row[name] as any]))) as any).value;
+  };
+
+  describe('single-frame frequency-limit root cause (jank_frame_detail)', () => {
+    const jankSql = () => String(getSkillStep(jankSkill, 'root_cause_summary').sql);
+    const jankReasonCase = () => caseAs(jankSql(), 'reason_code', jankSql().indexOf('classified AS ('));
+    const batchReasonCase = () => {
+      const sql = String(getStep('batch_frame_root_cause').sql);
+      return caseAs(sql, 'reason_code', sql.indexOf('classified AS ('));
+    };
+    // The WHEN clause that yields `code`, split into its AND-ed predicates.
+    const predicatesOf = (tree: string, code: string) => {
+      const then = tree.indexOf(`THEN '${code}'`);
+      expect(then).toBeGreaterThan(0);
+      const when = tree.lastIndexOf('WHEN ', then);
+      return tree.slice(when + 'WHEN '.length, then).replace(/--[^\n]*/g, ' ').replace(/\s+/g, ' ').trim().split(' AND ');
+    };
+    const SF_GUARD = "'${jank_responsibility}' <> 'SF'";
+
+    it('keeps P4 workload_heavy < thermal_throttling < cpu_max_limited < big_core_low_freq and the fallback after the ramp', () => {
+      const tree = jankReasonCase();
+      const at = (code: string, from = 0) => tree.indexOf(`THEN '${code}'`, from);
+      const p4 = at('workload_heavy');
+      expect(p4).toBeGreaterThan(at('render_thread_heavy'));
+      expect(at('thermal_throttling')).toBeGreaterThan(p4);
+      expect(at('cpu_max_limited')).toBeGreaterThan(at('thermal_throttling'));
+      expect(at('big_core_low_freq')).toBeGreaterThan(at('cpu_max_limited'));
+      expect(at('workload_heavy', p4 + 1)).toBeGreaterThan(at('freq_ramp_slow'));
+    });
+
+    it('names a limit only outside SF responsibility, which batch splits off before its limit branches', () => {
+      const jank = jankReasonCase();
+      for (const code of ['thermal_throttling', 'cpu_max_limited']) {
+        expect(predicatesOf(jank, code)[0]).toBe(SF_GUARD);
+      }
+      const batch = batchReasonCase();
+      const lastSfBranch = batch.lastIndexOf("WHEN jank_responsibility = 'SF'");
+      expect(lastSfBranch).toBeGreaterThan(0);
+      expect(lastSfBranch).toBeLessThan(batch.indexOf("THEN 'thermal_throttling'"));
+      // cause_type short-circuits SF before the limit override as well.
+      const causeType = caseAs(jankSql(), 'cause_type');
+      expect(causeType.indexOf("WHEN '${jank_responsibility}' = 'SF' THEN 'sf_composition'"))
+        .toBeLessThan(causeType.indexOf("THEN 'freq_limit'"));
+    });
+
+    it('shares the binding predicates of the batch branches item by item', () => {
+      for (const code of ['thermal_throttling', 'cpu_max_limited']) {
+        const jank = predicatesOf(jankReasonCase(), code).filter(predicate => predicate !== SF_GUARD)
+          .map(predicate => predicate.split('slice_dur').join('top_slice_ms'));
+        expect({code, predicates: jank}).toEqual({code, predicates: predicatesOf(batchReasonCase(), code)});
+      }
+      expect(predicatesOf(jankReasonCase(), 'thermal_throttling')).toEqual([SF_GUARD,
+        'slice_dur > slice_critical_ms', "freq_limit_state = 'capped_binding'", 'freq_limit_onset_confirmed = 1',
+        "freq_limit_basis <> 'mixed_limit_values_in_frame'"]);
+    });
+
+    it('classifies the frame from the main thread\'s binding state and its onset verdict only', () => {
+      const tree = jankReasonCase();
+      const db = new Database(':memory:');
+      try {
+        const reason = (overrides: Record<string, unknown>) => evaluateSql(db, tree, {jank_responsibility: 'APP',
+          frame_budget_ms: 8.33, slice_critical_ms: 4.17, freq_ramp_critical_ms: 2.92, binder_overlap_critical_ms: 1.5,
+          slice_dur: 6, freq_limit_state: null, freq_limit_basis: null, freq_limit_onset_confirmed: 0, ...overrides});
+        const binding = {freq_limit_state: 'capped_binding'};
+        expect(reason({})).toBe('workload_heavy');
+        expect(reason({...binding, freq_limit_onset_confirmed: 1, freq_limit_basis: 'THERMAL_LIMIT_CONFIRMED'}))
+          .toBe('thermal_throttling');
+        expect(reason({...binding, freq_limit_onset_confirmed: 1, freq_limit_basis: 'mixed_limit_values_in_frame'}))
+          .toBe('cpu_max_limited');
+        expect(reason({...binding, freq_limit_basis: 'LIMIT_RELAXED'})).toBe('cpu_max_limited');
+        expect(reason({...binding, freq_limit_basis: 'LIMIT_ONSET_UNKNOWN'})).toBe('cpu_max_limited');
+        // Before P5: a binding cap outranks a low in-slice big-core frequency.
+        const lowFreq = {top_slice_big_pct: 50, top_big_avg_freq_mhz: 900, top_big_max_freq_mhz: 2000};
+        expect(reason(lowFreq)).toBe('big_core_low_freq');
+        expect(reason({...lowFreq, ...binding})).toBe('cpu_max_limited');
+        // After P4: over 2x budget stays workload_heavy; under the critical share nothing names a cap.
+        expect(reason({...binding, freq_limit_onset_confirmed: 1, slice_dur: 20})).toBe('workload_heavy');
+        expect(reason({...binding, freq_limit_onset_confirmed: 1, slice_dur: 3})).toBe('unknown');
+        for (const state of ['capped_not_binding', 'limit_state_unknown', 'limit_track_unavailable',
+          'threads_not_on_limited_policy', 'insufficient_running', 'frequency_unavailable', 'at_observed_max_limit']) {
+          expect({state, reason: reason({freq_limit_state: state, freq_limit_onset_confirmed: 1})})
+            .toEqual({state, reason: 'workload_heavy'});
+        }
+        // The window-average heuristic never names a limit, nor does RenderThread binding.
+        expect(reason({slice_dur: 0, big_freq: 800, big_freq_peak: 2000})).toBe('big_core_low_freq');
+        expect(reason({rt_freq_limit_state: 'capped_binding', freq_limit_state: 'threads_not_on_limited_policy'}))
+          .toBe('workload_heavy');
+        // SF responsibility: the same binding evidence names no App-side limit.
+        expect(reason({...binding, freq_limit_onset_confirmed: 1, jank_responsibility: 'SF'})).toBe('workload_heavy');
+        expect(reason({...binding, jank_responsibility: 'SF'})).toBe('workload_heavy');
+        // A ramp names freq_ramp_slow only when every big CPU was observed for the frame.
+        expect(reason({...SLOW_RAMP, freq_ramp_evidence: 'observed'})).toBe('freq_ramp_slow');
+        for (const evidence of UNOBSERVED_RAMP_EVIDENCE) {
+          expect({evidence, reason: reason({...SLOW_RAMP, freq_ramp_evidence: evidence})})
+            .toEqual({evidence, reason: 'workload_heavy'});
+        }
+      } finally { db.close(); }
+    });
+
+    it('labels a limit reason as frequency-limit supply before the slice-based labels', () => {
+      const sql = jankSql();
+      const causeType = caseAs(sql, 'cause_type');
+      const confidence = caseAs(sql, 'confidence');
+      const primaryCause = caseAs(sql, 'primary_cause');
+      const mechanismGroup = caseAs(sql, 'mechanism_group');
+      const supplyConstraint = caseAs(sql, 'supply_constraint');
+      const triggerLayer = caseAs(sql, 'trigger_layer');
+      const db = new Database(':memory:');
+      try {
+        const labels = (values: Record<string, unknown>) => {
+          const row = {jank_responsibility: 'APP', frame_budget_ms: 8.33, slice_critical_ms: 4.17,
+            slice_warning_ms: 2, slice_dur: 6, slice_name: 'Work', render_q4a: 20, render_q4b: 20, ...values};
+          const cause = evaluateSql(db, causeType, row);
+          const withCause = {...row, cause_type: cause};
+          return {cause_type: cause, confidence: evaluateSql(db, confidence, row),
+            mechanism_group: evaluateSql(db, mechanismGroup, withCause),
+            supply_constraint: evaluateSql(db, supplyConstraint, withCause),
+            trigger_layer: evaluateSql(db, triggerLayer, withCause)};
+        };
+        expect(labels({reason_code: 'thermal_throttling'})).toEqual({cause_type: 'freq_limit', confidence: '高',
+          mechanism_group: 'supply', supply_constraint: 'thermal_throttle', trigger_layer: 'app_producer'});
+        expect(labels({reason_code: 'cpu_max_limited'})).toEqual({cause_type: 'freq_limit', confidence: '中',
+          mechanism_group: 'supply', supply_constraint: 'frequency_insufficient', trigger_layer: 'app_producer'});
+        // Without limit evidence a slice over the critical share stays a trigger.
+        expect(labels({reason_code: 'workload_heavy'})).toMatchObject({cause_type: 'slice', mechanism_group: 'trigger'});
+        // A low window-average big-core frequency is supply, never a frequency limit.
+        const heuristic = {reason_code: 'unknown', slice_dur: 0, big_freq: 900, big_freq_peak: 2000};
+        expect(labels(heuristic)).toEqual({cause_type: 'low_freq', confidence: '低', mechanism_group: 'supply',
+          supply_constraint: 'frequency_insufficient', trigger_layer: 'app_producer'});
+        expect(causeType).not.toMatch(/big_freq[^\n]*THEN 'freq_limit'/);
+        const text = evaluateSql(db, primaryCause, {...heuristic, frame_budget_ms: 8.33, render_q4a: 0, render_q4b: 0});
+        expect(text).toContain('大核平均频率仅 900');
+        expect(text).toContain('仅为频率观测');
+        expect(text).not.toMatch(/温控|可能触发/);
+        // SF responsibility keeps its composition label.
+        expect(labels({reason_code: 'workload_heavy', jank_responsibility: 'SF'}).cause_type).toBe('sf_composition');
+      } finally { db.close(); }
+    });
+
+    it('cites the selected limit value with its own binding time, the cumulative time only across values', () => {
+      const primaryCause = caseAs(jankSql(), 'primary_cause');
+      const db = new Database(':memory:');
+      try {
+        const cause = (overrides: Record<string, unknown>) => evaluateSql(db, primaryCause, {slice_name: 'Work',
+          slice_dur: 10, slice_critical_ms: 4.17, freq_limit_run_ns: 10_000_000, freq_limit_policy_cpu: 6n,
+          freq_limit_mhz: 1800.0, freq_limit_depth_pct: 25.0, freq_limit_binding_ratio: 1.0, ...overrides}) as string;
+        const mixed = cause({reason_code: 'cpu_max_limited', freq_limit_basis: 'mixed_limit_values_in_frame',
+          freq_limit_onset_binding_ns: 3_000_000, freq_limit_binding_ns: 5_000_000});
+        expect(mixed).toContain('运行 10.0ms 中有 3.0ms 受 policy6 上限 1800.0MHz 约束');
+        expect(mixed).toContain('跨全部上限值共受约束 5.0ms');
+        expect(mixed).toContain('触发方未由帧内证据确定（mixed_limit_values_in_frame）');
+        const thermal = cause({reason_code: 'thermal_throttling', freq_limit_onset_binding_ns: 10_000_000,
+          freq_limit_binding_ns: 10_000_000});
+        expect(thermal).toContain('温控限频: "Work" 运行 10.0ms 中有 10.0ms 受 policy6');
+        expect(thermal).not.toContain('跨全部上限值');
+      } finally { db.close(); }
+    });
+
+    it('attributes main-thread state to the clipped top slice on its own thread and RenderThread to the frame', () => {
+      const sql = jankSql();
+      expect(sql).toMatch(/ROUND\(s\.dur \/ 1e6, 2\) as dur_ms,\s*tt\.utid as slice_utid\s*FROM slice s/);
+      expect(sql).toMatch(/system_work_intervals AS \(\s*SELECT 'frame' AS window_id,'MainThread' AS role,slice_utid AS utid,\s*MAX\(slice_start_ns,\$\{start_ts\}\) AS work_start_ts,MIN\(slice_end_ns,\$\{end_ts\}\) AS work_end_ts\s*FROM top_slice_bounds\s*UNION ALL SELECT 'frame','RenderThread',NULL,\$\{start_ts\},\$\{end_ts\}\s*\)/);
+      expect(sql).toContain("SELECT * FROM system_cpu_freq_limit_frame_binding WHERE window_id='frame' AND role='MainThread'");
+      expect(sql).toContain("SELECT * FROM system_cpu_freq_limit_frame_binding WHERE window_id='frame' AND role='RenderThread'");
+      // Outside the system_target_threads .. GPU Fence slice that crossSceneSystemConsumers executes alone.
+      const isolated = sql.slice(sql.indexOf('system_target_threads AS ('), sql.indexOf('-- 8. GPU Fence'));
+      expect(isolated).not.toMatch(/system_work_intervals|frame_freq_limit_|system_cpu_freq_limit/);
+      // Of the verdict layer, the step reads only the per-frame binding.
+      const code = sql.replace(/--[^\n]*/g, ' ').replace(/'[^']*'/g, "''");
+      expect([...new Set(code.match(/\bsystem_cpu_freq_limit_[a-z_]+|\bthermal_[a-z_]+/g) ?? [])])
+        .toEqual(['system_cpu_freq_limit_frame_binding']);
+    });
+
+    it('injects the binding fragment with the batch step\'s dependencies, in the batch order', () => {
+      const jankFragments: string[] = getSkillStep(jankSkill, 'root_cause_summary').sql_fragments;
+      const batchFragments: string[] = getStep('batch_frame_root_cause').sql_fragments;
+      const limitFragments = batchFragments.slice(batchFragments.indexOf('fragments/system_cpu_freq_limit_spans.sql'));
+      expect(limitFragments[limitFragments.length - 1]).toBe('fragments/system_cpu_freq_limit_frame_binding.sql');
+      expect(jankFragments.filter(file => limitFragments.includes(file))).toEqual(limitFragments);
+      const at = (file: string) => jankFragments.indexOf(file);
+      for (const dependency of ['system_sched_spans', 'system_thread_state_spans', 'system_cpu_frequency_spans']) {
+        expect(at(`fragments/${dependency}.sql`)).toBeGreaterThanOrEqual(0);
+        expect(at(`fragments/${dependency}.sql`)).toBeLessThan(at(limitFragments[0]));
+      }
+    });
+
+    it('declares the limit columns with the batch display contract', () => {
+      const step = getSkillStep(jankSkill, 'root_cause_summary');
+      const batchStep = getStep('batch_frame_root_cause');
+      const names = (batchStep.display.columns as any[]).map(column => column.name)
+        .filter(name => /^(rt_)?freq_limit_/.test(name));
+      expect(names).toHaveLength(16);
+      for (const name of names) {
+        expect(getColumn(step, name)).toEqual(getColumn(batchStep, name));
+        expect(getColumn(step, name).hidden).toBe(true);
+      }
+      expect(jankSql()).toContain(
+        "CASE WHEN freq_limit_onset_ts IS NOT NULL THEN printf('%d', freq_limit_onset_ts) END AS freq_limit_onset_ts");
+    });
+  });
+
+  // SCROLLING_V1_REASON_CODES is the domain pack's authoritative vocabulary; the
+  // single-frame deep path keeps three deep-only codes of its own.
+  describe('reason code vocabulary', () => {
+    const codesOf = (sql: string) => {
+      const tree = caseAs(sql, 'reason_code', sql.indexOf('classified AS ('));
+      return new Set([...tree.matchAll(/\b(?:THEN|ELSE)\s+'([a-z_]+)'/g)].map(match => match[1]));
+    };
+    const DEEP_ONLY = ['cpu_load_high', 'io_page_cache_wait', 'gpu_wait'];
+    // Every code jank_frame_detail produced before the frequency-limit branches.
+    const JANK_BASELINE = ['buffer_stuffing', 'binder_sync_blocking', 'lock_contention', 'small_core_placement',
+      'sched_delay_in_slice', 'render_thread_heavy', 'workload_heavy', 'big_core_low_freq', 'freq_ramp_slow',
+      'gc_jank', 'scheduling_delay', 'shader_compile', 'gpu_wait', 'cpu_load_high', 'io_page_cache_wait',
+      'uninterruptible_wait', 'render_sync_wait', 'unknown'];
+
+    it('batch produces exactly the current scrolling.v1 codes', () => {
+      const batch = [...codesOf(String(getStep('batch_frame_root_cause').sql))].sort();
+      expect(batch).toEqual(SCROLLING_V1_REASON_CODES.filter(code => code !== 'lock_binder_wait').sort());
+    });
+
+    it('the single-frame path produces only pack or deep-only codes and keeps every code it had', () => {
+      const jank = codesOf(String(getSkillStep(jankSkill, 'root_cause_summary').sql));
+      const allowed = new Set<string>([...SCROLLING_V1_REASON_CODES, ...DEEP_ONLY]);
+      expect([...jank].filter(code => !allowed.has(code))).toEqual([]);
+      expect([...JANK_BASELINE, 'thermal_throttling', 'cpu_max_limited'].filter(code => !jank.has(code))).toEqual([]);
+    });
+  });
+
+  // frame_diagnosis collects every matching rule, so the limit observation must
+  // not contradict the root cause that the same frame reports.
+  describe('frame diagnosis agrees with the frequency-limit root cause', () => {
+    const OBSERVED = {has_limit_track: 1, has_max_limit_data: 1, episode_count: 1, policy_count: 1,
+      deepest_depth_pct: 25, min_limit_khz: 1800000, reference_max_limit_khz: 2400000,
+      evidence_status: 'freq_limit_observed', limit_evidence_missing_reason: null};
+    const LIMIT_RULES = () => (getSkillStep(jankSkill, 'frame_diagnosis').rules as any[])
+      .filter(rule => String(rule.condition).includes("evidence_status === 'freq_limit_observed'"));
+    const diagnose = async (rootCause: Record<string, unknown> | null, limit = OBSERVED) =>
+      (await diagnoseRuleStep(getSkillStep(jankSkill, 'frame_diagnosis'),
+        {root_cause: rootCause ? [rootCause] : [], freq_limit_evidence: [limit]}, {start_ts: 1, end_ts: 2}))
+        .filter(d => d.diagnosis.includes('帧窗口内观测到 CPU 限频'));
+    const rootCause = (reasonCode: string) => ({primary_cause: 'cause', confidence: '高', secondary_info: 'info',
+      reason_code: reasonCode});
+
+    it('fires exactly one limit rule whose advice matches what the root cause already determined', async () => {
+      expect(LIMIT_RULES()).toHaveLength(3);
+      const thermal = await diagnose(rootCause('thermal_throttling'));
+      expect(thermal).toHaveLength(1);
+      const thermalAdvice = (thermal[0].suggestions ?? []).join('\n');
+      expect(thermalAdvice).toContain('约束了它（binding）');
+      expect(thermalAdvice).toContain('温控冷却设备升档配对确认');
+      expect(thermalAdvice).not.toContain('尚未判定');
+
+      const limited = await diagnose(rootCause('cpu_max_limited'));
+      expect(limited).toHaveLength(1);
+      const limitedAdvice = (limited[0].suggestions ?? []).join('\n');
+      expect(limitedAdvice).toContain('限频约束了本帧关键线程（binding）');
+      expect(limitedAdvice).toContain('cpu_frequency_limit_attribution');
+      expect(limitedAdvice).not.toContain('是否约束了本帧关键线程尚未判定');
+
+      for (const other of [rootCause('workload_heavy'), null]) {
+        const found = await diagnose(other);
+        expect(found).toHaveLength(1);
+        expect(found[0].suggestions).toEqual([
+          '限频已发生，但由温控还是功耗/厂商策略触发尚未判定：用 cpu_frequency_limit_attribution 判断触发方与限频前负载',
+          '限频是否约束了本帧关键线程尚未判定：对照关键线程运行所在 CPU/policy 与运行时长，不能直接把卡顿归因于限频',
+        ]);
+      }
+      // A binding root cause alone never asserts a limit without the limit evidence row.
+      expect(await diagnose(rootCause('thermal_throttling'), {...OBSERVED, evidence_status: 'no_limit_episode_in_range'}))
+        .toHaveLength(0);
+    });
+
+    it('keys the limit rules on reason codes the root cause can produce, in the portable expression subset', () => {
+      const sql = String(getSkillStep(jankSkill, 'root_cause_summary').sql);
+      const produced = caseAs(sql, 'reason_code', sql.indexOf('classified AS ('));
+      const keyed = LIMIT_RULES().flatMap(rule =>
+        [...String(rule.condition).matchAll(/reason_code [!=]== '(\w+)'/g)].map(match => match[1]));
+      expect([...new Set(keyed)].sort()).toEqual(['cpu_max_limited', 'thermal_throttling']);
+      expect(keyed.filter(code => !produced.includes(`THEN '${code}'`))).toEqual([]);
+      for (const rule of LIMIT_RULES()) {
+        const condition = String(rule.condition).replace(/\?\./g, '');
+        expect({condition, ternary: /\?/.test(condition), math: /\bMath\./.test(condition)})
+          .toEqual({condition, ternary: false, math: false});
+      }
+    });
   });
 
   it('uses trace-wide evidence when the shared VSync fragment has no range', () => {
@@ -692,6 +1149,7 @@ describe('scrolling_analysis skill schema', () => {
       `);
 
       db.exec("ALTER TABLE android_input_events ADD COLUMN upid INTEGER; UPDATE android_input_events SET upid = CASE process_name WHEN 'com.example.app' THEN 1 WHEN 'com.example.app:remote' THEN 2 ELSE 3 END");
+      completeAndroidInputEventsFixture(db);
       const row = db.prepare(renderScrollingSql('input_data_check')).get() as {
         total_input_events: number;
         target_processes: number;
@@ -741,6 +1199,7 @@ describe('scrolling_analysis skill schema', () => {
       }
 
       db.exec("ALTER TABLE android_input_events ADD COLUMN upid INTEGER; UPDATE android_input_events SET upid = CASE process_name WHEN 'com.example.app' THEN 1 WHEN 'com.example.app:remote' THEN 2 ELSE 3 END");
+      completeAndroidInputEventsFixture(db);
       const row = db.prepare(renderScrollingSql('input_latency_summary')).get() as {
         target_process: string;
         total_input_events: number;
@@ -752,6 +1211,295 @@ describe('scrolling_analysis skill schema', () => {
       expect(row.p95_handling_ms).toBe(19);
     } finally {
       db.close();
+    }
+  });
+
+  it('reads frame linkage, backlog and input-to-present only from exact frame associations', () => {
+    type Row = [frameId: number | null, speculative: number | null, e2eNs: number | null];
+    const run = (stepId: string, rows: Row[]) => {
+      const db = createScopedSqlFixture();
+      try {
+        db.exec(`
+          CREATE TABLE counter_track(id INTEGER, name TEXT);
+          CREATE TABLE counter(track_id INTEGER, ts INTEGER);
+          ${androidInputEventsTableDdl()}
+        `);
+        const insert = db.prepare(`
+          INSERT INTO android_input_events(process_name, upid, event_action, dispatch_ts, receive_ts, receive_dur,
+            handling_latency_dur, total_latency_dur, frame_id, is_speculative_frame, end_to_end_latency_dur)
+          VALUES ('com.example.app', 1, 'MOVE', ?, ?, 10, 100000, 1000000, ?, ?, ?)
+        `);
+        rows.forEach(([frameId, speculative, e2e], index) =>
+          insert.run(100 + index * 100, 100 + index * 100, frameId, speculative, e2e));
+        return db.prepare(renderScrollingSql(stepId)).get() as Record<string, unknown>;
+      } finally {
+        db.close();
+      }
+    };
+
+    // A whole gesture speculatively matched to the one doFrame after it: no
+    // backlog, no measured input-to-present, and frame linkage is not available.
+    const speculativeOnly: Row[] = Array(18).fill([7, 1, 50_000_000]);
+    expect(run('input_latency_summary', speculativeOnly)).toMatchObject({
+      input_backlog_frames: 0, speculative_frame_matches: 18, max_e2e_ms: null,
+    });
+    expect(run('input_data_check', speculativeOnly)).toMatchObject({
+      input_data_status: 'speculative_only', frame_matched_events: 0,
+    });
+
+    const mixed: Row[] = [[7, 0, 10_000_000], [7, 0, 12_000_000], [7, 0, 11_000_000], [8, 1, 90_000_000]];
+    expect(run('input_latency_summary', mixed)).toMatchObject({
+      input_backlog_frames: 1, speculative_frame_matches: 1, max_e2e_ms: 12,
+    });
+    expect(run('input_data_check', mixed)).toMatchObject({input_data_status: 'available', frame_matched_events: 3});
+
+    // A frame without the speculative flag is not assumed exact.
+    expect(run('input_latency_summary', [[7, null, 10_000_000], [7, null, 10_000_000], [7, null, 10_000_000]]))
+      .toMatchObject({input_backlog_frames: 0, max_e2e_ms: null});
+    expect(run('input_data_check', [[null, null, null]])).toMatchObject({input_data_status: 'no_frame_match'});
+  });
+
+  // One physical touch is delivered to the app window and to monitor channels;
+  // only the app's row carries the action (surface-view trace, runtime 99234d73fe).
+  type InputDelivery = readonly [
+    upid: number, processName: string, channel: string, eventId: string, action: string | null, latency: number,
+  ];
+  const createMonitorCopyInputFixture = (deliveries: readonly InputDelivery[]): Database.Database => {
+    const db = createScopedSqlFixture();
+    db.exec(`
+      CREATE TABLE counter_track(id INTEGER, name TEXT);
+      CREATE TABLE counter(track_id INTEGER, ts INTEGER);
+      CREATE TABLE android_input_events(
+        upid INTEGER, process_name TEXT, event_channel TEXT, input_event_id TEXT,
+        event_action TEXT, total_latency_dur INTEGER,
+        dispatch_ts INTEGER, receive_ts INTEGER, receive_dur INTEGER
+      );
+    `);
+    const insert = db.prepare('INSERT INTO android_input_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, 10)');
+    deliveries.forEach(([upid, processName, channel, eventId, action, latency], index) =>
+      insert.run(upid, processName, channel, eventId, action, latency, 100 * (index + 1), 100 * (index + 1)));
+    completeAndroidInputEventsFixture(db);
+    return db;
+  };
+
+  const monitorCopyDeliveries: InputDelivery[] = [
+    ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].flatMap((action, index): InputDelivery[] => [
+      [1, 'com.example.app', 'app (server)', String(index + 1), action, 1000000],
+      [2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', String(index + 1), null, 3000000],
+      [3, 'system_server', 'PointerEventDispatcher0 (server)', String(index + 1), null, 2000000],
+    ]),
+    [2, 'com.android.systemui', 'NavigationBar0 (server)', '1', null, 3000000],
+  ];
+
+  it('selects the input latency target by application deliveries, not monitor copies', () => {
+    const db = createMonitorCopyInputFixture(monitorCopyDeliveries);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {
+        target_process: string;
+        total_input_events: number;
+        move_events: number;
+      };
+
+      expect(row.target_process).toBe('com.example.app');
+      expect(row.total_input_events).toBe(3);
+      expect(row.move_events).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps an explicit package authoritative when its input rows are all monitor copies', () => {
+    const db = createMonitorCopyInputFixture(monitorCopyDeliveries);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', 'com.android.systemui')).get() as {
+        target_process: string;
+        total_input_events: number;
+      };
+
+      expect(row.target_process).toBe('com.android.systemui');
+      // Four rows, three physical events: the navigation bar repeats event 1.
+      expect(row.total_input_events).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves out the target\'s own monitor channel once it has application deliveries', () => {
+    // The launcher owns its window and a gesture monitor: 1-3 resolve an action
+    // on the window and are copied to the monitor, 4-5 resolve none and reach
+    // both, 6 reaches only the window.
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 1000000]),
+      ...['4', '5', '6'].map((eventId): InputDelivery => [1, launcher, 'Launcher (server)', eventId, null, 1000000]),
+      ...['1', '2', '3', '4', '5'].map((eventId): InputDelivery =>
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+    ]);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {
+        target_process: string;
+        total_input_events: number;
+        move_events: number;
+      };
+
+      expect(row).toMatchObject({target_process: launcher, total_input_events: 6, move_events: 1});
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps a pinned instance that only observed input when a same-named instance has deliveries', () => {
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 1000000]),
+      ...['1', '2', '3'].map((eventId): InputDelivery =>
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+      ...['1', '2'].map((eventId): InputDelivery =>
+        [3, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+    ]);
+    try {
+      const render = (upid: string) =>
+        renderScrollingSql('input_latency_summary', launcher).split('${__process_scope.upid}').join(upid);
+      expect(db.prepare(render('NULL')).get()).toMatchObject({total_input_events: 3});
+      expect(db.prepare(render('3')).get()).toMatchObject({target_process: launcher, total_input_events: 2});
+    } finally {
+      db.close();
+    }
+  });
+
+  it('counts the input precheck in physical events of the rows the analysis reads', () => {
+    // The launcher owns its window and a gesture monitor: 1-3 resolve an action
+    // on the window and are copied to the monitor, 4-5 resolve none and reach
+    // both, 6 (FOCUS) reaches only the window. 7 is a touch on another app's
+    // window that both monitors also observe. systemui observes 1-5 and 7.
+    // Rows: launcher 12, app 1, systemui 6; physical events: 7.
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 2000000]),
+      ...['4', '5', '6'].map((eventId): InputDelivery => [1, launcher, 'Launcher (server)', eventId, null, 4000000]),
+      [3, 'com.example.app', 'app (server)', '7', 'ACTION_DOWN', 2000000],
+      ...['1', '2', '3', '4', '5', '7'].flatMap((eventId): InputDelivery[] => [
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000],
+        [2, 'com.android.systemui', '[Gesture Monitor] edge-swipe (server)', eventId, null, 3000000],
+      ]),
+    ]);
+    try {
+      const run = (stepId: string, scope: {upid?: number; packageName?: string}) => {
+        const step = getStep(stepId);
+        return db.prepare(renderStepSql(String(step.sql), step.sql_fragments, {
+          '__process_scope.upid': scope.upid ?? 'NULL',
+          package: scope.packageName ?? '',
+          start_ts: 'NULL',
+          end_ts: 'NULL',
+        })).get() as Record<string, unknown>;
+      };
+
+      // Selected app: its own monitor channel adds no events (not even 7, which
+      // only it saw), and the count is what input_latency_summary then reads.
+      for (const scope of [{packageName: launcher}, {upid: 1}]) {
+        expect(run('input_data_check', scope)).toMatchObject({
+          input_data_status: 'no_frame_match', total_input_events: 6, move_events: 1, target_processes: 1,
+        });
+        expect(run('input_latency_summary', scope)).toMatchObject({target_process: launcher, total_input_events: 6});
+      }
+      // Unscoped: each physical event once; the observer is not an input target.
+      expect(run('input_data_check', {})).toMatchObject({
+        input_data_status: 'no_frame_match', total_input_events: 7, move_events: 1, target_processes: 2,
+      });
+      // An explicitly chosen observer still returns its observations.
+      for (const scope of [{packageName: 'com.android.systemui'}, {upid: 2}]) {
+        expect(run('input_data_check', scope)).toMatchObject({
+          input_data_status: 'no_frame_match', total_input_events: 6, move_events: 0, target_processes: 1,
+        });
+      }
+      expect(run('input_data_check', {packageName: 'com.example.absent'})).toMatchObject({
+        input_data_status: 'unavailable', total_input_events: 0, target_processes: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('counts an observer target in physical events across its channels, latency per delivery', () => {
+    // systemui observes the app's touches on a gesture monitor and its
+    // navigation bar; events 1-2 are slow and map both channels to the same
+    // exact frame, event 3 to a speculative one.
+    const db = createMonitorCopyInputFixture(['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].flatMap(
+      (action, index): InputDelivery[] => [
+        [1, 'com.example.app', 'app (server)', String(index + 1), action, 1000000],
+        [2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', String(index + 1), null, 3000000],
+        [2, 'com.android.systemui', 'NavigationBar0 (server)', String(index + 1), null, 3000000],
+      ]));
+    try {
+      db.exec(`UPDATE android_input_events SET handling_latency_dur = 10000000, frame_id = 7,
+        is_speculative_frame = 0 WHERE upid = 2 AND input_event_id IN ('1', '2');
+        UPDATE android_input_events SET frame_id = 8, is_speculative_frame = 1
+        WHERE upid = 2 AND input_event_id = '3'`);
+      const check = db.prepare(renderScrollingSql('input_data_check', 'com.android.systemui')).get();
+      const summary = db.prepare(renderScrollingSql('input_latency_summary', 'com.android.systemui')).get();
+
+      expect(check).toMatchObject({total_input_events: 3, move_events: 0, frame_matched_events: 2});
+      // Two events on frame 7 is no backlog, however many channels saw them.
+      expect(summary).toMatchObject({
+        target_process: 'com.android.systemui', total_input_events: 3, move_events: 0, input_backlog_frames: 0,
+        slow_handling_events: 2, speculative_frame_matches: 1, max_handling_ms: 10,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('ranks action-free input by physical events, so extra monitor channels do not win', () => {
+    // No receiver carries an action (runtimes that resolve none): the app has
+    // more distinct events, systemui more rows through two channels.
+    const db = createMonitorCopyInputFixture([
+      ...['1', '2', '3', '4'].map((eventId): InputDelivery => [1, 'com.example.app', 'app (server)', eventId, null, 1000000]),
+      ...['1', '2', '3'].flatMap((eventId): InputDelivery[] => [
+        [2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', eventId, null, 3000000],
+        [2, 'com.android.systemui', 'NavigationBar0 (server)', eventId, null, 3000000],
+      ]),
+    ]);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {target_process: string};
+
+      expect(row.target_process).toBe('com.example.app');
+    } finally {
+      db.close();
+    }
+  });
+
+  // Action-free input where monitors see as many or more physical events than
+  // the app: only the receiver of a '<hash> <package>/<component>' window owns it.
+  const appWindow = '32c6ecb com.tencent.mm/com.tencent.mm.plugin.lite.ui.WxaLiteAppLiteUI (server)';
+
+  it('ranks action-free input by owned window events before monitor event counts', () => {
+    // v58.2 runtime on the surface-view trace: equal counts, monitors slower.
+    const tied = createMonitorCopyInputFixture(['1', '2', '3'].flatMap((eventId): InputDelivery[] => [
+      [1, 'com.tencent.mm', appWindow, eventId, null, 1000000],
+      [2, 'com.android.systemui', '[Gesture Monitor] swipe-to-screenshot (server)', eventId, null, 3000000],
+      [3, 'system_server', 'PointerEventDispatcher0 (server)', eventId, null, 2000000],
+    ]));
+    // A child process on its package window; the monitor also saw a touch elsewhere.
+    const childProcess = createMonitorCopyInputFixture([
+      ...['1', '2'].map((eventId): InputDelivery =>
+        [1, 'com.tencent.mm:appbrand0', 'a1 com.tencent.mm/com.tencent.mm.plugin.appbrand.ui.AppBrandUI00 (server)', eventId, null, 1000000]),
+      ...['1', '2', '3'].map((eventId): InputDelivery =>
+        [2, 'system_server', '[Gesture Monitor] OplusExInputReceiver1', eventId, null, 3000000]),
+    ]);
+    try {
+      const target = (db: Database.Database, packageName: string) =>
+        (db.prepare(renderScrollingSql('input_latency_summary', packageName)).get() as {target_process: string})
+          .target_process;
+
+      expect(target(tied, '')).toBe('com.tencent.mm');
+      expect(target(tied, 'com.android.systemui')).toBe('com.android.systemui');
+      expect(target(childProcess, '')).toBe('com.tencent.mm:appbrand0');
+    } finally {
+      tied.close();
+      childProcess.close();
     }
   });
 
@@ -1187,6 +1935,7 @@ describe('scrolling_analysis skill schema', () => {
           target_process_count: number;
           target_process_status: string;
           coverage_status: string;
+          root_cause_evidence_scope: string;
           should_fallback: number;
         };
       } finally {
@@ -1197,33 +1946,45 @@ describe('scrolling_analysis skill schema', () => {
     expect(runCoverage(0, 100)).toEqual(expect.objectContaining({
       frame_timeline_frames: 0,
       coverage_status: 'no_frame_timeline_coverage',
+
+      root_cause_evidence_scope: 'coverage_unverified',
       should_fallback: 1,
     }));
     expect(runCoverage(36, 100)).toEqual(expect.objectContaining({
       frame_timeline_to_buffer_tx_ratio: 0.36,
       coverage_status: 'partial_frame_timeline_coverage',
+
+      root_cause_evidence_scope: 'partial_sample',
       should_fallback: 1,
     }));
     expect(runCoverage(90, 100)).toEqual(expect.objectContaining({
       frame_timeline_to_buffer_tx_ratio: 0.9,
       coverage_status: 'sufficient_frame_timeline_coverage',
+
+      root_cause_evidence_scope: 'full_frame_timeline',
       should_fallback: 0,
     }));
     expect(runCoverage(2, null)).toEqual(expect.objectContaining({
       target_process_status: 'found',
       coverage_status: 'no_buffer_tx_candidate',
+
+      root_cause_evidence_scope: 'frame_timeline_only_unbenchmarked',
       should_fallback: 0,
     }));
     expect(runCoverage(1, null, 'com.example.application')).toEqual(expect.objectContaining({
       target_process_count: 0,
       target_process_status: 'not_found',
       coverage_status: 'target_process_not_found',
+
+      root_cause_evidence_scope: 'coverage_unverified',
       should_fallback: 0,
     }));
     expect(runCoverage(1, null, 'com.example.app:renderer')).toEqual(expect.objectContaining({
       target_process_count: 1,
       target_process_status: 'found',
       coverage_status: 'no_buffer_tx_candidate',
+
+      root_cause_evidence_scope: 'frame_timeline_only_unbenchmarked',
       should_fallback: 0,
     }));
   });
@@ -1231,7 +1992,7 @@ describe('scrolling_analysis skill schema', () => {
   it('does not recommend an unavailable frame fallback when the target process is absent', () => {
     const renderSql = (targetProcessStatus: string) => String(getStep('fallback_no_frame_timeline').sql)
       .split('${package}').join('com.example.app')
-      .split('${buffer_tx_coverage.data[0].target_process_status}').join(targetProcessStatus);
+      .split('${buffer_tx_coverage.data[0].target_process_status|}').join(targetProcessStatus);
     const db = createScopedSqlFixture();
     try {
       db.exec('CREATE TABLE actual_frame_timeline_slice(id INTEGER)');
@@ -1255,10 +2016,6 @@ describe('scrolling_analysis skill schema', () => {
       expect(getColumn(step, 'frame_timeline_coverage_status').hidden).toBe(true);
       expect(getColumn(step, 'frame_timeline_to_buffer_tx_ratio').hidden).toBe(true);
       expect(getColumn(step, 'evidence_scope').hidden).toBe(true);
-      const sql = String(step.sql);
-      expect(sql).toContain('${buffer_tx_coverage.data[0].coverage_status}');
-      expect(sql).toContain('${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio}');
-      expect(sql).toContain("THEN 'partial_sample'");
     }
 
     const fallback = getStep('buffer_tx_performance_fallback');
@@ -1269,8 +2026,49 @@ describe('scrolling_analysis skill schema', () => {
       'frame_timeline_to_buffer_tx_ratio',
       'coverage_status',
       'evidence_status',
+      'present_interval_source',
     ]) {
       getColumn(fallback, column);
+    }
+    // Both perf_summary producers describe where their present intervals came from.
+    getColumn(getStep('performance_summary'), 'present_interval_source');
+  });
+
+  it('calls coverage full only after a sufficient FrameTimeline/BufferTX comparison', () => {
+    const cases: Array<[string, string]> = [
+      ['sufficient_frame_timeline_coverage', 'full_frame_timeline'],
+      ['partial_frame_timeline_coverage', 'partial_sample'],
+      ['no_buffer_tx_candidate', 'frame_timeline_only_unbenchmarked'],
+      ['frame_timeline_only_exact_upid', 'frame_timeline_only_unbenchmarked'],
+      ['no_frame_timeline_coverage', 'coverage_unverified'],
+      ['target_process_not_found', 'coverage_unverified'],
+    ];
+    const probe = getStep('buffer_tx_coverage_probe') as any;
+    const db = new Database(':memory:');
+    try {
+      // The probe maps its own coverage status, in both branches.
+      for (const [branch, sql] of [['sql', probe.sql], ['exact_sql', probe.exact_sql.sql]]) {
+        const mapping = /(CASE coverage_status[\s\S]*?END) AS root_cause_evidence_scope/.exec(String(sql))?.[1];
+        expect([branch, mapping === undefined]).toEqual([branch, false]);
+        for (const [status, expected] of cases) {
+          const scope = db.prepare(`SELECT ${mapping} AS v FROM (SELECT ? AS coverage_status)`).pluck().get(status);
+          expect([branch, status, scope]).toEqual([branch, status, expected]);
+        }
+      }
+      // A consumer reads that scope; a probe that produced no row (it is
+      // optional) leaves coverage unverified.
+      for (const stepId of ['jank_type_stats', 'batch_frame_root_cause']) {
+        for (const value of ['partial_sample', undefined]) {
+          const sql = substituteSqlPlaceholders(String(getStep(stepId).sql), placeholder =>
+            placeholder.path === 'buffer_tx_coverage.data[0].root_cause_evidence_scope' && value !== undefined
+              ? value
+              : absentPlaceholderSql(placeholder));
+          const scope = /'([^']*)' as evidence_scope/.exec(sql)?.[1];
+          expect([stepId, value, scope]).toEqual([stepId, value, value ?? 'coverage_unverified']);
+        }
+      }
+    } finally {
+      db.close();
     }
   });
 
@@ -2007,10 +2805,13 @@ describe('scrolling_analysis skill schema', () => {
 
 describe('scrolling exact UPID SQL semantics', () => {
   const source = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/scrolling_analysis.skill.yaml'), 'utf8')) as any;
-  const render = (stepId: string, upid: number) => String(source.steps.find((step: any) => step.id === stepId).sql)
-    .split('${__process_scope.upid}').join(String(upid))
-    .split('${package}').join('com.example.app')
-    .split('${start_ts}').join('NULL').split('${end_ts}').join('NULL');
+  const render = (stepId: string, upid: number) => {
+    const step = source.steps.find((item: any) => item.id === stepId);
+    return withStepFragments(String(step.sql), step.sql_fragments)
+      .split('${__process_scope.upid}').join(String(upid))
+      .split('${package}').join('com.example.app')
+      .split('${start_ts}').join('NULL').split('${end_ts}').join('NULL');
+  };
 
   it('does not count same-name restarts, children or similar prefixes as exact input events', () => {
     const db = new Database(':memory:');
@@ -2022,6 +2823,7 @@ describe('scrolling exact UPID SQL semantics', () => {
           (43,'com.example.app',100,10,90,'MOVE',1),
           (44,'com.example.app:child',100,10,90,'MOVE',1),
           (45,'com.example.application',100,10,90,'MOVE',1);`);
+      completeAndroidInputEventsFixture(db);
       expect(db.prepare(render('input_data_check', 42)).get()).toMatchObject({ total_input_events: 1, target_processes: 1 });
     } finally { db.close(); }
   });
@@ -2064,25 +2866,17 @@ describe('scrolling exact UPID SQL semantics', () => {
 describe('single-frame exact UPID SQL semantics', () => {
   const source = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/jank_frame_detail.skill.yaml'), 'utf8')) as any;
   const step = (id: string) => source.steps.find((value: any) => value.id === id);
-  const render = (sql: string, upid: number | null, packageName = 'com.example.app') => {
-    const values: Record<string, string> = {
-      '__process_scope.upid': upid === null ? 'NULL' : String(upid), package: packageName,
-      start_ts: '0', end_ts: '100000000', main_start_ts: 'NULL', main_end_ts: 'NULL',
-      render_start_ts: 'NULL', render_end_ts: 'NULL', dur_ms: '100',
-      jank_type: 'App Deadline Missed', jank_responsibility: 'APP',
-    };
-    return sql.replace(/\$\{([^}]+)\}/g, (_token, name: string) => {
-      if (!Object.prototype.hasOwnProperty.call(values, name)) throw new Error(`Unbound SQL fixture parameter: ${name}`);
-      return values[name];
-    });
-  };
-  const sqlFor = (id: string, upid: number | null, packageName = 'com.example.app') => {
-    const definition = step(id);
-    const fragments = (definition.sql_fragments || []).map((file: string) =>
-      fs.readFileSync(path.join(process.cwd(), 'skills', file), 'utf8').trim());
-    const sql = fragments.length ? String(definition.sql).replace(/\bWITH\b/i, `WITH\n${fragments.join(',\n')},`) : String(definition.sql);
-    return render(sql, upid, packageName);
-  };
+  const bindings = (upid: number | null, packageName: string, overrides: Record<string, string>) => ({
+    '__process_scope.upid': upid === null ? 'NULL' : String(upid), package: packageName,
+    start_ts: '0', end_ts: '100000000', main_start_ts: 'NULL', main_end_ts: 'NULL',
+    render_start_ts: 'NULL', render_end_ts: 'NULL', dur_ms: '100',
+    jank_type: 'App Deadline Missed', jank_responsibility: 'APP', ...overrides,
+  });
+  const render = (sql: string, upid: number | null, packageName = 'com.example.app') =>
+    renderStepSql(sql, [], bindings(upid, packageName, {}));
+  const sqlFor = (id: string, upid: number | null, packageName = 'com.example.app',
+    overrides: Record<string, string> = {}) =>
+    renderStepSql(String(step(id).sql), step(id).sql_fragments, bindings(upid, packageName, overrides));
   const rootCtes = (first: string, next: string, upid: number | null) => {
     const sql = String(step('root_cause_summary').sql);
     const start = sql.indexOf(`${first} AS (`);
@@ -2104,6 +2898,9 @@ describe('single-frame exact UPID SQL semantics', () => {
       },
     });
     db.function('STR_SPLIT', (value: string, separator: string, index: number) => value.split(separator)[index] ?? null);
+    // trace_processor intrinsic; NULL like a trace without clock snapshots,
+    // so fragments/cpu_cluster_load.sql uses the wall-clock window.
+    db.function('to_monotonic', (_ts: unknown) => null);
     db.exec(`
       CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT);
       INSERT INTO process VALUES (42,700,'com.example.app'),(43,700,'com.example.app'),
@@ -2135,8 +2932,8 @@ describe('single-frame exact UPID SQL semantics', () => {
       CREATE TABLE android_garbage_collection_events(tid INTEGER,utid INTEGER,upid INTEGER,gc_type TEXT,gc_ts INTEGER,gc_dur INTEGER);
       INSERT INTO android_garbage_collection_events VALUES (800,8,42,'young',10000000,10000000),
         (800,18,43,'young',10000000,80000000);
-      CREATE TABLE _cpu_topology(cpu_id INTEGER,core_type TEXT);
-      INSERT INTO _cpu_topology VALUES (0,'big'),(1,'little');
+      CREATE TABLE _cpu_topology(cpu_id INTEGER,core_type TEXT,topology_source TEXT);
+      INSERT INTO _cpu_topology VALUES (0,'big','capacity_scale'),(1,'little','capacity_scale');
       CREATE TABLE trace_bounds(start_ts INTEGER,end_ts INTEGER);
       INSERT INTO trace_bounds VALUES (0,100000000);
       CREATE TABLE cpu(id INTEGER,cpu INTEGER,machine_id INTEGER,cluster_id INTEGER,capacity INTEGER);
@@ -2170,6 +2967,13 @@ describe('single-frame exact UPID SQL semantics', () => {
       INSERT INTO cpu_counter_track VALUES (200,0,'cpufreq'),(201,1,'cpufreq');
       CREATE TABLE expected_frame_timeline_slice(ts INTEGER,dur INTEGER);
       INSERT INTO expected_frame_timeline_slice VALUES (0,16666667);
+      -- The frequency-limit fragments read these; this trace has no limit or cooling track.
+      ALTER TABLE counter_track ADD COLUMN type TEXT;
+      ALTER TABLE counter_track ADD COLUMN dimension_arg_set_id INTEGER;
+      ALTER TABLE cpu_counter_track ADD COLUMN type TEXT;
+      ALTER TABLE counter ADD COLUMN id INTEGER;
+      UPDATE counter SET id=rowid;
+      CREATE TABLE args(arg_set_id INTEGER,key TEXT,string_value TEXT);
     `);
     return db;
   };
@@ -2226,10 +3030,10 @@ describe('single-frame exact UPID SQL semantics', () => {
       const lock = rootCtes('monitor_lock_overlap', 'render_sync_intervals', 42);
       expect(db.prepare(`WITH ${lock} SELECT lock_contention_ms FROM monitor_lock_overlap`).get()).toEqual({lock_contention_ms: 10});
       expect(db.prepare(sqlFor('gc_in_frame', 42)).all()).toEqual([
-        {gc_type: 'young', gc_count: 1, total_dur_ms: 10, overlap_ms: 10, max_dur_ms: 10},
+        {gc_type: 'young', gc_count: 1, total_dur_ms: 10, overlap_ms: 10, max_dur_ms: 10, total_overlap_ms: 10},
       ]);
       expect(db.prepare(sqlFor('gc_in_frame', null)).all()).toEqual([
-        {gc_type: 'young', gc_count: 2, total_dur_ms: 90, overlap_ms: 90, max_dur_ms: 80},
+        {gc_type: 'young', gc_count: 2, total_dur_ms: 90, overlap_ms: 90, max_dur_ms: 80, total_overlap_ms: 90},
       ]);
       expect(step('lock_contention').process_scope.context_fields.peer_context).toEqual(['blocking_method', 'blocking_thread_name', 'waiter_count']);
     } finally {db.close();}
@@ -2247,17 +3051,99 @@ describe('single-frame exact UPID SQL semantics', () => {
       const timeline = db.prepare(sqlFor('cpu_freq_timeline', 42)).all();
       expect(timeline).toHaveLength(4);
       expect(db.prepare(sqlFor('cpu_freq_timeline', 43)).all()).toEqual(timeline);
-      const cluster = rootCtes('cluster_core_counts', 'gc_frame_overlap', 42);
-      const systemSched = fs.readFileSync(path.join(process.cwd(), 'skills/fragments/system_sched_spans.sql'), 'utf8');
-      expect(db.prepare(`WITH system_windows(window_id,window_start_ts,window_end_ts) AS (VALUES('frame',0,100000000)),
-        ${systemSched}, ${cluster} SELECT * FROM cluster_load`).get()).toEqual({big_load_pct: 50, little_load_pct: 60});
+      // Same definition as the cpu_cluster_load_in_range table (fragments/cpu_cluster_load.sql).
+      const cluster = rootCtes('cluster_load', 'gc_frame_overlap', 42);
+      const clusterFragment = render(builtInSkillFragment('cpu_cluster_load.sql'), 42);
+      expect(db.prepare(`WITH ${clusterFragment}, ${cluster} SELECT * FROM cluster_load`).get())
+        .toEqual({big_load_pct: 50, little_load_pct: 60});
       const root = db.prepare(sqlFor('root_cause_summary', 42)).get() as Record<string, unknown>;
       expect(root).toMatchObject({slice_name: 'target_main', slice_dur: 20, frame_budget_ms: 16.67,
         frame_dur_ms: 100, main_io_block_ms: 2, reason_code: 'binder_sync_blocking'});
       expect(root.deep_reason).toContain('surfaceflinger');
       expect(step('root_cause_summary').process_scope.context_fields).toEqual({
-        global_context: ['frame_budget_ms', 'primary_cause', 'secondary_info'], peer_context: ['deep_reason'],
+        global_context: ['frame_budget_ms', 'primary_cause', 'secondary_info', 'ramp_to_high_ms', 'freq_ramp_evidence'],
+        peer_context: ['deep_reason'],
       });
+      for (const status of ['multi_machine_unresolved', 'ambiguous_cpu_metadata']) {
+        db.prepare('UPDATE _cpu_topology SET topology_source = ?').run(status);
+        expect(db.prepare(`WITH ${clusterFragment}, ${cluster} SELECT * FROM cluster_load`).get())
+          .toEqual({big_load_pct: null, little_load_pct: null});
+      }
+    } finally {db.close();}
+  });
+
+  it('times the big-core frequency ramp only from complete big-tier observation', () => {
+    // The full root-cause SQL on a frame P6 can reach: no Binder or monitor wait,
+    // top slice 20 ms (1x-2x of the 16.67 ms budget), starting 10 ms into the
+    // 0..100 ms frame. cpu0 is the only big CPU (capacity 1024 vs 300): 1 GHz
+    // until 50 ms, then 2 GHz, so the big tier reaches high frequency at 50 ms.
+    const ramp = (setup: string) => {
+      const db = fixture();
+      try {
+        db.exec(`DELETE FROM android_binder_txns WHERE client_upid=42;
+          DELETE FROM android_monitor_contention WHERE upid=42; ${setup}`);
+        const row = db.prepare(sqlFor('root_cause_summary', 42)).get() as Record<string, unknown>;
+        return {reason_code: row.reason_code, ramp_to_high_ms: row.ramp_to_high_ms,
+          freq_ramp_evidence: row.freq_ramp_evidence};
+      } finally {db.close();}
+    };
+    const cpu0 = (rows: string) => `DELETE FROM cpu_frequency_counters WHERE cpu=0;
+      INSERT INTO cpu_frequency_counters(cpu,ts,dur,freq,track_id,ucpu) VALUES ${rows};
+      UPDATE cpu_frequency_counters SET id=rowid;`;
+    const unobserved = (state: string) => ({reason_code: 'workload_heavy', ramp_to_high_ms: null, freq_ramp_evidence: state});
+
+    expect(ramp('')).toEqual({reason_code: 'freq_ramp_slow', ramp_to_high_ms: 50, freq_ramp_evidence: 'observed'});
+    // Already high when the frame starts: a measured 0, not a missing value.
+    expect(ramp('UPDATE cpu_frequency_counters SET freq=2000000 WHERE cpu=0;'))
+      .toEqual({reason_code: 'workload_heavy', ramp_to_high_ms: 0, freq_ramp_evidence: 'observed'});
+    // No big tier: nothing to time, so no frequency reason (was the whole 100 ms frame).
+    expect(ramp('UPDATE cpu SET capacity=NULL;')).toEqual(unobserved('big_core_topology_unknown'));
+    // A big CPU first sampled inside the frame, a dropped negative sample, a missing tail.
+    expect(ramp(cpu0('(0,50000000,50000000,2000000,0,0)'))).toEqual(unobserved('big_core_freq_incomplete'));
+    expect(ramp(cpu0(`(0,0,10000000,1000000,0,0),(0,10000000,40000000,-1,0,0),
+      (0,50000000,50000000,2000000,0,0)`))).toEqual(unobserved('big_core_freq_incomplete'));
+    expect(ramp(cpu0('(0,0,50000000,1000000,0,0),(0,50000000,30000000,2000000,0,0)')))
+      .toEqual(unobserved('big_core_freq_incomplete'));
+    // Coverage is the union per CPU: a span nested in an earlier, longer one does not end
+    // coverage (an adjacent-end check would see a gap at 20..30 ms), and spans that abut cover.
+    expect(ramp(cpu0(`(0,0,60000000,1000000,0,0),(0,10000000,10000000,1000000,1,0),
+      (0,30000000,20000000,1000000,1,0),(0,50000000,50000000,2000000,0,0)`)))
+      .toEqual({reason_code: 'freq_ramp_slow', ramp_to_high_ms: 50, freq_ramp_evidence: 'observed'});
+    // Overlap is not coverage: 150 ms of spans that leave 60..70 ms unobserved.
+    expect(ramp(cpu0(`(0,0,60000000,1000000,0,0),(0,0,60000000,1000000,1,0),
+      (0,70000000,30000000,2000000,0,0)`))).toEqual(unobserved('big_core_freq_incomplete'));
+    // Every big CPU must be covered: a second, fully observed big CPU does not cover cpu0's gap.
+    const secondBig = `INSERT INTO cpu VALUES (2,2,0,0,1024);
+      INSERT INTO cpu_frequency_counters(cpu,ts,dur,freq,track_id,ucpu) VALUES (2,0,100000000,1000000,2,2);
+      UPDATE cpu_frequency_counters SET id=rowid;`;
+    expect(ramp(secondBig)).toEqual({reason_code: 'freq_ramp_slow', ramp_to_high_ms: 50, freq_ramp_evidence: 'observed'});
+    expect(ramp(secondBig + cpu0('(0,0,40000000,1000000,0,0),(0,50000000,50000000,2000000,0,0)')))
+      .toEqual(unobserved('big_core_freq_incomplete'));
+    // CPUs of two machines (duplicate ordinals): the frame names no machine, so no single big tier.
+    expect(ramp('INSERT INTO cpu VALUES (2,0,1,0,1024),(3,1,1,1,300);'))
+      .toEqual(unobserved('machine_scope_ambiguous'));
+  });
+
+  it('runs the frequency-limit binding in the full root-cause SQL and leaves the reason unchanged without limit data', () => {
+    const db = fixture();
+    try {
+      // The facts of a capped value exist only for a capped frame.
+      const LIMIT_FACTS = ['freq_limit_basis', 'freq_limit_onset_ts', 'freq_limit_cooling_basis', 'freq_limit_mhz',
+        'freq_limit_depth_pct', 'freq_limit_trace_episode_id'];
+      // A valid top-slice work interval on a trace without a max-limit track.
+      const root = db.prepare(sqlFor('root_cause_summary', 42)).get() as Record<string, unknown>;
+      // Every declared display column is projected by the executed SQL.
+      const declared = (step('root_cause_summary').display.columns as any[]).map(column => column.name);
+      expect(declared.filter(name => !Object.prototype.hasOwnProperty.call(root, name))).toEqual([]);
+      expect(root).toMatchObject({reason_code: 'binder_sync_blocking', freq_limit_state: 'limit_track_unavailable',
+        freq_limit_onset_confirmed: 0, rt_freq_limit_state: 'limit_track_unavailable'});
+      for (const column of LIMIT_FACTS) expect({column, value: root[column]}).toEqual({column, value: null});
+      // No top slice in the main window: no main row, so no state and no limit reason.
+      const noTopSlice = db.prepare(sqlFor('root_cause_summary', 42, 'com.example.app',
+        {main_start_ts: '95000000', main_end_ts: '100000000'})).get() as Record<string, unknown>;
+      expect(noTopSlice).toMatchObject({slice_name: null, freq_limit_state: null, freq_limit_onset_confirmed: null,
+        rt_freq_limit_state: 'limit_track_unavailable'});
+      expect(['thermal_throttling', 'cpu_max_limited']).not.toContain(noTopSlice.reason_code);
     } finally {db.close();}
   });
 });
@@ -2710,6 +3596,179 @@ describe('FrameTimeline gap observation boundary', () => {
       expect(query('gap_list')).toEqual([]);
       db.exec("INSERT INTO actual_frame_timeline_slice VALUES(140000000,20000000,1,'same',13,13)");
       expect(query('gap_list')).toEqual([expect.objectContaining({gap_ms:40,before_frame_id:'10',after_frame_id:'13'})]);
+    } finally { db.close(); }
+  });
+});
+
+describe('smoothness_basis puts present cadence beside frame duration', () => {
+  const scrolling = yaml.load(fs.readFileSync(path.join(process.cwd(),
+    'skills/composite/scrolling_analysis.skill.yaml'), 'utf8')) as any;
+  const consumer = yaml.load(fs.readFileSync(path.join(process.cwd(),
+    'skills/atomic/consumer_jank_detection.skill.yaml'), 'utf8')) as any;
+  const stepOf = (definition: any, id: string) => definition.steps.find((item: any) => item.id === id);
+  const VSYNC = 8333333;
+  const LAYER = 'TX - com.example.app/Main#1';
+
+  const fixture = () => {
+    const db = new Database(':memory:');
+    db.aggregate('PERCENTILE', {
+      start: () => ({values: [] as number[], p: 50}),
+      step: (state: {values: number[]; p: number}, ...args: unknown[]) => {
+        const [value, p] = args as [number | null, number];
+        if (value !== null) state.values.push(value);
+        state.p = p;
+        return state;
+      },
+      result: (state: {values: number[]; p: number}) => {
+        const sorted = state.values.sort((a, b) => a - b);
+        return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * state.p / 100))] : null;
+      },
+    });
+    db.function('android_is_missed_frame_type', (value: unknown) => /App Deadline Missed/.test(String(value)) ? 1 : 0);
+    db.exec(`
+      CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
+      INSERT INTO trace_bounds VALUES (0, 2000000000);
+      CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT, start_ts INTEGER, end_ts INTEGER);
+      CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT, start_ts INTEGER, end_ts INTEGER);
+      CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+      CREATE TABLE slice(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, dur INTEGER,
+        name TEXT, parent_id INTEGER, arg_set_id INTEGER);
+      CREATE TABLE thread_state(utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, io_wait INTEGER,
+        id INTEGER PRIMARY KEY, blocked_function TEXT);
+      CREATE TABLE counter(ts INTEGER, track_id INTEGER);
+      CREATE TABLE counter_track(id INTEGER, name TEXT);
+      CREATE TABLE actual_frame_timeline_slice(id INTEGER, upid INTEGER, display_frame_token INTEGER,
+        surface_frame_token INTEGER, layer_name TEXT, ts INTEGER, dur INTEGER, jank_type TEXT, present_type TEXT);
+      CREATE TABLE expected_frame_timeline_slice(upid INTEGER, layer_name TEXT, surface_frame_token INTEGER,
+        ts INTEGER, dur INTEGER);
+      INSERT INTO process VALUES (1, 100, 'com.example.app', NULL, NULL);
+      INSERT INTO thread VALUES (1, 1, 100, 'main', NULL, NULL);
+      INSERT INTO thread_track VALUES (10, 1);
+      INSERT INTO counter_track VALUES (1, 'VSYNC-sf');
+    `);
+    const tick = db.prepare('INSERT INTO counter VALUES (?, 1)');
+    for (let i = 0; i < 240; i++) tick.run(i * VSYNC);
+    // A steady pipeline one buffer deep: every frame presents one VSync
+    // apart, two VSyncs after its expected present, with a three-VSync dur.
+    const actual = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)');
+    const expected = db.prepare('INSERT INTO expected_frame_timeline_slice VALUES (1, ?, ?, ?, ?)');
+    for (let i = 0; i < 30; i++) {
+      actual.run(i + 1, i + 1, i + 101, LAYER, i * VSYNC, 3 * VSYNC, 'Buffer Stuffing', 'Late Present');
+      expected.run(LAYER, i + 101, i * VSYNC, VSYNC);
+    }
+    return db;
+  };
+  const bind = (sql: string, fragments?: string[]) => renderStepSql(sql, fragments, {
+    '__process_scope.upid': 'NULL', package: 'com.example.app', layer_name: '',
+    start_ts: 'NULL', end_ts: 'NULL', 'buffer_tx_coverage.data[0].coverage_status': 'no_buffer_tx_candidate',
+  });
+  const basis = (db: Database.Database) => {
+    const step = stepOf(scrolling, 'smoothness_basis');
+    return db.prepare(bind(String(step.sql), step.sql_fragments)).all() as Record<string, any>[];
+  };
+  const audit = (db: Database.Database) => db.prepare(bind(String(
+    stepOf(consumer, 'presentation_cadence_audit').sql))).all() as Record<string, any>[];
+
+  it('reads a steady late pipeline as one-VSync presents beside a three-VSync dur', () => {
+    const db = fixture();
+    try {
+      const [row] = basis(db);
+      expect(row).toMatchObject({
+        session_id: 1, layer_name: LAYER, frames: 30, budget_ns: VSYNC, budget_source: 'trace_wide_vsync_counter',
+        cadence_metric: 'frametimeline_present_gap', cadence_gap_count: 29, cadence_gap_p50_ns: VSYNC,
+        cadence_gaps_over_1_5x_budget: 0, frame_dur_metric: 'frametimeline_actual_dur_start_to_present',
+        frame_dur_p50_ns: 3 * VSYNC, buffer_stuffing_frames: 30, buffer_stuffing_pct: 100,
+        cadence_status: 'steady_late', presentation_status: 'measured', budget_status: 'measured',
+        verdict_basis: 'present_gaps_vs_budget',
+      });
+      expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('applies the presentation cadence audit rule to a session with an excursion', () => {
+    const db = fixture();
+    try {
+      db.exec(`UPDATE actual_frame_timeline_slice SET dur = dur + ${2 * VSYNC} WHERE id = 15`);
+      const [row] = basis(db);
+      expect(row.cadence_gaps_over_1_5x_budget).toBe(1);
+      expect(row.cadence_status).toBe('steady_late_with_cadence_excursions');
+      expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('aggregates every doFrame start gap and leaves presentation unmeasured without FrameTimeline', () => {
+    const db = fixture();
+    try {
+      db.exec('DELETE FROM actual_frame_timeline_slice');
+      const insert = db.prepare("INSERT INTO slice VALUES (?, 10, ?, 5000000, 'Choreographer#doFrame', NULL, NULL)");
+      // 40 starts one VSync apart except one skipped VSync: more gaps than the top-K list returns.
+      for (let i = 0; i < 40; i++) insert.run(i + 1, (i < 20 ? i : i + 1) * VSYNC);
+      const rows = basis(db);
+      expect(rows).toEqual([expect.objectContaining({
+        process_name: 'com.example.app', session_id: null, frames: 40,
+        cadence_metric: 'doframe_start_gap', cadence_gap_count: 39, cadence_gaps_over_1_5x_budget: 1,
+        frame_dur_metric: 'doframe_main_thread_execution', frame_dur_p50_ns: 5000000,
+        buffer_stuffing_pct: null, cadence_status: 'presentation_unmeasured',
+        presentation_status: 'unmeasured', verdict_basis: 'doframe_start_gaps_presentation_unmeasured',
+      })]);
+    } finally { db.close(); }
+  });
+
+  it('leaves cadence unjudged without a measured VSYNC-sf budget, as the audit does', () => {
+    const db = fixture();
+    try {
+      db.exec('DELETE FROM counter');
+      const [row] = basis(db);
+      expect(row).toMatchObject({budget_source: 'trace_wide_expected_frame', budget_status: 'derived_from_expected_frames',
+        cadence_status: 'insufficient_cadence_evidence', verdict_basis: 'present_gaps_budget_unverified'});
+      expect(audit(db).map(item => item.cadence_status)).toEqual([row.cadence_status]);
+    } finally { db.close(); }
+  });
+
+  it('splits sessions with scroll_sessions\' own rule', () => {
+    const db = fixture();
+    try {
+      // A pause past six VSyncs, then a second run: two sessions in both steps.
+      const actual = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)');
+      for (let i = 0; i < 30; i++) {
+        actual.run(i + 101, i + 101, i + 201, LAYER, 1000000000 + i * VSYNC, 3 * VSYNC, 'None', 'On-time Present');
+      }
+      const step = stepOf(scrolling, 'scroll_sessions');
+      const sessions = db.prepare(bind(String(step.sql), step.sql_fragments)).all() as Record<string, any>[];
+      expect(basis(db).map(row => [row.session_id, row.start_ts, row.frames]))
+        .toEqual(sessions.map(row => [row.session_id, row.start_ts, row.frame_count]));
+      expect(sessions).toHaveLength(2);
+    } finally { db.close(); }
+  });
+
+  it('marks a budget the observed cadence contradicts', () => {
+    const db = fixture();
+    try {
+      // A sparse VSync counter: every sixth tick.
+      db.exec(`DELETE FROM counter WHERE (ts / ${VSYNC}) % 6 != 0`);
+      const [row] = basis(db);
+      expect(row).toMatchObject({budget_status: 'contradicted_by_observed_cadence',
+        verdict_basis: 'present_gaps_budget_unverified'});
+    } finally { db.close(); }
+  });
+
+  it('reports no present interval rather than FrameTimeline dur when no present gap is valid', () => {
+    const sql = String(stepOf(scrolling, 'performance_summary').sql);
+    const begin = sql.indexOf('app_frame_intervals AS (');
+    const end = sql.indexOf('-- Per-layer 帧序列', begin);
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(begin);
+    const ctes = sql.slice(begin, end).trim().replace(/,\s*$/, '');
+    const db = fixture();
+    try {
+      // One frame per layer: no gap at all, while every dur is three VSyncs.
+      db.exec("UPDATE actual_frame_timeline_slice SET layer_name = 'layer-' || id");
+      const result = db.prepare(`WITH
+        timing_config(vsync_period_ns) AS (VALUES (${VSYNC})),
+        app_frame_rows AS (SELECT *, 'display:' || display_frame_token AS frame_key FROM actual_frame_timeline_slice),
+        ${ctes} SELECT * FROM app_stats`).get();
+      expect(result).toMatchObject({total: 30, avg_present_interval: null, p95_present_interval: null,
+        max_present_interval: null, present_interval_source: 'unmeasured_no_valid_present_gap'});
     } finally { db.close(); }
   });
 });

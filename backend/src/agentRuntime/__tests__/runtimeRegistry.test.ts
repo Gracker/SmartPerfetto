@@ -9,7 +9,6 @@ import type { IOrchestrator } from '../../agent/core/orchestratorTypes';
 import {
   RuntimeRegistry,
   createRuntimeRegistry,
-  createRuntimeRegistryForSelection,
   type RuntimeEngineDefinition,
   type RuntimeFactoryInput,
 } from '../runtimeRegistry';
@@ -18,6 +17,7 @@ import {
   getProductionEngineCapabilities,
   isProductionAgentRuntimeKind,
   listProductionRuntimeKinds,
+  runtimeSupportsDraftAnswerStreaming,
   supportsRuntimeProviderType,
 } from '../runtimeDescriptors';
 import {
@@ -35,6 +35,7 @@ function fakeCapabilities(kind = 'fake-runtime'): EngineCapabilities {
     production: false,
     publicRuntime: false,
     promptCache: { systemPromptDynamicBoundary: false },
+    draftAnswerStreaming: false,
   };
 }
 
@@ -84,6 +85,7 @@ describe('runtime registry', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: true },
+      draftAnswerStreaming: true,
     });
     expect(openai).toEqual({
       kind: 'openai-agents-sdk',
@@ -91,6 +93,7 @@ describe('runtime registry', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: true,
     });
     expect(pi).toEqual({
       kind: 'pi-agent-core',
@@ -98,6 +101,7 @@ describe('runtime registry', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
     expect(opencode).toEqual({
       kind: 'opencode',
@@ -105,6 +109,7 @@ describe('runtime registry', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
     expect(qoder).toEqual({
       kind: 'qoder-agent-sdk',
@@ -112,12 +117,20 @@ describe('runtime registry', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
     for (const capabilities of [claude, openai, pi, opencode, qoder]) {
       expect(capabilities).not.toHaveProperty('toolTransport');
       expect(capabilities).not.toHaveProperty('continuationPolicy');
       expect(capabilities).not.toHaveProperty('snapshotState');
     }
+  });
+
+  it('gates answer drafts on the reset contract: Claude and OpenAI only, never an unknown runtime', () => {
+    expect(listProductionRuntimeKinds().filter(runtimeSupportsDraftAnswerStreaming))
+      .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
+    expect(runtimeSupportsDraftAnswerStreaming(undefined)).toBe(false);
+    expect(runtimeSupportsDraftAnswerStreaming(EXPERIMENTAL_OPENCODE_RUNTIME_KIND)).toBe(false);
   });
 
   it('derives provider compatibility from runtime descriptors', () => {

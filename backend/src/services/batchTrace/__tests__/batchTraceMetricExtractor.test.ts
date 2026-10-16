@@ -73,6 +73,23 @@ describe('batch trace metric extractor', () => {
     expect(metrics.find(metric => metric.key === 'trace.device_model')?.value).toBe('Pixel 9');
   });
 
+  it('keeps trace-wide fields local instead of promoting them to app metrics', () => {
+    const traceWide: DataEnvelope = {
+      ...envelope(),
+      meta: {...envelope().meta, source: 'scrolling_analysis', skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+        scopeProvenance: {version: 'process_scope_evidence@1', entries: [{role: 'global_context',
+          scope: {mode: 'unscoped', traceId: 'trace-a', traceSide: 'current'}}]}},
+      data: {columns: ['total_frames', 'device_model'], rows: [[697, 'Pixel 9']]},
+    };
+    const metrics = extractBatchTraceMetrics({skillId: 'scrolling_analysis', ordinal: 0,
+      result: {...baseResult(), synthesizeData: []}, dataEnvelopes: [traceWide]});
+
+    const frames = metrics.find(metric => metric.value === 697);
+    expect(frames?.key).toBe('frame_timeline_population.total_frames');
+    expect(frames?.promotableMetricKey).toBeUndefined();
+    expect(metrics.find(metric => metric.key === 'trace.device_model')?.value).toBe('Pixel 9');
+  });
+
   it('converts promotable batch metrics to normalized comparison metrics', () => {
     const metrics = toPromotableNormalizedMetrics(extractBatchTraceMetrics({
       skillId: 'startup_analysis',

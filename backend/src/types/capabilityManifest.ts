@@ -17,13 +17,35 @@ export type CapabilitySourceState =
   | 'present_with_data'
   | 'present_empty'
   | 'schema_missing'
-  | 'not_applicable';
+  | 'not_applicable'
+  /** The probe could not determine the source: a module or query did not finish. */
+  | 'unprobed';
+
+/**
+ * Reason codes for a capability the probe could not determine. They ride in the
+ * legacy `missingConfig` bucket and map to status `missing`, but never claim
+ * the schema or the data is absent.
+ */
+export const CAPABILITY_UNPROBED_REASON_CODES = [
+  'probe_module_unavailable',
+  'probe_query_failed',
+] as const;
+
+export type CapabilityUnprobedReasonCode =
+  typeof CAPABILITY_UNPROBED_REASON_CODES[number];
+
+export function isCapabilityUnprobedReasonCode(
+  code: unknown,
+): code is CapabilityUnprobedReasonCode {
+  return (CAPABILITY_UNPROBED_REASON_CODES as readonly unknown[]).includes(code);
+}
 
 export type CapabilityReasonCode =
   | 'schema_missing'
   | 'empty_or_scene_absent'
   | 'sparse_or_scene_absent'
-  | 'not_applicable';
+  | 'not_applicable'
+  | CapabilityUnprobedReasonCode;
 
 export interface CapabilityManifestCapabilityDefinition {
   id: string;
@@ -39,7 +61,22 @@ export interface CapabilityManifestCapabilityDefinition {
    * counted, so the content hash has to carry the query itself.
    */
   probeSql?: string;
+  /**
+   * The raw events a stdlib view is derived from, counted when the view is
+   * empty. Part of the identity: an entry's rows may come from this query.
+   */
+  rawEventFallback?: CapabilityManifestRawEventFallback;
+  /** Bounded count that qualifies an available capability (heap dumps in a heap graph). */
+  availableDetailSql?: string;
 }
+
+export interface CapabilityManifestRawEventFallback {
+  table: string;
+  probeSql: string;
+}
+
+/** Where an available or sparse capability's rows came from, when not its primary table. */
+export type CapabilityRowSource = 'raw_event_fallback';
 
 export interface CapabilityManifestLegacyProbeResult {
   id: string;
@@ -51,7 +88,13 @@ export interface CapabilityManifestLegacyProbeResult {
     | 'insufficient_or_scene_absent';
   primaryTable: string;
   rowEstimate?: number;
+  /**
+   * Only on a `missingConfig` result the probe could not determine; routine
+   * causes are derived from the bucket and `rowEstimate`.
+   */
+  reasonCode?: CapabilityUnprobedReasonCode;
   reason?: string;
+  rowSource?: CapabilityRowSource;
 }
 
 export interface CapabilityManifestLegacyProbeInput {
@@ -98,8 +141,12 @@ export interface CapabilityManifestEntryV1 {
   primaryTable: string;
   requiredModules?: string[];
   probeSql?: string;
+  rawEventFallback?: CapabilityManifestRawEventFallback;
+  availableDetailSql?: string;
   status: CapabilityManifestStatus;
   sourceState: CapabilitySourceState;
+  /** Set when the rows were counted from the raw-event fallback, not the primary table. */
+  rowSource?: CapabilityRowSource;
   reasonCode?: CapabilityReasonCode;
   rowEstimate?: number;
 }
@@ -139,8 +186,12 @@ export interface CapabilityManifestV1 {
   contentHash: string;
 }
 
-export type CapabilityManifestResolutionV1 =
-  | {status: 'ready'; manifest: CapabilityManifestV1}
+/**
+ * Why no manifest was resolved. A resolution and its attribution share these
+ * branches, so the attribution (and the analysis receipt that carries it)
+ * never reaches the full manifest or its provenance.
+ */
+export type CapabilityManifestUnresolvedV1 =
   | {
       status: 'unavailable';
       reason:
@@ -152,6 +203,10 @@ export type CapabilityManifestResolutionV1 =
       detailCode?: string;
     }
   | {status: 'failed'; reason: 'capability_manifest_build_failed'};
+
+export type CapabilityManifestResolutionV1 =
+  | {status: 'ready'; manifest: CapabilityManifestV1}
+  | CapabilityManifestUnresolvedV1;
 
 export type CapabilityManifestProbeCacheOutcome = 'hit' | 'miss' | 'bypass';
 
@@ -176,8 +231,7 @@ export type CapabilityManifestAttributionResolutionV1 =
       traceFingerprintSha256: string;
       traceProcessor: CapabilityManifestTraceProcessorIdentityV1;
     }
-  | Extract<CapabilityManifestResolutionV1, {status: 'unavailable'}>
-  | Extract<CapabilityManifestResolutionV1, {status: 'failed'}>;
+  | CapabilityManifestUnresolvedV1;
 
 export interface CapabilityManifestAttributionV1 {
   schemaVersion: typeof CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION;

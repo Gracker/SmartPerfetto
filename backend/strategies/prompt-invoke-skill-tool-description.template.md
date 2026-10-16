@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-Run a registered Skill against the current trace. Use `list_skills` when its ID is unknown.
+Run a Skill; `list_skills` discovers IDs. Use it first for scene-level measurements. When `scene_evidence` ran, `fetch_artifact` its tables instead of re-running it. Invoke required detail Skills for gaps, not untyped SQL.
 
-For a target follow-up, pass the positive `upid` only from its selected evidence row. The identity gate pins nested target Skills. Never infer an UPID from a name or pass NULL, zero, or ambiguity.
+Every target follow-up uses the selected evidence row's positive `upid`; nested targets stay pinned. Never infer an UPID or use NULL/zero.
+Identity refusal: inspect candidates/warnings; if acquisition is allowed, use `process_identity_resolver`. Distinguish the target by evidence, not rank/name. Retry the Skill with that UPID and original time range. Explicit UPID can still fail; SQL success or dropping filters cannot verify identity. Deliver bounded findings.
 
-`modelProjection.status="exact"` preserves scalar types. With `truncated`, no artifact string supports an exact claim; query narrower. With `unavailable`, cells are display-only.
+`modelProjection.status="exact"` preserves scalar types; `truncated` strings cannot support exact claims (query narrower); `unavailable` cells are display-only.
 
-`columnUnits` gives raw producer-declared units. Missing means unknown; never infer from names, type/format, or displayed `%`.
+`columnUnits`: raw producer-declared units. Missing means unknown; never infer units.

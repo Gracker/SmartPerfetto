@@ -42,7 +42,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标进程名（支持 GLOB）"
+    description: "目标进程名（精确匹配，含 name:* 子进程）"
   - name: start_ts
     type: timestamp
     required: false
@@ -77,6 +77,7 @@ display:
       label: "评级"
       type: string
 
+sql_fragments: [fragments/android_input_events_normalized.sql]
 sql: |
   WITH move_events AS (
     SELECT
@@ -84,7 +85,7 @@ sql: |
       process_name,
       upid,
       ROW_NUMBER() OVER (PARTITION BY upid ORDER BY dispatch_ts) as move_idx
-    FROM android_input_events
+    FROM android_input_events_normalized
     WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
       AND event_action = 'MOVE'
       AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})

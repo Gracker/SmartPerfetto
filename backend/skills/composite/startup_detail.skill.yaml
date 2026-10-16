@@ -109,6 +109,9 @@ steps:
   # ========== 启动基本信息 ==========
   - id: startup_info
     type: atomic
+    # 回显父 Skill 传入的启动参数，不读 trace。
+    process_scope:
+      role: identity_metadata
     name: "启动基本信息"
     display:
       level: key
@@ -233,10 +236,12 @@ steps:
         - name: big_core_pct
           label: "大核占比(%)"
           type: percentage
+          unit: "%"
           format: percentage
         - name: little_core_pct
           label: "小核占比(%)"
           type: percentage
+          unit: "%"
           format: percentage
         - name: used_cpus
           label: "使用CPU"
@@ -245,7 +250,10 @@ steps:
           label: "核判定来源"
           type: string
         - {name: unknown_core_ms, label: "未知核类型运行(ms)", type: duration, format: duration_ms, unit: ms}
-        - {name: unknown_core_pct, label: "未知核类型占比", type: percentage}
+        - {name: unknown_core_pct, label: "未知核类型占比", type: percentage, unit: "%"}
+        - {name: unknown_core_ns, label: "未知核运行(ns)", type: number, unit: ns, hidden: true}
+        - {name: main_thread_count, label: "主线程数", type: number, unit: count, hidden: true}
+        - {name: big_core_pct_definition, label: "大核占比口径", type: string, hidden: true}
     process_scope:
       role: target
       binding: effective_target_processes
@@ -275,6 +283,9 @@ steps:
           ss.cpu,
           SUM(
             MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})
+          ) as dur_ns,
+          SUM(
+            MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})
           ) / 1e6 as dur_ms,
           COALESCE(ct.core_type, 'unknown') as core_type,
           COALESCE(ct.topology_source, 'unavailable') as topology_source
@@ -299,7 +310,12 @@ steps:
         GROUP_CONCAT(DISTINCT topology_source) as classify_method,
         ROUND(SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ms ELSE 0 END), 2) as unknown_core_ms,
         ROUND(100.0 * SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ms ELSE 0 END) /
-          NULLIF(SUM(dur_ms), 0), 1) as unknown_core_pct
+          NULLIF(SUM(dur_ms), 0), 1) as unknown_core_pct,
+        -- Comparison producer contract for cpu.big_core_pct (comparisonMetricProducerContract.ts):
+        -- unrounded unknown time, the main threads merged into this row, and the declared definition.
+        SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ns ELSE 0 END) as unknown_core_ns,
+        COUNT(DISTINCT utid) as main_thread_count,
+        'main_thread_running:core_tier_group:prime+big+medium@3' as big_core_pct_definition
       FROM cpu_time
       GROUP BY 1
     save_as: cpu_core
@@ -319,12 +335,15 @@ steps:
         - name: avg_freq_mhz
           label: "平均频率(MHz)"
           type: number
+          unit: MHz
         - name: max_freq_mhz
           label: "最高频率(MHz)"
           type: number
+          unit: MHz
         - name: min_freq_mhz
           label: "最低频率(MHz)"
           type: number
+          unit: MHz
         - name: classify_method
           label: "核判定来源"
           type: string
@@ -415,14 +434,14 @@ steps:
         - {name: cpu, label: "CPU", type: number}
         - {name: core_type, label: "核类型", type: string}
         - {name: topology_source, label: "拓扑来源", type: string}
-        - {name: avg_freq_mhz, label: "窗口加权均频(MHz)", type: number}
-        - {name: min_freq_mhz, label: "最低频率(MHz)", type: number}
-        - {name: max_freq_mhz, label: "最高频率(MHz)", type: number}
+        - {name: avg_freq_mhz, label: "窗口加权均频(MHz)", type: number, unit: MHz}
+        - {name: min_freq_mhz, label: "最低频率(MHz)", type: number, unit: MHz}
+        - {name: max_freq_mhz, label: "最高频率(MHz)", type: number, unit: MHz}
         - {name: freq_coverage_ms, label: "频率覆盖(ms)", type: duration, format: duration_ms, unit: ms}
-        - {name: freq_coverage_pct, label: "频率覆盖比例", type: percentage}
+        - {name: freq_coverage_pct, label: "频率覆盖比例", type: percentage, unit: "%"}
         - {name: sched_coverage_ms, label: "调度记录覆盖(ms)", type: duration, format: duration_ms, unit: ms}
         - {name: system_busy_ms, label: "系统非 idle 运行(ms)", type: duration, format: duration_ms, unit: ms}
-        - {name: system_busy_pct, label: "系统忙碌/窗口", type: percentage}
+        - {name: system_busy_pct, label: "系统忙碌/窗口", type: percentage, unit: "%"}
         - {name: target_main_running_ms, label: "目标主线程运行(ms)", type: duration, format: duration_ms, unit: ms}
         - {name: pid, label: "目标 PID", type: number, hidden: true}
         - {name: tid, label: "目标 TID", type: number, hidden: true}
@@ -584,14 +603,14 @@ steps:
         - {name: ucpu, label: "UCPU", type: number}
         - {name: cpu, label: "CPU", type: number}
         - {name: machine_id, label: "Machine ID", type: number}
-        - {name: early_avg_freq_mhz, label: "初期均频(MHz)", type: number}
-        - {name: steady_avg_freq_mhz, label: "后段均频(MHz)", type: number}
-        - {name: max_freq_mhz, label: "观测峰值(MHz)", type: number}
+        - {name: early_avg_freq_mhz, label: "初期均频(MHz)", type: number, unit: "MHz"}
+        - {name: steady_avg_freq_mhz, label: "后段均频(MHz)", type: number, unit: "MHz"}
+        - {name: max_freq_mhz, label: "观测峰值(MHz)", type: number, unit: "MHz"}
         - {name: early_covered_ns, label: "初期覆盖时长", type: duration, unit: ns}
         - {name: early_window_ns, label: "初期窗口时长", type: duration, unit: ns}
         - {name: steady_covered_ns, label: "后段覆盖时长", type: duration, unit: ns}
         - {name: steady_window_ns, label: "后段窗口时长", type: duration, unit: ns}
-        - {name: rampup_pct, label: "后段相对变化(%)", type: percentage, format: percentage}
+        - {name: rampup_pct, label: "后段相对变化(%)", type: percentage, format: percentage, unit: "%"}
         - {name: assessment, label: "评估", type: string}
         - {name: claim_boundary, label: "证据边界", type: string}
     save_as: freq_rampup
@@ -767,6 +786,7 @@ steps:
         - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
         - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
         - {name: unknown_core_ms, label: "unknown_core_ms", type: duration, unit: ms, hidden: true}
+        - {name: unknown_core_ns, label: "unknown_core_ns", type: duration, unit: ns, hidden: true}
         - {name: used_ucpus, label: "used_ucpus", type: string, hidden: true}
         - {name: sched_covered_ns, label: "sched_covered_ns", type: duration, unit: ns, hidden: true}
         - {name: sched_evidence, label: "sched_evidence", type: string, hidden: true}
@@ -816,6 +836,7 @@ steps:
         - name: count
           label: "次数"
           type: number
+          unit: events
           format: compact
         - name: total_ms
           label: "总耗时"
@@ -835,6 +856,7 @@ steps:
         - name: percent
           label: "区间占比"
           type: percentage
+          unit: "%"
           format: percentage
     save_as: main_slices
 
@@ -853,6 +875,7 @@ steps:
         - name: count
           label: "次数"
           type: number
+          unit: "count"
           format: compact
         - name: total_ms
           label: "总耗时(wall)"
@@ -877,20 +900,28 @@ steps:
         - name: percent
           label: "区间占比(wall)"
           type: percentage
+          unit: "%"
           format: percentage
         - name: self_percent
           label: "区间占比(self)"
           type: percentage
+          unit: "%"
           format: percentage
         - name: is_framework_wrapper
           label: "框架包裹切片"
           type: boolean
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql_fragments:
+      - fragments/effective_target_processes.sql
     sql: |
       WITH main_thread AS (
         SELECT t.utid
         FROM thread t
-        JOIN process p ON t.upid = p.upid
-        WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
+        JOIN effective_target_processes p ON t.upid = p.upid
+        WHERE (${__process_scope.upid} IS NOT NULL
+            OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND t.tid = p.pid
       ),
       slice_with_self AS (
@@ -1221,7 +1252,7 @@ steps:
       columns:
         - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
         - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
-        - {name: total_observed_threads, label: "total_observed_threads", type: number, hidden: true}
+        - {name: total_observed_threads, label: "total_observed_threads", type: number, unit: count, hidden: true}
         - name: thread_name
           label: "线程"
           type: string
@@ -1233,6 +1264,7 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
+        - {name: returned_total_cpu_ms, label: "返回线程 CPU 时间合计", type: duration, format: duration_ms, unit: ms, hidden: true}
         - name: q1_big_running_ms
           label: "Q1 大核运行"
           type: duration
@@ -1256,26 +1288,30 @@ steps:
         - name: running_pct
           label: "运行占比"
           type: percentage
+          unit: "%"
           format: percentage
         - name: big_core_pct
           label: "大核占比"
           type: percentage
+          unit: "%"
           format: percentage
         - name: migrations
           label: "核迁移"
           type: number
-        - {name: observed_cross_cluster_migrations, label: "已确认跨 cluster 迁移", type: number}
-        - {name: unknown_cluster_migrations, label: "cluster 身份未知的迁移", type: number}
+          unit: "count"
+        - {name: observed_cross_cluster_migrations, label: "已确认跨 cluster 迁移", type: number, unit: "count"}
+        - {name: unknown_cluster_migrations, label: "cluster 身份未知的迁移", type: number, unit: "count"}
         - {name: migration_evidence, label: "迁移证据覆盖", type: string}
         - name: cross_cluster_migrations
           label: "跨 cluster"
           type: number
+          unit: "count"
         - {name: upid, label: "UPID", type: number}
         - {name: utid, label: "UTID", type: number}
         - {name: priority_min, label: "最小 kernel priority", type: number}
         - {name: priority_max, label: "最大 kernel priority", type: number}
-        - {name: priority_value_count, label: "priority 值数", type: number}
-        - {name: preemption_count, label: "窗口内 R+ 切出次数", type: number}
+        - {name: priority_value_count, label: "priority 值数", type: number, unit: count}
+        - {name: preemption_count, label: "窗口内 R+ 切出次数", type: number, unit: events}
         - {name: runnable_preempted_ms, label: "R+ 等待(ms)", type: duration, format: duration_ms, unit: ms}
         - {name: unknown_running_ms, label: "未知核类型运行(ms)", type: duration, format: duration_ms, unit: ms}
         - {name: scheduling_policy_evidence, label: "调度策略证据", type: string}
@@ -1509,6 +1545,7 @@ steps:
         - name: state_pct
           label: "状态占比"
           type: percentage
+          unit: "%"
           format: percentage
         - name: state_coverage_ms
           label: "状态覆盖"
@@ -1518,6 +1555,7 @@ steps:
         - name: state_coverage_pct
           label: "状态覆盖率"
           type: percentage
+          unit: "%"
           format: percentage
         - name: uncovered_ms
           label: "未覆盖时长"
@@ -1564,7 +1602,7 @@ steps:
     inputs: [startup_basic, cpu_core, cpu_freq, per_cpu_context, preemption_handoffs, freq_rampup, quadrant, cpu_placement, main_slices, actionable_main_slices, main_file_io, binder_calls, main_sync_binder, binder_pool, sched_delay, thread_states, critical_tasks, blocking_graph, jit_analysis, hot_slice_states]
     rules:
       # 大核占比偏低 + Runnable 明显（仅在判定来源可信时触发）
-      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.unknown_core_pct === 0 && quadrant.data[0]?.q3_runnable_ms > 50"
+      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.unknown_core_ns === 0 && quadrant.data[0]?.q3_runnable_ms > 50"
         severity: warning
         diagnosis: "主线程大核占比偏低（${cpu_core.data[0].big_core_pct}%）且 Runnable 排队明显（${quadrant.data[0].q3_runnable_ms}ms），可能存在调度供给不足"
         confidence: medium
@@ -1573,9 +1611,9 @@ steps:
           - "对照关键线程 kernel priority、R+ 切换和 affinity/cgroup 证据，再评估调度配置"
 
       # 核判定来源不可靠时，避免把大小核结论当根因
-      - condition: "cpu_core.data[0]?.unknown_core_pct > 0"
+      - condition: "cpu_core.data[0]?.unknown_core_ns > 0"
         severity: info
-        diagnosis: "主线程运行时间中 ${cpu_core.data[0].unknown_core_pct}% 的核类型未知，不能把未知部分计为小核或据此认定摆核不足"
+        diagnosis: "主线程有 ${cpu_core.data[0].unknown_core_ms}ms（${cpu_core.data[0].unknown_core_pct}%）运行时间的核类型未知，不能把未知部分计为小核或据此认定摆核不足"
         confidence: medium
         suggestions:
           - "补充或检查 cpu_frequency/cpu capacity 数据后再判断大小核调度问题"
@@ -1701,9 +1739,9 @@ steps:
           - "检查是否有其他线程/进程在启动期间与主线程争抢 CPU"
 
       # 多线程 CPU 时间可超过墙钟时间；这是并行度观察，不是争抢证据。
-      - condition: "critical_tasks?.data?.length > 0 && critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0) > ${dur_ms} * 2"
+      - condition: "(critical_tasks?.data?.[0]?.returned_total_cpu_ms || 0) > ${dur_ms} * 2"
         severity: info
-        diagnosis: "返回的关键线程 CPU 时间合计 ${Math.round(critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0))}ms，是启动墙钟时间 ${dur_ms}ms 的 ${(critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0) / ${dur_ms}).toFixed(1)} 倍，表明存在多核并行工作；是否竞争需检查实际 Runnable 与抢占区间"
+        diagnosis: "返回的关键线程 CPU 时间合计 ${critical_tasks.data[0].returned_total_cpu_ms}ms，超过启动墙钟时间 ${dur_ms}ms 的 2 倍，表明存在多核并行工作；是否竞争需检查实际 Runnable 与抢占区间"
         confidence: medium
         suggestions:
           - "结合逐核系统负载、关键线程 Runnable 和 R+ 交接，确认并行工作是否挤占关键路径"
@@ -1737,10 +1775,11 @@ steps:
         suggestions:
           - "对齐该 CPU 上关键任务、DVFS 请求/限制及频率响应，再评估是否影响关键路径"
 
-      # 核驻留变化不等于曾被困小核。
-      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
+      # 核驻留变化不等于曾被困小核。A low share needs unknown_core_ns === 0 (see
+      # lowBigGroupGuardViolations); a high one is a lower bound.
+      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].unknown_core_ns === 0 && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
         severity: info
-        diagnosis: "主线程已分类大核占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；需保留未知核占比，不能据此认定被困小核或亲和性配置错误"
+        diagnosis: "主线程大核组占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；不能据此认定被困小核或亲和性配置错误"
         confidence: medium
         suggestions:
           - "结合实际 CPU 容量、核驻留时间及任务需求说明变化；未知拓扑保持未知"

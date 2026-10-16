@@ -23,8 +23,8 @@ SmartPerfetto exposes one analysis core through several products:
 | Portable | Three platform release assets | Bundles Node.js 24, backend, frontend, trace processor, and runtime assets |
 | HTTP/SSE API | `/api/*` | Web, CLI support, and integrations reuse backend contracts |
 
-A feature cannot be verified on only one entry point. The authoritative surface
-list is [`.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md).
+Identify the entry points and shared contracts affected by a change, then verify
+their behavior. The authoritative surface list is [`.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md).
 
 ## 2. Component Boundaries
 
@@ -37,9 +37,11 @@ flowchart LR
   M --> S["YAML Skill engine"]
   S --> T["trace_processor_shell pool"]
   O --> K["Strategies and knowledge retrieval"]
-  O --> Q["Result normalization and quality gates"]
-  Q --> D["DataEnvelope / evidence / identity"]
-  D --> X["Chat / report / CLI / snapshot / comparison"]
+  R --> Q["Product-owned finalization"]
+  O -->|"Exact result + private context"| Q
+  M --> D["DataEnvelope / capture / identity"]
+  D --> Q
+  Q --> X["Chat / report / CLI / snapshot / comparison"]
 ```
 
 Primary directories:
@@ -68,21 +70,26 @@ POST /api/agent/v1/analyze
   -> resolve workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
   -> select Claude / OpenAI / Pi / OpenCode / Qoder runtime
+  -> typed intent pins scope, evidence access, budget, and deliverable
+  -> product acquires strategy-declared scene entry evidence when eligible
   -> use the shared MCP registry for SQL, Skills, knowledge, and planning
   -> selected source: bounded lookup or structured SourceUseDecision stop
   -> DataEnvelope + evidence/claim/identity sidecars
-  -> final-result normalization / report-contract + source-claim-binding gate
+  -> exact runtime result + private finalization context
+  -> product-owned finalizeAnalysisResult: finite proof, at most one no-tool review, terminal state
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
 `options.analysisMode` supports:
 
-- `fast`: lightweight tools and deterministic direct-evidence paths;
-- `full`: full tools, planning, and quality checks;
-- `auto`: non-negotiable context rules, then semantic classification.
+- `fast`: fixed quick budget with the request's authorized capabilities;
+- `full`: fixed full budget;
+- `auto`: the typed intent's complexity recommendation, with an explicit fallback when unavailable.
 
-When a reference trace, codebase, or private knowledge source requires full
-context, a requested `fast` mode must not silently drop the capability.
+Budget, investigation scope, evidence access, and deliverable are independent.
+A full budget does not automatically require a plan, report, or source lookup;
+a quick budget does not reduce permissions. `existing_only` prohibits new
+acquisition at the tool handler boundary. See [Agent Runtime](agent-runtime.en.md#analysis-modes).
 
 ### 3.1 Enterprise Identity Boundary
 
@@ -108,7 +115,13 @@ mode never imports old unscoped data.
 
 Cookie-authenticated mutations use an exact Origin check in addition to CORS,
 because CORS alone does not prevent a browser from sending a cross-site
-mutation, and they also require the session-derived CSRF token. The callback
+mutation, and they also require the session-derived CSRF token. A Trace
+Processor WebSocket handshake is a GET that bypasses the Express middleware, so
+when a credential the browser attaches by itself authenticates it (a session
+cookie, trusted SSO headers, or the keyless local identity), its Origin must be
+in the CORS allow list, checked before any lease holder is acquired. The
+backend's own origin is never inferred from Host, which a DNS-rebinding page
+controls. In keyless local mode the handshake also rejects a non-loopback Host. The callback
 establishes the session and redirects directly to `FRONTEND_URL`; there is no
 popup or frontend workspace-selection flow.
 
@@ -119,11 +132,11 @@ shared `IOrchestrator` contract:
 
 | Runtime | Primary providers | Resume state |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | Claude session id |
-| `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | history + response id |
-| `pi-agent-core` | Provider Manager custom profile / Pi model config | opaque transcript |
-| `opencode` | OpenCode SDK and custom providers | OpenCode session id + isolated directories |
-| `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | Qoder session id; private-knowledge runs do not persist opaque sessions |
+| `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | No native state across turns (provider pin only) |
+| `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | No native state across turns (provider pin only) |
+| `pi-agent-core` | Provider Manager custom profile / Pi model config | No native state across turns (provider pin only) |
+| `opencode` | OpenCode SDK and custom providers | No native session across turns; isolated directories derived from the session id are reused |
+| `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | No native state across turns (provider pin only) |
 
 Canonical loaders and capabilities come from
 `backend/src/agentRuntime/runtimeDescriptors.ts`, with implementations under
@@ -147,7 +160,7 @@ establish SDK readiness.
 exposure, and allowlists; `claudeMcpServer.ts` supplies implementations and
 request-shaped composition. The total is intentionally dynamic:
 
-- fast and full requests expose different surfaces;
+- quick budgets compact the catalog and result projections outside scene-wide investigations; request and handler boundaries still determine permissions;
 - code-aware tools require permission;
 - comparison tools require a reference trace;
 - artifact tools depend on session capabilities;
@@ -162,7 +175,7 @@ The two content layers have different jobs:
 
 ```text
 Markdown Strategy / Template
-  -> classification, methodology, constraints, final_report_contract
+  -> classification, methodology, investigation_requirements, entry_skill, final_report_contract
 
 YAML Skill
   -> SQL / iterator / conditional / composite execution
@@ -191,6 +204,14 @@ See the [Skill System Guide](../reference/skill-system.en.md).
 trace loading, and SQL RPC. Source, npm, Docker, and portable products must
 follow the same pin and integrity rules. An explicit `TRACE_PROCESSOR_PATH` is
 user-owned; launchers do not change its permissions or overwrite it.
+
+A processor's lifetime is bound to the process that started it. On macOS and
+Linux it starts as `server http --idle-start orphaned`, so it reaps itself
+shortly after its owner exits, including exits that run no cleanup (SIGKILL,
+a crash, `jest --forceExit`). On Windows and for a backend running as PID 1 it
+starts as `server http` without owner binding, and binaries without `server
+http` use the classic `--httpd` launch; there a processor left by a dead owner
+is removed by the next backend start's orphan sweep.
 
 DataEnvelope output feeds:
 
@@ -225,33 +246,41 @@ confused with the live arbitrary raw-trace dual view.
 
 Codebases pass through `PathSecurityGate` preview/register/reindex.
 `metadata_only` exposes `CodeRef`; `provider_send` additionally requires
-registration consent and an explicit request mode. Raw source never belongs in
-sessions, logs, SSE, reports, or exports.
+registration consent and an explicit request mode. Owner-authorized result
+projection may retain quoted source for the user's UI, local history and reports;
+logs, public and shared outputs use strict projection. Sensitive paths,
+credentials and revoked authority remain independently checked. See
+[Private Analysis Context](private-analysis-context.en.md).
 
 Registration only makes a codebase selectable; it does not attach source.
 `search_codebase` / `read_codebase_file` work against a live root without an
 active index. Reindexing is optional acceleration for semantic/symbol lookup
-and patch workflows. Full analysis with selected source and a queryable trace
-anchor must perform lookup or record a structured stop status first.
-`SourceUseDecisionV1` records selected/queried/used IDs, status, and coverage.
+and patch workflows. Source lookup follows the question and `sourceNeed`;
+budget mode does not insert it automatically. `existing_only` permits no new
+acquisition. `SourceUseDecisionV1` records actual selected/queried/used IDs,
+status, and coverage.
 
-Trace/Skill/SQL proves occurrence, while `CodeRef` proves mechanism.
-`SourceClaimBindingV1` is limited to
-`corroborated|compatible|ambiguous|unverified`; `corroborated` requires verified
-same-claim trace occurrence plus `provider_send` body/indexed evidence.
-`metadata_only` is locate-only. One canonical projector provides safe
+Trace/Skill/SQL supports observations, source bodies support mechanism analysis,
+and `CodeRef` metadata only locates source. `SourceClaimBindingV1` declares a
+claim's source/trace references; `source_claim_verifier@2` computes status from
+the actual ledger. `invalid` rejects the binding; `unbound`, `location_only`,
+and `source_only` remain partial. `trace_linked` means this run read the body
+and linked it to verified same-claim trace evidence; it does not independently
+prove a general mechanism or causal relation. One canonical projector provides safe
 provenance for SSE, reports, CLI, snapshots, and APIs; Web further reduces it
 to the current-run receipt.
 
-### Android Internals
+### Document Knowledge Bases
 
-The signed built-in Knowledge Pack and a private checkout are separate sources:
-
-- the bundled Pack ships with every product and can update through a TUF
-  channel; its provenance is background knowledge, never current-trace
-  evidence;
-- a private checkout requires a path allowlist, rights acknowledgement,
-  provider consent, and request-level source selection.
+Knowledge has one source: document knowledge bases (`document_collection`) the
+user registers and selects per turn, including the Android Internals Wiki's
+`src/`. They require a path allowlist (or the local folder picker), a rights
+acknowledgement, provider consent, and an active index. Results of
+`search_knowledge` / `read_knowledge_section` are background
+(`evidenceEffect: background`), carry `kref-` references and `kb:` citations,
+and never stand in for current-trace evidence. Records of the legacy Wiki
+connector are a retired kind: listed and deletable, and refused at the run-start
+gate with `ANALYSIS_CONTEXT_SOURCE_RETIRED`.
 
 The resolved analysis context pins codebase/knowledge generations,
 tenant/workspace/user, provider consent, and session continuity. Resume,
@@ -316,19 +345,20 @@ The final result is not one Markdown string:
 | HTML report | Evidence, claims, identity, background references, and appendix |
 | CLI artifact | Turn, report, resume state, and machine-readable output |
 | Analysis-result snapshot | Standard metrics, evidence references, comparison input |
-| Provider session snapshot | Runtime/provider-specific resume state |
+| Logical session snapshot | Provider/runtime pin and product history; no native SDK session restoration across turns |
 | Source provenance | Safe SourceUseDecision, relative `CodeRef`, and trace-to-mechanism bindings; the Web receipt retains no `CodeRef` |
 
-`final_report_contract`, normalization, and quality gates converge provider
-outputs on shared semantics rather than patching one provider-specific string
-at one exit.
+The product takes the private context from the exact runtime result and invokes
+`finalizeAnalysisResult` once. It preserves the original propositions and capture
+provenance, with independent completion, declaration, evidence, source, identity,
+and report assessments. Declarations are checked per entry; delivery model calls
+are admitted against the time left. See [Agent Runtime](agent-runtime.en.md#final-result-and-quality-artifacts).
 
 ## 12. Release Assets
 
 Release surfaces are independent:
 
-- npm bundles CLI dist, Skills, Strategies, SQL, trace processor, and the
-  Knowledge Pack;
+- npm bundles CLI dist, Skills, Strategies, SQL, and trace processor;
 - portable additionally bundles Node.js 24, native dependencies, backend,
   `frontend/`, and a launcher;
 - Docker builds a Linux image from `main` using committed `frontend/` and
@@ -360,7 +390,7 @@ npm run verify:code-aware-semantic-delta
 npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
-npm --prefix backend run verify:codebase-aware
+npm run verify:codebase-aware
 ```
 
 Additionally:

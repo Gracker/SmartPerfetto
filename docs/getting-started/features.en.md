@@ -19,10 +19,10 @@ Why is the main thread blocked in my selected range?
 
 Entry points:
 
-- Open `http://localhost:10000`.
+- Open the address your entry point prints (`./start.sh` and Docker default to `http://127.0.0.1:10000`).
 - Load a trace.
 - Open the SmartPerfetto AI Assistant panel.
-- Choose `fast`, `full`, or `auto`.
+- Choose an analysis mode: `Chat` (default), `Fast`, `Full`, or `Auto`.
 - Ask a question.
 
 Output:
@@ -31,7 +31,8 @@ Output:
 - The UI streams progress, SQL/Skill evidence, tables, and the final conclusion.
 - Each round places its analysis process and steps above its final conclusion, keeping each round together.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
-- Server verification details are collapsed by default; expand them for the full evidence and source references. Verification warnings remain visible.
+- Server verification details are collapsed by default; expand them for the full evidence and source references. Verification warnings remain visible. Completed analyses are delivered normally, with verification concerns and coverage gaps labelled separately for users to assess against the evidence.
+- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once finished it is shown in full, marked as being verified, and the verdict follows. A first stop at that point ends only the verification and keeps the answer. The Pi, OpenCode and Qoder runtimes show no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
 
 ### Browser Trace Tools And Local WASM
 
@@ -49,9 +50,28 @@ that run directly in the browser:
 These capabilities belong to the local browser timeline and Perfetto plugins.
 Raw multi-trace open/merge is separate from SmartPerfetto dual-trace AI
 comparison, and new WASM capabilities do not automatically extend backend AI,
-Skills, CLI, or HTML reports. Those surfaces continue to use the packaged,
-pinned native `trace_processor_shell` until an independent upgrade passes the
-five-platform verification gates.
+Skills, CLI, or HTML reports. Those surfaces use the packaged, pinned native
+`trace_processor_shell`, built from the same upstream Perfetto revision as the
+frontend (`scripts/trace-processor-pin.env`); a new browser view reaches AI
+analysis only once a backend Skill, strategy, or tool uses it.
+
+### Critical Path Wait Chain And Flamegraph
+
+- **Critical-path analysis**: after you select a `thread_state` task on the
+  timeline, a `Critical-path analysis` button appears next to the AI Assistant
+  preset questions. It opens a drawer with the wakeup chain, anomaly
+  assessment, related modules, next steps, and copyable verification SQL;
+  "Continue in the conversation" hands the result to the chat.
+- **Flamegraph**: the `火焰图` (flamegraph) tab in the AI Assistant view reads
+  the current trace, checks for CPU call-stack samples, and shows self/total
+  hotspots, hot paths, and categories.
+
+Both AI summaries use the current Provider and require the `agent:run`
+permission. When AI is disabled, permission or credentials are missing, or the
+Provider is not the Claude runtime, they return a rule-based fallback summary;
+the analysis itself still returns. Results are not written to reports,
+snapshots, or the conversation. See
+[Critical Path And Flamegraph](critical-path-and-flamegraph.en.md).
 
 ### Smart Analysis Mode
 
@@ -132,6 +152,10 @@ Output:
 
 - Packages the question, evidence, conclusion, and suggestions into a readable report.
 - Useful for team sharing, issues, and regression records.
+- Metric tables retain literal values and declared units. Warning and critical observations have explicit labels; ordinary observations carry no green health marker. Units are never guessed from field names.
+- Expand complete tables, nested values, additional captured columns, case matches, and the conversation timeline. Different captures sharing a title or reference are retained.
+- `Save HTML Report` downloads the current page locally for offline reopening. Printing expands captured details and collapsed rows.
+- Opening a historical report upgrades its layout and save controls. Units or data omitted when an old file was generated require report regeneration; they cannot be recovered from the page.
 
 ## 6. Live Trace Comparison
 
@@ -190,49 +214,51 @@ Output:
 
 See [Multi-Trace Analysis Result Comparison](multi-trace-result-comparison.en.md) for the full workflow.
 
-## 8. Android Internals Knowledge
+## 8. Document Knowledge Bases And The Android Internals Wiki
 
-SmartPerfetto separates Android Internals background knowledge into two sources:
-
-- a signed Knowledge Pack bundled with npm, Docker, source, and portable
-  products, available offline and updatable through a TUF stable channel;
-- a user-allowed private checkout guarded by path, rights, provider-consent,
-  and request-level source-id checks.
+Any folder of documents (`.md .markdown .mdx .txt .rst .adoc .html .htm`) can be
+registered as a document knowledge base, including your device tag definitions,
+trace passage notes, team documents and the public Android Internals Wiki's
+`src/` folder. Knowledge bases are selected explicitly per turn;
+the model searches them on demand with `search_knowledge` /
+`read_knowledge_section` and cites them as `kb:path#Lstart-Lend`.
 
 Entry points:
 
-- CLI: `smp knowledge-pack status` and `smp knowledge-pack update --check`.
-- AI analysis: the runtime retrieves the built-in Pack when relevant; a private
-  source must be selected explicitly for the request.
-- Admin API: `/api/rag/android-internals/*` manages private checkouts only.
+- The AI Assistant composer's context control → "Manage…" → "Document
+  knowledge bases": preview, register, reindex, test search, delete.
+- CLI: `smp knowledge preview/register/reindex/list/search/remove`, and
+  `--knowledge-source-id` for an analysis.
 
-Output:
+Effects:
 
-- Pack/private content is background knowledge, never current-trace SQL/Skill
-  evidence.
-- Reports retain source, version, fingerprint, and snippet hashes; logs/SSE do
-  not project excerpt bodies.
-- Updates do not silently switch active sessions; revocation requires a new
-  analysis context.
+- A knowledge base is background only and never stands in for current-trace
+  SQL/Skill evidence; statements based only on it are labelled.
+- Reports, snapshots, and CLI artifacts record which knowledge references were
+  delivered (`knowledge_use@1`) and whether each citation in the answer matches.
+- "Knowledge use" below each Web answer shows retrieved passages and answer
+  citations separately, including an explicit indication when none were cited.
 
-See [Android Internals Knowledge Pack And Private Knowledge](android-internals-knowledge.en.md).
+See [Private Knowledge](private-knowledge.en.md) and
+[Using The Android Internals Wiki As A Knowledge Base](android-internals-knowledge.en.md).
 
 ## 9. Code-Aware Local Source Analysis
 
-Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK source trees with SmartPerfetto. Registration only creates a selectable source and never attaches it to a session automatically. By default, the model sees only `CodeRef` metadata, not raw source text. A live root supports bounded on-demand search/read without an index.
+Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK source trees with SmartPerfetto. Registration only creates a selectable source and never attaches it to a session automatically; each turn chooses `Locate only` (the model sees only `CodeRef` metadata) or `Send text` (the model may read redacted snippets inside the authorized scope on demand) in the composer's "Analysis context for this turn" popover. A live root supports bounded on-demand search/read without an index.
 
 Entry points:
 
-- `Codebases` tab in AI Assistant settings: preview/register, selection and provider consent, current-scope/new-language authorization, pending accept/reject, reindex, audit, and delete.
-- CLI: `smp codebase list/preview/register/selection/consent/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`.
-- During analysis, explicitly pass `--code-aware metadata_only` and `--codebase-id <id>`, or choose a registered codebase in the UI.
+- `Codebases` tab in AI Assistant settings: preview and add (`Add without using` or `Add and use for analysis`), edit scope, `Allow source text` (review the server-reported include scope, exclude globs, and languages, then `Allow`) and revoke, accept/reject a limited index candidate, build the optional index, audit, and delete.
+- The composer's "Analysis context for this turn" popover: choose the source mode, codebases, source depth, and knowledge bases per turn.
+- CLI: `smp codebase list/preview/register/selection/consent/authorize-content/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`.
+- In the CLI, pass `--codebase-id <id>` explicitly (defaults to `metadata_only`: the model sees only `CodeRef`s); `--code-aware provider_send` additionally needs source text granted first: `smp codebase authorize-content <id>` prints the disclosure and its token, and `--confirm <token>` grants it. Web "Add and use for analysis" grants source text once you confirm the disclosed scope.
 
 Output:
 
 - Maps call stacks, native frames, or kernel symbols to relative file paths, line ranges, and symbols.
-- Performs bounded source lookup when a queryable trace anchor exists, or records a structured non-use reason; quantitative-only questions may be `not_needed`.
+- Selecting source only hands the authorized source tools to the model, which decides whether to search for the question; the source receipt records status from the calls the run actually made, and `not_needed` for a turn that may acquire no evidence.
 - Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism; `corroborated|compatible|ambiguous|unverified` reports the binding strength.
-- Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Raw source text is fetched only through the controlled excerpt endpoint.
+- Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Source text appears only as quotations an authorized analysis saved with its own results; no API returns indexed source text.
 - If no codebase is configured for the session, the normal trace-only analysis path is unchanged.
 
 See [Code-Aware Analysis](code-aware-analysis.en.md) for the full workflow.
@@ -357,7 +383,7 @@ running directory. See [Application Updates](application-updates.en.md).
 | Produce a shareable conclusion | HTML report |
 | Temporarily compare a reference trace in this conversation | `compare_arrows` live trace comparison |
 | Compare completed results across windows or users | `fact_check` multi-trace result comparison |
-| Retrieve Android Internals background | Built-in Knowledge Pack; explicit knowledge source for private material |
+| Retrieve Android Internals or team-document background | Register and select a document knowledge base |
 | Map findings to local source files and line ranges | Code-Aware Analysis |
 | Decide whether an analysis is worth reporting and what to contribute | “Ask the Agent whether to report this” below the result |
 | Review and apply a qualified analysis improvement | Settings -> Evolution |

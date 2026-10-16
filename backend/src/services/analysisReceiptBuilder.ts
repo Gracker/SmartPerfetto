@@ -12,6 +12,8 @@ import type {AnalysisAssuranceStatus} from '../types/analysisDelivery';
 import {parseAdaptiveRoutingReceipt} from '../agentRuntime/adaptiveEvidenceRouter';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
+import {summarizeClaimVerification} from './analysisInvestigationPresentation';
+import {knowledgeReferenceCount} from './knowledge/knowledgeUse';
 import type {
   AnalysisReceipt,
   AnalysisReceiptGateStatus,
@@ -41,6 +43,12 @@ export interface AnalysisSessionReceiptSource {
   traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   adaptiveRouting?: AdaptiveRoutingReceiptV1;
 }
+
+/**
+ * `reportError` when report generation threw: fixed, because the field reaches
+ * clients, the receipt, the report and external issue drafting.
+ */
+export const REPORT_GENERATION_FAILED = 'report generation failed';
 
 export interface AnalysisReceiptFinalArtifacts {
   reportId?: string;
@@ -121,6 +129,7 @@ function buildAnalysisReceiptBody(
     agentResponses: session.agentResponses,
   });
   const claimAudit = buildClaimAudit(claimSupport, claimVerificationResult);
+  const knowledgeReferences = knowledgeReferenceCount(result.knowledgeUse);
   const requestedMode = input.requestedMode ?? session.analysisMode ?? quickRun?.requestedMode ?? 'auto';
   const resolvedMode = input.resolvedMode ?? quickRun?.resolvedMode ?? 'full';
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
@@ -159,6 +168,7 @@ function buildAnalysisReceiptBody(
       memoryHintCount: countMemoryHints(quickRun),
       conversationContextCount: countConversationContext(quickRun, session.conversationSteps),
       strategyHintCount: countStrategyHints(quickRun),
+      ...(knowledgeReferences !== undefined ? {knowledgeReferenceCount: knowledgeReferences} : {}),
     },
     claimAudit,
     qualityGates: result.deliveryAssurance ? {
@@ -284,14 +294,21 @@ function buildClaimAudit(
         uncertainClaims: 0,
       };
     }
+    // The CLI/HTML status line's own counts, derived from the claim results.
+    const summary = summarizeClaimVerification(claimVerificationResult)!;
     return {
-      totalClaims: claimResults.length,
-      verifiedClaims: claimResults.filter(claim => claim.status === 'verified').length,
-      unsupportedClaims: claimVerificationResult.unsupportedClaimCount,
+      totalClaims: summary.totalClaimCount ?? 0,
+      verifiedClaims: summary.verifiedClaimCount ?? 0,
+      unsupportedClaims: summary.unsupportedClaimCount ?? 0,
       uncertainClaims: claimResults.filter(claim =>
         claim.status === 'partial' ||
         claim.status === 'inference' ||
         claim.status === 'not_checked').length,
+      referencesMatchedClaims: summary.referencesMatchedClaimCount ?? 0,
+      ...(summary.propositionProvedClaimCount !== undefined
+        ? {propositionProvedClaims: summary.propositionProvedClaimCount} : {}),
+      ...(summary.invalidDeclarationClaimCount !== undefined
+        ? {invalidDeclarationClaims: summary.invalidDeclarationClaimCount} : {}),
     };
   }
   const byLevel = new Map<EvidenceSupportLevel, number>();
@@ -348,7 +365,6 @@ function finalReportGate(input: {
     query: input.session.query,
     sceneType: input.sceneType,
     contractSceneId: input.result.conclusionContract?.metadata?.sceneId,
-    caseRecommendations: input.result.conclusionContract?.caseRecommendations,
   };
   if (!assessFinalReportContractApplicability(contractInput)) return 'not_applicable';
   return assessFinalReportContractCompleteness(contractInput) ? 'partial' : 'passed';

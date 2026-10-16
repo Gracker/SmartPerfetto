@@ -2,23 +2,74 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
-import { authenticate } from '../../middleware/auth';
-import { registerAgentReportRoutes } from '../agentReportRoutes';
-import { registerAgentSessionCatalogRoutes } from '../agentSessionCatalogRoutes';
-import reportRoutes, { persistReport, reportStore } from '../reportRoutes';
-import traceRoutes from '../simpleTraceRoutes';
-import {
-  clearCodeAwareOutputGuards,
-  registerCodeAwareCanary,
-  registerPrivateAnalysisQueryForEcho,
-} from '../../services/security/codeAwareOutputRegistry';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+// Product imports follow the suite's private runtime paths, including scene config.
+let authenticate: typeof import('../../middleware/auth').authenticate;
+let registerAgentReportRoutes: typeof import('../agentReportRoutes').registerAgentReportRoutes;
+let registerAgentSessionCatalogRoutes: typeof import('../agentSessionCatalogRoutes').registerAgentSessionCatalogRoutes;
+let reportRoutes: typeof import('../reportRoutes').default;
+let persistReport: typeof import('../reportRoutes').persistReport;
+let reportStore: typeof import('../reportRoutes').reportStore;
+let traceRoutes: typeof import('../simpleTraceRoutes').default;
+let clearCodeAwareOutputGuards: typeof import('../../services/security/codeAwareOutputRegistry').clearCodeAwareOutputGuards;
+let registerCodeAwareCanary: typeof import('../../services/security/codeAwareOutputRegistry').registerCodeAwareCanary;
+let registerPrivateAnalysisQueryForEcho: typeof import('../../services/security/codeAwareOutputRegistry').registerPrivateAnalysisQueryForEcho;
+let NO_PRIVATE_CONTEXT: typeof import('../../services/security/analysisPrivateContext').NO_PRIVATE_CONTEXT;
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService').SessionPersistenceService;
+
+const loopbackServers = createLoopbackServerFixture();
+
+const runtimePathKeys = [
+  'SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'SMARTPERFETTO_DATA_DIR', 'SMARTPERFETTO_LOGS_DIR',
+  'SMARTPERFETTO_TRACE_UPLOAD_DIR', 'SCENE_REPORT_DIR', 'SCENE_JOB_ARTIFACT_DIR',
+] as const;
+const originalRuntimePaths = new Map(runtimePathKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let cleanupFailed = false;
+
+beforeAll(async () => {
+  suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-owner-suite-'));
+  Object.assign(process.env, {
+    SMARTPERFETTO_ENTERPRISE_DB_PATH: path.join(suiteRoot, 'enterprise.sqlite'),
+    SMARTPERFETTO_BACKEND_DATA_DIR: path.join(suiteRoot, 'data'),
+    SMARTPERFETTO_BACKEND_LOG_DIR: path.join(suiteRoot, 'logs'),
+    SMARTPERFETTO_DATA_DIR: path.join(suiteRoot, 'legacy-data'),
+    SMARTPERFETTO_LOGS_DIR: path.join(suiteRoot, 'legacy-logs'),
+    SMARTPERFETTO_TRACE_UPLOAD_DIR: '',
+    SCENE_REPORT_DIR: path.join(suiteRoot, 'scene-reports'),
+    SCENE_JOB_ARTIFACT_DIR: path.join(suiteRoot, 'scene-jobs'),
+  });
+  ({authenticate} = await import('../../middleware/auth'));
+  ({registerAgentReportRoutes} = await import('../agentReportRoutes'));
+  ({registerAgentSessionCatalogRoutes} = await import('../agentSessionCatalogRoutes'));
+  ({default: reportRoutes, persistReport, reportStore} = await import('../reportRoutes'));
+  ({default: traceRoutes} = await import('../simpleTraceRoutes'));
+  ({clearCodeAwareOutputGuards, registerCodeAwareCanary, registerPrivateAnalysisQueryForEcho} =
+    await import('../../services/security/codeAwareOutputRegistry'));
+  ({NO_PRIVATE_CONTEXT} = await import('../../services/security/analysisPrivateContext'));
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+});
+
+afterAll(async () => {
+  try {
+    await loopbackServers.close();
+    SessionPersistenceService?.resetForTests();
+  } finally {
+    for (const [key, value] of originalRuntimePaths) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+  // A case cleanup failure preserves the suite's files for diagnosis.
+  if (!cleanupFailed && suiteRoot) await fs.rm(suiteRoot, {recursive: true, force: true});
+});
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -50,12 +101,12 @@ function ssoHeaders(
     .set('X-SmartPerfetto-SSO-Scopes', scopes);
 }
 
-function makeResourceApp(): express.Express {
+async function makeResourceApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/traces', traceRoutes);
   app.use('/api/reports', reportRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 async function writeTraceMetadata(
@@ -83,13 +134,23 @@ async function writeTraceMetadata(
 }
 
 beforeEach(async () => {
+  SessionPersistenceService.resetForTests();
   uploadDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-owner-'));
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(uploadDir, 'enterprise.sqlite');
   process.env.UPLOAD_DIR = uploadDir;
   process.env.SMARTPERFETTO_API_KEY = API_KEY;
   reportStore.clear();
 });
 
 afterEach(async () => {
+  try {
+    await loopbackServers.close();
+    SessionPersistenceService.resetForTests();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  }
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(suiteRoot, 'enterprise.sqlite');
   reportStore.clear();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
@@ -116,7 +177,7 @@ describe('owner guard for trace and report routes', () => {
       writeTraceMetadata('trace-b'),
       writeTraceMetadata('trace-c'),
     ]);
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const firstPage = await authHeaders(request(app).get('/api/traces?limit=2'));
     expect(firstPage.status).toBe(200);
@@ -151,7 +212,7 @@ describe('owner guard for trace and report routes', () => {
       userId: API_USER_ID,
     });
 
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
     const listRes = await authHeaders(request(app).get('/api/traces'));
     expect(listRes.status).toBe(200);
     expect(listRes.body.traces.map((trace: any) => trace.id)).toEqual(['own-trace']);
@@ -169,7 +230,7 @@ describe('owner guard for trace and report routes', () => {
 
   it('treats legacy trace metadata as dev-only default ownership', async () => {
     await writeTraceMetadata('legacy-trace', null);
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const apiKeyRes = await authHeaders(request(app).get('/api/traces/legacy-trace'));
     expect(apiKeyRes.status).toBe(404);
@@ -182,7 +243,7 @@ describe('owner guard for trace and report routes', () => {
 
   it('hides global trace cleanup from non-privileged analyst requests', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const res = await ssoHeaders(
       request(app).post('/api/traces/cleanup'),
@@ -206,7 +267,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: 'viewer-user',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const readRes = await ssoHeaders(request(app).get('/api/traces/peer-trace'), 'viewer-user', 'viewer');
     expect(readRes.status).toBe(200);
@@ -230,7 +291,7 @@ describe('owner guard for trace and report routes', () => {
       workspaceId: 'workspace-a',
       userId: 'peer-user',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const deleteRes = await ssoHeaders(
       request(app).delete('/api/traces/peer-owned-trace'),
@@ -245,6 +306,7 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('own-report', {
       html: '<html><body>own report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'own-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -253,13 +315,14 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('other-report', {
       html: '<html><body>other report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'other-session',
       tenantId: 'tenant-b',
       workspaceId: 'workspace-a',
       userId: API_USER_ID,
     });
 
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const ownRes = await authHeaders(request(app).get('/api/reports/own-report'));
     expect(ownRes.status).toBe(200);
@@ -278,12 +341,13 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set(escapedId, {
       html: '<html><body>must not escape</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'unsafe-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: API_USER_ID,
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const readRes = await authHeaders(
       request(app).get('/api/reports/..%2f..%2ffrontend%2findex'),
@@ -303,6 +367,7 @@ describe('owner guard for trace and report routes', () => {
       persistReport('../escaped-report', {
         html: '<html><body>must not persist</body></html>',
         generatedAt: Date.now(),
+        privateContext: NO_PRIVATE_CONTEXT,
         sessionId: 'unsafe-session',
       }),
     ).toThrow('Unsafe report id');
@@ -314,12 +379,13 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('report-no-read', {
       html: '<html><body>restricted report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'restricted-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'report-owner',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const exportRes = await ssoHeaders(
       request(app).get('/api/reports/report-no-read/export'),
@@ -337,12 +403,13 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('peer-report', {
       html: '<html><body>peer report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'peer-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'peer-user',
     });
-    const app = makeResourceApp();
+    const app = await makeResourceApp();
 
     const deleteRes = await ssoHeaders(
       request(app).delete('/api/reports/peer-report'),
@@ -356,7 +423,7 @@ describe('owner guard for trace and report routes', () => {
 });
 
 describe('owner guard for agent session routes', () => {
-  function makeAgentApp() {
+  async function makeAgentApp() {
     const router = express.Router();
     const recoverResultForSessionIfNeeded = jest.fn((sessionId: string) => sessionId === 'private-session'
       ? {
@@ -427,7 +494,7 @@ describe('owner guard for agent session routes', () => {
         sessionId: 'private-session',
         status: 'completed',
         traceId: 'private-trace',
-        query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY',
+        query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',
         createdAt: 3000,
         tenantId: 'tenant-a',
         workspaceId: 'workspace-a',
@@ -437,7 +504,8 @@ describe('owner guard for agent session routes', () => {
         outputLanguage: 'en',
         scenes: [],
         conversationSteps: [{text: 'PRIVATE_TIMELINE_CANARY'}],
-        queryHistory: [],
+        queryHistory: [{turn: 1, query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',
+          timestamp: 1}],
         conclusionHistory: [{conclusion: 'PRIVATE_HISTORY_CANARY'}],
         hypotheses: [],
         orchestrator: {
@@ -445,7 +513,7 @@ describe('owner guard for agent session routes', () => {
           getSessionPlan: () => ({text: 'PRIVATE_PLAN_CANARY'}),
           getSessionUncertaintyFlags: () => ['PRIVATE_FLAG_CANARY'],
         },
-        logger: {getLogFilePath: () => '/tmp/PRIVATE_LOG_CANARY.log'},
+        logger: {getLogFilePath: () => '/tmp/private-session.log'},
       }],
     ]);
 
@@ -458,7 +526,6 @@ describe('owner guard for agent session routes', () => {
     registerAgentReportRoutes(router, {
       getSession: (sessionId) => sessions.get(sessionId),
       recoverResultForSessionIfNeeded,
-      normalizeNarrativeForClient: (narrative) => narrative,
       buildClientFindings: (findings) => findings,
       buildSessionResultContract: () => ({value: 'PRIVATE_RESULT_CONTRACT_CANARY'}),
       getCompletedPayload: (session) => session.sessionId === 'private-session' ? {
@@ -474,11 +541,11 @@ describe('owner guard for agent session routes', () => {
     app.use(express.json());
     app.use(authenticate);
     app.use('/api/agent/v1', router);
-    return { app, recoverResultForSessionIfNeeded };
+    return { app: await loopbackServers.listen(app), recoverResultForSessionIfNeeded };
   }
 
   it('filters /api/agent/v1/sessions by owner fields', async () => {
-    const { app } = makeAgentApp();
+    const { app } = await makeAgentApp();
 
     const res = await authHeaders(request(app).get('/api/agent/v1/sessions?includeRecoverable=false'));
 
@@ -487,15 +554,16 @@ describe('owner guard for agent session routes', () => {
       'own-session',
       'private-session',
     ]);
-    expect(JSON.stringify(res.body)).not.toContain('PRIVATE_QUERY_CANARY');
+    // The creator sees their own question; a credential inside it stays masked.
+    expect(JSON.stringify(res.body)).not.toContain('PRIVATE_QUERY_SECRET_123456');
     expect(res.body.activeSessions.find((session: any) =>
       session.sessionId === 'private-session').query).toBe(
-      'Private source or knowledge analysis request (original content not persisted)',
+      'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="[REDACTED_SECRET]"',
     );
   });
 
   it('returns 404 for another tenant session report without invoking report recovery', async () => {
-    const { app, recoverResultForSessionIfNeeded } = makeAgentApp();
+    const { app, recoverResultForSessionIfNeeded } = await makeAgentApp();
 
     const res = await authHeaders(request(app).get('/api/agent/v1/other-session/report'));
 
@@ -508,10 +576,10 @@ describe('owner guard for agent session routes', () => {
   });
 
   it('retains owner report commentary and history while filtering protected values and raw state', async () => {
-    const {app} = makeAgentApp();
+    const {app} = await makeAgentApp();
     registerPrivateAnalysisQueryForEcho(
       'private-session',
-      'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY',
+      'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',
     );
     const protectedCanaries = [
       'PRIVATE_FINDING_CANARY',
@@ -542,13 +610,19 @@ describe('owner guard for agent session routes', () => {
         resultContract: expect.any(Object),
         conversationTimeline: [{text: 'PRIVATE_TIMELINE_CANARY'}],
         conclusionHistory: [{conclusion: 'PRIVATE_HISTORY_CANARY'}],
-        analysisNotes: [],
-        analysisPlan: null,
-        uncertaintyFlags: [],
+        // The plan, notes and flags a public run's report shows are the creator's to read.
+        analysisNotes: ['PRIVATE_NOTE_CANARY'],
+        analysisPlan: {text: 'PRIVATE_PLAN_CANARY'},
+        uncertaintyFlags: ['PRIVATE_FLAG_CANARY'],
+        queryHistory: [{turn: 1, query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key=[REDACTED_SECRET]',
+          timestamp: 1}],
       }));
-      expect(res.body.report.logFile).toBeUndefined();
+      // The log is written through the strict projection; the owner may locate it.
+      expect(res.body.report.logFile).toBe('/tmp/private-session.log');
+      // The creator's question is theirs to read; only its credential is withheld.
+      // The registered guard replaces the whole quoted unit around the match.
       expect(res.body.report.query).toBe(
-        'Private source or knowledge analysis request (original content not persisted)',
+        'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key=[REDACTED_SECRET]',
       );
       expect(res.body.report.summary.terminationMessage).toBe(
         '[REDACTED_CODE_ECHO]',
@@ -558,9 +632,8 @@ describe('owner guard for agent session routes', () => {
         conclusion: 'safe conclusion PRIVATE_REPORT_CANARY', partial: true, terminationReason: 'execution_error',
       }));
       // Ordinary source/query quotations are owner-visible; registered canaries
-      // and raw prompt/runtime state remain protected independently.
-      for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_CANARY', 'PRIVATE_NOTE_CANARY',
-        'PRIVATE_PLAN_CANARY', 'PRIVATE_FLAG_CANARY', 'PRIVATE_LOG_CANARY']) {
+      // and credentials remain protected independently.
+      for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_SECRET_123456']) {
         expect(JSON.stringify(res.body)).not.toContain(canary);
       }
     } finally {

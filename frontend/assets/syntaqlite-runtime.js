@@ -836,7 +836,7 @@ async function createWasm() {
 
 
 
-  var ___heap_base = 233104;
+  var ___heap_base = 236128;
 
   var alignMemory = (size, alignment) => {
       return Math.ceil(size / alignment) * alignment;
@@ -983,7 +983,7 @@ async function createWasm() {
 
   /** @type {WebAssembly.Table} */
   var wasmTable = new WebAssembly.Table({
-    'initial': 368,
+    'initial': 374,
     'element': 'anyfunc'
   });
   ;
@@ -4095,11 +4095,11 @@ async function createWasm() {
 
   var ___memory_base = new WebAssembly.Global({'value': 'i32', 'mutable': false}, 1024);
 
-  var ___stack_high = 233104;
+  var ___stack_high = 236128;
 
-  var ___stack_low = 167568;
+  var ___stack_low = 170592;
 
-  var ___stack_pointer = new WebAssembly.Global({'value': 'i32', 'mutable': true}, 233104);
+  var ___stack_pointer = new WebAssembly.Global({'value': 'i32', 'mutable': true}, 236128);
 
 
 
@@ -4771,6 +4771,23 @@ var _wasm_set_dialect = Module['_wasm_set_dialect'] = wasmExports['wasm_set_dial
 var _wasm_set_sqlite_version = Module['_wasm_set_sqlite_version'] = wasmExports['wasm_set_sqlite_version']
 var _main = Module['_main'] = wasmExports['main']
 var _syntaqlite_analyzer_analyze = Module['_syntaqlite_analyzer_analyze'] = wasmExports['syntaqlite_analyzer_analyze']
+var _syntaqlite_analyzer_column_lineage = Module['_syntaqlite_analyzer_column_lineage'] = wasmExports['syntaqlite_analyzer_column_lineage']
+var _syntaqlite_analyzer_column_lineage_count = Module['_syntaqlite_analyzer_column_lineage_count'] = wasmExports['syntaqlite_analyzer_column_lineage_count']
+var _syntaqlite_analyzer_diagnostic_count = Module['_syntaqlite_analyzer_diagnostic_count'] = wasmExports['syntaqlite_analyzer_diagnostic_count']
+var _syntaqlite_analyzer_diagnostics = Module['_syntaqlite_analyzer_diagnostics'] = wasmExports['syntaqlite_analyzer_diagnostics']
+var _syntaqlite_analyzer_lineage_complete = Module['_syntaqlite_analyzer_lineage_complete'] = wasmExports['syntaqlite_analyzer_lineage_complete']
+var _syntaqlite_analyzer_physical_table_count = Module['_syntaqlite_analyzer_physical_table_count'] = wasmExports['syntaqlite_analyzer_physical_table_count']
+var _syntaqlite_analyzer_physical_tables = Module['_syntaqlite_analyzer_physical_tables'] = wasmExports['syntaqlite_analyzer_physical_tables']
+var _syntaqlite_analyzer_relation_count = Module['_syntaqlite_analyzer_relation_count'] = wasmExports['syntaqlite_analyzer_relation_count']
+var _syntaqlite_analyzer_relations = Module['_syntaqlite_analyzer_relations'] = wasmExports['syntaqlite_analyzer_relations']
+var _syntaqlite_analyzer_render_diagnostics = Module['_syntaqlite_analyzer_render_diagnostics'] = wasmExports['syntaqlite_analyzer_render_diagnostics']
+var _syntaqlite_analyzer_set_check_level = Module['_syntaqlite_analyzer_set_check_level'] = wasmExports['syntaqlite_analyzer_set_check_level']
+var _syntaqlite_analyzer_set_mode = Module['_syntaqlite_analyzer_set_mode'] = wasmExports['syntaqlite_analyzer_set_mode']
+var _syntaqlite_analyzer_set_module_resolver = Module['_syntaqlite_analyzer_set_module_resolver'] = wasmExports['syntaqlite_analyzer_set_module_resolver']
+var _syntaqlite_analyzer_set_strict_schema = Module['_syntaqlite_analyzer_set_strict_schema'] = wasmExports['syntaqlite_analyzer_set_strict_schema']
+var _syntaqlite_analyzer_set_suggestion_threshold = Module['_syntaqlite_analyzer_set_suggestion_threshold'] = wasmExports['syntaqlite_analyzer_set_suggestion_threshold']
+var _syntaqlite_analyzer_unexpanded_view_count = Module['_syntaqlite_analyzer_unexpanded_view_count'] = wasmExports['syntaqlite_analyzer_unexpanded_view_count']
+var _syntaqlite_analyzer_unexpanded_views = Module['_syntaqlite_analyzer_unexpanded_views'] = wasmExports['syntaqlite_analyzer_unexpanded_views']
 var _syntaqlite_formatter_create_sqlite = Module['_syntaqlite_formatter_create_sqlite'] = wasmExports['syntaqlite_formatter_create_sqlite']
 var _syntaqlite_formatter_create_sqlite_with_config = Module['_syntaqlite_formatter_create_sqlite_with_config'] = wasmExports['syntaqlite_formatter_create_sqlite_with_config']
 var _syntaqlite_formatter_create_with_dialect = Module['_syntaqlite_formatter_create_with_dialect'] = wasmExports['syntaqlite_formatter_create_with_dialect']
@@ -4797,26 +4814,9 @@ var _syntaqlite_analyzer_statement_relations = Module['_syntaqlite_analyzer_stat
 var _syntaqlite_analyzer_statement_source = Module['_syntaqlite_analyzer_statement_source'] = wasmExports['syntaqlite_analyzer_statement_source']
 var _syntaqlite_analyzer_statement_unexpanded_view_count = Module['_syntaqlite_analyzer_statement_unexpanded_view_count'] = wasmExports['syntaqlite_analyzer_statement_unexpanded_view_count']
 var _syntaqlite_analyzer_statement_unexpanded_views = Module['_syntaqlite_analyzer_statement_unexpanded_views'] = wasmExports['syntaqlite_analyzer_statement_unexpanded_views']
-var _syntaqlite_analyzer_column_lineage = Module['_syntaqlite_analyzer_column_lineage'] = wasmExports['syntaqlite_analyzer_column_lineage']
-var _syntaqlite_analyzer_column_lineage_count = Module['_syntaqlite_analyzer_column_lineage_count'] = wasmExports['syntaqlite_analyzer_column_lineage_count']
-var _syntaqlite_analyzer_diagnostic_count = Module['_syntaqlite_analyzer_diagnostic_count'] = wasmExports['syntaqlite_analyzer_diagnostic_count']
-var _syntaqlite_analyzer_diagnostics = Module['_syntaqlite_analyzer_diagnostics'] = wasmExports['syntaqlite_analyzer_diagnostics']
-var _syntaqlite_analyzer_lineage_complete = Module['_syntaqlite_analyzer_lineage_complete'] = wasmExports['syntaqlite_analyzer_lineage_complete']
-var _syntaqlite_analyzer_physical_table_count = Module['_syntaqlite_analyzer_physical_table_count'] = wasmExports['syntaqlite_analyzer_physical_table_count']
-var _syntaqlite_analyzer_physical_tables = Module['_syntaqlite_analyzer_physical_tables'] = wasmExports['syntaqlite_analyzer_physical_tables']
-var _syntaqlite_analyzer_relation_count = Module['_syntaqlite_analyzer_relation_count'] = wasmExports['syntaqlite_analyzer_relation_count']
-var _syntaqlite_analyzer_relations = Module['_syntaqlite_analyzer_relations'] = wasmExports['syntaqlite_analyzer_relations']
-var _syntaqlite_analyzer_render_diagnostics = Module['_syntaqlite_analyzer_render_diagnostics'] = wasmExports['syntaqlite_analyzer_render_diagnostics']
-var _syntaqlite_analyzer_unexpanded_view_count = Module['_syntaqlite_analyzer_unexpanded_view_count'] = wasmExports['syntaqlite_analyzer_unexpanded_view_count']
-var _syntaqlite_analyzer_unexpanded_views = Module['_syntaqlite_analyzer_unexpanded_views'] = wasmExports['syntaqlite_analyzer_unexpanded_views']
 var _syntaqlite_analyzer_create_sqlite = Module['_syntaqlite_analyzer_create_sqlite'] = wasmExports['syntaqlite_analyzer_create_sqlite']
 var _syntaqlite_analyzer_create_with_dialect = Module['_syntaqlite_analyzer_create_with_dialect'] = wasmExports['syntaqlite_analyzer_create_with_dialect']
 var _syntaqlite_analyzer_destroy = Module['_syntaqlite_analyzer_destroy'] = wasmExports['syntaqlite_analyzer_destroy']
-var _syntaqlite_analyzer_set_check_level = Module['_syntaqlite_analyzer_set_check_level'] = wasmExports['syntaqlite_analyzer_set_check_level']
-var _syntaqlite_analyzer_set_mode = Module['_syntaqlite_analyzer_set_mode'] = wasmExports['syntaqlite_analyzer_set_mode']
-var _syntaqlite_analyzer_set_module_resolver = Module['_syntaqlite_analyzer_set_module_resolver'] = wasmExports['syntaqlite_analyzer_set_module_resolver']
-var _syntaqlite_analyzer_set_strict_schema = Module['_syntaqlite_analyzer_set_strict_schema'] = wasmExports['syntaqlite_analyzer_set_strict_schema']
-var _syntaqlite_analyzer_set_suggestion_threshold = Module['_syntaqlite_analyzer_set_suggestion_threshold'] = wasmExports['syntaqlite_analyzer_set_suggestion_threshold']
 var _syntaqlite_string_destroy = Module['_syntaqlite_string_destroy'] = wasmExports['syntaqlite_string_destroy']
 var _syntaqlite_analyzer_add_function_overload = Module['_syntaqlite_analyzer_add_function_overload'] = wasmExports['syntaqlite_analyzer_add_function_overload']
 var _syntaqlite_analyzer_add_table_function = Module['_syntaqlite_analyzer_add_table_function'] = wasmExports['syntaqlite_analyzer_add_table_function']
@@ -4825,6 +4825,7 @@ var _syntaqlite_analyzer_add_views = Module['_syntaqlite_analyzer_add_views'] = 
 var _syntaqlite_analyzer_load_schema_ddl = Module['_syntaqlite_analyzer_load_schema_ddl'] = wasmExports['syntaqlite_analyzer_load_schema_ddl']
 var _syntaqlite_analyzer_reset_catalog = Module['_syntaqlite_analyzer_reset_catalog'] = wasmExports['syntaqlite_analyzer_reset_catalog']
 var _malloc = wasmExports['malloc']
+var _synq_extent_record_list_append = Module['_synq_extent_record_list_append'] = wasmExports['synq_extent_record_list_append']
 var _synq_extent_on_shift = Module['_synq_extent_on_shift'] = wasmExports['synq_extent_on_shift']
 var _synq_extent_on_reduce = Module['_synq_extent_on_reduce'] = wasmExports['synq_extent_on_reduce']
 var _synq_extent_fold_below_into_top = Module['_synq_extent_fold_below_into_top'] = wasmExports['synq_extent_fold_below_into_top']

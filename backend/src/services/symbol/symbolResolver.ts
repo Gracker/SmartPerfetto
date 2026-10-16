@@ -82,6 +82,11 @@ export class SymbolResolver {
     private readonly store: RagStore,
     private readonly scope?: KnowledgeScope,
     private readonly codebaseRegistry?: CodebaseRegistry,
+    /**
+     * The index generations an analysis run pinned. When given, resolution
+     * reads exactly these and never a generation activated since.
+     */
+    private readonly pinnedGenerations?: Readonly<Record<string, string>>,
   ) {}
 
   resolveApp(opts: ResolveAppSymbolOptions): ResolveAppSymbolResult {
@@ -224,6 +229,10 @@ export class SymbolResolver {
   }
 
   private activeCodebaseGenerations(codebaseId?: string): Record<string, string> {
+    if (this.pinnedGenerations) {
+      const pinned = Object.entries(this.pinnedGenerations);
+      return Object.fromEntries(codebaseId ? pinned.filter(([id]) => id === codebaseId) : pinned);
+    }
     if (!this.codebaseRegistry) return {};
     const refs = codebaseId
       ? [this.codebaseRegistry.get(codebaseId, this.scope)].filter(Boolean)

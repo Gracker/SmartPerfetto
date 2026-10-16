@@ -14,6 +14,49 @@ import {immutableCanonicalSnapshot} from './canonicalJson';
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 
+/**
+ * Rule code for a proposal whose target no analysis reads.
+ *
+ * Strategy phase hints were never injected into a run: a `phase_hint`
+ * proposal, a `retire_injection` anchored at `injections.phaseHints`, or a
+ * `strategy_section` contribution that appends phase hints changes nothing an
+ * analysis does, so gating one would spend a paired replay's provider cost to
+ * measure a no-op. Stored proposals of these shapes stay readable; no new one
+ * is accepted, gated, materialized or applied.
+ */
+export const INERT_INJECTION_TARGET = 'inert_injection_target';
+
+export function proposalTargetsInertInjection(
+  proposal: Pick<CurationProposalV1, 'kind' | 'deltas'>,
+): boolean {
+  if (proposal.kind === 'phase_hint') return true;
+  return proposal.deltas.some(delta =>
+    (proposal.kind === 'retire_injection'
+      && delta.anchor.startsWith('injections.phaseHints['))
+    || (proposal.kind === 'strategy_section'
+      && contributionAppendsPhaseHints(delta.after)));
+}
+
+export function assertProposalTargetIsLive(
+  proposal: Pick<CurationProposalV1, 'kind' | 'deltas'>,
+): void {
+  if (proposalTargetsInertInjection(proposal)) fail(INERT_INJECTION_TARGET);
+}
+
+function contributionAppendsPhaseHints(after: string | undefined): boolean {
+  if (after === undefined) return false;
+  let contribution: unknown;
+  try {
+    contribution = JSON.parse(after);
+  } catch {
+    // Not a contribution at all; the contribution parser reports it.
+    return false;
+  }
+  const operations = (contribution as {operations?: unknown})?.operations;
+  return Array.isArray(operations) && operations.some(operation =>
+    (operation as {op?: unknown} | null)?.op === 'append_phase_hints');
+}
+
 export function parseM6DraftProposal(value: unknown): CurationProposalV1 {
   const proposal = requireRecord(value, 'proposal');
   assertExactKeys(proposal, [

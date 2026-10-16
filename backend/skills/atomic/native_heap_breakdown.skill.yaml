@@ -2,55 +2,196 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+# =============================================================================
+# heapprofd allocation profile breakdown (per process and heap)
+# =============================================================================
+# heap_profile_allocation is analysed per (upid, heap_name) of the scoped
+# processes (fragments/heap_target_process.sql), never through the stdlib
+# summary tree, which folds every process and every heap together:
+# - libc.malloc (and custom heaps that report frees) record allocations and
+#   frees, so SUM(size) is unreleased bytes and SUM(MAX(size, 0)) is churn.
+# - com.android.art Java allocation profiles record allocations only, never GC
+#   frees: unreleased == allocated by construction, so they only ever show
+#   allocation churn, never retention (retention_measurable in
+#   fragments/heap_profile_scope.sql is the one definition).
+# Each sampled callstack is attributed to its first application/library frame
+# above the ART/Bionic allocator frames (upstream heap_profile_diff method);
+# pass-through ancestors whose totals equal a single child are collapsed.
+
 name: native_heap_breakdown
-version: "1.0"
+version: "2.0"
 type: atomic
 category: memory
 tier: B
 
 meta:
-  display_name: "Native Heap 分解"
-  description: "基于 heapprofd summary tree 输出 native heap 未释放和累计分配热点"
+  display_name: "Heap Profile 分解（Native / Java 分配）"
+  description: "按进程 × heap 拆分 heapprofd 分配：native 区分未释放保留与分配 churn，Java(com.android.art) 只报分配 churn；热点归因到分配器之上的第一个应用/库帧"
   icon: "account_tree"
-  tags: [memory, native_heap, heapprofd, allocation, leak, atomic]
+  tags: [memory, native_heap, heapprofd, allocation, leak, java_allocation, atomic]
 
 triggers:
   keywords:
-    zh: [native heap, heapprofd, native 内存, C++ 内存, malloc 泄漏]
-    en: [native heap, heapprofd, native memory, malloc leak, allocation]
+    zh: [native heap, heapprofd, native 内存, C++ 内存, malloc 泄漏, Java 分配, 分配抖动]
+    en: [native heap, heapprofd, native memory, malloc leak, allocation, java allocation, allocation churn]
   patterns:
     - ".*(native heap|heapprofd|malloc).*(泄漏|增长|热点).*"
     - ".*(native heap|heapprofd|malloc).*(leak|growth|hotspot).*"
 
 prerequisites:
   modules:
-    - android.memory.heap_profile.summary_tree
+    - callstacks.stack_profile
 
 inputs:
   - name: min_size_mb
     type: number
     required: false
-    description: "最小累计未释放大小(MB)，默认 1"
+    description: "热点门槛(MB)：native 按归因未释放大小，Java 按归因分配大小，默认 1"
   - name: min_alloc_mb
     type: number
     required: false
-    description: "最小累计分配大小(MB)，默认 0；用于捕获已释放但分配量很高的 churn 热点"
+    description: "最小分配量(MB)，默认 0；用于捕获已释放但分配量很高的 churn 热点"
   - name: max_rows
     type: number
     required: false
     description: "返回行数上限，默认 100"
+  - name: process_name
+    type: string
+    required: false
+    description: "目标进程名（精确或 name:* 子进程，见 fragments/heap_target_process.sql）；留空分析全部 heapprofd 进程"
+  - name: upid
+    type: integer
+    required: false
+    description: "可选的稳定进程身份"
 
 steps:
+  - id: heap_profile_inventory
+    type: atomic
+    name: "Heap Profile 清单"
+    display:
+      level: key
+      layer: overview
+      title: "heapprofd Profiles (per process × heap)"
+      columns:
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: heap_name
+          label: "Heap"
+          type: string
+        - name: heap_semantics
+          label: "Heap 语义"
+          type: string
+        - name: alloc_mb
+          label: "累计分配(MB)"
+          type: number
+        - name: unreleased_mb
+          label: "未释放(MB)"
+          type: number
+        - name: alloc_count
+          label: "分配次数(采样)"
+          type: number
+        - name: unreleased_count
+          label: "未释放次数(采样)"
+          type: number
+        - name: retention_claim
+          label: "能否判断保留"
+          type: string
+        - name: heapprofd_issues
+          label: "heapprofd 截断/错误"
+          type: string
+        - name: process_identity
+          label: "进程身份"
+          type: string
+        - name: status
+          label: "状态"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_profile_scope.sql
+    sql: |
+      WITH
+      -- heapprofd stats are indexed by pid, except heapprofd_malformed_packet
+      -- which the importer indexes by upid; unindexed stats apply to all.
+      issue_stats AS (
+        SELECT s.name, s.value,
+          IIF(s.name = 'heapprofd_malformed_packet', s.idx, NULL) AS upid,
+          IIF(s.name = 'heapprofd_malformed_packet', NULL, s.idx) AS pid
+        FROM stats AS s
+        WHERE s.name GLOB 'heapprofd*'
+          AND s.severity IN ('error', 'data_loss')
+          AND s.value > 0
+      )
+      SELECT
+        p.upid,
+        t.process_name,
+        p.heap_name,
+        CASE
+          WHEN p.heap_name = 'com.android.art' THEN 'java_allocations_only'
+          WHEN p.free_records > 0 THEN 'allocations_and_frees'
+          ELSE 'no_frees_observed'
+        END AS heap_semantics,
+        ROUND(p.alloc_bytes / 1048576.0, 2) AS alloc_mb,
+        -- Heaps without recorded frees have no measurable unreleased bytes.
+        IIF(p.retention_measurable, ROUND(p.unreleased_bytes / 1048576.0, 2), NULL) AS unreleased_mb,
+        p.alloc_count,
+        IIF(p.retention_measurable, p.unreleased_count, NULL) AS unreleased_count,
+        CASE
+          WHEN p.retention_measurable THEN 'retention_measurable'
+          WHEN p.heap_name = 'com.android.art' THEN 'churn_only_frees_not_recorded'
+          ELSE 'churn_only_no_frees_observed'
+        END AS retention_claim,
+        COALESCE((
+          SELECT GROUP_CONCAT(i.name || '=' || i.value, ', ')
+          FROM issue_stats AS i
+          WHERE i.upid = p.upid
+            OR i.pid = (SELECT pid FROM process WHERE process.upid = p.upid)
+            OR (i.upid IS NULL AND i.pid IS NULL)
+        ), 'none') AS heapprofd_issues,
+        t.process_identity,
+        'heap_profile_available' AS status
+      FROM heap_profiles AS p
+      JOIN heap_target_process AS t USING (upid)
+      UNION ALL
+      SELECT
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        0,
+        0,
+        0,
+        0,
+        'not_applicable',
+        COALESCE((SELECT GROUP_CONCAT(name || '=' || value, ', ') FROM issue_stats), 'none'),
+        'none',
+        IIF(EXISTS (SELECT 1 FROM heap_profile_allocation),
+          'no_heap_profile_for_requested_process', 'no_heap_profile_data')
+      WHERE NOT EXISTS (SELECT 1 FROM heap_profiles)
+    save_as: heap_profile_inventory
+
   - id: native_heap_hotspots
     type: atomic
-    name: "Native Heap 热点"
+    name: "Heap Profile 热点"
     display:
       level: detail
       layer: list
-      title: "Native Heap Allocation Hotspots"
+      title: "Heap Profile Allocation Hotspots (per process × heap)"
       columns:
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: heap_name
+          label: "Heap"
+          type: string
         - name: name
-          label: "函数/符号"
+          label: "归因帧(分配器之上首个应用/库帧)"
           type: string
         - name: mapping_name
           label: "Mapping"
@@ -59,10 +200,16 @@ steps:
           label: "累计未释放(MB)"
           type: number
         - name: self_size_mb
-          label: "自身未释放(MB)"
+          label: "归因未释放(MB)"
           type: number
         - name: cumulative_alloc_mb
           label: "累计分配(MB)"
+          type: number
+        - name: self_alloc_mb
+          label: "归因分配(MB)"
+          type: number
+        - name: self_alloc_count
+          label: "归因分配次数(采样)"
           type: number
         - name: unreleased_to_alloc_pct
           label: "未释放/累计分配(%)"
@@ -71,54 +218,231 @@ steps:
           label: "Churn 倍数"
           type: number
         - name: native_signal
-          label: "Native 信号"
+          label: "信号"
           type: string
         - name: source_file
           label: "源码"
           type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_profile_scope.sql
     sql: |
-      WITH input AS (
+      WITH RECURSIVE
+      input AS (
         SELECT
           COALESCE(${min_size_mb|1}, 1) AS min_size_mb,
           COALESCE(${min_alloc_mb|0}, 0) AS min_alloc_mb,
-          MIN(MAX(COALESCE(${max_rows|100}, 100), 1), 500) AS max_rows
+          MIN(MAX(COALESCE(${max_rows|100}, 100), 1), 500) AS max_rows,
+          -- heapprofd default Poisson sampling interval; differences within one
+          -- interval are sampling noise, not retention.
+          4096 AS sampling_interval_bytes
+      ),
+      -- ART runtime, Bionic libc/libc++ and JIT trampolines are allocator
+      -- internals shared by every call site; classified once per mapping.
+      runtime_mappings AS MATERIALIZED (
+        SELECT
+          id,
+          (
+            name GLOB '/apex/com.android.art/*'
+            OR name GLOB '/apex/com.android.runtime/*'
+            OR name GLOB '/[[]anon_shmem:dalvik-jit-code-cache]*'
+            OR name GLOB '/system/lib*/libc.so'
+            OR name GLOB '/system/lib*/libc++.so'
+            OR name GLOB '/system/lib*/libart.so'
+          ) AS is_runtime
+        FROM stack_profile_mapping
+      ),
+      -- Walk each sampled callsite from its leaf frame to the root. Inline
+      -- symbols are expanded by the stdlib forest. (Join, not IN: IN on this
+      -- forest callsite_id aborts trace_processor v58.3-99234d73f.)
+      frame_chain(callsite_id, node_id, depth) AS (
+        SELECT DISTINCT f.callsite_id, f.id, 0
+        FROM _callstack_spc_forest AS f
+        JOIN (SELECT DISTINCT callsite_id FROM heap_profile_callsites) AS used
+          ON used.callsite_id = f.callsite_id
+        WHERE f.is_leaf_function_in_callsite_frame
+        UNION ALL
+        SELECT c.callsite_id, f.parent_id, c.depth + 1
+        FROM frame_chain AS c
+        JOIN _callstack_spc_forest AS f ON f.id = c.node_id
+        WHERE f.parent_id IS NOT NULL
+      ),
+      chain_frames AS MATERIALIZED (
+        SELECT
+          c.callsite_id,
+          c.depth,
+          COALESCE(f.name, '[unknown]') AS name,
+          COALESCE(m.name, '') AS mapping_name,
+          f.source_file,
+          COALESCE(rm.is_runtime, 0) AS is_runtime
+        FROM frame_chain AS c
+        JOIN _callstack_spc_forest AS f ON f.id = c.node_id
+        LEFT JOIN stack_profile_mapping AS m ON m.id = f.mapping_id
+        LEFT JOIN runtime_mappings AS rm ON rm.id = f.mapping_id
+      ),
+      attribution AS MATERIALIZED (
+        SELECT
+          callsite_id,
+          COALESCE(MIN(IIF(is_runtime, NULL, depth)), 0) AS attributed_depth
+        FROM chain_frames
+        GROUP BY callsite_id
+      ),
+      attributed AS (
+        SELECT
+          a.upid,
+          a.heap_name,
+          cf.name,
+          cf.mapping_name,
+          MIN(cf.source_file) AS source_file,
+          SUM(a.unreleased_bytes) AS unreleased_bytes,
+          SUM(a.alloc_bytes) AS alloc_bytes,
+          SUM(a.alloc_count) AS alloc_count
+        FROM heap_profile_callsites AS a
+        JOIN attribution AS at USING (callsite_id)
+        JOIN chain_frames AS cf
+          ON cf.callsite_id = a.callsite_id
+          AND cf.depth = at.attributed_depth
+        GROUP BY a.upid, a.heap_name, cf.name, cf.mapping_name
+      ),
+      -- Frames that count toward cumulative totals: every non-runtime frame,
+      -- once per callstack (recursion), plus the attributed fallback frame.
+      callsite_labels AS (
+        SELECT DISTINCT cf.callsite_id, cf.name, cf.mapping_name
+        FROM chain_frames AS cf
+        JOIN attribution AS at USING (callsite_id)
+        WHERE NOT cf.is_runtime OR cf.depth = at.attributed_depth
+      ),
+      cumulative AS MATERIALIZED (
+        SELECT
+          a.upid,
+          a.heap_name,
+          l.name,
+          l.mapping_name,
+          SUM(a.unreleased_bytes) AS unreleased_bytes,
+          SUM(a.alloc_bytes) AS alloc_bytes,
+          SUM(a.unreleased_count) AS unreleased_count,
+          SUM(a.alloc_count) AS alloc_count
+        FROM heap_profile_callsites AS a
+        JOIN callsite_labels AS l USING (callsite_id)
+        GROUP BY a.upid, a.heap_name, l.name, l.mapping_name
+      ),
+      label_edges AS (
+        SELECT DISTINCT
+          a.upid,
+          a.heap_name,
+          e.parent_name,
+          e.parent_mapping,
+          e.name,
+          e.mapping_name
+        FROM (
+          SELECT
+            callsite_id,
+            name,
+            mapping_name,
+            LEAD(name) OVER w AS parent_name,
+            LEAD(mapping_name) OVER w AS parent_mapping
+          FROM chain_frames
+          WHERE NOT is_runtime
+          WINDOW w AS (PARTITION BY callsite_id ORDER BY depth)
+        ) AS e
+        JOIN heap_profile_callsites AS a USING (callsite_id)
+        WHERE e.parent_name IS NOT NULL
+          AND NOT (e.parent_name = e.name AND e.parent_mapping = e.mapping_name)
+      ),
+      -- Pass-through wrappers (main -> ZygoteInit -> Looper ...) whose totals
+      -- are fully accounted for by one child frame.
+      pass_through AS (
+        SELECT DISTINCT e.upid, e.heap_name, e.parent_name AS name, e.parent_mapping AS mapping_name
+        FROM label_edges AS e
+        JOIN cumulative AS parent
+          ON parent.upid = e.upid
+          AND parent.heap_name = e.heap_name
+          AND parent.name = e.parent_name
+          AND parent.mapping_name = e.parent_mapping
+        JOIN cumulative AS child
+          ON child.upid = e.upid
+          AND child.heap_name = e.heap_name
+          AND child.name = e.name
+          AND child.mapping_name = e.mapping_name
+        WHERE parent.unreleased_bytes = child.unreleased_bytes
+          AND parent.alloc_bytes = child.alloc_bytes
+          AND parent.unreleased_count = child.unreleased_count
+          AND parent.alloc_count = child.alloc_count
+      ),
+      ranked AS (
+        SELECT
+          c.upid,
+          c.heap_name,
+          c.name,
+          c.mapping_name,
+          COALESCE(s.unreleased_bytes, 0) AS self_unreleased_bytes,
+          COALESCE(s.alloc_bytes, 0) AS self_alloc_bytes,
+          COALESCE(s.alloc_count, 0) AS self_alloc_count,
+          c.unreleased_bytes AS cumulative_unreleased_bytes,
+          c.alloc_bytes AS cumulative_alloc_bytes,
+          s.source_file,
+          p.retention_measurable
+        FROM cumulative AS c
+        JOIN heap_profiles AS p USING (upid, heap_name)
+        LEFT JOIN attributed AS s USING (upid, heap_name, name, mapping_name)
+        LEFT JOIN pass_through AS pt USING (upid, heap_name, name, mapping_name)
+        WHERE pt.name IS NULL OR s.alloc_bytes > 0
       )
       SELECT
-        name,
-        mapping_name,
-        ROUND(cumulative_size / 1024.0 / 1024.0, 2) AS cumulative_size_mb,
-        ROUND(self_size / 1024.0 / 1024.0, 2) AS self_size_mb,
-        ROUND(cumulative_alloc_size / 1024.0 / 1024.0, 2) AS cumulative_alloc_mb,
-        ROUND(100.0 * cumulative_size / NULLIF(cumulative_alloc_size, 0), 2) AS unreleased_to_alloc_pct,
-        ROUND(1.0 * cumulative_alloc_size / NULLIF(cumulative_size, 0), 2) AS churn_ratio,
+        r.upid,
+        t.process_name,
+        r.heap_name,
+        r.name,
+        r.mapping_name,
+        -- Unreleased metrics are only meaningful where frees are recorded.
+        IIF(r.retention_measurable, ROUND(r.cumulative_unreleased_bytes / 1048576.0, 2), NULL) AS cumulative_size_mb,
+        IIF(r.retention_measurable, ROUND(r.self_unreleased_bytes / 1048576.0, 2), NULL) AS self_size_mb,
+        ROUND(r.cumulative_alloc_bytes / 1048576.0, 2) AS cumulative_alloc_mb,
+        ROUND(r.self_alloc_bytes / 1048576.0, 2) AS self_alloc_mb,
+        r.self_alloc_count,
+        IIF(r.retention_measurable, ROUND(100.0 * r.cumulative_unreleased_bytes / NULLIF(r.cumulative_alloc_bytes, 0), 2), NULL) AS unreleased_to_alloc_pct,
+        IIF(r.retention_measurable, ROUND(1.0 * r.cumulative_alloc_bytes / NULLIF(r.cumulative_unreleased_bytes, 0), 2), NULL) AS churn_ratio,
         CASE
-          WHEN cumulative_size >= input.min_size_mb * 1024.0 * 1024.0
-            AND cumulative_alloc_size >= cumulative_size * 5
+          WHEN r.self_alloc_bytes = 0 THEN 'call_path_ancestor'
+          WHEN NOT r.retention_measurable THEN
+            IIF(r.self_alloc_bytes >= MAX(input.min_alloc_mb, input.min_size_mb) * 1048576.0,
+              'allocation_churn', 'inspect_if_relevant')
+          WHEN r.self_unreleased_bytes >= input.min_size_mb * 1048576.0
+            AND r.self_unreleased_bytes > input.sampling_interval_bytes
+            AND r.self_alloc_bytes >= r.self_unreleased_bytes * 5
             THEN 'retention_with_churn'
-          WHEN cumulative_size >= input.min_size_mb * 1024.0 * 1024.0
+          WHEN r.self_unreleased_bytes >= input.min_size_mb * 1048576.0
+            AND r.self_unreleased_bytes > input.sampling_interval_bytes
             THEN 'unreleased_native_retention'
           WHEN input.min_alloc_mb > 0
-            AND cumulative_alloc_size >= input.min_alloc_mb * 1024.0 * 1024.0
+            AND r.self_alloc_bytes >= input.min_alloc_mb * 1048576.0
             THEN 'allocation_churn'
           ELSE 'inspect_if_relevant'
         END AS native_signal,
-        source_file
-      FROM android_heap_profile_summary_tree, input
-      WHERE cumulative_size >= input.min_size_mb * 1024.0 * 1024.0
-        OR (
-          input.min_alloc_mb > 0
-          AND cumulative_alloc_size >= input.min_alloc_mb * 1024.0 * 1024.0
-        )
-      ORDER BY cumulative_size DESC, cumulative_alloc_size DESC
+        r.source_file
+      FROM ranked AS r
+      CROSS JOIN input
+      JOIN heap_target_process AS t USING (upid)
+      WHERE (r.retention_measurable AND r.cumulative_unreleased_bytes >= input.min_size_mb * 1048576.0)
+        OR r.cumulative_alloc_bytes >= MAX(input.min_alloc_mb, input.min_size_mb) * 1048576.0
+      ORDER BY
+        r.self_alloc_bytes > 0 DESC,
+        IIF(r.retention_measurable, r.self_unreleased_bytes, r.self_alloc_bytes) DESC,
+        r.self_alloc_bytes DESC,
+        r.cumulative_alloc_bytes DESC
       LIMIT (SELECT max_rows FROM input)
     save_as: native_heap_hotspots
 
 output:
   format: structured
   fields:
+    - name: heap_profile_inventory
+      description: "每个 (进程, heap) profile 的累计分配/未释放总量与 heap 语义；com.android.art 只记录分配、不记录 GC 释放，未释放恒等于分配，只能说明分配 churn；heapprofd_issues 非 none 时 profile 可能被截断或丢样本。"
     - name: cumulative_size_mb
-      description: "heapprofd summary tree 中当前仍未释放的累计 native allocation；只能覆盖 profiler 启动后的 native malloc/free 族分配。"
+      description: "该帧所在调用栈在本 (进程, heap) 内当前仍未释放的累计分配；只覆盖 profiler 启动后的分配。不记录释放的 heap（com.android.art 等）为 NULL：未释放不可测量，不能当作保留。"
+    - name: self_size_mb
+      description: "以该帧为分配器之上首个应用/库帧归因的未释放量；native 保留候选按此列判断。"
     - name: cumulative_alloc_mb
       description: "heapprofd 观测窗口内累计分配量；高累计分配但低未释放通常代表 allocation churn，而不是已证明泄漏。"
     - name: native_signal
-      description: "按未释放保留与累计分配 churn 粗分的诊断信号，需结合 RSS/Swap、heap graph 和采集窗口解释。"
+      description: "按 heap 语义分类：com.android.art 或无释放记录的 heap 只会是 allocation_churn / inspect_if_relevant；可测量释放的 native heap 才可能是 unreleased_native_retention / retention_with_churn；call_path_ancestor 为无直接归因的调用路径上层帧。需结合 RSS/Swap、heap graph 和采集窗口解释。"

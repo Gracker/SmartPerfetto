@@ -138,16 +138,27 @@ function validScanDeclaration(scan: InvestigationScanDeclaration): boolean {
     [scan.sourceColumn, scan.resultSourceColumn].every(value => value === undefined || nonempty(value)));
 }
 
+/**
+ * Why `value` is not an investigation_evidence declaration the executor
+ * admits (its shape, or conflicting field semantics), or undefined.
+ */
+export function investigationEvidenceDeclarationError(value: unknown): string | undefined {
+  if (!isInvestigationEvidenceDeclaration(value)) return 'Invalid investigation_evidence producer declaration';
+  try {
+    investigationCaptureFields(value, {kind: 'skill_literal', definitionFingerprint: 'declaration_validation'});
+  } catch (error) {
+    return (error as Error).message;
+  }
+  return undefined;
+}
+
 /** Validate nested Skill declarations before admitting a definition into the executor. */
 export function validateInvestigationEvidenceDeclarations(definition: object): void {
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {
-      if (key === 'investigation_evidence' && !isInvestigationEvidenceDeclaration(child)) {
-        throw new Error('Invalid investigation_evidence producer declaration');
-      }
-      if (key === 'investigation_evidence') investigationCaptureFields(child as InvestigationEvidenceDeclaration,
-        {kind: 'skill_literal', definitionFingerprint: 'declaration_validation'});
+      const error = key === 'investigation_evidence' ? investigationEvidenceDeclarationError(child) : undefined;
+      if (error) throw new Error(error);
       visit(child);
     }
   };
@@ -192,6 +203,26 @@ export function attachInvestigationEvidence(witness: EvidenceTableWitness, bindi
   bindings.set(witness, freezeEvidenceValue(structuredClone(binding)));
 }
 
+/**
+ * The runtime tool call a capture was registered inside. Its `sourceToolCallId`
+ * is a synthetic producer id that no tool observation carries, so this is the
+ * only join between a capture and the invocation that produced it. Kept off the
+ * capture record: that record is serialized into provider snapshots and claim
+ * fingerprints, where a per-call id is neither useful nor stable.
+ */
+const captureToolCalls = new WeakMap<EvidenceTableWitness, string>();
+
+/** The first registration of a witness names its producing call; later ones never re-attribute it. */
+export function recordCaptureToolCall(witness: EvidenceTableWitness, toolCallId: string | undefined): void {
+  if (toolCallId && !captureToolCalls.has(witness)) captureToolCalls.set(witness, toolCallId);
+}
+
+function producingToolObservation<T>(toolStates: ReadonlyMap<string, T>,
+  {record, witness}: EvidenceReadRecord): T | undefined {
+  const toolCallId = captureToolCalls.get(witness);
+  return toolCallId ? toolStates.get(`${record.originRunId || ''}:${toolCallId}`) : undefined;
+}
+
 export type InvestigationToolObservation = {toolCallId: string; phase: 'started' | 'completed' | 'failed'; failed: boolean; success?: boolean; originRunId?: string};
 export function captureInvestigationToolObservation(event: RuntimeToolInvocationEvent): InvestigationToolObservation {
   return Object.freeze({toolCallId: event.toolCallId, phase: event.phase,
@@ -224,10 +255,13 @@ export interface CompactInvestigationEvidenceSnapshot {
   readonly complete: boolean;
 }
 
-/** Bounded provider projection. Cohorts are kept whole and never selected by success or value. */
-function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnapshot,
-  maxBytes: number, ceilingBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > ceilingBytes) return undefined;
+/**
+ * The cohorts of a provider projection in ledger order, each with the bytes its
+ * records serialize to, and the exact size of a view keeping some of them.
+ * A view serializes as its record-free envelope with the records spliced into
+ * `"records":[]`, so each record is serialized once rather than once per cohort.
+ */
+function compactCohorts(snapshot: InvestigationEvidenceSnapshot) {
   const groups = new Map<string, CompactInvestigationEvidenceRecord[]>();
   for (const record of snapshot.records) {
     const {recordId, captureId, domain, metricId, status, origin, originRunId, traceId, traceSide,
@@ -238,23 +272,36 @@ function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnaps
       window, upid, utid, cpu, ucpu, machineId, windowId, role, aggregation, value, unit, coverage, denominator});
     groups.set(key, group);
   }
-  const envelope = (records: CompactInvestigationEvidenceRecord[]): CompactInvestigationEvidenceSnapshot => {
-    const omittedRecordCount = snapshot.records.length - records.length;
-    return {schemaVersion: 'compact_investigation_evidence@1', fingerprint: snapshot.fingerprint, byteBudget: maxBytes,
+  const cohorts = [...groups.values()].map(records => ({records,
+    bytes: records.reduce((sum, record) => sum + Buffer.byteLength(JSON.stringify(record), 'utf8'), 0)}));
+  const envelope = (records: CompactInvestigationEvidenceRecord[], byteBudget: number,
+    kept = records.length): CompactInvestigationEvidenceSnapshot => {
+    const omittedRecordCount = snapshot.records.length - kept;
+    return {schemaVersion: 'compact_investigation_evidence@1', fingerprint: snapshot.fingerprint, byteBudget,
       records, omittedRecordCount, issues: [...new Set([...snapshot.issues,
         ...(omittedRecordCount ? ['investigation_provider_view_omitted_records'] : [])])].sort(),
       ...(snapshot.incompleteCaptureIds ? {incompleteCaptureIds: [...snapshot.incompleteCaptureIds]} : {}),
       complete: snapshot.complete && omittedRecordCount === 0};
   };
-  const fits = (view: CompactInvestigationEvidenceSnapshot) => Buffer.byteLength(JSON.stringify(view), 'utf8') <= maxBytes;
-  let view = envelope([]);
-  if (!fits(view)) return undefined;
-  for (const group of groups.values()) {
-    const candidate = envelope([...view.records, ...group]);
-    if (!fits(candidate)) break;
-    view = candidate;
+  const viewBytes = (kept: number, recordBytes: number, byteBudget: number) =>
+    Buffer.byteLength(JSON.stringify(envelope([], byteBudget, kept)), 'utf8') + recordBytes + Math.max(0, kept - 1);
+  return {cohorts, envelope, viewBytes};
+}
+
+/** Bounded provider projection. Cohorts are kept whole and never selected by success or value. */
+function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnapshot,
+  maxBytes: number, ceilingBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > ceilingBytes) return undefined;
+  const {cohorts, envelope, viewBytes} = compactCohorts(snapshot);
+  if (viewBytes(0, 0, maxBytes) > maxBytes) return undefined;
+  const records: CompactInvestigationEvidenceRecord[] = [];
+  let recordBytes = 0;
+  for (const cohort of cohorts) {
+    if (viewBytes(records.length + cohort.records.length, recordBytes + cohort.bytes, maxBytes) > maxBytes) break;
+    records.push(...cohort.records);
+    recordBytes += cohort.bytes;
   }
-  return freezeEvidenceValue(view);
+  return freezeEvidenceValue(envelope(records, maxBytes));
 }
 
 /** Preserve the existing general provider-view contract and its 64 KiB ceiling. */
@@ -267,6 +314,35 @@ export function compactInvestigationEvidence(snapshot: InvestigationEvidenceSnap
 export function compactInvestigationEvidenceForSemantic(snapshot: InvestigationEvidenceSnapshot,
   maxBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
   return compactInvestigationEvidenceWithin(snapshot, maxBytes, FINAL_SEMANTIC_INPUT_BYTE_LIMIT);
+}
+
+/**
+ * The only budgets at which the semantic projection changes: entry k is the
+ * least budget whose view keeps the first k cohorts, up to the shared ceiling.
+ * Sizing the final prompt over these instead of over every byte count visits
+ * each distinct ledger view at most once.
+ */
+export function investigationEvidenceSemanticBudgets(snapshot: InvestigationEvidenceSnapshot): number[] {
+  const {cohorts, viewBytes} = compactCohorts(snapshot);
+  const budgets: number[] = [];
+  // The view states its own budget, so take the least budget at least as large as
+  // the view naming it, and never below an earlier entry: a view that drops its
+  // omission issue shrinks, yet the greedy selection must still admit every prefix.
+  const admit = (kept: number, recordBytes: number): boolean => {
+    let budget = Math.max(viewBytes(kept, recordBytes, 0), budgets[budgets.length - 1] ?? 0);
+    while (viewBytes(kept, recordBytes, budget) > budget) budget++;
+    if (budget > FINAL_SEMANTIC_INPUT_BYTE_LIMIT) return false;
+    budgets.push(budget);
+    return true;
+  };
+  if (!admit(0, 0)) return budgets;
+  let kept = 0, recordBytes = 0;
+  for (const cohort of cohorts) {
+    kept += cohort.records.length;
+    recordBytes += cohort.bytes;
+    if (!admit(kept, recordBytes)) break;
+  }
+  return budgets;
 }
 
 /** Independent from metric presence/identity: an empty successful sibling is meaningful for a scan. */
@@ -287,12 +363,12 @@ function buildScanRecords(captures: readonly EvidenceReadRecord[], options: Evid
         !allowed.has(`current:${record.meta.traceId}`)) continue;
     if (binding.traceId !== record.meta.traceId ||
         !record.meta.sourceToolCallId || record.captureId !== witness.captureId || !table || table.unavailableReason ||
-        ['optional_error', 'unavailable'].includes(record.meta.executionStatus || '') ||
+        ['optional_error', 'unavailable', 'skipped'].includes(record.meta.executionStatus || '') ||
         new Set(table.columns).size !== table.columns.length) {
       scanIssues.add('scan_scope_or_summary_unavailable'); continue;
     }
     if (!table.rows.length) {scanIssues.add('scan_summary_empty'); continue;}
-    const observation = toolStates.get(`${record.originRunId}:${record.meta.sourceToolCallId}`);
+    const observation = producingToolObservation(toolStates, {record, witness});
     const siblings = new Map<string, EvidenceReadRecord>();
     for (const candidate of captures) {
       const sibling = bindings.get(candidate.witness);
@@ -325,7 +401,7 @@ function buildScanRecords(captures: readonly EvidenceReadRecord[], options: Evid
       let returned: number | undefined;
       if (sibling && resultBinding && resultTable) {
         if (sibling.record.captureId !== sibling.witness.captureId || resultTable.unavailableReason ||
-            ['optional_error', 'unavailable'].includes(sibling.record.meta.executionStatus || '') ||
+            ['optional_error', 'unavailable', 'skipped'].includes(sibling.record.meta.executionStatus || '') ||
             new Set(resultTable.columns).size !== resultTable.columns.length) issues.add('scan_result_unavailable');
         else if (!resultTable.columns.includes(resultBinding.declaration.window.start) ||
             !resultTable.columns.includes(resultBinding.declaration.window.end)) issues.add('scan_result_window_columns_missing');
@@ -389,7 +465,8 @@ export function buildInvestigationEvidenceSnapshot(captures: readonly EvidenceRe
     if (meta.executionStatus === 'unavailable' || meta.executionStatus === 'optional_error') {
       incomplete('capture_execution_unavailable'); continue;
     }
-    const observation = meta.sourceToolCallId ? toolStates.get(`${record.originRunId || ''}:${meta.sourceToolCallId}`) : undefined;
+    if (meta.executionStatus === 'skipped') {incomplete('capture_execution_skipped'); continue;}
+    const observation = producingToolObservation(toolStates, {record, witness});
     const toolChecked = observation?.phase === 'completed' && !observation.failed;
     if (!toolChecked) incomplete('capture_tool_observation_missing');
     if (new Set(table.columns).size !== table.columns.length) {incomplete('capture_columns_ambiguous'); continue;}
@@ -398,6 +475,12 @@ export function buildInvestigationEvidenceSnapshot(captures: readonly EvidenceRe
     const originRunId = record.originRunId;
     const origin = originRunId && options.currentRunId
       ? originRunId === options.currentRunId ? 'current_run' : 'reused' : 'unknown';
+    // One immutable witness can be registered under multiple authorized read
+    // locators. Bind their issued registration identity, not merely its cell:
+    // repeated views stay stable while other stores/generations remain distinct.
+    const readIdentity = evidenceCaptureHash({storeId: record.storeId, generation: record.generation, originRunId,
+      traceId: meta.traceId, traceSide: meta.traceSide, artifactId: meta.artifactId,
+      evidenceRefId: meta.evidenceRefId, sourceToolCallId: meta.sourceToolCallId});
     for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex++) {
       if (records.length >= LEDGER_RECORD_BUDGET) {incomplete('ledger_record_budget_exhausted'); break;}
       const read = (column: string | undefined) => column ? table.rows[rowIndex][table.columns.indexOf(column)] : undefined;
@@ -437,7 +520,7 @@ export function buildInvestigationEvidenceSnapshot(captures: readonly EvidenceRe
         if (status === 'observed' && metric.coverage && exactNs(coverage) && exactNs(denominator) &&
             BigInt(coverage) < BigInt(denominator)) status = 'partial';
         if (status === 'unknown') issues.add('capture_metric_unknown');
-        records.push({recordId: `${witness.captureId}:${rowIndex}:${metricIndex}`, captureId: witness.captureId, rowIndex,
+        records.push({recordId: `${witness.captureId}:${rowIndex}:${metricIndex}:${readIdentity}`, captureId: witness.captureId, rowIndex,
           evidenceRefId: meta.evidenceRefId, artifactId: meta.artifactId, sourceToolCallId: meta.sourceToolCallId,
           skillId: binding.skillId, stepId: binding.stepId, definitionFingerprint: binding.definitionFingerprint,
           selectedSqlHash: binding.selectedSqlHash, traceId: binding.traceId, traceSide: meta.traceSide as 'current' | 'reference',

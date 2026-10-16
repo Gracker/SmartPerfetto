@@ -61,10 +61,11 @@ describe('scene SSE verification gate', () => {
     input.observation.revisions.unshift({revision: 1, event: 0, acquisitions: 0, fingerprint: 'earlier'});
     expect(evaluateSceneSseVerification(input).passed).toBe(true);
   });
-  it('does not count progress, foreign traces, failed outputs or replayed data as fresh acquisition', () => {
+  it('does not count progress, foreign traces, failed or skipped outputs or replayed data as fresh acquisition', () => {
     const state = createSceneSseObservation();
     recordSceneSseEvent(state, 'data', {meta: {...fact().meta, traceId: 'other'}}, scope);
     recordSceneSseEvent(state, 'data', {meta: {...fact().meta, executionStatus: 'optional_error'}}, scope);
+    recordSceneSseEvent(state, 'data', {meta: {...fact('skipped').meta, executionStatus: 'skipped'}}, scope);
     recordSceneSseEvent(state, 'progress', fact(), scope);
     recordSceneSseEvent(state, 'data', fact(), scope); recordSceneSseEvent(state, 'data', fact(), scope);
     expect(state.acquisitions).toBe(1);
@@ -135,7 +136,7 @@ describe('scene SSE verification gate', () => {
     await expect(collectSceneOracleRows(spec, async () => ({columns: ['ts', 'end_ts', 'upid'], rows: [[Number.MAX_SAFE_INTEGER + 1, 2, 7]]}))).rejects.toThrow('NONEXACT');
   });
   it('exposes explicit scene wrapper suites without changing the ordinary default', () => {
-    const wrapper = require('../../../scripts/run-deepseek-agent-e2e.cjs');
+    const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
     expect(wrapper.parseArgs(['--suite', 'scene-reconstruction']).suite).toBe('scene-reconstruction');
     expect(wrapper.suites['scene-reconstruction'].args).toEqual(expect.arrayContaining(['--entry', 'scene-reconstruction']));
     expect(wrapper.suites['scene-cancel'].args).toEqual(expect.arrayContaining(['--scene-scenario', 'cancel']));

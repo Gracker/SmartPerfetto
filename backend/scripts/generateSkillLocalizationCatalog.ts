@@ -8,228 +8,15 @@ import {
   ensureSkillRegistryInitialized,
   skillRegistry,
 } from '../src/services/skillEngine/skillLoader';
-import type {
-  DisplayConfig,
-  SkillDefinition,
-  SkillStep,
-  SynthesizeConfig,
-} from '../src/services/skillEngine/types';
-import {humanizeSkillIdentifier} from '../src/services/skillLocalizationLabels';
-import {isDisplayTitleTranslations, validateSkillDisplayContract} from '../src/services/skillEngine/displayContractValidator';
-
-type OutputLanguage = 'zh-CN' | 'en';
-
-interface LocalizedText {
-  'zh-CN': string;
-  en: string;
-}
-
-interface CatalogColumn {
-  label: LocalizedText;
-  tooltip?: LocalizedText;
-}
-
-interface CatalogStep {
-  title: LocalizedText;
-  description?: LocalizedText;
-  columns: Record<string, CatalogColumn>;
-  synthesizeLabels: Record<string, LocalizedText>;
-}
-
-interface CatalogSkill {
-  displayName: LocalizedText;
-  description: LocalizedText;
-  type: string;
-  steps: Record<string, CatalogStep>;
-}
-
-interface SkillLocalizationCatalog {
-  schemaVersion: 1;
-  generationPolicy: {
-    sourceOfTruth: string;
-    stableIdentifiersRemainUntranslated: boolean;
-    inferredSchemaLabelsUseLocaleHumanizer: boolean;
-    authoredNarrativeRemainsVerbatim: boolean;
-  };
-  inventory: {
-    skillCount: number;
-    pipelineDefinitionCount: number;
-    moduleExpertCount: number;
-    stepCount: number;
-    explicitColumnCount: number;
-  };
-  skills: Record<string, CatalogSkill>;
-}
+import type {SkillDefinition} from '../src/services/skillEngine/types';
+import {validateSkillDisplayContract} from '../src/services/skillEngine/displayContractValidator';
+import {skillCatalogEntry, type CatalogSkill, type SkillLocalizationCatalog} from '../src/services/skillLocalizationCatalog';
 
 const OUTPUT_PATH = path.resolve(__dirname, '../skills/localization.catalog.json');
-const HAN_RE = /\p{Script=Han}/u;
-function sentence(text: unknown): string {
-  return String(text || '')
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .find(Boolean) || '';
-}
-
-function humanizeIdentifier(value: string): string {
-  return humanizeSkillIdentifier(value, 'en') || value.trim() || 'Untitled';
-}
-
-function humanizeIdentifierZh(value: string): string {
-  return humanizeSkillIdentifier(value, 'zh-CN') || value.trim() || '未命名';
-}
-
-function localizedTitle(authored: unknown, stableId: string, titles?: DisplayConfig['title_i18n']): LocalizedText {
-  if (titles !== undefined && !isDisplayTitleTranslations(titles)) {
-    throw new Error(`Invalid title_i18n for ${stableId}`);
-  }
-  const source = sentence(authored);
-  const identifierEn = humanizeIdentifier(stableId);
-  const identifierZh = humanizeIdentifierZh(stableId);
-  return {
-    'zh-CN': titles?.['zh-CN']?.trim() ?? (source && HAN_RE.test(source) ? source : identifierZh),
-    en: titles?.en?.trim() ?? (source && !HAN_RE.test(source) ? source : identifierEn),
-  };
-}
-
-function localizedDescription(authored: unknown, stableId: string): LocalizedText {
-  const source = sentence(authored);
-  const identifierEn = humanizeIdentifier(stableId);
-  const identifierZh = humanizeIdentifierZh(stableId);
-  return {
-    'zh-CN': source && HAN_RE.test(source)
-      ? source
-      : `基于 Trace 指标与证据分析${identifierZh}。`,
-    en: source && !HAN_RE.test(source)
-      ? source
-      : `Analyzes ${identifierEn} using trace metrics and supporting evidence.`,
-  };
-}
-
-function localizedLabel(authored: unknown, stableId: string): LocalizedText {
-  const source = sentence(authored);
-  return {
-    'zh-CN': source && HAN_RE.test(source) ? source : humanizeIdentifierZh(stableId),
-    en: source && !HAN_RE.test(source) ? source : humanizeIdentifier(stableId),
-  };
-}
-
-function localizedTooltip(authored: unknown, label: LocalizedText): LocalizedText {
-  const source = sentence(authored);
-  return {
-    'zh-CN':
-      source && HAN_RE.test(source) ? source : `字段：${label['zh-CN']}`,
-    en:
-      source && !HAN_RE.test(source) ? source : `Column: ${label.en}`,
-  };
-}
-
-function emptyStep(title: LocalizedText): CatalogStep {
-  return {
-    title,
-    columns: {},
-    synthesizeLabels: {},
-  };
-}
-
-function collectColumns(step: CatalogStep, display: DisplayConfig | boolean | undefined): void {
-  if (!display || typeof display !== 'object' || !Array.isArray(display.columns)) return;
-  for (const column of display.columns) {
-    const name = typeof column === 'string'
-      ? column
-      : typeof column?.name === 'string'
-        ? column.name
-        : '';
-    if (!name) continue;
-    const authoredLabel = typeof column === 'string' ? column : column.label;
-    const label = localizedLabel(authoredLabel, name);
-    step.columns[name] = {
-      label,
-      ...(typeof column === 'object' && column.tooltip
-        ? {tooltip: localizedTooltip(column.tooltip, label)}
-        : {}),
-    };
-  }
-}
-
-function collectSynthesizeLabels(
-  step: CatalogStep,
-  synthesize: boolean | SynthesizeConfig | undefined,
-): void {
-  if (!synthesize || typeof synthesize !== 'object') return;
-  for (const field of Array.isArray(synthesize.fields) ? synthesize.fields : []) {
-    if (!field?.key) continue;
-    step.synthesizeLabels[`field:${field.key}`] = localizedLabel(field.label, field.key);
-  }
-  for (const group of Array.isArray(synthesize.groupBy) ? synthesize.groupBy : []) {
-    if (!group?.field) continue;
-    step.synthesizeLabels[`group:${group.field}`] = localizedLabel(group.title, group.field);
-  }
-  const cluster = synthesize.clusterBy;
-  if (typeof cluster === 'object' && cluster?.field) {
-    step.synthesizeLabels[`cluster:${cluster.field}`] = localizedLabel(
-      cluster.label,
-      cluster.field,
-    );
-  }
-}
-
-function nestedSteps(step: SkillStep): SkillStep[] {
-  const value = step as SkillStep & {steps?: SkillStep[]};
-  return Array.isArray(value.steps) ? value.steps : [];
-}
-
-function collectSteps(skill: SkillDefinition): Record<string, CatalogStep> {
-  const result: Record<string, CatalogStep> = {
-    root: emptyStep(localizedTitle(skill.meta.display_name, skill.name)),
-    __synthesize_summary__: emptyStep({
-      'zh-CN': '洞见摘要',
-      en: 'Insight Summary',
-    }),
-  };
-
-  const visit = (steps: SkillStep[]): void => {
-    for (const definition of steps) {
-      const raw = definition as SkillStep & {
-        id?: string;
-        name?: string;
-        display?: DisplayConfig | boolean;
-        synthesize?: boolean | SynthesizeConfig;
-      };
-      const stepId = String(raw.id || '').trim();
-      if (!stepId) continue;
-      const displayTitle = typeof raw.display === 'object'
-        ? raw.display.title
-        : undefined;
-      const entry = result[stepId] || emptyStep(
-        localizedTitle(displayTitle || raw.name, stepId,
-          typeof raw.display === 'object' ? raw.display.title_i18n : undefined),
-      );
-      if (typeof raw.description === 'string' && raw.description.trim()) {
-        entry.description = localizedDescription(raw.description, stepId);
-      }
-      collectColumns(entry, raw.display);
-      collectSynthesizeLabels(entry, raw.synthesize);
-      result[stepId] = entry;
-      visit(nestedSteps(definition));
-    }
-  };
-
-  visit(skill.steps || []);
-  collectColumns(result.root, skill.output?.display);
-  for (const field of skill.output?.fields || []) {
-    if (!field?.name) continue;
-    result.root.columns[field.name] = {
-      label: localizedLabel(field.label, field.name),
-    };
-  }
-  return Object.fromEntries(
-    Object.entries(result).sort(([left], [right]) => left.localeCompare(right)),
-  );
-}
 
 function buildCatalog(skills: SkillDefinition[]): SkillLocalizationCatalog {
   for (const skill of skills) {
-    const invalidTitles = validateSkillDisplayContract(skill).filter(issue => issue.field.endsWith('.title_i18n'));
+    const invalidTitles = validateSkillDisplayContract(skill).filter(issue => issue.field.endsWith('_i18n'));
     if (invalidTitles.length) throw new Error(invalidTitles.map(issue => `${skill.name}: ${issue.path}: ${issue.message}`).join('\n'));
   }
   const orderedSkills = [...skills].sort((left, right) =>
@@ -239,17 +26,11 @@ function buildCatalog(skills: SkillDefinition[]): SkillLocalizationCatalog {
   let explicitColumnCount = 0;
 
   for (const skill of orderedSkills) {
-    const displayName = localizedTitle(skill.meta.display_name, skill.name);
-    const steps = collectSteps(skill);
-    stepCount += Object.keys(steps).length;
-    explicitColumnCount += Object.values(steps)
+    const entry = skillCatalogEntry(skill);
+    stepCount += Object.keys(entry.steps).length;
+    explicitColumnCount += Object.values(entry.steps)
       .reduce((total, step) => total + Object.keys(step.columns).length, 0);
-    catalogSkills[skill.name] = {
-      displayName,
-      description: localizedDescription(skill.meta.description, skill.name),
-      type: skill.type,
-      steps,
-    };
+    catalogSkills[skill.name] = entry;
   }
 
   return {

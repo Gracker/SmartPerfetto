@@ -11,17 +11,56 @@ import {
 import type { SkillDefinition } from '../types';
 
 describe('authored display title translations', () => {
+  it('keeps registered numeric units while excluding non-time units from temporal columns', () => {
+    const columns = [
+      {name: 'frames', type: 'number', unit: 'frames'},
+      {name: 'rate', type: 'percentage', unit: '%'},
+      {name: 'frequency', type: 'number', unit: 'kHz'},
+      {name: 'size', type: 'bytes', unit: 'KiB'},
+      {name: 'frame_rate', type: 'number', unit: 'fps'},
+      {name: 'timestamp', type: 'timestamp', unit: 'Hz'},
+      {name: 'duration', type: 'duration', unit: 'frames'},
+      {name: 'category', type: 'string', unit: 'count'},
+      {name: 'unknown', type: 'number', unit: 'priority'},
+      {name: 'percentage_frames', type: 'percentage', unit: 'frames'},
+      {name: 'bytes_time', type: 'bytes', unit: 'ns'},
+    ];
+    const skill = baseSkill({steps: [{id: 'units', type: 'atomic', sql: 'SELECT values',
+      display: {columns}} as any]});
+    expect(validateSkillDisplayContract(skill).map(issue => issue.path)).toEqual([
+      'steps[0].display.columns[5].unit', 'steps[0].display.columns[6].unit',
+      'steps[0].display.columns[7].unit', 'steps[0].display.columns[8].unit',
+      'steps[0].display.columns[9].unit', 'steps[0].display.columns[10].unit',
+    ]);
+    const cleaned = sanitizeDisplayConfigForRuntime({columns} as any, {skillName: 'units'});
+    expect(cleaned.config?.columns?.slice(0, 5)).toEqual(columns.slice(0, 5));
+    for (const column of cleaned.config?.columns?.slice(5) ?? []) expect(column).not.toHaveProperty('unit');
+  });
+
   it.each([null, [], 'title', {en: ''}, {en: '  '}, {en: 7}, {fr: 'Titre'}])('rejects malformed overrides: %p', value => {
     expect(isDisplayTitleTranslations(value)).toBe(false);
     expect(validateSkillDisplayContract(baseSkill({steps: [{id: 'step', type: 'atomic',
       display: {title_i18n: value}} as any]})).some(issue => issue.field.endsWith('title_i18n'))).toBe(true);
   });
+  it.each(['display_name_i18n', 'description_i18n'])('checks meta.%s as the Skill name and description translations', field => {
+    const issues = (value: unknown) => validateSkillDisplayContract(baseSkill({
+      meta: {display_name: 'Name', description: 'Description', [field]: value},
+    } as any)).filter(issue => issue.field === `meta.${field}`);
+    expect(issues({en: 'English'})).toEqual([]);
+    expect(issues({en: ''})).toHaveLength(1);
+    expect(issues({fr: 'Nom'})).toHaveLength(1);
+  });
   it('accepts partial locale overrides and removes authoring metadata from runtime display', () => {
     expect(isDisplayTitleTranslations({en: 'Observed interval'})).toBe(true);
     expect(sanitizeDisplayConfigForRuntime({title: 'Observed interval', title_i18n: {en: 'Observed interval'}}).config.title_i18n)
       .toBeUndefined();
+    expect(sanitizeDisplayConfigForRuntime({columns: [{name: 'n', label: '次数', label_i18n: {en: 'Count'}}]}).config.columns)
+      .toEqual([{name: 'n', label: '次数'}]);
   });
-  it.each(['root', 'output', 'then', 'else', 'conditions', 'unnamed'])('rejects title overrides at unsupported %s locations', location => {
+  // The display walk is stepNodesOf: the branches the executor runs. A `then`
+  // written on the conditional itself is no branch; the closed step schema
+  // rejects it (conditional_step_invalid).
+  it.each(['root', 'output', 'else', 'conditions', 'unnamed'])('rejects title overrides at unsupported %s locations', location => {
     const display = {title_i18n: {en: 'Explicit title'}};
     const child = {id: 'child', type: 'atomic', display};
     const branch = location === 'conditions' ? {conditions: [{then: child}]} : {[location]: child};

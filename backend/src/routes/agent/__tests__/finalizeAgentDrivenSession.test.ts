@@ -9,6 +9,7 @@ import {
   finalizeAgentDrivenSession,
   type FinalizeAgentDrivenSessionDeps,
 } from '../finalizeAgentDrivenSession';
+import {NO_PRIVATE_CONTEXT} from '../../../services/security/analysisPrivateContext';
 
 type TestSessionStatus =
   | 'pending'
@@ -113,6 +114,7 @@ function createFinalizeDeps(
     },
     persistAgentTurn: () => undefined,
     refreshPersistedAgentSnapshot: () => undefined,
+    runPrivateContext: () => NO_PRIVATE_CONTEXT,
     ensureCompletedAnalysisSseEvents,
     sendAgentDrivenResult: () => undefined,
   };

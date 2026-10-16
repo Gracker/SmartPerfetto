@@ -14,6 +14,7 @@ import type {
 } from '../../types/selfEvolution';
 import {canonicalJsonString, immutableCanonicalSnapshot} from './canonicalJson';
 import {getSelfEvolutionLifecycleSnapshot} from './selfEvolutionLifecycle';
+import {parseStoredJson} from '../../utils/storedData';
 
 export interface RunManifestStoreOptions {
   persistence: SelfEvolutionPersistenceCapability;
@@ -44,7 +45,7 @@ function runKey(scope: RunManifestScope, runId: string): string {
 }
 
 function parseManifest(payload: string): RunManifestV1 {
-  return immutableCanonicalSnapshot(JSON.parse(payload) as RunManifestV1);
+  return immutableCanonicalSnapshot(parseStoredJson<RunManifestV1>(payload, 'run manifest'));
 }
 
 export class RunManifestStore {
@@ -313,12 +314,14 @@ export function getRunManifestStore(): RunManifestStore {
   return defaultStore;
 }
 
+/** @internal Test seam. */
 export function resetRunManifestStoreForTests(): void {
   defaultStore?.close();
   defaultStore = undefined;
   defaultStoreKey = undefined;
 }
 
+/** @internal Test seam. */
 export const __testing = {
   DEFAULT_EPHEMERAL_CAPACITY,
   manifestKey,

@@ -11,6 +11,7 @@
 
 import { EventEmitter } from 'events';
 import { spawnSync } from 'child_process';
+import { randomInt } from 'crypto';
 import { traceProcessorConfig } from '../config';
 
 const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
@@ -22,6 +23,21 @@ export interface PortAllocation {
 }
 
 export type PortBindProbe = (port: number) => boolean;
+
+/**
+ * Where allocation starts scanning the pool.
+ * - `lowest`: always the lowest free port (predictable; the Web backend default).
+ * - a port number: start there and wrap. Independent CLI processes each pick a
+ *   different origin so concurrent processes rarely probe the same port during
+ *   the window between the bind probe and trace_processor_shell's own bind,
+ *   which only happens after the trace has been parsed.
+ */
+export type PortScanOrigin = 'lowest' | number;
+
+/** A uniformly random origin within [minPort, maxPort], drawn once per process. */
+export function randomPortScanOrigin(minPort: number, maxPort: number): number {
+  return minPort + randomInt(maxPort - minPort + 1);
+}
 
 const LOOPBACK_PORT_PROBE = [
   "const net = require('net');",
@@ -54,6 +70,10 @@ export class PortPool extends EventEmitter {
   private blockedPorts: Set<number>; // ports known to be unusable (e.g. already in use by another process)
   private allocations: Map<string, PortAllocation>; // traceId -> allocation
   private portToTraceId: Map<number, string>; // port -> traceId (reverse lookup)
+  // Ports detached from their key whose process may still hold the socket.
+  // They are neither available nor owned by any key until their retirement ends.
+  private retiringPorts: Map<number, PortAllocation>;
+  private scanOrigin: PortScanOrigin = 'lowest';
 
   constructor(
     minPort: number = traceProcessorConfig.portRange.min,
@@ -67,6 +87,7 @@ export class PortPool extends EventEmitter {
     this.blockedPorts = new Set();
     this.allocations = new Map();
     this.portToTraceId = new Map();
+    this.retiringPorts = new Map();
 
     // Initialize all ports as available
     for (let port = minPort; port <= maxPort; port++) {
@@ -134,22 +155,44 @@ export class PortPool extends EventEmitter {
       return false;
     }
 
-    const port = allocation.port;
-
-    // Return port to available pool
     this.allocations.delete(traceId);
-    this.portToTraceId.delete(port);
-    // If a port is known-bad, keep it blocked even after release.
+    this.portToTraceId.delete(allocation.port);
+    this.returnPortToPool(allocation.port, traceId, 'port');
+    return true;
+  }
+
+  /** Put a port no key owns back into circulation, unless it is known-bad. */
+  private returnPortToPool(port: number, traceId: string, what: 'port' | 'retired port'): void {
     if (!this.blockedPorts.has(port)) {
       this.availablePorts.add(port);
     }
-
     if (!IS_TEST_ENV) {
-      console.log(`[PortPool] Released port ${port} from trace ${traceId} (${this.availablePorts.size} available)`);
+      console.log(`[PortPool] Released ${what} ${port} from trace ${traceId} (${this.availablePorts.size} available)`);
     }
     this.emit('released', { port, traceId });
+  }
 
-    return true;
+  /**
+   * Detach `port` from `traceId` now and keep it out of circulation until the
+   * returned callback runs (normally when the owning process has exited).
+   *
+   * The key becomes free immediately, so a retry or replacement for the same
+   * key receives a different port instead of the dying process's socket, and
+   * the late exit of the old process cannot release the successor's port.
+   * Returns null when `traceId` no longer owns `port`; the callback is idempotent.
+   */
+  retire(traceId: string, port: number): (() => void) | null {
+    const allocation = this.allocations.get(traceId);
+    if (allocation?.port !== port) return null;
+    this.allocations.delete(traceId);
+    this.portToTraceId.delete(port);
+    this.retiringPorts.set(port, allocation);
+    return () => {
+      // Ended already, or blocked meanwhile (blockPort drops the retirement).
+      if (this.retiringPorts.get(port) !== allocation) return;
+      this.retiringPorts.delete(port);
+      this.returnPortToPool(port, traceId, 'retired port');
+    };
   }
 
   /**
@@ -161,7 +204,8 @@ export class PortPool extends EventEmitter {
     const traceId = this.portToTraceId.get(port);
     if (!traceId) {
       // Port might not be tracked, just add it back to available
-      if (port >= this.minPort && port <= this.maxPort && !this.availablePorts.has(port) && !this.blockedPorts.has(port)) {
+      if (port >= this.minPort && port <= this.maxPort && !this.availablePorts.has(port) &&
+          !this.blockedPorts.has(port) && !this.retiringPorts.has(port)) {
         this.availablePorts.add(port);
         if (!IS_TEST_ENV) {
           console.log(`[PortPool] Force-released untracked port ${port}`);
@@ -186,6 +230,8 @@ export class PortPool extends EventEmitter {
       this.release(traceId);
     }
 
+    // A retiring port ends its retirement blocked; the pending callback becomes a no-op.
+    this.retiringPorts.delete(port);
     this.availablePorts.delete(port);
     this.blockedPorts.add(port);
     console.log(`[PortPool] Blocked port ${port} (marked unusable)`);
@@ -211,6 +257,18 @@ export class PortPool extends EventEmitter {
     return this.availablePorts.has(port);
   }
 
+  /** Change where subsequent allocations start scanning; ports outside the pool are rejected. */
+  setScanOrigin(origin: PortScanOrigin): void {
+    if (origin !== 'lowest' && (!Number.isInteger(origin) || origin < this.minPort || origin > this.maxPort)) {
+      throw new Error(`Port scan origin ${origin} is outside the pool (${this.minPort}-${this.maxPort})`);
+    }
+    this.scanOrigin = origin;
+  }
+
+  getScanOrigin(): PortScanOrigin {
+    return this.scanOrigin;
+  }
+
   /**
    * Get the next available port
    * @returns The next available port or null if none available
@@ -219,8 +277,19 @@ export class PortPool extends EventEmitter {
     if (this.availablePorts.size === 0) {
       return null;
     }
-    // Get the smallest available port for predictability
-    return Math.min(...this.availablePorts);
+    const origin = this.scanOrigin;
+    if (origin === 'lowest') {
+      // Get the smallest available port for predictability
+      return Math.min(...this.availablePorts);
+    }
+    // The first free port at or after the origin, wrapping to the lowest.
+    let atOrAfter: number | null = null;
+    let lowest: number | null = null;
+    for (const port of this.availablePorts) {
+      if (lowest === null || port < lowest) lowest = port;
+      if (port >= origin && (atOrAfter === null || port < atOrAfter)) atOrAfter = port;
+    }
+    return atOrAfter ?? lowest;
   }
 
   private getNextBindablePort(): number | null {
@@ -247,6 +316,7 @@ export class PortPool extends EventEmitter {
     available: number;
     allocated: number;
     blocked: number;
+    retiring: number;
     allocations: PortAllocation[];
   } {
     return {
@@ -254,6 +324,7 @@ export class PortPool extends EventEmitter {
       available: this.availablePorts.size,
       allocated: this.allocations.size,
       blocked: this.blockedPorts.size,
+      retiring: this.retiringPorts.size,
       allocations: Array.from(this.allocations.values()),
     };
   }
@@ -297,17 +368,38 @@ export class PortPool extends EventEmitter {
 
 // Singleton instance
 let portPoolInstance: PortPool | null = null;
+// Process-wide scan origin for the singleton; survives resetPortPool().
+let processScanOrigin: PortScanOrigin = 'lowest';
+
+function createProcessPortPool(): PortPool {
+  const pool = new PortPool();
+  pool.setScanOrigin(processScanOrigin);
+  return pool;
+}
 
 export function getPortPool(): PortPool {
   if (!portPoolInstance) {
-    portPoolInstance = new PortPool();
+    portPoolInstance = createProcessPortPool();
   }
   return portPoolInstance;
+}
+
+/**
+ * Opt this process into a random scan origin within the configured range.
+ * Intended for short-lived CLI processes, several of which may run at once.
+ * The long-running Web backend keeps the predictable lowest-port behaviour.
+ */
+export function usePerProcessPortScanOrigin(): PortScanOrigin {
+  if (processScanOrigin === 'lowest') {
+    processScanOrigin = randomPortScanOrigin(traceProcessorConfig.portRange.min, traceProcessorConfig.portRange.max);
+  }
+  portPoolInstance?.setScanOrigin(processScanOrigin);
+  return processScanOrigin;
 }
 
 export function resetPortPool(): void {
   if (portPoolInstance) {
     portPoolInstance.releaseAll();
   }
-  portPoolInstance = new PortPool();
+  portPoolInstance = createProcessPortPool();
 }

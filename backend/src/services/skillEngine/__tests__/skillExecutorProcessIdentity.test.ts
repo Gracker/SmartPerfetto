@@ -200,7 +200,7 @@ describe('SkillExecutor process identity gate', () => {
     expect(query).toHaveBeenCalledTimes(1);
   });
 
-  it('blocks required process skills when resolver returns only weak identity evidence', async () => {
+  it.each(['zh-CN', 'en'] as const)('blocks weak identity evidence with scoped recovery guidance in %s', async language => {
     const query = jest.fn().mockResolvedValueOnce({
       columns: ['rank', 'confidence_score', 'identity_status', 'canonical_package_name', 'recommended_process_name_param', 'upid', 'target_match_sources', 'supporting_sources', 'identity_warning'],
       rows: [[1, 20, 'weak_match', 'com.example', 'com.uncertain', 42, 'thread.name', '', 'shared UID']],
@@ -209,10 +209,15 @@ describe('SkillExecutor process identity gate', () => {
 
     const result = await createExecutor(query).execute('target_process_skill', 'trace', {
       process_name: 'com.example',
-    });
+    }, {__outputLanguage: language});
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('could not be verified');
+    const suggestions = result.diagnostics[0].suggestions!.join(' ');
+    expect(suggestions).toContain('process_identity_resolver');
+    expect(suggestions).toContain('upid');
+    expect(suggestions).toContain(language === 'en' ? 'original time range' : '原时间范围');
+    expect(suggestions).toContain(language === 'en' ? 'must still pass the gate' : '仍须通过门禁');
     expect(query).toHaveBeenCalledTimes(1);
   });
 
@@ -568,6 +573,32 @@ describe('SkillExecutor trusted exact UPID execution', () => {
     expect(query.mock.calls.map(call => call[1]).join('\n')).not.toContain('unsafe_named_buffer_track');
   });
 
+  it('binds an exact-scope-unavailable step\'s save_as to null that keeps its unavailable scope', async () => {
+    const { executor } = makeExecutor();
+    const skill: SkillDefinition = { ...native, name: 'partial_bound', type: 'composite', sql: undefined, steps: [
+      { id: 'buffer', type: 'atomic', sql: 'SELECT * FROM unsafe_named_buffer_track', save_as: 'buffer_rows',
+        process_scope: { role: 'target', exact_unavailable: 'No UPID relationship exists for this track' } },
+      { id: 'probe', type: 'diagnostic', inputs: ['buffer_rows'], rules: [
+        { condition: 'buffer_rows?.data == null', diagnosis: 'UNOBSERVED', confidence: 'high' },
+        { condition: 'buffer_rows?.data != null', diagnosis: 'BOUND ${JSON.stringify(buffer_rows.data)}', confidence: 'high' },
+      ] } as any,
+    ] };
+    executor.registerSkill(skill);
+    const inherited = { buffer_rows: { data: [{ source: 'caller' }] } };
+    const entries = (provenance: any) => provenance?.entries?.map((entry: any) =>
+      ({ sourceStepId: entry.sourceStepId, availability: entry.availability }));
+    const unavailable = [{ sourceStepId: 'buffer', availability: 'unavailable' }];
+
+    const result = await executor.execute(skill.name, 'trace', { upid: 42 }, inherited);
+    expect(result.diagnostics.map(d => d.diagnosis)).toEqual(['UNOBSERVED']);
+    expect(entries(result.diagnostics[0].scopeProvenance)).toEqual(unavailable);
+
+    const layered = await executor.executeCompositeSkill(skill, { upid: 42 }, { traceId: 'trace', inherited });
+    const probe = layered.stepResults?.find(step => step.stepId === 'probe');
+    expect(probe?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['UNOBSERVED']);
+    expect(entries(probe?.scopeProvenance)).toEqual(unavailable);
+  });
+
   it('preflights the whole composite before an earlier target step can run', async () => {
     const { executor, query } = makeExecutor();
     executor.registerSkill({ ...native, name: 'unmigrated_child', process_scope: undefined });
@@ -741,6 +772,34 @@ describe('PID uniqueness with the real process identity resolver YAML', () => {
         expect(result.identityResolution?.status).not.toBe('verified');
         expect(targetQueries).toHaveLength(0);
         expect(query.mock.calls).toHaveLength(1);
+
+        // Names cannot distinguish two instances. Inspect actual resolver rows,
+        // then simulate evidence selecting the non-first instance explicitly.
+        const window = {start_ts: 100, end_ts: 900};
+        const named = await executor.execute('pid_exact_target', 'trace', {package: 'com.example', ...window});
+        expect(named.success).toBe(false);
+        expect(named.identityResolution?.status).toBe('ambiguous');
+        expect(query.mock.calls.filter(([, sql]) => sql.includes('AS selected_upid'))).toHaveLength(0);
+        const inspected = await executor.execute(definition.name, 'trace', {package: 'com.example', ...window});
+        expect(inspected.success).toBe(true);
+        const selected = inspected.rawResults!.root.data.find((row: any) => row.upid === 43)!;
+        expect(selected.rank).toBe(2);
+        query.mockClear();
+        const retried = await executor.execute('pid_exact_target', 'trace', {upid: selected.upid, ...window});
+        expect(retried.success).toBe(true);
+        expect(retried.rawResults?.root.data).toEqual([{selected_upid: 43}]);
+        expect(retried.rawResults?.root.appliedProcessScope).toMatchObject({mode: 'exact_upid', upid: 43});
+        const resolverSql = query.mock.calls.find(([, sql]) => sql.includes('AS raw_start_ts'))![1];
+        expect(resolverSql).toContain('COALESCE(100, trace_start())');
+        expect(resolverSql).toContain('COALESCE(900, trace_end())');
+
+        // An explicit instance does not waive unresolved package ownership.
+        db.exec("INSERT INTO android_process_metadata VALUES (42,'com.example','com.example',1000,1,0)");
+        query.mockClear();
+        const sharedUid = await executor.execute('pid_exact_target', 'trace', {upid: 42, ...window});
+        expect(sharedUid.success).toBe(false);
+        expect(sharedUid.identityResolution?.status).toBe('ambiguous');
+        expect(query.mock.calls.filter(([, sql]) => sql.includes('AS selected_upid'))).toHaveLength(0);
       } else {
         expect(result.rawResults?.root.data).toEqual([{selected_upid: 42}]);
         expect(result.rawResults?.root.appliedProcessScope).toMatchObject({mode: 'exact_upid', upid: 42});
@@ -780,6 +839,9 @@ describe('ANR and frame-detail real YAML scope closure', () => {
     const db = new Database(':memory:');
     db.function('trace_start', () => 0);
     db.function('trace_end', () => 1_000_000_000);
+    // trace_processor intrinsic; NULL like a trace without clock snapshots, so
+    // cpu_cluster_load_in_range takes its wall-clock fallback.
+    db.function('to_monotonic', (_ts: unknown) => null);
     db.exec(`
       CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT, cmdline TEXT,
         uid INTEGER, android_appid INTEGER, start_ts INTEGER, end_ts INTEGER);
@@ -802,7 +864,7 @@ describe('ANR and frame-detail real YAML scope closure', () => {
         blocked_thread_name TEXT, process_name TEXT, is_blocked_thread_main INTEGER,
         waiter_count INTEGER, ts INTEGER, dur INTEGER);
       CREATE TABLE android_logs(ts INTEGER, prio INTEGER, tag TEXT, msg TEXT);
-      CREATE TABLE android_gpu_frequency(gpu_id INTEGER, gpu_freq INTEGER, dur INTEGER, ts INTEGER);
+      CREATE TABLE gpu_counter_track(id INTEGER PRIMARY KEY, name TEXT, gpu_id INTEGER, ugpu INTEGER);
       CREATE TABLE android_process_metadata(upid INTEGER, process_name TEXT, package_name TEXT,
         uid INTEGER, shared_uid INTEGER, is_kernel_task INTEGER);
       CREATE TABLE actual_frame_timeline_slice(upid INTEGER, ts INTEGER, dur INTEGER, jank_type TEXT, layer_name TEXT);
@@ -867,11 +929,15 @@ describe('ANR and frame-detail real YAML scope closure', () => {
         (2,100000000,2000000),(2,190000000,1500000),
         (30,100000000,1),(30,116000000,1),(30,132000000,1),(30,148000000,1),
         (30,164000000,1),(30,180000000,1),(30,196000000,1);
-      INSERT INTO android_gpu_frequency VALUES (0,800000000,50000000,100000000),(0,400000000,50000000,150000000);
+      -- kgsl_gpu_frequency samples, which trace_processor stores in Hz.
+      INSERT INTO gpu_counter_track VALUES (40,'gpufreq',0,0);
+      INSERT INTO counter VALUES (40,100000000,800000000),(40,150000000,400000000);
     `);
     db.exec(`
       CREATE TABLE trace_bounds(start_ts INTEGER,end_ts INTEGER);
       INSERT INTO trace_bounds VALUES(0,1000000000);
+      ALTER TABLE counter ADD COLUMN id INTEGER;
+      UPDATE counter SET id = rowid;
       ALTER TABLE thread ADD COLUMN is_idle INTEGER DEFAULT 0;
       ALTER TABLE cpu ADD COLUMN cpu INTEGER;
       ALTER TABLE cpu ADD COLUMN machine_id INTEGER;

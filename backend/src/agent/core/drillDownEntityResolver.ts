@@ -12,6 +12,7 @@ import {
   rethrowIfTraceProcessorQueryCancelled,
   throwIfTraceProcessorQueryCancelled,
 } from '../../services/traceProcessorCancellation';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 interface TraceQueryResult {
   columns?: string[];
@@ -122,11 +123,7 @@ function toRowObject(result: TraceQueryResult | null | undefined): Record<string
   if (!Array.isArray(row) || !Array.isArray(result.columns) || result.columns.length === 0) {
     return null;
   }
-  const objectRow: Record<string, unknown> = {};
-  result.columns.forEach((column, index) => {
-    objectRow[column] = row[index];
-  });
-  return objectRow;
+  return rowObject(result.columns, row);
 }
 
 async function executeTraceQuery(

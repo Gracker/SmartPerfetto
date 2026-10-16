@@ -21,6 +21,9 @@ import {
   type SharedToolSpec,
 } from '../runtimeToolSpec';
 import {createRuntimeToolConcurrencyCoordinator} from '../runtimeToolConcurrency';
+import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
+import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../runtimeCandidateAdmission';
 import {
@@ -673,6 +676,54 @@ describe('SharedToolSpec', () => {
     })).toBe('first\n{"type":"json","payload":{"ok":true}}');
   });
 
+  it('drops null and placeholder strings from optional fields only, given the tool shape', () => {
+    const shape = {
+      sql: z.string(),
+      process_name: z.string().optional(),
+      thread_name: z.string().optional(),
+      utid: z.union([z.number(), z.string()]).optional(),
+      limit: z.number().default(10),
+      note: z.string().optional(),
+    };
+    expect(normalizeRuntimeToolArgs({
+      sql: 'null', process_name: 'null', thread_name: '', utid: null, limit: null, note: 'kept',
+    }, shape)).toEqual({sql: 'null', note: 'kept'});
+    // A real value, a required field and nested values are the handler's business.
+    expect(normalizeRuntimeToolArgs({sql: '', utid: '0', process_name: ' NONE '}, shape))
+      .toEqual({sql: '', utid: '0'});
+    // Without the shape nothing is dropped.
+    expect(normalizeRuntimeToolArgs({process_name: 'null'})).toEqual({process_name: 'null'});
+  });
+
+  it('preserves schema-declared strings while retaining container and placeholder compatibility', () => {
+    const args = {body: ' {"literal":true} ', declarationJson: '{"claims":[]}',
+      optional: '[1,2]', defaulted: '{"a":1}', enumeration: '{"enum":true}',
+      params: '{"nested":"[1,2]"}', list: '[{"id":1}]', omitted: 'null'};
+    const shape = {body: z.string(), declarationJson: z.string().max(65536), optional: z.string().optional(),
+      defaulted: z.string().default(''), enumeration: z.enum(['{"enum":true}']),
+      params: z.record(z.string(), z.any()), list: z.array(z.object({id: z.number()})), omitted: z.string().optional()};
+    const expected = {...args, params: {nested: [1, 2]}, list: [{id: 1}]};
+    delete (expected as Partial<typeof expected>).omitted;
+    expect(normalizeRuntimeToolArgs(args, shape)).toEqual(expected);
+    expect(normalizeRuntimeToolArgs(JSON.stringify(args), shape)).toEqual(expected);
+  });
+
+  it('transports exact JSON strings through the real shared Pi and OpenAI adapters', async () => {
+    const handler = jest.fn(async (args: Record<string, unknown>) => ({content: [{type: 'text' as const, text: JSON.stringify(args)}]}));
+    const shared: SharedToolSpec = {name: 'string_transport_probe', description: 'Preserve string input', exposure: 'internal',
+      inputSchema: {body: z.string(), declarationJson: z.string(), params: z.record(z.string(), z.any())}, handler};
+    const args = {body: '{"report":"literal"}', declarationJson: '{"claims":[]}', params: '{"enabled":true}'};
+    const expected = {...args, params: {enabled: true}};
+    const pi = createPiAgentCoreToolFromSharedSpec(shared, {allowedToolNames: new Set([shared.name])});
+    await pi.execute('string-transport-pi', args);
+    const registry = new McpToolRegistry();
+    registry.registerShared(shared);
+    const openai = createOpenAIToolsFromMcpDefinitions(registry.list())[0] as any;
+    await openai.invoke({context: {}}, JSON.stringify(args), {toolCall: {callId: 'string-transport-openai'}});
+    expect(handler).toHaveBeenCalledTimes(2);
+    for (const call of handler.mock.calls) expect(call[0]).toEqual(expected);
+  });
+
   it('supports a fake third-party adapter without a production runtime value', async () => {
     const handler = jest.fn(async (args: Record<string, unknown>, _extra: unknown) => ({
       content: [{ type: 'text' as const, text: JSON.stringify(args) }],
@@ -688,7 +739,7 @@ describe('SharedToolSpec', () => {
       name: `third-party-test:${shared.name}`,
       schema: createJsonSchemaFromZodRawShape(shared.inputSchema),
       call: async (rawArgs: unknown) => shared.handler(
-        normalizeRuntimeToolArgs(rawArgs) as Record<string, unknown>,
+        normalizeRuntimeToolArgs(rawArgs, shared.inputSchema) as Record<string, unknown>,
         { runtime: 'third-party-test-engine' },
       ),
     };
@@ -701,10 +752,10 @@ describe('SharedToolSpec', () => {
       properties: { payload: { type: 'string' } },
     });
     expect(handler).toHaveBeenCalledWith(
-      { payload: { nested: true } },
+      { payload: '{"nested": true}' },
       { runtime: 'third-party-test-engine' },
     );
-    expect((result.content[0] as any).text).toBe('{"payload":{"nested":true}}');
+    expect((result.content[0] as any).text).toBe(JSON.stringify({payload: '{"nested": true}'}));
   });
 
   it('keeps one timing receipt when a registry observer wraps an already timed SDK handler', async () => {
@@ -761,5 +812,63 @@ describe('SharedToolSpec', () => {
       factory.mockRestore();
       lifecycle.dispose();
     }
+  });
+});
+
+describe('run authorization wrappers', () => {
+  const revoked = new Error('analysis_context_changed_restart_required');
+  const fence = (failAt: Array<'pre' | 'post'>) => {
+    const events: string[] = [];
+    let checks = 0;
+    return {
+      events,
+      authorization: {
+        assertCurrentInTurn: () => {
+          const at = checks++ === 0 ? 'pre' : 'post';
+          events.push(`check:${at}`);
+          if (failAt.includes(at)) throw revoked;
+        },
+        settled: async () => { events.push('settled'); },
+      },
+    };
+  };
+  const timedExtra = () => {
+    const recorder = createRuntimePerformanceRecorder();
+    return {recorder, extra: {toolCallId: 'call-1', runManifestAttributionSink: {runtimePerformanceRecorder: recorder} as any}};
+  };
+  const spec = (body: () => Promise<any>): SharedToolSpec => ({name: 'probe', description: 'probe', exposure: 'public',
+    inputSchema: {}, handler: async () => body()});
+
+  it.each([
+    ['pre-check', ['pre'] as Array<'pre' | 'post'>, async () => createRuntimeToolResult({success: true}), ['check:pre', 'settled'], 0],
+    ['body error', [] as Array<'pre' | 'post'>, async () => { throw new Error('body'); }, ['check:pre', 'settled'], 1],
+    ['post-check', ['post'] as Array<'pre' | 'post'>, async () => createRuntimeToolResult({success: true}), ['check:pre', 'check:post', 'settled'], 1],
+  ])('waits for the revoke to settle on a failing %s and keeps one timing receipt per executed body', async (_label, failAt, body, expected, timedCalls) => {
+    for (const wrap of ['composite', 'auth_only'] as const) {
+      const {events, authorization} = fence(failAt);
+      const {recorder, extra} = timedExtra();
+      const wrapped = wrap === 'composite'
+        ? runtimeToolSpec.withRuntimeToolAuthorization(spec(body), authorization)
+        : runtimeToolSpec.withRunAuthorizationOnly(withRuntimeToolTiming(spec(body)), authorization);
+      await expect(wrapped.handler({}, extra)).rejects.toThrow();
+      expect(events).toEqual(expected);
+      expect(recorder.seal().tools).toHaveLength(timedCalls);
+    }
+  });
+
+  it('is the composition auth-only ∘ timing, and auth-only alone records no tool timing', async () => {
+    const composite = timedExtra();
+    const authOnly = timedExtra();
+    const body = async () => createRuntimeToolResult({success: true});
+    const allow = {assertCurrentInTurn: () => undefined, settled: async () => undefined};
+    await runtimeToolSpec.withRuntimeToolAuthorization(spec(body), allow).handler({}, composite.extra);
+    await runtimeToolSpec.withRunAuthorizationOnly(spec(body), allow).handler({}, authOnly.extra);
+    expect(composite.recorder.seal().tools).toHaveLength(1);
+    expect(authOnly.recorder.seal().tools).toEqual([]);
+    // The composite stays marked as timed, so outer wrappers do not time it again.
+    const outer = withRuntimeToolTiming(runtimeToolSpec.withRuntimeToolAuthorization(spec(body), allow));
+    const again = timedExtra();
+    await outer.handler({}, again.extra);
+    expect(again.recorder.seal().tools).toHaveLength(1);
   });
 });

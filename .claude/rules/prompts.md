@@ -1,158 +1,61 @@
 # Prompt and Strategy Rules
 
-## No Prompt Content in TypeScript
+`backend/strategies/*.strategy.md` and `*.template.md` own durable instructions;
+TypeScript loads, validates, substitutes, routes and assembles them. Skills collect
+deterministic evidence. Discover scenes/output contracts from pinned frontmatter
+and registry, not duplicated lists. Read
+[Agent Runtime](../../docs/architecture/agent-runtime.md) and
+[Skill System](../../docs/reference/skill-system.md) for current contracts.
 
-Do not hardcode durable prompt instructions in TypeScript. TypeScript should
-load, validate, substitute, route, and assemble prompt assets. The content lives
-in Markdown strategy/template files.
+## Runtime Contract
 
-Runtime prompt assets:
+- All native prompt entrypoints use resolved typed intent and a pinned strategy
+  registry; missing context fails, never a legacy quick/full contract fallback.
+  `lookup_strategy_detail` returns full pinned detail, not a catalog preview.
+- Budget, scope, deliverable, evidence access and source need remain independent.
+  Existing-only forbids acquisition; sourceNeed sizes depth but grants no access.
+  Plans/source lookup are on demand, submitted plans and investigation obligations
+  stay binding, selected knowledge remains background rather than trace evidence.
+- Conclusions preserve material findings, evidence, uncertainty and recommendations
+  within scope. Runtime budget/preview imposes no hidden length/row/claim cap.
+  Provider/review limits remain explicit incomplete states; never truncate or waive
+  verification to pass. Native completion is not inferred from prose/headings.
+- Preserve original claim semantics/references. Shared semantic review has no tools,
+  at most one call, pinned provider/original deadline, and cannot rewrite the body.
+  Structured repairs stay inside the same contract and remaining budget.
+- Retained-evidence metadata remains bounded and authorized; titles/columns are
+  data, not instructions or proof. Missing/evicted data stays unavailable.
 
-- Scene strategies: `backend/strategies/*.strategy.md`
-- Prompt templates: `backend/strategies/prompt-*.template.md`
-- Architecture knowledge: `backend/strategies/knowledge-rendering-pipeline.template.md`
-- Selection scope: `backend/strategies/knowledge-selection-scope.template.md`
-- Knowledge templates: `backend/strategies/knowledge-*.template.md`
-- Comparison methodology: `backend/strategies/knowledge-trace-comparison.template.md`
-  and `backend/strategies/multi-trace-result-comparison.strategy.md`
+## Authoring and Language
 
-Current strategy set is discovered from strategy frontmatter through
-`strategyLoader.ts`; do not duplicate the scene list in TypeScript when the
-frontmatter can be the source of truth.
+- Templates use `{{variable}}`; Skill parameters use `${param|default}`.
+  Never put brace placeholders in comments: substitution/split logic reads them
+  too. HTML comments are stripped before prompt delivery.
+- Frontmatter schemas/loaders own field support; update their validators/tests
+  with new syntax. `keywords` are classifier lexical anchors, not regex routing.
+  Removed fields (`compound_patterns`, `phase_hints`, `plan_template`) cannot be
+  reintroduced as inert metadata. Actual evidence obligations belong in
+  `investigation_contract`; model plans remain a distinct live contract.
+- `entry_skill` must pass strict schema and registry admission: executable
+  single-trace, declared inputs, identity/time bindings and read-only SQL. Product
+  scene-entry evidence runs under scope/lease/deadline/authorization/identity
+  guards; it is not a model tool call. Guidance belongs in templates.
+- Default strategy detail and new prompt sections consume the measured prompt
+  budget; run backend
+  `claudeSystemPrompt.realStrategyTokenRegression.test.ts` when enlarging them
+  and inspect dropped segment labels. Added prose must not silently evict useful
+  schema or completeness context.
+- Runtime language is `SMARTPERFETTO_OUTPUT_LANGUAGE` (`zh-CN` default, `en`
+  override), external language templates and `outputLanguage.ts` `localize`.
+  Preserve bilingual user-facing runtime/report/insight strings.
 
-Strategy frontmatter can also declare final-output requirements such as
-`final_report_contract`. Add or update those fields in the strategy/template
-layer, then update `strategyLoader.ts` and contract tests only when the schema
-itself changes.
-
-## Runtime Content Paths
-
-SmartPerfetto uses two content tracks:
-
-```text
-Markdown strategies/templates
-  -> strategyLoader.ts
-  -> system prompt / quick prompt / classifier prompt
-  -> agent runtime
-
-YAML Skills
-  -> invoke_skill MCP tool
-  -> SkillExecutor
-  -> SQL / trace_processor_shell
-  -> DataEnvelope / DisplayResult
-```
-
-Strategies shape agent behavior. Skills collect deterministic evidence. Keep
-that boundary intact.
-
-`lookup_strategy_detail` returns the complete detail from the run's pinned
-strategy registry. Do not truncate its body or substitute a catalog preview;
-the final sections carry interpretation limits and system-analysis guidance.
-Keep discovery metadata and general runtime budgets separate from this read.
-Scene `investigation_requirements` preserve relevant evidence depth for both
-answers and reports; presentation freedom does not waive that coverage.
-
-The five native runtimes share external typed-intent and conclusion-declaration
-templates. Scene choices come from the pinned strategy registry, and the finite
-proof catalog comes from `SUPPORTED_DETERMINISTIC_CLAIM_RULES`. Valid JSON only
-establishes a declaration's shape; it does not prove its interpretation or
-claims correct.
-
-All system-prompt entrypoints require the resolved turn intent and pinned
-strategy registry. There is no legacy quick/full prompt fallback. Missing
-context fails explicitly instead of selecting a different answer contract.
-Final conclusions are the primary user record: retain all material findings,
-evidence, uncertainty and relevant recommendations within scope. Neither a
-runtime budget setting nor an artifact preview imposes a conclusion length,
-table-row or claim-count limit. Actual provider/review limits remain explicit
-incomplete states; do not truncate a conclusion or waive verification to pass.
-
-Keep budget, question scope, deliverable and evidence access separate. An
-`existing_only` turn cannot acquire new evidence; `read_new` never widens
-authorization. Plans and source lookup are on demand. A larger budget does not
-require a report, extra source pass, fixed Skill sequence or plan template.
-
-Preserve the original claim semantics and references. Do not use wording,
-headings or error-like prose to infer native completion, rewrite causal claims
-into easier assertions, or force another answer. Structured delivery repairs
-must respect the same strategy contract and remaining runtime budget.
-
-The shared final semantic review uses an external template, the pinned provider
-and original deadline, with no tools and at most one review. It checks the
-canonical body, declarations and available evidence; it does not perform new
-queries or rewrite the body. Known-misdiagnosis regex metadata is not a substitute
-for this current semantic boundary.
-
-Conversation's retained-evidence template receives only bounded, authorized
-locator metadata from live captures. Titles and column names are data, not
-instructions or proof; private metadata passes the existing projection before
-entering the native prompt path. Missing or evicted data remains unavailable.
-
-## Template Syntax
-
-- Prompt/template variables use `{{variable}}`.
-- Skill YAML parameter substitution uses `${param|default}`.
-- Strategy frontmatter may include `keywords`, `priority`,
-  `investigation_contract`, and final-report contract fields. `keywords` are
-  lexical anchors: the first eight of each scene reach the classifier's scene
-  catalog, so put the words a user actually types first. `compound_patterns`
-  is not a frontmatter field; scene routing is semantic and no runtime path
-  evaluates regular expressions against the query.
-- `phase_hints` and `plan_template` are historical. They are parsed, pinned and
-  fingerprinted, but no runtime path injects them into an analysis; their
-  `critical_tools` admit and suggest nothing. Do not add an obligation there
-  expecting it to take effect. An obligation that must bind to what a run
-  actually measured belongs in `investigation_contract`, whose `evidence`
-  condition and `evidence_metrics` resolve against the producer ledger and so
-  still apply when the final semantic review is unavailable.
-- Never write a variable in braces inside a template comment. Rendering
-  substitutes inside comments too, and split points that search for a
-  placeholder find the documented one first — that once injected the whole
-  scene core inside an unterminated HTML comment and pushed the methodology
-  preamble after it. Write `Variable "name" = ...` instead.
-- HTML comments are stripped when a template becomes a prompt segment, so
-  SPDX and authoring notes cost no tokens and never reach the model. Marker
-  comments such as `<!-- tool-description:start -->` are consumed by their own
-  loader before that point; keep any new marker on the same contract.
-- The full-mode prompt is budget-bound (`MAX_PROMPT_TOKENS`). Before adding a
-  section, measure with
-  `npx jest src/agentv3/__tests__/claudeSystemPrompt.realStrategyTokenRegression.test.ts`
-  and read the typed prompt budget report: a new section that pushes
-  `droppedLabels` wider has traded trace-completeness or schema context for
-  its own text.
-
-`strategyLoader.ts` owns loading, frontmatter parsing, template rendering, cache
-behavior, and phase hint access. Update it and its tests when adding template
-syntax or frontmatter fields.
-
-## Language Output
-
-Runtime output language is controlled by `SMARTPERFETTO_OUTPUT_LANGUAGE`.
-
-- Default: `zh-CN`.
-- English override: `en`.
-- Use `backend/strategies/prompt-language-zh.template.md` and
-  `prompt-language-en.template.md`.
-- For TypeScript-generated runtime text, use `localize(...)` from
-  `backend/src/agentv3/outputLanguage.ts`.
-
-Do not reintroduce hardcoded English-only or Chinese-only runtime messages in
-paths that stream to users, reports, or insights.
-
-## Validation
-
-After changing strategies/templates:
+## Verification
 
 ```bash
-cd backend
-npm run validate:strategies
-npm run test:scene-trace-regression
+npm --prefix backend run validate:strategies
+npm --prefix backend run test:scene-trace-regression
 ```
 
-If the change affects startup, scrolling, Flutter, comparison, selection,
-system prompt, verifier, or MCP tool behavior, also run the relevant Agent SSE
-e2e command from `.claude/rules/testing.md`.
-
-If the change affects final-answer completeness, evidence summaries, claim
-verification wording, or OpenAI final-report continuation, include the focused
-result-quality tests listed in `.claude/rules/testing.md`.
+Add affected finalization/result-quality owner tests for output/evidence/recovery
+contracts and authenticated scene E2E for actual agent behavior according to
+[testing](testing.md). Schema/parser co-versioning belongs to [skills](skills.md).

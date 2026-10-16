@@ -8,11 +8,17 @@ import SkillController from '../skillController';
 
 function responseDouble() {
   const response = {
+    headersSent: false,
     status: jest.fn(),
     json: jest.fn(),
+    type: jest.fn(),
+    set: jest.fn(),
+    removeHeader: jest.fn(),
   };
   response.status.mockReturnValue(response);
   response.json.mockReturnValue(response);
+  response.type.mockReturnValue(response);
+  response.set.mockReturnValue(response);
   return response as typeof response & Response;
 }
 
@@ -59,9 +65,10 @@ describe('SkillController localization', () => {
     });
   });
 
-  it('localizes controller failures while preserving technical error details', async () => {
+  it('localizes controller failures; the technical cause stays in the log', async () => {
     const controller = new SkillController();
     const response = responseDouble();
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const adapter = {
       listSkills: jest.fn<() => Promise<never>>()
         .mockRejectedValue(new Error('registry unavailable')),
@@ -75,14 +82,19 @@ describe('SkillController localization', () => {
 
     expect(response.status).toHaveBeenCalledWith(500);
     expect(response.json).toHaveBeenCalledWith({
+      success: false,
+      code: 'skill_list_failed',
       error: '无法列出 Skills',
-      details: 'registry unavailable',
+      requestId: expect.any(String),
     });
+    expect(errorLog.mock.calls.flat()).toContainEqual(new Error('registry unavailable'));
+    errorLog.mockRestore();
   });
 
-  it('localizes unknown failure details instead of falling back to English', async () => {
+  it('localizes the failure text of a non-Error rejection too', async () => {
     const controller = new SkillController();
     const response = responseDouble();
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     const adapter = {
       listSkills: jest.fn<() => Promise<never>>()
         .mockRejectedValue({reason: 'offline'}),
@@ -95,8 +107,11 @@ describe('SkillController localization', () => {
     );
 
     expect(response.json).toHaveBeenCalledWith({
+      success: false,
+      code: 'skill_list_failed',
       error: '无法列出 Skills',
-      details: '未知错误',
+      requestId: expect.any(String),
     });
+    errorLog.mockRestore();
   });
 });

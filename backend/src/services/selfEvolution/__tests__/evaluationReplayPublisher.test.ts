@@ -55,7 +55,7 @@ const EMPTY_INJECTIONS: RunInjectionAttribution = {
   knowledgeDocs: [],
 };
 const treatmentRef = {
-  category: 'phaseHints' as const,
+  category: 'skillNotes' as const,
   id: 'candidate-hint-a',
   contentHash: 'a'.repeat(64),
 };

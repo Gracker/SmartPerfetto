@@ -4,25 +4,42 @@
 
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
-import type {AnalysisReceipt, DataEnvelope} from '../types/dataContract';
+import type {AnalysisReceipt, DataEnvelope, ExpandableRowData} from '../types/dataContract';
+import {outsideTargetScopeFields} from '../types/identityContract';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   STANDARD_COMPARISON_METRICS,
+  standardMetricDescribesApp,
   type AnalysisResultSceneType,
   type AnalysisResultSnapshot,
   type EvidenceRef,
+  type NormalizedMetricDefinition,
   type NormalizedMetricSource,
   type NormalizedMetricValue,
   type StandardComparisonMetricKey,
 } from '../types/multiTraceComparison';
 import { openEnterpriseDb } from './enterpriseDb';
+import {
+  COMPARISON_METRIC_PRODUCER_CONTRACTS,
+  decideProducerCandidate,
+  isWithheldMetric,
+  producerContractFor,
+  withheldMetricReason,
+  type ComparisonMetricProducerContract,
+  type ContractedMetricKey,
+} from './comparisonMetricProducerContract';
 import { createAnalysisResultSnapshotRepository } from './analysisResultSnapshotStore';
+import { insertAnalysisRunIfMissing } from './analysisRunStore';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
+import {sanitizeOwnerCodeAwareText} from './security/codeAwareOutputRegistry';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {
-  privateAnalysisQueryMessage,
   projectOwnerDataEnvelopes,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
@@ -36,6 +53,9 @@ import {
   type AnalysisDeliveryFields,
 } from './security/analysisDeliveryProjection';
 import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
+import {envelopeTraceValue, measuresTrace} from './evidence/envelopeTraceIdentity';
+import {rowObject} from '../utils/traceProcessorRowUtils';
+import {dataEnvelopeRefId} from './caseEvolution/dataEnvelopeRef';
 
 export interface CompletedAnalysisSnapshotInput extends AnalysisDeliveryFields {
   tenantId?: string;
@@ -69,8 +89,11 @@ export interface CompletedAnalysisSnapshotInput extends AnalysisDeliveryFields {
   traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   uiActionProposals?: import('../types/dataContract').UiActionProposalV1[];
   createdAt?: number;
-  /** Apply the non-resumable private-source persistence projection. */
-  privateKnowledge?: boolean;
+  /**
+   * The run's authorized private material. It is stored with the snapshot and
+   * decides both its audience and the non-resumable persistence projection.
+   */
+  privateContext: AnalysisPrivateContextMarker;
   /** Language pinned to the originating analysis session. */
   outputLanguage?: OutputLanguage;
   /** Canonical scene derived before any private query/evidence projection. */
@@ -104,50 +127,6 @@ function firstNonEmptyLine(text: string | undefined): string | undefined {
     ?.split(/\r?\n/)
     .map(line => line.trim())
     .find(Boolean);
-}
-
-function stableEnvelopeContentHash(env: DataEnvelope): string {
-  return crypto.createHash('sha256')
-    .update(JSON.stringify({
-      source: env.meta?.source,
-      skillId: env.meta?.skillId,
-      stepId: env.meta?.stepId,
-      title: env.display?.title,
-      data: env.data,
-    }, (_key, value) => typeof value === 'bigint' ? value.toString() : value))
-    .digest('hex')
-    .slice(0, 12);
-}
-
-function envelopeTraceValue(
-  env: DataEnvelope,
-  key: 'traceSide' | 'traceId' | 'paneSide',
-): string | undefined {
-  const envelopeAny = env as any;
-  const metaValue = env.meta?.[key];
-  if (typeof metaValue === 'string' && metaValue.length > 0) return metaValue;
-  const topLevelValue = envelopeAny?.[key];
-  if (typeof topLevelValue === 'string' && topLevelValue.length > 0) return topLevelValue;
-  const provenanceValue = envelopeAny?.traceProvenance?.[key];
-  return typeof provenanceValue === 'string' && provenanceValue.length > 0
-    ? provenanceValue
-    : undefined;
-}
-
-function dataEnvelopeRefId(env: DataEnvelope, duplicateEvidenceRefIds: Set<string> = new Set()): string {
-  if (env.meta?.evidenceRefId) {
-    if (duplicateEvidenceRefIds.has(env.meta.evidenceRefId) && env.meta.sourceToolCallId) {
-      return `${env.meta.evidenceRefId}:tool:${env.meta.sourceToolCallId}`;
-    }
-    return env.meta.evidenceRefId;
-  }
-  const source = env.meta?.source || env.meta?.skillId || 'data_envelope';
-  const stepId = env.meta?.stepId || 'step';
-  const timestamp = env.meta?.timestamp;
-  if (typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0) {
-    return `data:${source}:${stepId}:${timestamp}`;
-  }
-  return `data:${source}:${stepId}:${stableEnvelopeContentHash(env)}`;
 }
 
 function toPlainRecord(value: unknown): Record<string, unknown> | undefined {
@@ -270,7 +249,6 @@ function evidenceRefsFromInput(input: CompletedAnalysisSnapshotInput): EvidenceR
     sourceRefOrdinals[sourceRefKind] = (sourceRefOrdinals[sourceRefKind] || 0) + 1;
     const sourceRefKey = `${sourceRefKind}:${sourceRefOrdinals[sourceRefKind]}`;
     const source = env.meta?.source || env.meta?.skillId || 'data_envelope';
-    const stepId = env.meta?.stepId || 'step';
     const id = dataEnvelopeRefId(env, duplicateEvidenceRefIds);
     const isPinnedClaimRef =
       claimPins.evidenceRefIds.has(id) ||
@@ -311,7 +289,12 @@ function evidenceRefsFromInput(input: CompletedAnalysisSnapshotInput): EvidenceR
 }
 
 function payloadRows(env: DataEnvelope): Array<Record<string, unknown>> {
-  const data = env.data as any;
+  return dataRows(env.data);
+}
+
+/** Rows of a table payload: row objects, or positional rows under `columns`. */
+function dataRows(payload: unknown): Array<Record<string, unknown>> {
+  const data = payload as any;
   if (!data || typeof data !== 'object') return [];
 
   if (Array.isArray(data.rows)) {
@@ -325,13 +308,7 @@ function payloadRows(env: DataEnvelope): Array<Record<string, unknown>> {
     if (columns.length > 0) {
       return data.rows
         .filter((row: unknown): row is unknown[] => Array.isArray(row))
-        .map((row: unknown[]) => {
-          const out: Record<string, unknown> = {};
-          columns.forEach((column, index) => {
-            out[column] = row[index];
-          });
-          return out;
-        });
+        .map((row: unknown[]) => rowObject(columns, row));
     }
   }
 
@@ -367,20 +344,30 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function getRowNumber(row: Record<string, unknown>, candidates: string[]): number | null {
-  const byNormalizedName = new Map<string, unknown>();
-  for (const [key, value] of Object.entries(row)) {
-    byNormalizedName.set(normalizeFieldName(key), value);
-  }
+/**
+ * The first candidate field with a numeric value, plus the definition its
+ * producer declared for it in a `<field>_definition` string on the same row.
+ * Only a producer row declares; a column name alone never implies one.
+ */
+function getRowMetric(
+  byNormalizedName: ReadonlyMap<string, unknown>,
+  candidates: string[],
+): {value: number; definition?: string} | null {
   for (const candidate of candidates) {
-    const value = byNormalizedName.get(normalizeFieldName(candidate));
-    const parsed = toNumber(value);
-    if (parsed !== null) return parsed;
+    const field = normalizeFieldName(candidate);
+    const value = toNumber(byNormalizedName.get(field));
+    if (value === null) continue;
+    const definition = byNormalizedName.get(`${field}definition`);
+    return typeof definition === 'string' && definition.trim()
+      ? {value, definition: definition.trim()}
+      : {value};
   }
   return null;
 }
 
-const METRIC_FIELD_CANDIDATES: Record<StandardComparisonMetricKey, string[]> = {
+/** Column names per metric. A metric with a producer contract is read only through that contract. */
+type UncontractedMetricKey = Exclude<StandardComparisonMetricKey, ContractedMetricKey>;
+const METRIC_FIELD_CANDIDATES: Record<UncontractedMetricKey, string[]> = {
   'startup.total_ms': ['startup.total_ms', 'startup_total_ms', 'total_ms', 'total_duration_ms', 'duration_ms', 'dur_ms', 'startup_ms'],
   'startup.first_frame_ms': ['startup.first_frame_ms', 'first_frame_ms', 'time_to_first_frame_ms', 'first_frame_duration_ms'],
   'startup.bind_application_ms': ['startup.bind_application_ms', 'bind_application_ms', 'bind_app_ms', 'bindApplicationMs'],
@@ -395,7 +382,6 @@ const METRIC_FIELD_CANDIDATES: Record<StandardComparisonMetricKey, string[]> = {
   'scrolling.p99_frame_ms': ['scrolling.p99_frame_ms', 'p99_frame_ms', 'frame_p99_ms', 'p99_ms'],
   'cpu.main_thread_running_ms': ['cpu.main_thread_running_ms', 'main_thread_running_ms', 'running_ms'],
   'cpu.main_thread_runnable_ms': ['cpu.main_thread_runnable_ms', 'main_thread_runnable_ms', 'runnable_ms'],
-  'cpu.big_core_pct': ['cpu.big_core_pct', 'big_core_pct', 'big_core_percent'],
   'cpu.avg_freq_mhz': ['cpu.avg_freq_mhz', 'avg_freq_mhz', 'average_freq_mhz'],
   'trace.duration_ms': ['trace.duration_ms', 'trace_duration_ms', 'duration_ms'],
   'trace.device_model': ['trace.device_model', 'device_model'],
@@ -413,30 +399,120 @@ function metricSourceFromEnvelope(env: DataEnvelope): NormalizedMetricSource {
   };
 }
 
-function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetricValue[] {
-  const byKey = new Map<string, NormalizedMetricValue>();
+/**
+ * Rows of one iterator item's section. The executor stores a section's rows as
+ * row objects, although the declared SectionData type is a table payload.
+ */
+function sectionRows(item: ExpandableRowData, sectionId: string): Array<Record<string, unknown>> {
+  const data: unknown = item?.result?.sections?.[sectionId]?.data;
+  return Array.isArray(data)
+    ? data.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row))
+    : dataRows(data);
+}
+
+interface ProducerUnit {
+  rows: Array<Record<string, unknown>>;
+  section?: string;
+  itemIndex?: number;
+}
+
+/** The first admitted producer unit in one envelope that returned rows. */
+function firstProducerUnit(contract: ComparisonMetricProducerContract, env: DataEnvelope): ProducerUnit | undefined {
+  // Only Skill execution writes skill_result envelopes.
+  if (env.meta?.type !== 'skill_result') return undefined;
+  const {skillId, stepId} = env.meta;
+  for (const producer of contract.producers) {
+    if (producer.skillId !== skillId || producer.stepId !== stepId) continue;
+    if (!producer.section) {
+      const rows = payloadRows(env);
+      if (rows.length > 0) return {rows};
+      continue;
+    }
+    const items = env.data?.expandableData ?? [];
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const rows = sectionRows(items[itemIndex], producer.section);
+      if (rows.length > 0) return {rows, section: producer.section, itemIndex};
+    }
+  }
+  return undefined;
+}
+
+function standardMetric(
+  definition: NormalizedMetricDefinition,
+  value: NormalizedMetricValue['value'],
+  source: NormalizedMetricSource,
+  missingReason?: string,
+): NormalizedMetricValue {
+  return {
+    key: definition.key,
+    label: definition.label,
+    group: definition.group,
+    value,
+    unit: definition.unit,
+    direction: definition.direction,
+    aggregation: definition.aggregation,
+    confidence: missingReason ? 0 : 0.75,
+    ...(missingReason ? {missingReason} : {}),
+    source,
+  };
+}
+
+/**
+ * A contracted metric comes from the first admitted producer unit that
+ * returned rows, and from nothing else: when its contract refuses that unit,
+ * the metric is stored withheld with the reason, not read from a later row,
+ * envelope or iterator item that may describe another thread or window.
+ */
+function extractContractedMetric(
+  contract: ComparisonMetricProducerContract,
+  envelopes: DataEnvelope[],
+): NormalizedMetricValue | undefined {
+  const definition = STANDARD_COMPARISON_METRICS.find(metric => metric.key === contract.metricKey)!;
   for (const env of envelopes) {
+    const unit = firstProducerUnit(contract, env);
+    if (!unit) continue;
+    const decision = decideProducerCandidate(contract, unit.rows);
+    const source: NormalizedMetricSource = {
+      ...metricSourceFromEnvelope(env),
+      ...(unit.section ? {section: unit.section, itemIndex: unit.itemIndex} : {}),
+    };
+    return decision.admitted
+      ? standardMetric(definition, decision.value, {...source, metricDefinition: contract.definition})
+      : standardMetric(definition, null, source, withheldMetricReason(decision.reason));
+  }
+  return undefined;
+}
+
+function extractStandardMetrics(traceId: string, envelopes: DataEnvelope[] = []): NormalizedMetricValue[] {
+  const ownTraceEnvelopes = envelopes.filter(env => measuresTrace(env, traceId));
+  const byKey = new Map<string, NormalizedMetricValue>();
+  for (const env of ownTraceEnvelopes) {
+    // App metrics never read a field the result declares trace-wide or peer.
+    const outsideTarget = outsideTargetScopeFields(env.meta?.scopeProvenance);
     for (const row of payloadRows(env)) {
+      const entries = Object.entries(row);
+      const byNormalizedName = new Map(entries.map(([key, value]) => [normalizeFieldName(key), value]));
+      const targetByNormalizedName = new Map(entries.filter(([key]) => !outsideTarget(key))
+        .map(([key, value]) => [normalizeFieldName(key), value]));
       for (const definition of STANDARD_COMPARISON_METRICS) {
-        const value = getRowNumber(row, METRIC_FIELD_CANDIDATES[definition.key]);
-        if (value === null) continue;
+        if (producerContractFor(definition.key) || byKey.has(definition.key)) continue;
+        const metric = getRowMetric(standardMetricDescribesApp(definition) ? targetByNormalizedName : byNormalizedName,
+          METRIC_FIELD_CANDIDATES[definition.key as UncontractedMetricKey]);
+        if (metric === null) continue;
+        const {value} = metric;
         const normalizedValue = definition.key === 'scrolling.jank_rate_pct' && value > 0 && value <= 1
           ? value * 100
           : value;
-        if (byKey.has(definition.key)) continue;
-        byKey.set(definition.key, {
-          key: definition.key,
-          label: definition.label,
-          group: definition.group,
-          value: normalizedValue,
-          unit: definition.unit,
-          direction: definition.direction,
-          aggregation: definition.aggregation,
-          confidence: 0.75,
-          source: metricSourceFromEnvelope(env),
-        });
+        byKey.set(definition.key, standardMetric(definition, normalizedValue, {
+          ...metricSourceFromEnvelope(env),
+          ...(metric.definition ? {metricDefinition: metric.definition} : {}),
+        }));
       }
     }
+  }
+  for (const contract of COMPARISON_METRIC_PRODUCER_CONTRACTS) {
+    const metric = extractContractedMetric(contract, ownTraceEnvelopes);
+    if (metric) byKey.set(contract.metricKey, metric);
   }
   return [...byKey.values()];
 }
@@ -470,12 +546,13 @@ export function buildCompletedAnalysisResultSnapshot(
   const headline = firstNonEmptyLine(input.conclusion)
     || input.terminationMessage
     || 'Analysis completed';
-  const metrics = extractStandardMetrics(input.dataEnvelopes);
+  const metrics = extractStandardMetrics(input.traceId, input.dataEnvelopes);
+  const hasComparableMetric = metrics.some(metric => !isWithheldMetric(metric));
   const partialReasons: string[] = [];
   if (input.partial) {
     partialReasons.push(input.terminationReason || input.terminationMessage || 'Analysis marked partial by runtime');
   }
-  if (metrics.length === 0) {
+  if (!hasComparableMetric) {
     partialReasons.push('No normalized comparison metrics extracted yet');
   }
   const storedAnalysisReceipt = input.analysisReceipt;
@@ -518,6 +595,7 @@ export function buildCompletedAnalysisResultSnapshot(
     conclusion: input.conclusion ?? '', confidence: input.confidence ?? 0, rounds: 0, totalDurationMs: 0,
     turnIntent: input.turnIntent, completion: input.completion, outputOrigin: input.outputOrigin,
     runtimeAppendix: input.runtimeAppendix, reportAssessment: input.reportAssessment, investigationAssessment: input.investigationAssessment, deliveryAssurance: input.deliveryAssurance,
+    knowledgeUse: input.knowledgeUse,
     conclusionContract: input.conclusionContract as AnalysisResult['conclusionContract'],
     claimSupport: input.claimSupport, claimVerificationResult: input.claimVerificationResult,
     sourceUseDecision: input.sourceUseDecision, sourceClaimVerificationResult: input.sourceClaimVerificationResult,
@@ -536,6 +614,7 @@ export function buildCompletedAnalysisResultSnapshot(
     ...(input.reportId ? { reportId: input.reportId } : {}),
     ...(input.userId ? { createdBy: input.userId } : {}),
     visibility: 'private',
+    privateContext: input.privateContext,
     sceneType,
     title: `${sceneType} analysis - ${input.traceLabel || input.traceId}`,
     userQuery: input.query,
@@ -561,7 +640,7 @@ export function buildCompletedAnalysisResultSnapshot(
     ...(capabilityManifest ? {capabilityManifest} : {}),
     metrics,
     evidenceRefs: evidenceRefsFromInput(input),
-    status: input.success === false ? 'failed' : input.partial || metrics.length === 0 ? 'partial' : 'ready',
+    status: input.success === false ? 'failed' : input.partial || !hasComparableMetric ? 'partial' : 'ready',
     schemaVersion: ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
     createdAt,
   };
@@ -630,22 +709,20 @@ function ensureSnapshotParentGraph(
     now,
   );
 
-  db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at, heartbeat_at, updated_at)
-    VALUES
-      (?, ?, ?, ?, 'agent', 'completed', ?, ?, ?, ?, ?)
-  `).run(
-    input.runId,
-    input.tenantId,
-    input.workspaceId,
-    input.sessionId,
-    input.query,
-    now,
-    now,
-    now,
-    now,
-  );
+  insertAnalysisRunIfMissing(db, {
+    id: input.runId,
+    tenantId: input.tenantId,
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+    mode: 'agent',
+    status: 'completed',
+    question: input.query,
+    startedAt: now,
+    completedAt: now,
+    heartbeatAt: now,
+    updatedAt: now,
+    privateContext: input.privateContext,
+  });
 }
 
 export function persistCompletedAnalysisResultSnapshot(
@@ -653,13 +730,15 @@ export function persistCompletedAnalysisResultSnapshot(
 ): AnalysisResultSnapshot | null {
   const outputLanguage = input.outputLanguage
     ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-  const privateResult = input.privateKnowledge ? projectOwnerAnalysisResult(input.sessionId, {
+  const privateKnowledge = privateContextRestrictsAudience(input.privateContext);
+  const privateResult = privateKnowledge ? projectOwnerAnalysisResult(input.sessionId, {
     sessionId: input.sessionId, success: input.success ?? true,
     findings: [], hypotheses: [], conclusion: input.conclusion ?? '',
     confidence: input.confidence ?? 0, rounds: 0, totalDurationMs: 0,
     partial: input.partial, terminationReason: projectPrivateTerminationReason(input.terminationReason), terminationMessage: input.terminationMessage,
     turnIntent: input.turnIntent, completion: input.completion, outputOrigin: input.outputOrigin,
     runtimeAppendix: input.runtimeAppendix, reportAssessment: input.reportAssessment, investigationAssessment: input.investigationAssessment, deliveryAssurance: input.deliveryAssurance,
+    knowledgeUse: input.knowledgeUse,
     conclusionContract: input.conclusionContract as AnalysisResult['conclusionContract'],
     claimSupport: input.claimSupport, claimVerificationResult: input.claimVerificationResult,
     sourceUseDecision: input.sourceUseDecision, sourceClaimVerificationResult: input.sourceClaimVerificationResult,
@@ -668,12 +747,14 @@ export function persistCompletedAnalysisResultSnapshot(
     sceneReport: validatedSceneReportReference(input),
   }, outputLanguage) : undefined;
   const {turnIntent: _intent, completion: _completion, outputOrigin: _origin, runtimeAppendix: _appendix,
-    reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance, ...inputWithoutDelivery} = input;
-  const durableInput: CompletedAnalysisSnapshotInput = input.privateKnowledge
+    reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance,
+    knowledgeUse: _knowledgeUse, ...inputWithoutDelivery} = input;
+  const durableInput: CompletedAnalysisSnapshotInput = privateKnowledge
     ? {
+        // The creator's snapshot keeps their question and trace label; the run store keeps none.
         ...inputWithoutDelivery,
-        query: privateAnalysisQueryMessage(outputLanguage),
-        traceLabel: input.traceId,
+        query: sanitizeOwnerCodeAwareText(input.sessionId, input.query),
+        ...(input.traceLabel ? {traceLabel: sanitizeOwnerCodeAwareText(input.sessionId, input.traceLabel)} : {}),
         ...copyAnalysisDeliveryFields(privateResult ?? {}),
         conclusion: privateResult?.conclusion,
         conclusionContract: privateResult?.conclusionContract,

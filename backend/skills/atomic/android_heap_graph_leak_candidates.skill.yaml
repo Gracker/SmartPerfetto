@@ -10,9 +10,12 @@
 # - reachable=1 才进入候选，避免把待回收对象误报为泄漏
 # - 生命周期只在可按 graph_sample_ts 对齐到组件切片时给高置信结论
 # - 引用链以 suspect object ids 为入口，避免全量三表 JOIN
+# - 进程范围、占位对象排除和 dump 完整性来自 fragments/heap_target_process.sql
+#   与 fragments/heap_graph_dump_scope.sql：只读真实对象（self_size >= 0），
+#   .hprof 等无进程名的 dump 以 process_identity 显式标注回退
 
 name: android_heap_graph_leak_candidates
-version: "1.0"
+version: "1.1"
 type: atomic
 category: memory
 tier: A
@@ -43,11 +46,15 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标进程名（支持前缀/GLOB）；process_name 为空时使用"
+    description: "目标进程名（精确或 name:* 子进程）；process_name 为空时使用"
   - name: process_name
     type: string
     required: false
-    description: "目标进程名别名；为空则分析所有 heap graph 进程"
+    description: "目标进程名（精确或 name:* 子进程）；为空则分析所有 heap graph 进程；无匹配时回退到没有进程名的 dump（如 .hprof）"
+  - name: upid
+    type: integer
+    required: false
+    description: "可选的稳定进程身份；进程名不可用时（.hprof）用它限定 dump"
   - name: graph_sample_ts
     type: timestamp
     required: false
@@ -109,37 +116,42 @@ steps:
         - name: lifecycle_phase_at_sample
           label: "Sample 前生命周期"
           type: string
+        - name: process_identity
+          label: "进程身份"
+          type: string
+        - name: dump_completeness
+          label: "Dump 完整性"
+          type: string
         - name: leak_state
           label: "判定"
           type: string
         - name: confidence
           label: "置信度"
           type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       WITH
       input AS (
         SELECT
-          COALESCE(NULLIF('${process_name|}', ''), NULLIF('${package|}', ''), '') AS target_process,
           NULLIF('${class_name_glob|}', '') AS class_name_glob,
           COALESCE(NULLIF('${lifecycle_slice_prefix|SI$}', ''), '') AS lifecycle_prefix,
           MIN(MAX(COALESCE(${max_candidates|50}, 50), 1), 200) AS max_candidates
       ),
-      heap_objects AS (
+      heap_objects AS MATERIALIZED (
         SELECT
           o.id AS object_id,
           o.upid,
           o.graph_sample_ts,
-          COALESCE(p.name, printf('upid:%d', o.upid)) AS process_name,
           COALESCE(c.deobfuscated_name, c.name) AS class_name,
           o.self_size,
           COALESCE(o.native_size, 0) AS native_size
-        FROM heap_graph_object o
+        -- Real objects of scoped dumps only (no self_size = -1 placeholders).
+        FROM heap_graph_scoped_objects o
         JOIN heap_graph_class c ON o.type_id = c.id
-        LEFT JOIN process p ON p.upid = o.upid
         CROSS JOIN input
         WHERE o.reachable = 1
-          AND (input.target_process = '' OR p.name = input.target_process OR p.name GLOB input.target_process || ':*')
-          AND (${graph_sample_ts} IS NULL OR o.graph_sample_ts = ${graph_sample_ts})
           AND COALESCE(c.deobfuscated_name, c.name) NOT IN (
             'android.app.Activity',
             'android.app.Fragment',
@@ -161,7 +173,6 @@ steps:
         SELECT
           upid,
           graph_sample_ts,
-          process_name,
           class_name,
           CASE
             WHEN class_name GLOB '*Fragment' OR class_name GLOB '*Fragment$*' OR class_name GLOB '*Fragment_*' THEN 'Fragment'
@@ -173,7 +184,7 @@ steps:
           SUM(native_size) AS native_size_bytes,
           GROUP_CONCAT(object_id) AS object_ids
         FROM heap_objects
-        GROUP BY upid, graph_sample_ts, process_name, class_name
+        GROUP BY upid, graph_sample_ts, class_name
       ),
       candidates_with_lifecycle AS (
         SELECT
@@ -213,15 +224,17 @@ steps:
         FROM class_candidates c
       )
       SELECT
-        process_name,
-        upid,
-        printf('%d', graph_sample_ts) AS graph_sample_ts,
+        d.process_name,
+        l.upid,
+        printf('%d', l.graph_sample_ts) AS graph_sample_ts,
         class_name,
         component_type,
         reachable_obj_count,
         ROUND(self_size_bytes / 1048576.0, 2) AS self_size_mb,
         ROUND(native_size_bytes / 1048576.0, 2) AS native_size_mb,
         COALESCE(lifecycle_phase_at_sample, 'unknown') AS lifecycle_phase_at_sample,
+        d.process_identity,
+        d.dump_completeness,
         CASE
           WHEN lifecycle_phase_at_sample = 'destroyed' THEN 'destroyed_reachable'
           WHEN reachable_obj_count > 1 THEN 'multi_instance_reachable'
@@ -234,7 +247,8 @@ steps:
           ELSE 'info'
         END AS confidence,
         object_ids
-      FROM candidates_with_lifecycle
+      FROM candidates_with_lifecycle AS l
+      JOIN heap_graph_dump_scope AS d USING (upid, graph_sample_ts)
       ORDER BY
         CASE
           WHEN lifecycle_phase_at_sample = 'destroyed' THEN 0
@@ -280,32 +294,31 @@ steps:
         - name: leak_state
           label: "候选判定"
           type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       WITH
       input AS (
         SELECT
-          COALESCE(NULLIF('${process_name|}', ''), NULLIF('${package|}', ''), '') AS target_process,
           NULLIF('${class_name_glob|}', '') AS class_name_glob,
           COALESCE(NULLIF('${lifecycle_slice_prefix|SI$}', ''), '') AS lifecycle_prefix,
           MIN(MAX(COALESCE(${max_candidates|50}, 50), 1), 200) AS max_candidates,
           MIN(MAX(COALESCE(${max_reference_edges|100}, 100), 1), 500) AS max_reference_edges
       ),
-      heap_objects AS (
+      heap_objects AS MATERIALIZED (
         SELECT
           o.id AS object_id,
           o.upid,
           o.graph_sample_ts,
-          COALESCE(p.name, printf('upid:%d', o.upid)) AS process_name,
           COALESCE(c.deobfuscated_name, c.name) AS class_name,
           o.self_size,
           COALESCE(o.native_size, 0) AS native_size
-        FROM heap_graph_object o
+        -- Real objects of scoped dumps only (no self_size = -1 placeholders).
+        FROM heap_graph_scoped_objects o
         JOIN heap_graph_class c ON o.type_id = c.id
-        LEFT JOIN process p ON p.upid = o.upid
         CROSS JOIN input
         WHERE o.reachable = 1
-          AND (input.target_process = '' OR p.name = input.target_process OR p.name GLOB input.target_process || ':*')
-          AND (${graph_sample_ts} IS NULL OR o.graph_sample_ts = ${graph_sample_ts})
           AND COALESCE(c.deobfuscated_name, c.name) NOT IN (
             'android.app.Activity',
             'android.app.Fragment',
@@ -327,12 +340,11 @@ steps:
         SELECT
           upid,
           graph_sample_ts,
-          process_name,
           class_name,
           COUNT(*) AS reachable_obj_count,
           SUM(self_size) AS self_size_bytes
         FROM heap_objects
-        GROUP BY upid, graph_sample_ts, process_name, class_name
+        GROUP BY upid, graph_sample_ts, class_name
       ),
       candidate_states AS (
         SELECT
@@ -399,7 +411,7 @@ steps:
           AND sc.class_name = h.class_name
       )
       SELECT
-        so.process_name,
+        d.process_name,
         printf('%d', so.graph_sample_ts) AS graph_sample_ts,
         so.class_name AS candidate_class,
         so.object_id AS owned_object_id,
@@ -411,6 +423,7 @@ steps:
         ref.field_type_name,
         so.leak_state
       FROM suspect_objects so
+      JOIN heap_graph_dump_scope d USING (upid, graph_sample_ts)
       JOIN heap_graph_reference ref
         ON ref.owned_id = so.object_id
         AND ref.id NOT IN _excluded_refs
@@ -430,6 +443,6 @@ output:
   format: structured
   fields:
     - name: leak_candidates
-      description: "Reachable Activity/Fragment heap objects classified against sample-time lifecycle evidence"
+      description: "Reachable Activity/Fragment heap objects classified against sample-time lifecycle evidence; placeholder objects (self_size = -1) are excluded, and dump_completeness=incomplete_dump means counts and sizes are lower bounds"
     - name: reference_holders
       description: "Small-scope incoming retaining references for suspect heap objects, excluding Perfetto _excluded_refs referent edges (weak/phantom/finalizer in v56; soft reference edges are not filtered by this stdlib helper)"

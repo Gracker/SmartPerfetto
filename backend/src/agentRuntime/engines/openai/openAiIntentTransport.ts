@@ -6,10 +6,12 @@ import type {OpenAIAgentConfig} from './openAiConfig';
 import {
   buildOpenAIChatCompletionsTokenLimit,
   buildOpenAITextRequestPurposeOptions,
+  isOpenAITextRequestPurpose,
   readOpenAIChatCompletionsOutput,
   type OpenAITextRequestPurpose,
 } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {
+  intentTransportErrorReason,
   intentTransportTextResult,
   runIntentTransport,
   type IntentTransportInput,
@@ -141,7 +143,7 @@ export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
   return runIntentTransport(input, async scope => {
     const {config} = input;
     if (!config.baseURL || !config.lightModel?.trim()
-      || (input.purpose !== undefined && input.purpose !== 'classification' && input.purpose !== 'final_semantic')
+      || (input.purpose !== undefined && !isOpenAITextRequestPurpose(input.purpose))
       || (input.maxOutputTokens !== undefined
         && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens <= 0))
       || (config.protocol !== 'chat_completions' && config.protocol !== 'responses')) {
@@ -165,8 +167,10 @@ export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
           && isTransientHttpStatus(result.httpStatus);
       } catch (error) {
         if (scope.signal.aborted || input.signal?.aborted) throw error;
-        result = {status: 'unavailable', reason: 'provider_error'};
-        transient = true;
+        // A request that ran out of time is reported as such and never repeated.
+        const reason = intentTransportErrorReason(error);
+        result = {status: 'unavailable', reason};
+        transient = reason === 'provider_error';
       }
       if (!transient || attempt > 1 || scope.remainingMs() < PROVIDER_ERROR_RETRY_MIN_REMAINING_MS) {
         // `attempts` is diagnostic only; attach it when a retry actually ran.
@@ -186,6 +190,9 @@ async function dispatchOneRequest(
   const endpoint = config.protocol === 'responses' ? 'responses' : 'chat/completions';
   const url = new URL(endpoint, config.baseURL.replace(/\/?$/, '/'));
   const purposeOptions = buildOpenAITextRequestPurposeOptions({requestUrl: url, protocol: config.protocol, purpose: input.purpose});
+  try {
+    input.observer?.reasoning?.('thinking' in purposeOptions || 'reasoning' in purposeOptions ? 'disabled' : 'provider_default');
+  } catch { /* Observers never change the request. */ }
   const body = config.protocol === 'responses' ? {
     model: config.lightModel,
     instructions: input.systemPrompt,
@@ -218,9 +225,10 @@ async function dispatchOneRequest(
   // A gateway that ignores `stream` still answers with one JSON body.
   if (response.headers.get('content-type')?.includes('text/event-stream')) {
     if (!response.body) return {status: 'unavailable', reason: 'invalid_response'};
+    const onFirstOutput = input.observer?.firstOutput ? () => input.observer?.firstOutput?.() : undefined;
     const streamed = config.protocol === 'responses'
-      ? await readResponsesStream(response.body, input.outputByteLimit)
-      : await readChatCompletionStream(response.body, input.outputByteLimit);
+      ? await readResponsesStream(response.body, input.outputByteLimit, onFirstOutput)
+      : await readChatCompletionStream(response.body, input.outputByteLimit, onFirstOutput);
     if (streamed.kind === 'unavailable') return {status: 'unavailable', reason: streamed.reason};
     output = streamed.body;
   } else {
@@ -228,5 +236,8 @@ async function dispatchOneRequest(
   }
   scope.throwIfInactive();
   if (!output || output.error != null) return {status: 'unavailable', reason: 'provider_error'};
+  if (output.usage !== undefined) {
+    try { input.observer?.usage?.(output.usage); } catch { /* Usage observers never change the reply. */ }
+  }
   return config.protocol === 'responses' ? responsesResult(output, input) : chatResult(output, input);
 }

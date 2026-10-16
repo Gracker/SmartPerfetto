@@ -9,13 +9,17 @@ import type {ConclusionContract} from '../../agent/core/conclusionContract';
 import {attachFinalizationContext, takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import type {IntentTransportInput, IntentTransportResult} from '../../agentRuntime/intentTransport';
 import {buildStrategyRegistrySnapshotFromDefinitions, loadPromptTemplate, type StrategyDefinition} from '../../agentv3/strategyLoader';
-import {analysisDeliveryFingerprint, type AnalysisReportRequirement, type AnalysisCaseRetrievalState} from '../../types/analysisDelivery';
+import {analysisDeliveryFingerprint, type AnalysisReportRequirement} from '../../types/analysisDelivery';
+import * as analysisDelivery from '../../types/analysisDelivery';
 import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT,
   type FinalSemanticAssessmentInput} from '../finalSemanticAssessment';
 import type {AnalysisInvestigationRequirement} from '../../types/analysisInvestigation';
 import {resolveAnalysisInvestigationRequirements} from '../../agentRuntime/analysisInvestigationRequirements';
 import {compactSemanticSourceSnapshot} from '../evidence/semanticSourceSnapshot';
 import type {AnalysisRunSelection} from '../../agentRuntime/analysisRunSpec';
+import {attachInvestigationEvidence, buildInvestigationEvidenceSnapshot, compactInvestigationEvidenceForSemantic,
+  recordCaptureToolCall, type InvestigationEvidenceSnapshot} from '../evidence/investigationEvidenceLedger';
+import {captureEvidenceTable} from '../evidence/evidenceCapture';
 
 jest.mock('../../agentv3/strategyLoader', () => {
   const actual = jest.requireActual<typeof import('../../agentv3/strategyLoader')>('../../agentv3/strategyLoader');
@@ -34,11 +38,12 @@ function fixture(options: {
   requirements?: AnalysisReportRequirement[];
   scope?: 'bounded_question' | 'scene_wide';
   deliverable?: 'answer' | 'report';
-  caseRetrieval?: AnalysisCaseRetrievalState;
   deadlineMs?: number;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
   investigationRequirements?: AnalysisInvestigationRequirement[];
+  investigationEvidence?: InvestigationEvidenceSnapshot;
   selection?: AnalysisRunSelection;
+  deliveryCall?: {providerOrigin?: string; model?: string};
 } = {}) {
   const body = options.body ?? 'Frame A took 9 ms.';
   const contract: ConclusionContract = {
@@ -54,7 +59,7 @@ function fixture(options: {
   const strategy: StrategyDefinition = {
     scene: 'general', classificationDescription: 'General performance interpretation.', strategyKind: 'normal',
     priority: 1, effort: 'low', keywords: [], requiredCapabilities: [], optionalCapabilities: [],
-    phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [], content: 'Scene context.', detailSections: [],
+    verifierMisdiagnosisPatterns: [], content: 'Scene context.', detailSections: [],
     sourcePath: '/fixtures/general.strategy.md', finalReportContract: {requiredSections: requirements.map(requirement => ({
       ...requirement, triggerPatterns: [], patterns: [], patternGroups: [], recoveryText: {zh: [], en: []},
     }))},
@@ -77,7 +82,7 @@ function fixture(options: {
     ({status: 'ok', text: JSON.stringify(reply)})));
   const reads = jest.fn(async () => []);
   attachFinalizationContext(result, {
-    runId: 'run', sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 10_000,
+    runId: 'run', sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 600_000,
     strategyRegistry: registry,
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: registry.registryFingerprint,
       taskKind: options.investigationRequirements ? 'investigation' : 'fact', sceneId: 'general', scope: options.scope ?? 'bounded_question', recommendedComplexity: 'full',
@@ -85,7 +90,9 @@ function fixture(options: {
     traceIdentity: {currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'},
     selection: options.selection,
     deliveryContext: {entry: 'new_finalization', acceptedCandidate: candidate},
-    evidenceReadView: {resolveReferences: reads}, dispatchText: dispatch,
+    evidenceReadView: {resolveReferences: reads,
+      ...(options.investigationEvidence ? {investigationEvidence: () => options.investigationEvidence!} : {})}, dispatchText: dispatch,
+    ...(options.deliveryCall ? {deliveryCall: options.deliveryCall} : {}),
   });
   const context = takeFinalizationContext(result)!;
   contexts.push(context);
@@ -96,9 +103,11 @@ function fixture(options: {
       ...(options.selection ? {selectionScope: options.selection} : {}),
       ...(requirements.length || options.deliverable === 'report' ? {reportRequirements: {
         sceneId: 'general', registryFingerprint: registry.registryFingerprint, requirements,
-      }} : {}), ...(options.caseRetrieval ? {caseRetrieval: options.caseRetrieval} : {})}};
+      }} : {})}};
   if (options.investigationRequirements) input.snapshot.investigationRequirements = resolveAnalysisInvestigationRequirements({
     intent: context.turnIntent, strategyRegistry: registry});
+  if (options.investigationEvidence) input.snapshot.investigationEvidence =
+    compactInvestigationEvidenceForSemantic(options.investigationEvidence, 16 * 1024)!;
   return {input, reply, dispatch, reads, controller, contract, candidate};
 }
 
@@ -119,8 +128,27 @@ function useV4(run: ReturnType<typeof fixture>): any[] {
 }
 
 describe('versioned investigation semantic coverage', () => {
-  function investigationFixture() {
-    const run = fixture({scope: 'scene_wide', investigationRequirements: [{id: 'system-frequency', domain: 'cpu_frequency',
+  // Plan 2 A.2: the review's denominator is the valid claims; an item-invalid
+  // entry is outside its scope, so a partially valid declaration can still be
+  // completely covered on the claims that count.
+  it('covers claims completely when an item-invalid entry stays outside the review', async () => {
+    const run = fixture();
+    run.contract.claims!.push({id: 'claim-b', text: 'Broken entry.', kind: 'numeric', references: [],
+      valid: false, invalidCodes: ['invalid_semantics'], rawSemantics: {polarity: 'sometimes'},
+      semanticsParseIssues: [{code: 'invalid_semantics', path: 'claims[1].semantics'}]});
+    run.contract.parseIssues = [{code: 'invalid_semantics', path: 'claims[1].semantics',
+      claimDiagnostic: {ordinal: 2, code: 'invalid_semantics', field: 'semantics.polarity'}}];
+    run.contract.rawClaims = structuredClone(run.contract.claims);
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'checked', coverage: {claims: 'complete', body: 'complete'},
+      claims: [{claimId: 'claim-a', consistency: 'consistent'}]});
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  function investigationFixture(scope: 'scene_wide' | 'bounded_question' = 'scene_wide',
+    evidence?: InvestigationEvidenceSnapshot, body?: string) {
+    const run = fixture({scope, body, investigationEvidence: evidence,
+      investigationRequirements: [{id: 'system-frequency', domain: 'cpu_frequency',
       description: 'Explain observed frequency or the precise missing evidence.', required: true,
       evidenceMetrics: ['system.cpu.frequency.time_weighted']}]});
     run.reply.schemaVersion = 'final_semantic_response@3';
@@ -131,6 +159,118 @@ describe('versioned investigation semantic coverage', () => {
     return {...run, row};
   }
 
+  function issuedInvestigationEvidence(rowCount = 1): InvestigationEvidenceSnapshot {
+    const columns = ['start', 'end', 'frequency', 'status'];
+    const witness = captureEvidenceTable({columns, rows: Array.from({length: rowCount}, (_, index) => [0, 100, 1000 + index, 'observed'])});
+    attachInvestigationEvidence(witness, {skillId: 'frequency', stepId: 'root', traceId: 'trace-current',
+      definitionFingerprint: 'producer', selectedSqlHash: 'sql', declaration: {window: {start: 'start', end: 'end'},
+        metrics: [{domain: 'cpu_frequency', metric_id: 'system.cpu.frequency.time_weighted', value: 'frequency',
+          status: 'status', unit: 'kHz'}]}});
+    recordCaptureToolCall(witness, 'observed-call');
+    return buildInvestigationEvidenceSnapshot([{witness, record: {captureId: witness.captureId, storeId: 'semantic',
+      generation: 1, columns, totalRowCount: rowCount, originRunId: 'run', fields: {},
+      meta: {type: 'skill_result', version: '2.0.0', source: 'frequency', timestamp: 1, executionStatus: 'observed',
+        evidenceRefId: 'evidence:frequency', traceId: 'trace-current', traceSide: 'current'},
+      display: {layer: 'deep', level: 'detail', format: 'table', title: 'Frequency'}}}],
+    {ownerKey: 'semantic', currentRunId: 'run', allowedTraces: [{traceId: 'trace-current', traceSide: 'current'}]},
+    [{toolCallId: 'observed-call', originRunId: 'run', phase: 'completed', failed: false, success: true}]);
+  }
+
+  it.each(['handle', 'actual'] as const)('decodes %s investigation references to the original issued record only', async kind => {
+    const source = issuedInvestigationEvidence();
+    const run = investigationFixture('scene_wide', source);
+    const before = JSON.stringify(run.input.snapshot);
+    const original = source.records[0].recordId;
+    const payload = assembledPayload(run);
+    const handle = payload.investigationEvidence.records[0].recordId;
+    expect(handle).toMatch(/^IR[0-9a-f]{12}_1$/);
+    expect(handle).not.toBe(original);
+    expect(payload.investigationEvidence.records[0]).toEqual({...run.input.snapshot.investigationEvidence!.records[0], recordId: handle});
+    run.row.evidenceRecordIds = [kind === 'handle' ? handle : original];
+    run.row.evidenceStatus = 'observed'; run.row.scopeMatch = 'matched';
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'checked', investigation: {requirements: [{evidenceRecordIds: [original],
+      evidenceStatus: 'observed', scopeMatch: 'matched'}]}});
+    expect(JSON.stringify(run.input.snapshot)).toBe(before);
+    expect(JSON.stringify(assessment.investigation)).not.toContain(handle);
+  });
+
+  it.each(['unknown', 'stale', 'out-of-range', 'duplicate-handle', 'alias-and-original'] as const)(
+    'rejects %s investigation handles without guessing an evidence record', async kind => {
+      const source = issuedInvestigationEvidence();
+      const run = investigationFixture('scene_wide', source);
+      const handle = assembledPayload(run).investigationEvidence.records[0].recordId;
+      const stale = assembledPayload(investigationFixture('scene_wide', source, 'Frame B took 9 ms.'))
+        .investigationEvidence.records[0].recordId;
+      expect(stale).not.toBe(handle);
+      run.row.evidenceRecordIds = kind === 'duplicate-handle' ? [handle, handle] : kind === 'alias-and-original'
+        ? [handle, source.records[0].recordId] : [kind === 'stale' ? stale : kind === 'out-of-range' ? handle.replace(/_1$/, '_2') : 'SECRET_UNKNOWN_RECORD'];
+      const assessment = await assessFinalSemantics(run.input);
+      expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response', responseDiagnostic: {
+        stage: 'investigation', code: 'invalid_reference', ordinal: 1,
+        constraint: kind === 'duplicate-handle' || kind === 'alias-and-original' ? 'duplicate_record' : 'unknown_record'}});
+      expect(JSON.stringify(assessment)).not.toContain('SECRET_UNKNOWN_RECORD');
+    });
+
+  it('binds the byte-identical budgeting/dispatch catalog without trusting a snapshot catalog injection', async () => {
+    const run = investigationFixture('scene_wide', issuedInvestigationEvidence());
+    Object.assign(run.input.snapshot, {investigationRecordCatalog: {fingerprint: 'SECRET_INJECTED_CATALOG', recordCount: 1}});
+    const before = JSON.stringify(run.input.snapshot);
+    const assembled = buildFinalSemanticPrompt({snapshot: run.input.snapshot, intent: run.input.context.turnIntent,
+      traceIdentity: run.input.context.traceIdentity, registryFingerprint: run.input.context.strategyRegistry.registryFingerprint})!;
+    const payload = assembledPayload(run);
+    expect(payload.investigationRecordCatalog.fingerprint).not.toBe('SECRET_INJECTED_CATALOG');
+    run.row.evidenceRecordIds = [payload.investigationEvidence.records[0].recordId];
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'checked'});
+    expect(run.dispatch.mock.calls[0][0].prompt).toBe(assembled.prompt);
+    expect(JSON.stringify(run.input.snapshot)).toBe(before);
+  });
+
+  it('keeps numeric record ordinals in ledger order after canonical JSON sorts object keys', async () => {
+    const source = issuedInvestigationEvidence(12);
+    const run = investigationFixture('scene_wide', source);
+    const payload = assembledPayload(run);
+    expect(payload.investigationEvidence.records).toHaveLength(12);
+    expect(payload.investigationEvidence.records[9].recordId).toMatch(/_10$/);
+    run.row.evidenceRecordIds = [payload.investigationEvidence.records[9].recordId];
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'checked', investigation: {
+      requirements: [{evidenceRecordIds: [source.records[9].recordId]}]}});
+  });
+
+  it('removes a forged reserved catalog even when no captured investigation records exist', async () => {
+    const run = investigationFixture();
+    Object.assign(run.input.snapshot, {investigationRecordCatalog: {schemaVersion: 'forged', records: ['SECRET_FORGED_RECORD']}});
+    expect(assembledPayload(run)).not.toHaveProperty('investigationRecordCatalog');
+    run.row.evidenceRecordIds = ['SECRET_FORGED_RECORD'];
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', responseDiagnostic: {
+      stage: 'investigation', code: 'invalid_reference', constraint: 'unknown_record'}});
+  });
+
+  it('marks an exact canonical/handle collision as ambiguous in the private catalog', () => {
+    const run = investigationFixture('scene_wide', issuedInvestigationEvidence());
+    const id = `IR${'c'.repeat(12)}_1`;
+    const evidence = run.input.snapshot.investigationEvidence!;
+    const snapshot = {...run.input.snapshot, investigationEvidence: {...evidence, records: [{...evidence.records[0], recordId: id}]}};
+    const digest = jest.spyOn(analysisDelivery, 'analysisDeliveryFingerprint').mockReturnValue('c'.repeat(64));
+    try {
+      const assembled = buildFinalSemanticPrompt({snapshot, intent: run.input.context.turnIntent,
+        traceIdentity: run.input.context.traceIdentity, registryFingerprint: run.input.context.strategyRegistry.registryFingerprint})!;
+      expect(assembled.investigationRecordCatalog?.ambiguousIds).toEqual([id]);
+    } finally { digest.mockRestore(); }
+  });
+
+  it.each(['shape', 'unknown', 'duplicate'] as const)('names an invalid %s investigation requirement without retaining its ID', async kind => {
+    const run = investigationFixture();
+    if (kind === 'shape') Object.assign(run.row, {scopeMatch: 'SECRET_INVALID_ENUM'});
+    if (kind === 'unknown') run.row.requirementId = 'SECRET_UNKNOWN_REQUIREMENT';
+    if (kind === 'duplicate') Object.assign(run.reply, {investigation: [run.row, run.row]});
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', responseDiagnostic: {stage: 'investigation', code: 'invalid_reference',
+      ordinal: kind === 'duplicate' ? 2 : 1,
+      constraint: kind === 'shape' ? 'investigation_row_shape' : kind === 'unknown' ? 'unknown_requirement' : 'duplicate_requirement'}});
+    expect(JSON.stringify(assessment)).not.toContain('SECRET_');
+  });
+
   it('reviews answer obligations in the existing one-call request without new evidence reads', async () => {
     const run = investigationFixture();
     const assessment = await assessFinalSemantics(run.input);
@@ -138,7 +278,21 @@ describe('versioned investigation semantic coverage', () => {
       investigation: {status: 'checked', requirements: [{requirementId: 'system-frequency', evidenceStatus: 'not_checked'}]}});
     expect(run.dispatch).toHaveBeenCalledTimes(1);
     expect(run.reads).not.toHaveBeenCalled();
+    const prompt = run.dispatch.mock.calls[0][0].prompt;
+    const payload = JSON.parse(prompt.slice(prompt.lastIndexOf('\n\n{') + 2));
+    expect(payload.fixedInvestigationApplicability).toEqual([{requirementId: 'system-frequency', applicability: 'applicable'}]);
   });
+
+  it.each(['scene_wide_applicability', 'non_applicable_coverage', 'content_location_required', 'observed_evidence_required'] as const)(
+    'names the %s constraint without retaining provider data', async constraint => {
+      const run = investigationFixture(constraint === 'non_applicable_coverage' ? 'bounded_question' : 'scene_wide');
+      if (constraint === 'scene_wide_applicability' || constraint === 'non_applicable_coverage') run.row.applicability = 'unknown';
+      if (constraint === 'content_location_required') run.row.contentLocations = [];
+      if (constraint === 'observed_evidence_required') run.row.evidenceStatus = 'observed';
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        notCheckedDetail: 'resp_investigation_invalid_constraint',
+        responseDiagnostic: {stage: 'investigation', code: 'invalid_constraint', ordinal: 1, constraint}});
+    });
 
   it('keeps old response protocols readable without certifying investigation coverage', async () => {
     const run = fixture({investigationRequirements: [{id: 'system-frequency', domain: 'cpu_frequency', description: 'Frequency', required: true}]});
@@ -146,7 +300,7 @@ describe('versioned investigation semantic coverage', () => {
   });
 
   it.each(['omitted', 'duplicate', 'unknown_id', 'unknown_record', 'empty_location', 'waiver', 'observed_without_record', 'report_claim_ids'])(
-    'rejects %s investigation assertions', async kind => {
+    'quarantines %s investigation assertions without discarding a healthy claim', async kind => {
       const run = investigationFixture();
       if (kind === 'omitted') Object.assign(run.reply, {investigation: []});
       if (kind === 'duplicate') Object.assign(run.reply, {investigation: [run.row, run.row]});
@@ -156,13 +310,103 @@ describe('versioned investigation semantic coverage', () => {
       if (kind === 'waiver') {run.row.applicability = 'not_applicable'; run.row.coverage = 'unknown';}
       if (kind === 'observed_without_record') {run.row.evidenceStatus = 'observed'; run.row.scopeMatch = 'matched';}
       if (kind === 'report_claim_ids') Object.assign(run.row, {claimIds: [run.reply.claims[0].claimId]});
-      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response'});
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        coverage: {body: 'complete', claims: 'complete'}, claims: [{claimId: 'claim-a', consistency: 'consistent'}],
+        investigation: {status: 'coverage_incomplete', requirements: [{requirementId: 'system-frequency',
+          applicability: 'applicable', coverage: 'unknown', contentLocations: [], evidenceRecordIds: [],
+          scopeMatch: 'unknown', evidenceStatus: 'unknown'}]}});
     });
+
+  // Minimal reproductions of the captured resp_investigation_invalid_location
+  // failures (wechat agent-1791891755030-a1ya3lwi and GC agent-1791883509835-szp8zsxi).
+  // Their saved receipts contain the failure code, not the original review reply;
+  // these deliberately constructed responses are not claimed as a raw replay.
+  it.each(['quote', 'span_id', 'missing', 'duplicate', 'malformed_row'] as const)(
+    'isolates a %s investigation fault while preserving healthy sibling judgments', async kind => {
+      const run = fixture({scope: 'scene_wide',
+        requirements: [{id: 'summary', label: 'Summary', required: true}],
+        investigationRequirements: [
+          {id: 'system-frequency', domain: 'cpu_frequency', description: 'Frequency', required: true},
+          {id: 'thread-state', domain: 'thread_state', description: 'Thread state', required: true},
+        ]});
+      const entries = useV4(run);
+      const contentLocations = [{spanId: entries[0].spanId}];
+      run.reply.claims[0].contentLocations = contentLocations as any;
+      run.reply.requirements[0].contentLocations = contentLocations as any;
+      const healthy = {requirementId: 'thread-state', applicability: 'applicable', coverage: 'covered',
+        contentLocations, evidenceRecordIds: [], scopeMatch: 'unknown', evidenceStatus: 'not_checked'};
+      const damaged = {...healthy, requirementId: 'system-frequency'};
+      const rows: unknown[] = [damaged, healthy];
+      if (kind === 'quote') Object.assign(damaged, {contentLocations: [{text: 'SECRET_NONEXISTENT_QUOTE'}]});
+      if (kind === 'span_id') Object.assign(damaged, {contentLocations: [{spanId: 'SECRET_STALE_SPAN'}]});
+      if (kind === 'missing') rows.shift();
+      if (kind === 'duplicate') rows.push({...damaged});
+      if (kind === 'malformed_row') Object.assign(damaged, {scopeMatch: 'SECRET_INVALID_ENUM'});
+      Object.assign(run.reply, {investigation: rows});
+
+      const assessment = await assessFinalSemantics(run.input);
+      expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        bodyReviewCoverage: 'complete', coverage: {body: 'complete', claims: 'complete', report: 'complete'},
+        claims: [{claimId: 'claim-a', consistency: 'consistent'}],
+        requirements: [{requirementId: 'summary', coverage: 'covered'}],
+        investigation: {status: 'coverage_incomplete', requirements: [
+          {requirementId: 'system-frequency', applicability: 'applicable', coverage: 'unknown',
+            contentLocations: [], evidenceRecordIds: [], scopeMatch: 'unknown', evidenceStatus: 'unknown'},
+          {requirementId: 'thread-state', coverage: 'covered', evidenceStatus: 'not_checked'},
+        ]}});
+      expect(assessment.investigation!.requirements).toHaveLength(2);
+      expect(assessment.investigation!.requirements[1].contentLocations).toEqual([{start: 0, end: run.input.snapshot.body.length}]);
+      expect(assessment.notCheckedDetail).toContain(kind === 'missing'
+        ? 'resp_investigation_set_set_mismatch' : kind === 'quote' || kind === 'span_id'
+          ? 'resp_investigation_invalid_location' : 'resp_investigation_invalid_reference');
+      expect(JSON.stringify(assessment)).not.toContain('SECRET_');
+      expect(run.dispatch).toHaveBeenCalledTimes(1);
+      expect(run.reads).not.toHaveBeenCalled();
+    });
+
+  it.each([null, {}, 'SECRET_INVALID_SECTION'])(
+    'keeps investigation section shape faults separate from the response envelope: %j', async investigation => {
+      const run = investigationFixture();
+      Object.assign(run.reply, {investigation});
+      const assessment = await assessFinalSemantics(run.input);
+      expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'consistent'}],
+        responseDiagnostic: {stage: 'investigation', code: 'invalid_shape'},
+        investigation: {status: 'coverage_incomplete', requirements: [{requirementId: 'system-frequency', coverage: 'unknown'}]}});
+      expect(JSON.stringify(assessment)).not.toContain('SECRET_');
+    });
+
+  it.each([false, true])('never lets a duplicate repair a malformed known requirement, malformedFirst=%s', async malformedFirst => {
+    const run = investigationFixture();
+    const malformed = {...run.row, contentLocations: [{text: 'SECRET_WRONG_QUOTE'}]};
+    Object.assign(run.reply, {investigation: malformedFirst ? [malformed, run.row] : [run.row, malformed]});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete',
+      investigation: {requirements: [{requirementId: 'system-frequency', coverage: 'unknown', contentLocations: []}]}});
+  });
+
+  it('retains a valid missing investigation judgment without promoting it to covered', async () => {
+    const run = investigationFixture();
+    run.row.coverage = 'missing';
+    run.row.contentLocations = [];
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'checked',
+      investigation: {status: 'checked', requirements: [{requirementId: 'system-frequency', coverage: 'missing'}]}});
+  });
 
   it('does not accept requirements replaced after the pinned registry was captured', async () => {
     const run = investigationFixture();
     run.input.snapshot.investigationRequirements = {...run.input.snapshot.investigationRequirements!, contractFingerprint: 'changed'};
-    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot',
+      notCheckedDetail: 'investigation_pin_mismatch'});
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a changed investigation evidence snapshot from a changed requirement pin', async () => {
+    const run = investigationFixture('scene_wide', issuedInvestigationEvidence());
+    run.input.snapshot.investigationEvidence = {...run.input.snapshot.investigationEvidence!, records: []};
+    const pending = assessFinalSemantics(run.input);
+    expect(await pending).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot',
+      notCheckedDetail: 'investigation_evidence_mismatch'});
+    expect(assessFinalSemantics(run.input)).toBe(pending);
     expect(run.dispatch).not.toHaveBeenCalled();
   });
 
@@ -170,10 +414,10 @@ describe('versioned investigation semantic coverage', () => {
     const run = investigationFixture();
     run.row.evidenceRecordIds = ['SECRET_PROVIDER_RESPONSE_CANARY'];
     const assessment = await assessFinalSemantics(run.input);
-    expect(assessment).toMatchObject({status: 'unavailable', reason: 'invalid_response',
-      responseDiagnostic: {stage: 'investigation', code: 'invalid_reference', ordinal: 1}});
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+      responseDiagnostic: {stage: 'investigation', code: 'invalid_reference', ordinal: 1, constraint: 'unknown_record'}});
     expect(JSON.stringify(assessment)).not.toContain('SECRET_PROVIDER_RESPONSE_CANARY');
-    expect(Object.keys(assessment.responseDiagnostic ?? {}).sort()).toEqual(['code', 'ordinal', 'stage']);
+    expect(Object.keys(assessment.responseDiagnostic ?? {}).sort()).toEqual(['code', 'constraint', 'ordinal', 'stage']);
   });
 });
 
@@ -196,7 +440,8 @@ describe('final semantic assessment snapshot and transport', () => {
     if (changed.input.snapshot.selectionScope?.present && changed.input.snapshot.selectionScope.context.kind === 'track_event') {
       changed.input.snapshot.selectionScope.context.eventId = 11141;
     }
-    expect(await assessFinalSemantics(changed.input)).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(changed.input)).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot',
+      notCheckedDetail: 'selection_mismatch'});
     expect(changed.dispatch).not.toHaveBeenCalled();
   });
 
@@ -273,6 +518,32 @@ describe('final semantic assessment snapshot and transport', () => {
     expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(FINAL_SEMANTIC_INPUT_BYTE_LIMIT);
   });
 
+  it('names a rejected source alias without retaining its value or dispatching', async () => {
+    const run = fixture();
+    Object.assign(run.input.snapshot, {semanticSourceAlias: {schemaVersion: 'SECRET_INVALID_ALIAS'}});
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot',
+      notCheckedDetail: 'source_alias_expansion_invalid'});
+    expect(JSON.stringify(assessment)).not.toContain('SECRET_INVALID_ALIAS');
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['candidate', 'shape', 'registry'] as const)('reports the closed %s input-binding failure and consumes its slot', async kind => {
+    const run = fixture();
+    if (kind === 'candidate') run.candidate.runId = 'different-run';
+    if (kind === 'shape') Reflect.deleteProperty(run.input.snapshot, 'evidenceSnapshot');
+    if (kind === 'registry') run.input.context = {...run.input.context,
+      turnIntent: {...run.input.context.turnIntent, registryFingerprint: 'different-registry'}};
+    const pending = assessFinalSemantics(run.input);
+    expect(await pending).toMatchObject({status: 'not_checked', reason: 'invalid_snapshot',
+      notCheckedDetail: kind === 'candidate' ? 'candidate_binding_mismatch' : kind === 'shape'
+        ? 'snapshot_shape_invalid' : 'registry_pin_mismatch'});
+    expect(assessFinalSemantics(run.input)).toBe(pending);
+    run.input.snapshot.query += ' changed';
+    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'snapshot_changed'});
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+
   it('captures data and transport identity before the first await', async () => {
     const run = fixture();
     const other = fixture();
@@ -289,7 +560,7 @@ describe('final semantic assessment snapshot and transport', () => {
     expect(run.dispatch.mock.calls[0][0].prompt).not.toContain('mutated declaration');
   });
 
-  it.each(['body', 'claim', 'evidence', 'source', 'capability', 'case', 'diagnostics', 'query', 'candidate'] as const)(
+  it.each(['body', 'claim', 'evidence', 'source', 'capability', 'diagnostics', 'query', 'candidate'] as const)(
     'does not reuse or redispatch after a %s snapshot change', async field => {
       const run = fixture();
       await assessFinalSemantics(run.input);
@@ -300,7 +571,6 @@ describe('final semantic assessment snapshot and transport', () => {
       if (field === 'source') changed.snapshot.sourceUse = {schemaVersion: 'source_use_decision@1', codeAwareMode: 'metadata_only',
         selectedCodebaseIds: [], status: 'pending', attemptedTools: [], queriedCodebaseIds: [], usedCodebaseIds: [], references: []};
       if (field === 'capability') changed.snapshot.capabilitySnapshot = {available: true};
-      if (field === 'case') changed.snapshot.caseRetrieval = {status: 'checked', recommendations: []};
       if (field === 'diagnostics') changed.snapshot.protocolDiagnostics = {rawPayload: 'changed original'};
       if (field === 'query') changed.snapshot.query += ' Broader request.';
       if (field === 'candidate') changed.canonicalCandidate.attemptId = 'different-attempt';
@@ -394,7 +664,8 @@ describe('final semantic assessment snapshot and transport', () => {
     const run = fixture();
     const getter = jest.fn(() => 'private accessor text');
     run.input.snapshot.evidenceSnapshot = Object.defineProperty({}, 'rows', {enumerable: true, get: getter});
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot',
+      notCheckedDetail: 'snapshot_capture_invalid'});
     expect(getter).not.toHaveBeenCalled();
     run.input.snapshot.evidenceSnapshot = {rows: []};
     expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'snapshot_changed'});
@@ -404,7 +675,23 @@ describe('final semantic assessment snapshot and transport', () => {
   it.each([NaN, new Date(), [undefined], Array(1), {callback: () => undefined}])('rejects non-JSON evidence input %#', async value => {
     const run = fixture();
     run.input.snapshot.evidenceSnapshot = value;
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot',
+      notCheckedDetail: 'snapshot_capture_invalid'});
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes an unfreezable limits object without invoking accessors or reopening the slot', async () => {
+    const run = fixture();
+    const getter = jest.fn(() => 'SECRET_LIMIT_VALUE');
+    run.input.limits = Object.defineProperty({}, 'inputBytes', {enumerable: true, get: getter});
+    const pending = assessFinalSemantics(run.input);
+    const assessment = await pending;
+    expect(assessment).toMatchObject({reason: 'invalid_snapshot', notCheckedDetail: 'limits_capture_invalid'});
+    expect(assessFinalSemantics(run.input)).toBe(pending);
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.stringify(assessment)).not.toContain('SECRET_LIMIT_VALUE');
+    run.input.limits = {};
+    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'snapshot_changed'});
     expect(run.dispatch).not.toHaveBeenCalled();
   });
 
@@ -455,7 +742,9 @@ describe('final semantic assessment snapshot and transport', () => {
     const ledger = {schemaVersion: 'source_use_decision@1' as const, codeAwareMode: 'metadata_only' as const,
       selectedCodebaseIds: [], status: 'pending' as const, attemptedTools: [], queriedCodebaseIds: [], usedCodebaseIds: [], references: []};
     run.input.snapshot.sourceUse = Object.assign(ledger, {body: 'unprojected private source'});
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot'});
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({reason: 'invalid_snapshot', notCheckedDetail: 'source_ledger_invalid'});
+    expect(JSON.stringify(assessment)).not.toContain('unprojected private source');
     expect(run.dispatch).not.toHaveBeenCalled();
   });
 
@@ -508,7 +797,8 @@ describe('final semantic assessment snapshot and transport', () => {
   it('rejects an explicit input bound above the shared safety ceiling', async () => {
     const run = fixture();
     run.input.limits = {inputBytes: FINAL_SEMANTIC_INPUT_BYTE_LIMIT + 1};
-    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'not_checked', reason: 'invalid_configuration'});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'not_checked', reason: 'invalid_configuration',
+      notCheckedDetail: 'limits_shape_invalid'});
     expect(run.dispatch).not.toHaveBeenCalled();
   });
 
@@ -524,7 +814,8 @@ describe('final semantic assessment snapshot and transport', () => {
   it('rejects a body/candidate mismatch without dispatch', async () => {
     const run = fixture();
     run.candidate.conclusionFingerprint = 'another-body';
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot',
+      notCheckedDetail: 'body_fingerprint_mismatch'});
     expect(run.dispatch).not.toHaveBeenCalled();
   });
 });
@@ -546,19 +837,31 @@ describe('final semantic response protocol', () => {
     for (const assessment of assessments.slice(1)) expect(assessment).toEqual(assessments[0]);
   });
 
-  it.each(['missing_claim', 'extra_claim', 'duplicate_claim', 'extra_root', 'wrong_quote', 'bad_span', 'partial_full_span', 'extra_span_field'] as const)(
-    'rejects the entire malformed response: %s', async issue => {
-      const run = fixture();
-      if (issue === 'missing_claim') run.reply.claims = [];
-      if (issue === 'extra_claim') run.reply.claims[0].claimId = 'unbound';
-      if (issue === 'duplicate_claim') run.reply.claims.push(structuredClone(run.reply.claims[0]));
-      if (issue === 'extra_root') Object.assign(run.reply, {verified: true});
-      if (issue === 'wrong_quote') run.reply.claims[0].contentLocations[0].text = 'different statement';
-      if (issue === 'bad_span') run.reply.claims[0].contentLocations.push({start: 0, end: 999, text: 'outside'});
-      if (issue === 'partial_full_span') run.reply.bodyCoverage.reviewedSpans[0].end -= 1;
-      if (issue === 'extra_span_field') Object.assign(run.reply.claims[0].contentLocations[0], {evidenceStatus: 'verified'});
-      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response', consistency: 'unknown'});
-    });
+  it.each(['extra_root', 'partial_full_span'] as const)('rejects the entire malformed response framing: %s', async issue => {
+    const run = fixture();
+    if (issue === 'extra_root') Object.assign(run.reply, {verified: true});
+    if (issue === 'partial_full_span') run.reply.bodyCoverage.reviewedSpans[0].end -= 1;
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response', consistency: 'unknown'});
+  });
+
+  it.each([
+    ['missing_claim', 'claim_set'], ['extra_claim', 'claim'], ['duplicate_claim', 'claim'], ['wrong_quote', 'claim'],
+    ['bad_span', 'claim'], ['extra_span_field', 'claim'],
+  ] as const)('degrades only the affected claim for a malformed item: %s', async (issue, stage) => {
+    const run = fixture();
+    if (issue === 'missing_claim') run.reply.claims = [];
+    if (issue === 'extra_claim') run.reply.claims[0].claimId = 'unbound';
+    if (issue === 'duplicate_claim') run.reply.claims.push(structuredClone(run.reply.claims[0]));
+    if (issue === 'wrong_quote') run.reply.claims[0].contentLocations[0].text = 'different statement';
+    if (issue === 'bad_span') run.reply.claims[0].contentLocations.push({start: 0, end: 999, text: 'outside'});
+    if (issue === 'extra_span_field') Object.assign(run.reply.claims[0].contentLocations[0], {evidenceStatus: 'verified'});
+    const assessment = await assessFinalSemantics(run.input);
+    // Never promoted: the only declared claim is unknown, so nothing can verify.
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response', consistency: 'unknown',
+      coverage: {body: 'complete', claims: 'incomplete'}, claims: [{claimId: 'claim-a', consistency: 'unknown'}],
+      responseDiagnostic: {stage}});
+    expect(assessment.notCheckedDetail).toMatch(/^resp_claim/);
+  });
 
   it.each(['explanation_first', 'tail', 'opening_only', 'double_fence', 'closing_without_newline', 'four_backticks',
     'closing_then_text', 'multiple_json', 'body_internal_fence'] as const)('rejects non-whole JSON framing %s', async framing => {
@@ -586,12 +889,91 @@ describe('final semantic response protocol', () => {
     expect(await assessFinalSemantics(invalidSchema.input)).toMatchObject({reason: 'invalid_response',
       responseDiagnostic: {stage: 'envelope', code: 'invalid_shape'}});
 
+    // An omitted declared claim stays unknown; the judged claim is retained.
     const missingA2Claim = fixture();
     missingA2Claim.contract.claims!.push({...structuredClone(missingA2Claim.contract.claims![0]), id: 'rec.no_rt'});
     missingA2Claim.dispatch.mockImplementation(async () => ({status: 'ok',
       text: `${JSON.stringify(missingA2Claim.reply)}\r\n\`\`\``}));
-    expect(await assessFinalSemantics(missingA2Claim.input)).toMatchObject({reason: 'invalid_response',
+    expect(await assessFinalSemantics(missingA2Claim.input)).toMatchObject({status: 'coverage_incomplete',
+      reason: 'invalid_response', notCheckedDetail: 'resp_claim_set_set_mismatch',
+      claims: [{claimId: 'claim-a', consistency: 'consistent'}, {claimId: 'rec.no_rt', consistency: 'unknown'}],
       responseDiagnostic: {stage: 'claim_set', code: 'set_mismatch', expectedCount: 2, actualCount: 1}});
+  });
+
+  it('degrades unlocatable judgments without contradicting or discarding correctly located claims', async () => {
+    const run = fixture({body: 'Frame A took 9 ms. Frame B took 4 ms.'});
+    const second = {...structuredClone(run.contract.claims![0]), id: 'claim-b', text: 'Frame B took 4 ms.'};
+    const third = {...structuredClone(run.contract.claims![0]), id: 'claim-c', text: 'Frame A took 9 ms.'};
+    run.contract.claims!.push(second, third);
+    const body = run.input.snapshot.body;
+    run.reply.schemaVersion = 'final_semantic_response@2';
+    run.reply.claims = [
+      {claimId: 'claim-a', consistency: 'inconsistent', contentLocations: [{text: 'not in the body'}],
+        issues: [{code: 'numeric_mismatch', contentLocations: [{text: 'also not in the body'}]}]},
+      {claimId: 'claim-b', consistency: 'consistent', contentLocations: [{text: 'Frame B took 4 ms.'}], issues: []},
+      {claimId: 'claim-c', consistency: 'consistent', contentLocations: [{spanId: 'L9.0000000000'}], issues: []},
+      {claimId: 'invented', consistency: 'consistent', contentLocations: [{text: 'Frame B took 4 ms.'}], issues: []},
+    ] as any;
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', consistency: 'unknown', reason: 'invalid_response',
+      claims: [
+        {claimId: 'claim-a', consistency: 'unknown', contentLocations: [], issues: []},
+        {claimId: 'claim-b', consistency: 'consistent', contentLocations: [{start: body.indexOf('Frame B'), end: body.length}]},
+        {claimId: 'claim-c', consistency: 'unknown'},
+      ],
+      responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
+    expect(assessment.notCheckedDetail).toBe('resp_claim_invalid_location,resp_claim_invalid_reference');
+    expect(JSON.stringify(assessment)).not.toContain('invented');
+  });
+
+  it('records a dropped invented claim without reducing an otherwise complete review', async () => {
+    const run = fixture();
+    run.reply.claims.push({claimId: 'invented', consistency: 'consistent', contentLocations: [span(run.input.snapshot.body)], issues: []});
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'checked', consistency: 'consistent',
+      responseDiagnostic: {stage: 'claim', code: 'invalid_reference', ordinal: 2}});
+    expect(assessment).not.toHaveProperty('reason');
+  });
+
+  it.each([[false, false], [false, true], [true, false], [true, true]])(
+    'retains only located duplicate contradictions: %s / %s', async (firstLocated, secondLocated) => {
+      const run = fixture();
+      const judgment = (located: boolean) => ({claimId: 'claim-a', consistency: 'inconsistent',
+        contentLocations: located ? [span(run.input.snapshot.body)] : [],
+        issues: [{code: 'declaration_not_expressed', contentLocations: located ? [span(run.input.snapshot.body)] : []}]});
+      run.reply.claims = [judgment(firstLocated), judgment(secondLocated)] as any;
+      const assessment = await assessFinalSemantics(run.input);
+      expect(assessment.claims[0]).toMatchObject({consistency: firstLocated || secondLocated ? 'inconsistent' : 'unknown'});
+      expect(assessment.claims[0].contentLocations).toEqual(firstLocated || secondLocated
+        ? [{start: 0, end: run.input.snapshot.body.length}] : []);
+    });
+
+  it.each(['declaration_not_expressed', 'unclear_semantics'])('keeps an unlocated %s issue unknown despite a located claim', async code => {
+    const run = fixture();
+    run.reply.claims[0].consistency = 'inconsistent';
+    run.reply.claims[0].issues = [{code, contentLocations: []}];
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete',
+      claims: [{consistency: 'unknown'}], notCheckedDetail: 'resp_claim_invalid_location'});
+  });
+
+  it('does not admit a model-authored body review receipt', async () => {
+    const run = fixture();
+    Object.assign(run.reply, {bodyReviewCoverage: 'complete'});
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'unavailable', reason: 'invalid_response',
+      responseDiagnostic: {stage: 'envelope', code: 'invalid_shape'}});
+    expect(assessment).not.toHaveProperty('bodyReviewCoverage');
+  });
+
+  it.each(['bad_location', 'bad_shape'] as const)('never passes with an unlocatable omission: %s', async kind => {
+    const run = fixture();
+    run.reply.omissions = kind === 'bad_location'
+      ? [{code: 'undeclared_claim', contentLocations: [{start: 0, end: 999, text: 'outside'}]}]
+      : [{code: 'undeclared_claim'}];
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response', consistency: 'unknown',
+      coverage: {body: 'incomplete'}, omissions: [], claims: [{claimId: 'claim-a', consistency: 'consistent'}],
+      responseDiagnostic: {stage: 'omission', ordinal: 1}});
   });
 
   it('preserves an explicitly incomplete review instead of inferring success from full-looking spans', async () => {
@@ -761,7 +1143,8 @@ describe('final semantic v2 exact quotation locations', () => {
     'rejects ambiguous or invalid repeated-text occurrence %s', async occurrence => {
       const run = quoteFixture({body: 'banana'});
       run.reply.claims[0].contentLocations = [{text: 'ana', ...(occurrence === undefined ? {} : {occurrence})}];
-      expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_response', claims: []});
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}]});
     });
 
   it.each([
@@ -791,7 +1174,7 @@ describe('final semantic v2 exact quotation locations', () => {
   });
 
   it.each(['start', 'end', 'both', 'extra', 'duplicate', 'mixed', 'one_bad'] as const)(
-    'rejects the entire v2 response for %s location fields', async invalid => {
+    'never accepts a claim judged at invalid %s location fields', async invalid => {
       const run = quoteFixture();
       const quote = {text: run.input.snapshot.body};
       if (invalid === 'start') run.reply.claims[0].contentLocations = [{...quote, start: 0}];
@@ -801,7 +1184,8 @@ describe('final semantic v2 exact quotation locations', () => {
       if (invalid === 'duplicate') run.reply.claims[0].contentLocations = [quote, {...quote, occurrence: 1}];
       if (invalid === 'mixed') run.reply.claims[0].contentLocations = [quote, span(quote.text)];
       if (invalid === 'one_bad') run.reply.claims[0].contentLocations = [quote, {text: 'not in body'}];
-      expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_response', claims: []});
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}]});
     });
 
   it.each(['missing_offsets', 'mixed_quote', 'occurrence'] as const)(
@@ -828,15 +1212,26 @@ describe('final semantic v2 exact quotation locations', () => {
         if (collection === 'omission') run.reply.omissions = [{code: 'undeclared_claim', contentLocations: locations}];
         if (collection === 'requirement') run.reply.requirements[0].contentLocations = locations;
         const assessment = await assessFinalSemantics(run.input);
-        expect(assessment).toMatchObject(invalid ? {reason: 'invalid_response', claims: [], omissions: [], requirements: []}
-          : {status: 'checked', consistency: collection === 'issue' || collection === 'omission' ? 'inconsistent' : 'consistent'});
+        // Item defects leave their own coverage unresolved and preserve other judgments.
+        const expected = !invalid
+          ? {status: 'checked', consistency: collection === 'issue' || collection === 'omission' ? 'inconsistent' : 'consistent'}
+          : collection === 'requirement' ? {status: 'coverage_incomplete', reason: 'invalid_response',
+            claims: [{claimId: 'claim-a', consistency: 'consistent'}], omissions: [],
+            coverage: {report: 'incomplete'}, requirements: [{requirementId: 'observation', coverage: 'unknown'}]}
+            : collection === 'issue' ? {status: 'coverage_incomplete', consistency: 'unknown',
+              responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1},
+              claims: [{claimId: 'claim-a', consistency: 'unknown', issues: []}]}
+              : collection === 'omission' ? {status: 'coverage_incomplete', reason: 'invalid_response', omissions: [],
+                coverage: {body: 'incomplete'}}
+                : {status: 'coverage_incomplete', reason: 'invalid_response', claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}]};
+        expect(assessment).toMatchObject(expected);
         if (!invalid) expect(JSON.stringify(assessment)).not.toContain('"text":');
       }
     });
 
   it.each(['missing_claim', 'duplicate_claim', 'missing_omissions', 'empty_omission', 'missing_requirement',
     'duplicate_requirement', 'wrong_claim_ref', 'coverage_gap', 'coverage_quote', 'extra_coverage'] as const)(
-    'preserves the existing full-response rejection for %s', async invalid => {
+    'reports an invalid response for %s', async invalid => {
       const run = quoteFixture({requirements: [{id: 'observation', label: 'Observation', required: true}], scope: 'scene_wide'});
       if (invalid === 'missing_claim') run.reply.claims = [];
       if (invalid === 'duplicate_claim') run.reply.claims.push(structuredClone(run.reply.claims[0]));
@@ -872,7 +1267,7 @@ describe('final semantic v4 body span locations', () => {
     const run = fixture({body});
     const entries = useV4(run);
     const entry = entries.find(item => item.text === target)!;
-    expect(entry.spanId).toMatch(/^line-2-[0-9a-f]{64}-[0-9a-f]{64}$/);
+    expect(entry.spanId).toMatch(/^L2\.[0-9a-f]{10}$/);
     run.reply.claims[0].contentLocations = [{spanId: entry.spanId}] as any;
     expect(await assessFinalSemantics(run.input)).toMatchObject({claims: [{contentLocations: [{
       start: body.indexOf(target), end: body.indexOf(target) + target.length,
@@ -899,7 +1294,7 @@ describe('final semantic v4 body span locations', () => {
       const entry = useV4(run)[0];
       const stale = fixture({body: '**different body**'});
       const staleId = assembledPayload(stale).contentLocationCatalog.entries[0].spanId;
-      const bad: any[] = invalid === 'unknown' ? [{spanId: 'line-1-unknown-unknown'}]
+      const bad: any[] = invalid === 'unknown' ? [{spanId: 'L1.0000000000'}]
         : invalid === 'stale' ? [{spanId: staleId}]
           : invalid === 'digest' ? [{spanId: `${entry.spanId.slice(0, -1)}${entry.spanId.endsWith('0') ? '1' : '0'}`}]
             : invalid === 'mixed' ? [{spanId: entry.spanId, text: body}]
@@ -907,9 +1302,23 @@ describe('final semantic v4 body span locations', () => {
                 : invalid === 'duplicate_id_quote' ? [{spanId: entry.spanId}, {text: body}]
                   : [{text: '\ud83d'}];
       run.reply.claims[0].contentLocations = bad;
-      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response',
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}],
         responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
     });
+
+  it('issues short span IDs that are exact per request and never resolve for another body', async () => {
+    const body = '**first line**\n**second line**';
+    const run = fixture({body});
+    const entries = useV4(run);
+    expect(entries.map(entry => entry.spanId)).toEqual([expect.stringMatching(/^L1\.[0-9a-f]{10}$/),
+      expect.stringMatching(/^L2\.[0-9a-f]{10}$/)]);
+    expect(entries.every(entry => entry.spanId.length <= 16)).toBe(true);
+    const other = fixture({body: '**first line**\n**other line**'});
+    const otherIds = assembledPayload(other).contentLocationCatalog.entries.map((entry: any) => entry.spanId);
+    // Same line ordinal and text, different body: the body digest keeps the IDs apart.
+    expect(otherIds[0]).not.toBe(entries[0].spanId);
+  });
 
   it.each(['claim', 'issue', 'omission', 'report', 'investigation'] as const)(
     'uses the common span resolver for %s locations', async collection => {
@@ -968,7 +1377,8 @@ describe('final semantic v4 body span locations', () => {
     run.reply.claims[0].contentLocations = [{spanId: 'forged-span'}] as any;
     Object.assign(run.reply, {investigation: []});
     expect(assembledPayload(run)).not.toHaveProperty('contentLocationCatalog');
-    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response',
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+      claims: [{claimId: 'claim-a', consistency: 'unknown'}],
       responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
   });
 
@@ -991,6 +1401,55 @@ describe('final semantic v4 body span locations', () => {
 
 describe('semantic report applicability and coverage', () => {
   const required = {id: 'observation', label: 'Observed data', required: true};
+  it('retains checked claims and other report rows when one requirement cites an unknown claim', async () => {
+    const run = fixture({requirements: [required, {id: 'cause', label: 'Cause', required: true}], scope: 'scene_wide'});
+    run.reply.requirements[0].claimIds.push('unknown-claim');
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+      coverage: {claims: 'complete', body: 'complete', report: 'incomplete'},
+      claims: [{claimId: 'claim-a', consistency: 'consistent'}],
+      requirements: [
+        {requirementId: 'observation', applicability: 'applicable', coverage: 'unknown', contentLocations: [], claimIds: []},
+        {requirementId: 'cause', applicability: 'applicable', coverage: 'covered', claimIds: ['claim-a']},
+      ], responseDiagnostic: {stage: 'report_requirement', code: 'invalid_reference', ordinal: 1}});
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reject an answer review for an invented report requirement outside its scope', async () => {
+    const run = fixture();
+    run.reply.requirements.push({requirementId: 'invented', applicability: 'applicable', coverage: 'covered',
+      contentLocations: [span(run.input.snapshot.body)], claimIds: ['claim-a']});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'checked',
+      coverage: {claims: 'complete', report: 'not_applicable'},
+      claims: [{claimId: 'claim-a', consistency: 'consistent'}], requirements: [],
+      responseDiagnostic: {stage: 'report_requirement', code: 'invalid_reference', ordinal: 1}});
+  });
+
+  it('cannot let an unlocatable numeric objection contradict a correctly located declaration', async () => {
+    const run = fixture();
+    run.reply.claims[0].consistency = 'inconsistent';
+    run.reply.claims[0].issues = [{code: 'numeric_mismatch', contentLocations: []}];
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', consistency: 'unknown',
+      coverage: {claims: 'incomplete'}, claims: [{claimId: 'claim-a', consistency: 'unknown', issues: []}],
+      responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
+  });
+
+  it('preserves located objections when a reviewer repeats a claim ID', async () => {
+    const run = fixture({body: 'Frame A took 9 ms. Frame A took 10 ms.'});
+    const body = run.input.snapshot.body;
+    run.reply.claims[0].consistency = 'inconsistent';
+    run.reply.claims[0].contentLocations = [span(body, 0, 17)];
+    run.reply.claims[0].issues = [{code: 'numeric_mismatch', contentLocations: [span(body, 0, 17)]}];
+    run.reply.claims.push(structuredClone(run.reply.claims[0]));
+    run.reply.claims.push({...structuredClone(run.reply.claims[0]), contentLocations: [span(body, 18)],
+      issues: [{code: 'numeric_mismatch', contentLocations: [span(body, 18)]}]});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'checked', consistency: 'inconsistent',
+      claims: [{claimId: 'claim-a', consistency: 'inconsistent',
+        contentLocations: [{start: 0, end: 17}, {start: 18, end: body.length}],
+        issues: [{code: 'numeric_mismatch', contentLocations: [{start: 0, end: 17}]},
+          {code: 'numeric_mismatch', contentLocations: [{start: 18, end: body.length}]}]}]});
+  });
+
   it('accepts content locations without a prescribed heading', async () => {
     const run = fixture({requirements: [required], scope: 'scene_wide'});
     expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'checked', coverage: {report: 'complete'},
@@ -1030,31 +1489,45 @@ describe('semantic report applicability and coverage', () => {
       contentLocations: [], claimIds: []});
   });
 
-  it.each(['not_checked', 'unavailable', 'checked'] as const)('uses actual case retrieval state %s without inventing complete search', async status => {
-    const run = fixture({requirements: [{...required, condition: {kind: 'strong_case_retrieval'}}],
-      caseRetrieval: {status, recommendations: []}});
-    Object.assign(run.reply.requirements[0], {applicability: status === 'checked' ? 'not_applicable' : 'unknown',
-      coverage: 'unknown', contentLocations: [], claimIds: []});
-    expect(await assessFinalSemantics(run.input)).toMatchObject({status: status === 'checked' ? 'checked' : 'coverage_incomplete'});
-  });
-
-  it('cannot waive an actual strong case retrieval requirement', async () => {
-    const run = fixture({requirements: [{...required, condition: {kind: 'strong_case_retrieval'}}],
-      caseRetrieval: {status: 'checked', recommendations: [{caseId: 'case-1', title: 'Relevant case', matchStrength: 'strong', recommendations: {app: [], oem: []}}]}});
-    Object.assign(run.reply.requirements[0], {applicability: 'not_applicable', coverage: 'unknown', contentLocations: [], claimIds: []});
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_response'});
-  });
-
   it('rejects absent or mutated requirement pins before dispatch', async () => {
     const run = fixture({requirements: [required]});
     run.input.snapshot.reportRequirements = undefined;
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_snapshot',
+      notCheckedDetail: 'report_requirement_pin_mismatch'});
     expect(run.dispatch).not.toHaveBeenCalled();
     const mutated = fixture({requirements: [required]});
     mutated.input.snapshot.reportRequirements = {...mutated.input.snapshot.reportRequirements!,
       requirements: [{...required, label: 'unrelated requirement'}]};
-    expect(await assessFinalSemantics(mutated.input)).toMatchObject({reason: 'invalid_snapshot'});
+    expect(await assessFinalSemantics(mutated.input)).toMatchObject({reason: 'invalid_snapshot',
+      notCheckedDetail: 'report_requirement_pin_mismatch'});
     expect(mutated.dispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('semantic review delivery budget', () => {
+  it('does not send a non-report review that cannot finish in the time left', async () => {
+    const run = fixture({deadlineMs: Date.now() + 60_000});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'not_checked', reason: 'budget_insufficient',
+      notCheckedDetail: 'estimate_default', consistency: 'unknown'});
+    expect(run.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('uses the provider family default: a GLM review needs more time than an unknown provider', async () => {
+    const glm = fixture({deadlineMs: Date.now() + 120_000,
+      deliveryCall: {providerOrigin: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-5.3'}});
+    expect(await assessFinalSemantics(glm.input)).toMatchObject({reason: 'budget_insufficient'});
+    expect(glm.dispatch).not.toHaveBeenCalled();
+    expect(glm.input.context.deliveryCall).toEqual({providerOrigin: 'https://open.bigmodel.cn', model: 'glm-5.3'});
+    const other = fixture({deadlineMs: Date.now() + 120_000, deliveryCall: {providerOrigin: 'https://gateway.example/v1'}});
+    expect(await assessFinalSemantics(other.input)).toMatchObject({status: 'checked'});
+    expect(other.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('still sends a report deliverable review whatever the estimate, bounded by the deadline', async () => {
+    const run = fixture({deadlineMs: Date.now() + 60_000, deliverable: 'report'});
+    const result = await assessFinalSemantics(run.input);
+    expect(result.reason).not.toBe('budget_insufficient');
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1078,6 +1551,13 @@ describe('semantic dispatch failure and cancellation', () => {
     expect(JSON.stringify(result)).not.toContain('do-not-echo');
   });
 
+  it('reports a thrown headers timeout as a timeout', async () => {
+    const run = fixture({dispatch: async () => {
+      throw Object.assign(new TypeError('fetch failed'), {cause: {code: 'UND_ERR_HEADERS_TIMEOUT'}});
+    }});
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'timeout'});
+  });
+
   it('honors pre-dispatch cancellation and an already-expired original deadline', async () => {
     const cancelled = fixture();
     cancelled.controller.abort();
@@ -1090,12 +1570,12 @@ describe('semantic dispatch failure and cancellation', () => {
 
   it('uses the context deadline to stop an unresponsive native callback', async () => {
     jest.useFakeTimers({now: 1_000});
-    const run = fixture({deadlineMs: 1_100, dispatch: async () => new Promise<IntentTransportResult>(() => undefined)});
+    const run = fixture({deadlineMs: 101_000, dispatch: async () => new Promise<IntentTransportResult>(() => undefined)});
     const pending = assessFinalSemantics(run.input);
-    await jest.advanceTimersByTimeAsync(101);
+    await jest.advanceTimersByTimeAsync(100_001);
     expect(await pending).toMatchObject({reason: 'timeout', consistency: 'unknown'});
     expect(run.dispatch).toHaveBeenCalledTimes(1);
-    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(1_100);
+    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(101_000);
     expect(run.dispatch.mock.calls[0][0].signal?.aborted).toBe(true);
   });
 
@@ -1138,15 +1618,15 @@ describe('semantic dispatch failure and cancellation', () => {
   it('preserves the original absolute deadline across dispatch delay and ignores success after the cached timeout', async () => {
     jest.useFakeTimers({now: 1_000});
     let resolve!: (response: IntentTransportResult) => void;
-    const run = fixture({deadlineMs: 91_000, dispatch: async () => new Promise<IntentTransportResult>(done => {resolve = done;})});
+    const run = fixture({deadlineMs: 151_000, dispatch: async () => new Promise<IntentTransportResult>(done => {resolve = done;})});
     const pending = assessFinalSemantics(run.input);
     // Synchronous work before the dispatch microtask consumes the original run budget.
     jest.setSystemTime(31_000);
     expect(assessFinalSemantics(run.input)).toBe(pending);
-    await jest.advanceTimersByTimeAsync(60_000);
+    await jest.advanceTimersByTimeAsync(120_000);
     const timeout = await pending;
     expect(timeout).toMatchObject({status: 'unavailable', reason: 'timeout'});
-    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(91_000);
+    expect(run.dispatch.mock.calls[0][0].deadlineMs).toBe(151_000);
     resolve({status: 'ok', text: JSON.stringify(run.reply)});
     await jest.advanceTimersByTimeAsync(0);
     expect(assessFinalSemantics(run.input)).toBe(pending);

@@ -28,6 +28,55 @@ The CLI package is the standalone terminal product; it does not start or bundle
 the Web UI launcher. Use Docker or a GitHub portable package for the browser
 experience.
 
+### When npm blocks install scripts
+
+If installation lists blocked or skipped dependency scripts, review those scripts
+first. The native `better-sqlite3` binding supports core commands such as `query`
+and `skill`, including when AI is disabled. The OpenCode runtime also needs the
+`opencode-ai` install script. Assess other entries, such as `@google/genai`,
+`protobufjs`, and `esbuild`, by their actual scripts and the features you use;
+the list alone does not establish a broken SQLite binding or CLI.
+
+For global installation or one-off `npm exec` / `npx`, approve only the reviewed
+packages for that command:
+
+```bash
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+npm exec --allow-scripts=better-sqlite3,opencode-ai --package=@gracker/smartperfetto -- smp doctor
+```
+
+These flags apply to that command. A project-local install uses `allowScripts`
+in the consuming project's root `package.json`; the field in the published
+SmartPerfetto package cannot grant approval for its consumer. See the
+[official npm install policy](https://docs.npmjs.com/cli/install/).
+
+In a consuming project, if your npm provides `install-scripts`, list pending
+scripts, review them, approve the required dependency, and rebuild SQLite:
+
+```bash
+npm install-scripts ls
+npm install-scripts approve better-sqlite3
+npm rebuild better-sqlite3
+```
+
+Approval updates the consumer's `allowScripts`. When using OpenCode, review and
+add `opencode-ai` to both commands. See
+[npm install-scripts](https://docs.npmjs.com/cli/v11/commands/npm-install-scripts/).
+Keep Node.js 24 for installation and rebuilding; no global npm configuration
+change or blanket script approval is needed.
+
+After approval, reinstallation, or rebuilding, check the same installation with
+doctor and a real SQL query against an existing local trace:
+
+```bash
+smp doctor --format json
+smp query /path/to/trace.pftrace --sql "SELECT COUNT(*) AS slice_count FROM slice" --format json
+```
+
+Replace the trace path. For project-local installation, substitute
+`npx --no-install smp` for `smp`. Confirm that doctor reports `sqlite_native` as
+`ok` and that the query returns successfully.
+
 ## Global Options
 
 ```text
@@ -53,18 +102,27 @@ seconds for locks; separate directories isolate test state and do not replace
 investigation of persistent contention.
 
 Session markers: `✓` delivered with checks passed or not applicable; `~`
-delivered but checks did not complete (for example an invalid conclusion
-declaration or a timed-out semantic review) — do not treat it as verified; `!`
-the run did not finish, or claims contradicted the evidence and quality checks
-failed; `✗` failed. The claim-verification line under the conclusion gives the
-verified count and reason. Without findings, confidence is a fixed baseline and
+delivered with outstanding verification (for example an invalid declaration,
+review timeout or flagged contradiction) — inspect the details before relying
+on those claims; `!` the analysis did not finish; `✗` failed. Verification issues
+do not block the body or report, and never become a passing check merely because
+delivery finished. The claim-verification line under the conclusion separates
+claims whose references matched the captured evidence, propositions a finite
+proof established, claims the whole review verified, contradicted claims and
+values rounded without an approximation marker (unverified, not contradicted);
+whole-answer issues such as undeclared assertions, which leave the answer
+unverified (`~`) rather than contradicted, follow `also:`, and the
+review's not-checked reason is kept in every status. The HTML report and the
+receipt's claim audit use the same counts. While the final semantic review runs,
+a `final_review` progress line shows its start (with its deadline) and outcome.
+Without findings, confidence is a fixed baseline and
 the text output omits it. JSON/NDJSON `complete` events carry `deliveryVerdict`
 (`completed`/`unverified`/`partial`/`failed`).
 
 Incomplete runs display their termination reason and available diagnostics,
 distinguishing absent narrative from narrative that failed quality checks.
 JSON/NDJSON also retain `terminationMessage` and `hasConclusion`.
-`quality_gate_failed` can mean invalid declarations or evidence bindings, not
+`quality_gate_failed` describes a missing body or native delivery failure, not
 missing report sections. A budget above one reserves one no-tool summary of
 returned data, findings, gaps and next steps; exhaustion remains `partial` /
 `max_turns`. The original deadline, authorization and explicit cost budget still
@@ -73,6 +131,14 @@ call if it has overshot the remaining allowance. `smp ask` passes history
 separately from the new question, retains completeness metadata and allows
 on-demand recall of older text. Evidence from a reloaded trace remains historical,
 not newly verified evidence for the new trace identity.
+
+When output goes to a pipe (for example `smp query … --format json | jq` or
+`| tee`), the CLI waits before exiting until stdout and stderr have handed their
+queued output to the OS, for at most `SMARTPERFETTO_CLI_FLUSH_TIMEOUT_MS`
+(default 30000 ms). This is a bounded best effort: if the reader closes the pipe
+early (for example `| head`) or the bound elapses, the CLI still exits with its
+original code and the tail may be lost. Ctrl-C and SIGTERM exit at once without
+waiting.
 
 ## Core Workflow
 
@@ -148,7 +214,11 @@ usually `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads:
 1. `backend/.env` from the package or source backend directory.
 2. `~/.smartperfetto/env`, which overrides earlier values.
 
-If you pass `--env-file /path/to/env`, the CLI reads only that file. Enable only
+If you pass `--env-file /path/to/env`, the CLI reads only that file. These env
+files are loaded before any module evaluates, so startup settings such as
+`LOG_LEVEL` and trace processor ports or timeouts can live there too. Relative
+paths in commands (traces, `--out`, `--config`, ...) always resolve against the
+directory you ran `smp` from. Enable only
 one CLI provider source for first setup: an active profile already present in
 the current CLI store, one Claude-compatible env block, or one OpenAI-compatible
 env block. `smp provider list` and `smp provider test <providerId>` inspect that
@@ -162,6 +232,13 @@ Runtime checks follow the actually selected provider/runtime:
   `localhost` / `127.0.0.1` / `0.0.0.0` OpenAI-compatible endpoint.
 - Ollama providers use the OpenAI-compatible runtime.
 
+Since v1.15.1, `smp doctor` loads the native SQLite binding in its `sqlite_native`
+check. A missing or unloadable binding reports `error` and exits with code 1.
+The check also runs with AI disabled because deterministic query and Skill
+commands still use SQLite. See the
+[installation checks](#when-npm-blocks-install-scripts) after script approval or
+rebuilding.
+
 When `SMARTPERFETTO_AI_ENABLED=false`, `smp doctor` prints the AI policy.
 `smp analyze`, `smp resume`, `smp provider test`, and
 `smp capture android --analyze` return `AI_DISABLED` before runtime/provider
@@ -173,25 +250,52 @@ reported as `aiPolicy.env.valid=false` in doctor JSON.
 The first CLI productization pass does not include `provider add/edit`; key
 writing still goes through env files or a later secure interaction design.
 
-## Android Internals Knowledge Pack
+## Document Knowledge Bases
 
 ```bash
-smp knowledge-pack status
-smp knowledge-pack status --format json
-smp knowledge-pack update --check
-smp knowledge-pack update
+smp knowledge preview ./team-docs
+smp knowledge register ./team-docs --accept-rights --name "Team docs" \
+  --description "Render framework and trace tag notes" --send-to-provider
+smp knowledge reindex eks_xxx
+smp knowledge consent eks_xxx --enable
+smp knowledge list --format json
+smp knowledge search eks_xxx XRenderCompositorWorker --top-k 5
+smp knowledge remove eks_xxx --yes
+smp analyze trace.pftrace --knowledge-source-id eks_xxx "Explain XRenderCompositorWorker in this trace"
 ```
 
-`status` reports the active Pack, bundled snapshot, and signed-channel state.
-`update --check` refreshes and verifies TUF metadata without installing
-content; `update` atomically installs the stable Pack after signature, version,
-hash, and revocation checks pass. The bundled snapshot distributed with npm,
-Docker, source, and portable packages remains available offline. Analysis
-projects provenance, version, and snippet hashes into logs/SSE; background
-content is not represented as trace evidence.
+`smp knowledge` manages document folders (`.md .markdown .mdx .txt .rst .adoc
+.html .htm`) as searchable knowledge bases with the same registry, indexer and
+store as the Web UI. `register` requires `--accept-rights` (you confirm you may
+use these documents) and indexes nothing; run `reindex` afterwards. Provider
+consent is explicit: at registration `--send-to-provider` grants it,
+`--no-send-to-provider` withdraws it, and leaving both out keeps the consent in
+effect; afterwards `smp knowledge consent <id> --enable|--disable` changes it
+(the same registry operation as the Web UI's consent switch; `--enable` prints
+the disclosure the Web UI shows). A knowledge base has no path filters, so the
+whole folder is the unit of authorization and consent is a boolean; sending
+source code instead needs its scope disclosed and confirmed with a token
+(`smp codebase authorize-content`). An analysis can select a knowledge base
+only after it has rights, consent and an active index. The CLI trusts the
+folder you name as your own, in place of `SMARTPERFETTO_KNOWLEDGE_ROOTS`: a
+registration records the `local_cli` channel, through which a later CLI
+`reindex` trusts that folder; a folder registered first in the Web UI's
+directory picker and then again from the CLI keeps both channels, so the server
+can still reindex it. Output never contains the registered absolute
+path; document text appears only in `search`, which you run to see it. `remove`
+requires `--yes` and deletes every index generation; a deletion that stopped
+half way finishes on the next `remove`. Exit codes: `0` success, `2` invalid
+input, `3` not found, `4` conflict (busy, deleting), `5` another failure. Every
+command accepts `--format text|json`.
 
-See [Android Internals Knowledge Pack And Private Knowledge](../getting-started/android-internals-knowledge.en.md)
-for licensing, updates, and private-source boundaries.
+An analysis that used a knowledge base records `knowledgeUse` (`knowledge_use@1`)
+in the turn's evidence bundle: which bases delivered how many references at
+which index generation, and how each `kb:path#Lx-Ly` citation in the answer
+stands (`delivered`, `located`, `unmatched`, `ambiguous`). Knowledge is
+background, never trace evidence.
+
+To use the public Android Internals Wiki as a knowledge base, see
+[Using The Android Internals Wiki As A Knowledge Base](../getting-started/android-internals-knowledge.en.md).
 
 ## Trace Query And Skills
 
@@ -269,13 +373,18 @@ smp codebase register /path/to/app --kind app_source --name MyApp --path-filter 
 smp codebase list
 smp codebase list --format json
 
-# Supplying both option families replaces both pathFilters and excludeGlobs
+# Preview what a new scope admits (nothing is saved), then replace pathFilters and excludeGlobs
+smp codebase selection cb_xxx --path-filter app/src/main/ --preview
 smp codebase selection cb_xxx \
   --path-filter app/src/main/ \
-  --exclude-glob '**/generated/**'
+  --exclude-glob '**/generated/**' \
+  --expected-revision 1
 
-# Provider-send consent and current-scope/new-language authorization
-smp codebase consent cb_xxx --enable
+# Show exactly what would be granted and its token (grants nothing), then grant that scope and every language (recommended)
+smp codebase authorize-content cb_xxx
+smp codebase authorize-content cb_xxx --confirm cd1:1:xxxxxxxxxxxxxxxx
+# Revoke body sending; --enable is refused with CODEBASE_CONSENT_DISCLOSURE_REQUIRED, use authorize-content
+smp codebase consent cb_xxx --disable
 smp codebase authorize-selection cb_xxx
 smp codebase authorize-extensions cb_xxx
 
@@ -299,14 +408,21 @@ smp run trace.perfetto-trace \
 
 `metadata_only` exposes only `CodeRef` metadata to the model; raw source text is
 not persisted into sessions, reports, or exports. `provider_send` can send
-snippets only when the codebase was registered with `--send-to-provider` and the
-current analysis also uses `--code-aware provider_send`. Supplying only
-`--codebase-id` defaults to `metadata_only`; combining a codebase ID with
-`--code-aware off` is rejected. A run is trace-only only when no codebase or
-knowledge-source ID is selected. `--knowledge-source-id <id>` can enable an
-authorized private external RAG source alone or together with a codebase.
-Source, private RAG, and reference-trace selections resolve an explicit `fast`
-request to `full` so the lightweight runtime cannot silently drop capabilities.
+snippets only when body sending was granted for the codebase with
+`smp codebase authorize-content` (it shows the scope and a token, then
+`--confirm <token>` grants it) and the current analysis also uses
+`--code-aware provider_send`. Registration cannot grant it: `smp codebase
+register --send-to-provider` is refused with `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`
+and registers nothing. Supplying only
+`--codebase-id` defaults to `metadata_only`; `--code-aware off` drops any
+codebase IDs passed with it (no error, and no source authorization or feature
+check). A run is trace-only only when no codebase is selected and no
+knowledge-source ID is passed; knowledge sources are independent of the source
+mode. `--knowledge-source-id <id>` can enable an
+authorized document knowledge base alone or together with a codebase.
+Selecting source, a knowledge base, or a reference trace leaves the requested
+budget mode unchanged; `fast` keeps those authorized capabilities too.
+`--source-depth auto|locate|mechanism` sizes the run's source budget (default `auto`, the same as the API's `options.sourceDepth`) and is kept in the session for later turns.
 `preview` and `register --dry-run` report the actual `ripgrep → git → node-walk`
 enumeration backend, fidelity, completeness, and truncation reason. A bounded
 preview truncation remains a successful command rather than masquerading as a
@@ -316,11 +432,25 @@ that order when it is unavailable.
 `selection` replaces only fields supplied explicitly: `--path-filter` replaces
 `pathFilters`, while `--exclude-glob` replaces `excludeGlobs`. An omitted field
 preserves its existing list; only a command containing both option families
-replaces both lists. An effective change advances the selection revision,
-invalidates the old active index, and may make the provider grant stale.
-`authorize-selection` grants only the current path scope;
-`authorize-extensions` grants only currently available new languages, and
-neither turns provider-send on. `pending` must echo the exact current candidate
+replaces both lists. `--preview` prints, as JSON, the relative paths the new
+scope would admit, enumerated exactly as a save enumerates it, and saves
+nothing; a save enumerates again and refuses a complete enumeration with no
+match (`CODEBASE_SELECTION_EMPTY_MATCH`). An effective change advances the
+selection revision and the index generation; only a codebase that had an active
+index is told to reindex. The provider grant never exceeds the current scope: a
+provable narrowing narrows the grant with it, and any other change (including
+one that cannot be proven narrower) revokes provider-send consent.
+`--expected-revision` takes the `selectionPolicyRevision` a preview printed and
+refuses the save if another change replaced it (`CODEBASE_SELECTION_STALE`).
+`authorize-content` without `--confirm` only prints the relative include and
+exclude scope, the languages, what sending means and the token, and grants
+nothing; with that token it grants exactly that scope and every language, a
+scope or language change since the disclosure is refused with
+`CODEBASE_CONSENT_DISCLOSURE_STALE`, and repeating it is idempotent; `authorize-selection` grants only the current path scope and
+`authorize-extensions` only currently available new languages, and neither of
+those two turns provider-send on. A `provider_send` analysis is refused with
+`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE` while a selected codebase's grant does
+not match its scope. `pending` must echo the exact current candidate
 ID from `list` / `audit`. `delete` requires explicit `--yes`.
 
 CLI `reindex` accepts only a codebase ID and has no `pathPrefix` option. Manage
@@ -360,6 +490,7 @@ limits in the report body.
 smp list
 smp list --json
 smp list --format json
+smp list --limit 20 --since 2026-01-01
 smp show <sessionId>
 smp report <sessionId>
 smp report <sessionId> --turn 1
@@ -370,28 +501,62 @@ smp report export <sessionId> --format md --out report.md
 smp report export <sessionId> --format json --out report.json
 ```
 
+`smp list` sorts by most recent update; `--limit <n>` shows at most n
+entries and `--since <date>` only sessions updated at or after that time (any
+`Date.parse` input).
+
 CLI files are stored under:
 
 ```text
 ~/.smartperfetto/
 ├── index.json
+├── env
 ├── traces/
 └── sessions/<sessionId>/
     ├── config.json
     ├── conclusion.md
     ├── report.html
+    ├── transcript.jsonl
+    ├── stream.jsonl
+    ├── claim-support.json
+    ├── claim-verification.json
+    ├── identity-resolutions.json
+    ├── analysis-receipt.json
+    ├── analysis-evidence.json
+    ├── scene-report.json
     ├── source-use-decision.json
     ├── source-claim-bindings.json
     ├── ui-action-proposals.json
-    ├── transcript.jsonl
-    ├── stream.jsonl
     └── turns/
         ├── 001.md
+        ├── 001.html
+        ├── 001.claim-support.json
+        ├── 001.claim-verification.json
+        ├── 001.identity-resolutions.json
+        ├── 001.investigation-assessment.json
+        ├── 001.delivery-assurance.json
+        ├── 001.analysis-receipt.json
+        ├── 001.analysis-evidence.json
+        ├── 001.scene-report.json
         ├── 001.source-use-decision.json
         ├── 001.source-claim-bindings.json
         ├── 001.ui-action-proposals.json
-        └── 001.html
+        ├── 001.runtime-performance.json
+        └── 001.tool-results.json
 ```
+
+The root defaults to `~/.smartperfetto`; move it with `--session-dir` or the
+`SMARTPERFETTO_HOME` environment variable (the flag takes priority).
+`claim-support`, `claim-verification`, and `identity-resolutions` hold claim
+support, verification results, and identity resolution;
+`investigation-assessment` and `delivery-assurance` hold the investigation
+obligation assessment and delivery verification state; `analysis-receipt` is
+the analysis receipt; `scene-report.json` points at the report only for a scene
+reconstruction turn and records an explicit none otherwise.
+`runtime-performance.json` records timing only and `tool-results.json` only the
+tool-result handoff facts (no payload values; Skill ids dropped for private
+turns); both are written only when the runtime supplies them. Unnumbered files
+in the session root are copies of the latest turn.
 
 The source sidecars exist only when the turn has canonical safe source
 provenance. Latest files are replaced by later turns; a source-free turn clears
@@ -426,35 +591,95 @@ smp capture presets
 smp capture suggest "debug startup jank" --app com.example.app --format json
 smp capture suggest "investigate scrolling frame drops; do not record yet" --app com.example.app
 smp capture suggest "Analyze Camera open-to-first-preview latency" --app com.example.camera
+smp capture suggest "find the Java heap leak" --app com.example.app
 smp capture config --preset startup --app com.example.app --duration 10 --out startup.pbtxt
 smp capture config --preset camera --app com.example.camera --duration 20
 smp capture config --preset cpu --app '*' --duration 30 --categories dalvikviktime my_custom_tag --out cpu-custom.pbtxt
 smp capture config --preset power --app com.example.app --duration 60 --out power.pbtxt
+smp capture config --preset memory-profile --app com.example.app --out memory-profile.pbtxt
 
 smp capture android --preset startup --app com.example.app --duration 10 --out launch.perfetto-trace
 smp capture android --preset scrolling --app com.example.app --duration 15 --serial <adbSerial> --out scroll.perfetto-trace
 smp capture android --preset power --app com.example.app --duration 60 --out power.perfetto-trace
+smp capture android --preset memory-profile --app com.example.app --duration 60 --out memory-profile.perfetto-trace
 smp capture android --config startup.pbtxt --out launch.perfetto-trace
 smp capture android --config template.pbtxt --duration 10 --categories my_custom_tag --out custom.perfetto-trace
 smp capture android --preset overview --app com.example.app --duration 10 --kill-stale --out retry.perfetto-trace
 smp capture android --preset game --app com.example.game --duration 20 --out game.perfetto-trace --analyze --query "Find launch and frame pacing issues" --mode fast
 ```
 
-Available presets: `startup`, `scrolling`, `camera`, `anr`, `game`, `memory`, `cpu`,
-`power`, `overview`, and `full`. Every preset enables `power/cpu_frequency` and
+Available presets: `startup`, `scrolling`, `camera`, `anr`, `loading`, `game`, `memory`,
+`memory-profile`, `cpu`, `power`, `overview`, and `full`. Every system-wide preset
+(all except `memory-profile`) enables `power/cpu_frequency` and
 `power/cpu_frequency_limits`; the latter carries each CPU's frequency bounds and
-separates "low frequency because the load is low" from "clamped". `cpu` and
-`power` also enable `thermal/thermal_temperature` and `thermal/cdev_update` so a
-clamp can be matched against thermal-zone temperature in the same window. Those
+separates "low frequency because the load is low" from "clamped". `cpu`,
+`power`, `scrolling`, and `full` also enable `thermal/thermal_temperature` and
+`thermal/cdev_update` so a clamp can be matched against thermal-zone temperature
+in the same window; cooling-device transitions are also the only evidence that
+ties a clamp a scrolling frame ran under to kernel thermal mitigation. Those
 tracepoints depend on device and kernel support and are not exposed everywhere.
 `power` additionally enables `android.power` battery
 counters, power rails, suspend/wakeup ftrace, and `android.network_packets`.
+`loading` targets in-app content loading (page navigation, list data, images,
+WebView). A load is a cross-thread wait chain from the main thread to workers,
+Binder, IO, and the network, so it enables wakeup, Binder, and block-IO ftrace,
+`network`/`database`/`res`/`webview` atrace, input, FrameTimeline, and
+`android.network_packets`. Packets are recorded only on devices and releases that
+provide that producer; a missing packet track is missing data, not evidence that
+no network request happened.
 `camera` collects Camera/HAL/vendor atrace candidates, Binder, scheduler,
 FrameTimeline, and DMA-BUF or legacy ION events. These tracepoints are optional
 and vary by Android release, kernel, and vendor implementation. Even with this
 preset, a trace may lack portable Camera open, request/result, buffer, or
 preview-presentation anchors. SmartPerfetto reports that evidence gap instead
 of fabricating an open-to-first-frame number.
+
+`memory-profile` profiles one app process, following Perfetto's Memscope
+single-process recipe. It records `linux.process_stats` memory counters every
+second, `android.packages_list` (which shows whether the app was profileable or
+debuggable), `android.heapprofd` native heap samples (32 KiB sampling, a dump
+every 5 s), `android.java_hprof` Java heap dumps, and a small `linux.ftrace`
+buffer with `ftrace/print` plus the `dalvik`, `am`, and `wm` atrace categories.
+It differs from the system-wide presets in several ways:
+
+- `--app` must name one concrete package or process (for example
+  `com.example.app` or `com.example.app:remote`); `--app '*'`, an empty value,
+  and glob patterns are rejected by `capture config`, `capture android`, and the
+  renderer itself.
+- The device must run Android 11 (API 30) or later with its built-in `perfetto`:
+  heapprofd needs API 29 and `java_hprof` needs API 30. `capture android` probes
+  the device and fails before any device-side work on an older device or with
+  `--sideload`, because tracebox does not provide the platform profiler daemons.
+- On user builds the app must be profileable or debuggable; otherwise the
+  profilers record nothing for it. Each Java heap dump pauses the app while the
+  heap is written. Both caveats appear as preflight warnings.
+- Start the app before capturing. Java heap dumps happen when the trace starts
+  (the baseline) and then every `max(10 s, (duration - 10 s) / 2)`, so the
+  default 60 s capture yields three dumps at about 0 s, 25 s, and 50 s. The
+  duration must be at least 20 s so a second dump follows the baseline.
+- The config uses four buffers instead of one scaled ring: process stats and
+  packages list (RING, 64 KB per second of duration, 8-128 MB), heapprofd
+  (RING, 128 MB), `java_hprof` (DISCARD, 256 MB), and ftrace (RING, 16 MB).
+  DISCARD keeps the baseline dump intact; a late dump that no longer fits is
+  truncated, and the heap-graph analysis reports it as incomplete. A buffer size
+  override (`bufferSizeKb` in the config API) sets the `java_hprof` buffer and
+  must be at least 256 MB. `--cuj` has no effect on this preset.
+- The config omits `java_hprof` `smaps_config` (needs Android build
+  ZP1A.260626.001 or newer) and `process_stats` `record_process_age`, both used
+  by Memscope, because the device rejects config fields its perfetto does not
+  know.
+
+`smp capture suggest` proposes `loading` for 页面加载, 加载慢, 内容加载, 图片加载,
+白屏, `page load`, `content load`, and `slow to load`. A tie with startup,
+scrolling, or ANR keywords keeps the existing preset: "冷启动白屏" stays `startup`
+and "图片加载慢导致滑动卡顿" stays `scrolling`. The bare word `loading` does not
+trigger it, so `downloading` and loading-animation jank are not misrouted.
+
+`smp capture suggest` proposes `memory-profile` for heap-dump, hprof, Java heap,
+heap graph, and memory-leak requests when `--app` names a concrete package.
+Without one it keeps the system-wide `memory` preset and says in the rationale
+that heap dumps need `--app`.
+
 `smp capture suggest` is side-effect free: it maps natural language to a
 built-in preset and returns rationale, warnings, recommended commands, and a
 textproto preview rendered by the same config renderer. It does not call an LLM,
@@ -496,7 +721,7 @@ device-ABI `tracebox` from `prebuilts/perfetto-recording-tools/android-*/` or
 and Linux hosts can capture Android devices. Linux host system tracing is
 reserved for a future `smp capture linux` target.
 
-Pass `--serial` when multiple devices are connected.
+Pass `--serial` when multiple devices are connected. `--adb <path>` selects the adb binary for this command only (overriding `ADB_PATH`); `--no-guardrails` passes the same flag to the device perfetto for long or large-buffer captures beyond its default guardrails.
 
 ## REPL
 
@@ -517,6 +742,13 @@ REPL commands:
 | `/clear` | Clear the terminal |
 | `/exit` | Exit |
 
+While a turn runs, Ctrl-C belongs to that turn: the first press after a printed
+answer stops only its verification and the turn is saved; the next press, or
+the first one before the answer, aborts the turn without saving and returns to
+the prompt; a further press exits with 130. With no turn running, press Ctrl-C twice within 1.5 s to exit.
+
 ## System investigation output
 
 The CLI reports system investigation coverage separately from system evidence coverage, with Not checked for missing historical fields. Machine-readable conclusion records include `investigationAssurance` without changing the original conclusion or native completion. Each turn also saves `NNN.investigation-assessment.json` and `NNN.delivery-assurance.json` with dimension statuses and evidence references. The HTML report shows the same investigation scope. Restoring historical results does not automatically acquire missing evidence.
+
+Tool results in `stream.jsonl` are transport-truncated copies. Each turn also saves `NNN.tool-results.json`, which records what every call handed to its runtime: tool name, call id (when the runtime supplies one), outcome, text characters and bytes, and whether audited fields such as `vendorOverride` appear verbatim in the text handed to the model. The file contains no payload values; private-knowledge runs also drop Skill ids.

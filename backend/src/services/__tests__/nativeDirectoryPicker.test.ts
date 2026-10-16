@@ -216,16 +216,16 @@ describe('NativeDirectoryPicker selection authorization', () => {
       code: 'DIRECTORY_SELECTION_SCOPE_MISMATCH',
     }));
 
-    picker.runWithSelection('selection-a', tmpDir, scope, () => undefined);
-    expect(() => picker.runWithSelection(
+    await picker.runWithSelection('selection-a', tmpDir, scope, () => undefined);
+    await expect(picker.runWithSelection(
       'selection-a',
       tmpDir,
       scope,
       () => undefined,
     ))
-      .toThrow(expect.objectContaining({
+      .rejects.toMatchObject({
         code: 'DIRECTORY_SELECTION_NOT_FOUND',
-      }));
+      });
 
     const second = await picker.chooseDirectory(scope);
     expect(second.selected).toBe(true);
@@ -243,47 +243,91 @@ describe('NativeDirectoryPicker selection authorization', () => {
     const result = await picker.chooseDirectory({});
     expect(result.selected).toBe(true);
 
-    expect(() => picker.runWithSelection(
+    await expect(picker.runWithSelection(
       'selection-path',
       otherDir,
       {},
       () => undefined,
     ))
-      .toThrow(expect.objectContaining({
+      .rejects.toMatchObject({
         code: 'DIRECTORY_SELECTION_PATH_MISMATCH',
-      }));
-    expect(picker.runWithSelection(
+      });
+    await expect(picker.runWithSelection(
       'selection-path',
       tmpDir,
       {},
       rootRealpath => rootRealpath,
     ))
-      .toBe(fs.realpathSync(tmpDir));
+      .resolves.toBe(fs.realpathSync(tmpDir));
   });
 
   it('restores a selection when its synchronous persistence step fails', async () => {
     const picker = localPicker({idGenerator: () => 'selection-retry'});
     await picker.chooseDirectory({});
 
-    expect(() => picker.runWithSelection(
+    await expect(picker.runWithSelection(
       'selection-retry',
       tmpDir,
       {},
       () => {
         throw new Error('persist_failed');
       },
-    )).toThrow('persist_failed');
+    )).rejects.toThrow('persist_failed');
 
-    expect(picker.runWithSelection(
+    await expect(picker.runWithSelection(
       'selection-retry',
       tmpDir,
       {},
       rootRealpath => rootRealpath,
-    )).toBe(fs.realpathSync(tmpDir));
+    )).resolves.toBe(fs.realpathSync(tmpDir));
     expect(() => picker.validateSelection('selection-retry', tmpDir, {}))
       .toThrow(expect.objectContaining({
         code: 'DIRECTORY_SELECTION_NOT_FOUND',
       }));
+  });
+
+  it('takes a selection for an asynchronous operation: a concurrent replay is refused, a failure gives it back', async () => {
+    let now = 1000;
+    const picker = localPicker({idGenerator: () => 'selection-async', now: () => now, selectionTtlMs: 5000});
+    await picker.chooseDirectory({});
+    // A preview checks the selection without using it up.
+    expect(picker.validateSelection('selection-async', tmpDir, {})).toBe(fs.realpathSync(tmpDir));
+    expect(picker.validateSelection('selection-async', tmpDir, {})).toBe(fs.realpathSync(tmpDir));
+
+    let failFirst: ((error: Error) => void) | undefined;
+    const first = picker.runWithSelection('selection-async', tmpDir, {},
+      () => new Promise<never>((_resolve, reject) => { failFirst = reject; }));
+    await expect(picker.runWithSelection('selection-async', tmpDir, {}, () => 'replayed'))
+      .rejects.toMatchObject({code: 'DIRECTORY_SELECTION_NOT_FOUND'});
+    expect(() => picker.validateSelection('selection-async', tmpDir, {}))
+      .toThrow(expect.objectContaining({code: 'DIRECTORY_SELECTION_NOT_FOUND'}));
+    failFirst!(new Error('register_failed'));
+    await expect(first).rejects.toThrow('register_failed');
+
+    // Given back after the failure, then used up by a success.
+    await expect(picker.runWithSelection('selection-async', tmpDir, {}, async root => root))
+      .resolves.toBe(fs.realpathSync(tmpDir));
+    await expect(picker.runWithSelection('selection-async', tmpDir, {}, () => 'again'))
+      .rejects.toMatchObject({code: 'DIRECTORY_SELECTION_NOT_FOUND'});
+
+    // A selection that expired while its operation ran is not given back.
+    await picker.chooseDirectory({});
+    await expect(picker.runWithSelection('selection-async', tmpDir, {}, async () => {
+      now = 7000;
+      throw new Error('slow_failure');
+    })).rejects.toThrow('slow_failure');
+    expect(() => picker.validateSelection('selection-async', tmpDir, {}))
+      .toThrow(expect.objectContaining({code: 'DIRECTORY_SELECTION_NOT_FOUND'}));
+  });
+
+  it('titles the dialog by what the folder is for', async () => {
+    const runCommand = jest.fn(async (_executable: string, _args: readonly string[]) =>
+      ({stdout: `${tmpDir}\n`, stderr: ''}));
+    const picker = localPicker({runCommand});
+    await picker.chooseDirectory({}, 'knowledge');
+    await picker.chooseDirectory({});
+    expect(runCommand.mock.calls[0]![1]).toContain('--title=Choose a documents folder');
+    expect(runCommand.mock.calls[1]![1]).toContain('--title=Choose a source code folder');
   });
 
   it('limits pending selections and allows only one system dialog at a time', async () => {

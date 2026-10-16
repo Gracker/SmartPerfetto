@@ -71,7 +71,7 @@ steps:
         score AS oom_score_adj,
         bucket AS bucket_name
       FROM android_oom_adj_intervals
-      WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+      WHERE ('${process_name}' = '' OR process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
       ORDER BY ts ASC

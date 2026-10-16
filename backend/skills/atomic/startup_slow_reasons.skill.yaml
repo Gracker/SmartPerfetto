@@ -139,7 +139,7 @@ steps:
           COALESCE(sp.upid, (
             SELECT p2.upid
             FROM process p2
-            WHERE p2.name GLOB s.package || '*'
+            WHERE (p2.name = s.package OR p2.name GLOB s.package || ':*')
             ORDER BY p2.start_ts DESC
             LIMIT 1
           )) as upid
@@ -194,6 +194,8 @@ steps:
         - name: claim_boundary
           label: "证据边界"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
     sql: |
       WITH startup_info AS (
         SELECT
@@ -232,19 +234,34 @@ steps:
           AND p.start_ts IS NOT NULL
           AND p.start_ts < (SELECT ts + dur FROM startup_info)
       ),
-      -- Check: GC during startup
+      -- Check: GC during startup. Count and time take collector runs; runs and
+      -- waits on the collector of the main thread are counted apart, and a
+      -- wait alone still reports the main thread blocked
+      -- (fragments/art_gc_names.sql).
+      gc_slices AS (
+        SELECT * FROM (
+          SELECT
+            s.dur,
+            tt.utid,
+            (SELECT n.gc_kind FROM art_gc_slice_name_patterns n WHERE s.name GLOB n.pattern
+             ORDER BY n.gc_kind LIMIT 1) AS gc_kind
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN startup_info si ON t.upid = si.upid
+          WHERE s.name GLOB '*GC*'
+            AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+            AND s.dur > 100000  -- > 0.1ms
+        )
+        WHERE gc_kind IS NOT NULL
+      ),
       gc_check AS (
         SELECT
-          COUNT(*) as gc_count,
-          ROUND(COALESCE(SUM(s.dur), 0) / 1e6, 1) as gc_total_ms,
-          SUM(CASE WHEN tt.utid = (SELECT utid FROM main_thread) THEN 1 ELSE 0 END) as main_thread_gc_count
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN startup_info si ON t.upid = si.upid
-        WHERE (s.name GLOB '*GC*' OR s.name GLOB '*gc*')
-          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
-          AND s.dur > 100000  -- > 0.1ms
+          COALESCE(SUM(gc_kind = 'collection'), 0) as gc_count,
+          ROUND(COALESCE(SUM(CASE WHEN gc_kind = 'collection' THEN dur END), 0) / 1e6, 1) as gc_total_ms,
+          COALESCE(SUM(gc_kind = 'collection' AND utid = (SELECT utid FROM main_thread)), 0) as main_thread_gc_count,
+          COALESCE(SUM(gc_kind = 'wait' AND utid = (SELECT utid FROM main_thread)), 0) as main_thread_gc_wait_count
+        FROM gc_slices
       ),
       -- Check: Lock contention
       lock_check AS (
@@ -343,12 +360,13 @@ steps:
 
       UNION ALL
       SELECT 'SR03',
-        CASE WHEN main_thread_gc_count > 0 THEN '主线程 GC（直接阻塞）'
+        CASE WHEN main_thread_gc_count + main_thread_gc_wait_count > 0 THEN '主线程 GC（直接阻塞）'
              ELSE 'GC 活动（间接影响）' END,
-        CASE WHEN main_thread_gc_count > 0 THEN 'warning' ELSE 'info' END,
-        gc_count || ' 次 GC, 总耗时 ' || gc_total_ms || ' ms, 主线程 ' || main_thread_gc_count || ' 次',
+        CASE WHEN main_thread_gc_count + main_thread_gc_wait_count > 0 THEN 'warning' ELSE 'info' END,
+        gc_count || ' 次 GC 回收, 总耗时 ' || gc_total_ms || ' ms; 主线程执行回收 ' || main_thread_gc_count
+          || ' 次、等待 GC 完成 ' || main_thread_gc_wait_count || ' 次',
         '减少启动期间的对象分配，避免触发 GC'
-      FROM gc_check WHERE gc_count > 0
+      FROM gc_check WHERE gc_count + main_thread_gc_wait_count > 0
 
       UNION ALL
       SELECT 'SR04', '主线程锁竞争',
@@ -584,15 +602,15 @@ steps:
           AND s.ts >= si.ts AND s.ts < si.ts + si.dur
       ) WHERE inflate_ms > 100
 
-      -- SR16: 热节流 (根因 B4)
+      -- SR16: 启动期频率未达本 trace 峰值（B2/B4 候选；频率比值不证明限频或热节流）
       -- 按 CPU 分组比较同一 CPU 的 startup max vs global max，取最低比值
       -- 避免跨大小核比较导致假阳性
       UNION ALL
-      SELECT 'SR16', 'CPU 热节流（CPU' || throttled_cpu || ' 启动期间频率仅达峰值 ' || min_pct || '%）',
+      SELECT 'SR16', 'CPU 频率未达本 trace 峰值（CPU' || throttled_cpu || ' 启动期间最高频率为全 trace 峰值的 ' || min_pct || '%）',
         CASE WHEN min_pct < 70 THEN 'critical'
              WHEN min_pct < 90 THEN 'warning' ELSE 'info' END,
         'CPU' || throttled_cpu || ': 启动期间最高 ' || startup_freq || ' KHz, 全局峰值 ' || global_freq || ' KHz (' || min_pct || '%)',
-        '设备可能过热; 冷却后重测对比; 检查 thermal governor 参数'
+        '仅为频率观测：可能来自负载、调速器升频或频率上限；是否限频以启动窗口的 CPU 限频证据（cpu_throttling_in_range）为准，本项未采集该证据'
       FROM (
         SELECT
           per_cpu.cpu as throttled_cpu,
@@ -689,7 +707,7 @@ steps:
         WHERE p2.start_ts IS NOT NULL
           AND p2.start_ts >= si.ts - 5000000000
           AND p2.start_ts <= si.ts + si.dur + 5000000000
-          AND p2.name NOT GLOB (si.package || '*')
+          AND NOT (p2.name = si.package OR p2.name GLOB si.package || ':*')
           AND p2.name != 'system_server'
           AND p2.name != 'Zygote'
           AND p2.name NOT GLOB 'zygote*'

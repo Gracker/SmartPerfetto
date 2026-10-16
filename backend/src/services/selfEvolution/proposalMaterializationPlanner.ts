@@ -15,7 +15,10 @@ import {
   createProposalMaterializationPlanV1,
   proposalDraftContentHash,
 } from './proposalGateContract';
-import {parseM6DraftProposal} from './proposalContract';
+import {
+  assertProposalTargetIsLive,
+  parseM6DraftProposal,
+} from './proposalContract';
 
 export type ProposalMaterializationRootId =
   | 'evolution_overlays'
@@ -36,6 +39,9 @@ interface RegisteredRoot {
   absolutePath: string;
 }
 
+// The registry's content hash covers every row and is bound into each plan,
+// candidate and gate proof, so removing the inert `phase_hint` row would make
+// every proposal gated before it unappliable. `plan()` refuses that kind first.
 const POLICIES: readonly ProposalMaterializationPolicy[] = [
   policy('phase_hint', 'evolution_overlays', 'runtime_overlay',
     'injections/phase-hints', '.json'),
@@ -158,6 +164,7 @@ export class ProposalMaterializationPlanner {
 
   plan(value: unknown): ProposalMaterializationPlanV1 {
     const proposal = parseM6DraftProposal(value);
+    assertProposalTargetIsLive(proposal);
     const mapping = this.registry.policyFor(proposal.kind);
     const rootPath = this.registry.resolveRoot(mapping.rootId);
     const target = proposal.deltas[0];

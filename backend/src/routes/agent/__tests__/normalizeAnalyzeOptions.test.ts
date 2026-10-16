@@ -287,7 +287,9 @@ describe('normalizeAnalyzeOptions', () => {
       );
     } catch (error: any) {
       expect(error.code).toBe('SMART_COMPARISON_UNSUPPORTED');
-      expect(error.httpStatus).toBe(400);
+      expect(error.status).toBe(400);
+      // (message, code) maps onto PublicRequestError's (code, message).
+      expect(error.message).not.toBe(error.code);
     }
   });
 
@@ -337,10 +339,24 @@ describe('normalizeAnalyzeOptions', () => {
       {endpoint: '/analyze', hasReferenceTraceId: false},
     )).toThrow('knowledgeSourceIds exceeds the maximum of 32');
 
+    // Ids are validated as sent even when an explicit off will drop them.
     expect(() => normalizeAnalyzeOptions(
-      {codeAwareMode: 'off', codebaseIds: ['app-source']},
+      {codeAwareMode: 'off', codebaseIds: [42]},
       {endpoint: '/analyze', hasReferenceTraceId: false},
-    )).toThrow('codebaseIds require codeAwareMode');
+    )).toThrow('codebaseIds must be an array of non-empty strings');
+  });
+
+  it('reads an explicit off as no codebases and keeps knowledge independent of the mode', () => {
+    const endpoint = {endpoint: '/analyze' as const, hasReferenceTraceId: false};
+    expect(normalizeAnalyzeOptions({codeAwareMode: 'off', codebaseIds: ['app-source']}, endpoint))
+      .toEqual({analysisMode: 'auto', codeAwareMode: 'off'});
+    expect(normalizeAnalyzeOptions(
+      {codeAwareMode: 'off', codebaseIds: ['app-source'], knowledgeSourceIds: ['wiki']}, endpoint,
+    )).toEqual({analysisMode: 'auto', codeAwareMode: 'off', knowledgeSourceIds: ['wiki']});
+    // A mode with no codebase means nothing.
+    expect(normalizeAnalyzeOptions({codeAwareMode: 'provider_send', codebaseIds: []}, endpoint))
+      .toEqual({analysisMode: 'auto', codeAwareMode: 'off'});
+    expect(normalizeAnalyzeOptions({}, endpoint)).toEqual({analysisMode: 'auto'});
   });
 
   it('preserves auto mode with source context and comparison', () => {
@@ -633,5 +649,15 @@ describe('normalizeAnalyzeOptions', () => {
       { preset: 'smart', smartAction: 'analyze', smartSelection: { scope: 'scene_types' } },
       { endpoint: '/analyze', hasReferenceTraceId: false },
     )).toThrow(/sceneTypes is required/);
+  });
+
+  it.each(['auto', 'locate', 'mechanism'] as const)('keeps the requested source depth %s', sourceDepth => {
+    expect(normalizeAnalyzeOptions({codeAwareMode: 'provider_send', codebaseIds: ['app'], sourceDepth},
+      {endpoint: '/analyze', hasReferenceTraceId: false}).sourceDepth).toBe(sourceDepth);
+  });
+
+  it.each(['deep', '', 3])('rejects source depth %j', sourceDepth => {
+    expect(() => normalizeAnalyzeOptions({sourceDepth}, {endpoint: '/analyze', hasReferenceTraceId: false}))
+      .toThrow(expect.objectContaining({code: 'SOURCE_DEPTH_INVALID'}));
   });
 });

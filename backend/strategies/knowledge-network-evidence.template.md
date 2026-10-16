@@ -47,6 +47,16 @@ metrics.
   ECH on Android 17 requires target SDK, network library integration, and remote
   endpoint support.
 
+## Chained Requests
+
+A user-visible wait can be a chain of requests rather than one slow request:
+each request starts only after the previous one completes, or several requests
+queue on a client dispatcher or connection pool. Every request can look fast
+while the total wait is long. Establishing this needs each request's start/end
+timestamps and request identity from request telemetry; gaps between packets
+prove neither dependency nor queueing. When a chain is established, attribute
+the wait to client request orchestration, not to one request or the server.
+
 ## Report Pattern
 
 1. Name the network stack and evidence class.

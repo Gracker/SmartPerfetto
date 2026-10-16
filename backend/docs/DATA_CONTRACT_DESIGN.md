@@ -47,8 +47,10 @@ interface DataEnvelope<T = DataPayload> {
 - `empty`：查询成功但没有匹配行；
 - `optional_error`：可选查询不可用或执行失败。
 - `unavailable`：当前数据不可取得，不能作为成功观测。
+- `skipped`：步骤的 `condition` 不满足，查询没有运行；`executionMessage` 带条件原文，
+  不携带 `sql`，不能读成空结果。
 
-不要把 `empty` 和 `optional_error` 合并成“没有问题”。对比模式还会在 `meta` 中保留
+不要把 `empty`、`skipped` 和 `optional_error` 合并成“没有问题”。对比模式还会在 `meta` 中保留
 `traceSide`、pane、trace id、query hash 和 evidence ref。进程/线程相关数据可以携带
 identity sidecar；计划执行可以携带 phase attribution；这些字段必须跨报告、
 snapshot 和 verifier 保持一致。

@@ -10,7 +10,6 @@ import {DEFAULT_SCENE_RUN_LIMITS, type SceneScope, type SceneRunLimits, type Sce
 import {createScenePacingState, DEFAULT_SCENE_PACING_PER_TURN_MS, type ScenePacingInputs,
   type ScenePacingState} from './sceneProposalPacing';
 
-const optionKey = Symbol('active scene run');
 const contexts = new WeakMap<object, SceneRunState>();
 const snapshots = new WeakMap<object, SceneRunState>();
 export interface SceneRunContextOptions extends SceneScope {
@@ -21,8 +20,10 @@ export interface SceneRunContextOptions extends SceneScope {
   /** Budget of a runtime whose deadline moves; a fixed-budget runtime omits it. */
   pacing?: ScenePacingInputs;
 }
+declare const sceneRunContextBrand: unique symbol;
+/** Opaque issued capability: only createSceneRunContext mints one, and it confers nothing once revoked. */
 export interface SceneRunContext {
-  bindOptions<T extends object>(options: T): T;
+  readonly [sceneRunContextBrand]: true;
 }
 /** Internal mutable state; possession of a JSON copy confers no capability. */
 export interface SceneRunState {
@@ -61,10 +62,7 @@ export function createSceneRunContext(options: SceneRunContextOptions): SceneRun
     pacing: createScenePacingState(resolvePacingInputs(options)),
     consumed: {scanBytes: 0, scanReceipts: 0, candidates: 0, bytes: 0, references: 0, receipts: 0, dependencyEdges: 0}};
   assertSceneRunActive(state);
-  const handle: SceneRunContext = Object.freeze({bindOptions<T extends object>(target: T): T {
-    assertSceneRunActive(state);
-    return Object.assign({}, target, {[optionKey]: handle});
-  }});
+  const handle = Object.freeze({}) as SceneRunContext;
   contexts.set(handle, state);
   return handle;
 }
@@ -75,14 +73,6 @@ function resolvePacingInputs(options: SceneRunContextOptions): ScenePacingInputs
   const deadline = options.deadlineMs;
   return {startedAt, baseBudgetMs: Math.max(1, deadline - startedAt), investigationLimitAt: deadline,
     current: () => deadline, perTurnMs: DEFAULT_SCENE_PACING_PER_TURN_MS};
-}
-export function resolveSceneRunContext(options: object, expected: SceneScope): SceneRunContext | undefined {
-  const handle = (options as Record<symbol, unknown>)[optionKey];
-  if (!handle || typeof handle !== 'object') return undefined;
-  const state = contexts.get(handle);
-  if (!state || !scopeMatches(state.options, expected)) throw new Error('scene_run_scope_mismatch');
-  assertSceneRunActive(state);
-  return handle as SceneRunContext;
 }
 function scopeMatches(actual: SceneScope, expected: SceneScope): boolean {
   return (['runId', 'sessionId', 'traceId', 'ownerKey'] as const).every(key => actual[key] === expected[key]);
@@ -98,12 +88,6 @@ export async function mutateSceneRun<T>(handle: SceneRunContext, operation: (sta
   if (state.busy) throw new Error('scene_mutation_in_progress');
   state.busy = true;
   try {return await operation(state);} finally {state.busy = false;}
-}
-export function freezeSceneTimeline(handle: SceneRunContext): SceneTimelineSnapshot {
-  const state = sceneRunState(handle);
-  assertSceneRunActive(state, true);
-  if (state.busy) throw new Error('scene_mutation_in_progress');
-  return sealSceneTimeline(handle);
 }
 /** Product closeout only: preserve committed work after expiry, without acquiring evidence.
  * An in-flight proposal must pass assertSceneRunActive before committing, so sealing

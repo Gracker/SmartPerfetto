@@ -11,6 +11,8 @@ import type {
   BatchTraceRunStatus,
   BatchTraceRunV1,
 } from './batchTraceTypes';
+import { parseStoredJson } from '../../utils/storedData';
+import { invalidBatchTraceRequest } from './batchTraceRequestError';
 
 interface BatchTraceRunRow {
   run_json: string;
@@ -27,13 +29,13 @@ function stringifyJson(value: unknown): string {
 
 function parseRun(row: BatchTraceRunRow | undefined): BatchTraceRunV1 | null {
   if (!row) return null;
-  return JSON.parse(row.run_json) as BatchTraceRunV1;
+  return parseStoredJson<BatchTraceRunV1>(row.run_json, 'batch trace run');
 }
 
 function boundedLimit(limit: number | undefined): number {
   if (limit === undefined) return 50;
   if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-    throw new Error('limit must be an integer between 1 and 200');
+    throw invalidBatchTraceRequest('limit must be an integer between 1 and 200');
   }
   return limit;
 }

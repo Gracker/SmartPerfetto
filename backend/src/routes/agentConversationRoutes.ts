@@ -9,6 +9,7 @@ import {createAgentOrchestrator} from '../agentRuntime';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {getConversationSessionStore, type ConversationSessionDescriptor} from '../services/conversationSessionStore';
 import {
+  ConversationRequestError,
   ConversationSessionService,
   type ConversationRun,
   type ConversationSession,
@@ -17,11 +18,9 @@ import {
 import {OrchestratorConversationRuntimeAdapter} from '../assistant/runtime/orchestratorConversationRuntimeAdapter';
 import {agentSessionConfig} from '../config';
 import {
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
 } from '../middleware/auth';
-import {getDefaultAndroidInternalsPackResolver} from '../services/androidInternalsPack/androidInternalsPackResolver';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import {authorizeAnalysisContext} from '../services/analysisContextAuthorization';
 import {
   heartbeatAnalysisRun,
@@ -40,55 +39,52 @@ import {
   ownerFieldsFromContext,
   sendResourceNotFound,
 } from '../services/resourceOwnership';
-import {assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../services/resolvedAnalysisContext';
-import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import {
-  projectOwnerAnalysisError,
-  privateAnalysisQueryMessage,
-} from '../services/security/privateAnalysisProjection';
+  AnalysisContextAuthorizationChangedError,
+  assertCurrentAnalysisContextAuthorization,
+  buildAnalysisContextAuthorizationFingerprint,
+} from '../services/resolvedAnalysisContext';
+import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import {readTraceMetadataForContext} from '../services/traceMetadataStore';
 import {getTraceProcessorService} from '../services/traceProcessorService';
-import {getProviderService, type ProviderScope} from '../services/providerManager';
+import {
+  getProviderService,
+  ProviderStoreUnreadableError,
+  type ProviderScope,
+  type ProviderService,
+} from '../services/providerManager';
+import {sendProviderStoreUnreadableIfPresent} from './providerStoreHttp';
+import {sendPublicRequestError, sendRouteError, type PublicErrorClass} from '../middleware/routeFailure';
+import {ProviderRequestError} from '../services/providerManager/providerRequestError';
 import {resolveProviderRuntimeSnapshot} from '../services/providerManager/providerSnapshot';
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions} from './agent/normalizeAnalyzeOptions';
-import {resolvePrimaryConversationSourceUse} from '../assistant/runtime/conversationSourcePolicy';
+import {privateContextRestrictsAudience} from '../services/security/analysisPrivateContext';
+import {sanitizeOwnerCodeAwareText} from '../services/security/codeAwareOutputRegistry';
 
 const CONVERSATION_RUN_HEARTBEAT_MS = 30_000;
 const heartbeatTimers = new Map<string, NodeJS.Timeout>();
+/** Errors whose text a conversation route returns: written by the conversation and authorization layers. */
+const CONVERSATION_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
+  ConversationRequestError,
+  AnalysisContextAuthorizationChangedError,
+  ProviderRequestError,
+];
+/** Starting also validates the analyze options. */
+const CONVERSATION_START_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
+  ...CONVERSATION_PUBLIC_ERRORS,
+  AnalyzeOptionsError,
+];
 
+/** A run's stream ends at its terminal event, or after replaying a run that already settled. */
 export function shouldCloseConversationStream(input: {
   eventType?: string;
-  enrichmentPending?: boolean;
   replay?: boolean;
-  primarySettled?: boolean;
-  enrichmentStatus?: 'running' | 'completed' | 'failed' | 'cancelled';
+  runSettled?: boolean;
 }): boolean {
-  if (input.replay) {
-    if (!input.primarySettled) return false;
-    return input.enrichmentStatus !== 'running';
-  }
-  if (input.eventType === 'run_completed') return input.enrichmentPending !== true;
-  return input.eventType === 'run_failed' ||
-    input.eventType === 'source_enrichment_completed' ||
-    input.eventType === 'source_enrichment_failed' ||
-    input.eventType === 'source_enrichment_cancelled';
-}
-
-export function conversationRunUsesPrivateKnowledge(
-  session: Pick<ConversationSession, 'codeAwareMode' | 'codebaseIds' | 'knowledgeSourceIds'>,
-  run: Pick<ConversationRun, 'sourceUseMode'>,
-): boolean {
-  return Boolean(
-    session.knowledgeSourceIds?.length ||
-    (
-      run.sourceUseMode === 'explicit' &&
-      session.codeAwareMode &&
-      session.codeAwareMode !== 'off' &&
-      session.codebaseIds?.length
-    ),
-  );
+  if (input.replay) return input.runSettled === true;
+  return input.eventType === 'run_completed' || input.eventType === 'run_failed';
 }
 
 function configuredOutputLanguage(): OutputLanguage {
@@ -121,10 +117,10 @@ function runScope(
     traceId: session.traceContext.kind === 'attached'
       ? session.traceContext.traceId
       : `conversation-no-trace:${session.sessionId}`,
-    query: conversationRunUsesPrivateKnowledge(session, run)
-      ? privateAnalysisQueryMessage(session.outputLanguage ?? configuredOutputLanguage())
-      : run.query,
+    // The run store keeps no question text for a run with private context.
+    query: run.query,
     mode: 'conversation',
+    privateContext: run.privateContext,
   };
 }
 
@@ -140,10 +136,12 @@ function sessionDescriptor(session: ConversationSession, run: ConversationRun): 
     providerSnapshotHash: session.providerSnapshotHash, analysisContextFingerprint: session.analysisContextFingerprint,
     outputLanguage: session.outputLanguage, codeAwareMode: session.codeAwareMode,
     codebaseIds: session.codebaseIds, knowledgeSourceIds: session.knowledgeSourceIds,
+    ...(session.sourceDepth ? {sourceDepth: session.sourceDepth} : {}),
     status: session.status, createdAt: session.createdAt, lastActivityAt: session.lastActivityAt,
-    lastRun: {runId: run.runId, query: runScope(session, run).query ?? '', turnIndex: run.turnIndex,
+    // The creator's conversation record keeps the question; the run store keeps none.
+    lastRun: {runId: run.runId, query: run.query, turnIndex: run.turnIndex,
       status: run.status, startedAt: run.startedAt, completedAt: run.completedAt,
-      ...(run.sourceUseMode === 'explicit' || session.knowledgeSourceIds?.length ? {sourceDerived: true} : {})},
+      ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})},
     ...(run.outcome ? {lastOutcome: outcome} : {}),
   };
 }
@@ -159,15 +157,12 @@ function settleRun(session: ConversationSession, run: ConversationRun): void {
       : run.outcome?.kind === 'needs_user_input'
         ? 'awaiting_user'
         : 'completed';
-  const error = run.error && conversationRunUsesPrivateKnowledge(session, run)
-    ? projectOwnerAnalysisError(undefined, run.error, session.outputLanguage ?? configuredOutputLanguage())
-    : run.error;
-  persistAnalysisRunState(runScope(session, run), status, {error});
+  persistAnalysisRunState(runScope(session, run), status, {error: run.error});
   const descriptor = sessionDescriptor(session, run);
   const turn = session.historyTurns.find(turn => turn.id === run.runId);
   if (!turn) throw new Error('conversation_finalized_history_missing');
   // Descriptor and the exact finalized public turn share one SQLite transaction.
-  getConversationSessionStore().save(descriptor, {...turn, query: descriptor.lastRun.query});
+  getConversationSessionStore().save(descriptor, turn);
 }
 
 const conversationSessionService = new ConversationSessionService({
@@ -186,6 +181,7 @@ const conversationSessionService = new ConversationSessionService({
       providerScope,
     });
     return new OrchestratorConversationRuntimeAdapter(orchestrator, {
+      runtimeKind: input.runtimeKind,
       analysisOptions: {
         ...input.runtimeOptions,
         providerId: input.providerId,
@@ -198,7 +194,7 @@ const conversationSessionService = new ConversationSessionService({
     persistAnalysisRunState(scope, 'running');
     const descriptor = sessionDescriptor(session, run);
     getConversationSessionStore().save(descriptor, toAnalysisHistoryTurn({id: run.runId,
-      turnIndex: run.turnIndex, query: descriptor.lastRun.query, traceId: scope.traceId,
+      turnIndex: run.turnIndex, query: run.query, traceId: scope.traceId,
       timestamp: run.startedAt, sourceDerived: descriptor.lastRun.sourceDerived,
       analysisContextFingerprint: descriptor.analysisContextFingerprint,
       result: {partial: true, completion: {status: 'unknown'}},
@@ -242,8 +238,6 @@ function requireConversationRunPermission(
 }
 
 async function startConversation(req: express.Request, res: express.Response): Promise<void> {
-  let privateKnowledge = false;
-  let failureLanguage = configuredOutputLanguage();
   try {
     const requestContext = requireConversationRunPermission(req, res);
     if (!requestContext) return;
@@ -286,7 +280,7 @@ async function startConversation(req: express.Request, res: express.Response): P
         ...(req.body?.options ?? {}), analysisMode: 'fast'},
       {endpoint: '/analyze', hasReferenceTraceId: false, ...(traceId ? {traceId} : {})},
     );
-    failureLanguage = options.outputLanguage ?? configuredOutputLanguage();
+    const failureLanguage = options.outputLanguage ?? configuredOutputLanguage();
     const analysisContextAuthorization = authorizeAnalysisContext({
       selection: options,
       scope: knowledgeScopeFromRequestContext(requestContext),
@@ -298,17 +292,6 @@ async function startConversation(req: express.Request, res: express.Response): P
         .json(analysisContextAuthorization.payload);
       return;
     }
-    privateKnowledge = Boolean(
-      options.knowledgeSourceIds?.length ||
-      (
-        options.codebaseIds?.length &&
-        resolvePrimaryConversationSourceUse({
-          query,
-          codeAwareMode: options.codeAwareMode,
-          codebaseIds: options.codebaseIds,
-        }) === 'explicit'
-      ),
-    );
     const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
       options,
       knowledgeScopeFromRequestContext(requestContext),
@@ -375,17 +358,10 @@ async function startConversation(req: express.Request, res: express.Response): P
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      sourceDepth: options.sourceDepth,
       selectionContext: options.selectionContext,
       analysisContextFingerprint,
     };
-    const availablePack = getDefaultAndroidInternalsPackResolver().resolve();
-    if (availablePack) {
-      runtimeOptions.androidInternalsPackPin = {
-        contentVersion: availablePack.contentVersion,
-        contentFingerprint: availablePack.contentFingerprint,
-        sourceRevision: availablePack.sourceRevision,
-      };
-    }
     const quotaDecision = evaluateAnalysisRunQuota(requestContext, {
       replacingRunId: existing?.activeRun?.runId,
     });
@@ -394,10 +370,8 @@ async function startConversation(req: express.Request, res: express.Response): P
       return;
     }
     if (existing?.activeRun) {
-      await conversationSessionService.cancelRun(existing.sessionId, existing.activeRun.runId);
-    }
-    if (existing) {
-      await conversationSessionService.cancelSourceEnrichments(existing.sessionId);
+      // At most one watchdog bound: a delivered answer commits its turn first.
+      await conversationSessionService.supersedeRun(existing.sessionId, existing.activeRun.runId);
     }
     // Resolve immediately before the synchronous startTurn boundary. Any
     // awaited Trace load or cancellation above may have allowed a Provider
@@ -408,17 +382,20 @@ async function startConversation(req: express.Request, res: express.Response): P
       userId: requestContext.userId,
     };
     const providerService = getProviderService();
-    const activeProviderId = providerService.getRawEffectiveProvider(providerScope)?.id ?? null;
     const providerFollowsActive = previous
       ? previous.providerFollowsActive ?? true
       : providerId === undefined;
-    const effectiveProviderId = previous
-      ? previous.providerId !== undefined
-        ? previous.providerId
-        : activeProviderId
-      : providerId !== undefined
-        ? providerId
-        : activeProviderId;
+    const pinnedProviderId = previous ? previous.providerId : providerId;
+    // Read the active provider only when it decides the pin or must still match
+    // it, so an explicit pin (including env's null) survives an unreadable
+    // providers.json, which leaves the active provider unknown.
+    let activeProviderId: string | null = null;
+    if (providerFollowsActive || pinnedProviderId === undefined) {
+      const active = readActiveProviderId(res, providerService, providerScope);
+      if (active === undefined) return;
+      activeProviderId = active;
+    }
+    const effectiveProviderId = pinnedProviderId !== undefined ? pinnedProviderId : activeProviderId;
     if (previous && providerFollowsActive && effectiveProviderId !== activeProviderId) {
       res.status(409).json({
         success: false,
@@ -436,11 +413,16 @@ async function startConversation(req: express.Request, res: express.Response): P
         providerScope,
       );
     } catch (error) {
-      res.status(404).json({
-        success: false,
-        code: 'PROVIDER_NOT_FOUND',
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (error instanceof ProviderRequestError && error.code === 'provider_not_found') {
+        sendPublicRequestError(res, new ConversationRequestError('PROVIDER_NOT_FOUND', error.message, 404));
+        return;
+      }
+      sendRouteError(res, error, {
+        code: 'CONVERSATION_PROVIDER_UNAVAILABLE',
+        error: 'The conversation AI provider could not be resolved',
+        logLabel: '[AgentConversation] Provider pin error',
+        // A pin missing from an unreadable providers.json is unknown, not deleted.
+      }, [ProviderRequestError, ProviderStoreUnreadableError]);
       return;
     }
     if (
@@ -465,6 +447,7 @@ async function startConversation(req: express.Request, res: express.Response): P
       providerSnapshotHash: providerPin.snapshotHash,
       runtimeOptions,
       analysisContextFingerprint,
+      requestId: requestContext.requestId,
     };
     assertCurrentAnalysisContextAuthorization(runtimeOptions, knowledgeScopeFromRequestContext(requestContext),
       analysisContextFingerprint);
@@ -483,20 +466,14 @@ async function startConversation(req: express.Request, res: express.Response): P
       status: 'running',
     });
   } catch (error: unknown) {
-    if (error instanceof AnalyzeOptionsError) {
-      res.status(error.httpStatus).json({
-        success: false,
-        code: error.code,
-        error: error.message,
-        ...(error.details ? {details: error.details} : {}),
-      });
-      return;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(/not found/i.test(message) ? 404 : /in progress|cancellation/i.test(message) ? 409 : 500).json({
-      success: false,
-      error: privateKnowledge ? projectOwnerAnalysisError(undefined, message, failureLanguage) : message,
-    });
+    // Typed option, conversation and authorization errors carry text we
+    // wrote; any other failure (stores, Trace loading, runtime setup) gets
+    // fixed text.
+    sendRouteError(res, error, {
+      code: 'CONVERSATION_START_FAILED',
+      error: 'Failed to start the conversation',
+      logLabel: '[AgentConversation] Start error',
+    }, CONVERSATION_START_PUBLIC_ERRORS);
   }
 }
 
@@ -532,9 +509,21 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
     metadata.analysisContextFingerprint!);
   const provider = getProviderService();
   const owner = ownerFieldsFromContext(context);
-  const pin = resolveProviderRuntimeSnapshot(provider, metadata.providerId, metadata.runtimeKind, owner);
+  let pin: ReturnType<typeof resolveProviderRuntimeSnapshot>;
+  let activeProviderId: string | null | undefined;
+  try {
+    pin = resolveProviderRuntimeSnapshot(provider, metadata.providerId, metadata.runtimeKind, owner);
+    if (metadata.providerFollowsActive) activeProviderId = provider.getRawEffectiveProvider(owner)?.id ?? null;
+  } catch (error) {
+    // A pin that depends on an unreadable providers.json cannot be checked. A
+    // live conversation keeps the runtime it has (its next run is checked when
+    // it starts); recovery would build a new one, so it waits for the file.
+    if (live && error instanceof ProviderStoreUnreadableError) return live;
+    if (sendProviderStoreUnreadableIfPresent(res, error)) return undefined;
+    throw error;
+  }
   if (pin.snapshotHash !== metadata.providerSnapshotHash || pin.snapshot.runtimeKind !== metadata.runtimeKind ||
-    (metadata.providerFollowsActive && (provider.getRawEffectiveProvider(owner)?.id ?? null) !== metadata.providerId)) {
+    (metadata.providerFollowsActive && activeProviderId !== metadata.providerId)) {
     res.status(409).json({success: false, code: 'CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
       error: 'Start a new conversation after changing the AI provider configuration'});
     return undefined;
@@ -542,13 +531,31 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
   if (live) return live;
   const runtimeOptions: AnalysisOptions = {outputLanguage: stored!.outputLanguage, codeAwareMode: stored!.codeAwareMode,
     codebaseIds: stored!.codebaseIds, knowledgeSourceIds: stored!.knowledgeSourceIds,
-    analysisContextFingerprint: stored!.analysisContextFingerprint};
+    sourceDepth: stored!.sourceDepth, analysisContextFingerprint: stored!.analysisContextFingerprint};
   return conversationSessionService.restoreSession(stored!, getConversationSessionStore().listTurns(stored!), {
     query: '', sessionId, owner, traceContext: stored!.traceContext, providerId: stored!.providerId,
     providerFollowsActive: stored!.providerFollowsActive, runtimeKind: stored!.runtimeKind,
     providerSnapshotHash: stored!.providerSnapshotHash, analysisContextFingerprint: stored!.analysisContextFingerprint,
     runtimeOptions,
   });
+}
+
+/**
+ * The active provider's id (null: none). While providers.json is unreadable
+ * the active provider is unknown: answers 409 `provider_store_unreadable` and
+ * returns undefined rather than letting the run fall back to env.
+ */
+function readActiveProviderId(
+  res: express.Response,
+  providerService: ProviderService,
+  providerScope: ProviderScope,
+): string | null | undefined {
+  try {
+    return providerService.getRawEffectiveProvider(providerScope)?.id ?? null;
+  } catch (error) {
+    if (sendProviderStoreUnreadableIfPresent(res, error)) return undefined;
+    throw error;
+  }
 }
 
 function sourceHistoryTurnAccessible(session: ConversationSession, turnId: string | undefined): boolean {
@@ -559,7 +566,7 @@ function sourceHistoryTurnAccessible(session: ConversationSession, turnId: strin
 
 function settledRunHistoryAccessible(session: ConversationSession, run: ConversationRun): boolean {
   const turn = session.historyTurns.find(candidate => candidate.id === run.runId);
-  return run.status === 'running' || !(turn?.sourceDerived || run.sourceUseMode === 'explicit') ||
+  return run.status === 'running' || !(turn?.sourceDerived || privateContextRestrictsAudience(run.privateContext)) ||
     sourceHistoryTurnAccessible(session, run.runId);
 }
 
@@ -580,8 +587,11 @@ async function getConversation(req: express.Request, res: express.Response): Pro
   const latestRun = session.runs[session.runs.length - 1];
   const controlsAccessible = !latestRun || settledRunHistoryAccessible(session, latestRun);
   res.json({success: true, sessionId: session.sessionId, status: session.status, traceContext: session.traceContext,
+    // A private turn stores its question verbatim for the model, so every
+    // source-derived message is read back under the owner guard. The run's
+    // guards are gone by now, so only the credential patterns apply.
     history: history.slice(-200).map(({role, content, turnId, sourceDerived, turn}) => ({
-      role, content, turnId, sourceDerived,
+      role, content: sourceDerived ? sanitizeOwnerCodeAwareText(undefined, content) : content, turnId, sourceDerived,
       ...(turn ? {turn: {id: turn.id, turnIndex: turn.turnIndex, partial: turn.partial, completionStatus: turn.completionStatus,
         terminationReason: turn.terminationReason, terminationMessage: turn.terminationMessage,
         uncertainties: turn.uncertainties, nextSteps: turn.nextSteps, evidence: turn.evidence}} : {}),
@@ -640,24 +650,25 @@ async function streamConversation(req: express.Request, res: express.Response): 
   };
   const unsubscribe = conversationSessionService.subscribe(session.sessionId, event => {
     if (event.runId !== runId) return;
+    if ('liveOnly' in event) {
+      // No `id:` line: a live-only draft is never a reconnect cursor. One
+      // missed during replay is simply not shown.
+      if (!replaying) send(event.type, event);
+      return;
+    }
     if (replaying) {
       pendingLiveEvents.push(event);
       return;
     }
     sendRunEvent(event);
-    if (shouldCloseConversationStream({
-      eventType: event.type,
-      enrichmentPending: event.type === 'run_completed'
-        ? event.enrichmentPending
-        : undefined,
-    })) close();
+    if (shouldCloseConversationStream({eventType: event.type})) close();
   });
   const heartbeat = setInterval(() => send('heartbeat', {timestamp: Date.now()}), 15_000);
   heartbeat.unref?.();
   req.on('close', close);
   send('connected', {sessionId: session.sessionId, runId, status: run.status});
   if (run.lifecycleSettled && run.events.length === 0 && run.outcome) {
-    send('run_completed', {sessionId: session.sessionId, runId, outcome: run.outcome, enrichmentPending: false});
+    send('run_completed', {sessionId: session.sessionId, runId, outcome: run.outcome});
   }
   for (const event of [...run.events].sort((left, right) => left.seqId - right.seqId)) {
     sendRunEvent(event);
@@ -666,13 +677,7 @@ async function streamConversation(req: express.Request, res: express.Response): 
   for (const event of pendingLiveEvents.sort((left, right) => left.seqId - right.seqId)) {
     sendRunEvent(event);
   }
-  if (shouldCloseConversationStream({
-    replay: true,
-    primarySettled: Boolean(run.outcome || run.error),
-    enrichmentStatus: run.sourceEnrichment?.status ?? (
-      run.sourceEnrichmentPending ? 'running' : undefined
-    ),
-  })) close();
+  if (shouldCloseConversationStream({replay: true, runSettled: Boolean(run.outcome || run.error)})) close();
 }
 
 async function cancelConversation(req: express.Request, res: express.Response): Promise<void> {
@@ -689,11 +694,17 @@ async function cancelConversation(req: express.Request, res: express.Response): 
       res.status(400).json({success: false, code: 'RUN_ID_REQUIRED', error: 'runId is required'});
       return;
     }
-    const outcome = await conversationSessionService.cancelRun(session.sessionId, runId);
-    res.json({success: true, sessionId: session.sessionId, runId, status: outcome.kind});
+    // After a provisional answer the first cancel ends only the review and
+    // answers at once; the stream then carries run_completed with the turn.
+    const result = await conversationSessionService.cancelRun(session.sessionId, runId);
+    res.json({success: true, sessionId: session.sessionId, runId,
+      status: result.status === 'review_stop_requested' ? result.status : result.outcome.kind});
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(/not found/i.test(message) ? 404 : 409).json({success: false, error: message});
+    sendRouteError(res, error, {
+      code: 'CONVERSATION_CANCEL_FAILED',
+      error: 'Failed to stop the conversation run',
+      logLabel: '[AgentConversation] Cancel error',
+    }, CONVERSATION_PUBLIC_ERRORS);
   }
 }
 
@@ -713,9 +724,15 @@ async function getFullHandoff(req: express.Request, res: express.Response): Prom
 function conversationReadRoute(handler: (req: express.Request, res: express.Response) => Promise<void>) {
   return (req: express.Request, res: express.Response): void => {
     void handler(req, res).catch(error => {
-      if (!res.headersSent) res.status(/not found/i.test(String(error)) ? 404 : 409).json({success: false,
-        code: 'CONVERSATION_RECOVERY_UNAVAILABLE', error: error instanceof Error ? error.message : String(error)});
-      else res.end();
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendRouteError(res, error, {
+        code: 'CONVERSATION_READ_FAILED',
+        error: 'Failed to read the conversation',
+        logLabel: '[AgentConversation] Read error',
+      }, CONVERSATION_PUBLIC_ERRORS);
     });
   };
 }

@@ -6,20 +6,26 @@ import type {StreamingUpdate} from '../../agent/types';
 import type {VerificationIssue} from '../../agentv3/types';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {localize} from '../../agentv3/outputLanguage';
-import {sanitizeCodeAwareText, sanitizeCodeAwareStructuredText, withOwnerCodeAwareProjection} from './codeAwareOutputRegistry';
-import {projectPrivateDataEnvelope, projectPrivateStructuredValue} from './privateAnalysisProjection';
+import {
+  sanitizeCodeAwareStructuredText,
+  sanitizeCodeAwareStructuredTextWithReceipt,
+  sanitizeCodeAwareText,
+  withOwnerCodeAwareProjection,
+} from './codeAwareOutputRegistry';
+import {projectPrivateDataEnvelope} from './privateAnalysisProjection';
 import {validateDataEnvelope} from '../../types/dataContract';
+import {isPlainObject} from '../../utils/llmJson';
 import {formatToolCallNarration, formatToolResultNarration, readPrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
 import {sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
 import {projectSceneTimelineForOwner} from '../../agent/scene/sceneTimelineProjection';
 import type {SceneTimelineView} from '../../types/sceneTimeline';
+import {isClosedCode} from '../../utils/closedCode';
 
 type PrivateEventPolicy =
   | 'deterministic'
   | 'suppress'
   | 'answer'
   | 'conclusion'
-  | 'source_supplement'
   | 'error';
 
 const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy> = {
@@ -28,6 +34,8 @@ const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy
   track_data: 'deterministic',
   architecture_detected: 'deterministic',
   answer_token: 'answer',
+  // Carries only the run id and a segment counter.
+  answer_segment_reset: 'deterministic',
   conclusion: 'conclusion',
   error: 'error',
   thought: 'suppress',
@@ -71,10 +79,6 @@ const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy
   scene_story_report_ready: 'suppress',
   scene_story_smart_eta_refined: 'suppress',
   scene_timeline_updated: 'suppress',
-  analysis_source_enrichment_started: 'deterministic',
-  analysis_source_enrichment_completed: 'source_supplement',
-  analysis_source_enrichment_failed: 'deterministic',
-  analysis_source_enrichment_cancelled: 'deterministic',
 };
 
 function privateDegradedFallback(
@@ -85,9 +89,7 @@ function privateDegradedFallback(
     return undefined;
   }
   const fallback = (content as Record<string, unknown>).fallback;
-  return typeof fallback === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(fallback)
-    ? fallback
-    : undefined;
+  return isClosedCode(fallback) ? fallback : undefined;
 }
 
 const PRIVATE_SAFE_VERIFICATION_ISSUE_TYPES = new Set<VerificationIssue['type']>([
@@ -249,41 +251,30 @@ export function projectCodeAwareStreamingUpdate(
       },
     };
   }
-  if (policy === 'source_supplement') {
-    const content = update.content && typeof update.content === 'object'
-      ? update.content as Record<string, unknown>
-      : {};
-    const metrics = content.metrics && typeof content.metrics === 'object'
-      ? content.metrics as Record<string, unknown>
-      : {};
-    const safeMetric = (key: string): number | undefined => {
-      const value = metrics[key];
-      return typeof value === 'number' && Number.isFinite(value) && value >= 0
-        ? value
-        : undefined;
-    };
-    const searchCalls = safeMetric('searchCalls');
-    const readCalls = safeMetric('readCalls');
-    const durationMs = safeMetric('durationMs');
-    return {
-      ...update,
-      content: {
-        ...(typeof content.message === 'string'
-          ? {message: sanitizeCodeAwareText(sessionId, content.message)}
-          : {}),
-        metrics: {
-          ...(searchCalls !== undefined ? {searchCalls} : {}),
-          ...(readCalls !== undefined ? {readCalls} : {}),
-          ...(durationMs !== undefined ? {durationMs} : {}),
-        },
-      },
-    };
-  }
   return null;
 }
 
 
-/** Authenticated owner process view. Raw tool payloads still use deterministic narration. */
+/**
+ * A tool result's transported payload stays out of the process view; the owner
+ * reads its outcome narration. Source and knowledge results are projected to
+ * hashes before the runtime narrates them, so for those only the private
+ * outcome receipt can say what came back.
+ */
+function ownerToolResultContent(content: StreamingUpdate['content'], language: OutputLanguage): StreamingUpdate['content'] {
+  if (!isPlainObject(content)) return content;
+  const {result: _payload, privateToolResultReceipt, ...rest} = content;
+  const toolName = typeof rest.toolName === 'string' ? rest.toolName : '';
+  const resultNarration = typeof rest.resultNarration === 'string' && rest.resultNarration
+    ? rest.resultNarration
+    : readPrivateToolResultNarrationReceipt(privateToolResultReceipt, toolName, language)?.message;
+  return {...rest, ...(resultNarration ? {resultNarration} : {})};
+}
+
+/**
+ * Authenticated owner process view: the updates a run without private context
+ * shows, under the owner guard, with tool results narrated rather than carried.
+ */
 export function projectOwnerCodeAwareStreamingUpdate(
   sessionId: string,
   update: StreamingUpdate,
@@ -291,9 +282,6 @@ export function projectOwnerCodeAwareStreamingUpdate(
   language: OutputLanguage,
 ): StreamingUpdate | null {
   if (!sourceAware) return update;
-  if (update.type === 'tool_call' || update.type === 'agent_task_dispatched' || update.type === 'agent_response') {
-    return privateExecutionUpdate(update, language);
-  }
   return withOwnerCodeAwareProjection(() => {
     if (update.type === 'scene_timeline_updated') {
       // The shared scene tool emits only a committed, bounded display view. Guard
@@ -304,10 +292,15 @@ export function projectOwnerCodeAwareStreamingUpdate(
       return {...update, content: projectSceneTimelineForOwner(value)};
     }
     if (update.type === 'data') return projectCodeAwareStreamingUpdate(sessionId, update, true, language);
-    // Tool acquisition payloads belong to evidence artifacts, not the process timeline.
-    if (update.type === 'skill_data' || update.type === 'skill_layered_result' ||
-        update.type === 'sql_generated') return null;
-    const content = sanitizeCodeAwareStructuredText(sessionId, update.content);
-    return {...update, content: projectPrivateStructuredValue(sessionId, content)};
+    if (update.type === 'answer_token' && isPlainObject(update.content) && typeof update.content.token === 'string') {
+      // A draft token the owner guard had to change is reported structurally
+      // (no update), never as a placeholder string in display text.
+      const receipt = sanitizeCodeAwareStructuredTextWithReceipt(sessionId, update.content.token);
+      if (receipt.disposition !== 'preserved') return null;
+      const {token: _token, ...rest} = update.content;
+      return {...update, content: {...sanitizeCodeAwareStructuredText(sessionId, rest), token: receipt.text}};
+    }
+    return {...update, content: sanitizeCodeAwareStructuredText(sessionId,
+      update.type === 'agent_response' ? ownerToolResultContent(update.content, language) : update.content)};
   });
 }

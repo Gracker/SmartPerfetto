@@ -7,11 +7,11 @@
     "authoredNarrativeRemainsVerbatim": true
   },
   "inventory": {
-    "skillCount": 249,
+    "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1334,
-    "explicitColumnCount": 4772
+    "stepCount": 1370,
+    "explicitColumnCount": 5178
   },
   "skills": {
     "ams_module": {
@@ -88,6 +88,384 @@
         }
       }
     },
+    "android_app_background_power_state": {
+      "displayName": {
+        "zh-CN": "应用后台功耗状态",
+        "en": "Android App Background Power State"
+      },
+      "description": {
+        "zh-CN": "App wakelock（按 uid/tag）、standby bucket 驻留与 freezer 冻结区间三层可选证据；按数据与 trace processor 能力分别启用，旧 runtime 显式降级",
+        "en": "Analyzes Android App Background Power State using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "app_wakelock_summary": {
+          "title": {
+            "zh-CN": "App wakelock（PowerManager 持锁，按 uid + tag，窗口内裁剪）",
+            "en": "App Wakelock Summary"
+          },
+          "columns": {
+            "uid": {
+              "label": {
+                "zh-CN": "Uid",
+                "en": "UID"
+              }
+            },
+            "user_id": {
+              "label": {
+                "zh-CN": "UserId",
+                "en": "User"
+              }
+            },
+            "packages": {
+              "label": {
+                "zh-CN": "包/进程",
+                "en": "Packages"
+              }
+            },
+            "tag": {
+              "label": {
+                "zh-CN": "Tag",
+                "en": "Wakelock tag"
+              }
+            },
+            "wakelock_count": {
+              "label": {
+                "zh-CN": "次数",
+                "en": "Wakelock Count"
+              }
+            },
+            "total_held_ms": {
+              "label": {
+                "zh-CN": "总持有",
+                "en": "Total Held ms"
+              }
+            },
+            "max_held_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Held ms"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "app_wakelock_summary_battery_stats": {
+          "title": {
+            "zh-CN": "App wakelock（BatteryStats longwake 回退，按 uid + tag，窗口内裁剪）",
+            "en": "App Wakelock Summary Battery Stats"
+          },
+          "columns": {
+            "uid": {
+              "label": {
+                "zh-CN": "Uid",
+                "en": "UID"
+              }
+            },
+            "user_id": {
+              "label": {
+                "zh-CN": "UserId",
+                "en": "User"
+              }
+            },
+            "packages": {
+              "label": {
+                "zh-CN": "包/进程",
+                "en": "Packages"
+              }
+            },
+            "tag": {
+              "label": {
+                "zh-CN": "Tag",
+                "en": "Wakelock tag"
+              }
+            },
+            "wakelock_count": {
+              "label": {
+                "zh-CN": "次数",
+                "en": "Wakelock Count"
+              }
+            },
+            "total_held_ms": {
+              "label": {
+                "zh-CN": "总持有",
+                "en": "Total Held ms"
+              }
+            },
+            "max_held_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Held ms"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "freezer_summary": {
+          "title": {
+            "zh-CN": "Freezer 冻结区间（statsd app_freeze_changed，按进程，窗口内裁剪）",
+            "en": "Freezer Summary"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "pid": {
+              "label": {
+                "zh-CN": "PID",
+                "en": "PID"
+              }
+            },
+            "freeze_count": {
+              "label": {
+                "zh-CN": "冻结次数",
+                "en": "Freeze Count"
+              }
+            },
+            "total_frozen_ms": {
+              "label": {
+                "zh-CN": "总冻结时长",
+                "en": "Total Frozen ms"
+              }
+            },
+            "max_frozen_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Frozen ms"
+              }
+            },
+            "top_unfreeze_reason": {
+              "label": {
+                "zh-CN": "主要解冻原因",
+                "en": "Top Unfreeze Reason"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "freezer_summary_slices": {
+          "title": {
+            "zh-CN": "Freezer 冻结区间（Freeze/Unfreeze slice，按进程，窗口内裁剪）",
+            "en": "Freezer Summary Slices"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "pid": {
+              "label": {
+                "zh-CN": "PID",
+                "en": "PID"
+              }
+            },
+            "freeze_count": {
+              "label": {
+                "zh-CN": "冻结次数",
+                "en": "Freeze Count"
+              }
+            },
+            "total_frozen_ms": {
+              "label": {
+                "zh-CN": "总冻结时长",
+                "en": "Total Frozen ms"
+              }
+            },
+            "max_frozen_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Frozen ms"
+              }
+            },
+            "top_unfreeze_reason": {
+              "label": {
+                "zh-CN": "主要解冻原因",
+                "en": "Top Unfreeze Reason"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "power_state_capability": {
+          "title": {
+            "zh-CN": "应用后台功耗证据：数据与 runtime 能力",
+            "en": "Power State Capability"
+          },
+          "columns": {
+            "wakelock_status": {
+              "label": {
+                "zh-CN": "WakelockStatus",
+                "en": "App wakelock"
+              }
+            },
+            "standby_bucket_status": {
+              "label": {
+                "zh-CN": "StandbyBucketStatus",
+                "en": "Standby bucket"
+              }
+            },
+            "standby_atom_count": {
+              "label": {
+                "zh-CN": "Standby atom 数",
+                "en": "Standby Atom Count"
+              }
+            },
+            "freezer_status": {
+              "label": {
+                "zh-CN": "FreezerStatus",
+                "en": "Freezer"
+              }
+            },
+            "freeze_atom_count": {
+              "label": {
+                "zh-CN": "Freeze atom 数",
+                "en": "Freeze Atom Count"
+              }
+            },
+            "freezer_slice_count": {
+              "label": {
+                "zh-CN": "Freeze slice 数",
+                "en": "Freezer Slice Count"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "应用后台功耗状态",
+            "en": "Android App Background Power State"
+          },
+          "columns": {
+            "power_state_capability": {
+              "label": {
+                "zh-CN": "功耗StateCapability",
+                "en": "Power State Capability"
+              }
+            },
+            "app_wakelock_summary": {
+              "label": {
+                "zh-CN": "AppWakelock摘要",
+                "en": "App Wakelock Summary"
+              }
+            },
+            "standby_bucket_residency": {
+              "label": {
+                "zh-CN": "StandbyBucketResidency",
+                "en": "Standby Bucket Residency"
+              }
+            },
+            "app_wakelock_summary_battery_stats": {
+              "label": {
+                "zh-CN": "AppWakelock摘要BatteryStats",
+                "en": "App Wakelock Summary Battery Stats"
+              }
+            },
+            "freezer_summary": {
+              "label": {
+                "zh-CN": "Freezer摘要",
+                "en": "Freezer Summary"
+              }
+            },
+            "freezer_summary_slices": {
+              "label": {
+                "zh-CN": "Freezer摘要Slices",
+                "en": "Freezer Summary Slices"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "standby_bucket_residency": {
+          "title": {
+            "zh-CN": "App standby bucket 驻留（窗口内裁剪）",
+            "en": "Standby Bucket Residency"
+          },
+          "columns": {
+            "package_name": {
+              "label": {
+                "zh-CN": "包名",
+                "en": "Package Name"
+              }
+            },
+            "user_id": {
+              "label": {
+                "zh-CN": "UserId",
+                "en": "User"
+              }
+            },
+            "bucket": {
+              "label": {
+                "zh-CN": "Bucket",
+                "en": "Bucket"
+              }
+            },
+            "residency_ms": {
+              "label": {
+                "zh-CN": "驻留时长",
+                "en": "Residency ms"
+              }
+            },
+            "entry_count": {
+              "label": {
+                "zh-CN": "进入次数",
+                "en": "Entry Count"
+              }
+            },
+            "last_main_reason": {
+              "label": {
+                "zh-CN": "最近原因",
+                "en": "Last Main Reason"
+              }
+            },
+            "first_entered_ts": {
+              "label": {
+                "zh-CN": "首次进入",
+                "en": "First Entered Ts"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
     "android_bitmap_memory_per_process": {
       "displayName": {
         "zh-CN": "Bitmap 内存（按进程）",
@@ -121,14 +499,26 @@
             },
             "bitmap_count": {
               "label": {
-                "zh-CN": "Bitmap 数量",
+                "zh-CN": "峰值时 Bitmap 数量",
                 "en": "Bitmap Count"
               }
             },
             "total_bytes": {
               "label": {
-                "zh-CN": "总字节",
+                "zh-CN": "Bitmap 内存峰值",
                 "en": "Total bytes"
+              }
+            },
+            "peak_ts": {
+              "label": {
+                "zh-CN": "峰值时刻",
+                "en": "Peak Ts"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
               }
             }
           },
@@ -207,6 +597,12 @@
                 "zh-CN": "存储类型",
                 "en": "Storage Types"
               }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -251,6 +647,12 @@
               "label": {
                 "zh-CN": "来源端存储",
                 "en": "Source Storage Types"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "接收进程身份",
+                "en": "Process Identity"
               }
             }
           },
@@ -427,6 +829,24 @@
                 "en": "Heap Objects"
               }
             },
+            "placeholder_object_count": {
+              "label": {
+                "zh-CN": "PlaceholderObjectCount",
+                "en": "Placeholder Objects (self_size=-1)"
+              }
+            },
+            "incomplete_dump_count": {
+              "label": {
+                "zh-CN": "IncompleteDumpCount",
+                "en": "Incomplete Dumps"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程Identity",
+                "en": "Process Identity"
+              }
+            },
             "status": {
               "label": {
                 "zh-CN": "Status",
@@ -501,8 +921,22 @@
                 "zh-CN": "RetainedSizebytes",
                 "en": "Retained Size"
               }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程Identity",
+                "en": "Process Identity"
+              }
             }
           },
+          "synthesizeLabels": {}
+        },
+        "dominator_tree_pass": {
+          "title": {
+            "zh-CN": "DominatorTreePass",
+            "en": "Dominator tree pass"
+          },
+          "columns": {},
           "synthesizeLabels": {}
         },
         "root": {
@@ -521,6 +955,419 @@
               "label": {
                 "zh-CN": "DominatorPaths",
                 "en": "Dominator Paths"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "android_heap_graph_class_growth": {
+      "displayName": {
+        "zh-CN": "Java Heap Class 增长对比",
+        "en": "Android Heap Graph Class Growth"
+      },
+      "description": {
+        "zh-CN": "按 class 对比 Java heap dump 的实例数与 dominated 大小：同 trace 多次 dump 比首尾，前后两份 trace 经 compare_skill 对照；app class 与 libcore/数组分开排名",
+        "en": "Analyzes Android Heap Graph Class Growth using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "class_dump_inventory": {
+          "title": {
+            "zh-CN": "Heap dump 清单（总量平稳不代表没有泄漏）",
+            "en": "Class Dump Inventory"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Dump 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "dump_index": {
+              "label": {
+                "zh-CN": "序号",
+                "en": "Dump Index"
+              }
+            },
+            "selected_for_ranking": {
+              "label": {
+                "zh-CN": "用于排名",
+                "en": "Selected For Ranking"
+              }
+            },
+            "reachable_heap_bytes": {
+              "label": {
+                "zh-CN": "ReachableHeapbytes",
+                "en": "Reachable Heap"
+              }
+            },
+            "reachable_obj_count": {
+              "label": {
+                "zh-CN": "Reachable 对象数",
+                "en": "Reachable Obj Count"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "class_growth_availability": {
+          "title": {
+            "zh-CN": "Heap dump 对比可用性",
+            "en": "Class Growth Availability"
+          },
+          "columns": {
+            "dump_count": {
+              "label": {
+                "zh-CN": "Dump 数",
+                "en": "Dump Count"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "进程数",
+                "en": "Process Count"
+              }
+            },
+            "max_dumps_per_process": {
+              "label": {
+                "zh-CN": "单进程最多 dump 数",
+                "en": "Max Dumps Per Process"
+              }
+            },
+            "incomplete_dump_count": {
+              "label": {
+                "zh-CN": "不完整 dump 数",
+                "en": "Incomplete Dump Count"
+              }
+            },
+            "dump_selector": {
+              "label": {
+                "zh-CN": "排名使用的 dump",
+                "en": "Dump Selector"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "class_growth_within_trace": {
+          "title": {
+            "zh-CN": "首次 → 末次 heap dump 的 class 增长（libcore/数组与其他 class 分开排名）",
+            "en": "Class Growth Within Trace"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "class_category": {
+              "label": {
+                "zh-CN": "类别",
+                "en": "Class Category"
+              }
+            },
+            "class_name": {
+              "label": {
+                "zh-CN": "ClassName",
+                "en": "Class"
+              }
+            },
+            "baseline_reachable_count": {
+              "label": {
+                "zh-CN": "首次 Reachable 实例",
+                "en": "Baseline Reachable Count"
+              }
+            },
+            "target_reachable_count": {
+              "label": {
+                "zh-CN": "末次 Reachable 实例",
+                "en": "Target Reachable Count"
+              }
+            },
+            "reachable_count_delta": {
+              "label": {
+                "zh-CN": "Reachable 实例增量",
+                "en": "Reachable Count Delta"
+              }
+            },
+            "baseline_dominated_bytes": {
+              "label": {
+                "zh-CN": "首次 Dominated",
+                "en": "Baseline Dominated bytes"
+              }
+            },
+            "target_dominated_bytes": {
+              "label": {
+                "zh-CN": "末次 Dominated",
+                "en": "Target Dominated bytes"
+              }
+            },
+            "dominated_delta_bytes": {
+              "label": {
+                "zh-CN": "Dominated 增量",
+                "en": "Dominated Delta bytes"
+              }
+            },
+            "growth_signal": {
+              "label": {
+                "zh-CN": "增长信号",
+                "en": "Growth Signal"
+              }
+            },
+            "monotonic_growth": {
+              "label": {
+                "zh-CN": "逐次不减",
+                "en": "Monotonic Growth"
+              }
+            },
+            "dump_count": {
+              "label": {
+                "zh-CN": "Dump 数",
+                "en": "Dump Count"
+              }
+            },
+            "comparability": {
+              "label": {
+                "zh-CN": "可比性",
+                "en": "Comparability"
+              }
+            },
+            "baseline_ts": {
+              "label": {
+                "zh-CN": "首次 Dump",
+                "en": "Baseline Ts"
+              }
+            },
+            "target_ts": {
+              "label": {
+                "zh-CN": "末次 Dump",
+                "en": "Target Ts"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "class_ranking": {
+          "title": {
+            "zh-CN": "所选 dump 的 class 按 dominated 大小排名（libcore/数组与其他 class 分开）",
+            "en": "Class Ranking"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Dump 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "class_category": {
+              "label": {
+                "zh-CN": "类别",
+                "en": "Class Category"
+              }
+            },
+            "class_name": {
+              "label": {
+                "zh-CN": "ClassName",
+                "en": "Class"
+              }
+            },
+            "reachable_obj_count": {
+              "label": {
+                "zh-CN": "Reachable 实例数",
+                "en": "Reachable Obj Count"
+              }
+            },
+            "obj_count": {
+              "label": {
+                "zh-CN": "实例数（含不可达）",
+                "en": "Obj Count"
+              }
+            },
+            "reachable_size_bytes": {
+              "label": {
+                "zh-CN": "Reachable 浅大小",
+                "en": "Reachable Size bytes"
+              }
+            },
+            "dominated_obj_count": {
+              "label": {
+                "zh-CN": "Dominated 对象数",
+                "en": "Dominated Obj Count"
+              }
+            },
+            "dominated_bytes": {
+              "label": {
+                "zh-CN": "Dominated 大小",
+                "en": "Dominated bytes"
+              }
+            },
+            "type_id_count": {
+              "label": {
+                "zh-CN": "同名 type 数",
+                "en": "Type Id Count"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "heap_class_table": {
+          "title": {
+            "zh-CN": "Heap class 聚合",
+            "en": "Heap Class Table"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "requested_classes": {
+          "title": {
+            "zh-CN": "指定 class 在所选 dump 中的对齐行",
+            "en": "Requested Classes"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Dump 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "class_name": {
+              "label": {
+                "zh-CN": "ClassName",
+                "en": "Class"
+              }
+            },
+            "present_in_dump": {
+              "label": {
+                "zh-CN": "存在",
+                "en": "Present In Dump"
+              }
+            },
+            "reachable_obj_count": {
+              "label": {
+                "zh-CN": "Reachable 实例数",
+                "en": "Reachable Obj Count"
+              }
+            },
+            "obj_count": {
+              "label": {
+                "zh-CN": "实例数（含不可达）",
+                "en": "Obj Count"
+              }
+            },
+            "dominated_bytes": {
+              "label": {
+                "zh-CN": "Dominated 大小",
+                "en": "Dominated bytes"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "Java Heap Class 增长对比",
+            "en": "Android Heap Graph Class Growth"
+          },
+          "columns": {
+            "class_growth_availability": {
+              "label": {
+                "zh-CN": "ClassGrowthAvailability",
+                "en": "Class Growth Availability"
+              }
+            },
+            "class_dump_inventory": {
+              "label": {
+                "zh-CN": "ClassDumpInventory",
+                "en": "Class Dump Inventory"
+              }
+            },
+            "class_ranking": {
+              "label": {
+                "zh-CN": "ClassRanking",
+                "en": "Class Ranking"
+              }
+            },
+            "requested_classes": {
+              "label": {
+                "zh-CN": "RequestedClasses",
+                "en": "Requested Classes"
+              }
+            },
+            "class_growth_within_trace": {
+              "label": {
+                "zh-CN": "ClassGrowthWithinTrace",
+                "en": "Class Growth Within Trace"
               }
             }
           },
@@ -605,6 +1452,18 @@
               "label": {
                 "zh-CN": "Sample 前生命周期",
                 "en": "Lifecycle Phase At Sample"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
               }
             },
             "leak_state": {
@@ -751,6 +1610,24 @@
                 "en": "Total Heap(MB)"
               }
             },
+            "incomplete_dump_count": {
+              "label": {
+                "zh-CN": "不完整 dump 数",
+                "en": "Incomplete Dump Count"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            },
+            "has_truncated_column": {
+              "label": {
+                "zh-CN": "Runtime 有截断标记",
+                "en": "Has Truncated Column"
+              }
+            },
             "status": {
               "label": {
                 "zh-CN": "状态",
@@ -758,6 +1635,14 @@
               }
             }
           },
+          "synthesizeLabels": {}
+        },
+        "heap_graph_dump_sizes": {
+          "title": {
+            "zh-CN": "Heap Graph dump 大小",
+            "en": "Heap Graph Dump Sizes"
+          },
+          "columns": {},
           "synthesizeLabels": {}
         },
         "heap_graph_samples": {
@@ -770,6 +1655,12 @@
               "label": {
                 "zh-CN": "进程",
                 "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
               }
             },
             "graph_sample_ts": {
@@ -819,6 +1710,75 @@
                 "zh-CN": "UnreachableHeapMB",
                 "en": "Unreachable Heap(MB)"
               }
+            },
+            "placeholder_object_count": {
+              "label": {
+                "zh-CN": "占位对象(self_size=-1)",
+                "en": "Placeholder Object Count"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            },
+            "dump_issues": {
+              "label": {
+                "zh-CN": "Dump 错误/丢包统计",
+                "en": "Dump Issues"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "heap_graph_truncation": {
+          "title": {
+            "zh-CN": "Heap Dump 截断标记（trace processor 导入时记录）",
+            "en": "Heap Graph Truncation"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Sample 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "dump_reason": {
+              "label": {
+                "zh-CN": "Dump 原因",
+                "en": "Dump Reason"
+              }
+            },
+            "truncated": {
+              "label": {
+                "zh-CN": "截断",
+                "en": "Truncated"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -839,6 +1799,12 @@
               "label": {
                 "zh-CN": "HeapGraphSamples",
                 "en": "Heap Graph Samples"
+              }
+            },
+            "heap_graph_truncation": {
+              "label": {
+                "zh-CN": "HeapGraphTruncation",
+                "en": "Heap Graph Truncation"
               }
             },
             "top_retained_classes": {
@@ -1213,64 +2179,9 @@
         "heap_profile_hotspots": {
           "title": {
             "zh-CN": "HeapProfileHotspots",
-            "en": "Heap Profile Allocation Hotspots"
+            "en": "Heap Profile Allocation Hotspots (per process × heap)"
           },
-          "columns": {
-            "scope": {
-              "label": {
-                "zh-CN": "Scope",
-                "en": "Scope"
-              }
-            },
-            "name": {
-              "label": {
-                "zh-CN": "Name",
-                "en": "Frame"
-              }
-            },
-            "mapping_name": {
-              "label": {
-                "zh-CN": "MappingName",
-                "en": "Mapping"
-              }
-            },
-            "self_size_mb": {
-              "label": {
-                "zh-CN": "SelfSizeMB",
-                "en": "Self Retained(MB)"
-              }
-            },
-            "cumulative_size_mb": {
-              "label": {
-                "zh-CN": "CumulativeSizeMB",
-                "en": "Cumulative Retained(MB)"
-              }
-            },
-            "self_alloc_mb": {
-              "label": {
-                "zh-CN": "SelfAllocMB",
-                "en": "Self Alloc(MB)"
-              }
-            },
-            "cumulative_alloc_mb": {
-              "label": {
-                "zh-CN": "CumulativeAllocMB",
-                "en": "Cumulative Alloc(MB)"
-              }
-            },
-            "allocation_signal": {
-              "label": {
-                "zh-CN": "AllocationSignal",
-                "en": "Signal"
-              }
-            },
-            "source_file": {
-              "label": {
-                "zh-CN": "SourceFile",
-                "en": "Source"
-              }
-            }
-          },
+          "columns": {},
           "synthesizeLabels": {}
         },
         "no_data_contract": {
@@ -1322,6 +2233,279 @@
               "label": {
                 "zh-CN": "HeapProfileHotspots",
                 "en": "Heap Profile Hotspots"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "android_process_state_residency": {
+      "displayName": {
+        "zh-CN": "进程状态驻留与切换",
+        "en": "Android Process State Residency"
+      },
+      "description": {
+        "zh-CN": "Framework 进程状态（TOP/前台服务/CACHED 等）的驻留时长、切换序列与最后观测状态；用于 LMK、后台与内存压力分析，旧 trace processor 显式降级",
+        "en": "Analyzes Android Process State Residency using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "process_state_capability": {
+          "title": {
+            "zh-CN": "进程状态（android.process_state）能力",
+            "en": "Process State Capability"
+          },
+          "columns": {
+            "runtime_has_process_state_table": {
+              "label": {
+                "zh-CN": "Runtime 有解析表",
+                "en": "Runtime Has Process State Table"
+              }
+            },
+            "runtime_has_process_state_module": {
+              "label": {
+                "zh-CN": "Runtime 有 stdlib 模块",
+                "en": "Runtime Has Process State Module"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_data": {
+          "title": {
+            "zh-CN": "进程状态数据",
+            "en": "Process State Data"
+          },
+          "columns": {
+            "state_event_count": {
+              "label": {
+                "zh-CN": "状态事件数",
+                "en": "State Event Count"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "进程数",
+                "en": "Process Count"
+              }
+            },
+            "matched_process_count": {
+              "label": {
+                "zh-CN": "匹配目标的进程数",
+                "en": "Matched Process Count"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_last_observed": {
+          "title": {
+            "zh-CN": "每个进程最后一次观测到的状态",
+            "en": "Process State Last Observed"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "last_state": {
+              "label": {
+                "zh-CN": "最后状态",
+                "en": "Last State"
+              }
+            },
+            "entered_ts": {
+              "label": {
+                "zh-CN": "进入时间",
+                "en": "Entered Ts"
+              }
+            },
+            "process_end_ts": {
+              "label": {
+                "zh-CN": "进程结束时间",
+                "en": "Process End Ts"
+              }
+            },
+            "lifecycle": {
+              "label": {
+                "zh-CN": "生命周期",
+                "en": "Lifecycle"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_residency": {
+          "title": {
+            "zh-CN": "进程状态驻留（存活时间内，按窗口裁剪）",
+            "en": "Process State Residency"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "state": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "State"
+              }
+            },
+            "state_rank": {
+              "label": {
+                "zh-CN": "重要性序",
+                "en": "State Rank"
+              }
+            },
+            "residency_ms": {
+              "label": {
+                "zh-CN": "驻留时长",
+                "en": "Residency ms"
+              }
+            },
+            "residency_pct": {
+              "label": {
+                "zh-CN": "占存活时间",
+                "en": "Residency Pct"
+              }
+            },
+            "interval_count": {
+              "label": {
+                "zh-CN": "进入次数",
+                "en": "Interval Count"
+              }
+            },
+            "first_entered_ts": {
+              "label": {
+                "zh-CN": "首次进入",
+                "en": "First Entered Ts"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_transitions": {
+          "title": {
+            "zh-CN": "进程状态切换序列",
+            "en": "Process State Transitions"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "ts": {
+              "label": {
+                "zh-CN": "切换时间",
+                "en": "Ts"
+              }
+            },
+            "prev_state": {
+              "label": {
+                "zh-CN": "原状态",
+                "en": "Prev State"
+              }
+            },
+            "state": {
+              "label": {
+                "zh-CN": "新状态",
+                "en": "State"
+              }
+            },
+            "prev_state_ms": {
+              "label": {
+                "zh-CN": "原状态停留",
+                "en": "Prev State ms"
+              }
+            },
+            "reason": {
+              "label": {
+                "zh-CN": "OomAdjuster 原因",
+                "en": "Reason"
+              }
+            },
+            "lifecycle": {
+              "label": {
+                "zh-CN": "生命周期",
+                "en": "Lifecycle"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "进程状态驻留与切换",
+            "en": "Android Process State Residency"
+          },
+          "columns": {
+            "process_state_capability": {
+              "label": {
+                "zh-CN": "进程StateCapability",
+                "en": "Process State Capability"
+              }
+            },
+            "process_state_data": {
+              "label": {
+                "zh-CN": "进程StateData",
+                "en": "Process State Data"
+              }
+            },
+            "process_state_residency": {
+              "label": {
+                "zh-CN": "进程StateResidency",
+                "en": "Process State Residency"
+              }
+            },
+            "process_state_transitions": {
+              "label": {
+                "zh-CN": "进程StateTransitions",
+                "en": "Process State Transitions"
+              }
+            },
+            "process_state_last_observed": {
+              "label": {
+                "zh-CN": "进程StateLastObserved",
+                "en": "Process State Last Observed"
               }
             }
           },
@@ -1539,6 +2723,63 @@
               "en": "Avg ANR Dur ms"
             }
           }
+        },
+        "anr_process_io_wait": {
+          "title": {
+            "zh-CN": "ANR 进程 D 态等待",
+            "en": "ANR Process I/O Wait"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "ANR 进程",
+                "en": "Process Name"
+              }
+            },
+            "main_thread_uninterruptible_ms": {
+              "label": {
+                "zh-CN": "主线程 D 态",
+                "en": "Main Thread Uninterruptible ms"
+              }
+            },
+            "process_uninterruptible_ms": {
+              "label": {
+                "zh-CN": "进程 D 态合计",
+                "en": "Process Uninterruptible ms"
+              }
+            },
+            "top_thread_name": {
+              "label": {
+                "zh-CN": "D 态最长线程",
+                "en": "Top Thread Name"
+              }
+            },
+            "top_thread_ms": {
+              "label": {
+                "zh-CN": "该线程 D 态",
+                "en": "Top Thread ms"
+              }
+            },
+            "main_thread_io_wchan_ms": {
+              "label": {
+                "zh-CN": "主线程 IO 等待点",
+                "en": "Main Thread I/O Wchan ms"
+              }
+            },
+            "frozen_ms": {
+              "label": {
+                "zh-CN": "冻结等待",
+                "en": "Frozen ms"
+              }
+            },
+            "blocked_function_coverage_pct": {
+              "label": {
+                "zh-CN": "等待点覆盖",
+                "en": "Blocked Function Coverage Pct"
+              }
+            }
+          },
+          "synthesizeLabels": {}
         },
         "futex_wait_probe": {
           "title": {
@@ -1833,20 +3074,26 @@
           "columns": {
             "total_apps": {
               "label": {
-                "zh-CN": "检测应用数",
+                "zh-CN": "可评估主线程数",
                 "en": "Total Apps"
               }
             },
-            "frozen_apps": {
+            "demanding_apps": {
               "label": {
-                "zh-CN": "冻结应用数",
-                "en": "Frozen Apps"
+                "zh-CN": "有运行需求的主线程数",
+                "en": "Demanding Apps"
               }
             },
-            "frozen_pct": {
+            "stalled_apps": {
               "label": {
-                "zh-CN": "冻结占比",
-                "en": "Frozen Pct"
+                "zh-CN": "停滞主线程数",
+                "en": "Stalled Apps"
+              }
+            },
+            "stalled_pct": {
+              "label": {
+                "zh-CN": "停滞占比（有需求者中）",
+                "en": "Stalled Pct"
               }
             },
             "freeze_verdict": {
@@ -1855,16 +3102,22 @@
                 "en": "Freeze Verdict"
               }
             },
+            "system_server_evaluated": {
+              "label": {
+                "zh-CN": "system_server 可评估",
+                "en": "System Server Evaluated"
+              }
+            },
+            "system_server_stalled_pct": {
+              "label": {
+                "zh-CN": "system_server 停滞时间占比",
+                "en": "System Server Stalled Pct"
+              }
+            },
             "system_server_running_pct": {
               "label": {
                 "zh-CN": "system_server 运行占比",
                 "en": "System Server Running Pct"
-              }
-            },
-            "system_server_frozen": {
-              "label": {
-                "zh-CN": "system_server 冻结",
-                "en": "System Server Frozen"
               }
             }
           },
@@ -1992,6 +3245,12 @@
               "label": {
                 "zh-CN": "ANR 时间",
                 "en": "ANR Ts"
+              }
+            },
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "窗口起点",
+                "en": "Window Start Ts"
               }
             },
             "timeout_ns": {
@@ -2599,6 +3858,12 @@
               "label": {
                 "zh-CN": "UnknownRunningms",
                 "en": "unknown_running_ms"
+              }
+            },
+            "unknown_running_ns": {
+              "label": {
+                "zh-CN": "UnknownRunningns",
+                "en": "unknown_running_ns"
               }
             },
             "uninterruptible_ms": {
@@ -3577,6 +4842,14 @@
             }
           }
         },
+        "gc_totals": {
+          "title": {
+            "zh-CN": "GC 合计",
+            "en": "GC Totals"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
         "jit_events": {
           "title": {
             "zh-CN": "JIT 编译事件",
@@ -3740,7 +5013,7 @@
         "en": "Battery Drain Attribution"
       },
       "description": {
-        "zh-CN": "组合 battery、Doze、wakelock、job、network、suspend/wakeup 证据，分析掉电和待机耗电原因",
+        "zh-CN": "组合 battery、Doze、kernel/app wakelock、standby bucket、freezer、job、network、suspend/wakeup 证据，分析掉电和待机耗电原因",
         "en": "Analyzes Battery Drain Attribution using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -3749,6 +5022,14 @@
           "title": {
             "zh-CN": "洞见摘要",
             "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "app_background_power": {
+          "title": {
+            "zh-CN": "应用后台功耗状态",
+            "en": "App Background Power"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -4674,7 +5955,7 @@
             },
             "big_core_ms": {
               "label": {
-                "zh-CN": "大核运行",
+                "zh-CN": "大核组运行（超大/大/中核）",
                 "en": "Big Core ms"
               }
             },
@@ -4682,6 +5963,12 @@
               "label": {
                 "zh-CN": "小核运行",
                 "en": "Little Core ms"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Core ms"
               }
             },
             "total_running_ms": {
@@ -4729,6 +6016,12 @@
               "label": {
                 "zh-CN": "Q2 小核 Running",
                 "en": "Q2 Little Running ms"
+              }
+            },
+            "unknown_running_ms": {
+              "label": {
+                "zh-CN": "未知核类型 Running",
+                "en": "Unknown Running ms"
               }
             },
             "q3_runnable_ms": {
@@ -7308,6 +8601,12 @@
                 "en": "Event Count"
               }
             },
+            "app_delivery_events": {
+              "label": {
+                "zh-CN": "应用投递",
+                "en": "App Delivery Events"
+              }
+            },
             "max_total_ms": {
               "label": {
                 "zh-CN": "最大延迟",
@@ -7426,6 +8725,12 @@
               "label": {
                 "zh-CN": "最大 Input→Frame 延迟",
                 "en": "Max E2e ms"
+              }
+            },
+            "speculative_frame_events": {
+              "label": {
+                "zh-CN": "推测帧关联事件",
+                "en": "Speculative Frame Events"
               }
             },
             "rating": {
@@ -7826,6 +9131,12 @@
                 "en": "Frame Id"
               }
             },
+            "frame_association": {
+              "label": {
+                "zh-CN": "帧关联",
+                "en": "Frame Association"
+              }
+            },
             "event_ts": {
               "label": {
                 "zh-CN": "事件时间",
@@ -8112,6 +9423,24 @@
                 "zh-CN": "核判定来源",
                 "en": "Classify Method"
               }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核运行(ns)",
+                "en": "Unknown Core ns"
+              }
+            },
+            "main_thread_count": {
+              "label": {
+                "zh-CN": "主线程数",
+                "en": "Main Thread Count"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核占比口径",
+                "en": "Big Core Pct Definition"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -8205,9 +9534,48 @@
           "columns": {},
           "synthesizeLabels": {}
         },
+        "input_app_receive": {
+          "title": {
+            "zh-CN": "应用端输入接收 (aq:pending:deliver / deliverInputEvent)",
+            "en": "Input App Receive"
+          },
+          "columns": {
+            "stage": {
+              "label": {
+                "zh-CN": "管线阶段",
+                "en": "Stage"
+              }
+            },
+            "start_ts": {
+              "label": {
+                "zh-CN": "开始时间",
+                "en": "Start Ts"
+              }
+            },
+            "dur_ms": {
+              "label": {
+                "zh-CN": "耗时(ms)",
+                "en": "Dur ms"
+              }
+            },
+            "thread_name": {
+              "label": {
+                "zh-CN": "线程",
+                "en": "Thread Name"
+              }
+            },
+            "detail": {
+              "label": {
+                "zh-CN": "详情",
+                "en": "Detail"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "input_dispatch_breakdown": {
           "title": {
-            "zh-CN": "输入分发管线 (kernel→InputDispatcher→App)",
+            "zh-CN": "输入分发 (InputReader→InputDispatcher，system_server)",
             "en": "Input Dispatch Breakdown"
           },
           "columns": {
@@ -9619,6 +10987,24 @@
                 "zh-CN": "核心数",
                 "en": "Core Count"
               }
+            },
+            "tier": {
+              "label": {
+                "zh-CN": "Tier",
+                "en": "tier"
+              }
+            },
+            "big_group_percent": {
+              "label": {
+                "zh-CN": "大核组（超大/大/中核）占比",
+                "en": "Big Group Percent"
+              }
+            },
+            "unknown_time_ns": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Time ns"
+              }
             }
           },
           "synthesizeLabels": {
@@ -10125,8 +11511,14 @@
             },
             "big_core_percent": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Percent"
+              }
+            },
+            "unknown_core_percent": {
+              "label": {
+                "zh-CN": "未知核类型占比",
+                "en": "Unknown Core Percent"
               }
             }
           },
@@ -10433,10 +11825,34 @@
                 "en": "Cluster"
               }
             },
+            "load_status": {
+              "label": {
+                "zh-CN": "负载测量状态",
+                "en": "Load measurement status"
+              }
+            },
+            "clock_basis": {
+              "label": {
+                "zh-CN": "计时口径",
+                "en": "Clock basis"
+              }
+            },
             "core_count": {
               "label": {
                 "zh-CN": "核心数",
                 "en": "Core Count"
+              }
+            },
+            "active_core_count": {
+              "label": {
+                "zh-CN": "活跃核心数",
+                "en": "Active Core Count"
+              }
+            },
+            "awake_ms": {
+              "label": {
+                "zh-CN": "非挂起时长",
+                "en": "Awake ms"
               }
             },
             "running_ms": {
@@ -10579,6 +11995,12 @@
                 "en": "Episode Id"
               }
             },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "全 trace 区段",
+                "en": "Trace Episode Id"
+              }
+            },
             "policy_cpu": {
               "label": {
                 "zh-CN": "policy 首核",
@@ -10615,6 +12037,18 @@
                 "en": "Episode Dur ns"
               }
             },
+            "onset_ts": {
+              "label": {
+                "zh-CN": "限频起点",
+                "en": "Onset Ts"
+              }
+            },
+            "onset_observed": {
+              "label": {
+                "zh-CN": "起点可观测",
+                "en": "Onset Observed"
+              }
+            },
             "min_limit_khz": {
               "label": {
                 "zh-CN": "最低上限",
@@ -10641,7 +12075,7 @@
             },
             "starts_at_data_start": {
               "label": {
-                "zh-CN": "起点未知",
+                "zh-CN": "区段含轨道首样本",
                 "en": "Starts At Data Start"
               }
             },
@@ -10730,6 +12164,30 @@
               "label": {
                 "zh-CN": "方向",
                 "en": "Direction"
+              }
+            },
+            "direction_basis": {
+              "label": {
+                "zh-CN": "方向依据",
+                "en": "Direction Basis"
+              }
+            },
+            "limit_value_valid": {
+              "label": {
+                "zh-CN": "有效样本",
+                "en": "Limit Value Valid"
+              }
+            },
+            "event_role": {
+              "label": {
+                "zh-CN": "事件角色",
+                "en": "Event Role"
+              }
+            },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "所属全 trace 区段",
+                "en": "Trace Episode Id"
               }
             },
             "dur_ns": {
@@ -10897,6 +12355,24 @@
                 "en": "Limit Evidence"
               }
             },
+            "invalid_sample_count": {
+              "label": {
+                "zh-CN": "无效样本数",
+                "en": "Invalid Sample Count"
+              }
+            },
+            "invalid_limit_ns": {
+              "label": {
+                "zh-CN": "无效样本时长",
+                "en": "Invalid Limit ns"
+              }
+            },
+            "data_quality_note": {
+              "label": {
+                "zh-CN": "数据质量",
+                "en": "Data Quality Note"
+              }
+            },
             "limit_source": {
               "label": {
                 "zh-CN": "数据来源",
@@ -10922,6 +12398,18 @@
               "label": {
                 "zh-CN": "限频证据",
                 "en": "Limit Evidence"
+              }
+            },
+            "limit_classification": {
+              "label": {
+                "zh-CN": "分类",
+                "en": "Limit Classification"
+              }
+            },
+            "limit_evidence_missing_reason": {
+              "label": {
+                "zh-CN": "缺失原因",
+                "en": "Limit Evidence Missing Reason"
               }
             },
             "required_ftrace_event": {
@@ -11130,7 +12618,7 @@
             },
             "downclocks": {
               "label": {
-                "zh-CN": "降频次数",
+                "zh-CN": "频率下调次数",
                 "en": "Downclocks"
               }
             }
@@ -11237,10 +12725,40 @@
                 "en": "Classification"
               }
             },
+            "classification_scope": {
+              "label": {
+                "zh-CN": "分类范围",
+                "en": "Classification Scope"
+              }
+            },
             "episode_count": {
               "label": {
                 "zh-CN": "区段数",
                 "en": "Episode Count"
+              }
+            },
+            "onset_count": {
+              "label": {
+                "zh-CN": "限频写入次数",
+                "en": "Onset Count"
+              }
+            },
+            "confirmed_onset_count": {
+              "label": {
+                "zh-CN": "由关联散热设备施加的写入",
+                "en": "Confirmed Onset Count"
+              }
+            },
+            "causal_onset_count": {
+              "label": {
+                "zh-CN": "收紧或起点未知的写入",
+                "en": "Causal Onset Count"
+              }
+            },
+            "onset_trigger_mix": {
+              "label": {
+                "zh-CN": "逐次写入分类",
+                "en": "Onset Trigger Mix"
               }
             },
             "deepest_depth_pct": {
@@ -11261,28 +12779,40 @@
                 "en": "Cooling Confirmed Episodes"
               }
             },
-            "coincident_transition_episodes": {
-              "label": {
-                "zh-CN": "档位变更与限频重合的区段",
-                "en": "Coincident Transition Episodes"
-              }
-            },
-            "cooling_active_episodes": {
-              "label": {
-                "zh-CN": "区段内散热设备生效的区段",
-                "en": "Cooling Active Episodes"
-              }
-            },
             "daemon_suspected_episodes": {
               "label": {
-                "zh-CN": "守护进程先于限频活动的区段",
+                "zh-CN": "以守护进程为最强证据的区段",
                 "en": "Daemon Suspected Episodes"
+              }
+            },
+            "cooling_background_episodes": {
+              "label": {
+                "zh-CN": "仅有关联散热设备背景活动的区段",
+                "en": "Cooling Background Episodes"
+              }
+            },
+            "cooling_unassociated_episodes": {
+              "label": {
+                "zh-CN": "仅有未关联散热设备活动的区段",
+                "en": "Cooling Unassociated Episodes"
               }
             },
             "onset_unknown_episodes": {
               "label": {
                 "zh-CN": "起点不可观测的区段",
                 "en": "Onset Unknown Episodes"
+              }
+            },
+            "tied_cooling_devices": {
+              "label": {
+                "zh-CN": "与 policy 时序关联的散热设备数",
+                "en": "Tied Cooling Devices"
+              }
+            },
+            "cooling_transition_coverage": {
+              "label": {
+                "zh-CN": "采集到散热设备档位变化",
+                "en": "Cooling Transition Coverage"
               }
             },
             "top_episode_id": {
@@ -11392,6 +12922,12 @@
                 "en": "Episode Id"
               }
             },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "全 trace 区段",
+                "en": "Trace Episode Id"
+              }
+            },
             "policy_cpu": {
               "label": {
                 "zh-CN": "policy 首核",
@@ -11428,6 +12964,18 @@
                 "en": "Episode Dur ns"
               }
             },
+            "onset_ts": {
+              "label": {
+                "zh-CN": "限频起点",
+                "en": "Onset Ts"
+              }
+            },
+            "onset_observed": {
+              "label": {
+                "zh-CN": "起点可观测",
+                "en": "Onset Observed"
+              }
+            },
             "min_limit_khz": {
               "label": {
                 "zh-CN": "最低上限",
@@ -11460,7 +13008,7 @@
             },
             "starts_at_data_start": {
               "label": {
-                "zh-CN": "起点未知",
+                "zh-CN": "区段含轨道首样本",
                 "en": "Starts At Data Start"
               }
             },
@@ -11510,6 +13058,18 @@
               "label": {
                 "zh-CN": "归因窗口结束",
                 "en": "Who End Ts"
+              }
+            },
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "分析窗口开始",
+                "en": "Window Start Ts"
+              }
+            },
+            "window_end_ts": {
+              "label": {
+                "zh-CN": "分析窗口结束",
+                "en": "Window End Ts"
               }
             },
             "package": {
@@ -11578,6 +13138,36 @@
                 "en": "kernel_daemon_share_pct"
               }
             },
+            "cdev_policy_pair_ms": {
+              "label": {
+                "zh-CN": "CdevPolicyPairms",
+                "en": "cdev_policy_pair_ms"
+              }
+            },
+            "cdev_policy_min_transitions": {
+              "label": {
+                "zh-CN": "CdevPolicyMinTransitions",
+                "en": "cdev_policy_min_transitions"
+              }
+            },
+            "cdev_policy_min_pair_pct": {
+              "label": {
+                "zh-CN": "CdevPolicyMinPairPct",
+                "en": "cdev_policy_min_pair_pct"
+              }
+            },
+            "episode_drop_pct": {
+              "label": {
+                "zh-CN": "EpisodeDropPct",
+                "en": "episode_drop_pct"
+              }
+            },
+            "merge_gap_ms": {
+              "label": {
+                "zh-CN": "MergeGapms",
+                "en": "merge_gap_ms"
+              }
+            },
             "thresholds": {
               "label": {
                 "zh-CN": "阈值",
@@ -11613,6 +13203,18 @@
                 "en": "Limit Evidence"
               }
             },
+            "classification": {
+              "label": {
+                "zh-CN": "分类",
+                "en": "Classification"
+              }
+            },
+            "limit_evidence_missing_reason": {
+              "label": {
+                "zh-CN": "缺失原因",
+                "en": "Limit Evidence Missing Reason"
+              }
+            },
             "required_ftrace_event": {
               "label": {
                 "zh-CN": "需要采集的 ftrace 事件",
@@ -11643,7 +13245,7 @@
         "no_limit_throttle_observation": {
           "title": {
             "zh-CN": "无限频数据时的频率观测",
-            "en": "No Limit Throttle Observation"
+            "en": "Frequency observation without limit data"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -11760,7 +13362,7 @@
         },
         "before_anomalies": {
           "title": {
-            "zh-CN": "限频前异常线程",
+            "zh-CN": "区段起点前异常线程",
             "en": "Before Anomalies"
           },
           "columns": {},
@@ -11768,7 +13370,7 @@
         },
         "before_workload": {
           "title": {
-            "zh-CN": "限频前负载归因",
+            "zh-CN": "区段起点前负载归因",
             "en": "Before Workload"
           },
           "columns": {},
@@ -11852,12 +13454,6 @@
                 "en": "Who Window Clipped"
               }
             },
-            "starts_at_data_start": {
-              "label": {
-                "zh-CN": "起点未知",
-                "en": "Starts At Data Start"
-              }
-            },
             "data_start_ts": {
               "label": {
                 "zh-CN": "数据起点",
@@ -11879,9 +13475,96 @@
           },
           "synthesizeLabels": {}
         },
+        "limit_onsets": {
+          "title": {
+            "zh-CN": "本区段在分析窗口内生效的每次限频写入",
+            "en": "Limit Onsets"
+          },
+          "columns": {
+            "onset_ts": {
+              "label": {
+                "zh-CN": "写入时刻",
+                "en": "Onset Ts"
+              }
+            },
+            "value_end_ts": {
+              "label": {
+                "zh-CN": "该值失效",
+                "en": "Value End Ts"
+              }
+            },
+            "prev_valid_limit_khz": {
+              "label": {
+                "zh-CN": "写入前上限",
+                "en": "Prev Valid Limit Khz"
+              }
+            },
+            "limit_khz": {
+              "label": {
+                "zh-CN": "写入后上限",
+                "en": "Limit Khz"
+              }
+            },
+            "direction": {
+              "label": {
+                "zh-CN": "方向",
+                "en": "Direction"
+              }
+            },
+            "direction_basis": {
+              "label": {
+                "zh-CN": "方向依据",
+                "en": "Direction Basis"
+              }
+            },
+            "onset_verdict": {
+              "label": {
+                "zh-CN": "写入判定",
+                "en": "Onset Verdict"
+              }
+            },
+            "trigger_class": {
+              "label": {
+                "zh-CN": "触发分类",
+                "en": "Trigger Class"
+              }
+            },
+            "cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备依据",
+                "en": "Cooling Basis"
+              }
+            },
+            "paired_cdev_name": {
+              "label": {
+                "zh-CN": "配对散热设备",
+                "en": "Paired Cdev Name"
+              }
+            },
+            "pair_lead_ns": {
+              "label": {
+                "zh-CN": "档位变更领先",
+                "en": "Pair Lead ns"
+              }
+            },
+            "daemon_slices": {
+              "label": {
+                "zh-CN": "写入前守护进程调度片",
+                "en": "Daemon Slices"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "non_cpu_heat_context": {
           "title": {
-            "zh-CN": "限频前回溯窗口内的非 CPU 热源迹象（仅存在性观测）",
+            "zh-CN": "区段起点前回溯窗口内的非 CPU 热源迹象（仅存在性观测）",
             "en": "Non CPU Heat Context"
           },
           "columns": {
@@ -11952,7 +13635,7 @@
         },
         "temperature_context": {
           "title": {
-            "zh-CN": "限频前回溯窗口内的温度",
+            "zh-CN": "区段起点前回溯窗口内的温度",
             "en": "Temperature Context"
           },
           "columns": {
@@ -12063,14 +13746,32 @@
             },
             "cdev_kind_hint": {
               "label": {
-                "zh-CN": "疑似作用域",
+                "zh-CN": "名称提示",
                 "en": "Cdev Kind Hint"
               }
             },
             "cdev_kind_basis": {
               "label": {
-                "zh-CN": "判定依据",
+                "zh-CN": "提示依据",
                 "en": "Cdev Kind Basis"
+              }
+            },
+            "association_status": {
+              "label": {
+                "zh-CN": "与 policy 的时序关联",
+                "en": "Association Status"
+              }
+            },
+            "associated_policy_cpu": {
+              "label": {
+                "zh-CN": "关联 policy 首核",
+                "en": "Associated Policy CPU"
+              }
+            },
+            "tied_to_this_policy": {
+              "label": {
+                "zh-CN": "关联本 policy",
+                "en": "Tied To This Policy"
               }
             },
             "prev_state": {
@@ -12114,7 +13815,7 @@
         },
         "who_daemon": {
           "title": {
-            "zh-CN": "限频前后的温控/性能策略守护进程活动（名字匹配，仅候选）",
+            "zh-CN": "区段起点前后的温控/性能策略守护进程活动（名字匹配，仅候选）",
             "en": "Who Daemon"
           },
           "columns": {
@@ -12180,19 +13881,19 @@
             },
             "ran_before_limit_ns": {
               "label": {
-                "zh-CN": "限频前运行",
+                "zh-CN": "区段起点前运行",
                 "en": "Ran Before Limit ns"
               }
             },
             "last_run_end_before_ts": {
               "label": {
-                "zh-CN": "限频前最后一次运行结束",
+                "zh-CN": "区段起点前最后一次运行结束",
                 "en": "Last Run End Before Ts"
               }
             },
             "lead_ns": {
               "label": {
-                "zh-CN": "距离限频时刻",
+                "zh-CN": "距区段起点",
                 "en": "Lead ns"
               }
             },
@@ -12223,6 +13924,12 @@
                 "en": "Episode Id"
               }
             },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "全 trace 区段",
+                "en": "Trace Episode Id"
+              }
+            },
             "policy_cpu": {
               "label": {
                 "zh-CN": "policy 首核",
@@ -12241,52 +13948,46 @@
                 "en": "Who Verdict"
               }
             },
-            "cooling_transition_coincident": {
+            "trigger_class": {
               "label": {
-                "zh-CN": "档位变更与限频时刻重合",
-                "en": "Cooling Transition Coincident"
+                "zh-CN": "触发分类",
+                "en": "Trigger Class"
               }
             },
-            "cooling_nearest_transition_ns": {
+            "trigger_class_rank": {
               "label": {
-                "zh-CN": "最近档位变更时间差",
-                "en": "Cooling Nearest Transition ns"
+                "zh-CN": "分类等级",
+                "en": "Trigger Class Rank"
               }
             },
-            "cooling_nearest_transition_ts": {
+            "onset_trigger_mix": {
               "label": {
-                "zh-CN": "最近档位变更时刻",
-                "en": "Cooling Nearest Transition Ts"
+                "zh-CN": "逐次写入分类",
+                "en": "Onset Trigger Mix"
               }
             },
-            "cooling_active_ns": {
+            "onset_count": {
               "label": {
-                "zh-CN": "区段内散热设备生效时长",
-                "en": "Cooling Active ns"
+                "zh-CN": "窗口内限频写入次数",
+                "en": "Onset Count"
               }
             },
-            "cooling_devices_active": {
+            "confirmed_onset_count": {
               "label": {
-                "zh-CN": "生效散热设备数",
-                "en": "Cooling Devices Active"
+                "zh-CN": "由关联散热设备施加的写入",
+                "en": "Confirmed Onset Count"
               }
             },
-            "cooling_transitions_in_who_window": {
+            "causal_onset_count": {
               "label": {
-                "zh-CN": "归因窗口内散热档位变更",
-                "en": "Cooling Transitions In Who Window"
+                "zh-CN": "收紧或起点未知的写入",
+                "en": "Causal Onset Count"
               }
             },
-            "daemon_ran_before_limit_ns": {
+            "onset_ts": {
               "label": {
-                "zh-CN": "限频前守护进程运行",
-                "en": "Daemon Ran Before Limit ns"
-              }
-            },
-            "daemon_threads_before_limit": {
-              "label": {
-                "zh-CN": "限频前活跃守护线程数",
-                "en": "Daemon Threads Before Limit"
+                "zh-CN": "限频起点",
+                "en": "Onset Ts"
               }
             },
             "onset_observed": {
@@ -12301,16 +14002,34 @@
                 "en": "Onset Note"
               }
             },
+            "paired_cooling_device": {
+              "label": {
+                "zh-CN": "配对散热设备",
+                "en": "Paired Cooling Device"
+              }
+            },
+            "cooling_policy_association": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Cooling Policy Association"
+              }
+            },
+            "tied_cooling_device": {
+              "label": {
+                "zh-CN": "关联散热设备",
+                "en": "Tied Cooling Device"
+              }
+            },
             "thresholds": {
               "label": {
                 "zh-CN": "阈值",
                 "en": "Thresholds"
               }
             },
-            "verdict_basis": {
+            "verdict_scope": {
               "label": {
-                "zh-CN": "判定依据",
-                "en": "Verdict Basis"
+                "zh-CN": "判定范围",
+                "en": "Verdict Scope"
               }
             },
             "interpretation": {
@@ -12523,7 +14242,7 @@
         "en": "CPU Module"
       },
       "description": {
-        "zh-CN": "分析 CPU 频率、热节流和电源状态",
+        "zh-CN": "分析 CPU 频率、频率变化和电源状态",
         "en": "Analyzes CPU Module using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -12592,7 +14311,7 @@
         "throttling_events": {
           "title": {
             "zh-CN": "频率变化事件",
-            "en": "Throttling Events"
+            "en": "Frequency Change Events"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -12745,13 +14464,13 @@
             },
             "big_core_pct": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Pct"
               }
             },
             "medium_core_pct": {
               "label": {
-                "zh-CN": "中核占比",
+                "zh-CN": "其中中核占比",
                 "en": "Medium Core Pct"
               }
             },
@@ -12759,6 +14478,18 @@
               "label": {
                 "zh-CN": "小核占比",
                 "en": "Little Core Pct"
+              }
+            },
+            "unknown_core_pct": {
+              "label": {
+                "zh-CN": "未知核类型占比",
+                "en": "Unknown Core Pct"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型运行时间",
+                "en": "Unknown Core ms"
               }
             }
           },
@@ -12934,8 +14665,20 @@
             },
             "avg_big_core_usage_pct": {
               "label": {
-                "zh-CN": "大核使用率",
+                "zh-CN": "样本线程平均大核组占比",
                 "en": "Avg Big Core Usage Pct"
+              }
+            },
+            "big_core_sample_threads": {
+              "label": {
+                "zh-CN": "大小核样本线程数",
+                "en": "Big Core Sample Threads"
+              }
+            },
+            "classified_sample_threads": {
+              "label": {
+                "zh-CN": "拓扑已分类样本线程数",
+                "en": "Classified Sample Threads"
               }
             },
             "latency_severity": {
@@ -13117,7 +14860,7 @@
             },
             "big_core_ms": {
               "label": {
-                "zh-CN": "大核时间",
+                "zh-CN": "大核组时间（超大/大/中核）",
                 "en": "Big Core ms"
               }
             },
@@ -13125,6 +14868,12 @@
               "label": {
                 "zh-CN": "小核时间",
                 "en": "Little Core ms"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型时间",
+                "en": "Unknown Core ms"
               }
             },
             "slice_count": {
@@ -13402,7 +15151,7 @@
         "en": "CPU Throttling In Range"
       },
       "description": {
-        "zh-CN": "观测 CPU 频率变化；频率跨度不能独立证明热控限频",
+        "zh-CN": "观测 CPU 频率变化与 cpufreq 频率上限；频率跨度不能独立证明限频，限频本身也不说明是否由温控触发",
         "en": "Analyzes CPU Throttling In Range using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -13433,6 +15182,12 @@
               "label": {
                 "zh-CN": "有限频轨道",
                 "en": "Has Limit Track"
+              }
+            },
+            "has_max_limit_data": {
+              "label": {
+                "zh-CN": "有有效上限样本",
+                "en": "Has Max Limit Data"
               }
             },
             "episode_count": {
@@ -13477,6 +15232,12 @@
                 "en": "Evidence Status"
               }
             },
+            "limit_evidence_missing_reason": {
+              "label": {
+                "zh-CN": "缺失原因",
+                "en": "Limit Evidence Missing Reason"
+              }
+            },
             "next_step": {
               "label": {
                 "zh-CN": "下一步",
@@ -13502,55 +15263,55 @@
         },
         "throttle_detection": {
           "title": {
-            "zh-CN": "热控限频",
+            "zh-CN": "CPU 限频",
             "en": "Throttle Detection"
           },
           "columns": {
             "core_type": {
               "label": {
-                "zh-CN": "核心类型",
+                "zh-CN": "核心类别",
                 "en": "Core Type"
               }
             },
             "start_freq_mhz": {
               "label": {
-                "zh-CN": "起始频率",
+                "zh-CN": "窗口内首采样均值",
                 "en": "Start Freq MHz"
               }
             },
             "end_freq_mhz": {
               "label": {
-                "zh-CN": "结束频率",
+                "zh-CN": "窗口内末采样均值",
                 "en": "End Freq MHz"
               }
             },
             "min_freq_mhz": {
               "label": {
-                "zh-CN": "最低频率",
+                "zh-CN": "类别最低频率",
                 "en": "Min Freq MHz"
               }
             },
             "max_freq_mhz": {
               "label": {
-                "zh-CN": "最高频率",
+                "zh-CN": "类别最高频率",
                 "en": "Max Freq MHz"
               }
             },
             "freq_drop_pct": {
               "label": {
-                "zh-CN": "降幅",
+                "zh-CN": "单轨最大频率跨度",
                 "en": "Freq Drop Pct"
               }
             },
             "frequency_variation_detected": {
               "label": {
-                "zh-CN": "观测到频率变化",
+                "zh-CN": "单轨跨度超 30%",
                 "en": "Frequency Variation Detected"
               }
             },
             "evidence_status": {
               "label": {
-                "zh-CN": "热原因证据",
+                "zh-CN": "限频证据状态",
                 "en": "Evidence Status"
               }
             },
@@ -13562,7 +15323,7 @@
             },
             "throttle_detected": {
               "label": {
-                "zh-CN": "已核验热控限频",
+                "zh-CN": "已观测 CPU 限频",
                 "en": "Throttle Detected"
               }
             }
@@ -16926,6 +18687,45 @@
           "columns": {},
           "synthesizeLabels": {}
         },
+        "data_loss_stats": {
+          "title": {
+            "zh-CN": "数据丢失统计",
+            "en": "Data Loss Stats"
+          },
+          "columns": {
+            "name": {
+              "label": {
+                "zh-CN": "统计项",
+                "en": "Name"
+              }
+            },
+            "idx": {
+              "label": {
+                "zh-CN": "索引",
+                "en": "Idx"
+              }
+            },
+            "value": {
+              "label": {
+                "zh-CN": "丢失计数",
+                "en": "Value"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            },
+            "description": {
+              "label": {
+                "zh-CN": "说明",
+                "en": "Description"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "root": {
           "title": {
             "zh-CN": "全局 Trace Sanity 检查",
@@ -17496,6 +19296,12 @@
             "en": "GPU Frame Correlation"
           },
           "columns": {
+            "gpu_id": {
+              "label": {
+                "zh-CN": "GPUId",
+                "en": "GPU"
+              }
+            },
             "jank_type": {
               "label": {
                 "zh-CN": "帧类型",
@@ -17508,9 +19314,15 @@
                 "en": "Frame Count"
               }
             },
+            "frames_with_running_freq": {
+              "label": {
+                "zh-CN": "有运行频率的帧",
+                "en": "Frames With Running Freq"
+              }
+            },
             "avg_gpu_freq_mhz": {
               "label": {
-                "zh-CN": "平均 GPU 频率",
+                "zh-CN": "帧内平均运行频率",
                 "en": "Avg GPU Freq MHz"
               }
             },
@@ -17545,6 +19357,12 @@
               "label": {
                 "zh-CN": "GPUId",
                 "en": "GPU"
+              }
+            },
+            "state": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "State"
               }
             },
             "gpu_freq_mhz": {
@@ -17588,7 +19406,7 @@
             },
             "weighted_avg_freq_mhz": {
               "label": {
-                "zh-CN": "加权平均频率",
+                "zh-CN": "运行时加权平均频率",
                 "en": "Weighted Avg Freq MHz"
               }
             },
@@ -17622,6 +19440,12 @@
                 "en": "Freq Change Count"
               }
             },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
+              }
+            },
             "total_time_sec": {
               "label": {
                 "zh-CN": "采样时间",
@@ -17637,7 +19461,7 @@
           },
           "synthesizeLabels": {
             "field:weighted_avg_freq_mhz": {
-              "zh-CN": "加权平均频率",
+              "zh-CN": "运行时加权平均频率",
               "en": "Weighted Avg Freq MHz"
             },
             "field:max_freq_time_pct": {
@@ -18070,19 +19894,19 @@
             },
             "avg_freq_mhz": {
               "label": {
-                "zh-CN": "平均频率",
+                "zh-CN": "运行时平均频率",
                 "en": "Avg Freq MHz"
               }
             },
             "max_freq_mhz": {
               "label": {
-                "zh-CN": "最大频率",
+                "zh-CN": "最高运行频率",
                 "en": "Max Freq MHz"
               }
             },
             "min_freq_mhz": {
               "label": {
-                "zh-CN": "最小频率",
+                "zh-CN": "最低运行频率",
                 "en": "Min Freq MHz"
               }
             },
@@ -18094,8 +19918,20 @@
             },
             "low_freq_pct": {
               "label": {
-                "zh-CN": "低频占比",
+                "zh-CN": "运行时间中低频占比",
                 "en": "Low Freq Pct"
+              }
+            },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
+              }
+            },
+            "out_of_domain_pct": {
+              "label": {
+                "zh-CN": "频率不可读占比",
+                "en": "Out Of Domain Pct"
               }
             }
           },
@@ -18109,7 +19945,7 @@
         "en": "GPU Frequency Analysis"
       },
       "description": {
-        "zh-CN": "分析 GPU 频率变化和 thermal throttling",
+        "zh-CN": "分析 GPU 频率变化（不采集 GPU 频率上限证据，不判定限频或温控）",
         "en": "Analyzes GPU Frequency Analysis using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -18267,6 +20103,12 @@
               "label": {
                 "zh-CN": "计数器",
                 "en": "Freq Counters"
+              }
+            },
+            "undeclared_unit_counters": {
+              "label": {
+                "zh-CN": "单位未声明的计数器",
+                "en": "Undeclared Unit Counters"
               }
             }
           },
@@ -18514,7 +20356,7 @@
         "en": "GPU Power State Analysis"
       },
       "description": {
-        "zh-CN": "分析 GPU 频率状态切换，识别降频压力与抖动",
+        "zh-CN": "分析 GPU 频率状态切换，识别频率下调与抖动",
         "en": "Analyzes GPU Power State Analysis using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -18547,7 +20389,7 @@
             },
             "avg_freq_mhz": {
               "label": {
-                "zh-CN": "平均频率(MHz)",
+                "zh-CN": "运行时平均频率(MHz)",
                 "en": "Avg Freq MHz"
               }
             },
@@ -18565,7 +20407,7 @@
             },
             "downshift_count": {
               "label": {
-                "zh-CN": "降频次数",
+                "zh-CN": "频率下调次数",
                 "en": "Downshift Count"
               }
             },
@@ -18577,8 +20419,14 @@
             },
             "downshift_ratio_pct": {
               "label": {
-                "zh-CN": "降频占比",
+                "zh-CN": "频率下调占比",
                 "en": "Downshift Ratio Pct"
+              }
+            },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
               }
             }
           },
@@ -18665,7 +20513,7 @@
       },
       "description": {
         "zh-CN": "基于 Trace 指标与证据分析GPUV57AIDiagnostics。",
-        "en": "Translate Perfetto v57 GPU Agent Skill SQL into deterministic inventory, occupancy, frequency, ramp, and throttle evidence"
+        "en": "Translate Perfetto v57 GPU Agent Skill SQL into deterministic inventory, occupancy, frequency, ramp, and below-target-clock evidence; it reads no frequency-cap evidence"
       },
       "type": "composite",
       "steps": {
@@ -18964,19 +20812,19 @@
                 "en": "Dvfs Ramp Events"
               }
             },
-            "sustained_throttle_events": {
+            "sustained_below_target_events": {
               "label": {
-                "zh-CN": "SustainedThrottle事件",
-                "en": "Sustained Throttle Events"
+                "zh-CN": "SustainedBelowTarget事件",
+                "en": "Sustained Below Target Events"
               }
             }
           },
           "synthesizeLabels": {}
         },
-        "sustained_throttle_events": {
+        "sustained_below_target_events": {
           "title": {
-            "zh-CN": "SustainedThrottle事件",
-            "en": "Sustained GPU Throttle Events"
+            "zh-CN": "SustainedBelowTarget事件",
+            "en": "GPU Busy Time Below Target Clock (not frequency-cap evidence)"
           },
           "columns": {
             "gpu": {
@@ -19162,6 +21010,12 @@
                 "en": "E2e Latency ms"
               }
             },
+            "frame_association": {
+              "label": {
+                "zh-CN": "帧关联",
+                "en": "Frame Association"
+              }
+            },
             "process_name": {
               "label": {
                 "zh-CN": "目标进程",
@@ -19334,12 +21188,6 @@
                 "zh-CN": "飙升倍数",
                 "en": "Spike Ratio"
               }
-            },
-            "is_speculative": {
-              "label": {
-                "zh-CN": "推测帧",
-                "en": "Is Speculative"
-              }
             }
           },
           "synthesizeLabels": {}
@@ -19419,18 +21267,6 @@
                 "en": "Frame Dur ms"
               }
             },
-            "frame_to_present_ms": {
-              "label": {
-                "zh-CN": "帧ToPresentms",
-                "en": "Frame→Present(ms)"
-              }
-            },
-            "is_speculative": {
-              "label": {
-                "zh-CN": "推测帧",
-                "en": "Is Speculative"
-              }
-            },
             "rating": {
               "label": {
                 "zh-CN": "评级",
@@ -19486,18 +21322,6 @@
               "label": {
                 "zh-CN": "帧耗时",
                 "en": "Frame Dur ms"
-              }
-            },
-            "frame_to_present_ms": {
-              "label": {
-                "zh-CN": "帧ToPresentms",
-                "en": "Frame→Present"
-              }
-            },
-            "is_speculative": {
-              "label": {
-                "zh-CN": "推测帧",
-                "en": "Is Speculative"
               }
             },
             "rating": {
@@ -20636,7 +22460,7 @@
         },
         "cpu_throttling": {
           "title": {
-            "zh-CN": "CPUThrottling",
+            "zh-CN": "CPU 限频证据",
             "en": "CPU Throttling"
           },
           "columns": {},
@@ -20684,6 +22508,12 @@
               "label": {
                 "zh-CN": "最大单次",
                 "en": "Max Dur ms"
+              }
+            },
+            "total_overlap_ms": {
+              "label": {
+                "zh-CN": "总重叠",
+                "en": "Total Overlap ms"
               }
             }
           },
@@ -21152,6 +22982,114 @@
               "label": {
                 "zh-CN": "RenderThread同步阶段工作",
                 "en": "Render Sync Rt Work ms"
+              }
+            },
+            "freq_limit_state": {
+              "label": {
+                "zh-CN": "主线程限频状态",
+                "en": "Freq Limit State"
+              }
+            },
+            "freq_limit_basis": {
+              "label": {
+                "zh-CN": "限频触发依据",
+                "en": "Freq Limit Basis"
+              }
+            },
+            "freq_limit_onset_confirmed": {
+              "label": {
+                "zh-CN": "热控施加已确认",
+                "en": "Freq Limit Onset Confirmed"
+              }
+            },
+            "freq_limit_onset_ts": {
+              "label": {
+                "zh-CN": "上限值写入时间",
+                "en": "Freq Limit Onset Ts"
+              }
+            },
+            "freq_limit_cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Freq Limit Cooling Basis"
+              }
+            },
+            "freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "限频 policy",
+                "en": "Freq Limit Policy CPU"
+              }
+            },
+            "freq_limit_mhz": {
+              "label": {
+                "zh-CN": "频率上限",
+                "en": "Freq Limit MHz"
+              }
+            },
+            "freq_limit_depth_pct": {
+              "label": {
+                "zh-CN": "上限低于观测最高上限",
+                "en": "Freq Limit Depth Pct"
+              }
+            },
+            "freq_limit_binding_ratio": {
+              "label": {
+                "zh-CN": "运行频率/上限",
+                "en": "Freq Limit Binding Ratio"
+              }
+            },
+            "freq_limit_onset_binding_ns": {
+              "label": {
+                "zh-CN": "该上限值约束运行时长",
+                "en": "Freq Limit Onset Binding ns"
+              }
+            },
+            "freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "跨上限值约束运行时长",
+                "en": "Freq Limit Binding ns"
+              }
+            },
+            "freq_limit_run_ns": {
+              "label": {
+                "zh-CN": "关键操作运行时长",
+                "en": "Freq Limit Run ns"
+              }
+            },
+            "freq_limit_trace_episode_id": {
+              "label": {
+                "zh-CN": "限频区段",
+                "en": "Freq Limit Trace Episode Id"
+              }
+            },
+            "rt_freq_limit_state": {
+              "label": {
+                "zh-CN": "RenderThread 限频状态",
+                "en": "Rt Freq Limit State"
+              }
+            },
+            "rt_freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "RenderThread 上限约束运行时长",
+                "en": "Rt Freq Limit Binding ns"
+              }
+            },
+            "rt_freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "RenderThread 限频 policy",
+                "en": "Rt Freq Limit Policy CPU"
+              }
+            },
+            "ramp_to_high_ms": {
+              "label": {
+                "zh-CN": "大核升频延迟",
+                "en": "Ramp To High ms"
+              }
+            },
+            "freq_ramp_evidence": {
+              "label": {
+                "zh-CN": "大核升频观测",
+                "en": "Freq Ramp Evidence"
               }
             }
           },
@@ -22540,6 +24478,183 @@
               "label": {
                 "zh-CN": "等待者数",
                 "en": "Waiter Count"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "lock_held_capability": {
+          "title": {
+            "zh-CN": "持锁区间（lock_held）数据可用性",
+            "en": "Lock Held Capability"
+          },
+          "columns": {
+            "lock_held_slice_count": {
+              "label": {
+                "zh-CN": "lock_held slice 数",
+                "en": "Lock Held Slice Count"
+              }
+            },
+            "lock_held_slice_count_in_scope": {
+              "label": {
+                "zh-CN": "目标进程内 slice 数",
+                "en": "Lock Held Slice Count In Scope"
+              }
+            },
+            "runtime_has_lock_held": {
+              "label": {
+                "zh-CN": "Runtime 有 android.lock_held",
+                "en": "Runtime Has Lock Held"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "lock_held_long_holds": {
+          "title": {
+            "zh-CN": "长时间持锁（持锁线程、时长、等锁方看到的持锁方法）",
+            "en": "Lock Held Long Holds"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程名",
+                "en": "Process Name"
+              }
+            },
+            "lock_name": {
+              "label": {
+                "zh-CN": "锁",
+                "en": "Lock Name"
+              }
+            },
+            "holder_thread": {
+              "label": {
+                "zh-CN": "持锁线程",
+                "en": "Holder Thread"
+              }
+            },
+            "holder_tid": {
+              "label": {
+                "zh-CN": "HolderTID",
+                "en": "TID"
+              }
+            },
+            "is_main_thread": {
+              "label": {
+                "zh-CN": "主线程",
+                "en": "Is Main Thread"
+              }
+            },
+            "ts": {
+              "label": {
+                "zh-CN": "获取时间",
+                "en": "Ts"
+              }
+            },
+            "held_ms": {
+              "label": {
+                "zh-CN": "窗口内持有时长",
+                "en": "Held ms"
+              }
+            },
+            "full_held_ms": {
+              "label": {
+                "zh-CN": "完整持有时长",
+                "en": "Full Held ms"
+              }
+            },
+            "blocking_method": {
+              "label": {
+                "zh-CN": "等锁方看到的持锁方法",
+                "en": "Blocking Method"
+              }
+            },
+            "is_incomplete": {
+              "label": {
+                "zh-CN": "trace 结束仍持有",
+                "en": "Is Incomplete"
+              }
+            },
+            "slice_id": {
+              "label": {
+                "zh-CN": "SliceId",
+                "en": "Slice ID"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "lock_held_owner_summary": {
+          "title": {
+            "zh-CN": "持锁时长汇总（按锁）",
+            "en": "Lock Held Owner Summary"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程名",
+                "en": "Process Name"
+              }
+            },
+            "lock_name": {
+              "label": {
+                "zh-CN": "锁",
+                "en": "Lock Name"
+              }
+            },
+            "hold_count": {
+              "label": {
+                "zh-CN": "持有次数",
+                "en": "Hold Count"
+              }
+            },
+            "total_held_ms": {
+              "label": {
+                "zh-CN": "总持有时长",
+                "en": "Total Held ms"
+              }
+            },
+            "max_held_ms": {
+              "label": {
+                "zh-CN": "最长持有",
+                "en": "Max Held ms"
+              }
+            },
+            "contended_hold_count": {
+              "label": {
+                "zh-CN": "期间有线程等锁",
+                "en": "Contended Hold Count"
+              }
+            },
+            "incomplete_hold_count": {
+              "label": {
+                "zh-CN": "trace 结束仍持有",
+                "en": "Incomplete Hold Count"
+              }
+            },
+            "top_holder_thread": {
+              "label": {
+                "zh-CN": "主要持锁线程",
+                "en": "Top Holder Thread"
+              }
+            },
+            "top_holder_held_ms": {
+              "label": {
+                "zh-CN": "该线程持有时长",
+                "en": "Top Holder Held ms"
+              }
+            },
+            "top_blocking_method": {
+              "label": {
+                "zh-CN": "等锁方看到的持锁方法",
+                "en": "Top Blocking Method"
               }
             }
           },
@@ -24819,6 +26934,18 @@
                 "en": "GC Dur ms"
               }
             },
+            "frame_count": {
+              "label": {
+                "zh-CN": "重叠帧数",
+                "en": "Frame Count"
+              }
+            },
+            "janky_frame_count": {
+              "label": {
+                "zh-CN": "掉帧数",
+                "en": "Janky Frame Count"
+              }
+            },
             "jank_type": {
               "label": {
                 "zh-CN": "掉帧类型",
@@ -24827,7 +26954,7 @@
             },
             "frame_dur_ms": {
               "label": {
-                "zh-CN": "帧耗时",
+                "zh-CN": "最长帧耗时",
                 "en": "Frame Dur ms"
               }
             },
@@ -24936,6 +27063,24 @@
               "label": {
                 "zh-CN": "主线程 GC 耗时",
                 "en": "Main Thread GC Time ms"
+              }
+            },
+            "main_thread_gc_wait_count": {
+              "label": {
+                "zh-CN": "主线程等待 GC",
+                "en": "Main Thread GC Wait Count"
+              }
+            },
+            "main_thread_gc_wait_ms": {
+              "label": {
+                "zh-CN": "主线程等待 GC 耗时",
+                "en": "Main Thread GC Wait ms"
+              }
+            },
+            "gc_wait_ms": {
+              "label": {
+                "zh-CN": "各线程等待 GC 合计",
+                "en": "GC Wait ms"
               }
             },
             "gc_per_second": {
@@ -25124,14 +27269,6 @@
           "title": {
             "zh-CN": "Heap Graph 总览",
             "en": "Heap Graph Summary"
-          },
-          "columns": {},
-          "synthesizeLabels": {}
-        },
-        "init_gc_view": {
-          "title": {
-            "zh-CN": "初始化 GC 事件视图",
-            "en": "Init GC View"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -25866,11 +28003,11 @@
     },
     "native_heap_breakdown": {
       "displayName": {
-        "zh-CN": "Native Heap 分解",
+        "zh-CN": "Heap Profile 分解（Native / Java 分配）",
         "en": "Native Heap Breakdown"
       },
       "description": {
-        "zh-CN": "基于 heapprofd summary tree 输出 native heap 未释放和累计分配热点",
+        "zh-CN": "按进程 × heap 拆分 heapprofd 分配：native 区分未释放保留与分配 churn，Java(com.android.art) 只报分配 churn；热点归因到分配器之上的第一个应用/库帧",
         "en": "Analyzes Native Heap Breakdown using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -25883,15 +28020,114 @@
           "columns": {},
           "synthesizeLabels": {}
         },
+        "heap_profile_inventory": {
+          "title": {
+            "zh-CN": "HeapProfileInventory",
+            "en": "heapprofd Profiles (per process × heap)"
+          },
+          "columns": {
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "heap_name": {
+              "label": {
+                "zh-CN": "HeapName",
+                "en": "Heap"
+              }
+            },
+            "heap_semantics": {
+              "label": {
+                "zh-CN": "Heap 语义",
+                "en": "Heap Semantics"
+              }
+            },
+            "alloc_mb": {
+              "label": {
+                "zh-CN": "累计分配(MB)",
+                "en": "Alloc MB"
+              }
+            },
+            "unreleased_mb": {
+              "label": {
+                "zh-CN": "未释放(MB)",
+                "en": "Unreleased MB"
+              }
+            },
+            "alloc_count": {
+              "label": {
+                "zh-CN": "分配次数(采样)",
+                "en": "Alloc Count"
+              }
+            },
+            "unreleased_count": {
+              "label": {
+                "zh-CN": "未释放次数(采样)",
+                "en": "Unreleased Count"
+              }
+            },
+            "retention_claim": {
+              "label": {
+                "zh-CN": "能否判断保留",
+                "en": "Retention Claim"
+              }
+            },
+            "heapprofd_issues": {
+              "label": {
+                "zh-CN": "heapprofd 截断/错误",
+                "en": "Heapprofd Issues"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "native_heap_hotspots": {
           "title": {
             "zh-CN": "NativeHeapHotspots",
-            "en": "Native Heap Allocation Hotspots"
+            "en": "Heap Profile Allocation Hotspots (per process × heap)"
           },
           "columns": {
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "heap_name": {
+              "label": {
+                "zh-CN": "HeapName",
+                "en": "Heap"
+              }
+            },
             "name": {
               "label": {
-                "zh-CN": "函数/符号",
+                "zh-CN": "归因帧(分配器之上首个应用/库帧)",
                 "en": "Name"
               }
             },
@@ -25909,7 +28145,7 @@
             },
             "self_size_mb": {
               "label": {
-                "zh-CN": "自身未释放(MB)",
+                "zh-CN": "归因未释放(MB)",
                 "en": "Self Size MB"
               }
             },
@@ -25917,6 +28153,18 @@
               "label": {
                 "zh-CN": "累计分配(MB)",
                 "en": "Cumulative Alloc MB"
+              }
+            },
+            "self_alloc_mb": {
+              "label": {
+                "zh-CN": "归因分配(MB)",
+                "en": "Self Alloc MB"
+              }
+            },
+            "self_alloc_count": {
+              "label": {
+                "zh-CN": "归因分配次数(采样)",
+                "en": "Self Alloc Count"
               }
             },
             "unreleased_to_alloc_pct": {
@@ -25933,7 +28181,7 @@
             },
             "native_signal": {
               "label": {
-                "zh-CN": "Native 信号",
+                "zh-CN": "信号",
                 "en": "Native Signal"
               }
             },
@@ -25948,14 +28196,26 @@
         },
         "root": {
           "title": {
-            "zh-CN": "Native Heap 分解",
+            "zh-CN": "Heap Profile 分解（Native / Java 分配）",
             "en": "Native Heap Breakdown"
           },
           "columns": {
+            "heap_profile_inventory": {
+              "label": {
+                "zh-CN": "HeapProfileInventory",
+                "en": "Heap Profile Inventory"
+              }
+            },
             "cumulative_size_mb": {
               "label": {
                 "zh-CN": "CumulativeSizeMB",
                 "en": "Cumulative Size MB"
+              }
+            },
+            "self_size_mb": {
+              "label": {
+                "zh-CN": "SelfSizeMB",
+                "en": "Self Size MB"
               }
             },
             "cumulative_alloc_mb": {
@@ -30723,14 +32983,6 @@
           "columns": {},
           "synthesizeLabels": {}
         },
-        "scene_summary": {
-          "title": {
-            "zh-CN": "场景还原报告",
-            "en": "Scene Summary"
-          },
-          "columns": {},
-          "synthesizeLabels": {}
-        },
         "screen_state_changes": {
           "title": {
             "zh-CN": "屏幕状态",
@@ -32207,6 +34459,12 @@
                 "en": "Ramp ms"
               }
             },
+            "freq_ramp_evidence": {
+              "label": {
+                "zh-CN": "大核升频观测",
+                "en": "Freq Ramp Evidence"
+              }
+            },
             "top_slice_little_pct": {
               "label": {
                 "zh-CN": "小核占比%",
@@ -32301,6 +34559,108 @@
               "label": {
                 "zh-CN": "设备峰值频率",
                 "en": "Device Peak Freq MHz"
+              }
+            },
+            "freq_ceiling_ratio_pct": {
+              "label": {
+                "zh-CN": "大核峰频/设备峰值",
+                "en": "Freq Ceiling Ratio Pct"
+              }
+            },
+            "freq_limit_state": {
+              "label": {
+                "zh-CN": "主线程限频状态",
+                "en": "Freq Limit State"
+              }
+            },
+            "freq_limit_basis": {
+              "label": {
+                "zh-CN": "限频触发依据",
+                "en": "Freq Limit Basis"
+              }
+            },
+            "freq_limit_onset_confirmed": {
+              "label": {
+                "zh-CN": "热控施加已确认",
+                "en": "Freq Limit Onset Confirmed"
+              }
+            },
+            "freq_limit_onset_ts": {
+              "label": {
+                "zh-CN": "上限值写入时间",
+                "en": "Freq Limit Onset Ts"
+              }
+            },
+            "freq_limit_cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Freq Limit Cooling Basis"
+              }
+            },
+            "freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "限频 policy",
+                "en": "Freq Limit Policy CPU"
+              }
+            },
+            "freq_limit_mhz": {
+              "label": {
+                "zh-CN": "频率上限",
+                "en": "Freq Limit MHz"
+              }
+            },
+            "freq_limit_depth_pct": {
+              "label": {
+                "zh-CN": "上限低于观测最高上限",
+                "en": "Freq Limit Depth Pct"
+              }
+            },
+            "freq_limit_binding_ratio": {
+              "label": {
+                "zh-CN": "运行频率/上限",
+                "en": "Freq Limit Binding Ratio"
+              }
+            },
+            "freq_limit_onset_binding_ns": {
+              "label": {
+                "zh-CN": "该上限值约束运行时长",
+                "en": "Freq Limit Onset Binding ns"
+              }
+            },
+            "freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "跨上限值约束运行时长",
+                "en": "Freq Limit Binding ns"
+              }
+            },
+            "freq_limit_run_ns": {
+              "label": {
+                "zh-CN": "关键操作运行时长",
+                "en": "Freq Limit Run ns"
+              }
+            },
+            "freq_limit_trace_episode_id": {
+              "label": {
+                "zh-CN": "限频区段",
+                "en": "Freq Limit Trace Episode Id"
+              }
+            },
+            "rt_freq_limit_state": {
+              "label": {
+                "zh-CN": "RenderThread 限频状态",
+                "en": "Rt Freq Limit State"
+              }
+            },
+            "rt_freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "RenderThread 上限约束运行时长",
+                "en": "Rt Freq Limit Binding ns"
+              }
+            },
+            "rt_freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "RenderThread 限频 policy",
+                "en": "Rt Freq Limit Policy CPU"
               }
             },
             "file_io_overlap_ms": {
@@ -32503,6 +34863,12 @@
                 "en": "Evidence Status"
               }
             },
+            "present_interval_source": {
+              "label": {
+                "zh-CN": "呈现间隔来源",
+                "en": "Present Interval Source"
+              }
+            },
             "rating": {
               "label": {
                 "zh-CN": "证据边界",
@@ -32590,6 +34956,63 @@
             "en": "Frame Timeline Check"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        },
+        "frame_timeline_population": {
+          "title": {
+            "zh-CN": "整个 Trace · 所有进程 · FrameTimeline 原始标签",
+            "en": "Whole trace · all processes · raw FrameTimeline tags (jank tags include Buffer Stuffing)"
+          },
+          "columns": {
+            "total_frames": {
+              "label": {
+                "zh-CN": "FrameTimeline 帧数（全部进程）",
+                "en": "Total Frames"
+              }
+            },
+            "jank_frames": {
+              "label": {
+                "zh-CN": "带 jank 标签的帧（含 Buffer Stuffing，非感知掉帧）",
+                "en": "Jank Frames"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "有帧的进程数",
+                "en": "Process Count"
+              }
+            },
+            "unattributed_frames": {
+              "label": {
+                "zh-CN": "无进程归属的帧",
+                "en": "Unattributed Frames"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "trace_start_ts": {
+              "label": {
+                "zh-CN": "Trace 起点",
+                "en": "Trace Start Ts"
+              }
+            },
+            "trace_end_ts": {
+              "label": {
+                "zh-CN": "Trace 终点",
+                "en": "Trace End Ts"
+              }
+            },
+            "frame_population_evidence": {
+              "label": {
+                "zh-CN": "证据状态",
+                "en": "Frame Population Evidence"
+              }
+            }
+          },
           "synthesizeLabels": {}
         },
         "frame_variance_probe": {
@@ -32845,14 +35268,14 @@
             },
             "total_dur": {
               "label": {
-                "zh-CN": "总耗时",
-                "en": "Total Dur"
+                "zh-CN": "FrameTimeline 时长合计（起点→呈现）",
+                "en": "FrameTimeline duration sum (start to present)"
               }
             },
             "avg_dur": {
               "label": {
-                "zh-CN": "平均耗时",
-                "en": "Avg Dur"
+                "zh-CN": "FrameTimeline 平均时长（起点→呈现，非呈现间隔）",
+                "en": "Mean FrameTimeline duration (start to present, not a present interval)"
               }
             },
             "responsibility": {
@@ -33719,13 +36142,19 @@
             "avg_frame_dur": {
               "label": {
                 "zh-CN": "平均呈现间隔",
-                "en": "Avg Frame Dur"
+                "en": "Mean present interval"
               }
             },
             "p95_frame_dur": {
               "label": {
                 "zh-CN": "P95 呈现间隔",
-                "en": "P95 Frame Dur"
+                "en": "P95 present interval"
+              }
+            },
+            "present_interval_source": {
+              "label": {
+                "zh-CN": "呈现间隔来源",
+                "en": "Present Interval Source"
               }
             },
             "rating": {
@@ -33872,14 +36301,14 @@
             },
             "avg_dur": {
               "label": {
-                "zh-CN": "平均帧耗时",
-                "en": "Avg Dur"
+                "zh-CN": "平均 FrameTimeline 时长（起点→呈现）",
+                "en": "Mean FrameTimeline duration (start to present)"
               }
             },
             "max_dur": {
               "label": {
-                "zh-CN": "最大帧耗时",
-                "en": "Max Dur"
+                "zh-CN": "最大 FrameTimeline 时长（起点→呈现）",
+                "en": "Max FrameTimeline duration (start to present)"
               }
             },
             "session_fps": {
@@ -33978,6 +36407,183 @@
             "en": "Session Thread Core Affinity"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        },
+        "smoothness_basis": {
+          "title": {
+            "zh-CN": "流畅度口径：呈现间隔 vs 帧时长 vs Buffer Stuffing",
+            "en": "Smoothness basis: present gaps vs frame duration vs Buffer Stuffing"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "session_id": {
+              "label": {
+                "zh-CN": "区间",
+                "en": "Session Id"
+              }
+            },
+            "layer_name": {
+              "label": {
+                "zh-CN": "图层",
+                "en": "Layer Name"
+              }
+            },
+            "verdict_basis": {
+              "label": {
+                "zh-CN": "流畅度判定依据",
+                "en": "Smoothness verdict basis"
+              }
+            },
+            "cadence_metric": {
+              "label": {
+                "zh-CN": "节奏口径",
+                "en": "Cadence metric"
+              }
+            },
+            "cadence_gap_p50_ns": {
+              "label": {
+                "zh-CN": "节奏间隔 P50",
+                "en": "Cadence gap P50"
+              }
+            },
+            "cadence_gap_p95_ns": {
+              "label": {
+                "zh-CN": "节奏间隔 P95",
+                "en": "Cadence gap P95"
+              }
+            },
+            "cadence_gap_max_ns": {
+              "label": {
+                "zh-CN": "节奏间隔最大",
+                "en": "Cadence gap max"
+              }
+            },
+            "cadence_gaps_over_1_5x_budget": {
+              "label": {
+                "zh-CN": "超过 1.5 倍预算的间隔",
+                "en": "Gaps over 1.5x budget"
+              }
+            },
+            "cadence_gap_count": {
+              "label": {
+                "zh-CN": "间隔数",
+                "en": "Gap count"
+              }
+            },
+            "budget_ns": {
+              "label": {
+                "zh-CN": "VSync 预算",
+                "en": "VSync budget"
+              }
+            },
+            "budget_source": {
+              "label": {
+                "zh-CN": "预算来源",
+                "en": "Budget source"
+              }
+            },
+            "budget_status": {
+              "label": {
+                "zh-CN": "预算可信度",
+                "en": "Budget status"
+              }
+            },
+            "frame_dur_metric": {
+              "label": {
+                "zh-CN": "帧时长口径",
+                "en": "Frame duration metric"
+              }
+            },
+            "frame_dur_p50_ns": {
+              "label": {
+                "zh-CN": "帧时长 P50（时延，非节奏）",
+                "en": "Frame duration P50 (latency, not cadence)"
+              }
+            },
+            "frame_dur_p95_ns": {
+              "label": {
+                "zh-CN": "帧时长 P95（时延，非节奏）",
+                "en": "Frame duration P95 (latency, not cadence)"
+              }
+            },
+            "frame_dur_max_ns": {
+              "label": {
+                "zh-CN": "帧时长最大（时延，非节奏）",
+                "en": "Frame duration max (latency, not cadence)"
+              }
+            },
+            "buffer_stuffing_pct": {
+              "label": {
+                "zh-CN": "原始 Buffer Stuffing 标签占比",
+                "en": "Raw Buffer Stuffing tag share"
+              }
+            },
+            "buffer_stuffing_frames": {
+              "label": {
+                "zh-CN": "原始 Buffer Stuffing 标签帧",
+                "en": "Raw Buffer Stuffing tagged frames"
+              }
+            },
+            "cadence_status": {
+              "label": {
+                "zh-CN": "呈现节奏核验",
+                "en": "Presentation cadence audit"
+              }
+            },
+            "steady_late_frames": {
+              "label": {
+                "zh-CN": "匀速晚拍帧（信息性）",
+                "en": "Steady late frames (informational)"
+              }
+            },
+            "dropped_frames": {
+              "label": {
+                "zh-CN": "丢弃帧",
+                "en": "Dropped frames"
+              }
+            },
+            "presentation_status": {
+              "label": {
+                "zh-CN": "呈现数据",
+                "en": "Presentation data"
+              }
+            },
+            "frames": {
+              "label": {
+                "zh-CN": "帧数",
+                "en": "Frames"
+              }
+            },
+            "frame_timeline_coverage_status": {
+              "label": {
+                "zh-CN": "FrameTimeline 覆盖状态",
+                "en": "Frame Timeline Coverage Status"
+              }
+            },
+            "start_ts": {
+              "label": {
+                "zh-CN": "开始时间",
+                "en": "Start Ts"
+              }
+            },
+            "end_ts": {
+              "label": {
+                "zh-CN": "结束时间",
+                "en": "End Ts"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            }
+          },
           "synthesizeLabels": {}
         },
         "system_context_window": {
@@ -34868,6 +37474,18 @@
                 "en": "Dur ns"
               }
             },
+            "dur_without_trampoline_ms": {
+              "label": {
+                "zh-CN": "去 Trampoline 耗时",
+                "en": "Dur Without Trampoline ms"
+              }
+            },
+            "trampoline_ms": {
+              "label": {
+                "zh-CN": "Trampoline 耗时",
+                "en": "Trampoline ms"
+              }
+            },
             "ttid_ms": {
               "label": {
                 "zh-CN": "TTIDms",
@@ -35009,6 +37627,18 @@
               "label": {
                 "zh-CN": "启动类型",
                 "en": "Startup Type"
+              }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部文件 IO 启动占比",
+                "en": "All Percent Of Startup"
+              }
+            },
+            "all_total_dur_ms": {
+              "label": {
+                "zh-CN": "全部文件 IO 总耗时",
+                "en": "All Total Dur ms"
               }
             }
           },
@@ -35197,6 +37827,12 @@
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部主线程同步 Binder 启动占比",
+                "en": "All Percent Of Startup"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -35249,6 +37885,18 @@
               "label": {
                 "zh-CN": "严重延迟次数",
                 "en": "Severe Delays"
+              }
+            },
+            "all_severe_delays": {
+              "label": {
+                "zh-CN": "全部状态严重延迟次数",
+                "en": "All Severe Delays"
+              }
+            },
+            "all_max_wait_ms": {
+              "label": {
+                "zh-CN": "全部状态最大等待",
+                "en": "All Max Wait ms"
               }
             }
           },
@@ -35306,6 +37954,12 @@
               "label": {
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
+              }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部 Binder 启动占比",
+                "en": "All Percent Of Startup"
               }
             }
           },
@@ -35374,6 +38028,12 @@
               "label": {
                 "zh-CN": "类别",
                 "en": "Category"
+              }
+            },
+            "category_percent": {
+              "label": {
+                "zh-CN": "类别占比",
+                "en": "Category Percent"
               }
             }
           },
@@ -35589,6 +38249,12 @@
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部 Binder 启动占比",
+                "en": "All Percent Of Startup"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -35708,6 +38374,12 @@
               "label": {
                 "zh-CN": "类别",
                 "en": "Category"
+              }
+            },
+            "category_percent": {
+              "label": {
+                "zh-CN": "类别占比",
+                "en": "Category Percent"
               }
             }
           },
@@ -35834,6 +38506,12 @@
               "label": {
                 "zh-CN": "UnknownCorems",
                 "en": "unknown_core_ms"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "UnknownCorens",
+                "en": "unknown_core_ns"
               }
             },
             "used_ucpus": {
@@ -35978,6 +38656,12 @@
               "label": {
                 "zh-CN": "CPU 时间",
                 "en": "Total CPU ms"
+              }
+            },
+            "returned_total_cpu_ms": {
+              "label": {
+                "zh-CN": "返回线程 CPU 时间合计",
+                "en": "Returned Total CPU ms"
               }
             },
             "q1_big_running_ms": {
@@ -36354,6 +39038,24 @@
                 "zh-CN": "未知核类型占比",
                 "en": "Unknown Core Pct"
               }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核运行(ns)",
+                "en": "Unknown Core ns"
+              }
+            },
+            "main_thread_count": {
+              "label": {
+                "zh-CN": "主线程数",
+                "en": "Main Thread Count"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核占比口径",
+                "en": "Big Core Pct Definition"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -36431,6 +39133,12 @@
               "label": {
                 "zh-CN": "UnknownCorems",
                 "en": "unknown_core_ms"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "UnknownCorens",
+                "en": "unknown_core_ns"
               }
             },
             "used_ucpus": {
@@ -36532,6 +39240,12 @@
               "label": {
                 "zh-CN": "CPU 时间",
                 "en": "Total CPU ms"
+              }
+            },
+            "returned_total_cpu_ms": {
+              "label": {
+                "zh-CN": "返回线程 CPU 时间合计",
+                "en": "Returned Total CPU ms"
               }
             },
             "q1_big_running_ms": {
@@ -38085,6 +40799,18 @@
                 "en": "Dur ns"
               }
             },
+            "dur_without_trampoline_ms": {
+              "label": {
+                "zh-CN": "去 Trampoline 耗时",
+                "en": "Dur Without Trampoline ms"
+              }
+            },
+            "trampoline_ms": {
+              "label": {
+                "zh-CN": "Trampoline 耗时",
+                "en": "Trampoline ms"
+              }
+            },
             "ttid_ms": {
               "label": {
                 "zh-CN": "TTIDms",
@@ -38714,6 +41440,18 @@
                 "zh-CN": "启动类型",
                 "en": "Startup Type"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部文件 IO 启动占比",
+                "en": "All Percent Of Startup"
+              }
+            },
+            "all_total_dur_ms": {
+              "label": {
+                "zh-CN": "全部文件 IO 总耗时",
+                "en": "All Total Dur ms"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -38954,6 +41692,12 @@
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部主线程同步 Binder 启动占比",
+                "en": "All Percent Of Startup"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -39019,6 +41763,18 @@
               "label": {
                 "zh-CN": "严重延迟次数",
                 "en": "Severe Delays"
+              }
+            },
+            "all_severe_delays": {
+              "label": {
+                "zh-CN": "全部状态严重延迟次数",
+                "en": "All Severe Delays"
+              }
+            },
+            "all_max_wait_ms": {
+              "label": {
+                "zh-CN": "全部状态最大等待",
+                "en": "All Max Wait ms"
               }
             }
           },
@@ -41129,8 +43885,14 @@
             },
             "big_core_pct": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Pct"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Core ns"
               }
             },
             "unique_cpus": {
@@ -41710,7 +44472,7 @@
         "throttling_events": {
           "title": {
             "zh-CN": "频率骤降事件（原因待查）",
-            "en": "Throttling Events"
+            "en": "Frequency Drop Events (cause not determined)"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -41719,12 +44481,12 @@
     },
     "thermal_predictor": {
       "displayName": {
-        "zh-CN": "热控风险预测",
-        "en": "Thermal Predictor"
+        "zh-CN": "CPU 频率趋势观察",
+        "en": "CPU Frequency Trend"
       },
       "description": {
         "zh-CN": "CPU 频率趋势观察；未提供温度或限频证据时不预测热机制",
-        "en": "Analyzes Thermal Predictor using trace metrics and supporting evidence."
+        "en": "Observes the CPU frequency trend; it reads no temperature or frequency-limit evidence and names no cause"
       },
       "type": "atomic",
       "steps": {
@@ -41738,8 +44500,8 @@
         },
         "root": {
           "title": {
-            "zh-CN": "热控风险预测",
-            "en": "Thermal Predictor"
+            "zh-CN": "CPU 频率趋势观察",
+            "en": "CPU Frequency Trend"
           },
           "columns": {
             "avg_start_freq_mhz": {
@@ -41763,7 +44525,7 @@
             "throttled_core_ratio_pct": {
               "label": {
                 "zh-CN": "频率变化核心占比",
-                "en": "Throttled Core Ratio Pct"
+                "en": "Frequency-drop core ratio (%)"
               }
             },
             "frequency_trend_risk": {
@@ -41775,7 +44537,7 @@
             "thermal_risk": {
               "label": {
                 "zh-CN": "热原因证据",
-                "en": "Thermal Risk"
+                "en": "Heat-cause evidence"
               }
             },
             "prediction": {
@@ -41847,13 +44609,13 @@
             "throttle_ratio": {
               "label": {
                 "zh-CN": "观测频率跨度(%)",
-                "en": "Throttle Ratio"
+                "en": "Observed frequency span (%)"
               }
             },
             "throttling_status": {
               "label": {
                 "zh-CN": "状态",
-                "en": "Throttling Status"
+                "en": "Status"
               }
             }
           },
@@ -41872,7 +44634,7 @@
             },
             "field:throttle_ratio": {
               "zh-CN": "观测频率跨度",
-              "en": "Throttle Ratio"
+              "en": "Observed frequency span"
             }
           }
         },
@@ -41886,7 +44648,7 @@
         },
         "direct_limit_evidence": {
           "title": {
-            "zh-CN": "直接限频证据（限频区段 x 散热设备）",
+            "zh-CN": "直接限频证据（限频区段 x 关联散热设备）",
             "en": "Direct Limit Evidence"
           },
           "columns": {
@@ -41916,7 +44678,7 @@
             },
             "cooling_confirmed_episodes": {
               "label": {
-                "zh-CN": "与散热设备同期的区段",
+                "zh-CN": "由关联散热设备施加的区段",
                 "en": "Cooling Confirmed Episodes"
               }
             },
@@ -41928,14 +44690,38 @@
             },
             "has_cdev_data": {
               "label": {
-                "zh-CN": "有内核散热设备数据",
+                "zh-CN": "采集到散热设备档位变化",
                 "en": "Has Cdev Data"
+              }
+            },
+            "freq_limit_classification": {
+              "label": {
+                "zh-CN": "限频触发分类",
+                "en": "Freq Limit Classification"
+              }
+            },
+            "is_confirmed": {
+              "label": {
+                "zh-CN": "已核验由内核热控施加",
+                "en": "Is Confirmed"
+              }
+            },
+            "onset_trigger_mix": {
+              "label": {
+                "zh-CN": "逐次限频写入分类",
+                "en": "Onset Trigger Mix"
               }
             },
             "thermal_throttling_evidence": {
               "label": {
                 "zh-CN": "热节流证据",
                 "en": "Thermal Throttling Evidence"
+              }
+            },
+            "class_note": {
+              "label": {
+                "zh-CN": "分类说明",
+                "en": "Class Note"
               }
             },
             "next_step": {
@@ -42069,6 +44855,12 @@
               "label": {
                 "zh-CN": "降频占比",
                 "en": "Downshift Ratio Pct"
+              }
+            },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
               }
             }
           },
@@ -42371,8 +45163,8 @@
         },
         "thermal_predictor_probe": {
           "title": {
-            "zh-CN": "热风险预测（专家探针）",
-            "en": "Thermal Predictor Probe"
+            "zh-CN": "CPU 频率趋势（专家探针）",
+            "en": "CPU frequency trend (expert probe)"
           },
           "columns": {
             "avg_start_freq_mhz": {
@@ -42396,7 +45188,7 @@
             "throttled_core_ratio_pct": {
               "label": {
                 "zh-CN": "频率变化核心占比",
-                "en": "Throttled Core Ratio Pct"
+                "en": "Frequency-drop core ratio (%)"
               }
             },
             "frequency_trend_risk": {
@@ -42408,7 +45200,7 @@
             "thermal_risk": {
               "label": {
                 "zh-CN": "热原因证据",
-                "en": "Thermal Risk"
+                "en": "Heat-cause evidence"
               }
             },
             "prediction": {

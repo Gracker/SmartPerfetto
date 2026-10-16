@@ -37,31 +37,6 @@ keywords:
   - compare snapshots
   - compare analysis results
 
-phase_hints:
-  - id: result_snapshot_selection
-    keywords: ['snapshot', '结果', '候选', 'baseline', 'current result', 'analysis result']
-    constraints: '必须先确认要对比的是 AnalysisResultSnapshot/SID/result，而不是实时 raw trace pair 对比。候选不唯一时必须让用户选择 baseline 和 candidates。'
-    critical_tools: []
-    critical: true
-  - id: matrix_first
-    keywords: ['matrix', 'delta', 'metric', 'fps', 'jank', 'startup', '启动', '帧率']
-    constraints: '定量结论只能来自 ComparisonMatrix 的 normalized metrics。缺失 metric 要标注 missing reason；只有允许回填时才请求 trace backfill。'
-    critical_tools: []
-    critical: true
-
-plan_template:
-  mandatory_aspects:
-    - id: snapshot_scope
-      match_keywords: ['snapshot', 'analysis result', '结果', 'baseline', 'candidate']
-      suggestion: '分析结果对比必须先确认 snapshot 范围、baseline 和 candidates'
-      required_expected_calls:
-        - tool: get_comparison_context
-    - id: comparison_matrix
-      match_keywords: ['matrix', 'metric', 'delta', 'fps', 'jank', 'startup', '启动', '帧率']
-      suggestion: '分析结果对比必须构造 ComparisonMatrix，并基于结构化 metric 输出 delta'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: multi_trace_result_comparison
 ---
 
 #### multi_trace_result_comparison Core Strategy

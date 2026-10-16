@@ -29,13 +29,21 @@ import {
 } from '../../services/traceMetadataStore';
 import { setTraceProcessorServiceForTests } from '../../services/traceProcessorService';
 import { persistAnalysisRunState, resetAnalysisRunStoreForTests } from '../../services/analysisRunStore';
-import { getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests } from '../../services/traceProcessorLeaseStore';
+import {
+  frontendHolderRef,
+  getTraceProcessorLeaseStore,
+  setTraceProcessorLeaseStoreForTests,
+} from '../../services/traceProcessorLeaseStore';
 import { TraceProcessorFactory } from '../../services/workingTraceProcessor';
 import {getPortPool} from '../../services/portPool';
 import * as traceMetadataStore from '../../services/traceMetadataStore';
 import {TRACE_PROCESSOR_CAPABILITY_SECRET_ENV} from '../../services/traceProcessorProxyCapability';
 import {setPublicHttpDownloadForTests} from '../../services/publicHttpDownload';
 import traceRoutes from '../simpleTraceRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -91,14 +99,14 @@ let fakeTraceProcessorService: {
   registerExternalRpc: jest.Mock;
 };
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/traces', traceRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
-function makeWorkspaceApp(): express.Express {
+async function makeWorkspaceApp() {
   const app = express();
   app.use(express.json());
   app.use(
@@ -108,7 +116,7 @@ function makeWorkspaceApp(): express.Express {
     requireWorkspaceRouteContext,
     traceRoutes,
   );
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -410,6 +418,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   jest.restoreAllMocks();
   setTraceProcessorServiceForTests(null);
   setPublicHttpDownloadForTests();
@@ -488,7 +497,8 @@ describe('enterprise trace metadata routes', () => {
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
     const metadata = {id: 'placeholder-backing', filename: 'capture.trace', size: 24,
       uploadedAt: new Date(0).toISOString(), status: 'ready', ...source()};
-    persistAnalysisRunState({...scope, traceId: metadata.id, sessionId: 'conversation-1', runId: 'run-1'}, 'completed');
+    persistAnalysisRunState({...scope, traceId: metadata.id, sessionId: 'conversation-1', runId: 'run-1',
+      privateContext: NO_PRIVATE_CONTEXT}, 'completed');
     expect(readTraceAsset(metadata.id)).toMatchObject({status: 'metadata_only', size_bytes: 0});
 
     ensureTraceProcessorLeaseBackingMetadata(metadata, scope);
@@ -509,7 +519,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('opens an authorized stored trace through an isolated viewer lease', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const traceId = 'viewer-trace';
     const tracePath = path.join(
       dataDir,
@@ -559,6 +569,9 @@ describe('enterprise trace metadata routes', () => {
         protocol: expect.any(String),
       }),
     }));
+    // The processor gets the stored file; the client gets no server path.
+    expect(response.body.trace).not.toHaveProperty('path');
+    expect(response.text).not.toContain(dataDir);
     expect(fakeTraceProcessorService.registerStoredTrace).toHaveBeenCalledWith(
       expect.objectContaining({id: traceId, filePath: tracePath}),
     );
@@ -582,7 +595,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('reports a ready page-scoped lease without refreshing its lifetime', async () => {
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
     const traceId = 'connection-ready-trace';
     const leaseScope = {
       tenantId: 'tenant-a',
@@ -653,7 +666,7 @@ describe('enterprise trace metadata routes', () => {
     store.acquireHolderForLease(scope, lease.id, {holderType: 'frontend_http_rpc', holderRef: 'window-private',
       windowId: 'window-private', metadata: {userId: 'user-a'}});
     const before = store.getLeaseById(scope, lease.id);
-    const response = await scopedSsoHeaders(request(makeWorkspaceApp()).get(
+    const response = await scopedSsoHeaders(request(await makeWorkspaceApp()).get(
       `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`), {windowId: 'window-private'});
     expect(response.body).toEqual({success: true, leaseId: lease.id, status: 'lease_expired'});
     expect(fakeTraceProcessorService.getLeaseProcessorSnapshot).not.toHaveBeenCalled();
@@ -705,7 +718,7 @@ describe('enterprise trace metadata routes', () => {
       await resume;
       return countMetadata(context);
     });
-    const pendingResponse = ssoHeaders(request(makeApp()).get('/api/traces/stats')).then(response => response);
+    const pendingResponse = ssoHeaders(request(await makeApp()).get('/api/traces/stats')).then(response => response);
     await entered;
     privateStillPresent = false; // The old private instance was removed while metadata was loading.
     publicPortWasReused = reverseReuse; // Another private key now owns the old public allocation's port.
@@ -717,7 +730,9 @@ describe('enterprise trace metadata routes', () => {
     expect(response.body.stats.processors.items.map((item: {httpPort: number}) => item.httpPort)).toEqual(publicPorts);
     expect(response.body.stats.portPool.allocated).toBe(2);
     expect(response.body.stats.portPool.allocations.map((item: {port: number}) => item.port)).toEqual(publicPorts);
-    expect(JSON.stringify(response.body)).not.toContain('9188');
+    // Match the port as a whole number: live RSS/memory byte counts in the same
+    // body can contain the digits 9188 (e.g. 1918812160).
+    expect(JSON.stringify(response.body)).not.toMatch(/(?<!\d)9188(?!\d)/);
     expect(JSON.stringify(response.body)).not.toContain(lease.id);
     expect(fakeTraceProcessorService.exposeNativePort.mock.calls).toEqual(publicPorts.map(port => [port]));
   });
@@ -725,7 +740,7 @@ describe('enterprise trace metadata routes', () => {
   it.each(['pending', 'starting', 'restarting'])(
     'maps %s lease state to preparing',
     async (leaseState) => {
-      const app = makeWorkspaceApp();
+      const app = await makeWorkspaceApp();
       const traceId = `connection-${leaseState}-trace`;
       const lease = await createConnectionLease({traceId, windowId: 'window-state'});
       setLeaseState(lease.id, leaseState);
@@ -749,7 +764,7 @@ describe('enterprise trace metadata routes', () => {
   );
 
   it('maps a deleted trace to trace_deleted', async () => {
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
     const traceId = 'connection-deleted-trace';
     const lease = await createConnectionLease({traceId, windowId: 'window-deleted'});
     expireTraceAsset(traceId);
@@ -773,7 +788,7 @@ describe('enterprise trace metadata routes', () => {
   it.each(['draining', 'released', 'failed', 'unexpected']) (
     'maps %s lease state to non-enumerable lease_expired',
     async (leaseState) => {
-      const app = makeWorkspaceApp();
+      const app = await makeWorkspaceApp();
       const traceId = `connection-${leaseState}-trace`;
       const lease = await createConnectionLease({traceId, windowId: 'window-terminal'});
       setLeaseState(lease.id, leaseState);
@@ -802,7 +817,7 @@ describe('enterprise trace metadata routes', () => {
   ])(
     'maps lease %s with processor %j to backend_unavailable',
     async (leaseState, processor) => {
-      const app = makeWorkspaceApp();
+      const app = await makeWorkspaceApp();
       const traceId = `connection-unavailable-${leaseState}-${processor?.status ?? 'missing'}`;
       const lease = await createConnectionLease({traceId, windowId: 'window-unavailable'});
       setLeaseState(lease.id, leaseState);
@@ -826,7 +841,7 @@ describe('enterprise trace metadata routes', () => {
   );
 
   it('keeps a busy processor ready when it has a usable port', async () => {
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
     const traceId = 'connection-busy-trace';
     const lease = await createConnectionLease({traceId, windowId: 'window-busy'});
     setLeaseState(lease.id, 'active');
@@ -847,7 +862,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('hides a lease from another user, window, workspace, and missing window context', async () => {
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
     const traceId = 'connection-scope-trace';
     const lease = await createConnectionLease({traceId, windowId: 'window-owner'});
     setLeaseState(lease.id, 'active');
@@ -887,7 +902,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('requires trace:read permission for connection status', async () => {
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
     const lease = await createConnectionLease({
       traceId: 'connection-permission-trace',
       windowId: 'window-permission',
@@ -905,7 +920,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('paginates scoped database metadata and reports its total without loading every row', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     for (const [index, id] of ['trace-a', 'trace-b', 'trace-c'].entries()) {
       await writeTraceMetadata({
         id,
@@ -941,7 +956,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('disables legacy direct RPC registration in enterprise mode before creating naked-port state', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const registerRes = await ssoHeaders(
       request(app)
@@ -960,7 +975,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('stores uploaded trace metadata in trace_assets and moves the trace into scoped data storage', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'fixture.trace');
     await fs.writeFile(sourceTracePath, 'trace-content');
 
@@ -1011,12 +1026,21 @@ describe('enterprise trace metadata routes', () => {
       }),
     ]);
 
+    // Upload, catalog and detail name the trace by id; none carries its server path.
+    expect(uploadRes.text).not.toContain(dataDir);
     const listRes = await ssoHeaders(request(app).get('/api/traces'));
     expect(listRes.status).toBe(200);
-    expect(listRes.body.traces.map((trace: any) => trace.id)).toEqual([traceId]);
+    expect(listRes.body.traces).toEqual([expect.objectContaining({
+      id: traceId, filename: 'fixture.trace', size: 'trace-content'.length, status: 'ready',
+    })]);
+    expect(listRes.body.traces[0]).not.toHaveProperty('path');
+    expect(listRes.text).not.toContain(dataDir);
 
     const ownTraceRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}`));
     expect(ownTraceRes.status).toBe(200);
+    expect(ownTraceRes.body.trace).toEqual(expect.objectContaining({id: traceId, filename: 'fixture.trace'}));
+    expect(ownTraceRes.body.trace).not.toHaveProperty('path');
+    expect(ownTraceRes.text).not.toContain(dataDir);
 
     const downloadRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}/file`));
     expect(downloadRes.status).toBe(200);
@@ -1066,8 +1090,35 @@ describe('enterprise trace metadata routes', () => {
     });
   });
 
+  it('downloads a stored trace whose data directory sits below a dot-directory', async () => {
+    // The Linux portable data root is ~/.local/share/smartperfetto; a rootless
+    // sendFile applied its dotfile rule to every parent segment and answered 404.
+    const dotDataDir = path.join(tmpDir, '.local', 'share', 'data');
+    process.env[ENTERPRISE_DATA_DIR_ENV] = dotDataDir;
+    const app = await makeApp();
+    const sourceTracePath = path.join(tmpDir, 'fixture.trace');
+    await fs.writeFile(sourceTracePath, 'dot-dir-trace');
+
+    const uploadRes = await ssoHeaders(
+      request(app).post('/api/traces/upload').attach('file', sourceTracePath),
+    );
+    expect(uploadRes.status).toBe(200);
+    const traceId = uploadRes.body.trace.id as string;
+    await expect(fs.access(
+      path.join(dotDataDir, 'tenant-a', 'workspace-a', 'traces', `${traceId}.trace`),
+    )).resolves.toBeUndefined();
+
+    const downloadRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}/file`));
+    expect(downloadRes.status).toBe(200);
+    expect(
+      Buffer.isBuffer(downloadRes.body)
+        ? downloadRes.body.toString('utf-8')
+        : downloadRes.text,
+    ).toBe('dot-dir-trace');
+  });
+
   it('preserves UTF-8 upload names and repairs legacy mojibake in trace catalog responses', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const filename = '直播跳转卡顿 修改后.perfetto';
     const uploadRes = await ssoHeaders(
       request(app)
@@ -1139,8 +1190,43 @@ describe('enterprise trace metadata routes', () => {
     ]));
   });
 
+  it('keeps one frontend holder for a client without a window id across trace requests', async () => {
+    const app = await makeApp();
+    const sourceTracePath = path.join(tmpDir, 'windowless.trace');
+    await fs.writeFile(sourceTracePath, 'windowless');
+    fakeTraceProcessorService.getTraceWithPort.mockImplementation((traceId: unknown) => ({
+      id: String(traceId),
+      filename: 'windowless.trace',
+      size: 'windowless'.length,
+      uploadTime: new Date(),
+      status: 'ready',
+      port: 9555,
+    }));
+
+    const uploadRes = await ssoHeaders(
+      request(app)
+        .post('/api/traces/upload')
+        .attach('file', sourceTracePath),
+    );
+    expect(uploadRes.status).toBe(200);
+    const traceId = uploadRes.body.trace.id as string;
+    // Each request has its own request id, and the session id differs too.
+    for (const sessionId of ['pane-a', 'pane-b']) {
+      const res = await ssoHeaders(request(app).get(`/api/traces/${traceId}?sessionId=${sessionId}`));
+      expect(res.status).toBe(200);
+      expect(res.body.trace.leaseId).toBe(uploadRes.body.trace.leaseId);
+    }
+
+    expect(readTraceProcessorLeases(traceId)).toEqual([
+      expect.objectContaining({
+        holder_type: 'frontend_http_rpc',
+        holder_ref: frontendHolderRef({userId: 'user-a'}),
+      }),
+    ]);
+  });
+
   it('reports trace_processor startup failures without creating a frontend lease', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'tp-failure.trace');
     await fs.writeFile(sourceTracePath, 'tp-failure');
     const tpError = 'trace_processor_shell not found at: /missing/trace_processor_shell';
@@ -1151,6 +1237,7 @@ describe('enterprise trace metadata routes', () => {
       id: String(traceId),
       filename: 'tp-failure.trace',
       size: 'tp-failure'.length,
+      filePath: path.join(dataDir, 'tenant-a', 'workspace-a', 'traces', `${String(traceId)}.trace`),
       uploadTime: new Date(),
       status: 'error',
       error: tpError,
@@ -1163,10 +1250,16 @@ describe('enterprise trace metadata routes', () => {
     );
 
     expect(uploadRes.status).toBe(200);
+    // The processor's own error (here a server path) stays in the log.
     expect(uploadRes.body).toEqual(expect.objectContaining({
       success: false,
-      error: expect.stringContaining(tpError),
+      error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
+    expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
+    // The failed upload still names the stored trace, by id and not by its server path.
+    expect(uploadRes.body.trace).toEqual(expect.objectContaining({filename: 'tp-failure.trace', status: 'error'}));
+    expect(uploadRes.body.trace).not.toHaveProperty('filePath');
+    expect(uploadRes.text).not.toContain(dataDir);
     const traceId = uploadRes.body.trace.id as string;
     expect(readTraceAsset(traceId)).toEqual(expect.objectContaining({
       id: traceId,
@@ -1176,7 +1269,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('does not log a trace as loaded when trace_processor reports an error status', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'tp-status-error.trace');
     await fs.writeFile(sourceTracePath, 'tp-status-error');
     const tpError = 'trace_processor_shell not found at: /missing/trace_processor_shell';
@@ -1198,16 +1291,18 @@ describe('enterprise trace metadata routes', () => {
     );
 
     expect(uploadRes.status).toBe(200);
+    // The processor's own error (here a server path) stays in the log.
     expect(uploadRes.body).toEqual(expect.objectContaining({
       success: false,
-      error: expect.stringContaining(tpError),
+      error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
+    expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
     expect(logSpy.mock.calls.some(call => String(call[0]).includes('[TraceProcessor] Loaded trace'))).toBe(false);
     expect(readTraceProcessorLeases(uploadRes.body.trace.id)).toEqual([]);
   });
 
   it('keeps simultaneous user uploads scoped while concurrent cleanup is blocked by active holders', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const [uploadA, uploadB] = await Promise.all([
       scopedSsoHeaders(
@@ -1261,7 +1356,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('rejects uploads that exceed workspace trace quota before metadata is committed', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     writeWorkspacePolicies({
       quotaPolicy: {
         maxTraceBytes: 4,
@@ -1285,7 +1380,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('rejects uploads after tenant tombstone before metadata is committed', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     writeTenantTombstone();
 
     const res = await ssoHeaders(
@@ -1305,7 +1400,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('applies workspace trace retention policy to uploaded trace metadata', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     writeWorkspacePolicies({
       retentionPolicy: {
         traceRetentionDays: 3,
@@ -1326,7 +1421,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('records observed processor RSS on the frontend lease and exposes RAM budget stats', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'rss.trace');
     await fs.writeFile(sourceTracePath, 'rss-trace-content');
     let currentTraceId: string | null = null;
@@ -1437,7 +1532,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('reports isolated report-generation lease queue length separately from the frontend shared queue', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'report-queue.trace');
     await fs.writeFile(sourceTracePath, 'report-queue-content');
     let currentTraceId: string | null = null;
@@ -1582,7 +1677,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('streams URL uploads into scoped trace storage without buffering the response body', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const traceBytes = 'url-trace-content';
     const fetchSpy = jest.fn(async (url: URL, _timeoutMs: number) => ({
       status: 200,
@@ -1622,7 +1717,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('blocks enterprise cleanup when scoped trace processor leases still have active holders and audits the attempt', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'active-cleanup.trace');
     await fs.writeFile(sourceTracePath, 'active-cleanup');
 
@@ -1659,7 +1754,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('hides enterprise cleanup from non-admin analysts', async () => {
-    const app = makeApp();
+    const app = await makeApp();
 
     const cleanupRes = await ssoHeaders(request(app).post('/api/traces/cleanup'));
 
@@ -1670,7 +1765,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('drains idle enterprise leases before scoped processor cleanup and records an audit event', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'idle-cleanup.trace');
     await fs.writeFile(sourceTracePath, 'idle-cleanup');
 
@@ -1717,7 +1812,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('keeps another workspace running run and active lease intact during scoped delete and cleanup', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTraceA = path.join(tmpDir, 'delete-a.trace');
     const sourceTraceB = path.join(tmpDir, 'active-b.trace');
     await fs.writeFile(sourceTraceA, 'delete-a');
@@ -1805,7 +1900,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('blocks enterprise trace delete while runs, active leases, or report holders still own the trace', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'active-delete.trace');
     await fs.writeFile(sourceTracePath, 'active-delete');
 
@@ -1882,7 +1977,7 @@ describe('enterprise trace metadata routes', () => {
   });
 
   it('deletes enterprise trace files and trace_assets metadata through the scoped owner path', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const sourceTracePath = path.join(tmpDir, 'delete-me.trace');
     await fs.writeFile(sourceTracePath, 'delete-me');
 

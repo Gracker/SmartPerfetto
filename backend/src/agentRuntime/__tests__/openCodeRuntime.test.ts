@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import {EventEmitter} from 'events';
 import {spawn as spawnChildProcess} from 'child_process';
 import fs from 'fs';
@@ -14,25 +14,21 @@ import {
   EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
   OpenCodeRuntime,
-  completeOpenCodeFinalReportPhaseIfDelivered,
   createOpenCodeHardenedConfig,
   createOpenCodeStandaloneMcpConfig,
   createOpenCodeStandaloneMcpToolNames,
   createOpenCodeToolAllowlist,
   dispatchOpenCodeBridgeRequest,
   extractOpenCodeAssistantText,
-  getOpenCodePlanCompletionStatus,
   getOpenCodeEngineCapabilities,
   getOpenCodeRuntimeDiagnostics,
   validateOpenCodeModelConfiguration,
   __testing as openCodeTesting,
   projectOpenCodeEventToStreamingUpdate,
   runOpenCodePrompt,
-  sanitizeOpenCodeConclusionText,
   type OpenCodeSdkModuleLoader,
 } from '../openCodeRuntime';
 import type { RuntimeFactoryInput } from '../runtimeRegistry';
-import type {AnalysisPlanV3} from '../../agentv3/types';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
@@ -42,16 +38,23 @@ import {runOpenCodeIntentTransport} from '../engines/opencode/openCodeIntentTran
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
 import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
+import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as sceneEntryEvidence from '../sceneEntryEvidence';
+import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
+import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
+import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
+import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import * as traceCompletenessProber from '../../agentv3/traceCompletenessProber';
 import * as runtimePromptContext from '../runtimePromptContext';
-import * as finalResultQualityGate from '../../services/finalResultQualityGate';
 import * as providerManager from '../../services/providerManager';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import * as finalizationContext from '../analysisFinalizationContext';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
+import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {
@@ -71,6 +74,11 @@ import {renderConclusionContractSidecar, type ConclusionContract} from '../../ag
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
+import {sessionContextManager} from '../../agent/context/enhancedSessionContext';
+import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../tests/helpers/runtimeDraftTerminalState';
 
 const mockOpenCodeIntentTransport = jest.fn<typeof runOpenCodeIntentTransport>();
 jest.mock('../engines/opencode/openCodeIntentTransport', () => ({
@@ -84,28 +92,27 @@ function useIntent(decision: Record<string, unknown>): void {
   mockOpenCodeIntentTransport.mockResolvedValue({status: 'ok', text: JSON.stringify(decision)});
 }
 
-const mockClaudeVerifierVerifyConclusion = jest.fn();
-jest.mock('../engines/claude/claudeVerifier', () => {
-  const actual = jest.requireActual('../engines/claude/claudeVerifier') as any;
-  return {
-    ...actual,
-    verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
-  };
-});
+/** The delivery context the run handed to finalization; the context is released. */
+function attachedDeliveryContext(result: Parameters<typeof finalizationContext.takeFinalizationContext>[0]) {
+  const context = finalizationContext.takeFinalizationContext(result);
+  const deliveryContext = context?.deliveryContext;
+  context?.dispose();
+  return deliveryContext;
+}
 
 type FakeTraceProcessorService = TraceProcessorService & {
   query: jest.MockedFunction<(traceId: string, sql: string) => Promise<QueryResult>>;
   getTrace: jest.MockedFunction<(traceId: string) => TraceInfo>;
 };
 
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   mockOpenCodeIntentTransport.mockReset();
   useIntent(BOUNDED_INTENT);
-  const actualVerifier = jest.requireActual('../engines/claude/claudeVerifier') as any;
-  mockClaudeVerifierVerifyConclusion.mockReset();
-  mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
-    actualVerifier.verifyConclusion(...args)
-  ));
 });
 
 function createFakeTraceProcessorService(): FakeTraceProcessorService {
@@ -263,35 +270,6 @@ function createCompletedScrollingPlanWithFinalPhase(): any {
   };
 }
 
-function createCompletedStartupPlanWithFinalPhase(): any {
-  return {
-    phases: [
-      {
-        id: 'p1',
-        name: '启动证据采集与根因深钻',
-        goal: '采集启动指标、阶段分解与根因证据',
-        expectedTools: [],
-        status: 'completed',
-        summary: '已完成启动类型、TTID/TTFD、阶段耗时和根因证据采集。',
-      },
-      {
-        id: 'p2',
-        name: '综合结论',
-        goal: '输出完整启动分析报告',
-        expectedTools: [],
-        status: 'in_progress',
-        summary: '',
-      },
-    ],
-    successCriteria: '输出包含完整启动场景合同的最终报告',
-    submittedAt: 1,
-    toolCallLog: [
-      {toolName: 'invoke_skill', skillId: 'anr_analysis', success: true, timestamp: 1},
-      {toolName: 'invoke_skill', skillId: 'startup_analysis', success: true, timestamp: 2},
-    ],
-  };
-}
-
 function mockOpenCodePreparation(
   runtime: OpenCodeRuntime,
   plan: any,
@@ -388,9 +366,18 @@ function createNativeIntentHarness(input: {
   nativeError?: boolean;
   closeoutAnswer?: string;
   closeoutError?: boolean;
+  closeoutFinish?: string;
   mainMessages?: Record<string, unknown>[];
+  /** Replaces the main session's default newest-first window and always-busy status. */
+  mainSession?: {
+    messages: (request: {query?: {limit?: number}}) => Promise<unknown>;
+    status: () => Promise<unknown>;
+  };
   beforeClassifierReply?: () => Promise<void>;
   beforeAnswerReply?: () => Promise<void>;
+  beforeCloseoutReply?: () => void;
+  /** Runs when the main session is created: after its prompt (and history) is rendered, before the prompt is sent. */
+  onMainSessionCreate?: () => void;
   env?: Record<string, string>;
   selection?: RuntimeFactoryInput['selection'];
 } = {}) {
@@ -414,37 +401,42 @@ function createNativeIntentHarness(input: {
       const abort = jest.fn(async () => ({}));
       serverCloses.push(close);
       aborts.push(abort);
+      let noToolReply: any;
       return {
         server: {url: 'http://127.0.0.1:4106', close},
         client: {session: {
           create: async request => {
             directories.push(request.query?.directory ?? '');
+            if (index === 1) input.onMainSessionCreate?.();
             return {data: {id: `native-${index}`}};
           },
           abort,
-          ...(index === 1 && input.mainMessages ? {
+          ...(index === 1 && (input.mainMessages || input.mainSession) ? {
             promptAsync: async (request: unknown) => {prompts.push(request); await input.beforeAnswerReply?.(); return {};},
-            messages: async (request: {query?: {limit?: number}}) => {
+            messages: input.mainSession?.messages ?? (async (request: {query?: {limit?: number}}) => {
               const limit = request.query?.limit ?? 50;
               messageReadLimits.push(limit);
               return {data: [...input.mainMessages!].reverse().slice(0, limit)};
-            },
-            status: async () => ({data: {[`native-${index}`]: {type: 'busy'}}}),
+            }),
+            status: input.mainSession?.status ?? (async () => ({data: {[`native-${index}`]: {type: 'busy'}}})),
           } : {}),
+          // A no-tool session holds the user message and the one reply its prompt returned.
+          ...(index !== 1 ? {messages: async () => ({data: [{info: {role: 'user'}}, noToolReply?.data]})} : {}),
           prompt: async request => {
             prompts.push(request);
             if (index === 0) {
               expect(traceProcessor.query).not.toHaveBeenCalled();
               await input.beforeClassifierReply?.();
-              return input.classifierResponse ?? {data: {
+              return noToolReply = input.classifierResponse ?? {data: {
                 info: {id: 'intent-message', role: 'assistant', finish: 'stop',
                   time: {completed: Date.now()}, modelID: 'light-model'},
                 parts: [{type: 'text', text: JSON.stringify(input.decision ?? BOUNDED_INTENT)}],
               }};
             }
             if (index > 1) {
+              input.beforeCloseoutReply?.();
               if (input.closeoutError) throw new Error('closeout provider failure');
-              return {data: {info: {id: 'closeout-message', role: 'assistant', finish: 'stop',
+              return noToolReply = {data: {info: {id: 'closeout-message', role: 'assistant', finish: input.closeoutFinish ?? 'stop',
                 time: {completed: Date.now()}, modelID: 'main-model'},
                 parts: [{type: 'text', text: input.closeoutAnswer ?? 'The cause remains unknown; ask about the main-thread interval.'}]}};
             }
@@ -481,7 +473,86 @@ function createNativeIntentHarness(input: {
     moduleLoader, bridgeClose, messageReadLimits, getTools: () => tools};
 }
 
+describe('OpenCode authorization at every dispatch and observation', () => {
+  const revokeWhen = (revoked: () => boolean) => {
+    const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+    return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+      if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+      return real(...args);
+    });
+  };
+  const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+  const toolStep = {info: {role: 'assistant', id: 'msg-tool', finish: 'tool-calls', time: {created: 1, completed: 2}},
+    parts: [{type: 'tool', tool: 'smartperfetto_read_codebase_file'}]};
+
+  it('aborts the session when authorization changes after a body read, at the first observation', async () => withBackendDataDir(async () => {
+    let revoked = false;
+    let reads = 0;
+    const harness = createNativeIntentHarness({
+      env: {SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: '4000'},
+      mainSession: {
+        messages: async () => {
+          reads += 1;
+          revoked = true; // The tool step returned a body; consent is withdrawn before OpenCode continues.
+          return {data: [toolStep]};
+        },
+        status: async () => ({data: {'native-1': {type: 'busy'}}}),
+      },
+    });
+    const authorization = revokeWhen(() => revoked);
+    try {
+      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-after-read', 'trace-opencode', admitted({analysisMode: 'full', ...PRIVATE})))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(reads).toBe(1);
+      expect(harness.aborts[1]).toHaveBeenCalledWith({path: {id: 'native-1'}});
+      expect(harness.prompts).toHaveLength(2);
+    } finally {authorization.mockRestore();}
+  }), 15_000);
+
+  it('sends nothing when authorization changes after the prompt is rendered, before it is sent', async () => withBackendDataDir(async () => {
+    let revoked = false;
+    const harness = createNativeIntentHarness({
+      mainSession: {messages: async () => ({data: []}), status: async () => ({data: {}})},
+      onMainSessionCreate: () => { revoked = true; },
+    });
+    const authorization = revokeWhen(() => revoked);
+    try {
+      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-before-dispatch', 'trace-opencode', admitted({analysisMode: 'full', ...PRIVATE})))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      // Only the classifier's prompt was sent.
+      expect(harness.prompts).toHaveLength(1);
+    } finally {authorization.mockRestore();}
+  }), 15_000);
+});
+
 describe('OpenCode native turn intent and delivery', () => {
+  it.each([
+    ['full', '3600000', 3600000],
+    ['full', undefined, 1200000],
+    ['full', '5000', 5000],
+    ['fast', '3600000', 90000],
+    ['fast', '5000', 5000],
+  ] as const)('preserves the configured %s run deadline (%s) through finalization', async (analysisMode, timeout, expected) => withBackendDataDir(async () => {
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    let context: ReturnType<typeof finalizationContext.takeFinalizationContext>;
+    try {
+      const harness = createNativeIntentHarness({env: timeout === undefined ? {} : {
+        SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: timeout,
+      }});
+      const result = await harness.runtime.analyze('same scope', 'opencode-configured-deadline', 'trace-opencode', {analysisMode});
+      context = finalizationContext.takeFinalizationContext(result);
+      expect(context?.deadlineMs).toBe(now + expected);
+      expect(harness.configs[1].agent.smartperfetto.maxSteps).toBe(analysisMode === 'fast' ? 2 : 8);
+      await context!.dispatchText({prompt: 'Review the current candidate', systemPrompt: '',
+        signal: new AbortController().signal, deadlineMs: now + expected + 60000, outputByteLimit: 8192});
+      const calls = mockOpenCodeIntentTransport.mock.calls;
+      expect(calls[calls.length - 1][0].deadlineMs).toBe(now + expected);
+      expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
+      expect(harness.bridgeClose).toHaveBeenCalledTimes(1);
+    } finally {context?.dispose(); clock.mockRestore();}
+  }));
+
   it('scene runtime matrix: runs the pinned OpenCode provider through shared bridge proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('opencode');
     let definitions: any[] = [];
@@ -530,7 +601,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.conclusion).toBe(closeoutError ? 'Only the frame interval is known.'
       : 'The frame interval is known. The cause is unverified; inspect the main-thread interval next.');
     expect(harness.prompts).toHaveLength(3);
-    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([1, 1, 1]);
+    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([2, 1, 2]);
     expect(harness.prompts[2].body.model).toEqual(harness.prompts[1].body.model);
     expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
     expect(harness.prompts[2].body.parts[0].text).toContain('Only the frame interval is known.');
@@ -615,16 +686,154 @@ describe('OpenCode native turn intent and delivery', () => {
       conclusionFingerprint: analysisDeliveryFingerprint(body)});
     expect(result.success).toBe(!nativeError);
     expect(result.partial === true).toBe(nativeError);
-    expect(result.terminationReason).toBe(nativeError ? 'quality_gate_failed' : undefined);
-    const verification = await mockClaudeVerifierVerifyConclusion.mock.results[0].value;
-    expect(verification).toMatchObject({heuristicIssues: expect.arrayContaining([
-      expect.objectContaining({type: 'plan_deviation', severity: 'error'}),
-      expect.objectContaining({type: 'unresolved_hypothesis', severity: 'error'}),
-    ])});
+    // Only the native failure is recorded; the pending plan and hypothesis stay advisory.
+    expect(result.terminationReason).toBe(nativeError ? 'execution_error' : undefined);
     const snapshot = harness.runtime.takeSnapshot(sessionId, 'trace-opencode', createSnapshotFields());
     expect(snapshot.analysisPlan?.phases).toEqual([expect.objectContaining({id: 'explore', status: 'pending'})]);
     expect(snapshot.claudeHypotheses).toEqual([expect.objectContaining({id: 'open-hypothesis', status: 'formed'})]);
   }));
+
+  describe('empty answer body', () => {
+    const declarationOnly = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
+      uncertainties: [], nextSteps: []} as ConclusionContract);
+    const returnData = async (harness: ReturnType<typeof createNativeIntentHarness>) => {
+      const submitHypothesis = harness.getTools().find(tool => tool.name === 'submit_hypothesis');
+      await submitHypothesis.shared.handler({id: 'anr-input', statement: 'Three ANRs are recorded.'});
+    };
+    const run = async (input: Parameters<typeof createNativeIntentHarness>[0], withData = true) => {
+      let harness!: ReturnType<typeof createNativeIntentHarness>;
+      harness = createNativeIntentHarness({answer: declarationOnly, ...input,
+        ...(withData ? {beforeAnswerReply: () => returnData(harness)} : {})});
+      const result = await harness.runtime.analyze('Any ANR here?', `opencode-empty-body-${harness.prompts.length}`,
+        'trace-opencode', {analysisMode: 'full'});
+      return {harness, result};
+    };
+
+    it('spends the delivery call writing the body from the returned data, with no declaration repair after it',
+      async () => withBackendDataDir(async () => {
+        // Its declaration is missing, which alone would ask for a repair; the call is already spent.
+        const {harness, result} = await run({closeoutAnswer: 'Three ANRs are recorded for com.example.app.'});
+        expect(harness.prompts).toHaveLength(3);
+        expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
+        const prompt = harness.prompts[2].body.parts[0].text;
+        expect(prompt).toContain('Any ANR here?');
+        expect(prompt).toContain('anr-input');
+        expect(prompt).not.toContain('missing_declaration');
+        expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim())
+          .toBe('Three ANRs are recorded for com.example.app.');
+        expect(result.completion).toMatchObject({status: 'completed'});
+        expect(result.rounds).toBe(2);
+        finalizationContext.takeFinalizationContext(result)?.dispose();
+      }));
+
+    it.each([
+      ['fails', {closeoutError: true}],
+      ['also has no body', {closeoutAnswer: declarationOnly}],
+    ])('keeps the original candidate when the continuation %s', async (_name, input) => withBackendDataDir(async () => {
+      const {harness, result} = await run(input);
+      expect(harness.prompts).toHaveLength(3);
+      expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe('');
+      finalizationContext.takeFinalizationContext(result)?.dispose();
+    }));
+
+    it('writes the missing body whatever the delivery-call estimate', async () => withBackendDataDir(async () => {
+      jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+        realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+      const {harness} = await run({closeoutAnswer: 'Three ANRs are recorded for com.example.app.'});
+      expect(harness.prompts).toHaveLength(3);
+      expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(undefined, expect.objectContaining({
+        purpose: 'continuation', failOpen: true}));
+    }));
+
+    it('does not continue without returned data to answer from', async () => withBackendDataDir(async () => {
+      const {harness} = await run({closeoutAnswer: 'An answer with nothing behind it.'}, false);
+      expect(harness.prompts).toHaveLength(2);
+    }));
+
+    it('does not continue when the run has no delivery call left', async () => withBackendDataDir(async () => {
+      const {harness} = await run({closeoutAnswer: 'Unreached.', env: {AGENT_MAX_TURNS: '1'}});
+      expect(harness.prompts).toHaveLength(2);
+    }));
+  });
+
+  describe('native output-limit delivery', () => {
+    const body = 'The root cause remains unverified.';
+    const complete = `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [],
+      uncertainties: ['Root cause not established.'], nextSteps: []})}`;
+    const run = async (input: Parameters<typeof createNativeIntentHarness>[0] = {}, mode: 'full' | 'fast' = 'full') => {
+      let harness!: ReturnType<typeof createNativeIntentHarness>;
+      harness = createNativeIntentHarness({answer: '', finish: 'length', closeoutAnswer: complete, ...input,
+        beforeAnswerReply: async () => {
+          harness.traceProcessor.query.mockResolvedValue({columns: ['value'], rows: [[7]], durationMs: 1});
+          const sql = harness.getTools().find(tool => tool.name === 'execute_sql');
+          await sql.shared.handler({sql: 'SELECT 7 AS value'});
+          await input.beforeAnswerReply?.();
+        }});
+      const result = await harness.runtime.analyze('Inspect the returned value', 'opencode-output-limit',
+        'trace-opencode', {analysisMode: mode});
+      return {harness, result};
+    };
+
+    it('uses the one reserved call for a full strict answer under the same pins and deadline', async () => withBackendDataDir(async () => {
+      const {harness, result} = await run();
+      expect(harness.prompts).toHaveLength(3);
+      expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
+      expect(harness.prompts[2].body.model).toEqual(harness.prompts[1].body.model);
+      const prompt = harness.prompts[2].body.parts[0].text;
+      expect(prompt).toContain('output_limit');
+      expect(prompt).toContain('current_run_returned_data_excerpts');
+      expect(prompt).toContain('SELECT 7 AS value');
+      expect(prompt).not.toContain('finished normally');
+      const protocol = inspectCandidateProtocol(result.conclusion);
+      expect(protocol.status).toBe('valid');
+      expect(protocol.canonicalBody.trim()).toBe(body);
+      expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop',
+        conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
+      expect(result.rounds).toBe(2);
+      const context = finalizationContext.takeFinalizationContext(result)!;
+      try {
+        expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
+        const call = mockOpenCodeIntentTransport.mock.calls.find(([input]) => input.purpose === undefined)!;
+        expect(call[0].deadlineMs).toBe(context.deadlineMs);
+      } finally {context.dispose();}
+      expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
+    }));
+
+    it.each([
+      ['length again', {closeoutFinish: 'length'}],
+      ['missing declaration', {closeoutAnswer: body}],
+      ['failed call', {closeoutError: true}],
+    ])('preserves the original incomplete receipt when delivery has %s', async (_name, input) => withBackendDataDir(async () => {
+      const {harness, result} = await run(input);
+      expect(harness.prompts).toHaveLength(3);
+      expect(result.conclusion).toBe('');
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit', sdkFinishReason: 'length'});
+      expect(result.rounds).toBe(2);
+      finalizationContext.takeFinalizationContext(result)?.dispose();
+    }));
+
+    it.each(['quick', 'zero reserve', 'native error'] as const)('does not dispatch for %s', async kind => withBackendDataDir(async () => {
+      const {harness, result} = await run(kind === 'zero reserve' ? {env: {AGENT_MAX_TURNS: '1'}}
+        : kind === 'native error' ? {nativeError: true} : {}, kind === 'quick' ? 'fast' : 'full');
+      expect(harness.prompts).toHaveLength(2);
+      expect(result.conclusion).toBe('');
+      expect(result.completion?.status).not.toBe('completed');
+      finalizationContext.takeFinalizationContext(result)?.dispose();
+    }));
+
+    it('does not accept a delivery response after the original deadline', async () => withBackendDataDir(async () => {
+      const clock = jest.spyOn(Date, 'now');
+      try {
+        const {harness, result} = await run({beforeCloseoutReply: () => clock.mockReturnValue(Date.now() + 3_600_001)});
+        expect(harness.prompts).toHaveLength(3);
+        expect(result.conclusion).toBe('');
+        expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit', sdkFinishReason: 'length'});
+        finalizationContext.takeFinalizationContext(result)?.dispose();
+      } finally {clock.mockRestore();}
+    }));
+  });
 
   it('uses the reserved delivery turn to repair a rejected declaration around the unchanged body', async () => withBackendDataDir(async () => {
     const body = 'Frame 12 missed its deadline.';
@@ -636,6 +845,25 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.prompts[2].body.parts[0].text).toContain('invalid_declaration');
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    finalizationContext.takeFinalizationContext(result)?.dispose();
+  }));
+
+  it('does not send a declaration repair that cannot finish in the time left', async () => withBackendDataDir(async () => {
+    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
+    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+    const body = 'Frame 12 missed its deadline.';
+    const harness = createNativeIntentHarness({answer: candidateWithPopulation(body, 'everywhere'),
+      closeoutAnswer: candidateWithPopulation(body, 'cited_rows')});
+    const result = await harness.runtime.analyze('same scope', 'opencode-repair-budget', 'trace-opencode', {
+      analysisMode: 'full', runId: 'opencode-repair-budget',
+    });
+    expect(harness.prompts).toHaveLength(2);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledTimes(1);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      purpose: 'declaration_repair', failOpen: false, inputBytes: expect.any(Number)}));
+    expect(jest.mocked(runtimeCallStats.admitDeliveryCall).mock.results[0]?.value).toBe(false);
     finalizationContext.takeFinalizationContext(result)?.dispose();
   }));
 
@@ -651,7 +879,7 @@ describe('OpenCode native turn intent and delivery', () => {
       analysisMode: 'full', runId: 'opencode-missing-declaration',
     });
     expect(harness.prompts).toHaveLength(3);
-    expect(harness.configs[2].agent.smartperfetto.maxSteps).toBe(1);
+    expect(harness.configs[2].agent.smartperfetto.maxSteps).toBe(2);
     expect(Object.values(harness.prompts[2].body.tools).every(value => value === false)).toBe(true);
     expect(harness.prompts[2].body.parts[0].text).toContain('missing_declaration');
     expect(inspectCandidateProtocol(repaired).canonicalBody.trim()).toBe(body);
@@ -674,7 +902,7 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
   }));
 
-  it('retains the original OpenCode attempt when a dispatched declaration completion changes the body', async () => withBackendDataDir(async () => {
+  it('keeps the original OpenCode body and takes the declaration when a completion changes the body', async () => withBackendDataDir(async () => {
     const body = 'Original bounded answer.';
     const changed = `Changed bounded answer.\n${renderConclusionContractSidecar({
       schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
@@ -688,9 +916,10 @@ describe('OpenCode native turn intent and delivery', () => {
     });
     expect(harness.prompts).toHaveLength(3);
     expect(harness.configs).toHaveLength(3);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', runId: 'opencode-declaration-rejected',
-      conclusionFingerprint: analysisDeliveryFingerprint(body)});
+    // The completion's declaration is delivered; its edited prose never is.
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed', runId: 'opencode-declaration-rejected'});
     expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
     expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
   }));
@@ -728,6 +957,7 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(JSON.stringify(result)).not.toContain('"providerQuery"');
       expect(finalizationContext.takeFinalizationContext(result)).toBeUndefined();
       expect(context?.traceIdentity).toEqual({currentTraceId: 'trace-opencode', referenceTraceId: 'trace-reference'});
+      expect(context?.deliveryCall).toEqual({providerOrigin: 'http://127.0.0.1:9999', model: 'main-model'});
       expect(context?.deliveryContext).toMatchObject({acceptedCandidate: result.completion});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -743,7 +973,7 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(response).toMatchObject({status: 'ok', actualModel: 'main-model'});
       expect(mockOpenCodeIntentTransport.mock.calls[1][0].deadlineMs).toBe(context!.deadlineMs);
       expect(harness.configs[2]).toMatchObject({model: 'smartperfetto/main-model', mcp: {}, instructions: [],
-        agent: {smartperfetto: {maxSteps: 1}}});
+        agent: {smartperfetto: {maxSteps: 2}}});
       for (const config of [harness.configs[1], harness.configs[2]]) {
         expect(config.provider.smartperfetto).toMatchObject({
           npm: '@ai-sdk/openai-compatible', name: 'Pinned provider',
@@ -768,7 +998,7 @@ describe('OpenCode native turn intent and delivery', () => {
     const context = finalizationContext.takeFinalizationContext(result);
     try {
       expect(context?.deliveryContext).toMatchObject({completion: {runId: 'failed-run', status: 'failed'}});
-      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
       expect(context?.hasSemanticTransport).toBe(false);
       expect(await context?.dispatchText({prompt: 'unused', systemPrompt: '', signal: new AbortController().signal,
         deadlineMs: Date.now() + 5000, outputByteLimit: 8192})).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
@@ -786,7 +1016,6 @@ describe('OpenCode native turn intent and delivery', () => {
     const sessionId = `privacy-redacted-${language}`;
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
     try {
       const harness = createNativeIntentHarness({answer});
       const result = await harness.runtime.analyze('same scope', sessionId, 'trace-opencode');
@@ -798,11 +1027,10 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(result.completion?.status).toBe('completed');
       expect(result.completion?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
       expect(result.completion?.conclusionFingerprint).not.toBe(analysisDeliveryFingerprint(answer));
-      expect(gate.mock.calls[0][0].context).toBe(projected.deliveryContext);
-      expect(mockClaudeVerifierVerifyConclusion.mock.calls[0][2]).toMatchObject({deliveryContext: projected.deliveryContext});
+      expect(attachedDeliveryContext(result)).toEqual(projected.deliveryContext);
       expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
     } finally {
-      gate.mockRestore(); projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+      projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
     }
   }));
 
@@ -812,7 +1040,6 @@ describe('OpenCode native turn intent and delivery', () => {
     const sessionId = `privacy-replaced-${language}`;
     revokeCodeAwareOutputGuards(sessionId);
     const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
     try {
       const harness = createNativeIntentHarness({answer});
       const result = await harness.runtime.analyze('same scope', sessionId, 'trace-opencode');
@@ -822,11 +1049,42 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(projected.conclusionProjection.disposition).toBe('replaced');
       expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'runtime_fallback'});
       expect(result.completion?.status).toBe('unknown');
-      expect(gate.mock.calls[0][0].context).toBe(projected.deliveryContext);
-      expect(mockClaudeVerifierVerifyConclusion.mock.calls[0][2]).toMatchObject({deliveryContext: projected.deliveryContext});
+      expect(attachedDeliveryContext(result)).toEqual(projected.deliveryContext);
       expect(result.completion?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
     } finally {
-      gate.mockRestore(); projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+      projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+    }
+  }));
+
+  it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => withBackendDataDir(async () => {
+    useIntent({...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide', recommendedComplexity: 'full'});
+    const sessionId = 'opencode-no-trace';
+    try {
+      const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide',
+        recommendedComplexity: 'full'}});
+      const result = await harness.runtime.analyze('A question', sessionId, `conversation-no-trace:${sessionId}`,
+        {assistantSurface: 'conversation', conversationTraceAttached: false, analysisMode: 'full'});
+      expect(harness.traceProcessor.query).not.toHaveBeenCalled();
+      const context = finalizationContext.takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({});
+      context?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
+  }));
+
+  it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => withBackendDataDir(async () => {
+    const sessionId = 'privacy-replaced-terminal-state';
+    revokeCodeAwareOutputGuards(sessionId);
+    try {
+      const harness = createNativeIntentHarness({answer: 'Native model conclusion'});
+      const updates: any[] = [];
+      harness.runtime.on('update', update => updates.push(update));
+      const result = await harness.runtime.analyze('same scope', sessionId, 'trace-opencode', {analysisMode: 'fast'});
+      expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace-opencode')?.getAllTurns().slice(-1)[0]?.result});
+      attachedDeliveryContext(result);
+    } finally {
+      clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);
     }
   }));
 
@@ -862,7 +1120,7 @@ describe('OpenCode native turn intent and delivery', () => {
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const entered = createDeferred<void>();
     const pending = createDeferred<void>();
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
+    const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
     try {
       const harness = createNativeIntentHarness({answer: 'Late PRIVATE_CANARY output', beforeAnswerReply: async () => {
         entered.resolve(); await pending.promise;
@@ -875,12 +1133,12 @@ describe('OpenCode native turn intent and delivery', () => {
       await harness.runtime.abortSession(sessionId);
       await rejected;
       pending.resolve();
-      expect(gate).not.toHaveBeenCalled();
+      expect(projection).not.toHaveBeenCalled();
       expect(updates.length).toBeGreaterThan(0);
       expect(updates.some(update => update.type === 'conclusion')).toBe(false);
       expect(JSON.stringify(updates)).not.toContain('PRIVATE_CANARY');
     } finally {
-      pending.resolve(); gate.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+      pending.resolve(); projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
     }
   }));
 
@@ -898,11 +1156,26 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(result.completion).toMatchObject({status: 'completed', runId: 'current-run',
       sdkFinishReason: 'stop', conclusionFingerprint: analysisDeliveryFingerprint(answer)});
     expect(result.outputOrigin).toBe('sdk_final');
-    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([1, 8, 1]);
+    // No-tool hosts stay above one step: OpenCode turns the last step into its own summary request.
+    expect(harness.configs.map(config => config.agent.smartperfetto.maxSteps)).toEqual([2, 8, 2]);
     expect(harness.prompts).toHaveLength(3);
     expect(harness.traceProcessor.query).toHaveBeenCalled();
     expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
     expect(fs.existsSync(path.dirname(harness.directories[0]))).toBe(false);
+  }));
+
+  it('disables GLM default thinking on the classifier and declaration-repair hosts, not the answer host', async () => withBackendDataDir(async () => {
+    // glm-5.3-flash spent its whole 30 s classifier budget reasoning in the E2E matrix.
+    const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
+      providerID: 'smartperfetto', modelID: 'main-model', smallModel: 'light-model',
+      baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'fixture-api-key'})}});
+    await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'full'});
+    expect(harness.configs[0].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
+    expect(harness.configs[0].provider.smartperfetto.models['light-model'].options).toBeUndefined();
+    expect(harness.configs).toHaveLength(3);
+    // The answer host keeps the provider default; the no-tool declaration repair is a delivery purpose.
+    expect(harness.configs[1].agent.smartperfetto.options).toBeUndefined();
+    expect(harness.configs[2].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
   }));
 
   it('registers the native classifier model and keeps fast comparison tools', async () => withBackendDataDir(async () => {
@@ -928,9 +1201,9 @@ describe('OpenCode native turn intent and delivery', () => {
     try {
       const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT,
         taskKind: 'investigation', scope, evidenceAccess: 'existing_only'}});
-      const result = await harness.runtime.analyze('same scope', `intent-existing-${scope}`, 'trace-opencode', {
+      const result = await harness.runtime.analyze('same scope', `intent-existing-${scope}`, 'trace-opencode', admitted({
         analysisMode: 'full', referenceTraceId: 'trace-reference', codeAwareMode: 'off',
-      });
+      }));
       expect(result.turnIntent).toMatchObject({status: 'resolved', scope, evidenceAccess: 'existing_only'});
       const names = harness.getTools().map(tool => tool.name);
       expect(names).toContain('fetch_artifact');
@@ -974,6 +1247,68 @@ describe('OpenCode native turn intent and delivery', () => {
     } finally { quick.mockRestore(); full.mockRestore(); }
   }));
 
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => withBackendDataDir(async () => {
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'scrolling_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpModule.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const full = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    try {
+      const wide = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}});
+      await wide.runtime.analyze('the whole scene', 'scene-entry-opencode', 'trace-opencode', {analysisMode: 'full'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-opencode',
+        turnIntent: expect.objectContaining({scope: 'scene_wide'})});
+      expect(full.mock.calls[0][0]).toMatchObject({sceneEvidence: evidence});
+      expect(wide.prompts[1].body.system).toContain('"context":"scene_evidence"');
+    } finally { scene.mockRestore(); mcp.mockRestore(); full.mockRestore(); }
+  }));
+
+  it.each(['full', 'fast'] as const)(
+    'prefetches admitted cross-session experience for a private %s run as for a public one', mode => withBackendDataDir(async () => {
+      const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+      const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+      const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
+      try {
+        const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}});
+        await harness.runtime.analyze('the whole scene', `private-experience-${mode}`, 'trace-opencode', admitted({
+          analysisMode: mode, codeAwareMode: 'metadata_only', codebaseIds: ['cb-opencode-private-experience'],
+        }));
+        expect(patterns).toHaveBeenCalled();
+        expect(negative).toHaveBeenCalled();
+        expect(harness.prompts[1].body.system).toContain('PATTERN_MEMORY_SECTION');
+        expect(harness.prompts[1].body.system).toContain('NEGATIVE_MEMORY_SECTION');
+        expect(harness.prompts[1].body.system).toContain('CASE_BACKGROUND_SECTION');
+      } finally { patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); }
+    }));
+
+  it('renders an issued focus-app evidence locator in both prompt variants', async () => withBackendDataDir(async () => {
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockResolvedValue({
+      method: 'battery_stats', confidence: 'high', primaryApp: 'com.example.opencode',
+      apps: [{packageName: 'com.example.opencode', totalDurationNs: 10, switchCount: 2, score: 50}],
+    });
+    try {
+      for (const [label, decision] of [['bounded', undefined],
+        ['wide', {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}]] as const) {
+        const harness = createNativeIntentHarness(decision ? {decision} : undefined);
+        const sessionId = `focus-evidence-${label}`;
+        await harness.runtime.analyze('which app', sessionId, 'trace-opencode', {analysisMode: 'full', runId: `run-${label}`});
+        const resolution = await resolveFocusPackageCell((harness.runtime as any).artifactStores.get(sessionId),
+          harness.prompts[1].body.system, 'trace-opencode', `run-${label}`);
+        expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.opencode'}});
+      }
+    } finally { focus.mockRestore(); }
+  }));
+
   // The completeness probe runs for every `preflight !== 'none'` turn, so a
   // bounded `read_new` turn pays for it. Leaving it out of the quick prompt
   // spent the queries and then told the model nothing about which data the
@@ -1014,6 +1349,22 @@ describe('OpenCode native turn intent and delivery', () => {
     }
   }));
 
+  // The same options carry the run's own learning grant, under which
+  // execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint from its own options, and the run grant', async () => withBackendDataDir(async () => {
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
+    try {
+      const harness = createNativeIntentHarness();
+      await harness.runtime.analyze('分析启动性能', 'opencode-vendor-hint', 'trace-opencode',
+        withDurableLearningPermission({runId: 'run-opencode-mcp'}, NO_PRIVATE_CONTEXT));
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally { mcp.mockRestore(); }
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-opencode-mcp');
+    await expectRuntimeVendorHintParity({
+      createMcpServer: createClaudeMcpServer, runtimeOptions});
+  }));
+
   it.each(['fast', 'full'] as const)('preserves known pair package identities for bounded %s answers', async analysisMode => withBackendDataDir(async () => {
     const originalPairBuilder = runtimePromptContext.buildRuntimeTracePairIdentityContext;
     const pair = jest.spyOn(runtimePromptContext, 'buildRuntimeTracePairIdentityContext')
@@ -1021,20 +1372,18 @@ describe('OpenCode native turn intent and delivery', () => {
         const identity = originalPairBuilder(input);
         return identity ? {...identity, referencePackageName: 'com.reference.app'} : undefined;
       });
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
     try {
       const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'comparison'}});
-      await harness.runtime.analyze('same scope', `intent-pair-${analysisMode}`, 'trace-opencode', {
+      const result = await harness.runtime.analyze('same scope', `intent-pair-${analysisMode}`, 'trace-opencode', {
         analysisMode, packageName: 'com.current.app', referenceTraceId: 'trace-reference',
       });
       expect(pair).toHaveBeenCalledTimes(1);
-      expect(gate).toHaveBeenCalledTimes(1);
-      expect(gate.mock.calls[0][0].comparisonIdentity).toEqual({
-        currentPackageName: 'com.current.app', referencePackageName: 'com.reference.app',
-      });
+      // The pair reaches finalization, which resolves both sides' identities itself.
+      const context = finalizationContext.takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({currentTraceId: 'trace-opencode', referenceTraceId: 'trace-reference'});
+      context?.dispose();
       expect(harness.traceProcessor.query).toHaveBeenCalled();
     } finally {
-      gate.mockRestore();
       pair.mockRestore();
     }
   }));
@@ -1118,14 +1467,161 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.traceProcessor.query).not.toHaveBeenCalled();
     expect(harness.serverCloses[0]).toHaveBeenCalledTimes(1);
   }));
+});
 
-  it('does not complete a submitted plan because the answer resembles a report', () => {
-    const plan = createCompletedScrollingPlanWithFinalPhase();
-    expect(getOpenCodePlanCompletionStatus(null)).toMatchObject({complete: true, hasPlan: false, pending: []});
-    expect(completeOpenCodeFinalReportPhaseIfDelivered(plan, '# Report\n' + 'Evidence '.repeat(1000), 'en')).toBeUndefined();
-    expect(getOpenCodePlanCompletionStatus(plan).complete).toBe(false);
-    expect(plan.phases[1].status).toBe('in_progress');
-    expect(sanitizeOpenCodeConclusionText('Process narration\n\n# Report')).toBe('Process narration\n\n# Report');
+describe('OpenCode message window order', () => {
+  type ServerOrder = 'chronological' | 'newest_first';
+  const SERVER_ORDERS: ServerOrder[] = ['chronological', 'newest_first'];
+  const MISSING_CREATED_DIAGNOSTIC = '[OpenCode] message window lacks created times; server order kept';
+  const message = (role: string, id: string, created: number | undefined, text: string, finish?: string) => ({
+    info: {role, id, ...(finish ? {finish} : {}),
+      time: {...(created === undefined ? {} : {created}), ...(role === 'assistant' ? {completed: (created ?? 0) + 1} : {})}},
+    parts: [{type: 'text', text}],
+  });
+  const user = message('user', 'msg_turn_01_user', 1_000, '这段滑动为什么掉帧？');
+  const toolStep = message('assistant', 'msg_turn_02_tool', 1_001, '先查询帧时间线', 'tool-calls');
+  const answer = message('assistant', 'msg_turn_03_answer', 1_003, '第 12 帧超出截止时间 4ms。', 'stop');
+  const previousUser = message('user', 'msg_prev_01_user', 900, '上一轮问题');
+  const previousAnswer = message('assistant', 'msg_prev_02_answer', 901, '上一轮结论', 'stop');
+  const serverWindow = (chronological: unknown[], order: ServerOrder, limit = 50) => {
+    const tail = chronological.slice(-limit);
+    return order === 'chronological' ? tail : [...tail].reverse();
+  };
+  const windowIds = (response: unknown) =>
+    (response as {data: Array<{info: {id: string}}>}).data.map(entry => entry.info.id);
+  const runPrompt = (session: Record<string, unknown>, options: Record<string, unknown> = {}) => runOpenCodePrompt({
+    client: {session: {prompt: jest.fn(), ...session}},
+    server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+  } as any, {
+    path: {id: 'ses-order'},
+    query: {directory: '/tmp/project'},
+    body: {parts: [{type: 'text', text: '为什么掉帧'}]},
+  }, {
+    sessionId: 'ses-order', projectDir: '/tmp/project', timeoutMs: 2_000, resumedSession: false,
+    pollDelay: async () => undefined, ...options,
+  } as any);
+  let warn: ReturnType<typeof jest.spyOn>;
+  beforeEach(() => {warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);});
+  afterEach(() => warn.mockRestore());
+
+  it.each(SERVER_ORDERS)('finishes a tool-call turn from %s windows once status drops the finished session', async order => withBackendDataDir(async () => {
+    let reads = 0;
+    const harness = createNativeIntentHarness({
+      env: {SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: '4000'},
+      mainSession: {
+        messages: async request => {
+          reads += 1;
+          return {data: serverWindow(reads === 1 ? [user, toolStep] : [user, toolStep, answer], order, request.query?.limit)};
+        },
+        // A finished session disappears from OpenCode's status map, which the loop reads as unknown.
+        status: async () => ({data: reads >= 2 ? {} : {'native-1': {type: 'busy'}}}),
+      },
+    });
+    const result = await harness.runtime.analyze('为什么掉帧', `window-order-${order}`, 'trace-opencode', {analysisMode: 'full'});
+    expect(result.conclusion).toBe('第 12 帧超出截止时间 4ms。');
+    expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop'});
+    expect(reads).toBe(2);
+    finalizationContext.takeFinalizationContext(result)?.dispose();
+  }), 15_000);
+
+  it.each(SERVER_ORDERS)('returns the current turn in chronological order with the answer last from %s windows', async order => {
+    let reads = 0;
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages: jest.fn(async () => {
+        reads += 1;
+        return {data: serverWindow(reads === 1 ? [user, toolStep] : [user, toolStep, answer], order)};
+      }),
+      status: jest.fn(async () => ({data: reads >= 2 ? {} : {'ses-order': {type: 'busy'}}})),
+    });
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_02_tool', 'msg_turn_03_answer']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(SERVER_ORDERS)('counts only messages after a resumed watermark in %s windows', async order => {
+    const messages = jest.fn(async (request: {query: {limit: number}}) => ({
+      data: request.query.limit === 1
+        ? [previousAnswer]
+        : serverWindow([previousUser, previousAnswer, user, toolStep, answer], order, request.query.limit),
+    }));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      status: jest.fn(async () => ({data: {}})),
+    }, {resumedSession: true});
+    expect(messages.mock.calls[0]?.[0]).toMatchObject({query: {limit: 1, order: 'desc'}});
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_02_tool', 'msg_turn_03_answer']);
+  });
+
+  it('breaks equal creation times by descending native id', async () => {
+    const first = message('assistant', 'msg_tie_a', 2_000, '先调用工具', 'tool-calls');
+    const second = message('assistant', 'msg_tie_b', 2_000, '同一毫秒内的最终结论', 'stop');
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages: jest.fn(async () => ({data: [first, second]})),
+      status: jest.fn(async () => ({data: {}})),
+    });
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_tie_a', 'msg_tie_b']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the server order and reports it once per run when a message lacks its creation time', async () => {
+    const undatedAnswer = message('assistant', 'msg_turn_03_answer', undefined, '缺少创建时间的最终结论', 'stop');
+    const messages = jest.fn(async () => ({data: [undatedAnswer, toolStep, user]}));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      // Idle forces the canonical final read, so the undated window is normalized twice.
+      status: jest.fn(async () => ({data: {'ses-order': {type: 'idle'}}})),
+    });
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_02_tool', 'msg_turn_03_answer']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(MISSING_CREATED_DIAGNOSTIC);
+  });
+
+  it('reports a single undated message once even though one entry needs no ordering', async () => {
+    const undatedAnswer = message('assistant', 'msg_turn_03_answer', undefined, '唯一一条缺少创建时间的结论', 'stop');
+    const messages = jest.fn(async () => ({data: [undatedAnswer]}));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      status: jest.fn(async () => ({data: {'ses-order': {type: 'idle'}}})),
+    });
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_03_answer']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(MISSING_CREATED_DIAGNOSTIC);
+  });
+
+  it('orders an expanded chronological window on the idle canonical read', async () => {
+    const steps = Array.from({length: 60}, (_, index) => message(
+      'assistant', `msg_turn_02_tool_${String(index).padStart(2, '0')}`, 1_001 + index, `工具步骤 ${index}`, 'tool-calls'));
+    const lastAnswer = message('assistant', 'msg_turn_03_answer', 2_000, '扩窗后的最终结论', 'stop');
+    const turn = [user, ...steps, lastAnswer];
+    const messages = jest.fn(async (request: {query: {limit: number}}) => ({
+      data: serverWindow(turn, 'chronological', request.query.limit),
+    }));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      status: jest.fn(async () => ({data: {'ses-order': {type: 'idle'}}})),
+    });
+    const limits = messages.mock.calls.map(([request]) => request.query.limit);
+    expect(limits).toContain(100);
+    const ids = windowIds(result.messagesResponse);
+    expect(ids).toHaveLength(61);
+    expect(ids[0]).toBe('msg_turn_02_tool_00');
+    expect(ids[ids.length - 1]).toBe('msg_turn_03_answer');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not reorder a multi-message synchronous prompt response', async () => {
+    const earlier = message('assistant', 'msg_sync_a', 3_000, '同步响应中的工具步骤', 'tool-calls');
+    const later = message('assistant', 'msg_sync_b', 3_001, '同步响应中的最终结论', 'stop');
+    const result = await runPrompt({prompt: jest.fn(async () => ({data: [earlier, later]}))});
+    expect(windowIds(result.promptResponse)).toEqual(['msg_sync_a', 'msg_sync_b']);
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_sync_a', 'msg_sync_b']);
   });
 });
 
@@ -1281,6 +1777,7 @@ describe('experimental OpenCode runtime contract', () => {
       production: false,
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
   });
 
@@ -1415,7 +1912,7 @@ describe('experimental OpenCode runtime contract', () => {
     const parent = net.createServer(socket => {
       sockets.add(socket);
       socket.on('close', () => sockets.delete(socket));
-      socket.once('data', chunk => {
+      socket.once('data', () => {
         setTimeout(() => {
           if (!socket.destroyed) {
             socket.write(`${JSON.stringify({jsonrpc: '2.0', id: 'strict-child', result: {ok: true}})}\n`);
@@ -2851,40 +3348,33 @@ describe('experimental OpenCode runtime contract', () => {
     expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_SOURCE|privateToolResultReceipt/);
   });
 
-  it('projects private wiki results before emitting OpenCode responses', async () => {
+  it('projects document knowledge results before emitting OpenCode responses', async () => {
     const updates: any[] = [];
     await dispatchOpenCodeBridgeRequest([{
-      name: 'lookup_blog_knowledge',
+      name: 'search_knowledge',
       exposure: 'internal',
       tool: {},
       shared: {
-        name: 'lookup_blog_knowledge',
-        description: 'Lookup knowledge',
+        name: 'search_knowledge',
+        description: 'Search the selected document knowledge bases',
         exposure: 'internal',
         inputSchema: {},
-        handler: jest.fn(async () => ({content: [{type: 'text', text: JSON.stringify({result: {
-          query: 'Handler',
-          probed: ['android_internals_wiki'],
-          retrievedAt: 1,
-          legacyPath: false,
-          hits: [{
-            chunkId: 'wiki-1',
-            score: 1,
-            metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-            snippet: 'OPENCODE_PRIVATE_WIKI_CANARY',
-          }],
-        }})}]})),
+        handler: jest.fn(async () => ({content: [{type: 'text', text: JSON.stringify({success: true, hits: [{
+          id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+          title: 'Handler', headingPath: ['Handler'], relativePath: 'private/notes.md',
+          lineRange: {start: 3, end: 9}, excerpt: 'OPENCODE_PRIVATE_KNOWLEDGE_CANARY',
+        }]})}]})),
       },
     } as any], {
       jsonrpc: '2.0',
-      id: 'wiki-call',
+      id: 'knowledge-call',
       method: 'tools/call',
-      params: {name: 'lookup_blog_knowledge', arguments: {}},
+      params: {name: 'search_knowledge', arguments: {}},
     }, update => updates.push(update));
 
-    const serialized = JSON.stringify(updates.filter(update => update.type === 'agent_response'));
-    expect(serialized).not.toContain('OPENCODE_PRIVATE_WIKI_CANARY');
-    expect(serialized).toContain('snippetHash');
+    const responses = updates.filter(update => update.type === 'agent_response');
+    expect(JSON.stringify(responses)).not.toContain('OPENCODE_PRIVATE_KNOWLEDGE_CANARY');
+    expect(JSON.parse(String(responses[0]?.content.result))).toMatchObject({knowledge: {referenceCount: 1}});
   });
 
   it('records OpenCode MCP bridge tool executions into the shared analysis plan evidence log', async () => {
@@ -2974,66 +3464,6 @@ describe('experimental OpenCode runtime contract', () => {
       },
     })).rejects.toMatchObject({ name: 'AbortError' });
   });
-
-  it('treats completed and skipped OpenCode plan phases as closed', () => {
-    const plan: AnalysisPlanV3 = {
-      phases: [
-        {id: 'p1', name: 'Review', goal: 'Assess available evidence', expectedTools: [], status: 'completed'},
-        {id: 'p2', name: 'Optional follow-up', goal: 'Resolve additional evidence', expectedTools: [],
-          status: 'skipped', skipDisposition: {kind: 'evidence_unavailable'}},
-      ],
-      successCriteria: 'Answer within available evidence', submittedAt: 1, toolCallLog: [],
-    };
-    expect(getOpenCodePlanCompletionStatus(plan)).toMatchObject({complete: true, pending: []});
-
-    plan.phases[1].status = 'in_progress';
-    delete plan.phases[1].skipDisposition;
-    expect(getOpenCodePlanCompletionStatus(plan)).toMatchObject({complete: false, pending: ['p2']});
-  });
-
-  it('does not treat a completed OpenCode phase as closed when required tool evidence is missing', () => {
-    const status = getOpenCodePlanCompletionStatus({
-      phases: [
-        {
-          id: 'p-frame-detail',
-          name: '代表帧深钻',
-          goal: '调用 jank_frame_detail 获取代表掉帧调用栈',
-          expectedTools: ['invoke_skill'],
-          expectedCalls: [{ tool: 'invoke_skill', skillId: 'jank_frame_detail' }],
-          status: 'completed',
-          summary: '已完成代表帧根因分析，并整理出主线程阻塞调用栈证据。',
-        },
-      ],
-      toolCallLog: [],
-    } as any);
-
-    expect(status).toMatchObject({
-      complete: false,
-      pending: ['p-frame-detail'],
-    });
-    expect(status.evidenceGaps?.[0].missingExpectedCalls).toEqual([
-      { tool: 'invoke_skill', skillId: 'jank_frame_detail' },
-    ]);
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   it('projects OpenCode events without synthesizing route terminal events', () => {
     expect(projectOpenCodeEventToStreamingUpdate({
@@ -3152,18 +3582,19 @@ describe('experimental OpenCode runtime contract', () => {
       '快速结合源码定位候选机制',
       'session-opencode-source-quick',
       'trace-opencode',
-      {
+      admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'metadata_only',
         codebaseIds: ['cb-opencode-quick'],
-      },
+      }),
     );
 
     const prompt = record.promptInput as {body?: {system?: string}} | undefined;
     expect(readPromptContextFrame(prompt?.body?.system, 'source_authorization')).toMatchObject({
-      mode: 'metadata_only', codebaseIds: ['cb-opencode-quick'], evidenceAccess: 'read_new',
+      mode: 'metadata_only', evidenceAccess: 'read_new',
+      codebases: [expect.objectContaining({id: 'cb-opencode-quick'})],
     });
     expect(result).toMatchObject({
       success: false,
@@ -3205,21 +3636,21 @@ describe('experimental OpenCode runtime contract', () => {
         fixture.sourceUse,
         true,
       );
-      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-opencode', {
+      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-opencode', admitted({
         analysisMode: 'fast',
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
       const context = finalizationContext.takeFinalizationContext(terminal)!;
       try {
         expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(`## Final Report\n${SOURCE_FINALIZATION_RAW_SOURCE}`);
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       mockOpenCodePreparation(runtime, null, 'startup', 'public second run', [], undefined, true);
-      const next = await runtime.analyze('public second run', sessionId, 'trace-opencode', {
+      const next = await runtime.analyze('public second run', sessionId, 'trace-opencode', admitted({
         analysisMode: 'fast',
         codeAwareMode: 'off',
-      });
+      }));
 
       expect(terminal.success).toBe(true);
       expect(terminal.sourceUseDecision).toEqual(decision);
@@ -3278,11 +3709,11 @@ describe('experimental OpenCode runtime contract', () => {
         'analyze with private source',
         'session-opencode-private',
         'trace-opencode',
-        {
+        admitted({
           analysisMode: 'full',
           codeAwareMode: 'provider_send',
           codebaseIds: ['codebase-private'],
-        },
+        }),
       );
 
       expect(paths.home).toContain('smartperfetto-opencode-private-');
@@ -3331,7 +3762,7 @@ describe('experimental OpenCode runtime contract', () => {
       'private source analysis',
       'session-opencode-legacy-adapter',
       'trace-opencode',
-      {codeAwareMode: 'metadata_only', codebaseIds: ['codebase-private']},
+      admitted({codeAwareMode: 'metadata_only', codebaseIds: ['codebase-private']}),
     )).rejects.toThrow('does not support explicit per-process environment isolation');
     expect(legacyCreate).not.toHaveBeenCalled();
   });
@@ -3431,7 +3862,7 @@ describe('experimental OpenCode runtime contract', () => {
 
 
 
-  it('restores OpenCode provider directories while creating a fresh native session', async () => {
+  it('reuses the session-derived directories across turns without persisting native session state', async () => {
     await withBackendDataDir(async (dataDir) => {
       const firstRecord = {
         closeCount: 0,
@@ -3475,19 +3906,33 @@ describe('experimental OpenCode runtime contract', () => {
         'trace-opencode',
         createSnapshotFields(),
       );
-      const opaque = snapshot.engineState?.kind === 'opencode'
-        ? snapshot.engineState.opencode.opaque
-        : undefined;
-
-      expect(opaque).toMatchObject({
-        version: 1,
-        openCodeSessionId: 'ses-opencode-original',
+      expect(snapshot.engineState).toEqual({
+        kind: 'opencode',
+        provider: {providerId: null, providerSnapshotHash: null},
+        opencode: {},
       });
-      expect(opaque?.projectDir).toContain(dataDir);
-      expect(opaque?.homeDir).toContain(dataDir);
-      expect(opaque?.configDir).toContain(dataDir);
-      expect(firstRecord.homeAtCreate).toBe(opaque?.homeDir);
-      expect(firstRecord.configAtCreate).toBe(opaque?.configDir);
+      expect(JSON.stringify(snapshot)).not.toContain('ses-opencode-original');
+      const projectDir = (firstRecord.createInput as {query: {directory: string}}).query.directory;
+      expect(projectDir).toContain(dataDir);
+      expect(firstRecord.homeAtCreate).toContain(dataDir);
+      expect(firstRecord.configAtCreate).toContain(dataDir);
+
+      // A snapshot written before native state was dropped still names the old
+      // session and absolute directories; neither is reused.
+      const legacySnapshot = {
+        ...snapshot,
+        engineState: {
+          kind: 'opencode' as const,
+          provider: {providerId: null, providerSnapshotHash: null},
+          opencode: {opaque: {
+            version: 1 as const,
+            openCodeSessionId: 'ses-opencode-original',
+            projectDir: dataDir,
+            homeDir: dataDir,
+            configDir: dataDir,
+          }},
+        },
+      };
 
       const restoredRecord = {
         closeCount: 0,
@@ -3529,7 +3974,7 @@ describe('experimental OpenCode runtime contract', () => {
           }),
         }),
       });
-      restoredRuntime.restoreFromSnapshot('session-opencode-resume', 'trace-opencode', snapshot);
+      restoredRuntime.restoreFromSnapshot('session-opencode-resume', 'trace-opencode', legacySnapshot);
 
       await restoredRuntime.analyze('follow-up OpenCode question', 'session-opencode-resume', 'trace-opencode');
 
@@ -3537,10 +3982,10 @@ describe('experimental OpenCode runtime contract', () => {
       expect(restoredRecord.getInput).toBeUndefined();
       expect(restoredRecord.promptInput).toMatchObject({
         path: { id: 'ses-opencode-new' },
-        query: { directory: opaque?.projectDir },
+        query: { directory: projectDir },
       });
-      expect(restoredRecord.homeAtCreate).toBe(opaque?.homeDir);
-      expect(restoredRecord.configAtCreate).toBe(opaque?.configDir);
+      expect(restoredRecord.homeAtCreate).toBe(firstRecord.homeAtCreate);
+      expect(restoredRecord.configAtCreate).toBe(firstRecord.configAtCreate);
     });
   });
 
@@ -3739,22 +4184,20 @@ describe('experimental OpenCode runtime contract', () => {
     });
   });
 
-  it('does not publish an OpenCode turn when cancelled during final verification', async () => {
+  it('does not publish an OpenCode turn when cancelled after its answer was projected', async () => {
     await withBackendDataDir(async () => {
       const sessionId = 'session-opencode-verification-cancel';
       const traceId = 'trace-opencode';
-      const verificationStarted = createDeferred<void>();
-      const releaseVerification = createDeferred<void>();
-      mockClaudeVerifierVerifyConclusion.mockImplementationOnce(async () => {
-        verificationStarted.resolve();
-        await releaseVerification.promise;
-        return {
-          passed: true,
-          heuristicIssues: [],
-          llmIssues: [],
-          durationMs: 1,
-        };
-      });
+      let promptCountAtCancellation = -1;
+      const originalProjection = sourceClaimVerifier.finalizeOwnerSourceAwareAnalysisResultWithProjection;
+      const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection')
+        .mockImplementation((...args) => {
+          if (promptCountAtCancellation < 0) {
+            promptCountAtCancellation = promptInputs.length;
+            void runtime.abortSession(sessionId);
+          }
+          return originalProjection(...args);
+        });
       const addTurn = jest.fn();
       const promptInputs: unknown[] = [];
       const close = jest.fn();
@@ -3811,16 +4254,13 @@ describe('experimental OpenCode runtime contract', () => {
         analysisRunSpec: {runtime: {kind: OPENCODE_RUNTIME_KIND}, query: {text: '分析滑动性能'}, outputLanguage: 'zh-CN', traceContext: {datasetCount: 0}, mode: {adaptiveRouting: undefined}},
       });
 
-      const analysis = runtime.analyze('分析滑动性能', sessionId, traceId, {
-        analysisMode: 'full',
-        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
-      });
-      await verificationStarted.promise;
-      const promptCountAtCancellation = promptInputs.length;
-      await runtime.abortSession(sessionId);
-      releaseVerification.resolve();
-
-      await expect(analysis).rejects.toThrow(/aborted|cancelled/i);
+      try {
+        await expect(runtime.analyze('分析滑动性能', sessionId, traceId, {
+          analysisMode: 'full',
+          runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+        })).rejects.toThrow(/aborted|cancelled/i);
+      } finally {projection.mockRestore();}
+      expect(promptCountAtCancellation).toBeGreaterThan(0);
       expect(promptInputs).toHaveLength(promptCountAtCancellation);
       expect(addTurn).not.toHaveBeenCalled();
       expect(close).toHaveBeenCalledTimes(1);

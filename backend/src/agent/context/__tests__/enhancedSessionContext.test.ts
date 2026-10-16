@@ -10,7 +10,6 @@
 import {
   EnhancedSessionContext,
   SessionContextManager,
-  sessionContextManager,
 } from '../enhancedSessionContext';
 import { Intent, Finding } from '../../types';
 

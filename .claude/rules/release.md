@@ -1,315 +1,132 @@
 # Release Rules
 
-Read this file before any publish, package, tag, release, npm, Docker, or
-portable artifact task.
+Read the maintained [Release Runbook](../../docs/reference/release.md) and
+[Portable Packaging](../../docs/reference/portable-packaging.md) for executable
+steps. [testing](testing.md) owns detailed static/native/exact-archive contracts.
+These rules are the acceptance boundaries, not a second copy of that runbook.
 
-## Release Surfaces
+## Release Surfaces and Versions
 
-SmartPerfetto has separate release surfaces. Do not assume one successful
-surface proves the others.
+Source, npm CLI, Docker and portable archives are separate deliveries; one pass
+proves none of the others. npm requires host Node.js `>=24 <25`; portable bundles
+pinned Node 24; Docker needs no host Node or host Claude login.
 
-| Surface | Artifact | User entry | Includes | Does not include |
-| --- | --- | --- | --- | --- |
-| npm CLI | `@gracker/smartperfetto` | `smp`, `smartperfetto` | CLI dist, backend runtime assets, Skills, Strategies, SQL, packaged `trace_processor_shell` prebuilts for supported targets | Web UI launcher, Docker image, portable app bundle |
-| GitHub portable | `smartperfetto-v<version>-windows-x64.zip`, `smartperfetto-v<version>-macos-arm64.zip`, `smartperfetto-v<version>-linux-x64.tar.gz` | bundled launcher | Node.js 24 runtime, native production dependencies, backend, committed `frontend/`, pinned `trace_processor_shell` | npm global install |
-| Docker Hub | Linux container image from `main` workflow | `docker compose -f docker-compose.hub.yml up -d` | backend, committed `frontend/`, pinned trace processor, Docker volumes | host Claude Code local auth |
-| Source checkout | Git repository | `./start.sh` | backend source, committed `frontend/`, optional `perfetto/` submodule for UI development | published artifact guarantees |
-
-The npm CLI requires user-provided Node.js `>=24 <25`. Portable packages bundle
-Node.js 24. Docker users do not need host Node.js. Native Windows source work
-should use WSL2; native Windows users should use the portable package.
-
-## Version Source
-
-- Root `package.json` is the project version source.
-- `npm run version:set -- <version>` must synchronize:
-  - `package.json`
-  - `package-lock.json`
-  - `backend/package.json`
-  - `backend/package-lock.json`
-- Verify with `npm run version:sync -- --check`.
-- Published npm versions are immutable. If a release bug escapes, fix it,
-  bump the next patch version, publish a new npm version, and supersede the
-  GitHub release instead of mutating the published version.
+Root `package.json` is the project version source. Use `npm run version:set --
+<version>` to synchronize root/backend package and lockfiles, update CHANGELOG,
+then `npm run version:sync -- --check`. Never hand-update only one mirror.
+Published versions/assets are immutable; runtime bugs require a verified next
+patch, not mutation of an existing public artifact.
 
 ## Public Release Sequence
 
-1. Fetch and inspect current state:
-   - `git status --short --branch`
-   - `git fetch --tags origin`
-   - `npm view @gracker/smartperfetto version --json`
-   - `gh release view v<version>` when checking an existing release
-2. Start from a clean, up-to-date `main`.
-3. Confirm Node.js 24 is active. Do not publish from Node 25.
-4. Run the verification tier that matches the change. For release-process,
-   portable, CLI packaging, runtime asset, or version-sync changes, follow
-   `.claude/rules/testing.md`.
-5. Bump and commit the version:
-   ```bash
-   npm run version:set -- <version>
-   npm run version:sync -- --check
-   git add package.json package-lock.json backend/package.json backend/package-lock.json
-   git commit -m "chore: release v<version>"
-   git push origin main
-   ```
-6. Preflight the npm CLI package without a publish credential:
-   ```bash
-   npm --prefix backend run cli:pack-check
-   npm --prefix backend run cli:e2e
-   ```
-   The normal npm publish path is the tokenless
-   `.github/workflows/npm-publish.yml` Trusted Publisher workflow. It repeats
-   these checks against the exact release tag before producing the tarball.
-7. Build portable GitHub assets from the exact clean release commit:
-   ```bash
-   npm run package:portable
-   ```
-   Linux `tar.gz` assets built on macOS must be created through
-   `scripts/create-portable-tar.sh`, which suppresses both extended attributes
-   and AppleDouble synthesis. The final archive must contain no `._*`,
-   `__MACOSX`, `.DS_Store`, or `.AppleDouble` entry and must list and extract
-   without diagnostics on the target's GNU tar. A staging-tree check alone
-   does not prove this archive-time contract.
-   Runtime-smoke the post-build final archives on their matching operating
-   systems with `scripts/smoke-portable-archive.cjs` and the exact-asset
-   contract in `.claude/rules/testing.md`.
-   macOS smoke must use the post-notarization, post-staple final zip. Do not
-   rebuild any archive after it passes runtime smoke. Store each result at
-   `dist/portable/smoke-evidence/<target>/smoke-summary.json` by using
-   `--public-release`. Each target output directory must be fresh and must not
-   overwrite prior smoke evidence.
-   When a target machine is unavailable, dispatch
-   `.github/workflows/portable-exact-archive-smoke.yml` from the default branch
-   with the numeric draft `release_id`. Use `selection=all` for promotion
-   evidence; `windows-linux` and single-target runs are explicitly partial.
-   A fixed-gate credential job downloads each immutable asset ID, re-checks
-   release metadata after download, and passes the opaque bytes through a
-   short-lived Actions artifact to a native smoke job with only repository
-   read access. The native job must execute the smoke client from the fixed
-   gate checkout against the release archive; immutable draft metadata and the
-   downloaded archive supply identity and product bytes. The native job must
-   not create or execute a release checkout. It then sends only raw evidence
-   to a fresh collect job. That job re-checks the unchanged draft before
-   downloading the raw evidence and uses the fixed gate verifier, without a
-   token, to issue verified contexts while preserving the distinct gate SHA
-   and release commit in a normalized
-   `promotion-evidence/` directory plus
-   `portable-smoke-attestation.json` in the combined artifact. Download that
-   exact artifact by successful workflow run ID; do not copy individual job
-   artifacts into a promotion directory by hand.
-   Releases that predate the schema-v2 lifecycle smoke contract are rejected
-   instead of being silently downgraded.
-   Hosted promotion also re-fetches repository metadata and rejects runs from
-   any branch other than GitHub's current default branch. The run gate SHA must
-   exactly equal the clean promotion checkout's `HEAD`.
-8. Publish those already-smoked portable assets:
-   ```bash
-   npm run release:portable -- <version> --skip-build --no-draft \
-     --smoke-evidence-dir dist/portable/smoke-evidence
-   gh release view v<version> --json tagName,isDraft,assets
-   ```
-   For hosted evidence, additionally pass the combined artifact and its
-   producing run:
-   ```bash
-   gh run download <run-id> \
-     --name portable-smoke-evidence-release-<release-id> \
-     --dir <download-dir>
-   npm run release:portable -- <version> --skip-build --no-draft \
-     --release-commit <draft-target-full-sha> \
-     --smoke-evidence-dir <download-dir>/promotion-evidence \
-     --smoke-attestation <download-dir>/portable-smoke-attestation.json \
-     --smoke-run-id <run-id>
-   ```
-9. Wait for the public release's npm Trusted Publishing workflow, then verify
-   the registry:
-   ```bash
-   gh run list --workflow npm-publish.yml --limit 5
-   gh run watch <run-id> --exit-status
-   npm view @gracker/smartperfetto@<version> version dist.integrity --json
-   ```
-   The workflow accepts only a public, non-prerelease release with a full
-   target SHA that matches its tag, package versions, and a commit reachable
-   from `main`. It builds and tests without an OIDC credential, then gives
-   `id-token: write` only to a separate job that publishes the hash-bound
-   tarball. A rerun may skip an immutable version only when registry
-   `dist.integrity` exactly matches that tarball. If the release event was not
-   delivered, rerun the same path from the default branch by immutable public
-   release ID:
-   ```bash
-   gh workflow run npm-publish.yml --ref main -f release_id=<numeric-release-id>
-   ```
-   If only the `propagation` job timed out, the publish already succeeded;
-   use `gh run rerun <run-id> --failed` instead, which reruns the wait and
-   smoke without re-entering the publish job.
-   Interactive WebAuthn publishing is an emergency fallback only. When it is
-   required, publish from `backend/` with `npm publish --access public`; never
-   use `npm --prefix backend publish`, which can resolve the private root
-   package and fail with `EPRIVATE`.
-10. Run isolated npm smoke in a temp directory under supported Node.js 24:
-    ```bash
-    npm install @gracker/smartperfetto@<version>
-    ./node_modules/.bin/smp --version
-    ./node_modules/.bin/smartperfetto --help
-    ./node_modules/.bin/smp doctor --format json
-    ```
-    Publishing can return success before registry metadata is fully visible;
-    require both `npm view` and this isolated install before calling the npm
-    release done.
-11. Re-check `git status --short --branch`. Generated `dist/portable/`,
-   `dist/windows-exe/`, and cache outputs must not be staged.
+1. Inspect/fetch live main/tags, registry and existing release state; start from
+   clean up-to-date main with supported Node 24. Run required local `verify:pr`
+   and change-specific acceptance before landing; reuse unchanged evidence only
+   within the identity/environment bounds in [testing](testing.md).
+2. Synchronize version/CHANGELOG, commit/push main and exact release tag. npm
+   preflight uses backend `cli:pack-check` and `cli:e2e` without publish credentials.
+3. Build portable packages once from that exact clean release commit, using
+   reviewed runtime/processor pins and macOS post-notarization, post-staple final zip.
+   Verify
+   manifest/version/target/commit/dirty state and safe final archive contents.
+4. Upload a draft using `release:portable -- <version> --skip-build`. Bind remote
+   release target/title and immutable asset IDs/names/sizes/sha256 digests to those
+   bytes. Native-smoke exact final archives on matching Windows/macOS/Linux;
+   use hosted `portable-exact-archive-smoke.yml` from default branch with numeric
+   release ID and `selection=all` when needed.
+5. Download the successful combined evidence artifact by producing run ID, then
+   promote through `release:portable -- <version> --skip-build --no-draft` with
+   its `--smoke-evidence-dir`, `--smoke-attestation` and `--smoke-run-id` (or the
+   admitted local-native evidence path). Do not assemble verified contexts by hand.
+6. Wait for npm Trusted Publishing and Docker workflow terminal results, verify
+   registry install and remote dual-architecture manifest/tags. Recheck clean Git
+   status; generated packages/caches stay untracked. Report each delivery separately.
 
-## npm CLI Invariants
+## Exact Portable Identity and Lifecycle
 
-- `backend/package.json` package name is `@gracker/smartperfetto`.
-- `backend/package.json.repository.url` must be exactly
-  `https://github.com/Gracker/SmartPerfetto`; npm Sigstore provenance validates
-  this metadata against the GitHub Actions repository identity.
-- The package must expose both `smp` and `smartperfetto` bins.
-- `npm --prefix backend run cli:pack-check` must verify package contents before
-  publish.
-- Build the releasable package from `backend/`. Trusted Publishing publishes
-  the exact tarball produced by that package job. Interactive fallback must
-  run from the `backend/` working directory with `npm publish --access public`;
-  do not publish with `npm --prefix backend publish`.
-- The packed CLI must contain runtime assets needed by `doctor`, `query`,
-  `skill`, `run`, `ask`, `repl`, `compare`, and `report export`.
-- Do not publish if dry-run or pack-check reports missing bin files,
-  missing runtime assets, wrong version, or an unsupported Node engine.
-
-## npm Trusted Publishing Invariants
-
-- npmjs.com must bind `@gracker/smartperfetto` to repository
-  `Gracker/SmartPerfetto` and the exact workflow filename `npm-publish.yml`.
-- The workflow must use GitHub-hosted runners, Node.js 24, and an npm CLI that
-  supports Trusted Publishing. It must not contain `NPM_TOKEN`,
-  `NODE_AUTH_TOKEN`, registry auth material, or repository secrets.
-- Release packaging and tests run without `id-token: write`. Only the publish
-  job receives the OIDC permission, and that job must not check out or execute
-  release source; it may consume only the hash-bound tarball artifact.
-- Manual dispatch is recovery-only, takes a numeric public release ID, and
-  must fail when invoked from any ref other than the default branch.
-- Both event and recovery paths must reject drafts, prereleases, non-SemVer
-  tags, non-full target SHAs, tag/target/version mismatches, and release commits
-  that are not ancestors of `main`.
-- An already-published version is idempotent only when npm registry
-  `dist.integrity` exactly equals the generated tarball SRI. A mismatch is a
-  hard failure, never a skip.
-- The publish job ends when `npm publish` returns. A separate credential-free
-  `propagation` job waits for registry `dist.integrity` to equal the tarball
-  SRI, with capped backoff inside the `REGISTRY_WAIT_*` sleep budget and a job
-  timeout; registry propagation has taken minutes. A failed `npm view` is
-  retried within that budget. A different integrity, or output that is not a
-  single SRI, fails immediately.
-- Post-publish smoke must install the public exact version without user npm
-  credentials and verify the supported Node boundary, CLI bins, Knowledge
-  Pack, and packaged `trace_processor_shell`.
-
-## Portable Release Invariants
-
-- Asset names and top-level directories must be versioned:
-  - `smartperfetto-v<version>-windows-x64.zip`
-  - `smartperfetto-v<version>-macos-arm64.zip`
-  - `smartperfetto-v<version>-linux-x64.tar.gz`
-- Do not publish old unversioned asset names.
-- Do not use `--allow-dirty` for public releases.
-- `--skip-build` is allowed only when the existing packages were freshly built
-  for the exact version and commit being released.
+- All three assets/top-level directories are versioned
+  `smartperfetto-v<version>-windows-x64.zip`, `-macos-arm64.zip`,
+  `-linux-x64.tar.gz`. Public manifest `gitDirty` is false and `gitCommit` is the
+  exact release target; dirty evidence cannot promote. `--skip-build` requires
+  freshly verified matching version/commit bytes, never stale local packages.
 - Build once, then runtime-smoke and upload the same final archive bytes.
-  Cross-compilation, manifest verification, archive extraction, and static
-  signature checks prove structure but do not prove the packaged launcher can
-  start on the target operating system.
-- Resolve portable Node runtimes only from the exact version, target archive
-  hashes, and executable-content digests in `scripts/node-runtime-pin.env`.
-  Update that file through review; never select a moving `latest-v24.x`
-  runtime during a release build.
-- Before `--no-draft`, runtime-smoke the final Windows, macOS, and Linux
-  archives on matching operating systems. Check backend and frontend
-  `127.0.0.1` health, bundled runtimes, a minimal trace-processor operation,
-  graceful shutdown, and port release as defined in `.claude/rules/testing.md`.
-  Each schema-v2 smoke summary must bind the exact asset name, byte size, and
-  SHA-256; promotion re-hashes the local asset and rejects any mismatch.
-- If a required target runner is unavailable, keep the release as a draft.
-  Publishing with an explicitly accepted gap requires user approval and a
-  visible downgrade in the release/hand-off notes; never call that result a
-  complete all-platform smoke.
-- Portable publishing is draft-first. Upload and verify the release target,
-  title, exact asset names, sizes, and GitHub `sha256:` digests before making a
-  release public.
-- `--no-draft` is promotion-only: the draft and all three assets must already
-  exist. It must not create a release, edit release metadata, upload, or
-  `--clobber` an asset. Before and after changing only the draft flag, compare
-  the release ID plus every asset ID, state, name, size, and digest.
-- If the gate code advanced after the draft bytes were built, run promotion
-  from the newer clean gate checkout with `--release-commit <full-draft-sha>`.
-  The script accepts only a locally available full SHA that is an ancestor of
-  the gate commit; package, evidence, and remote target checks still bind to
-  that release SHA.
-- `--no-draft` requires the complete default three-target set. A partial target
-  selection must remain a draft.
-- A published release is read-only. Re-running the script may verify and exit
-  idempotently, but must never clobber, replace, upload, or edit public assets.
-- The package manifest must report `gitDirty: false` and `gitCommit` equal to
-  the release target commit.
-- Portable manifest schema v3 records distribution, update channel, target,
-  source commit, signing mode, the pinned trace-processor source hash, and the
-  post-signing packaged trace-processor hash so provenance and final artifact
-  verification remain distinct.
-- Ad-hoc signing is limited to local or draft macOS packages. A public macOS
-  release requires `SMARTPERFETTO_MACOS_SIGN_IDENTITY` and
-  `SMARTPERFETTO_MACOS_NOTARY_PROFILE`, Developer ID signing, Hardened Runtime,
-  Apple notarization acceptance, a stapled ticket, Gatekeeper acceptance, and
-  an actual launch smoke.
-- Discover nested macOS code by Mach-O file magic, not filename extension or
-  executable mode. Sign every Mach-O inside-out; do not use
-  `codesign --force --deep` as a signing shortcut.
-- When re-signing an already-signed bundled runtime, preserve only its upstream
-  `identifier,entitlements`. Do not add JIT entitlements to arbitrary unsigned
-  Mach-O files. The final zip verifier must check every Mach-O signature and
-  the required Node/Claude runtime entitlements.
-- A notary profile is a local Keychain credential alias, not a provisioning
-  profile. Keep the API key material outside the repository and pass only the
-  profile name to release automation.
+  Promote those bytes; never rebuild after smoke.
+  Use exact archive names/sizes/hashes, source-versus-packaged processor hashes,
+  fixed Node archive/executable-content pins from `node-runtime-pin.env`, and
+  target native dependency/compatibility validation. Never choose moving latest.
+- Archive safety must apply to final bytes, not staging alone: bounded listing/
+  extraction, no traversal/links/collisions/diagnostics/macOS metadata. Linux tar
+  creation uses `create-portable-tar.sh` to suppress xattrs/AppleDouble and must
+  list/extract cleanly with target GNU tar.
+- Cross-compiles/static signatures are structure evidence, not target startup.
+  Matching-OS native smoke needs isolated data/ports, explicit IPv4 loopback health,
+  bundled runtime/processor operation, graceful contained shutdown, no surviving
+  descendants/listeners, preserved failure logs and schema-v2 bound receipts.
+  [Exact archive gate](testing.md#exact-portable-archive-runtime-gate) is mandatory.
+- Hosted gate SHA and release commit are separate trust roots. Only fixed gate
+  code validates/downloads/collects; native jobs execute release archives, never
+  a release source checkout. Write credentials stay in trusted prepare/download/
+  collect jobs; native release code receives at most read access, never those
+  credentials. Collection rechecks unchanged draft and all target provenance.
+- Only successful `selection=all` yields complete public-eligible attestation.
+  Partial/old-schema/stale/edited summaries cannot promote. Promotion re-fetches
+  current repository/default branch, completed run and combined artifact, checks
+  artifact digest, byte-compares local evidence, binds its gate SHA to clean HEAD
+  and rehashes exact archives. `--release-commit` may bind a locally available full
+  ancestor draft SHA to a newer clean gate, never change the release identity.
+- `--no-draft` only changes an existing complete draft's flag. No release creation,
+  metadata edit, upload or clobber; compare release and every asset ID/state/name/
+  size/digest before and after. Public releases are read-only: idempotent verification
+  may exit successfully but cannot replace/edit assets. Missing native targets keep
+  a draft unless the user explicitly accepts a visible named verification gap;
+  such a downgrade is never complete all-platform acceptance.
 
-## Release-Surface Acceptance
+## macOS Signing
 
-Verify only the public surfaces included in the release, but close each one
-completely:
+Public macOS requires `SMARTPERFETTO_MACOS_SIGN_IDENTITY` and Keychain alias
+`SMARTPERFETTO_MACOS_NOTARY_PROFILE`, Developer ID/Hardened Runtime, Accepted
+Apple notarization receipt inside final archive, staple validation, Gatekeeper
+Notarized Developer ID and actual launch. Ad-hoc signing is local/draft only.
+Find nested code by Mach-O magic, sign inside-out, never force/deep as a shortcut.
+Re-signing preserves only upstream identifier/entitlements.
+Do not add JIT entitlements to arbitrary unsigned Mach-O binaries. Final verification checks every Mach-O signature and
+required Node/Claude entitlements. Keep Keychain key material outside the repo.
 
-- Portable: remote tag/target, non-draft status, exact asset names/sizes, and
-  GitHub `sha256:` digests must match the locally smoked archives.
-- npm: wait for registry propagation, verify `npm view`, then install the
-  public version in an empty directory under supported Node.js 24 and run the
-  CLI smoke.
-- Docker: when Docker is published or affected, wait for the workflow terminal
-  state and verify the SemVer, `latest`, and `sha-*` tags plus the amd64/arm64
-  manifest digest. Git tag `v1.2.3` normally maps to Docker tag `1.2.3`.
+## npm Trusted Publishing
 
-## Docker Release Notes
+- Backend package is `@gracker/smartperfetto`, with both `smp`/`smartperfetto` bins,
+  supported engine, all runtime assets and exact repository URL
+  `https://github.com/Gracker/SmartPerfetto` for provenance. Build/pack from backend;
+  missing bins/assets, wrong version or engine block publication.
+- Normal publication is `.github/workflows/npm-publish.yml`, bound in npm to the
+  exact repository/workflow on GitHub-hosted Node24. No NPM_TOKEN/NODE_AUTH_TOKEN,
+  repository secrets or registry auth. Package/tests have no `id-token: write`;
+  only isolated publish consumes hash-bound tarball with OIDC, without checkout
+  or execution of release source.
+- Event/recovery rejects draft/prerelease/non-SemVer, nonfull target SHA,
+  tag/target/package mismatches and commits outside main ancestry. Manual recovery
+  requires default branch and numeric public release ID. Existing immutable npm
+  version is idempotent only when registry integrity equals the produced tarball.
+- Propagation is credential-free, capped backoff and timeout; different/malformed
+  integrity fails immediately. If only propagation failed, rerun failed jobs,
+  not successful publishing. Missing event may dispatch the same workflow by ID.
+  Interactive fallback is explicit emergency work from backend (`npm publish
+  --access public`), never `npm --prefix backend publish`.
+- Verify public `npm view` version/integrity, then install exact version in an empty
+  directory under supported Node24 without npm credentials. Smoke both bins/help,
+  `smp doctor --format json`, actual native modules/SDK binary and packaged processor.
+  Publish command success alone is not registry/install acceptance.
 
-Docker Hub images are produced by repository workflow. Version tags publish an
-immutable SemVer tag plus `latest`; schedule/manual runs on `main` publish only
-the opt-in `nightly` tag. `docker-compose.hub.yml` defaults to `latest` and
-accepts `SMARTPERFETTO_DOCKER_TAG` for explicit SemVer or nightly selection.
-When a task changes Dockerfile, compose files, `frontend/` consumption,
-trace-processor setup, provider env behavior, or startup scripts, verify the
-Docker path and update Docker docs. Do not describe a manual Docker publish as
-complete unless the workflow or image tag is verified.
+## Docker, Secrets and Faults
 
-## Secret Handling
+Version tags publish SemVer, latest and sha tags; scheduled/manual main publishes
+opt-in nightly. When included/affected, wait for workflow success then inspect
+remote tag/digest equality and linux amd64/arm64 manifest. Source/npm/portable
+success cannot prove Docker delivery. Compose defaults latest with explicit tag
+override; Docker/startup/frontend/processor/provider changes need the Docker gate.
 
-- Never commit npm tokens, provider keys, GitHub tokens, or temporary `.npmrc`
-  files.
-- Do not echo tokens into logs, docs, commit messages, release notes, or final
-  summaries.
-- Prefer npm Trusted Publishing OIDC. Use environment variables or npm's
-  normal auth store only for explicitly accepted one-off fallback work.
-- If a token was pasted into a chat or terminal transcript, recommend rotation
-  after the release is verified.
-
-## Release Bug Policy
-
-- Small documentation or release-note mistakes: fix docs, commit, push.
-- Package/runtime bug after npm publish: fix, verify, bump next patch version,
-  publish npm again, then publish matching portable assets.
-- Major runtime regression: stop promoting the bad version, document the
-  blocker, fix with targeted tests, then publish a superseding release.
+Never commit/echo tokens, provider keys or temporary npm auth. Prefer OIDC; keep
+permitted fallback auth in normal external stores. A publicly exposed credential
+needs rotation. Post-publication runtime/package faults require the next patch;
+stop promotion of a broken candidate, record the blocker and verify a superseding
+release. Documentation-only corrections may land normally.

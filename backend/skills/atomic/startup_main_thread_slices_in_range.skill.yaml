@@ -59,6 +59,7 @@ display:
     - name: count
       label: "次数"
       type: number
+      unit: events
       format: compact
     - name: total_dur_ms
       label: "总耗时(wall)"
@@ -83,10 +84,12 @@ display:
     - name: percent_of_startup
       label: "启动占比(wall)"
       type: percentage
+      unit: "%"
       format: percentage
     - name: self_percent
       label: "启动占比(self)"
       type: percentage
+      unit: "%"
       format: percentage
     - name: startup_type
       label: "启动类型"

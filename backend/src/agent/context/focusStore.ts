@@ -726,16 +726,3 @@ function formatNsForDisplay(ns: string): string {
     return ns;
   }
 }
-
-// =============================================================================
-// Factory
-// =============================================================================
-
-/**
- * Create a new FocusStore instance.
- */
-export function createFocusStore(config?: Partial<FocusStoreConfig>): FocusStore {
-  return new FocusStore(config);
-}
-
-export default FocusStore;

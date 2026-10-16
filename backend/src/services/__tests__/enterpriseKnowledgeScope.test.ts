@@ -26,6 +26,9 @@ import {
   type RagChunk,
   makeSparkProvenance,
 } from '../../types/sparkContracts';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -238,7 +241,7 @@ describe('enterprise knowledge scope', () => {
     const baselineStore = new BaselineStore(path.join(tmpDir, 'baselines.json'));
     const memoryStore = new ProjectMemory(path.join(tmpDir, 'memory.json'));
     const caseLibrary = new CaseLibrary(path.join(tmpDir, 'cases.json'));
-    const caseGraph = new CaseGraph(path.join(tmpDir, 'edges.json'));
+    const caseGraph = new CaseGraph(path.join(tmpDir, 'edges.json'), caseLibrary);
 
     baselineStore.addBaseline(
       makeBaseline({curatorNote: 'tenant-a'}),
@@ -256,8 +259,8 @@ describe('enterprise knowledge scope', () => {
       makeMemoryEntry({insight: 'tenant b memory'}),
       scopeB,
     );
-    caseLibrary.saveCase(makeCase({title: 'Tenant A case'}), scopeA);
-    caseLibrary.saveCase(makeCase({title: 'Tenant B case'}), scopeB);
+    caseLibrary.saveCase(makeCase({title: 'Tenant A case'}), curator, scopeA);
+    caseLibrary.saveCase(makeCase({title: 'Tenant B case'}), curator, scopeB);
     caseGraph.addEdge(makeEdge({note: 'tenant-a'}), scopeA);
     caseGraph.addEdge(makeEdge({note: 'tenant-b'}), scopeB);
 

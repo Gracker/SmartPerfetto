@@ -21,6 +21,9 @@ import type {
 } from '../../agent/scene/types';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {resolveEffectiveAnalysisMode} from '../../services/effectiveAnalysisMode';
+import {effectiveAnalysisSelection} from '../../services/effectiveAnalysisSelection';
+import {PublicRequestError} from '../../utils/publicRequestError';
+import {isRequestedSourceDepth, type RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
 export type AnalyzeEndpointKind = '/analyze' | '/sessions/:id/runs';
 export type AnalyzePreset = 'smart';
@@ -35,6 +38,7 @@ export interface NormalizedAnalyzeOptions {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
   generateTracks?: boolean;
   forceRefresh?: boolean;
   selectionContext?: SelectionContext;
@@ -52,15 +56,15 @@ export interface NormalizedAnalyzeOptions {
   smartSelection?: SceneAnalysisSelection;
 }
 
-export class AnalyzeOptionsError extends Error {
+/** An analyze request option the caller has to change; its text and code are the route contract. */
+export class AnalyzeOptionsError extends PublicRequestError {
   constructor(
     message: string,
-    readonly code: string,
-    readonly httpStatus = 400,
-    readonly details?: Readonly<Record<string, string | number>>,
+    code: string,
+    status = 400,
+    details?: Readonly<Record<string, string | number>>,
   ) {
-    super(message);
-    this.name = 'AnalyzeOptionsError';
+    super(code, message, status, details);
   }
 }
 
@@ -120,28 +124,38 @@ export function normalizeAnalyzeOptions(
     );
   }
 
-  const codebaseIds = normalizeBoundedAuthorizationIds(
-    raw.codebaseIds,
-    'codebaseIds',
-    MAX_CODEBASE_IDS_PER_ANALYSIS,
-  );
-  if (codebaseIds.length > 0) normalized.codebaseIds = codebaseIds;
+  // Validated as sent, then read through the one effective selection: an
+  // explicit off drops the codebase ids (they authorize nothing), ids without
+  // a mode mean metadata_only, and knowledge is independent of the mode.
+  const requestedCodeAwareMode = parseCodeAwareMode(raw.codeAwareMode);
+  const selection = effectiveAnalysisSelection({
+    codeAwareMode: requestedCodeAwareMode,
+    codebaseIds: normalizeBoundedAuthorizationIds(
+      raw.codebaseIds,
+      'codebaseIds',
+      MAX_CODEBASE_IDS_PER_ANALYSIS,
+    ),
+    knowledgeSourceIds: normalizeBoundedAuthorizationIds(
+      raw.knowledgeSourceIds,
+      'knowledgeSourceIds',
+      MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS,
+    ),
+  });
+  const knowledgeSourceIds = selection.knowledgeSourceIds ?? [];
+  if (selection.codebaseIds) normalized.codebaseIds = selection.codebaseIds;
+  if (selection.knowledgeSourceIds) normalized.knowledgeSourceIds = selection.knowledgeSourceIds;
+  if (selection.codebaseIds || requestedCodeAwareMode) normalized.codeAwareMode = selection.codeAwareMode;
 
-  const knowledgeSourceIds = normalizeBoundedAuthorizationIds(
-    raw.knowledgeSourceIds,
-    'knowledgeSourceIds',
-    MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS,
-  );
-  if (knowledgeSourceIds.length > 0) normalized.knowledgeSourceIds = knowledgeSourceIds;
-
-  const codeAwareMode = normalizeCodeAwareMode(raw.codeAwareMode, codebaseIds.length > 0);
-  if (codeAwareMode === 'off' && codebaseIds.length > 0) {
-    throw new AnalyzeOptionsError(
-      'codebaseIds require codeAwareMode=metadata_only or provider_send',
-      'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE',
-    );
+  // Sizes the run's source budget only; it grants no access.
+  if (raw.sourceDepth !== undefined) {
+    if (!isRequestedSourceDepth(raw.sourceDepth)) {
+      throw new AnalyzeOptionsError(
+        'sourceDepth must be auto, locate or mechanism',
+        'SOURCE_DEPTH_INVALID',
+      );
+    }
+    normalized.sourceDepth = raw.sourceDepth;
   }
-  if (codeAwareMode) normalized.codeAwareMode = codeAwareMode;
 
   // Source and comparison context preserve the caller's requested budget mode.
   normalized.analysisMode = resolveEffectiveAnalysisMode(normalized.analysisMode, {
@@ -309,13 +323,11 @@ function normalizeSmartSelectionScope(value: unknown): SceneAnalysisSelectionSco
   );
 }
 
-function normalizeCodeAwareMode(value: unknown, hasCodebases: boolean): CodeAwareMode | undefined {
+function parseCodeAwareMode(value: unknown): CodeAwareMode | undefined {
   if (value === 'off' || value === 'metadata_only' || value === 'provider_send') {
     return value;
   }
-  if (value === undefined || value === null || value === '') {
-    return hasCodebases ? 'metadata_only' : undefined;
-  }
+  if (value === undefined || value === null || value === '') return undefined;
   throw new AnalyzeOptionsError(
     `Unsupported codeAwareMode: ${String(value)}`,
     'UNSUPPORTED_CODE_AWARE_MODE',

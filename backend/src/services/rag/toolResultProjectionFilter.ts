@@ -4,12 +4,12 @@
 
 import {createHash} from 'crypto';
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts, runtimeToolReceiptMetadata} from '../../agentRuntime/runtimeToolResult';
+import {isSourceAccessRefusalAction} from '../codebase/sourceAccessRefusal';
+import {isKnowledgeRefusalAction, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape} from '../knowledge/knowledgeTools';
 
-import type {
-  BackgroundKnowledgeReference,
-  RagSourceKind,
-} from '../../types/sparkContracts';
-import type {CodeLookupOutcome} from '../codebase/codeLookupLedger';
+import type {RagSourceKind} from '../../types/sparkContracts';
+import {sourceLookupOutcome, type CodeLookupOutcome} from '../codebase/codeLookupLedger';
+import {ragChunkAudience} from './ragChunkAudience';
 import type {SanitizedRagResult} from './lookupResponseFilter';
 
 export interface ProjectedPayload {
@@ -25,12 +25,6 @@ export interface ProjectedPayload {
     attribution?: string;
     sourceStatus?: string;
     sourceConfidence?: string;
-    articleId?: string;
-    sectionId?: string;
-    sectionHeading?: string;
-    chunkHash?: string;
-    knowledgePackVersion?: string;
-    knowledgePackFingerprint?: string;
     lastVerifiedAgainst?: string;
     commitHash?: string;
     sourceDirty?: boolean;
@@ -52,23 +46,48 @@ export interface ProjectedPayload {
   }>;
   outcome: CodeLookupOutcome;
   legacyPath: boolean;
-  backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
+  /** A closed source-access refusal action; narration reads it to say "refused", not "failed". */
+  action_required?: string;
+  /** Present only as `false`: the search did not cover every admitted file. */
+  coverageComplete?: false;
+  /** Files a `find_codebase_files` call returned, by path hash only. */
+  fileRefs?: Array<{filePathHash: string}>;
+  /**
+   * A document-collection tool's outcome without any document content: which
+   * selected knowledge bases answered, how many references came back, and for
+   * a read the part position. Titles, heading paths, relative paths and text
+   * never cross this boundary.
+   */
+  knowledge?: {
+    knowledgeBaseIds: string[];
+    referenceCount: number;
+    part?: number;
+    partCount?: number;
+    alreadyDelivered?: true;
+    truncated?: true;
+  };
 }
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
+  ...KNOWLEDGE_TOOL_NAMES,
+  // Standalone public MCP server only (bin/smartperfetto-mcp.ts); its public
+  // blog hits are projected below, anything else fails closed.
   'lookup_blog_knowledge',
   'lookup_app_source',
   'lookup_kernel_source',
   'lookup_aosp_source',
   'lookup_oem_sdk',
   'search_codebase',
+  'locate_trace_anchor',
   'read_codebase_file',
+  'find_codebase_files',
   'query_code_graph',
   'inspect_code_symbol',
 ]);
 
 const ON_DEMAND_SOURCE_TOOL_NAMES = new Set([
   'search_codebase',
+  'locate_trace_anchor',
   'read_codebase_file',
 ]);
 
@@ -89,25 +108,58 @@ function hashSnippet(snippet: string): string {
   return createHash('sha256').update(snippet).digest('hex').slice(0, 12);
 }
 
+/** The facts every on-demand projection carries: outcome, refusal action and incomplete coverage. */
+function onDemandEnvelope(candidate: Record<string, unknown>): Pick<ProjectedPayload,
+'outcome' | 'action_required' | 'coverageComplete'> {
+  return {
+    outcome: sourceLookupOutcome(candidate),
+    ...(candidate.success === false && isSourceAccessRefusalAction(candidate.action_required)
+      ? {action_required: candidate.action_required}
+      : {}),
+    // Narration must not call an incomplete search "nothing found".
+    ...(candidate.coverageComplete === false ? {coverageComplete: false as const} : {}),
+  };
+}
+
+function onDemandCandidate(raw: unknown): Record<string, unknown> | undefined {
+  const payload = unwrapMcpPayload(raw);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  return ((payload as {result?: unknown}).result ?? payload) as Record<string, unknown>;
+}
+
+/** A file find returns relative paths only; external surfaces get their hashes. */
+function projectFileFindResult(toolName: string, raw: unknown): ProjectedPayload | undefined {
+  if (toolName !== 'find_codebase_files') return undefined;
+  const candidate = onDemandCandidate(raw);
+  if (!candidate || !Array.isArray(candidate.files)) return undefined;
+  const fileRefs = candidate.files.flatMap(file => {
+    const filePath = file && typeof file === 'object' ? (file as {filePath?: unknown}).filePath : undefined;
+    return typeof filePath === 'string' ? [{filePathHash: hashSnippet(filePath)}] : [];
+  });
+  return {toolName, chunkRefs: [], fileRefs, legacyPath: false, ...onDemandEnvelope(candidate)};
+}
+
 function projectOnDemandSourceResult(
   toolName: string,
   raw: unknown,
 ): ProjectedPayload | undefined {
   const isGraphTool = CODE_GRAPH_TOOL_NAMES.has(toolName);
   if (!ON_DEMAND_SOURCE_TOOL_NAMES.has(toolName) && !isGraphTool) return undefined;
-  const payload = unwrapMcpPayload(raw);
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
-  const candidate = ((payload as {result?: unknown}).result ?? payload) as Record<string, unknown>;
+  const candidate = onDemandCandidate(raw);
+  if (!candidate) return undefined;
   const rawReferences = isGraphTool
     ? candidate.references
-    : toolName === 'search_codebase'
+    : toolName === 'search_codebase' || toolName === 'locate_trace_anchor'
     ? candidate.matches
     : candidate.reference === undefined ? [] : [candidate.reference];
   if (!Array.isArray(rawReferences)) return undefined;
   const sourceRefs = rawReferences.flatMap(rawReference => {
     if (!rawReference || typeof rawReference !== 'object' || Array.isArray(rawReference)) return [];
     const reference = rawReference as Record<string, unknown>;
-    if (typeof reference.referenceId !== 'string' || typeof reference.codebaseId !== 'string') return [];
+    // The model sees each item's issued `id`; older payloads carried `referenceId`.
+    const referenceId = typeof reference.referenceId === 'string' ? reference.referenceId
+      : typeof reference.id === 'string' ? reference.id : undefined;
+    if (!referenceId || typeof reference.codebaseId !== 'string') return [];
     const lineRange = reference.lineRange && typeof reference.lineRange === 'object'
       ? reference.lineRange as Record<string, unknown>
       : undefined;
@@ -118,12 +170,15 @@ function projectOnDemandSourceResult(
       Number(lineRange.end) >= Number(lineRange.start)
       ? {start: Number(lineRange.start), end: Number(lineRange.end)}
       : undefined;
-    const text = typeof reference.text === 'string' ? reference.text : undefined;
+    // The model reads one numbered body; the raw text appears only when
+    // numbering did not apply.
+    const text = typeof reference.numberedText === 'string' ? reference.numberedText
+      : typeof reference.text === 'string' ? reference.text : undefined;
     const filePath = typeof reference.filePath === 'string' ? reference.filePath : undefined;
     const symbol = typeof reference.symbol === 'string' ? reference.symbol : undefined;
     const kind = typeof reference.kind === 'string' ? reference.kind : undefined;
     return [{
-      referenceId: reference.referenceId,
+      referenceId,
       codebaseId: reference.codebaseId,
       ...(validLineRange ? {lineRange: validLineRange} : {}),
       ...(filePath ? {filePathHash: hashSnippet(filePath)} : {}),
@@ -135,20 +190,52 @@ function projectOnDemandSourceResult(
         : {}),
     }];
   });
-  const unsupportedReason = typeof candidate.unsupportedReason === 'string'
-    ? candidate.unsupportedReason
-    : undefined;
-  const outcome: CodeLookupOutcome = unsupportedReason?.includes('consent')
-    ? 'consent_blocked'
-    : unsupportedReason === 'budget_exceeded' ? 'budget_exceeded'
-    : candidate.success === false ? 'rejected' : 'success';
+  return {toolName, chunkRefs: [], sourceRefs, legacyPath: false, ...onDemandEnvelope(candidate)};
+}
+
+/**
+ * The content-free facts of a well-formed document-collection result, or
+ * undefined for any other shape (`knowledgeResultShape`, shared with the
+ * owner's narration, decides what is well formed).
+ */
+function knowledgeFacts(toolName: string, candidate: Record<string, unknown>): ProjectedPayload['knowledge'] | undefined {
+  const shape = knowledgeResultShape(toolName, candidate);
+  if (!shape) return undefined;
+  const truncated = candidate.truncated === true ? {truncated: true as const} : {};
+  if (shape.variant === 'search') {
+    return {knowledgeBaseIds: shape.knowledgeBaseIds, referenceCount: (candidate.hits as unknown[]).length, ...truncated};
+  }
   return {
-    toolName,
-    chunkRefs: [],
-    sourceRefs,
-    outcome,
-    legacyPath: false,
+    knowledgeBaseIds: [shape.knowledgeBaseId],
+    referenceCount: 1,
+    part: shape.part,
+    partCount: shape.partCount,
+    ...(shape.variant === 'already_delivered' ? {alreadyDelivered: true as const} : {}),
+    ...truncated,
   };
+}
+
+/**
+ * Document-collection results, failing closed: only counts, the server-minted
+ * knowledge base ids, the part position and a closed refusal action survive.
+ * A failure keeps its closed action; any shape this does not recognize is a
+ * rejection, never a success and never read as the legacy RAG shape.
+ */
+function projectKnowledgeToolResult(toolName: string, raw: unknown): ProjectedPayload | undefined {
+  if (!KNOWLEDGE_TOOL_NAMES.has(toolName)) return undefined;
+  const candidate = onDemandCandidate(raw);
+  if (candidate?.success === false) {
+    return {
+      ...rejectedProjection(toolName),
+      ...(isKnowledgeRefusalAction(candidate.action_required) ? {action_required: candidate.action_required} : {}),
+    };
+  }
+  // An error result or failed receipt is a failure whatever its body claims.
+  const knowledge = candidate && readRuntimeToolResultFacts(raw).success !== false
+    ? knowledgeFacts(toolName, candidate) : undefined;
+  return knowledge
+    ? {toolName, chunkRefs: [], legacyPath: false, outcome: 'success', knowledge}
+    : rejectedProjection(toolName);
 }
 
 export function projectRagResultForSseAndLog(toolName: string, result: SanitizedRagResult): ProjectedPayload {
@@ -157,7 +244,7 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
     if (hit.unsupportedReason) outcome = hit.unsupportedReason === 'budget_exceeded'
       ? 'budget_exceeded'
       : 'rejected';
-    const privateWiki = hit.metadata?.kind === 'android_internals_wiki';
+    const privateWiki = hit.metadata ? ragChunkAudience(hit.metadata) === 'retired_private' : false;
     return {
       chunkId: hit.chunkId,
       ...(hit.metadata?.codebaseId ? {codebaseId: hit.metadata.codebaseId} : {}),
@@ -172,18 +259,6 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
       ...(!privateWiki && hit.metadata?.sourceStatus ? {sourceStatus: hit.metadata.sourceStatus} : {}),
       ...(!privateWiki && hit.metadata?.sourceConfidence
         ? {sourceConfidence: hit.metadata.sourceConfidence}
-        : {}),
-      ...(hit.metadata?.articleId ? {articleId: hit.metadata.articleId} : {}),
-      ...(hit.metadata?.sectionId ? {sectionId: hit.metadata.sectionId} : {}),
-      ...(hit.metadata?.sectionHeading
-        ? {sectionHeading: hit.metadata.sectionHeading}
-        : {}),
-      ...(hit.metadata?.chunkHash ? {chunkHash: hit.metadata.chunkHash} : {}),
-      ...(hit.metadata?.knowledgePackVersion
-        ? {knowledgePackVersion: hit.metadata.knowledgePackVersion}
-        : {}),
-      ...(hit.metadata?.knowledgePackFingerprint
-        ? {knowledgePackFingerprint: hit.metadata.knowledgePackFingerprint}
         : {}),
       ...(!privateWiki && hit.metadata?.lastVerifiedAgainst
         ? {lastVerifiedAgainst: hit.metadata.lastVerifiedAgainst}
@@ -200,9 +275,6 @@ export function projectRagResultForSseAndLog(toolName: string, result: Sanitized
     chunkRefs,
     outcome,
     legacyPath: result.legacyPath,
-    ...(result.backgroundKnowledgeReferences
-      ? {backgroundKnowledgeReferences: result.backgroundKnowledgeReferences.map(item => ({...item}))}
-      : {}),
   };
 }
 
@@ -233,18 +305,6 @@ function projectRawRetrievalResult(toolName: string, candidate: Record<string, u
         ...(typeof chunk.sourceConfidence === 'string' ? {sourceConfidence: chunk.sourceConfidence} : {}),
         ...(typeof chunk.lastVerifiedAgainst === 'string'
           ? {lastVerifiedAgainst: chunk.lastVerifiedAgainst}
-          : {}),
-        ...(typeof chunk.articleId === 'string' ? {articleId: chunk.articleId} : {}),
-        ...(typeof chunk.sectionId === 'string' ? {sectionId: chunk.sectionId} : {}),
-        ...(typeof chunk.sectionHeading === 'string'
-          ? {sectionHeading: chunk.sectionHeading}
-          : {}),
-        ...(typeof chunk.chunkHash === 'string' ? {chunkHash: chunk.chunkHash} : {}),
-        ...(typeof chunk.knowledgePackVersion === 'string'
-          ? {knowledgePackVersion: chunk.knowledgePackVersion}
-          : {}),
-        ...(typeof chunk.knowledgePackFingerprint === 'string'
-          ? {knowledgePackFingerprint: chunk.knowledgePackFingerprint}
           : {}),
         ...(typeof chunk.commitHash === 'string' ? {commitHash: chunk.commitHash} : {}),
         ...(typeof chunk.sourceDirty === 'boolean' ? {sourceDirty: chunk.sourceDirty} : {}),
@@ -285,13 +345,7 @@ export function projectSensitiveRagToolResult(
   if (!candidate || typeof candidate !== 'object') return undefined;
   const result = candidate as SanitizedRagResult;
   if (!Array.isArray(result.hits)) return undefined;
-  if (!result.hits.some(hit =>
-    hit.metadata?.kind === 'android_internals_wiki' ||
-    hit.metadata?.kind === 'android_internals_pack' ||
-    hit.metadata?.kind === 'app_source' ||
-    hit.metadata?.kind === 'kernel_source' ||
-    (hit.metadata?.kind === 'aosp' && Boolean(hit.metadata?.codebaseId)) ||
-    (hit.metadata?.kind === 'oem_sdk' && Boolean(hit.metadata?.codebaseId)))) {
+  if (!result.hits.some(hit => hit.metadata ? ragChunkAudience(hit.metadata) !== 'public' : false)) {
     return undefined;
   }
   return projectRagResultForSseAndLog(toolName, result);
@@ -305,7 +359,8 @@ export function projectToolResultForExternalSurface(toolName: string, raw: unkno
   const publish = (payload: ProjectedPayload) => ({
     ...payload, _meta: runtimeToolReceiptMetadata(readRuntimeToolResultFacts(raw)),
   });
-  const onDemandProjection = projectOnDemandSourceResult(toolName, raw);
+  const onDemandProjection = projectOnDemandSourceResult(toolName, raw) ?? projectFileFindResult(toolName, raw) ??
+    projectKnowledgeToolResult(toolName, raw);
   if (onDemandProjection) return publish(onDemandProjection);
   const projected = projectSensitiveRagToolResult(toolName, raw);
   if (projected) return publish(projected);
@@ -317,7 +372,15 @@ export function projectToolResultForExternalSurface(toolName: string, raw: unkno
     const publicProjection = projectRawRetrievalResult(toolName, candidate as Record<string, unknown>);
     if (publicProjection) return publish(publicProjection);
   }
-  return isSensitiveRagToolName(toolName) ? publish(rejectedProjection(toolName)) : raw;
+  if (!isSensitiveRagToolName(toolName)) return raw;
+  // A refused lookup keeps its closed source-access action, so narration can
+  // say why nothing was read instead of calling it a failure.
+  const refusal = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {};
+  return publish({
+    ...rejectedProjection(toolName),
+    ...(refusal.success === false && isSourceAccessRefusalAction(refusal.action_required)
+      ? {action_required: refusal.action_required} : {}),
+  });
 }
 
 /** @deprecated Use projectSensitiveRagToolResult. */

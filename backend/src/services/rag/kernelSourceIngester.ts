@@ -15,7 +15,7 @@ import {
 } from '../codebase/codebaseRegistry';
 import {PathSecurityGate, readAcceptedTextFileSync} from '../codebase/pathSecurityGate';
 import {SourceEnumerator} from '../codebase/sourceEnumerator';
-import {redactSecrets} from '../security/secretPatterns';
+import {redactSourceFile} from '../security/secretPatterns';
 import {
   chunkSourceBySymbols,
   estimateTokenCount,
@@ -32,10 +32,15 @@ import {
   resolveMaxSourceChunks,
   resolveSourcePathPrefix,
   selectEnumeratedSourceFiles,
-  selectCodebasePreviewFiles,
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
+import {
+  codebaseNotFound,
+  invalidCodebaseMetadata,
+  invalidCodebaseSelection,
+  isCodebaseStateError,
+} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 1800;
 const UNKNOWN_LICENSE = 'UNKNOWN';
@@ -81,17 +86,17 @@ export class KernelSourceIngester {
   async ingest(codebaseId: string, opts: KernelSourceIngestOptions = {}): Promise<KernelSourceIngestResult> {
     const ref = this.registry.get(codebaseId, opts.scope);
     if (!ref) {
-      throw new Error(`Codebase '${codebaseId}' not found`);
+      throw codebaseNotFound(codebaseId);
     }
     if (ref.kind !== 'kernel_source') {
-      throw new Error(`Codebase '${codebaseId}' is kind=${ref.kind}; kernel ingestion requires kernel_source`);
+      throw invalidCodebaseMetadata(`Codebase '${codebaseId}' is kind=${ref.kind}; kernel ingestion requires kernel_source`);
     }
     if (!ref.vendor) {
-      throw new Error(`Kernel codebase '${codebaseId}' requires vendor`);
+      throw invalidCodebaseMetadata(`Kernel codebase '${codebaseId}' requires vendor`);
     }
     const pathPrefix = resolveSourcePathPrefix(opts.pathPrefix);
     if ((ref.pathFilters ?? []).length === 0 && !pathPrefix) {
-      throw new Error(`Kernel codebase '${codebaseId}' requires pathFilters or pathPrefix`);
+      throw invalidCodebaseSelection(`Kernel codebase '${codebaseId}' requires pathFilters or pathPrefix`);
     }
     const effectiveScope = codebaseScopeFromRef(ref);
     return this.registry.withIngestLease(codebaseId, effectiveScope, lease =>
@@ -127,7 +132,7 @@ export class KernelSourceIngester {
         lastIngestError: reason,
         blockedFileCount: 0,
       });
-      if (reason === 'codebase_root_realpath_drift') throw error;
+      if (isCodebaseStateError(error, 'codebase_root_realpath_drift')) throw error;
       return {
         codebaseId,
         filesProcessed: 0,
@@ -208,7 +213,10 @@ export class KernelSourceIngester {
         );
         assertSourceFileUnchanged(provenance, file.relativePath, content);
         const license = ref.licenseTag ?? spdxLicense(content);
-        const chunks = chunkSourceBySymbols(content, maxChars);
+        // The whole file is the context: a chunk can start inside a literal or comment.
+        const redaction = redactSourceFile(content, file.relativePath);
+        result.redactionHitCount += redaction.redactedCount;
+        const chunks = chunkSourceBySymbols(redaction.text, maxChars);
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
@@ -218,8 +226,6 @@ export class KernelSourceIngester {
         }
         for (const chunk of chunks) {
           lease.assertHeld();
-          const redaction = redactSecrets(chunk.text);
-          result.redactionHitCount += redaction.redactedCount;
           const chunkId = stableChunkId([
             codebaseId,
             nextIndexGeneration,
@@ -232,8 +238,8 @@ export class KernelSourceIngester {
             kind: 'kernel_source',
             uri: `codebase://${codebaseId}/${file.relativePath}`,
             title: file.relativePath.split('/').pop(),
-            snippet: redaction.text,
-            tokenCount: estimateTokenCount(redaction.text),
+            snippet: chunk.text,
+            tokenCount: estimateTokenCount(chunk.text),
             license: license ?? UNKNOWN_LICENSE,
             indexedAt: Date.now(),
             filePath: file.relativePath,
@@ -359,8 +365,3 @@ export class KernelSourceIngester {
     return result;
   }
 }
-
-export const __TEST_ONLY__ = {
-  spdxLicense,
-  filterPreviewFiles: selectCodebasePreviewFiles,
-};

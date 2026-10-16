@@ -69,7 +69,7 @@ steps:
         FROM thread t
         LEFT JOIN process p USING (upid)
         WHERE t.utid IS NOT NULL
-          AND (p.name GLOB '${process_name}*' OR '${process_name}' = '')
+          AND ('${process_name}' = '' OR p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
       ), samples AS (
         SELECT
           t.process_name,

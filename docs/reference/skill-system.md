@@ -2,6 +2,8 @@
 
 [English](skill-system.en.md) | [中文](skill-system.md)
 
+<!-- i18n-headings: paired -->
+
 > YAML Skill DSL 完整开发指南。面向需要创建或修改 Skill 的开发者。
 
 ---
@@ -97,7 +99,11 @@ category: rendering                  # 分类 (可选)
 
 meta:
   display_name: "Consumer Jank 检测"  # 显示名称 (必填)
+  display_name_i18n:                   # 另一种语言的显示名称 (可选)，未写时由标识符生成
+    en: "Consumer jank detection"
   description: "基于 present_ts 间隔的真实卡顿检测"  # 描述 (必填)
+  description_i18n:                    # 另一种语言的描述 (可选)
+    en: "Detects real jank from present_ts intervals"
   tags: [jank, consumer, surfaceflinger]  # 标签 (可选)
 
 # === 触发规则 (可选) ===
@@ -178,6 +184,9 @@ outputs:
 
 ## 4. Step 类型
 
+每种步骤都是确定性的：没有调用模型的步骤类型。需要叙述时由分析 runtime 基于 Skill 的
+证据撰写，Skill 结果的摘要只按规则生成。
+
 ### 4.1 atomic — 单步 SQL
 
 最基本的步骤类型，执行一条 SQL 查询。
@@ -200,7 +209,7 @@ outputs:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `condition` | string | 条件表达式，为 true 才执行此步骤。支持 JS 语法（`?.`、`??`、`\|\|`） |
+| `condition` | string | 条件表达式，为 true 才执行此步骤。按 JavaScript 求值（`?.`、`??`、`&&`、`\|\|`）；写 SQL 的 `AND` / `OR` 不能编译，步骤会被静默跳过，`validate:skills` 报 `condition_uses_sql_boolean_words` |
 | `on_empty` | string | 查询结果为空时的提示消息，用于告知用户所需数据缺失 |
 
 ```yaml
@@ -228,22 +237,51 @@ outputs:
     startup_id: "${startup_data.data[0].startup_id}"
 ```
 
+带 `save_as` 的引用步骤只绑定被引用 Skill 的一个步骤结果：有 `root` 步骤时取它，否则取第一个有数据的
+展示步骤，再否则取第一个有数据的步骤，都没有数据时取最后一个返回了结果的步骤（开头返回 `[]` 的建表/准备步骤因此不会被选中）。按步骤 id 读取引用步骤
+——表达式里的 `${step_id.data...}`、诊断步骤的 `inputs`、iterator/pipeline 的 `source`——读到的也是这个
+默认选中的步骤及其范围来源。父 Skill 要读具体字段时，用 `save_from` 指明步骤（它只改变 `save_as` 的绑定，
+按步骤 id 读取仍是默认选择）：
+
+```yaml
+- id: cpu_throttling
+  skill: cpu_throttling_in_range
+  save_as: freq_limit_evidence
+  save_from: limit_evidence   # 被引用 Skill 的顶层步骤 id
+```
+
+该步骤未观测到结果（失败、条件跳过、可选查询出错或不存在）时，`save_as` 绑定为 `null`，查找不会退回其他
+步骤，也不会退回同名输入或继承值；真正的空结果绑定 `[]`。引用步骤本身失败（子 Skill 失败、required 条件不满足）
+时同样绑定 `null`，即使目标步骤已有数据；按步骤 id 也读不到它的任何子步骤数据，包括失败前已经返回的部分结果。
+`save_from` 只在父 Skill 的顶层步骤生效，`validate:skills` 会拒绝不存在的目标步骤。
+
+分层输出（Skill HTTP API 与 HTML 报告背后的 composite 路径）展示引用步骤的方式与此一致：展示默认选中子步骤的
+数据和该步骤自己的范围来源（该步骤没有声明范围时就没有，绝不用全部子步骤合并后的范围）。失败的引用显示为失败、
+不带任何子步骤行；步骤为 `optional` 时，这个失败显示为可选步骤出错（`executionStatus: optional_error`，与
+可选查询出错相同），不会使整个 Skill 失败。
+
+默认选中的子步骤本身又是 Skill 引用时，绑定的是孙 Skill 的结果对象：表达式经 `.data` 访问时按同一规则再
+选一层，诊断步骤的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
+的顶层步骤、不能穿透到孙 Skill：需要具体字段时，用它绑定子 Skill 中真正的读取步骤，而不是那个引用步骤。
+
 ### 4.3 iterator — 遍历数据行
 
-对上一步结果的每一行执行子 Skill。
+对上一步结果的每一行执行子 Skill。`item_params` 的值是当前行的列名：执行器读 `item[列名]`，该列不存在时把值原样作为常量传入，所以这里写 `${item.x}` 只会传出字面字符串。省略 `item_params` 时整行作为参数。
 
 ```yaml
 - id: per_frame_analysis
   type: iterator
   source: jank_frames           # 引用 save_as 的数据
   item_skill: jank_frame_detail # 对每一行调用的 Skill
-  item_params:
-    frame_id: "${item.frame_id}"
-    package: "${package}"
-  max_items: "${max_frames_per_session|8}"   # 最多处理 N 项
+  item_params:                  # 子 Skill 参数 ← 当前行的列名
+    frame_id: frame_id
+  max_items: 8                  # 最多处理 N 项（数字，不做 ${...} 替换；缺省 100）
   display:
     layer: deep
 ```
+
+每一项的结果会作为可展开数据挂回 iterator 读到行的那个步骤：iterator 运行前绑定 `source` 这个名字的步骤
+（按步骤 id 读取时就是该步骤）。多个步骤声明同一个 `save_as` 时也按这一规则确定。
 
 ### 4.4 parallel — 并行执行
 
@@ -293,33 +331,91 @@ outputs:
 ```yaml
 - id: diagnose
   type: diagnostic
+  inputs: [startups]
   rules:
-    - id: slow_startup
-      condition: "startups.data[0].dur_ms > 2000"
+    - condition: "startups.data[0]?.dur_ms > 2000"
       severity: critical
-      message: "启动时间超过 2 秒"
+      confidence: high
+      diagnosis: "启动耗时 ${startups.data[0].dur_ms}ms，超过 2 秒"
       suggestions:
         - "检查 Application.onCreate 耗时"
         - "优化 ContentProvider 初始化"
+      evidence_fields:
+        - startups.data[0]?.dur_ms
+        - startups.data.length
 ```
+
+`inputs` 列出规则读到的每个步骤（step id 或 `save_as`），它们就是步骤上报的
+`data.inputs`，也是 `evidence_fields` 唯一能引用的名字。阈值等 Skill 参数按参数名直接读，例如 `(threshold_ms ?? 50)`：作用域里没有 `inputs` 对象，`inputs?.threshold_ms` 永远是 `undefined`，规则只会用默认值。
+evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}` 模板：以某个 input 的
+`name.data`（或 `name?.data`）开头，后接任意个 `.column`、`[n]`、`.length`、
+`.find(r => r.column OP literal)` / `.filter(...)`（OP 为比较运算，literal 为数字、带引号字符串、
+布尔或 `null`），每段都可写成 `?.`。它读的就是 condition 里 `name.data` 的同一个值，只读对象自有的数据属性，不调用函数、
+不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
+规则触发时还会附带它的 condition 读到的每个 input 的样本（同样有界），无论写成 `name.data`、`name?.data` 还是 `name?.["data"]`；只在字符串或注释里出现的名字不算读到。
+`validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
+里的步骤、condition 不经 `.data` 读步骤数据（按路径解析的占位符 `${name[0].x|默认值}` 或嵌在文本中的 `${name[0].x}` 里仍合法；占位符里的 JS 表达式和不带默认值的整串 `${...}` 按 condition 绑定，同样要经 `.data`），没有
+`inputs` 的 diagnostic 步骤，以及读了任何作用域都不绑定的名字（如 `inputs`）的规则。按根名的这几项检查只在能确定读到哪些根时生效：condition 里含函数体、方法、块语句等可能声明局部名的写法时不报。
 
 ### 4.7 pipeline — 渲染管线检测
 
 专用于匹配 trace 中的渲染管线类型。详见 [Pipeline Skills](#11-pipeline-skills)。
 
-### 4.8 ai_decision / ai_summary — AI 协作步骤
+### 4.8 精确进程范围与调查证据
 
-`ai_decision` 让当前会话选中的 AI runtime 基于指定输入产出结构化判断；
-`ai_summary` 汇总指定步骤的有界数据。两者都属于可选协作层：AI 被禁用或不可用时，
-引擎返回明确的跳过状态，不把缺失的 AI 输出伪装成确定性 SQL 结论。
+原子步骤（以及原子 Skill 的根）可以声明三项可选字段，校验与执行器准入使用同一套判定。
+
+`process_scope` 说明这段 SQL 的证据与目标进程的关系：
+
+| 字段 | 说明 |
+|---|---|
+| `role` | `target`（目标进程自身的证据）、`global_context`、`peer_context` 或 `identity_metadata`（上下文证据，不能声明 `binding`） |
+| `binding` | target SQL 绑定可信 UPID 的方式：`native_upid`（SQL 直接使用 `${__process_scope.upid}`），或 `effective_target_processes`（引入 `fragments/effective_target_processes.sql` 并 `FROM` / `JOIN effective_target_processes`） |
+| `context_fields` | 上下文证据按角色列出的字段 |
+| `exact_unavailable` | 这段 SQL 做不到精确进程范围的原因（必须写明） |
+| `limitations` | 精确运行下仍存在的限制 |
+
+`exact_sql` 是同一步骤在精确进程范围下运行的 SQL，只能包含 `sql`、`sql_fragments` 和它自己的
+`process_scope`。身份门禁为调用确定唯一目标 UPID 时，执行器运行 `exact_sql`，否则运行原 `sql`；
+`exact_sql` 无效时步骤失败，不会退回原 SQL。
 
 ```yaml
-- id: summarize_findings
-  type: ai_summary
-  inputs: [frame_stats, diagnose]
-  prompt: "Summarize the selected evidence without inventing missing data."
-  save_as: ai_summary
+- id: frame_coverage
+  type: atomic
+  sql: |
+    SELECT ... FROM actual_frame_timeline_slice a
+    JOIN process p USING (upid) WHERE p.name GLOB '${package}*'
+  exact_sql:
+    process_scope:
+      role: target
+      binding: effective_target_processes
+    sql_fragments:
+      - fragments/effective_target_processes.sql
+    sql: |
+      SELECT ... FROM actual_frame_timeline_slice a
+      JOIN effective_target_processes p ON a.upid = p.upid
 ```
+
+`investigation_evidence` 把步骤结果登记到调查证据账本，供场景 Strategy `investigation_contract` 的
+`evidence` 条件与 `evidence_metrics` 读取（见文末“系统调查证据合同”）：
+
+| 字段 | 说明 |
+|---|---|
+| `window: {start, end}` | 结果中给出证据时间窗的列 |
+| `identity` | 可选：`upid`、`utid`、`cpu`、`ucpu`、`machine_id` 对应的列 |
+| `metrics[]` | 每项 `domain`、生产者声明的 `metric_id`、值所在列 `value`、状态列 `status`（只有 `observed` 参与比较），可选 `unit`、`coverage`、`denominator`、`aggregation` |
+| `scan` | 可选：本步骤非分页扫描的完整性列（总行数、输出截断、游标关闭、解析失败） |
+
+无效的 `exact_sql` 或 `investigation_evidence` 在任何地方都是错误；无效的 `process_scope` 只会让精确范围
+不可用，报 `process_scope_invalid`。语料中每个精确单元（每个 `exact_sql`，以及没有 `exact_sql`、
+自身 SQL 用 `binding: native_upid` 或 `binding: effective_target_processes` 绑定 UPID 的 target 步骤）
+都必须被某个 Trace case 的 `exact_scope` 绑定实际执行并通过，否则 `npm run trace:sql-regression` 失败；
+执行器不准入精确运行的 Skill（某个会执行的步骤没有 `process_scope`）不会在精确范围下运行任何单元，
+在被准入之前不要求绑定。通过还要求它的结果只取决于这个 UPID：
+去掉身份门禁写入的进程选择参数（package 及其别名、upid、pid）重跑必须结果不变，去掉进程范围重跑
+必须结果不同（否则这条 trace 区分不出进程，绑定判为证据不足）。这只证明结果不依赖进程选择参数，
+不证明数据本身按进程区分：收包行只记 socket uid，同 uid 的进程（同包 `:worker`）共享收包证据，
+读这类数据的步骤在 `process_scope.limitations` 里写明，精确范围支持因此是 partial。
 
 ---
 
@@ -336,11 +432,21 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 
 ### 解析优先级
 
-1. **步骤结果**: `${step_id}` → `results[step_id].data`
-2. **保存的变量**: `${save_as_name}` → `variables[save_as_name]`
-3. **输入参数**: `${package}` → `params.package`
-4. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`
-5. **当前迭代项**: `${item.field}` → `currentItem.field`
+占位符、`condition`、iterator `filter`、诊断步骤的 `inputs` 以及证据范围都按同一顺序解析根名字，先找到的作用域生效：
+
+1. **当前迭代项**（仅 iterator `filter`）: `item` 和它自己的字段 → `currentItem`
+2. **保存的变量**: `${save_as_name}` → `variables[save_as_name]`；值为 `null` 也算已绑定
+3. **步骤结果**: `${step_id}` → `results[step_id].data`；成功的步骤、条件跳过的步骤、exact scope 不可用的步骤以及失败的查询或 Skill 引用都会记录结果（两条执行路径相同）。Skill 引用步骤是它默认 `save_as` 会绑定的子步骤数据（见 4.2），引用失败时没有数据
+4. **输入参数**: `${package}` → `params.package`（含声明的 `default`）
+5. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`，即调用方 Skill 的继承值和它的 `save_as`
+
+SQL 里按路径读取前面步骤的结果（`${step_id.data[0].字段}`）时，必须二选一写明意图：带 `|默认值`（结果没有行时照常执行，引号内常用 `|`、其它位置常用 `|NULL`），或者让本步骤的 `condition` 以顶层合取项 `step_id.data?.length > 0` 要求该结果有行（结果没有行时不执行；只是提到该结果、在无行时仍可能为真的条件不算）。本运行时缺值会按下面的智能默认值照常执行，公开的 Perfetto-Skills 运行时则把没有默认值的路径当成依赖、结果无行时跳过整步；`validate:skills` 对没写明的读取报错 `result_path_read_undecided`。
+
+所以本 Skill 自己的绑定总会遮住调用方的同名值；`save_as` 先于同名步骤结果，读到的是它声明的绑定（包括 `save_from` 选中的子步骤）。一个步骤的 `save_as` 不能使用另一个步骤的 id（`validate:skills` 报 `save_as_step_id_collision`），以自身 id 命名则是常规写法。根名字一旦在某层找到就不再向更低的层回退（例如 `null` 变量不会让位给同名输入参数）；完整路径最终解析为 `null`/`undefined` 时（未绑定、绑定为 `null`、空数组取 `[0]`、字段不存在），再使用 `|默认值` 和下面的智能默认值。
+
+表达式（`condition`、iterator `filter`、`${...}` 里的 JS 表达式、诊断文案）里有一组名字始终是语言自带的标准全局，不从上面五层解析：`Infinity`、`NaN`、`undefined`、`isFinite`、`isNaN`、`parseFloat`、`parseInt`、`decodeURI`、`decodeURIComponent`、`encodeURI`、`encodeURIComponent`、`Array`、`BigInt`、`Boolean`、`Date`、`Error`、`Intl`、`JSON`、`Map`、`Math`、`Number`、`Object`、`RegExp`、`Set`、`String`、`Symbol`（清单在 `expressionUtils.ts` 的 `EXPRESSION_GLOBALS`）。所以输入、`save_as` 或数据列取了其中某个名字时，表达式读不到它。其余名字（包括 `window`、`process`、`console` 这类宿主全局名）都按五层解析，五层都没有就是 `undefined`；保留字（如 `enum`、`default`）不会被当成名字，写在字符串里也不影响求值。`validate:skills` 对步骤 `condition` 用同一套名字检查未声明的引用：占位符 `${path|默认值}` 读的是 `path` 的根名字（引号里也算），箭头函数参数和对象字面量的静态键不算引用。只检查 ASCII 名字；上下文关键字（`async`、`await`、`let`、`of`、`static`、`yield`）和 `window`、`console`、`globalThis` 不要求声明。字符串、模板、正则和注释的边界以 JS 引擎的编译结果为准；条件编译不过或无法确认时退回粗扫描（成对引号之外、不在 `.` 之后的标识符），正则、模板和注释里的词可能被当成引用。
+
+声明了 `save_as` 的步骤执行后总会绑定这个名字：成功时绑定选中的数据（可选步骤被条件跳过或查询出错时为 `[]`）；步骤没有成功（非可选步骤被条件跳过、exact scope 不可用、任何类型的步骤失败，包括失败的可选 Skill 引用）时绑定 `null`，带上该步骤自身结果的 scope（`save_from` 带上目标子步骤的 scope，目标不存在时不带 scope）。被条件跳过的步骤没有执行，不会覆盖本 Skill 前面步骤已经做出的绑定，所以互斥条件下的多个备选步骤可以声明同一个名字。
 
 ### 智能默认值
 
@@ -410,6 +516,8 @@ display:
   expandableBindSource: frame_details  # 关联的详情数据源
 ```
 
+`expandableBindSource` 写 `save_as` 名：用该绑定的行展开本步骤的行，展开数据带的范围来源也是这个绑定自己的。
+
 ### 高亮规则
 
 ```yaml
@@ -420,6 +528,22 @@ display:
     - condition: "jank_rate > 5"
       color: "orange"
 ```
+
+### 双语标签与原因措辞
+
+Skill 展示的每段文字都按中英文两种语言检查：显示名、描述、列标签、步骤标题、诊断结论与建议、输入描述、
+由标识符派生的目录标签，以及 SQL 和所引 fragment 中可能被显示的字符串字面量（CASE 结果、VALUES 表里的标签）。
+作为比较操作数、`IN (…)` 成员、GLOB/LIKE 操作数或简单 CASE 的 WHEN 值的字面量不显示，不算。标识符、路径
+和写成数据的模式（如 `*thermal-engine*`）是名字；只用来指称组件的英文子句（thermal HAL 服务进程）也是名字。
+
+- 温控词（温控、过热、thermal）需要温度、cooling device 或 cpufreq 上限证据；
+- 限频词（throttle、限频、降频、热节流，以及被当作原因的“频率上限”）需要 cooling device 或 cpufreq 上限
+  证据——温度只能说明发热，不能说明被限频；
+- 只观察到频率下降时写“频率下调”。
+
+标识符读起来像结论时，不要改列名，给标签写 `label_i18n`（display 列、synthesize 字段）或 `title_i18n`
+（步骤标题），`meta` 用 `display_name_i18n` / `description_i18n`。缺少证据支撑的措辞报
+`cause_wording_without_evidence`。精确运行显示 `exact_sql` 的文字，需要该运行实际读取的证据。
 
 ---
 
@@ -778,15 +902,52 @@ Skill 可以声明顶层 `tier: S | A | B`，用于表达目标复杂度和 revi
 | `A` | 单域实质分析，能产出诊断结论或关键列表 | 至少声明相关 `prerequisites.modules`，并提供可复用的显示层 |
 | `B` | 单事实或辅助数据提供者 | 查询边界清晰，字段和缺失数据语义明确 |
 
-`cd backend && npm run validate:skills` 会执行这些稳定规则：
+`cd backend && npm run validate:skills` 依次运行：
 
-| Rule | 行为 |
+1. `tsx src/cli/index.ts validate --contracts --all`：逐文件的结构 lint，加上与 Self-Evolution 门禁共用的
+   in-process validator（`selfEvolution/inProcessValidator.ts`）；
+2. `check:skill-localizations`：`backend/skills/localization.catalog.json` 与当前 Skill 一致
+   （`npm --prefix backend run generate:skill-localizations` 重新生成）；
+3. `check:skill-identity-policies`：`backend/skills/identity-policy.catalog.json`（每个内置 Skill 的生效身份策略，
+   Perfetto-Skills 导出器直接读取）一致（`npm --prefix backend run generate:skill-identity-policies`）；
+4. `check:skill-sql-inventory`：`Trace/skill-sql.inventory.json`（Trace SQL 回归读取的 Skill SQL 清单）一致
+   （`npm --prefix backend run generate:skill-sql-inventory`）；`npm run trace:validate` 另外检查每个 Skill 文件的文本 hash 与清单一致。
+
+结构 lint 以文本消息报告（没有 issue code）：
+
+| 规则 | 行为 |
 |---|---|
-| `skill-tier-must-match-declared` | 校验 `tier` 是否为 `S/A/B`，并把结构不足报告为迁移 warning |
-| `skill-stdlib-detected-vs-declared` | 扫描 SQL 中使用的 Perfetto stdlib symbol，要求被 `prerequisites.modules` 覆盖 |
-| `skill-include-budget-soft-cap` | 当 `prerequisites.modules` 超过 8 个时发出成本 warning |
-| `skill-step-id-uniqueness` | 每个 Skill 内 step id 必须唯一 |
-| `skill-vendor-override-runtime-conformant` | Vendor override 必须有真实 `additional_steps`、vendor signatures，并指向已注册 base Skill |
+| tier 与声明一致 | 校验 `tier` 是否为 `S/A/B`，并把结构不足报告为迁移 warning |
+| stdlib 声明覆盖 | 扫描 SQL 中使用的 Perfetto stdlib symbol，要求被 `prerequisites.modules` 覆盖 |
+| include 预算 | `prerequisites.modules` 超过 8 个时发出成本 warning |
+| step id 唯一 | 每个 Skill 内 step id 必须唯一 |
+| vendor override 有效 | Vendor override 必须有真实 `additional_steps`、vendor signatures，并指向已注册 base Skill |
+
+共享 validator 的问题带 issue code（提案门禁与 `validate:skills` 报同样的 code）：
+
+| Code | 行为 |
+|---|---|
+| `skill_top_level_key_unknown` | 顶层字段必须是加载器会读的字段，否则报错：Skill 是 `SkillDefinition` 的字段加上加载器归一化的旧写法（`display`、`description`、`tags`、`icon`、`display_name`、`displayName`）；pipeline 只能用 `PipelineDefinition` 的字段；vendor override 只能用 `extends`、`version`、`meta`、`vendor_detection`、`additional_steps`。外部 Skill Pack 带未知顶层字段时整包拒绝加载 |
+| `result_path_read_undecided` | 按路径读取前面顶层步骤结果的 SQL 占位符（`sql` 与 `exact_sql.sql`）必须带 `\|默认值`，或所在步骤的 `condition` 含顶层合取项 `<结果>.data?.length > 0` |
+| `cause_wording_without_evidence` | 温控/限频措辞缺少对应证据，见 [双语标签与原因措辞](#双语标签与原因措辞) |
+| `process_scope_invalid` | `process_scope` 声明无效，精确范围不可用，见 [4.8](#48-精确进程范围与调查证据) |
+| `sql_not_executed` | 执行器永远不会运行的 SQL：非 atomic Skill 的根 SQL、atomic 根旁边的 steps、metadata-only Skill 的 steps |
+| `condition_uses_sql_boolean_words` | 步骤 `condition`、conditional 分支 `when` 或诊断规则 `condition` 的代码里写了 SQL `AND` / `OR`（字符串字面量和属性名里的不算）。这些表达式按 JavaScript 求值，`AND` / `OR` 不能编译，结果为 false，步骤被静默跳过（分支不走、规则不触发）。iterator `filter` 例外，其中的 `AND` / `OR` 会被改写 |
+| 其他结构错误 | 如 `step_id_duplicate`、`save_as_step_id_collision`、`save_from_target_missing`、`fragment_reference_missing`、`skill_reference_missing`、`display_contract`，在任何地方都是错误 |
+
+其中 `result_path_read_undecided`、`cause_wording_without_evidence`、`process_scope_invalid`、
+`sql_not_executed` 和 `condition_uses_sql_boolean_words` 属于 `PREDATING_RULE_CODES`：它们在
+`validate:skills` 和提案定义或修改的 Skill（含该 Skill 已有覆盖层的步骤；`skill_sql` 候选放进它替换的步骤后检查）
+上是错误，对其他已发布的覆盖层和 Skill Pack 只报警告，避免一个早于规则的覆盖层让同一 scope 的全部覆盖层下线。
+内置 registry 在这些规则下没有错误。
+
+所有读取 Skill SQL 的检查都从同一次遍历（`executableSqlUnits`）取单元：atomic Skill 的根 SQL，否则是任意深度的
+每个 atomic 步骤（嵌套步骤、内联 conditional 分支）及其 `exact_sql`；读取步骤的检查同样只用 `stepNodesOf`。
+
+没人读的顶层字段不是无害注释：它看起来像会生效的配置（顶层 `diagnostics`、`thresholds`、`synthesis`、厂商
+`thresholds_override` 都曾这样静默无效，公开投影还把它们当作活配置渲染）。诊断规则写在 `type: diagnostic`
+步骤里，综合结论写在步骤级 `synthesize`；vendor override 运行时只把厂商名、显示名和 `additional_steps` 的 id
+作为提示挂在基础 Skill 结果上。
 
 `backend/skills/_template/` 是作者模板，不进入运行时 registry。复制模板后必须删除占位符，放入正式 Skill 目录，再运行 `validate:skills` 和匹配的 trace regression。
 

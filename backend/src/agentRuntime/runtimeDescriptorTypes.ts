@@ -17,6 +17,14 @@ export interface EngineCapabilities {
     /** Supports SDK-level split between cacheable system prompt prefix and dynamic suffix. */
     systemPromptDynamicBoundary: boolean;
   };
+  /**
+   * Streams a display-only answer draft under the reset contract in
+   * agentRuntime/answerDraftStream.ts: every token carries runId + attempt and
+   * an `answer_segment_reset` revokes shown text at each response start, tool
+   * boundary and continuation/retry. Only runtimes that implement and test that
+   * contract may set this; product surfaces forward drafts for no other runtime.
+   */
+  draftAnswerStreaming: boolean;
 }
 
 export interface RuntimeFactoryInput {

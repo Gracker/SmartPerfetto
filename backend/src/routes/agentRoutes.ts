@@ -18,8 +18,6 @@ import {SCENE_FINITE_RULE_VERSION} from '../agent/scene/sceneTimelineProposal';
 import {appendSceneAwareReplayEvent, includeLatestSceneReplay} from '../assistant/stream/sceneTimelineReplay';
 import {dispatchAnalysisRun, SmartPreviewSelectionError,
   type AnalysisRunDispatchDependencies} from '../assistant/application/analysisRunDispatchService';
-import * as fs from 'fs';
-import * as path from 'path';
 import {randomUUID} from 'crypto';
 import {getTraceProcessorService, type TraceProcessorLeaseQueryContext} from '../services/traceProcessorService';
 import {SessionLogger} from '../services/sessionLogger';
@@ -32,6 +30,7 @@ import {
 import {
   buildAnalysisReceipt,
   buildLegacyAnalysisReceipt,
+  REPORT_GENERATION_FAILED,
   type BuildAnalysisReceiptInput,
 } from '../services/analysisReceiptBuilder';
 import { deriveUiActionProposals } from '../services/uiActionProposalDeriver';
@@ -40,24 +39,27 @@ import {
   resolveCapturedComparisonIdentity,
 } from '../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../services/finalResultQualityGate';
-import {finalizeAnalysisResult, type AnalysisFinalizationOwner} from '../services/finalizeAnalysisResult';
+import {finalizeAnalysisResult, type AnalysisFinalizationOwner, type ProvisionalAnalysisAnswer} from '../services/finalizeAnalysisResult';
+import {
+  buildReviewNotFinishedResult,
+  mayPersistUnverifiedBody,
+  resolveReviewStopWatchdogMs,
+  ReviewStopController,
+} from '../services/reviewStopHandle';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
-import type {AnalysisCaseRetrievalState} from '../types/analysisDelivery';
+import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
 import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
-import {
-  normalizeNarrativeForClient as sharedNormalizeNarrative,
-  resolveConclusionOutputModeForTurn,
-} from '../services/agentResultNormalizer';
-import { reportStore, persistReport } from './reportRoutes';
+import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
   authenticate,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
   type RequestContext,
 } from '../middleware/auth';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
+import { createRequestId, requestIdOf } from '../middleware/requestId';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   ownersMatch,
@@ -66,20 +68,14 @@ import {
   type ResourceOwnerFields,
 } from '../services/resourceOwnership';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
-import { AiDisabledError, assertAiFeatureEnabled } from '../services/aiCapabilityPolicy';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import { sessionContextManager, EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
-import { registerCoreTools, StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
-import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
+import { StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
-import {
-  deriveConclusionSceneAspectsFromSkillIds,
-  resolveConclusionScene,
-} from '../agent/core/conclusionSceneTemplates';
-import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
+import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
-import { sanitizeNarrativeForClient } from './narrativeSanitizer';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { buildSmartSceneSelectionReport } from '../agent/scene/buildSmartChatReport';
@@ -124,7 +120,6 @@ import {
   hasTerminalReplayAfter,
   isTerminalSseEvent,
   parseLastEventId,
-  TERMINAL_SSE_EVENT_TYPES,
 } from '../assistant/stream/sessionSseReplay';
 
 import {
@@ -140,7 +135,11 @@ import {
   type AnalysisRunPersistenceScope,
   type PersistedAnalysisRunStatus,
 } from '../services/analysisRunStore';
-import {buildAgentQueryWithContinuityNotice, type AnalyzeSessionRunContext} from '../assistant/application/agentAnalyzeSessionService';
+import {
+  sessionRunHasPrivateContext,
+  sessionRunPrivateContext,
+  type AnalyzeSessionRunContext,
+} from '../assistant/application/agentAnalyzeSessionService';
 import { buildAssistantResultContract } from '../assistant/contracts/assistantResultContract';
 import {
   persistCompletedAnalysisResultSnapshot,
@@ -159,43 +158,24 @@ import {
 import { buildTraceContextDataEnvelopes, decorateTraceContextDatasets } from '../agentRuntime/traceContextEvidence';
 import {recordAdaptiveRoutingPostEvidenceBestEffort} from '../agentRuntime/adaptiveRoutingProjection';
 import type { ConclusionContract } from '../agent/core/conclusionContract';
-import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
-import {type AnalysisSourceActivation} from '../services/codebase/analysisSourceActivationPolicy';
-import {resetRuntimeForSourceActivation} from '../services/codebase/analysisSourceContextTransition';
-import {
-  AnalysisSourceSupplementFailure,
-  cancelAnalysisSourceSupplement,
-  runAnalysisSourceSupplement,
-  type AnalysisSourceSupplementMetrics,
-} from '../services/codebase/analysisSourceSupplement';
+import {sanitizeSourceUseDecision, withClientSourceUseCounts} from '../services/codebase/sourceUseDecision';
 import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
 import { SkillExecutor } from '../services/skillEngine/skillExecutor';
+import { composeFragmentSql } from '../services/skillEngine/skillFragments';
 import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skillEngine/skillLoader';
-import type { ConversationTurn, Finding, Intent } from '../agent/types';
+import type { ConversationTurn } from '../agent/types';
 import {
   validateFeedbackInput,
 } from '../agentv3/selfImprove/feedbackEnricher';
 import {
   deriveTimelineStep,
   sanitizeConversationText,
-  summarizeDataEnvelopeForTimeline,
 } from '../services/timeline/conversationTimeline';
 import {patternExistsForFeedback} from '../agentv3/analysisPatternMemory';
-import { backendLogPath } from '../runtimePaths';
-import { CaseLibrary } from '../services/caseLibrary';
-import { saveCaseCandidates } from '../services/caseEvolution/saveCaseCandidates';
-import { openCaseCandidateOutbox } from '../services/caseEvolution/caseCandidateOutbox';
-import {caseCandidateKnowledgeScope} from '../services/caseEvolution/caseCandidateBuilder';
-import {
-  attachCaseHitsToContractSync,
-} from '../services/caseEvolution/attachCaseHitsToContract';
-import {
-  isCaseEvolutionCaptureEnabled,
-  isCaseEvolutionRetrieveEnabled,
-  loadCaseEvolutionConfig,
-} from '../services/caseEvolution/caseEvolutionConfig';
+import { retrieveCaseHits } from '../services/caseEvolution/retrieveCaseHits';
+import { loadCaseEvolutionConfig } from '../services/caseEvolution/caseEvolutionConfig';
 import {
   knowledgeScopeFromRequestContext,
   resolveKnowledgeScope,
@@ -207,31 +187,40 @@ import {
   privateAnalysisFailureMessage,
   projectOwnerAnalysisError,
   privateAnalysisQueryMessage,
-  projectPrivateAnalysisReceipt,
+  projectOwnerAnalysisReceipt,
   projectOwnerAnalysisResult,
-  copyAnalysisResultForSnapshot,
+  projectOwnerQuestion,
+  projectOwnerReportError,
+  projectPrivateAnalysisReceipt,
+  projectStoredAnalysisResultForOwner,
   projectOwnerFindings,
   projectOwnerConclusion,
+  projectOwnerProvisionalConclusion,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
-  sessionUsesPrivateKnowledge,
 } from '../services/security/privateAnalysisProjection';
+import {
+  privateContextRestrictsAudience,
+  resolveAnalysisPrivateContext,
+  analysisHasPrivateContext,
+} from '../services/security/analysisPrivateContext';
+import {withDurableLearningPermission} from '../services/security/durableLearning';
+import {projectAnalysisFailure, projectStoredAnalysisFailure} from '../services/analysisFailureProjection';
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
+  requireAdmittedAnalysisContextFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
+import {runAnalysisSelection} from '../services/effectiveAnalysisSelection';
 import {buildSmartDeepDiveAnalysisContext} from '../services/effectiveAnalysisMode';
 import {
   cleanupIdleAgentConversationSessions,
   registerAgentConversationRoutes,
 } from './agentConversationRoutes';
-import type { CaseCandidateCaptureInput, CaseEvolutionConfig } from '../types/caseEvolution';
-import type { CaseEvolutionEngine } from '../types/caseEvolution';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
-import {getWorkspaceSkillRegistry} from '../services/skillPacks/workspaceSkillRegistryProvider';
+import {createAnswerDraftRelay} from '../services/answerDraftRelay';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
 import {
   currentEffectiveSkillRegistry,
@@ -242,6 +231,7 @@ import {createRunManifestLifecycle, disposeRunManifestLifecyclesForSession, getA
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import {
   FeedbackEventStore,
+  FeedbackRequestError,
   privateFeedbackStorePaths,
 } from '../services/selfEvolution/feedbackEventStore';
 import {
@@ -256,8 +246,9 @@ import type {
   RunManifestV1,
   RunManifestScope,
 } from '../types/selfEvolution';
-import type {AnalysisReceipt} from '../types/dataContract';
+import type {AnalysisReceipt, ProvisionalConclusionEventData} from '../types/dataContract';
 import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
+import type {RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -273,38 +264,6 @@ const COMPLETED_ANALYSIS_SSE_EVENTS_QUALITY_GATE_VERSION = 3;
 const PRIVATE_ANALYSIS_EVENT_PROJECTION_VERSION = 1;
 
 const router = express.Router();
-
-interface AgentRequestWithObservability extends express.Request {
-  assistantRequestId?: string;
-}
-
-const REQUEST_ID_HEADER = 'x-request-id';
-const MAX_REQUEST_ID_LENGTH = 128;
-
-function sanitizeRequestId(raw: unknown): string {
-  const text = String(raw || '').trim();
-  if (!text) return '';
-  const normalized = text.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, MAX_REQUEST_ID_LENGTH);
-  return normalized;
-}
-
-function generateRequestId(): string {
-  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function resolveRequestIdFromRequest(req: express.Request): string {
-  const headerId = req.header(REQUEST_ID_HEADER) || req.header('x-correlation-id') || req.header('x-amzn-trace-id');
-  const bodyId =
-    req.body && typeof req.body === 'object' && !Array.isArray(req.body)
-      ? (req.body as Record<string, unknown>).requestId
-      : undefined;
-
-  return sanitizeRequestId(headerId) || sanitizeRequestId(bodyId) || generateRequestId();
-}
-
-function getRequestId(req: express.Request): string {
-  return (req as AgentRequestWithObservability).assistantRequestId || resolveRequestIdFromRequest(req);
-}
 
 function normalizeRunSequence(value: unknown): number {
   if (!Number.isFinite(value)) return 0;
@@ -468,11 +427,13 @@ function startSessionRun(
 
   const run: AnalyzeSessionRunContext = {
     runId: buildRunId(session.sessionId, nextSequence),
-    requestId: sanitizeRequestId(requestId) || generateRequestId(),
+    requestId,
     sequence: nextSequence,
     query,
     startedAt: Date.now(),
     status: 'pending',
+    // The session's selection was set for this run just before admission.
+    privateContext: resolveAnalysisPrivateContext(session),
   };
   session.activeRun = run;
   session.lastRun = run;
@@ -486,7 +447,7 @@ function startSessionRun(
     turn: nextSequence,
     query,
     timestamp: Date.now(),
-    sourceDerived: session.sourceActivation === 'bounded_explicit' ? true : undefined,
+    sourceDerived: privateContextRestrictsAudience(run.privateContext) ? true : undefined,
   });
 
   // Inject turn boundary marker for multi-turn conversations
@@ -571,9 +532,30 @@ function isSessionRunCancelled(
 interface HttpFinalizationRun {
   owner: AnalysisFinalizationOwner;
   controller: AbortController;
+  /**
+   * Stop state and delivery. Delivery is marked in the same tick the
+   * provisional answer is broadcast (with the canonical, unprojected body);
+   * from then on the first cancel ends only the review (the run still commits
+   * its turn and history equals what the user read) and the second forces.
+   */
+  stop: ReviewStopController<CancelSessionRunResult | undefined>;
+  /** The cancel reason the watchdog's full cancel reports. */
+  stopReason: string;
+  /** The path that owns this run's terminal write; the first claimer wins. */
+  terminal?: 'finalized' | 'review_not_finished';
+  /**
+   * Commits the delivered body as an unverified partial turn. Set by the
+   * executing run before finalization; the watchdog calls it at most once.
+   */
+  commitReviewNotFinished?: (body: string) => boolean;
+  /** Resolves once the executing run released this finalization. */
+  settled: Promise<void>;
+  claimTerminal(kind: NonNullable<HttpFinalizationRun['terminal']>): boolean;
   assertCurrent(): void;
   release(): void;
 }
+
+let httpReviewStopWatchdogMs = resolveReviewStopWatchdogMs();
 
 const httpFinalizationRuns = new WeakMap<AnalysisSession, Map<string, HttpFinalizationRun>>();
 // Root lease ownership outlives smart -> deep-dive finalization controller handoffs.
@@ -611,14 +593,38 @@ function createHttpFinalizationRun(
       isCurrentRunOwner(session, runId) && !isSessionRunCancelled(session, runId),
     assertAuthorized: () => assertCurrentAnalysisContextAuthorization(selection, scope, fingerprint),
   };
+  let settle!: () => void;
+  const settled = new Promise<void>(resolve => {settle = resolve;});
+  // The fallback keeps the canonical body with the runtime result's findings
+  // (the report needs them); privacy is decided per session, like every other
+  // durable surface of this route.
+  const stop = new ReviewStopController<CancelSessionRunResult | undefined>({
+    watchdogMs: httpReviewStopWatchdogMs,
+    owner: {
+      mayPersistPartial: () => mayPersistUnverifiedBody({privateKnowledge: sessionRunHasPrivateContext(session, runId),
+        isCurrent: () => !run.terminal && owner.isCurrent(), assertAuthorized: owner.assertAuthorized}),
+      commitPartial: body => run.commitReviewNotFinished?.(body) ?? false,
+      fullCancel: () => !run.terminal && isCurrentRunOwner(session, runId) && !isSessionRunCancelled(session, runId)
+        ? performFullSessionRunCancellation(session, runId, run.stopReason) : undefined,
+    },
+  });
   const run: HttpFinalizationRun = {
-    owner, controller,
+    owner, controller, stop, stopReason: 'Analysis cancelled by user', settled,
+    claimTerminal: kind => {
+      if (run.terminal) return false;
+      run.terminal = kind;
+      return true;
+    },
     assertCurrent: () => {
       controller.signal.throwIfAborted();
       if (!owner.isCurrent()) throw new DOMException('Analysis superseded', 'AbortError');
       owner.assertAuthorized();
     },
-    release: () => {if (runs.get(runId) === run) runs.delete(runId);},
+    release: () => {
+      stop.dispose();
+      settle();
+      if (runs.get(runId) === run) runs.delete(runId);
+    },
   };
   runs.set(runId, run);
   return run;
@@ -713,10 +719,9 @@ async function abortSessionBestEffort(session: AnalysisSession, component: strin
   try {
     await session.orchestrator.abortSession(session.sessionId, session.referenceTraceId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn(component, 'Runtime abortSession failed during cancellation cleanup', {
       sessionId: session.sessionId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -740,48 +745,21 @@ function cleanupSessionBestEffort(sessionId: string, session: AnalysisSession, c
   try {
     const cleanup = session.orchestrator.cleanupSession(sessionId);
     void Promise.resolve(cleanup).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
       session.logger.warn(component, 'Runtime cleanupSession failed', {
         sessionId,
-        error: message,
+        error: errorMessage(error),
       });
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn(component, 'Runtime cleanupSession failed', {
       sessionId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
 
-async function resetSessionRuntimeForSourceActivation(
-  session: AnalysisSession,
-  query: string,
-  nextActivation: AnalysisSourceActivation,
-): Promise<void> {
-  const previousActivation = session.sourceActivation;
-  const resetQuery = await resetRuntimeForSourceActivation({
-    orchestrator: session.orchestrator,
-    sessionId: session.sessionId,
-    query,
-    previousActivation,
-    nextActivation,
-    queryHistory: session.queryHistory,
-    conclusionHistory: session.conclusionHistory,
-  });
-  if (!resetQuery) return;
-  session.agentQuery = resetQuery;
-  session.logger.info('AgentRoutes', 'Reset provider runtime after source activation changed', {
-    sessionId: session.sessionId,
-    previousActivation,
-    nextActivation,
-  });
-}
-
 async function abortAndCleanupSession(sessionId: string, session: AnalysisSession, component: string): Promise<void> {
   abortHttpFinalizationRuns(session);
-  await cancelActiveAnalysisSourceEnrichment(session, 'session_cancelled');
   await abortSessionBestEffort(session, component);
   cleanupSessionBestEffort(sessionId, session, component);
   revokeCodeAwareOutputGuards(sessionId);
@@ -814,7 +792,6 @@ async function retireAuthorizationChangedSession(
 function scrubAuthorizationChangedSession(session: AnalysisSession): void {
   const privateQuery = privateAnalysisQueryMessage(sessionOutputLanguage(session));
   session.query = privateQuery;
-  session.agentQuery = privateQuery;
   session.result = undefined;
   session.error = undefined;
   session.hypotheses = [];
@@ -923,7 +900,9 @@ type CancelSessionRunResult = {
   runStatus?: AnalyzeSessionRunContext['status'];
   outcome:
     | 'cancelled'
-    | 'source_enrichment_cancelled'
+    | 'review_stop_requested'
+    | 'committed'
+    | 'review_not_finished'
     | 'already_cancelled'
     | 'run_not_found'
     | 'run_not_active'
@@ -939,7 +918,7 @@ async function cancelSessionRun(
   const session = assistantAppService.getSession(sessionId);
   if (!session) return undefined;
 
-  const targetRun = resolveSessionRun(session, runId);
+  let targetRun = resolveSessionRun(session, runId);
   if (!targetRun) {
     return {
       session,
@@ -947,19 +926,40 @@ async function cancelSessionRun(
       outcome: 'run_not_found',
     };
   }
+  const finalizationRun = httpFinalizationRuns.get(session)?.get(runId);
   if (
-    session.analysisSourceEnrichment?.status === 'running' &&
-    session.analysisSourceEnrichment.runId === runId
+    finalizationRun?.stop.provisionalDelivered &&
+    !finalizationRun.terminal &&
+    isCurrentRunOwner(session, runId) &&
+    !isSessionRunCancelled(session, runId) &&
+    (targetRun.status === 'pending' || targetRun.status === 'running')
   ) {
-    await cancelActiveAnalysisSourceEnrichment(session, reason);
+    // The user already holds the finished answer. The first stop ends only its
+    // review (a review that already ended ignores it): the run keeps session
+    // ownership, commits its turn and publishes analysis_completed. A second
+    // stop forces: it waits for that commit up to the watchdog the first stop
+    // armed, then falls back.
+    finalizationRun.stopReason = reason;
+    const request = finalizationRun.stop.requestStop();
     session.lastActivityAt = Date.now();
-    return {
-      session,
-      runId,
-      runStatus: targetRun.status,
-      outcome: 'source_enrichment_cancelled',
-      reason,
-    };
+    if (request === 'review') {
+      return {
+        session,
+        runId,
+        runStatus: 'running',
+        outcome: 'review_stop_requested',
+        reason,
+      };
+    }
+    const expiry = await finalizationRun.stop.awaitCommitOrExpire(finalizationRun.settled);
+    if (expiry?.kind === 'cancelled' && expiry.value) return expiry.value;
+    if (finalizationRun.terminal) {
+      return {session, runId, runStatus: 'completed', reason,
+        outcome: finalizationRun.terminal === 'finalized' ? 'committed' : 'review_not_finished'};
+    }
+    // Otherwise the run ended some other way: report its state now, not the
+    // one read before the wait.
+    targetRun = resolveSessionRun(session, runId) ?? targetRun;
   }
   if (isSessionRunCancelled(session, runId) || targetRun.status === 'cancelled') {
     return {
@@ -990,6 +990,15 @@ async function cancelSessionRun(
     };
   }
 
+  return performFullSessionRunCancellation(session, runId, reason);
+}
+
+async function performFullSessionRunCancellation(
+  session: AnalysisSession,
+  runId: string,
+  reason: string,
+): Promise<CancelSessionRunResult> {
+  const sessionId = session.sessionId;
   session.cancellationInFlightRunId = runId;
   session.cancellationAbortCompletedRunId = undefined;
   markSessionRunCancelled(session, runId, reason);
@@ -1049,13 +1058,29 @@ function readRequiredCancellationRunId(value: unknown): string | undefined {
 function projectCancelSessionRunResult(result: CancelSessionRunResult): {status: number; body: Record<string, unknown>} {
   const { session, runId, runStatus, outcome, reason } = result;
   switch (outcome) {
-    case 'source_enrichment_cancelled':
+    case 'review_stop_requested':
+      // Not terminal: analysis_completed still follows with the verdict.
       return {status: 200, body: {
         success: true,
         sessionId: session.sessionId,
         runId,
-        status: 'source_enrichment_cancelled',
-        primaryRunStatus: runStatus,
+        status: 'review_stop_requested',
+        runStatus,
+        sessionStatus: session.status,
+        outcome,
+        reason,
+      }};
+    case 'committed':
+    case 'review_not_finished':
+      // A force stop found the run committed: its normal turn (`committed`), or,
+      // when it did not commit within the watchdog, the answer the user read
+      // kept as an unverified partial turn. analysis_completed carries either.
+      return {status: 200, body: {
+        success: true,
+        sessionId: session.sessionId,
+        runId,
+        status: 'completed',
+        runStatus,
         sessionStatus: session.status,
         outcome,
         reason,
@@ -1108,14 +1133,6 @@ function sendCancelSessionRunResult(res: express.Response, result: CancelSession
   return res.status(response.status).json(response.body);
 }
 
-// Attach/echo requestId for all agent endpoints.
-router.use((req, res, next) => {
-  const requestId = resolveRequestIdFromRequest(req);
-  (req as AgentRequestWithObservability).assistantRequestId = requestId;
-  res.setHeader(REQUEST_ID_HEADER, requestId);
-  next();
-});
-
 // Apply API-key auth and RequestContext to all Agent endpoints (dev fallback still applies when key is not configured).
 router.use(authenticate);
 
@@ -1159,7 +1176,6 @@ interface AnalysisSession {
   providerSnapshotHash?: string | null;
   providerSnapshotChanged?: boolean;
   providerSnapshotChangeReason?: string;
-  agentQuery?: string;
   analysisMode?: AnalyzeMode;
   continuityBreaks?: import('../agentv3/sessionStateSnapshot').ProviderContinuityBreak[];
   codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
@@ -1171,18 +1187,6 @@ interface AnalysisSession {
     codebaseIds: string[];
     analysisContextFingerprint: string;
   };
-  sourceActivation?: AnalysisSourceActivation;
-  analysisSourceEnrichment?: {
-    runId: string;
-    status: 'running' | 'completed' | 'failed' | 'cancelled';
-    startedAt: number;
-    completedAt?: number;
-    message?: string;
-    metrics?: AnalysisSourceSupplementMetrics;
-    errorCode?: 'analysis_source_enrichment_failed';
-    finalResult?: AgentRuntimeAnalysisResult;
-  };
-  androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
   referenceTraceId?: string;
   comparisonSource?: 'raw_trace_pair' | 'analysis_result_snapshots';
@@ -1343,7 +1347,7 @@ function sealHttpRunManifest(
         session.query,
         session.dataEnvelopes,
       ),
-      architecture: resolveCaseEvolutionArchitectureType(
+      architecture: resolveSessionArchitectureType(
         session,
         session.traceId,
       ),
@@ -1405,9 +1409,9 @@ function baseAgentEventScopeFromSession(
     sessionId: session.sessionId,
     runId: run.runId,
     traceId: session.traceId,
-    query: sessionUsesPrivateKnowledge(session)
-      ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
-      : run.query || session.query,
+    // The run store keeps no question text for a run with private context.
+    query: run.query || session.query,
+    privateContext: run.privateContext,
   };
 }
 
@@ -1436,7 +1440,7 @@ function persistSessionRunState(
   const scope = analysisRunScopeFromSession(session, runId);
   if (!scope) return;
   try {
-    const durableError = error && sessionUsesPrivateKnowledge(session)
+    const durableError = error && privateContextRestrictsAudience(scope.privateContext)
       ? projectOwnerAnalysisError(session.sessionId, error, sessionOutputLanguage(session))
       : error;
     persistAnalysisRunState(scope, status, {
@@ -1444,12 +1448,11 @@ function persistSessionRunState(
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
     });
   } catch (persistError) {
-    const message = persistError instanceof Error ? persistError.message : String(persistError);
     session.logger.warn('AnalysisRun', 'Failed to persist run state', {
       sessionId: session.sessionId,
       runId: scope.runId,
       status,
-      error: message,
+      error: errorMessage(persistError),
     });
   }
 }
@@ -1460,11 +1463,10 @@ function heartbeatSessionRun(session: AnalysisSession, runId?: string): void {
   try {
     heartbeatAnalysisRun(scope);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AnalysisRun', 'Failed to persist run heartbeat', {
       sessionId: session.sessionId,
       runId: scope.runId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1481,11 +1483,10 @@ function isPersistedSessionRunFresh(session: AnalysisSession, now: number): bool
   try {
     return isAnalysisRunHeartbeatFresh(scope, scope.runId, now, AGENT_RUN_HEARTBEAT_MAX_STALE_MS);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AnalysisRun', 'Failed to inspect persisted run heartbeat', {
       sessionId: session.sessionId,
       runId: scope.runId,
-      error: message,
+      error: errorMessage(error),
     });
     return true;
   }
@@ -1500,20 +1501,19 @@ function persistBufferedAgentEvent(session: AnalysisSession, event: SerializedAg
     );
   if (!scope) return;
   try {
-    const durableEvent = sessionUsesPrivateKnowledge(session)
-      ? sanitizePersistedAnalysisCompletedEvent(session, event)
+    const durableEvent = privateContextRestrictsAudience(scope.privateContext)
+      ? sanitizePersistedAnalysisCompletedEvent(session, event, true)
       : event;
     persistSerializedAgentEvent(scope, durableEvent, {
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AgentEvents', 'Failed to persist SSE event', {
       sessionId: session.sessionId,
       runId: scope.runId,
       eventType: event.eventType,
       cursor: event.cursor,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1529,9 +1529,9 @@ function getRunSseReplayState(session: AnalysisSession, runId: string): RunScope
 function sanitizePersistedAnalysisCompletedEvent(
   session: AnalysisSession,
   event: SerializedAgentEvent,
+  privateKnowledge: boolean,
 ): SerializedAgentEvent {
   if (event.eventType !== 'analysis_completed') return event;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
 
   let payload: any;
   try {
@@ -1617,9 +1617,12 @@ function sanitizePersistedAnalysisCompletedEvent(
         sourceUseDecision: undefined,
         turnIntent: undefined, completion: undefined, outputOrigin: undefined, runtimeAppendix: undefined,
         reportAssessment: undefined, investigationAssessment: undefined, deliveryAssurance: undefined,
+        knowledgeUse: undefined,
         identityResolutions: undefined,
         sceneTimeline: undefined, sceneReport: undefined,
         uiActionProposals: [],
+        // An untrusted legacy event keeps only the receipt's identifiers.
+        analysisReceipt: projectPrivateAnalysisReceipt(result.analysisReceipt),
       }
     : result;
   const durableResult = privateKnowledge
@@ -1658,7 +1661,7 @@ function sanitizePersistedAnalysisCompletedEvent(
         resultContract: trustedPrivateProjection && data.resultContract
           ? projectOwnerStructuredValue(session.sessionId, data.resultContract)
           : undefined,
-        analysisReceipt: projectPrivateAnalysisReceipt(durableResult.analysisReceipt),
+        analysisReceipt: durableResult.analysisReceipt,
         confidence: durableResult.confidence,
         rounds: durableResult.rounds,
         totalDurationMs: durableResult.totalDurationMs,
@@ -1674,6 +1677,9 @@ function sanitizePersistedAnalysisCompletedEvent(
           : undefined,
         resultSnapshotId: typeof data?.resultSnapshotId === 'string'
           ? data.resultSnapshotId.slice(0, 160)
+          : undefined,
+        reportError: trustedPrivateProjection && typeof data.reportError === 'string' && data.reportError
+          ? projectOwnerAnalysisError(session.sessionId, data.reportError, outputLanguage)
           : undefined,
         terminalRunStatus: ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(data?.terminalRunStatus)
           ? data.terminalRunStatus
@@ -1701,6 +1707,8 @@ function sanitizePersistedAnalysisCompletedEvent(
         terminationMessage: durableResult.terminationMessage,
         quickRun: durableResult.quickRun,
       };
+  // The replayed copy is a client read: its decisions carry their counts, the stored event need not.
+  const clientData = withClientSourceUseCounts(nextData);
   const nextPayload = privateKnowledge
     ? {
         type: 'analysis_completed',
@@ -1712,12 +1720,12 @@ function sanitizePersistedAnalysisCompletedEvent(
         ...(typeof payload?.runSequence === 'number'
           ? {runSequence: payload.runSequence}
           : {}),
-        data: nextData,
+        data: clientData,
         timestamp: typeof payload?.timestamp === 'number' ? payload.timestamp : event.createdAt,
       }
     : payload?.data && typeof payload.data === 'object'
-      ? {...payload, data: nextData}
-      : {...payload, ...nextData};
+      ? {...payload, data: clientData}
+      : {...payload, ...clientData};
   return {
     ...event,
     eventData: JSON.stringify(nextPayload),
@@ -1736,12 +1744,11 @@ function replayPersistedAgentEvents(
   try {
     events = listSerializedAgentEventsAfter(scope, scope.runId, lastEventId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AgentEvents', 'Failed to load persisted SSE replay events', {
       sessionId: session.sessionId,
       runId: scope.runId,
       lastEventId,
-      error: message,
+      error: errorMessage(error),
     });
     return { replayed: 0, includesTerminal: false, lastCursor: lastEventId };
   }
@@ -1751,13 +1758,14 @@ function replayPersistedAgentEvents(
   let lastCursor = lastEventId;
   for (const event of events) {
     try {
-      const replayEvent = sanitizePersistedAnalysisCompletedEvent(session, event);
+      const replayEvent = sanitizePersistedAnalysisCompletedEvent(
+        session, event, privateContextRestrictsAudience(scope.privateContext));
       res.write(`id: ${event.cursor}\n`);
       res.write(`event: ${replayEvent.eventType}\n`);
       res.write(`data: ${projectSerializedDataEvent(replayEvent.eventType, replayEvent.eventData)}\n\n`);
       replayed++;
       lastCursor = event.cursor;
-      if (isTerminalSseEvent(replayEvent.eventType, replayEvent.eventData)) {
+      if (isTerminalSseEvent(replayEvent.eventType)) {
         includesTerminal = true;
       }
     } catch {
@@ -1816,136 +1824,6 @@ function writeBufferedSessionEvent(res: express.Response, event: BufferedSseEven
   res.write(`data: ${event.eventData}\n\n`);
 }
 
-function appendAnalysisSourceEventToCompletedCache(
-  session: AnalysisSession,
-  runId: string,
-  event: BufferedSseEvent,
-): void {
-  const runCache = (session as any).completedAnalysisSseEventsByRunId?.[runId] as
-    | {events?: BufferedSseEvent[]}
-    | undefined;
-  if (runCache?.events && !runCache.events.includes(event)) runCache.events.push(event);
-  const sessionCache = (session as any).completedAnalysisSseEvents as BufferedSseEvent[] | undefined;
-  if (sessionCache && !sessionCache.includes(event)) sessionCache.push(event);
-}
-
-function publishAnalysisSourceEvent(
-  session: AnalysisSession,
-  runId: string,
-  eventType: string,
-  payload: Record<string, unknown>,
-): BufferedSseEvent {
-  const event = appendAndPersistReplayableSessionEvent(
-    session,
-    eventType,
-    {
-      type: eventType,
-      architecture: 'agent-driven',
-      ...buildStreamObservability(session, runId),
-      ...payload,
-      timestamp: Date.now(),
-    },
-    runId,
-  );
-  appendAnalysisSourceEventToCompletedCache(session, runId, event);
-  for (const client of filterSseClientsForRun(session.sseClients, runId)) {
-    try {
-      writeBufferedSessionEvent(client, event);
-    } catch {
-      assistantAppService.removeSseClient(session.sessionId, client);
-    }
-  }
-  return event;
-}
-
-function finishAnalysisSourceEventStream(session: AnalysisSession, runId: string): void {
-  publishAnalysisSourceEvent(session, runId, 'end', {});
-}
-
-async function cancelActiveAnalysisSourceEnrichment(
-  session: AnalysisSession,
-  reason: string,
-): Promise<boolean> {
-  const state = session.analysisSourceEnrichment;
-  if (!state || state.status !== 'running') return false;
-  abortHttpFinalizationRuns(session, state.runId);
-  state.status = 'cancelled';
-  state.completedAt = Date.now();
-  await cancelAnalysisSourceSupplement(
-    session.orchestrator,
-    session.sessionId,
-    state.runId,
-  );
-  if (assistantAppService.getSession(session.sessionId) !== session ||
-    session.analysisSourceEnrichment !== state || !isCurrentRunOwner(session, state.runId)) return true;
-  publishAnalysisSourceEvent(session, state.runId, 'analysis_source_enrichment_cancelled', {
-    reason,
-  });
-  finishAnalysisSourceEventStream(session, state.runId);
-  return true;
-}
-
-function startAnalysisSourceEnrichment(
-  session: AnalysisSession,
-  input: {
-    runId: string;
-    traceId: string;
-    question: string;
-    primaryConclusion: string;
-    analysisOptions: AnalysisOptions;
-    finalizationRun: HttpFinalizationRun;
-  },
-): void {
-  const state = session.analysisSourceEnrichment;
-  const run = input.finalizationRun;
-  const isCurrent = () => session.analysisSourceEnrichment === state && state?.status === 'running' &&
-    !run.controller.signal.aborted && run.owner.isCurrent();
-  if (!state || state.runId !== input.runId || !isCurrent()) {run.release(); return;}
-  run.assertCurrent();
-  publishAnalysisSourceEvent(session, input.runId, 'analysis_source_enrichment_started', {});
-  run.assertCurrent();
-  void runAnalysisSourceSupplement({
-    orchestrator: session.orchestrator,
-    sessionId: session.sessionId,
-    runId: input.runId,
-    traceId: input.traceId,
-    question: input.question,
-    primaryConclusion: input.primaryConclusion,
-    analysisOptions: input.analysisOptions,
-    signal: run.controller.signal,
-    isCurrent,
-    assertAuthorized: run.owner.assertAuthorized,
-  }).then(outcome => {
-    if (!isCurrent()) return;
-    run.assertCurrent();
-    state.status = 'completed';
-    state.completedAt = Date.now();
-    state.message = outcome.message;
-    state.metrics = outcome.metrics;
-    state.finalResult = outcome.finalResult;
-    publishAnalysisSourceEvent(session, input.runId, 'analysis_source_enrichment_completed', {
-      message: outcome.message, metrics: outcome.metrics, finalResult: outcome.finalResult,
-    });
-    run.assertCurrent();
-    finishAnalysisSourceEventStream(session, input.runId);
-  }).catch(error => {
-    if (!isCurrent()) return;
-    try {run.assertCurrent();} catch {return;}
-    state.status = 'failed';
-    state.completedAt = Date.now();
-    state.errorCode = 'analysis_source_enrichment_failed';
-    if (error instanceof AnalysisSourceSupplementFailure) {
-      state.finalResult = error.finalResult;
-      state.metrics = error.metrics;
-    }
-    publishAnalysisSourceEvent(session, input.runId, 'analysis_source_enrichment_failed', {
-      errorCode: state.errorCode, finalResult: state.finalResult, metrics: state.metrics,
-    });
-    run.assertCurrent();
-    finishAnalysisSourceEventStream(session, input.runId);
-  }).finally(() => run.release()).catch(() => undefined);
-}
-
 function loadPersistedCompletedAnalysisSseEvents(session: AnalysisSession, runId?: string): BufferedSseEvent[] {
   const scope = agentEventScopeFromSession(session, runId);
   if (!scope) return [];
@@ -1955,15 +1833,12 @@ function loadPersistedCompletedAnalysisSseEvents(session: AnalysisSession, runId
         event.eventType === 'snapshot_created' ||
         event.eventType === 'progress' ||
         event.eventType === 'analysis_completed' ||
-        event.eventType === 'analysis_source_enrichment_started' ||
-        event.eventType === 'analysis_source_enrichment_completed' ||
-        event.eventType === 'analysis_source_enrichment_failed' ||
-        event.eventType === 'analysis_source_enrichment_cancelled' ||
         event.eventType === 'analysis_cancelled' ||
         event.eventType === 'scene_reconstruction_completed' ||
         event.eventType === 'end',
     )
-    .map((event) => sanitizePersistedAnalysisCompletedEvent(session, event))
+    .map((event) => sanitizePersistedAnalysisCompletedEvent(
+      session, event, privateContextRestrictsAudience(scope.privateContext)))
     .map((event) => ({
       seqId: event.cursor,
       eventType: event.eventType,
@@ -2160,6 +2035,11 @@ function buildDisplayTurnResult(turn: ConversationTurn): ConversationTurn['resul
   return turn.result;
 }
 
+/** A turn's recorded value for its creator: under the owner guard when the session reads private material. */
+function ownerTurnValue<T>(privateSessionId: string | undefined, value: T): T {
+  return privateSessionId ? projectOwnerStructuredValue(privateSessionId, value) : value;
+}
+
 function buildTurnSummary(
   turn: ConversationTurn,
   privateSessionId?: string,
@@ -2184,14 +2064,12 @@ function buildTurnSummary(
     turnId: turn.id,
     turnIndex: turn.turnIndex,
     timestamp: turn.timestamp,
-    query: privateSessionId ? privateAnalysisQueryMessage(outputLanguage) : turn.query,
-    intent: privateSessionId
-      ? {primaryGoal: '', followUpType: 'initial', aspects: []}
-      : {
-          primaryGoal: turn.intent?.primaryGoal || '',
-          followUpType: turn.intent?.followUpType || 'initial',
-          aspects: Array.isArray(turn.intent?.aspects) ? turn.intent.aspects : [],
-        },
+    query: ownerTurnValue(privateSessionId, turn.query),
+    intent: ownerTurnValue(privateSessionId, {
+      primaryGoal: turn.intent?.primaryGoal || '',
+      followUpType: turn.intent?.followUpType || 'initial',
+      aspects: Array.isArray(turn.intent?.aspects) ? turn.intent.aspects : [],
+    }),
     completed: !!turn.completed,
     success: typeof displayResult?.success === 'boolean' ? displayResult.success : null,
     partial: displayResult?.partial === true,
@@ -2217,9 +2095,9 @@ function buildTurnDetail(
   const displayResult = buildDisplayTurnResult(turn);
   return {
     ...summary,
-    intent: privateSessionId ? summary.intent : toJsonSafe(turn.intent),
+    intent: ownerTurnValue(privateSessionId, toJsonSafe(turn.intent)),
     result: displayResult
-      ? toJsonSafe(privateSessionId
+      ? withClientSourceUseCounts(toJsonSafe(privateSessionId
           ? projectOwnerAnalysisResult(privateSessionId, {
               sessionId: turn.id,
               success: displayResult.success !== false,
@@ -2240,7 +2118,7 @@ function buildTurnDetail(
               ...copyAnalysisDeliveryFields(displayResult),
               identityResolutions: displayResult.identityResolutions,
             }, outputLanguage)
-          : displayResult)
+          : displayResult))
       : null,
     findings: toJsonSafe(privateSessionId
       ? projectOwnerFindings(privateSessionId, turn.findings || [])
@@ -2312,93 +2190,6 @@ function recoverResultForSessionIfNeeded(
   return recovered && belongsToRun(recovered) ? recovered : null;
 }
 
-function buildFallbackIntentFromQuery(query?: string): Intent | null {
-  const primaryGoal = String(query || '').trim();
-  if (!primaryGoal) return null;
-
-  return {
-    primaryGoal,
-    aspects: [],
-    expectedOutputType: 'summary',
-    complexity: 'simple',
-    followUpType: 'initial',
-  };
-}
-
-export function resolveConclusionSceneIdHint(params: {
-  sessionId: string;
-  query?: string;
-  findings?: Finding[];
-  intent?: Intent;
-  dataEnvelopes?: DataEnvelope[];
-  currentTurn?: number;
-}): string | undefined {
-  const findings = Array.isArray(params.findings) ? params.findings : [];
-  let intent = params.intent;
-
-  if (!intent) {
-    const resolved = resolveSessionContextForReview(params.sessionId);
-    const turn = resolved ? getLastCompletedTurn(resolved.context) : null;
-    if (turn?.intent) {
-      intent = turn.intent;
-    }
-  }
-
-  if (!intent) {
-    intent = buildFallbackIntentFromQuery(params.query) || undefined;
-  }
-
-  if (!intent) return undefined;
-
-  const sceneEnvelopes = params.currentTurn === undefined
-    ? params.dataEnvelopes || []
-    : (params.dataEnvelopes || []).filter(envelope => {
-        const envelopeTurn = Number((envelope.meta as any)?.turn);
-        if (Number.isFinite(envelopeTurn)) return envelopeTurn === params.currentTurn;
-        return params.currentTurn === 1;
-      });
-  const evidenceAspects = deriveConclusionSceneAspectsFromSkillIds(
-    sceneEnvelopes.map(envelope => envelope.meta?.skillId),
-  );
-  const routedIntent = evidenceAspects.length > 0
-    ? {...intent, aspects: evidenceAspects}
-    : intent;
-
-  try {
-    return resolveConclusionScene({
-      intent: routedIntent,
-      findings,
-      deepReasonLabel: DEEP_REASON_LABEL,
-    }).selectedTemplate.id;
-  } catch {
-    return undefined;
-  }
-}
-
-function conclusionContractDeriveOptionsForSession(
-  session: AnalysisSession,
-  result: AgentRuntimeAnalysisResult,
-  sceneId: string | undefined,
-  requestedAnalysisMode?: AnalyzeMode,
-): {
-  existingContract?: ConclusionContract;
-  mode: ConclusionContract['mode'];
-  sceneId?: string;
-} {
-  const mode = resolveConclusionOutputModeForTurn({
-    existingMode: result.conclusionContract?.mode,
-    runSequence: session.runSequence,
-    requestedAnalysisMode,
-  });
-  return {
-    existingContract: result.conclusionContract
-      ? {...result.conclusionContract, mode} as ConclusionContract
-      : undefined,
-    mode,
-    ...(sceneId ? {sceneId} : {}),
-  };
-}
-
 // =============================================================================
 // Scene Reconstruction Types (kept for backward-compatible API responses)
 // =============================================================================
@@ -2451,8 +2242,6 @@ interface TrackEvent {
   details?: Record<string, any>;
 }
 
-// Initialize Agent tools once
-let toolsRegistered = false;
 const SCENE_STRATEGY_IDS = ['scene_reconstruction', 'scene_reconstruction_quick'];
 const MAX_SESSION_DATA_ENVELOPES = 1200;
 const MAX_SESSION_AGENT_DIALOGUE = 800;
@@ -2493,14 +2282,6 @@ function trimSessionArray<T>(items: T[], maxEntries: number): void {
 function pushWithSessionCap<T>(items: T[], value: T, maxEntries: number): void {
   items.push(value);
   trimSessionArray(items, maxEntries);
-}
-
-function ensureToolsRegistered() {
-  if (!toolsRegistered) {
-    registerCoreTools();
-    toolsRegistered = true;
-    console.log('[AgentRoutes] Core tools registered');
-  }
 }
 
 function isDedicatedSceneReplayRequest(query: string): boolean {
@@ -2544,11 +2325,11 @@ function analysisRunDispatchDependencies(): AnalysisRunDispatchDependencies<Anal
     configuredOutputLanguage, sessionOutputLanguage, enterpriseLeasesEnabled,
     leaseScopeFromRequestContext, buildLeaseModeDecisionForTrace, startSessionRun,
     markSessionRunStatus, isSessionRunCancelled, abortHttpFinalizationRuns,
-    isStaleRun, settleSessionRunExecution, resetSessionRuntimeForSourceActivation,
+    isStaleRun, settleSessionRunExecution,
     createHttpRunManifestLifecycle, sealCompletedHttpRunManifest, finalizeHttpRunManifestLifecycle,
-    persistSessionRunState, cancelActiveAnalysisSourceEnrichment, assignSessionOwner,
+    persistSessionRunState, assignSessionOwner,
     requestedSessionIsVisible, resolveVisibleSessionReferenceTraceIdForTrace, buildRecoveredResultFromContext,
-    ensureToolsRegistered, isDedicatedSceneReplayRequest, runSmartAnalysis,
+    isDedicatedSceneReplayRequest, runSmartAnalysis,
     smartSelectionReportId, analyzeOptionsErrorMessage, smartPreviewSelectionErrorMessage,
     resolveSmartPreviewReportForSelection, runAgentDrivenAnalysis, broadcastToAgentDrivenClients,
     assistantAppService, httpAnalysisRunLeaseControllers, admittedLocalAnalysisRuns,
@@ -2572,7 +2353,7 @@ async function handleAnalyzeRequest(
   res: express.Response,
   requestedSessionIdOverride?: string,
 ): Promise<void> {
-  const response = await dispatchAnalysisRun({entry: 'analysis', requestId: getRequestId(req),
+  const response = await dispatchAnalysisRun({entry: 'analysis', requestId: requestIdOf(req),
     context: requireRequestContext(req), body: req.body ?? {}, requestedSessionIdOverride},
     analysisRunDispatchDependencies());
   res.status(response.status).json(response.body);
@@ -2654,10 +2435,8 @@ function handleSessionStream(
     ...buildStreamObservability(session, streamRunId),
   });
 
-  const sourceEnrichmentRunning = session.analysisSourceEnrichment?.status === 'running';
   if (
     lastEventId !== null &&
-    !sourceEnrichmentRunning &&
     (streamStatus === 'completed' || streamStatus === 'quota_exceeded')
   ) {
     recoverResultForSessionIfNeeded(sessionId, session);
@@ -2734,23 +2513,22 @@ function handleSessionStream(
     recoverResultForSessionIfNeeded(sessionId, session);
     if (session.result) {
       sendAgentDrivenResult(res, session, streamRunId);
-      if (!sourceEnrichmentRunning) {
-        res.end();
-        assistantAppService.removeSseClient(sessionId, res);
-        return;
-      }
+      res.end();
+      assistantAppService.removeSseClient(sessionId, res);
+      return;
     }
   }
 
   // If analysis failed, send error
   if (streamStatus === 'failed') {
+    const error = projectStoredHttpError(session);
     sendReplayableSessionEvent(
       session,
       res,
       'error',
       {
-        error: session.error,
-        message: session.error,
+        error,
+        message: error,
         timestamp: Date.now(),
         ...buildStreamObservability(session, streamRunId),
       },
@@ -2787,9 +2565,6 @@ function handleSessionStream(
   req.on('close', () => {
     console.log(`[AgentRoutes] SSE client disconnected for ${sessionId}`);
     assistantAppService.removeSseClient(sessionId, res);
-    if (session.sseClients.length === 0 && session.analysisSourceEnrichment?.status === 'running') {
-      void cancelActiveAnalysisSourceEnrichment(session, 'client_disconnected');
-    }
   });
 
   // Handle write errors (EPIPE when client disconnects mid-write).
@@ -2811,9 +2586,8 @@ function connectedStreamQuery(
   session: AnalysisSession,
   streamRun?: AnalyzeSessionRunContext,
 ): string {
-  return sessionUsesPrivateKnowledge(session)
-    ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
-    : streamRun?.query ?? session.query;
+  return projectOwnerQuestion(sessionRunHasPrivateContext(session, streamRun?.runId), session.sessionId,
+    streamRun?.query ?? session.query);
 }
 
 async function ensureSceneHistoryAccessible(req: express.Request, res: express.Response, session: AnalysisSession): Promise<boolean> {
@@ -2854,15 +2628,14 @@ router.get('/:sessionId/status', async (req, res) => {
 
   const session = getAuthorizedSession(req, res, sessionId);
   if (!session || !await ensureSceneHistoryAccessible(req, res, session)) return;
+  const privateKnowledge = sessionRunHasPrivateContext(session);
 
   const response: any = {
     success: true,
     sessionId,
     status: session.status,
     traceId: session.traceId,
-    query: sessionUsesPrivateKnowledge(session)
-      ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
-      : session.query,
+    query: projectOwnerQuestion(privateKnowledge, sessionId, session.query),
     createdAt: session.createdAt,
     observability: buildSessionObservability(session),
   };
@@ -2873,14 +2646,13 @@ router.get('/:sessionId/status', async (req, res) => {
       const completedPayload = ensureCompletedAnalysisResultPayload(session);
       const result = completedPayload?.result ?? projectStoredHttpResult(session, recoveredResult);
       const finalArtifacts = completedPayload?.finalArtifacts;
-      const privateKnowledge = sessionUsesPrivateKnowledge(session);
       const outputLanguage = sessionOutputLanguage(session);
       const normalizedCompletedConclusion = result.conclusion;
       const projectedCompletedContract = result.conclusionContract;
       const projectedQualityArtifacts = result;
       const projectedFindings = result.findings;
       const resultContract = buildSessionResultContract(session, projectedFindings);
-      response.result = {
+      response.result = withClientSourceUseCounts({
         ...copyAnalysisDeliveryFields(result),
         sceneTimeline: result.sceneTimeline ? projectSceneTimelineForClient(result.sceneTimeline) : undefined,
         sceneReport: result.sceneReport,
@@ -2904,10 +2676,10 @@ router.get('/:sessionId/status', async (req, res) => {
           ? projectOwnerTerminationMessage(result.terminationMessage, outputLanguage, result)
           : result.terminationMessage,
         reportUrl: finalArtifacts?.reportUrl,
-        reportError: privateKnowledge ? undefined : finalArtifacts?.reportError,
+        reportError: projectOwnerReportError(privateKnowledge, sessionId, finalArtifacts?.reportError, outputLanguage),
         resultSnapshotId: finalArtifacts?.resultSnapshotId,
         analysisReceipt: privateKnowledge
-          ? projectPrivateAnalysisReceipt(completedPayload?.analysisReceipt)
+          ? projectOwnerAnalysisReceipt(completedPayload?.analysisReceipt)
           : completedPayload?.analysisReceipt,
         uiActionProposals: privateKnowledge
           ? projectOwnerStructuredValue(sessionId, completedPayload?.uiActionProposals || [])
@@ -2917,14 +2689,12 @@ router.get('/:sessionId/status', async (req, res) => {
         resultContract: privateKnowledge
           ? projectOwnerStructuredValue(sessionId, resultContract)
           : resultContract,
-      };
+      });
     }
   }
 
   if (session.status === 'failed' || session.status === 'cancelled') {
-    response.error = sessionUsesPrivateKnowledge(session)
-      ? projectOwnerAnalysisError(sessionId, session.error, sessionOutputLanguage(session))
-      : session.error;
+    response.error = projectStoredHttpError(session);
   }
 
   res.json(response);
@@ -2963,7 +2733,7 @@ router.get('/:sessionId/turns', (req, res) => {
   }
   const privateSelection = assistantAppService.getSession(sessionId) ??
     SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId) ?? {};
-  const privateSessionId = sessionUsesPrivateKnowledge(privateSelection) ? sessionId : undefined;
+  const privateSessionId = analysisHasPrivateContext(privateSelection) ? sessionId : undefined;
   const outputLanguage = sessionOutputLanguage(privateSelection);
 
   const allTurns = resolved.context.getAllTurns();
@@ -2977,9 +2747,7 @@ router.get('/:sessionId/turns', (req, res) => {
     sessionId,
     traceId: resolved.traceId,
     source: resolved.source,
-    query: privateSessionId
-      ? privateAnalysisQueryMessage(outputLanguage)
-      : resolved.query,
+    query: ownerTurnValue(privateSessionId, resolved.query),
     createdAt: resolved.createdAt,
     totalTurns: allTurns.length,
     turns: paged.map(turn => buildTurnSummary(turn, privateSessionId, outputLanguage)),
@@ -3020,7 +2788,7 @@ router.get('/:sessionId/turns/:turnId', (req, res) => {
   }
   const privateSelection = assistantAppService.getSession(sessionId) ??
     SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId) ?? {};
-  const privateSessionId = sessionUsesPrivateKnowledge(privateSelection) ? sessionId : undefined;
+  const privateSessionId = analysisHasPrivateContext(privateSelection) ? sessionId : undefined;
   const outputLanguage = sessionOutputLanguage(privateSelection);
 
   const turns = resolved.context.getAllTurns();
@@ -3109,7 +2877,6 @@ function privateFeedbackResponse(input: {
     ...(input.eventId ? {eventId: input.eventId} : {}),
     ...(input.feedbackId ? {feedbackId: input.feedbackId} : {}),
     patternStatus: null,
-    caseCandidateFeedbackAdded: null,
   };
 }
 
@@ -3191,14 +2958,9 @@ router.post('/:sessionId/feedback', async (req, res) => {
     targetRun.runId,
   );
   const targetKind = validated.value.targetKind ??
-    (validated.value.patternId
-      ? 'pattern'
-      : validated.value.caseCandidateId
-        ? 'case_candidate'
-        : 'session');
+    (validated.value.patternId ? 'pattern' : 'session');
   const targetId = validated.value.targetId ??
     validated.value.patternId ??
-    validated.value.caseCandidateId ??
     sessionId;
   if (
     validated.value.patternId &&
@@ -3209,42 +2971,9 @@ router.post('/:sessionId/feedback', async (req, res) => {
       error: 'patternId must identify a pattern target',
     });
   }
-  if (
-    validated.value.caseCandidateId &&
-    (
-      targetKind !== 'case_candidate' ||
-      targetId !== validated.value.caseCandidateId
-    )
-  ) {
-    return res.status(400).json({
-      success: false,
-      error: 'caseCandidateId must identify a case_candidate target',
-    });
-  }
   if (targetKind === 'pattern') {
     if (!patternExistsForFeedback(targetId, feedbackKnowledgeScope)) {
       return res.status(404).json({success: false, error: 'Pattern not found'});
-    }
-  } else if (targetKind === 'case_candidate') {
-    const outbox = openCaseCandidateOutbox();
-    try {
-      const candidate = outbox.getCandidate(targetId);
-      const candidateScope = candidate
-        ? caseCandidateKnowledgeScope(candidate.candidate)
-        : null;
-      if (
-        !candidate ||
-        !candidateScope ||
-        candidateScope.tenantId !== resolvedFeedbackScope.tenantId ||
-        candidateScope.workspaceId !== resolvedFeedbackScope.workspaceId
-      ) {
-        return res.status(404).json({
-          success: false,
-          error: 'Case candidate not found',
-        });
-      }
-    } finally {
-      outbox.close();
     }
   } else if (!feedbackTargetBelongsToSession(
     session,
@@ -3277,7 +3006,6 @@ router.post('/:sessionId/feedback', async (req, res) => {
     targetKind,
     targetId,
     patternId: validated.value.patternId,
-    caseCandidateId: validated.value.caseCandidateId,
     source: validated.value.source ?? 'ui',
     actor: {
       userId: requestContext.userId,
@@ -3291,7 +3019,8 @@ router.post('/:sessionId/feedback', async (req, res) => {
 
   let store: FeedbackEventStore | null = null;
   try {
-    if (sessionUsesPrivateKnowledge(session)) {
+    // Feedback follows the run it is about, not the session's current selection.
+    if (privateContextRestrictsAudience(targetRun.privateContext)) {
       const persistence =
         getSelfEvolutionLifecycleSnapshot().persistence.persistence ===
         'available';
@@ -3330,21 +3059,13 @@ router.post('/:sessionId/feedback', async (req, res) => {
       durableFeedbackStored: true,
       storageDisposition: 'stored_scoped',
       patternStatus: projected.patternStatus,
-      caseCandidateFeedbackAdded:
-        projected.caseCandidateProjection?.found ?? null,
     });
   } catch (err) {
-    console.error('[Feedback] Failed to save feedback:', (err as Error).message);
-    const code = (err as Error).message;
-    const conflict = code === 'legacy_feedback_not_retractable' ||
-      code.startsWith('feedback_supersedes_') ||
-      code === 'feedback_idempotency_conflict' ||
-      code === 'feedback_id_conflict';
-    return res.status(conflict ? 409 : 500).json({
-      success: false,
-      error: code,
-      idempotencyKey,
-    });
+    return sendRouteError(res, err, {
+      code: 'feedback_save_failed',
+      error: 'Failed to save feedback',
+      logLabel: '[Feedback] Failed to save feedback',
+    }, [FeedbackRequestError]);
   } finally {
     store?.close();
   }
@@ -3530,12 +3251,12 @@ router.post('/:sessionId/interaction', async (req, res) => {
       sessionId,
       focusCount: 0,
     });
-  } catch (error: any) {
-    console.error(`[Interaction] Error recording interaction for session ${sessionId}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to record interaction',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'interaction_record_failed',
+      error: 'Failed to record interaction',
+      logLabel: '[Interaction] Error recording interaction',
+    }, error);
   }
 });
 
@@ -3598,12 +3319,12 @@ router.get('/:sessionId/focus', (req, res) => {
       focuses,
       context,
     });
-  } catch (error: any) {
-    console.error(`[Focus] Error getting focus for session ${sessionId}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to get focus state',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'focus_read_failed',
+      error: 'Failed to get focus state',
+      logLabel: '[Focus] Error getting focus',
+    }, error);
   }
 });
 
@@ -3655,8 +3376,11 @@ registerSceneReconstructRoutes(router, {
     const session = getAuthorizedSession(req, res, sessionId);
     return Boolean(session && await ensureSceneHistoryAccessible(req, res, session));
   },
-  projectSceneResult: session => session.result ? projectStoredHttpResult(session, session.result) : undefined,
-  getRequestId,
+  projectSceneResult: session => {
+    const stored = recoverResultForSessionIfNeeded(session.sessionId, session);
+    return stored ? projectStoredHttpResult(session, stored) : undefined;
+  },
+  projectSceneError: projectStoredHttpError,
   dispatchSceneAnalysis: input => dispatchAnalysisRun({...input, entry: 'scene_reconstruction'}, analysisRunDispatchDependencies()),
   cancelSceneRun: async (sessionId, runId) => {
     const result = await cancelSessionRun(sessionId, runId, 'Scene reconstruction cancelled by user');
@@ -3665,7 +3389,6 @@ registerSceneReconstructRoutes(router, {
   assistantAppService,
   isSceneReplayOnlyQuery,
   buildSceneReplayNarrative,
-  normalizeNarrativeForClient,
   sceneStoryService,
 });
 
@@ -3725,11 +3448,14 @@ async function runSmartAnalysis(
     codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
+    sourceDepth?: RequestedSourceDepth;
     runManifestAttributionSink: RunManifestAttributionSink;
   },
 ): Promise<void> {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
+  // Before the run starts: without its admitted fingerprint nothing may run.
+  const authorizationFingerprint = requireAdmittedAnalysisContextFingerprint(session.analysisContextFingerprint);
 
   const startedAt = Date.now();
   const runId = options.runContext.runId;
@@ -3745,19 +3471,13 @@ async function runSmartAnalysis(
   session.lastActivityAt = Date.now();
   persistSessionRunState(session, 'running', undefined, runId);
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runId);
-  const authorizationSelection: AnalysisContextSelection = {
-    codeAwareMode: session.sourceAuthorization?.codeAwareMode ?? options.codeAwareMode,
-    codebaseIds: [...(session.sourceAuthorization?.codebaseIds ?? options.codebaseIds ?? [])],
-    knowledgeSourceIds: [...(options.knowledgeSourceIds ?? [])],
-  };
+  const authorizationSelection: AnalysisContextSelection = runAnalysisSelection(options, session.sourceAuthorization);
   const knowledgeScope = {...options.knowledgeScope};
-  const authorizationFingerprint = session.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
   const finalizationRun = createHttpFinalizationRun(session, runId, authorizationSelection,
     knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const cancelToken = smartCancelBridge.create(sessionId, runId);
   let dispatchedToAgentDeepDive = false;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const privateKnowledge = sessionRunHasPrivateContext(session, runId);
   const outputLanguage = sessionOutputLanguage(session);
   const durableQuery = privateKnowledge
     ? privateAnalysisQueryMessage(outputLanguage)
@@ -3783,7 +3503,6 @@ async function runSmartAnalysis(
     );
     const skillExecutor = new SkillExecutor(
       options.traceProcessorService,
-      undefined,
       undefined,
       options.runManifestAttributionSink,
     );
@@ -3843,7 +3562,7 @@ async function runSmartAnalysis(
         return;
       }
       const finalized = await finalizeAnalysisResult({result, owner: finalizationRun.owner, query,
-        dataEnvelopes: session.dataEnvelopes, caseRetrieval: {status: 'not_checked', recommendations: []}});
+        dataEnvelopes: session.dataEnvelopes});
       finalizationRun.assertCurrent();
       completeAgentDrivenSessionWithResult({
         sessionId,
@@ -3911,6 +3630,7 @@ async function runSmartAnalysis(
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      sourceDepth: options.sourceDepth,
       runManifestAttributionSink: options.runManifestAttributionSink,
     }));
   } catch (error: any) {
@@ -3926,9 +3646,8 @@ async function runSmartAnalysis(
     }
     const publicErrorMessage = error instanceof SmartPreviewSelectionError
       ? smartPreviewSelectionErrorMessage(outputLanguage, error.reportId)
-      : privateKnowledge
-        ? projectOwnerAnalysisError(sessionId, error, outputLanguage)
-        : error.message || String(error);
+      : projectAnalysisFailure(error, {privateContext: sessionRunPrivateContext(session, runId),
+        guardSessionId: sessionId, language: outputLanguage, requestId: options.runContext.requestId});
     session.status = 'failed';
     session.error = publicErrorMessage;
     markSessionRunStatus(session, 'failed', session.error, runId);
@@ -3970,6 +3689,7 @@ export function buildSmartDeepDiveRunOptions(input: {
   codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
   codebaseIds?: readonly string[];
   knowledgeSourceIds?: readonly string[];
+  sourceDepth?: RequestedSourceDepth;
   runManifestAttributionSink: RunManifestAttributionSink;
 }): Record<string, unknown> {
   return {
@@ -3985,6 +3705,7 @@ export function buildSmartDeepDiveRunOptions(input: {
     knowledgeScope: input.knowledgeScope,
     outputLanguage: input.outputLanguage,
     runManifestAttributionSink: input.runManifestAttributionSink,
+    ...(input.sourceDepth ? {sourceDepth: input.sourceDepth} : {}),
     ...buildSmartDeepDiveAnalysisContext(input.analysisMode, input),
   };
 }
@@ -4067,12 +3788,6 @@ export function analyzeOptionsErrorMessage(
         outputLanguage,
         '源码感知模式必须是 off、metadata_only 或 provider_send',
         'Code-aware mode must be off, metadata_only, or provider_send',
-      );
-    case 'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE':
-      return localize(
-        outputLanguage,
-        '选择源码库时，源码感知模式必须是 metadata_only 或 provider_send',
-        'Selecting codebases requires code-aware mode metadata_only or provider_send',
       );
     case 'ANALYSIS_SOURCE_ALLOWLIST_TOO_LARGE': {
       const field = error.details?.field === 'codebaseIds'
@@ -4200,6 +3915,7 @@ function completeAgentDrivenSessionWithResult(input: {
     markSessionRunStatus,
     persistAgentTurn,
     refreshPersistedAgentSnapshot,
+    runPrivateContext: (session: AnalysisSession, runId?: string) => sessionRunPrivateContext(session, runId),
     ensureCompletedAnalysisSseEvents: (session, runId) => ensureCompletedAnalysisSseEvents(session, runId, {
       entry: 'new_finalization', assertCurrent: input.assertCurrent,
     }),
@@ -4428,6 +4144,12 @@ async function detectStartups(
   return scenes;
 }
 
+/**
+ * The Skill fragment both legacy input detectors read android_input_events
+ * through, so they see the same prefix-free actions (DOWN/MOVE/UP) as Skills.
+ */
+const INPUT_EVENTS_FRAGMENTS = ['android_input_events_normalized.sql'];
+
 /** Detect scroll sessions from input events + frame timeline */
 async function detectScrollSessions(
   tps: ReturnType<typeof getTraceProcessorService>,
@@ -4435,7 +4157,7 @@ async function detectScrollSessions(
 ): Promise<DetectedScene[]> {
   const scrollResult = await tps.query(
     traceId,
-    `
+    composeFragmentSql({leadingCtes: [], fragments: INPUT_EVENTS_FRAGMENTS, select: `
     WITH
     input_exists AS (
       SELECT 1 AS ok WHERE EXISTS (
@@ -4445,8 +4167,9 @@ async function detectScrollSessions(
     motion_events AS (
       SELECT
         read_time AS ts,
-        event_action
-      FROM android_input_events
+        event_action,
+        physical_event_key
+      FROM android_input_events_normalized
       WHERE event_type = 'MOTION'
         AND EXISTS (SELECT ok FROM input_exists)
     ),
@@ -4454,6 +4177,7 @@ async function detectScrollSessions(
       SELECT
         ts,
         event_action,
+        physical_event_key,
         SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS gesture_id
       FROM motion_events
     ),
@@ -4462,11 +4186,12 @@ async function detectScrollSessions(
         gesture_id,
         MIN(ts) AS down_ts,
         MAX(CASE WHEN event_action = 'UP' THEN ts ELSE NULL END) AS up_ts,
-        COUNT(*) AS event_count
+        COUNT(DISTINCT physical_event_key) AS event_count
       FROM gesture_markers
       WHERE gesture_id > 0
       GROUP BY gesture_id
-      HAVING COUNT(*) >= 4
+      -- Physical events: monitor channels repeat every touch, so rows would pass a tap.
+      HAVING event_count >= 4
     ),
     frame_with_stats AS (
       SELECT
@@ -4499,7 +4224,7 @@ async function detectScrollSessions(
     FROM scroll_sessions s
     WHERE s.end_ts > s.start_ts + 100000000
     ORDER BY s.start_ts
-  `,
+  `}),
   );
 
   const scenes: DetectedScene[] = [];
@@ -4532,7 +4257,7 @@ async function detectTapEvents(
 ): Promise<DetectedScene[]> {
   const tapResult = await tps.query(
     traceId,
-    `
+    composeFragmentSql({leadingCtes: [], fragments: INPUT_EVENTS_FRAGMENTS, select: `
     WITH
     input_exists AS (
       SELECT 1 AS ok WHERE EXISTS (
@@ -4543,7 +4268,7 @@ async function detectTapEvents(
       SELECT
         read_time AS ts,
         event_action
-      FROM android_input_events
+      FROM android_input_events_normalized
       WHERE event_type = 'MOTION'
         AND EXISTS (SELECT ok FROM input_exists)
     ),
@@ -4565,7 +4290,7 @@ async function detectTapEvents(
       AND (up_ts - down_ts) < 300000000
     ORDER BY down_ts
     LIMIT 50
-  `,
+  `}),
   );
 
   const scenes: DetectedScene[] = [];
@@ -4701,7 +4426,6 @@ registerTeachingRoutes(router);
 registerAgentReportRoutes(router, {
   getSession: (sessionId) => assistantAppService.getSession(sessionId),
   recoverResultForSessionIfNeeded,
-  normalizeNarrativeForClient: narrative => narrative,
   buildClientFindings: copyStoredClientFindings,
   buildSessionResultContract,
   getCompletedPayload: ensureCompletedAnalysisResultPayload,
@@ -4717,76 +4441,11 @@ registerAgentExternalIssueRoutes(router, {
 // Agent-Driven Analysis Helper Functions (Phase 2-4)
 // ============================================================================
 
-type CaseCandidateSaveFn = (input: CaseCandidateCaptureInput) => Promise<unknown>;
-
-export interface CaptureCaseCandidatesAfterQualityArtifactsInput {
-  sessionId: string;
-  traceId: string;
-  session: AnalysisSession;
-  result: AgentRuntimeAnalysisResult;
-  normalizedConclusionContract?: ConclusionContract;
-  sceneIdHint?: string;
-  runIdForAnalysis: string;
-  knowledgeScope?: KnowledgeScope;
-  caseEvolutionConfig?: CaseEvolutionConfig;
-  computeTraceHash?: (traceId: string) => Promise<string | null>;
-  saveCandidates?: CaseCandidateSaveFn;
-  /**
-   * Returns the set of `${scene}::${rootCause}` keys already covered by
-   * published cases, used to dedupe capture against the live library
-   * (§1.2 flooding guard). Defaults to scanning the real CaseLibrary.
-   */
-  listPublishedSceneRootCauses?: (scope?: KnowledgeScope) => Set<string>;
-  logger: Pick<SessionLogger, 'info' | 'warn'>;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function resolveCaseEvolutionTurnIndex(session: AnalysisSession): number {
-  const activeSequence = session.activeRun?.sequence;
-  if (typeof activeSequence === 'number' && Number.isFinite(activeSequence)) {
-    return activeSequence;
-  }
-  if (typeof session.runSequence === 'number' && Number.isFinite(session.runSequence)) {
-    return session.runSequence;
-  }
-  if (typeof session.conversationOrdinal === 'number' && Number.isFinite(session.conversationOrdinal)) {
-    return session.conversationOrdinal;
-  }
-  return 0;
-}
-
-function resolveCaseEvolutionEngine(runtimeKind: AgentRuntimeKind | undefined): CaseEvolutionEngine {
-  switch (runtimeKind) {
-    case 'openai-agents-sdk':
-      return 'openai';
-    case 'opencode':
-      return 'opencode';
-    case 'pi-agent-core':
-      return 'pi';
-    case 'claude-agent-sdk':
-    default:
-      return 'claude';
-  }
-}
-
-function cloneCaseEvolutionEnvelopes(envelopes: readonly DataEnvelope[]): DataEnvelope[] {
-  try {
-    return structuredClone(envelopes) as DataEnvelope[];
-  } catch {
-    // DataEnvelope payloads are expected to be structured-cloneable. Keep a
-    // detached top-level snapshot for legacy/custom envelopes that are not.
-    return envelopes.map(envelope => ({...envelope}));
-  }
-}
-
-export function buildCaseEvolutionSnapshotPath(sessionId: string): string {
-  return `session-persistence://sessions/${sessionId}/metadata/sessionStateSnapshot`;
-}
-
-export function resolveCaseEvolutionArchitectureType(
+export function resolveSessionArchitectureType(
   session: Pick<AnalysisSession, 'orchestrator'>,
   traceId: string,
 ): string {
@@ -4799,122 +4458,11 @@ export function resolveCaseEvolutionArchitectureType(
   }
 }
 
-/**
- * Build the dedupe set of `${scene}::${rootCause}` keys covered by published
- * cases in the live CaseLibrary (curated + learned). Used by the §1.2 capture
- * flooding guard so a recurring trace whose root cause already has published
- * guidance does not re-enqueue candidates. Failures are non-fatal: an empty
- * set means "no dedupe" (the candidate still goes through the qualification
- * gate), never a blocked capture.
- */
-export function collectPublishedSceneRootCauses(scope: KnowledgeScope | undefined): Set<string> {
-  const keys = new Set<string>();
-  try {
-    const library = new CaseLibrary(backendLogPath('case_library.json'));
-    const published = library.listCases({ status: 'published' }, scope);
-    for (const node of published) {
-      const knowledge = node.knowledge;
-      if (!knowledge) continue;
-      const scene = knowledge.scene;
-      const rootCause = knowledge.taxonomy?.primary_root_cause;
-      if (scene && rootCause) keys.add(`${scene}::${rootCause}`);
-    }
-  } catch {
-    // Library read is best-effort for dedupe; never block capture on it.
-  }
-  return keys;
-}
-
-export async function captureCaseCandidatesAfterQualityArtifacts(
-  input: CaptureCaseCandidatesAfterQualityArtifactsInput & {assertCurrent?: () => void},
-): Promise<void> {
-  try {
-    if (sessionUsesPrivateKnowledge(input.session)) {
-      input.logger.info('CaseEvolution', 'Skipping candidate capture for private source or knowledge analysis', {
-        sessionId: input.sessionId,
-        runId: input.runIdForAnalysis,
-      });
-      return;
-    }
-    try {
-      assertAiFeatureEnabled('background_review_agent');
-    } catch (error) {
-      if (error instanceof AiDisabledError) {
-        input.logger.info('CaseEvolution', 'Skipping background candidate capture because AI is disabled', {
-          sessionId: input.sessionId,
-          runId: input.runIdForAnalysis,
-          feature: error.feature,
-        });
-        return;
-      }
-      throw error;
-    }
-    const config = input.caseEvolutionConfig || loadCaseEvolutionConfig();
-    if (!isCaseEvolutionCaptureEnabled(config)) return;
-
-    // Capture every mutable session-derived field before the first await. A
-    // follow-up turn may reuse and mutate the live session while trace hashing
-    // is still in flight; candidates must describe the turn that triggered
-    // this call, not whichever turn happens to be current later.
-    const capturedDataEnvelopes = cloneCaseEvolutionEnvelopes(input.session.dataEnvelopes || []);
-    const capturedArchitectureType = resolveCaseEvolutionArchitectureType(
-      input.session,
-      input.traceId,
-    );
-    const capturedTurnIndex = resolveCaseEvolutionTurnIndex(input.session);
-    const capturedEngine = resolveCaseEvolutionEngine(input.session.runtimeKind);
-
-    const computeTraceHash =
-      input.computeTraceHash || ((traceId) => computeTraceContentHash(getTraceProcessorService(), traceId));
-    input.assertCurrent?.();
-    const traceContentHash = await computeTraceHash(input.traceId);
-    input.assertCurrent?.();
-    // §1.2 flooding guard: build the set of (scene::rootCause) keys the
-    // published library already covers, so capture skips clusters that
-    // already have published guidance. Defaults to scanning the live library.
-    const listPublishedSceneRootCauses =
-      input.listPublishedSceneRootCauses ??
-      ((scope?: KnowledgeScope) => collectPublishedSceneRootCauses(scope ?? input.knowledgeScope));
-    const existingPublishedSceneRootCauses = listPublishedSceneRootCauses(input.knowledgeScope);
-    const saveCandidates =
-      input.saveCandidates ||
-      ((captureInput: CaseCandidateCaptureInput) =>
-        saveCaseCandidates(captureInput, {
-          logger: input.logger,
-          config,
-          existingPublishedSceneRootCauses,
-        }));
-
-    input.assertCurrent?.();
-    await saveCandidates({
-      result: input.result,
-      conclusionContract: input.normalizedConclusionContract,
-      claimVerificationResult: input.result.claimVerificationResult,
-      dataEnvelopes: capturedDataEnvelopes,
-      sceneType: input.sceneIdHint || 'general',
-      architectureType: capturedArchitectureType,
-      knowledgeScope: input.knowledgeScope,
-      snapshotPath: buildCaseEvolutionSnapshotPath(input.sessionId),
-      provenance: {
-        sessionId: input.sessionId,
-        runId: input.runIdForAnalysis,
-        turnIndex: capturedTurnIndex,
-        engine: capturedEngine,
-        traceContentHash,
-      },
-    });
-  } catch (error) {
-    input.logger.warn('CaseEvolution', 'Candidate capture failed (non-fatal)', {
-      sessionId: input.sessionId,
-      runId: input.runIdForAnalysis,
-      error: errorMessage(error),
-    });
-  }
-}
-
 async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId: string, options: any = {}) {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
+  // Before the run starts: without its admitted fingerprint nothing may run.
+  const authorizationFingerprint = requireAdmittedAnalysisContextFingerprint(session.analysisContextFingerprint);
 
   const inputRun = options.runContext as AnalyzeSessionRunContext | undefined;
   const requestedRunId = inputRun?.runId ?? session.activeRun?.runId;
@@ -4935,7 +4483,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     initializeCancelStateForRun(session, session.activeRun!);
     session.runSequence = Math.max(normalizeRunSequence(session.runSequence), normalizeRunSequence(inputRun.sequence));
   } else if (!session.activeRun) {
-    const fallback = startSessionRun(session, query, generateRequestId());
+    const fallback = startSessionRun(session, query, createRequestId());
     if (!fallback) return;
     setCurrentSessionRun(session, {
       ...fallback,
@@ -4958,10 +4506,11 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   session.status = 'running';
   session.lastActivityAt = Date.now();
   const runIdForAnalysis = session.activeRun?.runId;
+  const runRequestId = session.activeRun?.requestId ?? createRequestId();
   persistSessionRunState(session, 'running', undefined, runIdForAnalysis);
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runIdForAnalysis);
   logger.info('AgentDrivenAnalysis', 'Starting agent-driven analysis', {
-    query: sessionUsesPrivateKnowledge(session)
+    query: sessionRunHasPrivateContext(session, runIdForAnalysis)
       ? privateAnalysisQueryMessage(outputLanguage)
       : query,
     traceId,
@@ -4978,49 +4527,43 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   if (!runIdForAnalysis) {
     throw new Error(`Missing run id for session ${sessionId}`);
   }
-  const authorizationSelection: AnalysisContextSelection = {
-    codeAwareMode: session.sourceAuthorization?.codeAwareMode ?? options.codeAwareMode,
-    codebaseIds: [...(session.sourceAuthorization?.codebaseIds ?? options.codebaseIds ?? [])],
-    knowledgeSourceIds: [...(options.knowledgeSourceIds ?? [])],
-  };
+  const authorizationSelection: AnalysisContextSelection = runAnalysisSelection(options, session.sourceAuthorization);
   const knowledgeScope: KnowledgeScope = {...(options.knowledgeScope ?? {
     tenantId: session.tenantId, workspaceId: session.workspaceId, userId: session.userId,
   })};
-  const authorizationFingerprint = session.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
   const finalizationRun = createHttpFinalizationRun(session, runIdForAnalysis,
     authorizationSelection, knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const startedAt = session.activeRun!.startedAt;
   const startupDeadlineMs = Number.isFinite(options.taskTimeoutMs) && options.taskTimeoutMs > 0
     ? startedAt + options.taskTimeoutMs : Number.POSITIVE_INFINITY;
   let runtimeDeadlineMs = startupDeadlineMs;
-  let allowAutomaticPrefetch = false;
+  let allowMemoryPrefetch = false;
   let finalizationContext: RuntimeFinalizationContext | undefined;
   let contextTransferred = false;
   let sceneSeal: SceneRuntimeSeal | undefined;
   let acceptingUpdates = true;
+  const sourceAware = analysisHasPrivateContext(options);
+  // Display-only answer draft, live-only for every session. Scene runs own
+  // their terminal delivery and have no conclusion that would replace it.
+  const answerDraftRelay = options.sceneRunBinding ? undefined : createAnswerDraftRelay({
+    runtimeKind: session.runtimeKind, runId: runIdForAnalysis, projectionSessionId: sessionId,
+    privateKnowledge: sourceAware, outputLanguage,
+    deliver: update => {
+      // A timer flush can come after the run lost currency; the relay closes on this throw.
+      finalizationRun.assertCurrent();
+      broadcastToAgentDrivenClients(sessionId, update, runIdForAnalysis, {liveOnly: true});
+    },
+  });
   const rawDataEnvelopes: DataEnvelope[] = [...(session.dataEnvelopes ?? [])];
   const canPrefetch = () => {
     finalizationRun.assertCurrent();
-    return !options.sceneRunBinding && allowAutomaticPrefetch && Date.now() < runtimeDeadlineMs;
+    return !options.sceneRunBinding && allowMemoryPrefetch && Date.now() < runtimeDeadlineMs;
   };
-  const agentQuery =
-    session.agentQuery && session.query === query
-      ? session.agentQuery
-      : buildAgentQueryWithContinuityNotice(query, session.continuityBreaks);
 
   // Track generation is a lightweight derivation step from DataEnvelopes.
   // Enable by default (unless explicitly disabled) so `/api/agent/v1/analyze` can
   // also produce TrackEvent(s) when the scene reconstruction skill runs.
   const shouldGenerateTracks = !options.sceneRunBinding && options.generateTracks !== false;
-
-  // Capture LLM call telemetry into session logs (privacy-safe: hashes + params only)
-  const modelRouter = getSharedModelRouter();
-  const onLlmTelemetry = (event: any) => {
-    if (!event || event.sessionId !== sessionId) return;
-    logger.debug('LLM', 'llmTelemetry', event);
-  };
-  modelRouter.on('llmTelemetry', onLlmTelemetry);
 
   const runWithTraceProcessorLease = <T>(fn: () => Promise<T>): Promise<T> => {
     const leaseContexts = [options.traceProcessorLease, options.referenceTraceProcessorLease].filter(
@@ -5038,17 +4581,24 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   // Set up streaming via event listener on orchestrator
   const handleUpdate = (update: StreamingUpdate) => {
     if (!acceptingUpdates) return;
-    try {finalizationRun.assertCurrent();} catch {return;}
+    try {
+      finalizationRun.assertCurrent();
+    } catch {
+      // No draft flush after revocation, cancellation or supersession.
+      answerDraftRelay?.dispose();
+      return;
+    }
     if (update.type === 'data') {
       const envelopes = Array.isArray(update.content) ? update.content : [update.content];
       rawDataEnvelopes.push(...envelopes.filter((item): item is DataEnvelope => validateDataEnvelope(item).length === 0));
     }
     session.lastActivityAt = Date.now();
-    const sourceAware = sessionUsesPrivateKnowledge({
-      codeAwareMode: options.codeAwareMode,
-      codebaseIds: options.codebaseIds,
-      knowledgeSourceIds: options.knowledgeSourceIds,
-    });
+    // Drafts never reach logs, the timeline or replay; the runtime's own
+    // conclusion is dropped below. Other runtimes' answer text is not a draft.
+    if (update.type === 'answer_token' || update.type === 'answer_segment_reset') {
+      answerDraftRelay?.accept(update);
+      return;
+    }
     // Log from the strict projection independently, before entering owner scope.
     const logUpdate = projectCodeAwareStreamingUpdate(sessionId, update, sourceAware, outputLanguage);
     if (logUpdate && logUpdate.type !== 'answer_token') {
@@ -5058,7 +4608,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     if (!projectedUpdate) return;
     const normalizedUpdate = normalizeAgentDrivenUpdate(projectedUpdate, outputLanguage);
 
-    if (normalizedUpdate.type === 'conclusion' || normalizedUpdate.type === 'answer_token') return;
+    if (normalizedUpdate.type === 'conclusion') return;
     if (options.sceneRunBinding && normalizedUpdate.type === 'error') {
       // A provider failure may still leave a valid committed proposal. Only the
       // product's finalization/catch path owns terminal delivery for scene runs.
@@ -5068,9 +4618,10 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     }
     finalizationRun.assertCurrent();
 
-    // Final narrative is emitted through analysis_completed after deterministic
-    // evidence/claim verification has run. Suppress early conclusion events so
-    // clients do not render an unverified terminal answer.
+    // The runtime's raw conclusion was dropped above and its answer tokens
+    // reach clients only as a live-only draft. The answer itself reaches
+    // clients from finalization: a provisional or final conclusion that
+    // replaces the draft, then analysis_completed with the verdict.
     broadcastToAgentDrivenClients(sessionId, normalizedUpdate, runIdForAnalysis);
 
     // Also derive a conversation_step for the timeline/observability layer.
@@ -5117,7 +4668,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         MAX_SESSION_AGENT_DIALOGUE,
       );
 
-      // Collect full agent responses for HTML report enrichment
+      // Collect agent responses for the analysis receipt's artifact ids
       if (normalizedUpdate.content.phase === 'task_completed') {
         pushWithSessionCap(
           session.agentResponses,
@@ -5197,19 +4748,23 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
             knowledgeSourceIds: Array.isArray(options.knowledgeSourceIds)
               ? options.knowledgeSourceIds
               : undefined,
-            sourceUsePolicy: options.sourceUsePolicy,
+            sourceDepth: options.sourceDepth,
             analysisContextFingerprint: options.analysisContextFingerprint,
-            androidInternalsPackPin: session.androidInternalsPackPin,
             tenantId: session.tenantId,
             workspaceId: session.workspaceId,
             userId: session.userId,
             runId: runIdForAnalysis,
             runManifestAttributionSink: options.runManifestAttributionSink,
           };
-        const analyzeOptions = options.sceneRunBinding ? options.sceneRunBinding.bindOptions(baseAnalyzeOptions) : baseAnalyzeOptions;
-        const analyze = () => session.orchestrator.analyze(agentQuery, sessionId, traceId, analyzeOptions).then(nativeResult => {
+        // The run may learn across sessions only under its own marker, fixed at admission.
+        const analyzeOptions = withDurableLearningPermission(
+          options.sceneRunBinding ? options.sceneRunBinding.bindOptions(baseAnalyzeOptions) : baseAnalyzeOptions,
+          sessionRunPrivateContext(session, runIdForAnalysis),
+        );
+        const analyze = () => session.orchestrator.analyze(query, sessionId, traceId, analyzeOptions).then(nativeResult => {
             sceneSeal = options.sceneRunBinding?.seal();
             finalizationContext = takeFinalizationContext(nativeResult);
+            answerDraftRelay?.settle();
             acceptingUpdates = false;
             session.orchestrator.off('update', handleUpdate);
             finalizationRun.assertCurrent();
@@ -5217,8 +4772,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
               throw new Error('finalization_run_identity_mismatch');
             }
             runtimeDeadlineMs = Math.min(startupDeadlineMs, finalizationContext?.deadlineMs ?? 0);
-            allowAutomaticPrefetch = finalizationContext !== undefined &&
-              resolveRuntimeTurnPolicy(finalizationContext.turnIntent, options.analysisMode).allowAutomaticPrefetch;
+            allowMemoryPrefetch = finalizationContext !== undefined &&
+              resolveRuntimeTurnPolicy(finalizationContext.turnIntent, options.analysisMode).allowMemoryPrefetch;
             return nativeResult;
           });
         return runWithTraceProcessorLease(analyze);
@@ -5304,19 +4859,18 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     finalizationRun.assertCurrent();
     const sceneIdHint = finalizationContext?.turnIntent.status === 'resolved'
       ? finalizationContext.turnIntent.sceneId : result.conclusionContract?.metadata?.sceneId;
-    const caseEvolutionConfig = loadCaseEvolutionConfig();
-    let caseRetrieval: AnalysisCaseRetrievalState = {status: 'not_checked', recommendations: []};
-    if (canPrefetch() && result.conclusionContract && isCaseEvolutionRetrieveEnabled(caseEvolutionConfig)) {
+    let caseRecommendations: CaseKnowledgeReportRecommendation[] | undefined;
+    if (canPrefetch() && loadCaseEvolutionConfig().retrieveEnabled) {
       try {
-        const attached = attachCaseHitsToContractSync({
-          conclusionContract: result.conclusionContract, dataEnvelopes: rawDataEnvelopes,
-          sceneType: sceneIdHint, architectureType: resolveCaseEvolutionArchitectureType(session, traceId), knowledgeScope,
+        caseRecommendations = retrieveCaseHits({
+          dataEnvelopes: rawDataEnvelopes,
+          sceneType: sceneIdHint,
+          architectureType: resolveSessionArchitectureType(session, traceId),
+          knowledgeScope,
         });
-        finalizationRun.assertCurrent();
-        caseRetrieval = {status: 'checked', recommendations: attached.hits};
       } catch {
-        finalizationRun.assertCurrent();
-        caseRetrieval = {status: 'unavailable', recommendations: []};
+        // A store error can quote stored text, so the log names only the failure.
+        session.logger.warn('AgentDrivenAnalysis', 'Curated case retrieval failed', {sessionId, runId: runIdForAnalysis});
       }
     }
     finalizationRun.assertCurrent();
@@ -5326,6 +4880,24 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     }) : undefined;
     finalizationRun.assertCurrent();
     contextTransferred = true;
+    const {findings, hypotheses, rounds, totalDurationMs, confidence} = result;
+    // Watchdog fallback after a stop: the delivered body as an unverified
+    // partial turn, committed on the same path as a finalized result. Claiming
+    // the terminal write aborts the finalization that never settled.
+    finalizationRun.commitReviewNotFinished = conclusion => {
+      if (!finalizationRun.claimTerminal('review_not_finished')) return false;
+      finalizationRun.controller.abort(new DOMException('Review stop watchdog elapsed', 'AbortError'));
+      completeAgentDrivenSessionWithResult({
+        sessionId, query, traceId, sceneType: sceneIdHint, session, runId: runIdForAnalysis,
+        result: buildReviewNotFinishedResult({sessionId, conclusion, outputLanguage,
+          base: {findings, hypotheses, rounds, totalDurationMs, confidence}}),
+        logComponent: 'AgentDrivenAnalysis',
+        assertCurrent: () => {
+          if (!finalizationRun.owner.isCurrent()) throw new DOMException('Analysis superseded', 'AbortError');
+        },
+      });
+      return true;
+    };
     const finalized = await finalizeAnalysisResult({
       result, context: finalizationContext, owner: finalizationRun.owner, query,
       ...(sceneSeal ? {scene: {seal: sceneSeal, outputLanguage, providerId: options.providerId,
@@ -5333,10 +4905,26 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         ownerKey: sceneRunOwnerKey(session)}}} : {}),
       dataEnvelopes: rawDataEnvelopes, comparisonReportSection: session.comparisonReportSection,
       comparisonIdentity,
-      caseRetrieval,
+      caseRecommendations,
+      // The semantic review can run for minutes after the answer stream ended.
+      onProgress: event => {
+        broadcastToAgentDrivenClients(sessionId, finalReviewProgressUpdate(event, outputLanguage), runIdForAnalysis);
+      },
+      // Scene runs own their terminal delivery; the finalizer also refuses them.
+      ...(options.sceneRunBinding ? {} : {
+        reviewStopSignal: finalizationRun.stop.signal,
+        onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) =>
+          broadcastAnswer(session, answer.conclusion, finalizationRun, outputLanguage, {provisional: true}),
+      }),
     });
     finalizationRun.assertCurrent();
     result = finalized.result;
+    // No review was dispatched, so no provisional answer is showing: the final
+    // text goes out now, ahead of report and snapshot generation. Its verdict
+    // still arrives only with analysis_completed.
+    if (!options.sceneRunBinding && !finalizationRun.stop.provisionalDelivered) {
+      broadcastAnswer(session, result.conclusion, finalizationRun, outputLanguage, {provisional: false});
+    }
     if (finalized.scenePublication && result.sceneTimeline) {
       try {
         const requestedRange = result.sceneTimeline.scanCoverage?.requestedWindow;
@@ -5372,17 +4960,10 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         logger.warn('SceneReconstruction', 'Timeline archive unavailable', {diagnostic: diagnosticLogIdentity(errorMessage(error))});
       }
     }
-    if (canPrefetch() && (result.success || result.partial === true)) {
-      void captureCaseCandidatesAfterQualityArtifacts({
-        sessionId, traceId, session, result, normalizedConclusionContract: result.conclusionContract,
-        sceneIdHint, runIdForAnalysis, knowledgeScope, caseEvolutionConfig, logger,
-        assertCurrent: () => {
-          finalizationRun.assertCurrent();
-          if (Date.now() >= runtimeDeadlineMs) throw new DOMException('Run deadline exceeded', 'TimeoutError');
-        },
-      });
-    }
 
+    // Claim the terminal write, then generate report and snapshot and publish
+    // analysis_completed (synchronously, so no stop can interleave).
+    if (!finalizationRun.claimTerminal('finalized')) return;
     completeAgentDrivenSessionWithResult({
       sessionId,
       query,
@@ -5396,22 +4977,22 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       assertCurrent: finalizationRun.assertCurrent,
     });
   } catch (error: any) {
+    // The watchdog fallback already committed this run; its aborted
+    // finalization is not a failure.
+    if (finalizationRun.terminal === 'review_not_finished') return;
     if (!finalizationRun.owner.isCurrent()) return;
-    const privateKnowledge = sessionUsesPrivateKnowledge(session);
+    const privateKnowledge = sessionRunHasPrivateContext(session, runIdForAnalysis);
     const authorizationChanged = error instanceof AnalysisContextAuthorizationChangedError ||
       error?.code === 'analysis_context_changed_restart_required';
     if (authorizationChanged) {
       await retireAuthorizationChangedSession(sessionId, session, handleUpdate);
       if (!finalizationRun.owner.isCurrent()) return;
     }
-    const publicErrorMessage = privateKnowledge
-      ? projectOwnerAnalysisError(sessionId, error, outputLanguage)
-      : error.message;
     if (isSessionRunCancelled(session, runIdForAnalysis)) {
       logger.info('AgentDrivenAnalysis', 'Ignoring analysis error after cancellation', {
         sessionId,
         runId: runIdForAnalysis,
-        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : publicErrorMessage,
+        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : error?.message,
       });
       return;
     }
@@ -5419,10 +5000,14 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       logger.info('AgentDrivenAnalysis', 'Ignoring stale analysis error', {
         sessionId,
         runId: runIdForAnalysis,
-        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : publicErrorMessage,
+        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : error?.message,
       });
       return;
     }
+    const publicErrorMessage = projectAnalysisFailure(error, {
+      privateContext: sessionRunPrivateContext(session, runIdForAnalysis), guardSessionId: sessionId,
+      language: outputLanguage, requestId: runRequestId,
+    });
     session.status = 'failed';
     session.error = publicErrorMessage;
     markSessionRunStatus(session, 'failed', publicErrorMessage, runIdForAnalysis);
@@ -5461,6 +5046,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     throw error;
   } finally {
     acceptingUpdates = false;
+    answerDraftRelay?.dispose();
     if (!contextTransferred) finalizationContext?.dispose();
     finalizationRun.release();
     if (runHeartbeatInterval) {
@@ -5471,7 +5057,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     if (session.orchestratorUpdateHandler === handleUpdate) {
       session.orchestratorUpdateHandler = undefined;
     }
-    modelRouter.off('llmTelemetry', onLlmTelemetry);
   }
 }
 
@@ -5719,15 +5304,60 @@ function dataEnvelopeDedupKey(envelope: DataEnvelope): string | undefined {
 }
 
 /**
+ * The answer body, owner-projected exactly as analysis_completed will project
+ * it. `provisional`: deliver first, verify after; the finished body is marked
+ * as awaiting its verdict and the run's stop becomes review-only. Otherwise it
+ * is the finalized body of a run whose review was not dispatched, sent before
+ * report and snapshot generation with no pending cue. Private sessions keep
+ * either live-only (ring buffer, never the durable event store), so a restart
+ * replays no unverified private body; clients then downgrade the cue.
+ */
+function broadcastAnswer(
+  session: AnalysisSession,
+  body: string,
+  run: HttpFinalizationRun,
+  outputLanguage: OutputLanguage,
+  options: {provisional: boolean},
+): boolean {
+  const runId = run.owner.runId;
+  if (!body.trim() || !isCurrentRunOwner(session, runId) ||
+    assistantAppService.getSession(session.sessionId) !== session) return false;
+  const privateKnowledge = sessionRunHasPrivateContext(session, runId);
+  const conclusion = projectOwnerProvisionalConclusion(privateKnowledge, session.sessionId, body, outputLanguage);
+  if (options.provisional) run.stop.markDelivered(body);
+  const content: ProvisionalConclusionEventData | {conclusion: string} = options.provisional
+    ? {provisional: true, verification: 'pending', conclusion} : {conclusion};
+  broadcastToAgentDrivenClients(session.sessionId, {type: 'conclusion', content, timestamp: Date.now()},
+    runId, {persist: !privateKnowledge});
+  return true;
+}
+
+/**
  * Broadcast update to all SSE clients for an agent-driven session
  */
-function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdate, runId?: string) {
+function broadcastToAgentDrivenClients(
+  sessionId: string,
+  update: StreamingUpdate,
+  runId?: string,
+  /**
+   * `persist: false` keeps an event out of the durable event store (the ring
+   * buffer still replays it). `liveOnly` keeps it out of both and sends it
+   * without an SSE id, so a reconnect cursor never points at it: answer drafts.
+   */
+  delivery: {persist?: boolean; liveOnly?: boolean} = {},
+) {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
   if (runId && !isCurrentRunOwner(session, runId)) return;
   if (update.type === 'scene_timeline_updated' && (!runId || update.content?.runId !== runId ||
       update.content?.sessionId !== sessionId || update.content?.traceId !== session.traceId)) return;
   session.lastActivityAt = Date.now();
+  if (delivery.liveOnly) {
+    streamProjector.broadcastStreamingUpdate(sessionId, filterSseClientsForRun(session.sseClients, runId), update, {
+      observability: buildStreamObservability(session, runId),
+    });
+    return;
+  }
 
   // F3: Assign monotonic sequence ID for replay on reconnect
   const seqId = ++session.sseEventSeq;
@@ -5741,7 +5371,7 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
       if (event.eventType === 'scene_timeline_updated') session.sceneTimelineReplay = event;
       // In-progress scene witnesses are live-only. Persist the final archived
       // revision, rather than storing repeated full candidate manifests on disk.
-      else persistBufferedAgentEvent(
+      else if (delivery.persist !== false) persistBufferedAgentEvent(
         session,
         {
           cursor: event.seqId,
@@ -5759,12 +5389,7 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
     onDataEnvelopeValidationWarning: (payload) => {
       console.warn(
         `[AgentRoutes.broadcastToAgentDrivenClients] DataEnvelope validation warning (envelope ${payload.envelopeIndex}):`,
-        {
-          sessionId: payload.sessionId,
-          errors: payload.errors.slice(0, 5),
-          totalErrors: payload.errors.length,
-          envelope: payload.envelope,
-        },
+        payload,
       );
     },
     onValidDataEnvelopes: (validEnvelopes) => {
@@ -6548,16 +6173,8 @@ function payloadToObjectRowsLocal(payload: any): Array<Record<string, any>> {
   const rows = (payload as any).rows;
   if (!Array.isArray(cols) || !Array.isArray(rows)) return [];
 
-  const out: Array<Record<string, any>> = [];
-  for (const row of rows) {
-    if (!Array.isArray(row)) continue;
-    const obj: Record<string, any> = {};
-    for (let i = 0; i < cols.length; i++) {
-      obj[String(cols[i])] = row[i];
-    }
-    out.push(obj);
-  }
-  return out;
+  const columns = cols.map(String);
+  return rows.filter(Array.isArray).map(row => rowObject(columns, row));
 }
 
 function normalizeNs(value: any): string | null {
@@ -6912,108 +6529,6 @@ function buildSceneReplayNarrative(
     .join('\n');
 }
 
-// Delegates to the shared normalizer so CLI's buildReportHtml gets identical
-// conclusion text for the same run. The HTTP-specific pieces (scene replay,
-// sceneIdHint) stay inline in sendAgentDrivenResult.
-function normalizeNarrativeForClient(narrative: string): string {
-  return sharedNormalizeNarrative(narrative);
-}
-
-function conclusionHasEvidenceIndex(conclusion: string): boolean {
-  const text = conclusion || '';
-  return /(^|\n)\s*(?:##\s*)?(?:证据(?:表)?索引|evidence\s+index)(?=\s|$|[:：])/i.test(text);
-}
-
-function markdownCell(value: unknown, maxLen = 80): string {
-  return (
-    String(value ?? '')
-      .replace(/\s+/g, ' ')
-      .replace(/\|/g, '/')
-      .trim()
-      .slice(0, maxLen) || '-'
-  );
-}
-
-function buildConclusionEvidenceIndex(
-  envelopes: DataEnvelope[],
-  maxItems = 3,
-  language: OutputLanguage = configuredOutputLanguage(),
-): string {
-  if (!Array.isArray(envelopes) || envelopes.length === 0) return '';
-
-  const seen = new Set<string>();
-  const candidates: Array<{ title: string; source: string; evidence: string }> = [];
-  for (const env of envelopes) {
-    const meta = (env as any)?.meta || {};
-    const display = (env as any)?.display || {};
-    if (display.level === 'hidden') continue;
-
-    const title = markdownCell(display.title || meta.stepId || meta.source);
-    if (title === '-') continue;
-
-    const key = String(meta.evidenceRefId || `${meta.source || ''}:${meta.stepId || ''}:${title}`);
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const source = markdownCell(meta.source || meta.skillId || 'execute_sql');
-    const evidence = markdownCell(meta.evidenceRefId || meta.sourceToolCallId || '-', 36);
-    candidates.push({ title, source, evidence });
-  }
-
-  if (candidates.length === 0) return '';
-  const rows = candidates.slice(0, maxItems);
-  const omitted = Math.max(0, candidates.length - rows.length);
-  const summary = rows.map((item) => localize(
-    language,
-    `${item.title}（${item.source} / ${item.evidence}）`,
-    `${item.title} (${item.source} / ${item.evidence})`,
-  )).join(localize(language, '；', '; '));
-  return [
-    localize(language, '## 证据索引', '## Evidence Index'),
-    '',
-    localize(
-      language,
-      `关键数据来源：${summary}${omitted > 0 ? `；其余 ${omitted} 份结构化证据见报告数据详情。` : '。'}`,
-      `Key data sources: ${summary}${omitted > 0 ? `; ${omitted} additional structured evidence items are available in report details.` : '.'}`,
-    ),
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-function appendEvidenceIndexIfMissing(
-  conclusion: string,
-  envelopes: DataEnvelope[],
-  language: OutputLanguage = configuredOutputLanguage(),
-): string {
-  const normalized = conclusion || '';
-  if (conclusionHasEvidenceIndex(normalized)) return normalized;
-  const evidenceIndex = buildConclusionEvidenceIndex(envelopes, 3, language);
-  if (!evidenceIndex) return normalized;
-  return `${normalized.trim()}\n\n${evidenceIndex}`;
-}
-
-function augmentConclusionUpdateWithEvidenceIndex(session: AnalysisSession, update: StreamingUpdate): StreamingUpdate {
-  if (update.type !== 'conclusion') return update;
-  const content = update.content;
-  if (!content || typeof content !== 'object' || Array.isArray(content)) return update;
-  const conclusion = (content as Record<string, any>).conclusion;
-  if (typeof conclusion !== 'string') return update;
-  const augmented = appendEvidenceIndexIfMissing(
-    conclusion,
-    session.dataEnvelopes || [],
-    sessionOutputLanguage(session),
-  );
-  if (augmented === conclusion) return update;
-  return {
-    ...update,
-    content: {
-      ...(content as Record<string, any>),
-      conclusion: augmented,
-    },
-  };
-}
-
 function collectEvidenceRefsFromText(text: string | undefined): Set<string> {
   const refs = new Set<string>();
   const matches = String(text || '').match(/data:[A-Za-z0-9_.:-]+/g) || [];
@@ -7267,7 +6782,9 @@ function ensureCompletedAnalysisFinalArtifacts(
     result,
     runId,
   );
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  // This run's own marker: a later run may already have moved the session on.
+  const privateContext = sessionRunPrivateContext(session, runId);
+  const privateKnowledge = privateContextRestrictsAudience(privateContext);
   const outputLanguage = sessionOutputLanguage(session);
   const durableResultForClient = privateKnowledge
     ? projectOwnerAnalysisResult(session.sessionId, input.resultForClient, outputLanguage)
@@ -7331,12 +6848,13 @@ function ensureCompletedAnalysisFinalArtifacts(
       const resultForReport = {
         ...durableResultForClient,
         analysisReceipt: privateKnowledge
-          ? projectPrivateAnalysisReceipt(reportReceipt)
+          ? projectOwnerAnalysisReceipt(reportReceipt)
           : reportReceipt,
       };
       const reportData = buildAgentDrivenReportData({
         session,
         result: resultForReport,
+        privateContext,
       });
       console.log(`[AgentRoutes] Generating HTML report, data keys:`, {
         hasResult: !!result,
@@ -7372,6 +6890,7 @@ function ensureCompletedAnalysisFinalArtifacts(
         workspaceId: session.workspaceId,
         userId: session.userId,
         visibility: 'private',
+        privateContext,
       });
 
       finalArtifacts.reportId = reportId;
@@ -7380,9 +6899,9 @@ function ensureCompletedAnalysisFinalArtifacts(
     } catch (error: any) {
       input.assertCurrent?.();
       reportId = undefined;
-      finalArtifacts.reportError = error.message || 'Unknown error';
+      finalArtifacts.reportError = REPORT_GENERATION_FAILED;
       console.error('[AgentRoutes] Failed to generate agent-driven HTML report:', {
-        error: finalArtifacts.reportError,
+        error: error?.message,
         stack: error.stack?.split('\n').slice(0, 5).join('\n'),
         resultConclusion: result?.conclusion ? `${result.conclusion.length} chars` : 'EMPTY/NULL',
         resultConfidence: result?.confidence,
@@ -7433,9 +6952,8 @@ function ensureCompletedAnalysisFinalArtifacts(
         reportId: finalArtifacts.reportId,
         sceneType: result.turnIntent?.status === 'resolved' ? result.turnIntent.sceneId
           : result.conclusionContract?.metadata?.sceneId ?? 'general',
-        query: privateKnowledge
-          ? privateAnalysisQueryMessage(outputLanguage)
-          : session.query,
+        // The snapshot keeps the creator's question; the run store keeps none.
+        query: session.query,
         traceLabel: session.traceId,
         conclusion: privateKnowledge
           ? durableResultForClient.conclusion
@@ -7460,11 +6978,11 @@ function ensureCompletedAnalysisFinalArtifacts(
           : result.terminationMessage,
         dataEnvelopes: session.dataEnvelopes,
         analysisReceipt: privateKnowledge
-          ? projectPrivateAnalysisReceipt(snapshotReceipt)
+          ? projectOwnerAnalysisReceipt(snapshotReceipt)
           : snapshotReceipt,
         traceSummary: session.traceSummary,
         uiActionProposals: durableResultForClient.uiActionProposals,
-        privateKnowledge,
+        privateContext,
         outputLanguage,
       });
       finalArtifacts.resultSnapshotId = resultSnapshot?.id;
@@ -7511,10 +7029,15 @@ function copyStoredClientFindings(findings: AgentRuntimeAnalysisResult['findings
   return findings.map((finding, index) => ({...finding, id: finding.id ?? `finding_${index + 1}`}));
 }
 
+/** The stored failure text, already projected when the run failed (`projectAnalysisFailure`). */
+function projectStoredHttpError(session: AnalysisSession): string | undefined {
+  return projectStoredAnalysisFailure(session.error, {privateContext: sessionRunPrivateContext(session),
+    guardSessionId: session.sessionId, language: sessionOutputLanguage(session)});
+}
+
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {
-  return sessionUsesPrivateKnowledge(session)
-    ? projectOwnerAnalysisResult(session.sessionId, result, sessionOutputLanguage(session))
-    : copyAnalysisResultForSnapshot(result);
+  return projectStoredAnalysisResultForOwner(sessionRunHasPrivateContext(session),
+    session.sessionId, result, sessionOutputLanguage(session));
 }
 
 function ensureCompletedAnalysisResultPayload(
@@ -7593,11 +7116,13 @@ function projectAnalysisCompletedConclusionContract(
 
 function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: string, publication?: CompletedPublication): BufferedSseEvent[] {
   const completedRunId = getCompletedResultRunId(session, runId);
+  const privateKnowledge = sessionRunHasPrivateContext(session, completedRunId);
   const sseCache = (session as any).completedAnalysisSseEventsByRunId as Record<string, {events: BufferedSseEvent[]}> | undefined;
   const cached = completedRunId ? sseCache?.[completedRunId]?.events
     : (session as any).completedAnalysisSseEvents as BufferedSseEvent[] | undefined;
   if (cached?.length && !publication) return cached.map(event => ({...event,
-    eventData: sanitizePersistedAnalysisCompletedEvent(session, event as unknown as SerializedAgentEvent).eventData}));
+    eventData: sanitizePersistedAnalysisCompletedEvent(session, event as unknown as SerializedAgentEvent,
+      privateKnowledge).eventData}));
   if (!publication) {
     const persisted = loadPersistedCompletedAnalysisSseEvents(session, completedRunId);
     if (persisted.length) return persisted;
@@ -7622,7 +7147,6 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
     finalArtifacts,
   } = completedPayload;
   const observability = buildStreamObservability(session, completedRunId);
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
   const outputLanguage = sessionOutputLanguage(session);
   const projectedConclusion = normalizedConclusion;
   const projectedConclusionContract = normalizedConclusionContract;
@@ -7698,7 +7222,9 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
         type: 'analysis_completed',
         architecture: 'agent-driven',
         ...observability,
-        data: {
+        // A client read: every decision copy carries its derived counts (the replay log keeps
+        // what was sent; results, snapshots and fingerprints never hold them).
+        data: withClientSourceUseCounts({
           ...(privateKnowledge
             ? {privateProjectionVersion: PRIVATE_ANALYSIS_EVENT_PROJECTION_VERSION}
             : {}),
@@ -7723,7 +7249,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
             : result.terminationMessage,
           quickRun,
           analysisReceipt: privateKnowledge
-            ? projectPrivateAnalysisReceipt(analysisReceipt)
+            ? projectOwnerAnalysisReceipt(analysisReceipt)
             : analysisReceipt,
           uiActionProposals: projectedUiActionProposals,
           sceneTimeline: result.sceneTimeline ? projectSceneTimelineForClient(result.sceneTimeline) : undefined,
@@ -7747,7 +7273,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
           conversationTimelineCount: privateKnowledge ? 0 : session.conversationSteps.length,
           conversationTimeline: privateKnowledge ? [] : session.conversationSteps,
           reportUrl: finalArtifacts.reportUrl,
-          reportError: privateKnowledge ? undefined : finalArtifacts.reportError,
+          reportError: projectOwnerReportError(privateKnowledge, session.sessionId, finalArtifacts.reportError, outputLanguage),
           comparisonReportSection: session.comparisonReportSection
             ? (privateKnowledge
                 ? projectOwnerStructuredValue(session.sessionId, {
@@ -7766,10 +7292,9 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
                   })
             : undefined,
           resultSnapshotId: finalArtifacts.resultSnapshotId,
-          sourceEnrichmentPending: session.analysisSourceEnrichment?.status === 'running',
           observability,
           terminalRunStatus: terminalRunStatusForResult(result),
-        },
+        }),
         timestamp: Date.now(),
       },
       completedRunId,
@@ -7816,19 +7341,17 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
     );
   }
 
-  if (session.analysisSourceEnrichment?.status !== 'running') {
-    events.push(
-      appendEvent(
-        session,
-        'end',
-        {
-          timestamp: Date.now(),
-          ...observability,
-        },
-        completedRunId,
-      ),
-    );
-  }
+  events.push(
+    appendEvent(
+      session,
+      'end',
+      {
+        timestamp: Date.now(),
+        ...observability,
+      },
+      completedRunId,
+    ),
+  );
   if (publication && completedRunId) {
     const writableCache = ((session as any).completedAnalysisSseEventsByRunId ||= {});
     writableCache[completedRunId] = {
@@ -7904,7 +7427,10 @@ const sessionCleanupInterval = setInterval(() => {
 }, SESSION_CLEANUP_INTERVAL_MS);
 sessionCleanupInterval.unref?.();
 
+/** @internal Test seam. */
 export const agentRoutesPrivacyProjectionTestSeam = {
+  startSessionRun,
+  baseAgentEventScopeFromSession,
   ensureCompletedAnalysisSseEvents,
   recoverResultForSessionIfNeeded,
   ensureCompletedAnalysisResultPayload,
@@ -7917,32 +7443,40 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   scrubAuthorizationChangedSession,
   retireAuthorizationChangedSession,
   connectedStreamQuery,
-  conclusionHasEvidenceIndex,
-  buildConclusionEvidenceIndex,
-  appendEvidenceIndexIfMissing,
   privateFeedbackResponse,
   analysisCompletedData,
 };
 
+/** @internal Test seam. */
 export const agentRoutesReceiptTestSeam = {
   runManifestReceiptReference,
   buildAnalysisReceiptForReference,
 };
 
+/** @internal Test seam. */
 export const agentRoutesSmartPreviewSelectionTestSeam = {
   hasSession: (sessionId: string) => Boolean(assistantAppService.getSession(sessionId)),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
 };
 
+/** @internal Test seam. */
 export const agentRoutesCancellationTestSeam = {
+  setReviewStopWatchdogMs: (ms: number) => {httpReviewStopWatchdogMs = ms;},
   runAgentDrivenAnalysis,
   createHttpFinalizationRun,
-  startAnalysisSourceEnrichment,
   abortHttpFinalizationRuns,
+  broadcastAnswer,
+  getSession: (sessionId: string) => assistantAppService.getSession(sessionId),
   setSession: (sessionId: string, session: AnalysisSession) =>
     assistantAppService.setSession(sessionId, session),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
   cancelSessionRun,
+  projectCancelSessionRunResult,
+};
+
+/** @internal Test seam. */
+export const agentRoutesSceneDetectionTestSeam = {
+  detectScrollSessions,
 };
 
 export default router;

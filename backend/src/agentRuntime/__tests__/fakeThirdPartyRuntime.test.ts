@@ -27,6 +27,7 @@ const fakeCapabilities: EngineCapabilities = {
   production: false,
   publicRuntime: false,
   promptCache: { systemPromptDynamicBoundary: false },
+  draftAnswerStreaming: false,
 };
 
 describe('fake third-party runtime contract', () => {

@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from '@jest/globals';
 import {
+  assertDeviceSupportsCapturePreset,
   buildPerfettoBackgroundArgs,
   captureAndroidTrace,
   parseAdbDevices,
@@ -85,6 +86,81 @@ describe('android capture service', () => {
       expect(result.device?.perfettoCommand).toBe('/data/local/tmp/smartperfetto-tracebox');
       expect(runner.calls.some((call) => call.args[0] === 'push' && call.args[1] === temp.tracebox)).toBe(true);
       expect(runner.calls.some((call) => call.args.join(' ').includes('chmod 755'))).toBe(true);
+    } finally {
+      fs.rmSync(temp.dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['API 29 (no java_hprof)', '29\narm64-v8a\nshell\n', false, 'needs Android API 30+'],
+    ['API 28 (would sideload tracebox)', '28\narm64-v8a\nshell\n', false, 'needs Android API 30+'],
+    ['forced --sideload on API 33', '33\narm64-v8a\nshell\n', true, 'drop --sideload'],
+  ])('fails memory-profile closed before touching the device on %s', async (_label, probe, sideload, message) => {
+    const temp = makeTempTools();
+    const runner = new FakeAdbRunner({ probe });
+    try {
+      await expect(captureAndroidTrace({
+        adbPath: temp.adb,
+        traceboxPath: temp.tracebox,
+        configText: 'duration_ms: 60000\n',
+        app: 'com.example.app',
+        preset: 'memory-profile',
+        durationSeconds: 60,
+        sideload,
+        out: path.join(temp.dir, 'trace.perfetto-trace'),
+        runner,
+        now: () => 1234,
+      })).rejects.toThrow(message);
+
+      // Only the device listing and the probe ran: no preflight, push, or start.
+      expect(runner.calls.map((call) => call.args[0] === 'shell' ? String(call.args[1]).split(' ')[0] : call.args[0]))
+        .toEqual(['devices', 'getprop']);
+    } finally {
+      fs.rmSync(temp.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs memory-profile on API 30+ with built-in perfetto and profileability preflight warnings', async () => {
+    const temp = makeTempTools();
+    const runner = new FakeAdbRunner({ probe: '30\narm64-v8a\nshell\n' });
+    try {
+      const result = await captureAndroidTrace({
+        adbPath: temp.adb,
+        configText: 'duration_ms: 60000\n',
+        app: 'com.example.app',
+        preset: 'memory-profile',
+        durationSeconds: 60,
+        out: path.join(temp.dir, 'trace.perfetto-trace'),
+        runner,
+        now: () => 1234,
+      });
+
+      expect(result.usedSideload).toBe(false);
+      expect(result.device?.perfettoCommand).toBe('perfetto');
+      const warnings = result.preflight?.warnings.join('\n') ?? '';
+      expect(warnings).toContain('profileable or debuggable');
+      expect(warnings).toContain('pauses the app');
+    } finally {
+      fs.rmSync(temp.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps system-wide presets free of app-profiling gates and warnings', async () => {
+    expect(() => assertDeviceSupportsCapturePreset('memory', { apiLevel: 23 }, { sideload: true })).not.toThrow();
+    const temp = makeTempTools();
+    const runner = new FakeAdbRunner({ probe: '33\narm64-v8a\nshell\n' });
+    try {
+      const result = await captureAndroidTrace({
+        adbPath: temp.adb,
+        configText: 'duration_ms: 3000\n',
+        configDurationMs: 3000,
+        app: 'com.example.app',
+        preset: 'memory',
+        out: path.join(temp.dir, 'trace.perfetto-trace'),
+        runner,
+        now: () => 1234,
+      });
+      expect(result.preflight?.warnings).toEqual([]);
     } finally {
       fs.rmSync(temp.dir, { recursive: true, force: true });
     }

@@ -21,12 +21,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveInvocationPath } from '../bootstrap';
 import type { CliPaths, SessionPaths } from '../io/paths';
 import { ensureSessionLayout, sessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionLineage, CliTranscriptTurn } from '../types';
-import type { CliAnalyzeService, RunTurnOutput } from './cliAnalyzeService';
-import {commitSourceSupplementOutput, commitTurnOutputs} from './turnPersistence';
+import type { CliAnalyzeService, RunTurnInput, RunTurnOutput } from './cliAnalyzeService';
+import {commitTurnOutputs} from './turnPersistence';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {analysisConfidenceIsGrounded} from '../../agentv3/analysisTermination';
 import { loadSession } from '../io/sessionStore';
@@ -38,9 +39,45 @@ import {
 import type {CodeAwareMode} from '../../services/codebase/codeAwareFeature';
 import type {CliAnalysisMode, TraceCaptureResult} from '../types';
 import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
-import {privateAnalysisQueryMessage} from '../../services/security/privateAnalysisProjection';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
+import {isTurnInterrupted, TurnInterruptController, TurnInterruptedError, type InterruptSource} from './turnInterrupt';
+import type {RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
+
+/**
+ * Text output shows the answer while its semantic review runs. json/ndjson keep
+ * their exact event stream, so they never receive it (nor "answer readable"),
+ * and their first Ctrl-C is therefore always the full abort.
+ */
+function provisionalAnswerOption(renderer: Renderer,
+  interrupt?: TurnInterruptController): Pick<RunTurnInput, 'onProvisionalAnswer'> {
+  // Only the text renderer implements printProvisionalConclusion.
+  return renderer.printProvisionalConclusion
+    ? {onProvisionalAnswer: ({conclusion}) => {
+        renderer.printProvisionalConclusion?.(conclusion);
+        // From now on the user has read the answer: a stop ends only its review.
+        interrupt?.markProvisionalDelivered();
+      }}
+    : {};
+}
+
+/** The turn's stop signals; full abort surfaces as TurnInterruptedError. */
+function interruptOptions(interrupt?: TurnInterruptController): Pick<RunTurnInput, 'signal' | 'reviewStopSignal'> {
+  return interrupt ? {signal: interrupt.signal, reviewStopSignal: interrupt.reviewStopSignal} : {};
+}
+
+async function withTurnInterrupt<T>(ctx: TurnRunnerContext,
+  run: (interrupt?: TurnInterruptController) => Promise<T>): Promise<T> {
+  const interrupt = ctx.interruptSource ? new TurnInterruptController({source: ctx.interruptSource}) : undefined;
+  try {
+    return await run(interrupt);
+  } catch (error) {
+    if (interrupt?.interrupted && !isTurnInterrupted(error)) throw new TurnInterruptedError();
+    throw error;
+  } finally {
+    interrupt?.dispose();
+  }
+}
 
 const CLI_LEVEL3_LINEAGE_REASON = 'cli-level3-degraded' as const;
 
@@ -48,6 +85,11 @@ export interface TurnRunnerContext {
   paths: CliPaths;
   service: CliAnalyzeService;
   renderer: Renderer;
+  /**
+   * Ctrl-C source for the running turn (process SIGINT for one-shot commands,
+   * readline for the REPL). Without it the turn has no interrupt handling.
+   */
+  interruptSource?: InterruptSource;
 }
 
 export interface TurnResult {
@@ -67,18 +109,29 @@ export interface TurnResult {
  */
 export async function startSession(
   ctx: TurnRunnerContext,
-  input: {
-    tracePath: string;
-    query: string;
-    referenceTracePath?: string;
-    analysisMode?: CliAnalysisMode;
-    codeAwareMode?: CodeAwareMode;
-    codebaseIds?: string[];
-    knowledgeSourceIds?: string[];
-    capture?: TraceCaptureResult;
-  },
+  input: StartSessionInput,
 ): Promise<TurnResult> {
-  const tracePath = path.resolve(input.tracePath);
+  return withTurnInterrupt(ctx, interrupt => runStartSession(ctx, input, interrupt));
+}
+
+interface StartSessionInput {
+  tracePath: string;
+  query: string;
+  referenceTracePath?: string;
+  analysisMode?: CliAnalysisMode;
+  codeAwareMode?: CodeAwareMode;
+  codebaseIds?: string[];
+  knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
+  capture?: TraceCaptureResult;
+}
+
+async function runStartSession(
+  ctx: TurnRunnerContext,
+  input: StartSessionInput,
+  interrupt?: TurnInterruptController,
+): Promise<TurnResult> {
+  const tracePath = resolveInvocationPath(input.tracePath);
   logText(ctx, `Loading trace: ${tracePath}`);
   // loadTraceFromFilePath throws on ENOENT; we let it propagate so there's
   // one source of truth for the existence check.
@@ -89,7 +142,7 @@ export async function startSession(
   let referenceTraceId: string | undefined;
   let reportAppendix: { markdown: string; html: string } | undefined;
   if (input.referenceTracePath) {
-    referenceTracePath = path.resolve(input.referenceTracePath);
+    referenceTracePath = resolveInvocationPath(input.referenceTracePath);
     if (referenceTracePath === tracePath) {
       throw new Error('reference trace must be different from current trace');
     }
@@ -128,6 +181,7 @@ export async function startSession(
     codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds,
     knowledgeSourceIds: input.knowledgeSourceIds,
+    sourceDepth: input.sourceDepth,
     turn: 1,
     resolveCliTurnPath: (sid, turn) => path.join(
       sessionPaths(ctx.paths, sid).turnsDir,
@@ -143,11 +197,9 @@ export async function startSession(
       ctx.renderer.onEvent(update);
       if (streamFile) appendStreamEvent(streamFile, update);
     },
+    ...provisionalAnswerOption(ctx.renderer, interrupt),
+    ...interruptOptions(interrupt),
   });
-  const persistedQuery = result.privateKnowledge
-    ? privateAnalysisQueryMessage(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
-    : input.query;
-
   // Defensive: if onSessionReady didn't fire (future refactor hazard) we
   // still land on a valid session folder using the resolved sessionId.
   if (!resolvedSessionId || !sp) {
@@ -167,28 +219,28 @@ export async function startSession(
     providerId: result.providerId,
     agentRuntimeKind: result.agentRuntimeKind,
     providerSnapshotHash: result.providerSnapshotHash,
-    sdkSessionId: result.sdkSessionId,
     model: result.model,
     analysisMode: input.analysisMode,
     codeAwareMode: result.codeAwareMode,
     codebaseIds: input.codebaseIds,
     knowledgeSourceIds: input.knowledgeSourceIds,
+    sourceDepth: input.sourceDepth,
     capture: input.capture,
     createdAt: startedAt,
     lastTurnAt: now,
     turnCount: 1,
   };
 
-  const analysisEvidence = commitTurnOutputs({
+  commitTurnOutputs({
     paths: ctx.paths,
     sp,
     renderer: ctx.renderer,
     sessionId: resolvedSessionId,
     turn: 1,
-    query: persistedQuery,
+    query: input.query,
     result,
     config,
-    turnMarkdown: formatTurnMarkdown(1, persistedQuery, result.result.conclusion || '', result.result, false),
+    turnMarkdown: formatTurnMarkdown(1, input.query, result.result.conclusion || '', result.result, false),
     reportAppendix,
     indexEntry: {
       sessionId: resolvedSessionId,
@@ -198,12 +250,13 @@ export async function startSession(
       traceFilename: referenceTracePath
         ? `${path.basename(tracePath)} vs ${path.basename(referenceTracePath)}`
         : path.basename(tracePath),
-      firstQuery: persistedQuery,
+      firstQuery: input.query,
       turnCount: 1,
       status: result.result.success ? 'completed' : 'failed',
     },
   });
-  await completeSourceSupplement(ctx, sp, resolvedSessionId, result, 1, analysisEvidence);
+  // The turn is saved: Ctrl-C no longer belongs to it.
+  interrupt?.markCommitted();
 
   return {
     sessionId: resolvedSessionId,
@@ -233,6 +286,14 @@ function escapeHtml(value: string): string {
 export async function continueSession(
   ctx: TurnRunnerContext,
   input: { sessionId: string; query: string },
+): Promise<TurnResult> {
+  return withTurnInterrupt(ctx, interrupt => runContinueSession(ctx, input, interrupt));
+}
+
+async function runContinueSession(
+  ctx: TurnRunnerContext,
+  input: { sessionId: string; query: string },
+  interrupt?: TurnInterruptController,
 ): Promise<TurnResult> {
   const userSessionId = input.sessionId;
   const sp = sessionPaths(ctx.paths, userSessionId);
@@ -297,6 +358,7 @@ export async function continueSession(
     codeAwareMode: existingConfig.codeAwareMode,
     codebaseIds: existingConfig.codebaseIds,
     knowledgeSourceIds: existingConfig.knowledgeSourceIds,
+    sourceDepth: existingConfig.sourceDepth,
     analysisMode: existingConfig.analysisMode,
     lineage: pendingLineage,
     turn: nextTurn,
@@ -311,6 +373,8 @@ export async function continueSession(
       ctx.renderer.onEvent(update);
       appendStreamEvent(streamFile, update);
     },
+    ...provisionalAnswerOption(ctx.renderer, interrupt),
+    ...interruptOptions(interrupt),
   };
   let result: RunTurnOutput;
   try {
@@ -343,31 +407,26 @@ export async function continueSession(
     providerId: result.providerId ?? existingConfig.providerId,
     agentRuntimeKind: result.agentRuntimeKind ?? existingConfig.agentRuntimeKind,
     providerSnapshotHash: result.providerSnapshotHash ?? existingConfig.providerSnapshotHash,
-    sdkSessionId: result.sdkSessionId || existingConfig.sdkSessionId,
     model: result.model || existingConfig.model,
     codeAwareMode: result.codeAwareMode,
     lastTurnAt: now,
     turnCount: nextTurn,
   };
-  const persistedQuery = result.privateKnowledge
-    ? privateAnalysisQueryMessage(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
-    : input.query;
-
   const idx = readIndex(ctx.paths);
   const prev = idx.sessions[userSessionId];
 
-  const analysisEvidence = commitTurnOutputs({
+  commitTurnOutputs({
     paths: ctx.paths,
     sp,
     renderer: ctx.renderer,
     sessionId: userSessionId,
     turn: nextTurn,
-    query: persistedQuery,
+    query: input.query,
     result,
     config: updatedConfig,
     turnMarkdown: formatTurnMarkdown(
       nextTurn,
-      persistedQuery,
+      input.query,
       result.result.conclusion || '',
       result.result,
       degraded,
@@ -379,12 +438,13 @@ export async function continueSession(
       lastTurnAt: now,
       tracePath: existingConfig.tracePath,
       traceFilename: prev?.traceFilename ?? path.basename(existingConfig.tracePath),
-      firstQuery: result.privateKnowledge ? persistedQuery : prev?.firstQuery ?? persistedQuery,
+      firstQuery: prev?.firstQuery ?? input.query,
       turnCount: nextTurn,
       status: result.result.success ? 'completed' : 'failed',
     },
   });
-  await completeSourceSupplement(ctx, sp, userSessionId, result, nextTurn, analysisEvidence);
+  // The turn is saved: Ctrl-C no longer belongs to it.
+  interrupt?.markCommitted();
 
   if (degraded) {
     const notice = buildLineageNotice(updatedConfig.lineage);
@@ -398,43 +458,6 @@ export async function continueSession(
     success: result.result.success,
     degraded,
   };
-}
-
-async function completeSourceSupplement(
-  ctx: TurnRunnerContext,
-  sp: SessionPaths,
-  sessionId: string,
-  result: RunTurnOutput,
-  turn: number,
-  analysisEvidence: ReturnType<typeof commitTurnOutputs>,
-): Promise<void> {
-  if (!result.sourceSupplementTask) return;
-  const supplement = await result.sourceSupplementTask;
-  if (!supplement) {
-    const failed = {
-      type: 'analysis_source_enrichment_failed' as const,
-      content: {errorCode: 'analysis_source_enrichment_failed'},
-      timestamp: Date.now(),
-    };
-    ctx.renderer.onEvent(failed);
-    appendStreamEvent(sp.stream, failed);
-    return;
-  }
-  result.sourceSupplement = supplement;
-  const completed = {
-    type: 'analysis_source_enrichment_completed' as const,
-    content: supplement,
-    timestamp: Date.now(),
-  };
-  appendStreamEvent(sp.stream, completed);
-  commitSourceSupplementOutput({
-    sp,
-    renderer: ctx.renderer,
-    sessionId,
-    turn,
-    supplement,
-    analysisEvidence,
-  });
 }
 
 function isTraceIdMismatchError(err: unknown): boolean {

@@ -11,7 +11,7 @@ import type {ConclusionContract} from '../../agent/core/conclusionContract';
 import type {ClaimSupportV1} from '../../types/evidenceContract';
 import type {ClaimVerificationResult, DeterministicNativeRowIdentity} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
-import {sanitizeCodeAwareText, withOwnerCodeAwareProjection, isOwnerCodeAwareProjection, isCredentialField} from './codeAwareOutputRegistry';
+import {sanitizeCodeAwareText, sanitizeOwnerCodeAwareText, withOwnerCodeAwareProjection, isOwnerCodeAwareProjection, isCredentialField} from './codeAwareOutputRegistry';
 import {projectSceneTimelineForOwner} from '../../agent/scene/sceneTimelineProjection';
 import type {CodeLookupSummary} from '../codebase/codeLookupLedger';
 import {sanitizeSourceUseDecision, type SourceUseDecisionV1, type SourceReferenceV1} from '../codebase/sourceUseDecision';
@@ -26,6 +26,8 @@ import {
   preserveProjectedFieldOrder,
 } from './analysisDeliveryProjection';
 import {sanitizeSourceClaimBindings, sanitizeSourceReferences} from '../codebase/sourceUseDecision';
+import {SOURCE_CLAIM_STATUS_VALUES} from '../codebase/sourceClaimVerifier';
+import {SOURCE_CITATION_STATUS_VALUES} from '../codebase/sourceCitations';
 import {isPlainJsonObject} from '../../utils/isPlainJsonObject';
 import {projectConclusionContractForDisplay, projectConclusionProtocol} from './conclusionProtocolProjection';
 
@@ -36,13 +38,6 @@ function privateControl<T extends string>(value: unknown, allowed: readonly T[],
   return typeof value === 'string' && allowed.includes(value as T) ? value as T : fallback;
 }
 
-export interface PrivateAnalysisSessionSelection {
-  sessionId: string;
-  codeAwareMode?: string;
-  codebaseIds?: string[];
-  knowledgeSourceIds?: string[];
-}
-
 const SAFE_TERMINATION_REASONS = new Set([
   'max_turns',
   'max_budget_usd',
@@ -51,9 +46,9 @@ const SAFE_TERMINATION_REASONS = new Set([
   'timeout',
   'quality_gate_failed',
   'plan_incomplete',
+  'review_not_finished',
 ]);
 const MAX_PRIVATE_PROVENANCE_IDS = 100;
-const MAX_PRIVATE_SOURCE_GENERATIONS = 20;
 const MAX_PRIVATE_DISPLAY_NAME = 120;
 
 function boundedIdentifier(value: unknown): string | undefined {
@@ -132,33 +127,20 @@ function projectPrivateCodeLookupSummary(
     .filter((value): value is string => Boolean(value))
     .filter(value => privateSourceTextUnchanged(sessionId, value))
     .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
-  const usedKnowledgeSources = summary.usedKnowledgeSources
-    ?.map(source => {
-      const knowledgeSourceId = boundedIdentifier(source.knowledgeSourceId);
-      if (!knowledgeSourceId || !privateSourceTextUnchanged(sessionId, knowledgeSourceId)) return undefined;
-      return {
-        knowledgeSourceId,
-        sourceGenerations: source.sourceGenerations
-          .map(boundedIdentifier)
-          .filter((value): value is string => Boolean(value))
-          .filter(value => privateSourceTextUnchanged(sessionId, value))
-          .slice(0, MAX_PRIVATE_SOURCE_GENERATIONS),
-      };
-    })
-    .filter((value): value is NonNullable<typeof value> => Boolean(value))
-    .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
   const sourceUseDecision = projectPrivateSourceUseDecision(
     sessionId,
     summary.sourceUseDecision,
     currentSelectedCodebaseIds,
   );
+  const boundedCount = (count: number | undefined) => Math.max(0, Math.min(1_000_000, Math.floor(count || 0)));
+  const unreadableRecordCount = boundedCount(summary.unreadableRecordCount);
   return {
-    lookupCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.lookupCount || 0))),
-    patchCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.patchCount || 0))),
+    lookupCount: boundedCount(summary.lookupCount),
+    patchCount: boundedCount(summary.patchCount),
     referencedCodebaseIds,
     ...(usedCodebaseIds?.length ? {usedCodebaseIds} : {}),
-    ...(usedKnowledgeSources?.length ? {usedKnowledgeSources} : {}),
     ...(sourceUseDecision ? {sourceUseDecision} : {}),
+    ...(unreadableRecordCount > 0 ? {unreadableRecordCount} : {}),
   };
 }
 
@@ -199,15 +181,6 @@ function projectPrivateCodebaseSnapshot(
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
-}
-
-export function sessionUsesPrivateKnowledge(
-  session: Omit<PrivateAnalysisSessionSelection, 'sessionId'>,
-): boolean {
-  return Boolean(
-    (session.codeAwareMode && session.codeAwareMode !== 'off' && session.codebaseIds?.length) ||
-    session.knowledgeSourceIds?.length,
-  );
 }
 
 export function privateAnalysisFailureMessage(language: OutputLanguage): string {
@@ -295,7 +268,7 @@ export function projectPrivateAnalysisReceipt(
     capabilityManifest: storedCapabilityManifest,
     traceSummary: storedTraceSummary,
     ...receiptWithoutAttribution
-  } = receipt;
+  } = withValidOptionalReceiptCounts(receipt);
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
     storedCapabilityManifest,
   );
@@ -304,14 +277,38 @@ export function projectPrivateAnalysisReceipt(
     ...receiptWithoutAttribution,
     ...(capabilityManifest ? {capabilityManifest} : {}),
     ...(traceSummary ? {traceSummary} : {}),
-    outputs: {
-      ...(receipt.outputs.reportId ? {reportId: receipt.outputs.reportId} : {}),
-      ...(receipt.outputs.reportUrl ? {reportUrl: receipt.outputs.reportUrl} : {}),
-      ...(receipt.outputs.resultSnapshotId
-        ? {resultSnapshotId: receipt.outputs.resultSnapshotId}
-        : {}),
-    },
+    // The owner also gets the CLI turn path and the report error, under the owner guard.
+    outputs: isOwnerCodeAwareProjection()
+      ? projectPrivateStructuredValue(receipt.sessionId, receipt.outputs)
+      : {
+          ...(receipt.outputs.reportId ? {reportId: receipt.outputs.reportId} : {}),
+          ...(receipt.outputs.reportUrl ? {reportUrl: receipt.outputs.reportUrl} : {}),
+          ...(receipt.outputs.resultSnapshotId
+            ? {resultSnapshotId: receipt.outputs.resultSnapshotId}
+            : {}),
+        },
   };
+}
+
+/**
+ * Projected claims are no longer the claims that were checked, so no check
+ * result (verification, finite proof or reference match) carries over.
+ */
+function withdrawClaimAuditVerification(audit: AnalysisReceipt['claimAudit']): AnalysisReceipt['claimAudit'] {
+  return {...audit, verifiedClaims: 0, uncertainClaims: audit.uncertainClaims + audit.verifiedClaims,
+    ...(audit.referencesMatchedClaims !== undefined ? {referencesMatchedClaims: 0} : {}),
+    ...(audit.propositionProvedClaims !== undefined ? {propositionProvedClaims: 0} : {})};
+}
+
+/**
+ * Optional receipt counts are kept only when well formed. A malformed one is
+ * dropped by itself (absent reads as "not recorded"), never the whole receipt.
+ */
+function withValidOptionalReceiptCounts(receipt: AnalysisReceipt): AnalysisReceipt {
+  const {knowledgeReferenceCount, ...nonEvidenceContext} = receipt.nonEvidenceContext;
+  if (knowledgeReferenceCount === undefined) return receipt;
+  const valid = Number.isSafeInteger(knowledgeReferenceCount) && knowledgeReferenceCount >= 0;
+  return valid ? receipt : {...receipt, nonEvidenceContext};
 }
 
 /** Historical JSON may be incomplete; it cannot supply missing audit counts. */
@@ -362,10 +359,11 @@ function projectPrivateEnvelopeValue(
   if (!value || typeof value !== 'object') return undefined;
 
   const projected: Record<string, unknown> = {};
+  const owner = isOwnerCodeAwareProjection();
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    const normalizedKey = key.replace(/[_-]/g, '').toLowerCase();
-    if (PRIVATE_ENVELOPE_FORBIDDEN_KEYS.has(normalizedKey)) continue;
-    const projectedEntry = isOwnerCodeAwareProjection() && isCredentialField(key) && typeof entry === 'string' && entry.length >= 8
+    // The owner reads the provenance a run without private context shows.
+    if (!owner && PRIVATE_ENVELOPE_FORBIDDEN_KEYS.has(key.replace(/[_-]/g, '').toLowerCase())) continue;
+    const projectedEntry = owner && isCredentialField(key, entry)
       ? '[REDACTED_SECRET]' : projectPrivateEnvelopeValue(sessionId, entry, depth + 1);
     if (projectedEntry !== undefined) projected[key] = projectedEntry;
   }
@@ -374,8 +372,8 @@ function projectPrivateEnvelopeValue(
 
 /**
  * Field-level projection for model-authored structured artifacts. It preserves
- * the contract shape and trace provenance while removing SQL/prompt/query
- * fields and applying the same registered-source echo guard to every string.
+ * the contract shape and trace provenance and applies the session echo guard
+ * to every string; strict output also removes SQL/prompt/query fields.
  */
 export function projectPrivateStructuredValue<T>(sessionId: string, value: T): T {
   return projectPrivateEnvelopeValue(sessionId, value) as T;
@@ -472,6 +470,34 @@ export function projectPrivateClaimVerification(
     claimResults: (verification.claimResults ?? []).map((claim, index) => ({
       claimId: text(claim.claimId), status: privateControl(claim.status,
         ['verified', 'partial', 'inference', 'unsupported', 'not_checked'], 'not_checked'),
+      // Offsets and text hashes of the owner's own body; strict surfaces keep none.
+      ...(claim.semanticReview && isOwnerCodeAwareProjection() ? {semanticReview: {
+        consistency: privateControl(claim.semanticReview.consistency, ['consistent', 'inconsistent', 'unknown'], 'unknown'),
+        contentLocations: claim.semanticReview.contentLocations.filter(location =>
+          Number.isSafeInteger(location.start) && Number.isSafeInteger(location.end) &&
+          typeof location.textHash === 'string' && /^[0-9a-f]{16}$/.test(location.textHash))
+          .map(({start, end, textHash}) => ({start, end, textHash})),
+      }} : {}),
+      // These locations and fingerprints describe the owner's canonical body.
+      // Strict projections omit the receipt just as they omit semantic spans.
+      ...(claim.numericPresentation?.schemaVersion === 'numeric_presentation_assessment@1' && isOwnerCodeAwareProjection() ? {numericPresentation: {
+        schemaVersion: 'numeric_presentation_assessment@1' as const,
+        status: privateControl(claim.numericPresentation.status, ['matched', 'mismatch', 'not_checked'], 'not_checked'),
+        reason: text(claim.numericPresentation.reason),
+        binding: {candidate: {
+          runId: text(claim.numericPresentation.binding.candidate.runId),
+          attemptId: text(claim.numericPresentation.binding.candidate.attemptId),
+          candidateRef: text(claim.numericPresentation.binding.candidate.candidateRef),
+          conclusionFingerprint: text(claim.numericPresentation.binding.candidate.conclusionFingerprint),
+        }, claimFingerprint: text(claim.numericPresentation.binding.claimFingerprint)},
+        ...(claim.numericPresentation.source ? {source: {
+          anchorId: text(claim.numericPresentation.source.anchorId), captureId: text(claim.numericPresentation.source.captureId),
+          rowIndex: claim.numericPresentation.source.rowIndex, column: text(claim.numericPresentation.source.column),
+        }} : {}),
+        locations: claim.numericPresentation.locations.filter(location => Number.isSafeInteger(location.start) &&
+          Number.isSafeInteger(location.end) && location.start >= 0 && location.end > location.start)
+          .map(({start, end}) => ({start, end})),
+      }} : {}),
       ...(claim.referenceResults ? {referenceResults: references(claim.referenceResults)} : {}),
       ...(claim.referenceCells ? {referenceCells: references(claim.referenceCells)} : {}),
       ...(claim.deterministicProof ? {deterministicProof: {
@@ -539,24 +565,46 @@ function projectPrivateSourceVerification(
   verification: AnalysisResult['sourceClaimVerificationResult'],
   invalidate: boolean,
 ): AnalysisResult['sourceClaimVerificationResult'] {
-  if (!verification || verification.schemaVersion !== 'source_claim_verifier@1') return undefined;
+  if (!verification || (verification.schemaVersion !== 'source_claim_verifier@1' &&
+    verification.schemaVersion !== 'source_claim_verifier@2')) return undefined;
   const text = (value: string) => sanitizeCodeAwareText(sessionId, value);
+  const status = invalidate && verification.status === 'passed' ? 'not_checked' :
+    privateControl(verification.status, ['passed', 'failed', 'partial', 'not_checked'], 'not_checked');
+  const bindings = sanitizeSourceClaimBindings(verification.bindings).map(binding => ({...binding,
+    claimId: text(binding.claimId), sourceReferenceIds: binding.sourceReferenceIds.map(text),
+    traceEvidenceRefIds: binding.traceEvidenceRefIds.map(text),
+    ...(binding.mechanismStatus ? {mechanismStatus: invalidate &&
+      (binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible')
+      ? 'unverified' as const : binding.mechanismStatus} : {}),
+  }));
+  // A citation is a fragment of the answer text: only the owner sees it.
+  const owner = isOwnerCodeAwareProjection();
+  const issues = <Code extends string>(stored: ReadonlyArray<{claimId?: string; severity: string; code: Code; message: string;
+    sourceReferenceId?: string; traceEvidenceRefId?: string; citation?: string}>) => stored.map(issue => ({
+    ...(issue.claimId !== undefined ? {claimId: text(issue.claimId)} : {}),
+    severity: privateControl(issue.severity, ['error', 'warning'] as const, 'warning'), code: issue.code, message: text(issue.message),
+    ...(issue.sourceReferenceId !== undefined ? {sourceReferenceId: text(issue.sourceReferenceId)} : {}),
+    ...(issue.traceEvidenceRefId !== undefined ? {traceEvidenceRefId: text(issue.traceEvidenceRefId)} : {}),
+    ...(owner && issue.citation !== undefined ? {citation: text(issue.citation)} : {}),
+  }));
+  if (verification.schemaVersion === 'source_claim_verifier@1') {
+    return preserveProjectedFieldOrder(verification, {schemaVersion: verification.schemaVersion, status, bindings,
+      issues: issues(verification.issues)});
+  }
+  // A projection that changed the text withdraws the strongest standing it supported.
   const projected: NonNullable<AnalysisResult['sourceClaimVerificationResult']> = {
-    schemaVersion: verification.schemaVersion,
-    status: invalidate && verification.status === 'passed' ? 'not_checked' :
-      privateControl(verification.status, ['passed', 'failed', 'partial', 'not_checked'], 'not_checked'),
-    bindings: sanitizeSourceClaimBindings(verification.bindings).map(binding => ({...binding,
-      claimId: text(binding.claimId), sourceReferenceIds: binding.sourceReferenceIds.map(text),
-      traceEvidenceRefIds: binding.traceEvidenceRefIds.map(text),
-      mechanismStatus: invalidate && (binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible')
-        ? 'unverified' : binding.mechanismStatus,
-    })),
-    issues: verification.issues.map(issue => ({
-      ...(issue.claimId !== undefined ? {claimId: text(issue.claimId)} : {}),
-      severity: privateControl(issue.severity, ['error', 'warning'], 'warning'), code: issue.code, message: text(issue.message),
-      ...(issue.sourceReferenceId !== undefined ? {sourceReferenceId: text(issue.sourceReferenceId)} : {}),
-      ...(issue.traceEvidenceRefId !== undefined ? {traceEvidenceRefId: text(issue.traceEvidenceRefId)} : {}),
-    })),
+    schemaVersion: verification.schemaVersion, status, bindings,
+    claims: verification.claims.map(claim => ({claimId: text(claim.claimId),
+      status: invalidate && claim.status === 'trace_linked' ? 'source_only' as const
+        : privateControl(claim.status, SOURCE_CLAIM_STATUS_VALUES, 'unbound'),
+      sourceReferenceIds: claim.sourceReferenceIds.map(text), traceEvidenceRefIds: claim.traceEvidenceRefIds.map(text)})),
+    citations: !owner ? [] : verification.citations.map(citation => ({citation: text(citation.citation), filePath: text(citation.filePath),
+      lineRange: citation.lineRange,
+      status: privateControl(citation.status, SOURCE_CITATION_STATUS_VALUES, 'unmatched'),
+      ...(citation.sourceReferenceId !== undefined ? {sourceReferenceId: text(citation.sourceReferenceId)} : {}),
+      ...(citation.candidateReferenceIds !== undefined
+        ? {candidateReferenceIds: citation.candidateReferenceIds.map(text)} : {})})),
+    issues: issues(verification.issues),
   };
   return preserveProjectedFieldOrder(verification, projected);
 }
@@ -587,12 +635,15 @@ export function projectPrivateUiActionProposals(
 /**
  * Project trace-derived evidence before it crosses a live or durable private
  * boundary. Envelope shape validation is not a provenance proof: SQL literals
- * and model-authored metadata can otherwise carry retrieved source verbatim.
+ * and model-authored metadata can carry retrieved source verbatim, so strict
+ * output keeps a metadata whitelist. The owner, who may read that source, sees
+ * the whole envelope under the owner guard.
  */
 export function projectPrivateDataEnvelope(
   sessionId: string,
   envelope: DataEnvelope,
 ): DataEnvelope {
+  if (isOwnerCodeAwareProjection()) return projectPrivateStructuredValue(sessionId, envelope);
   const meta = envelope.meta;
   const projectedMeta: DataEnvelope['meta'] = {
     type: meta.type,
@@ -630,7 +681,14 @@ export function projectPrivateDataEnvelopes(
   return envelopes.map(envelope => projectPrivateDataEnvelope(sessionId, envelope));
 }
 
-/** Durable/user-visible result projection shared by CLI and snapshot surfaces. */
+/**
+ * Strict-audience result projection building block: no owner audience is set,
+ * so owner-only diagnostic fields (for example the per-claim review trace) are
+ * dropped, which counts as a material change and invalidates verification.
+ * Caller-facing durable surfaces use `projectOwnerAnalysisResult` (restricted
+ * runs) or `copyAnalysisResultForSnapshot` (plain runs) instead —
+ * see `projectStoredAnalysisResultForOwner`.
+ */
 export function projectPrivateAnalysisResult(
   sessionId: string,
   result: AnalysisResult,
@@ -647,9 +705,10 @@ export function projectPrivateAnalysisResult(
       sourceReferences: projectPrivateSourceReferences(sessionId, storedContract.sourceReferences)};
   }
   if (conclusionContract?.sourceClaimBindings && storedContract?.sourceClaimBindings) {
-    conclusionContract = {...conclusionContract, sourceClaimBindings: conclusionContract.sourceClaimBindings.map((binding, index) => ({
-      ...binding, mechanismStatus: storedContract.sourceClaimBindings![index].mechanismStatus,
-    }))};
+    conclusionContract = {...conclusionContract, sourceClaimBindings: conclusionContract.sourceClaimBindings.map((binding, index) => {
+      const stored = storedContract.sourceClaimBindings![index]?.mechanismStatus;
+      return stored ? {...binding, mechanismStatus: stored} : binding;
+    })};
   }
   let claimSupport = projectPrivateClaimSupport(sessionId, result.claimSupport)?.map((support, index) => {
     const status = result.claimSupport?.[index].supportLevel;
@@ -674,22 +733,21 @@ export function projectPrivateAnalysisResult(
     analysisProjectionChanged(result.sourceClaimVerificationResult, sourceProjection);
   if ((claimsChanged || sourceChanged) && conclusionContract?.sourceClaimBindings) {
     conclusionContract = {...conclusionContract,
-      sourceClaimBindings: sanitizeSourceClaimBindings(conclusionContract.sourceClaimBindings).map(binding => ({...binding,
-        mechanismStatus: binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible'
-          ? 'unverified' : binding.mechanismStatus}))};
+      sourceClaimBindings: sanitizeSourceClaimBindings(conclusionContract.sourceClaimBindings).map(binding =>
+        binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible'
+          ? {...binding, mechanismStatus: 'unverified' as const} : binding)};
   }
   const sourceClaimVerificationResult = claimsChanged || sourceChanged
     ? projectPrivateSourceVerification(sessionId, result.sourceClaimVerificationResult, true) : sourceProjection;
   const identityChanged = analysisProjectionChanged(result.identityResolutions, identityResolutions);
   const delivery = projectPrivateAnalysisDelivery(result, {conclusion, conclusionContract, claimsChanged,
     sourceChanged, identityChanged,
-  }, text => sanitizeCodeAwareText(sessionId, text));
+  }, text => sanitizeCodeAwareText(sessionId, text), {privateMetadata: !isOwnerCodeAwareProjection()});
   let analysisReceipt = projectPrivateAnalysisReceipt(result.analysisReceipt);
   if (analysisReceipt && (claimsChanged || identityChanged ||
       delivery.deliveryAssurance?.report === 'not_checked' || delivery.deliveryAssurance?.report === 'coverage_incomplete')) {
     analysisReceipt = {...analysisReceipt,
-      claimAudit: claimsChanged ? {...analysisReceipt.claimAudit, verifiedClaims: 0,
-        uncertainClaims: analysisReceipt.claimAudit.uncertainClaims + analysisReceipt.claimAudit.verifiedClaims} : analysisReceipt.claimAudit,
+      claimAudit: claimsChanged ? withdrawClaimAuditVerification(analysisReceipt.claimAudit) : analysisReceipt.claimAudit,
       qualityGates: {...analysisReceipt.qualityGates,
         ...(claimsChanged ? {claimVerification: 'partial' as const} : {}),
         ...(identityChanged ? {identityResolution: 'partial' as const} : {}),
@@ -790,10 +848,10 @@ export function copyAnalysisResultForSnapshot(result: AnalysisResult): AnalysisR
     ((result.deliveryAssurance?.report === 'passed' || result.deliveryAssurance?.report === 'not_applicable') &&
       delivery.deliveryAssurance?.report !== 'passed' && delivery.deliveryAssurance?.report !== 'not_applicable');
   if (stored.analysisReceipt && !isCompleteAnalysisReceipt(stored.analysisReceipt)) delete stored.analysisReceipt;
+  if (stored.analysisReceipt) stored.analysisReceipt = withValidOptionalReceiptCounts(stored.analysisReceipt);
   if (stored.analysisReceipt && (claimsChanged || sourceChanged || reportInvalidated)) {
     stored.analysisReceipt = {...stored.analysisReceipt,
-      claimAudit: claimsChanged ? {...stored.analysisReceipt.claimAudit, verifiedClaims: 0,
-        uncertainClaims: stored.analysisReceipt.claimAudit.uncertainClaims + stored.analysisReceipt.claimAudit.verifiedClaims} : stored.analysisReceipt.claimAudit,
+      claimAudit: claimsChanged ? withdrawClaimAuditVerification(stored.analysisReceipt.claimAudit) : stored.analysisReceipt.claimAudit,
       qualityGates: {...stored.analysisReceipt.qualityGates, finalReportContract: 'partial',
         ...(claimsChanged ? {claimVerification: 'partial' as const} : {})}};
   }
@@ -865,9 +923,6 @@ export function projectPrivateSessionStateSnapshot(
     ...(snapshot.analysisContextFingerprint
       ? {analysisContextFingerprint: snapshot.analysisContextFingerprint}
       : {}),
-    ...(snapshot.androidInternalsPackPin
-      ? {androidInternalsPackPin: {...snapshot.androidInternalsPackPin}}
-      : {}),
     ...(snapshot.backgroundKnowledgeReferences
       ? {
           backgroundKnowledgeReferences: snapshot.backgroundKnowledgeReferences.map(
@@ -898,11 +953,45 @@ export function projectPrivateSessionStateSnapshot(
 export function projectOwnerAnalysisResult(...args: Parameters<typeof projectPrivateAnalysisResult>): AnalysisResult {
   return withOwnerCodeAwareProjection(() => projectPrivateAnalysisResult(...args));
 }
+/**
+ * A stored result as every owner surface serves it: the owner projection for a
+ * run whose private-context marker restricts its audience, the public-field
+ * snapshot copy otherwise. The caller decides from the run's own marker.
+ */
+export function projectStoredAnalysisResultForOwner(
+  restricted: boolean, sessionId: string, result: AnalysisResult, language: OutputLanguage,
+): AnalysisResult {
+  return restricted
+    ? projectOwnerAnalysisResult(sessionId, result, language)
+    : copyAnalysisResultForSnapshot(result);
+}
 export function projectOwnerConclusion(...args: Parameters<typeof projectPrivateConclusion>): string {
   return withOwnerCodeAwareProjection(() => projectPrivateConclusion(...args));
 }
+/**
+ * A provisional answer uses exactly the projection its terminal conclusion will
+ * get: owner projection for private-knowledge runs, the canonical body otherwise.
+ */
+export function projectOwnerProvisionalConclusion(
+  privateKnowledge: boolean, sessionId: string, conclusion: string, language: OutputLanguage,
+): string {
+  return privateKnowledge ? projectOwnerConclusion({sessionId, conclusion, success: true, language}) : conclusion;
+}
+/** The question a surface shows its creator: under the owner guard for a run with private context. */
+export function projectOwnerQuestion(privateKnowledge: boolean, sessionId: string, query: string): string {
+  return privateKnowledge ? sanitizeOwnerCodeAwareText(sessionId, query) : query;
+}
+/** The report error a surface shows: under the owner guard for a run with private context. */
+export function projectOwnerReportError(
+  privateKnowledge: boolean, sessionId: string, reportError: string | undefined, language: OutputLanguage,
+): string | undefined {
+  return privateKnowledge && reportError ? projectOwnerAnalysisError(sessionId, reportError, language) : reportError;
+}
 export function projectOwnerTerminationMessage(...args: Parameters<typeof projectPrivateTerminationMessage>): string | undefined {
   return withOwnerCodeAwareProjection(() => projectPrivateTerminationMessage(...args));
+}
+export function projectOwnerAnalysisReceipt(receipt: AnalysisReceipt | undefined): AnalysisReceipt | undefined {
+  return withOwnerCodeAwareProjection(() => projectPrivateAnalysisReceipt(receipt));
 }
 export function projectOwnerStructuredValue<T>(sessionId: string, value: T): T {
   return withOwnerCodeAwareProjection(() => projectPrivateStructuredValue(sessionId, value));

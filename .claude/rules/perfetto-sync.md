@@ -49,8 +49,20 @@ Use this order unless the task has a narrower explicit scope:
    when the plugin UI, Perfetto UI bundle, or generated UI assets changed.
 8. Update trace processor prebuilts and pin files only when that runtime is part
    of the sync. Keep independent recording-tool pins separate unless the task
-   explicitly updates them too.
-9. Regenerate Perfetto SQL docs, SQL indexes, stdlib symbols, and light indexes
+   explicitly updates them too. The UI talks to the backend processor over RPC
+   and runs stdlib SQL of its own revision, so a UI synced to upstream main
+   needs a processor from the same revision.
+   Google's LUCI post-submit CI publishes `trace_processor_shell` under
+   `<commit>/<platform>/` for some main commits: merge the submodule at exactly
+   a commit whose five platform artifacts all exist and pin
+   `PERFETTO_VERSION` and `PERFETTO_ARTIFACT_VERSION` to it. That binary is not
+   release-qualified; the SQL and scene regressions below are its acceptance
+   gate. `public-export.yaml` keeps `official_perfetto` on a release tag (the
+   Skill gap-check reference) and `runtime_perfetto.reported_version` on the
+   newest release in the runtime revision's CHANGELOG. After a pin change,
+   run `node Trace/tools/trace-corpus.cjs build` so constructed cases record
+   the runtime that reparsed them, then `trace-corpus index`.
+9. Regenerate Perfetto SQL docs, the light SQL index, and stdlib symbols
    from the exact trace-processor runtime revision with
    `cd backend && npm run stdlib:generate-runtime-assets`; this creates one
    temporary revision worktree for all outputs. Do not generate runtime
@@ -109,18 +121,9 @@ packaging verification tier in `.claude/rules/testing.md`.
 
 ## Landing Order
 
-If `perfetto/` changed:
-
-1. Commit inside `perfetto/`.
-2. Push the submodule commit to the `fork` remote, never upstream `origin`.
-3. Confirm the pushed commit is anchored to `fork/main` with the anchoring
-   check in `.claude/rules/git.md`, not merely present on some `fork` branch.
-4. Return to the root repository.
-5. Stage the root gitlink, refreshed `frontend/`, updated pins, regenerated
-   SQL/stdlib data, and Skill/Strategy changes that belong to the sync.
-6. Commit and push the root repository only after that anchoring check passes.
-
-Do not push a root commit that points at a local-only Perfetto submodule commit.
+Follow [git](git.md#perfetto-landing-and-anchoring): push submodule changes to
+`fork/main` and prove anchoring before root gitlink/prebuild publication.
+Stage only task-owned pins, generated assets and Skill/Strategy changes.
 
 ## Review Checklist
 
@@ -134,5 +137,10 @@ Before calling the sync done, explicitly check:
 - Trace processor version and packaged prebuilts match the intended runtime pin.
 - SQL docs, stdlib symbols, Skills, and Strategies agree on the new Perfetto
   schema/stdlib capabilities.
+- Private stdlib tables still have the shape/interval semantics affected Skills
+  expect. Run their constructed cases and inspect changed rows, not just inventory.
+- Runtime-gated Skill layers (`runtime_lacks_*` capability statuses) still
+  degrade explicitly on the previous release binary: run the affected Skills
+  with `TRACE_PROCESSOR_PATH` pointing at it on their constructed cases.
 - Scene trace regression still passes on the canonical traces.
 - The root repository and `perfetto/` submodule have no unrelated staged files.

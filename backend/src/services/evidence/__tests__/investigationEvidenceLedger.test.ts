@@ -10,10 +10,11 @@ import {SkillExecutor} from '../../skillEngine/skillExecutor';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
 import {captureEvidenceTable, evidenceTableFor} from '../evidenceCapture';
 import {isIssuedInvestigationEvidenceSnapshot, investigationEvidenceFingerprint, compactInvestigationEvidence,
-  compactInvestigationEvidenceForSemantic,
+  compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets,
   investigationCaptureFields, validateInvestigationEvidenceDeclarations, LEDGER_PER_METRIC_BUDGET,
   type InvestigationEvidenceDeclaration, type InvestigationEvidenceSnapshot} from '../investigationEvidenceLedger';
 import type {RuntimeToolInvocationEvent} from '../../../agentRuntime/runtimeToolObserver';
+import {runWithinRuntimeToolInvocation} from '../../../agentRuntime/runtimeToolInvocationContext';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../../finalSemanticLimits';
 
 const declaration: InvestigationEvidenceDeclaration = {window: {start: 'start', end: 'end'},
@@ -26,7 +27,8 @@ const observation = (phase: 'started' | 'completed' | 'failed', toolCallId = 'ca
   ...(phase === 'completed' ? {result: {content: []}} : phase === 'failed' ? {error: new Error('fixture')} : {}),
 } as RuntimeToolInvocationEvent);
 
-async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; declared?: boolean; originRunId?: string;
+/** One fresh producer execution: its witness has never been registered anywhere. */
+async function executeFixture(rows: unknown[][] = [row], settings: {declared?: boolean;
   declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[]} = {}) {
   const executor = new SkillExecutor({query: async () => ({columns: ['start', 'end', 'upid', 'utid', 'freq', 'status', 'coverage', 'denominator', ...(settings.extraColumns || [])],
     rows, durationMs: 1})});
@@ -36,16 +38,25 @@ async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; 
     output: {display: {layer: 'overview', level: 'summary', format: 'table', columns: [{name: 'freq', type: 'number'}]}}});
   const result = await executor.execute('ledger_fixture', 'trace');
   expect(result.success).toBe(true);
-  const display = result.displayResults[0];
+  return {skillId: result.skillId, display: result.displayResults[0]};
+}
+
+async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; declared?: boolean; originRunId?: string;
+  declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[];
+  executionStatus?: 'optional_error' | 'unavailable' | 'skipped'} = {}) {
+  const {skillId, display} = await executeFixture(rows, settings);
   const store = new ArtifactStore();
   const originRunId = settings.originRunId || 'run-1';
   if (settings.observe !== false) {
     store.observeInvestigationTool(observation('started'), originRunId);
     store.observeInvestigationTool(observation('completed'), originRunId);
   }
-  const artifactId = store.store({skillId: result.skillId, data: display.data,
-    traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}), sourceToolCallId: 'call'});
-  store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture', originRunId});
+  const artifactId = store.store({skillId, data: display.data, executionStatus: settings.executionStatus,
+    traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+    sourceToolCallId: 'invoke_skill:1:fixture'});
+  // Production captures are registered inside the invocation the observations name.
+  await runWithinRuntimeToolInvocation({toolCallId: 'call'}, async () =>
+    store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture', originRunId}));
   return {store, artifactId, display};
 }
 
@@ -111,6 +122,51 @@ describe('trusted investigation evidence ledger', () => {
     expect(phases).toEqual(['started', 'completed']);
   });
 
+  // Production captures carry a synthetic producer id (`invoke_skill:<n>:<hash>`)
+  // that no observation names, and a run without a run-scoped evidence facade
+  // stamps no origin run. Every real ledger record once read `unknown`, so no
+  // requirement with declared metrics could be acquired. The invocation the
+  // registry runs the handler in now supplies both.
+  describe('through the registry on an unbound store', () => {
+    async function acquireThroughRegistry(settings: {supplyCallId?: boolean; lateCapture?: boolean} = {}) {
+      const {display} = await executeFixture();
+      const store = new ArtifactStore();
+      let late: Promise<void> | undefined;
+      const registry = new McpToolRegistry({runId: 'run-1',
+        acquisitionObserver: event => store.observeInvestigationTool(event, 'run-1')});
+      registry.registerShared({name: 'invoke_skill', description: 'fixture', inputSchema: {}, exposure: 'public',
+        evidenceEffect: 'acquire', handler: async () => {
+          const register = () => {
+            const artifactId = store.store({skillId: 'ledger_fixture', data: display.data,
+              traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+              sourceToolCallId: 'invoke_skill:1:3ba220c3'});
+            store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture'});
+          };
+          if (settings.lateCapture) late = new Promise<void>(resolve => setTimeout(() => {register(); resolve();}, 0));
+          else register();
+          return {content: []};
+        }});
+      await registry.list()[0].shared.handler({}, settings.supplyCallId === false ? {} : {toolCallId: 'call_x9Qk'});
+      await late;
+      return store.createEvidenceReadView(options).investigationEvidence!();
+    }
+
+    it.each([true, false])('joins a capture to the invocation that produced it (runtime call id supplied: %p)', async supplyCallId => {
+      const snapshot = await acquireThroughRegistry({supplyCallId});
+      expect(snapshot.issues).not.toContain('capture_tool_observation_missing');
+      expect(snapshot.records[0]).toMatchObject({origin: 'current_run', originRunId: 'run-1', status: 'observed',
+        sourceToolCallId: 'invoke_skill:1:3ba220c3'});
+      // The join key is private: it reaches neither the ledger nor anything derived from it.
+      expect(JSON.stringify(snapshot)).not.toContain('call_x9Qk');
+    });
+
+    it('does not attribute a capture registered after its invocation settled', async () => {
+      const snapshot = await acquireThroughRegistry({lateCapture: true});
+      expect(snapshot.records[0]).toMatchObject({origin: 'current_run', status: 'unknown'});
+      expect(snapshot.issues).toContain('capture_tool_observation_missing');
+    });
+  });
+
   // A real 10s scrolling trace filled the whole ledger with one per-handoff
   // metric, so every requirement acquired later read as unacquired because its
   // records never got in. The per-metric share keeps one producer from
@@ -159,6 +215,58 @@ describe('trusted investigation evidence ledger', () => {
     expect(snapshot.records.map(record => record.status)).toEqual(['observed', 'partial']);
     expect(new Set(snapshot.records.map(record => record.recordId)).size).toBe(2);
     expect(snapshot.records[1]).toMatchObject({utid: 44, window: {start: 110, end: 210}});
+  });
+
+  it('keeps distinct authorized read IDs when one capture is registered under two artifact locators', async () => {
+    const {store, display, artifactId} = await fixture();
+    const before = store.createEvidenceReadView(options).investigationEvidence!();
+    const witness = evidenceTableFor(display)!;
+    const secondArtifact = store.store({skillId: 'ledger_fixture', data: display.data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+      sourceToolCallId: 'invoke_skill:1:fixture'});
+    await runWithinRuntimeToolInvocation({toolCallId: 'call'}, async () =>
+      store.registerEvidenceCapture(secondArtifact, witness, {evidenceRefId: 'evidence:second-read', originRunId: 'run-1'}));
+    const snapshot = store.createEvidenceReadView(options).investigationEvidence!();
+    expect(snapshot.records).toHaveLength(2);
+    expect(new Set(snapshot.records.map(record => record.recordId)).size).toBe(2);
+    expect(snapshot.records.map(record => ({artifactId: record.artifactId, evidenceRefId: record.evidenceRefId})))
+      .toEqual([{artifactId, evidenceRefId: 'evidence:fixture'}, {artifactId: secondArtifact, evidenceRefId: 'evidence:second-read'}]);
+    for (const record of snapshot.records) {
+      expect(record.recordId.startsWith(`${witness.captureId}:0:`)).toBe(true);
+      expect(record).toMatchObject({captureId: witness.captureId, rowIndex: 0, value: 1234, unit: 'kHz',
+        status: 'observed', originRunId: 'run-1', origin: 'current_run', window: {start: 10, end: 110}});
+    }
+    expect(snapshot.records[0]).toEqual(before.records[0]);
+    expect(store.createEvidenceReadView(options).investigationEvidence!().records).toEqual(snapshot.records);
+    expect(snapshot.fingerprint).toBe(investigationEvidenceFingerprint(snapshot));
+  });
+
+  it('binds registration identity across stores without treating a reused capture as a new observation', async () => {
+    const {store, display} = await fixture();
+    const original = store.createEvidenceReadView(options).investigationEvidence!().records[0];
+    const anotherStore = new ArtifactStore();
+    anotherStore.observeInvestigationTool(observation('completed'), 'run-1');
+    const artifactId = anotherStore.store({skillId: 'ledger_fixture', data: display.data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+      sourceToolCallId: 'invoke_skill:1:fixture'});
+    await runWithinRuntimeToolInvocation({toolCallId: 'call'}, async () =>
+      anotherStore.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture', originRunId: 'run-1'}));
+    const reused = anotherStore.createEvidenceReadView({...options, currentRunId: 'run-2'}).investigationEvidence!().records[0];
+    expect(reused.recordId).not.toBe(original.recordId);
+    expect(reused).toMatchObject({captureId: original.captureId, rowIndex: original.rowIndex, originRunId: 'run-1',
+      origin: 'reused', value: original.value, unit: original.unit, status: original.status});
+  });
+
+  it('gives a later-run registration a new read ID while retaining the capture origin', async () => {
+    const {store, display, artifactId} = await fixture();
+    const original = store.createEvidenceReadView(options).investigationEvidence!().records[0];
+    await runWithinRuntimeToolInvocation({toolCallId: 'call', runId: 'run-2'}, async () =>
+      store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:next-run', originRunId: 'run-2'}));
+    const reused = store.createEvidenceReadView({...options, currentRunId: 'run-2'}).investigationEvidence!().records[0];
+    expect(reused.recordId).not.toBe(original.recordId);
+    expect(reused).toMatchObject({captureId: original.captureId, rowIndex: original.rowIndex, originRunId: 'run-1',
+      origin: 'reused', value: original.value, unit: original.unit, status: original.status});
+    expect(store.createEvidenceReadView({...options, currentRunId: 'run-2'}).investigationEvidence!().records[0]).toEqual(reused);
   });
 
   it('preserves declared CPU/machine identity, null unknowns, role and aggregation', async () => {
@@ -250,6 +358,15 @@ describe('trusted investigation evidence ledger', () => {
     const empty = await fixture([]);
     expect(empty.store.createEvidenceReadView(options).investigationEvidence!()).toMatchObject({records: [], complete: false});
   });
+
+  it('never records a condition-skipped capture and reports it apart from unavailable execution', async () => {
+    const skipped = (await fixture([row], {executionStatus: 'skipped'})).store.createEvidenceReadView(options).investigationEvidence!();
+    expect(skipped).toMatchObject({records: [], complete: false});
+    expect(skipped.issues).toContain('capture_execution_skipped');
+    expect(skipped.issues).not.toContain('capture_execution_unavailable');
+    const unavailable = (await fixture([row], {executionStatus: 'unavailable'})).store.createEvidenceReadView(options).investigationEvidence!();
+    expect(unavailable.issues).toContain('capture_execution_unavailable');
+  });
 });
 
 describe('bounded investigation provider view', () => {
@@ -299,6 +416,22 @@ describe('bounded investigation provider view', () => {
     expect(semantic.omittedRecordCount).toBe(0);
     expect(semantic.complete).toBe(snapshot.complete);
     expect(compactInvestigationEvidenceForSemantic(snapshot, FINAL_SEMANTIC_INPUT_BYTE_LIMIT + 1)).toBeUndefined();
+  });
+
+  // Finalization sizes its prompt only at these budgets, so each must be the
+  // least one admitting its cohort, measured against the real serialization.
+  it('places each semantic budget exactly where one more whole cohort fits', async () => {
+    const snapshot = await largeSnapshot();
+    const budgets = investigationEvidenceSemanticBudgets(snapshot);
+    expect(budgets).toHaveLength(31);
+    expect(compactInvestigationEvidenceForSemantic(snapshot, budgets[0] - 1)).toBeUndefined();
+    budgets.forEach((budget, cohorts) => {
+      const view = compactInvestigationEvidenceForSemantic(snapshot, budget)!;
+      expect(view.records).toHaveLength(10 * cohorts);
+      expect(Buffer.byteLength(JSON.stringify(view), 'utf8')).toBeLessThanOrEqual(budget);
+      expect(Buffer.byteLength(JSON.stringify({...view, byteBudget: budget - 1}), 'utf8')).toBeGreaterThan(budget - 1);
+      if (cohorts > 0) expect(compactInvestigationEvidenceForSemantic(snapshot, budget - 1)!.records).toHaveLength(10 * (cohorts - 1));
+    });
   });
 
   it('retains complete small evidence and incomplete capture provenance', async () => {

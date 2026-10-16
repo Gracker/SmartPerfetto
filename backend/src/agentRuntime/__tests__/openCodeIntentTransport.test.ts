@@ -9,12 +9,14 @@ type ClassifierSession = OpenCodeClassifierHost['client']['session'];
 
 function fixture() {
   const message = {
-    info: {role: 'assistant', time: {completed: 1000}, modelID: 'pinned-light', finish: 'end_turn'},
+    info: {id: 'reply', role: 'assistant', time: {completed: 1000}, modelID: 'pinned-light', finish: 'end_turn'},
     parts: [{type: 'text', text: '{"intent":"focused"}'}],
   };
   const session = {
     create: jest.fn<ClassifierSession['create']>().mockResolvedValue({data: {id: 'classifier-session'}}),
     prompt: jest.fn<ClassifierSession['prompt']>().mockResolvedValue({data: message}),
+    messages: jest.fn<ClassifierSession['messages']>()
+      .mockResolvedValue({data: [{info: {role: 'user'}}, message]}),
     abort: jest.fn<ClassifierSession['abort']>().mockResolvedValue({data: true}),
     delete: jest.fn<NonNullable<ClassifierSession['delete']>>().mockResolvedValue({data: true}),
   };
@@ -58,6 +60,40 @@ describe('OpenCode intent transport', () => {
     expect(host.close).toHaveBeenCalledTimes(1);
   });
 
+  it('gives the host the call purpose that selects its provider controls', async () => {
+    const {input, createClassifierHost} = fixture();
+    await runOpenCodeIntentTransport({...input, purpose: 'classification'});
+    expect(createClassifierHost).toHaveBeenCalledWith(expect.objectContaining({purpose: 'classification'}));
+  });
+
+  it('rejects a reply from a step after a tool call, which the prompt alone does not show', async () => {
+    const {input, session, message} = fixture();
+    // OpenCode's last step answers with its own "maximum steps reached" summary.
+    session.messages.mockResolvedValue({data: [{info: {role: 'user'}},
+      {info: {role: 'assistant', finish: 'tool-calls'}, parts: [{type: 'tool', tool: 'bash'}]}, message]});
+    expect(await runOpenCodeIntentTransport(input)).toEqual({status: 'unavailable', reason: 'tool_use'});
+  });
+
+  it('rejects a session whose only reply is not the one the prompt returned', async () => {
+    const {input, session, message} = fixture();
+    session.messages.mockResolvedValue({data: [{info: {role: 'user'}}, {...message, info: {...message.info, id: 'other'}}]});
+    expect(await runOpenCodeIntentTransport(input)).toEqual({status: 'unavailable', reason: 'tool_use'});
+  });
+
+  it('reads the session in the wrappers the answer session accepts', async () => {
+    const {input, session, message} = fixture();
+    session.messages.mockResolvedValue({data: {data: [{info: {role: 'user'}}, message], cursor: 'next'}});
+    expect(await runOpenCodeIntentTransport(input)).toMatchObject({status: 'ok'});
+    session.messages.mockResolvedValue([{info: {role: 'user'}}, message]);
+    expect(await runOpenCodeIntentTransport(input)).toMatchObject({status: 'ok'});
+  });
+
+  it('rejects a reply whose session cannot be read back', async () => {
+    const {input, session} = fixture();
+    session.messages.mockResolvedValue({error: {name: 'NotFound'}});
+    expect(await runOpenCodeIntentTransport(input)).toEqual({status: 'unavailable', reason: 'invalid_response'});
+  });
+
   it.each(['length', 'error', 'tool-calls'])('rejects explicit finish %s', async finish => {
     const {input, session, message} = fixture();
     session.prompt.mockResolvedValue({data: {...message, info: {...message.info, finish}}});
@@ -79,6 +115,28 @@ describe('OpenCode intent transport', () => {
     expect(result).toMatchObject({status: 'unavailable'});
     expect(JSON.stringify(result)).not.toContain('SECRET_ERROR_CANARY');
     expect(result).not.toHaveProperty('text');
+  });
+
+  it.each([
+    ['MessageOutputLengthError', 'incomplete_output'],
+    ['APIError', 'provider_error'],
+    ['ProviderAuthError', 'provider_error'],
+    ['UnknownError', 'provider_error'],
+    ['MessageAbortedError', 'invalid_response'],
+    [undefined, 'invalid_response'],
+  ] as const)('reports a failed reply of error type %s as %s without its text', async (name, reason) => {
+    const {input, session, message} = fixture();
+    session.prompt.mockResolvedValue({data: {...message,
+      info: {...message.info, error: {...(name ? {name} : {}), data: {message: 'SECRET_ERROR_CANARY'}}}}});
+    const result = await runOpenCodeIntentTransport(input);
+    expect(result).toEqual({status: 'unavailable', reason});
+  });
+
+  it('reports a prompt that outlived the local headers timeout as a timeout', async () => {
+    const {input, session} = fixture();
+    session.prompt.mockRejectedValue(Object.assign(new TypeError('fetch failed'),
+      {cause: {name: 'HeadersTimeoutError', code: 'UND_ERR_HEADERS_TIMEOUT'}}));
+    expect(await runOpenCodeIntentTransport(input)).toEqual({status: 'unavailable', reason: 'timeout'});
   });
 
   it('rejects an enabled tool before creating a session and still closes the host', async () => {

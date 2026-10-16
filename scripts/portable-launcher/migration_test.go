@@ -6,10 +6,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -147,9 +149,16 @@ func TestPreparePreferredWindowsRuntimeDirsMigratesLocalAppDataToD(t *testing.T)
 	if err != nil || string(copied) != "preserved-c-data" {
 		t.Fatalf("copied C data mismatch: %q, %v", copied, err)
 	}
-	receipt, err := os.ReadFile(filepath.Join(preferred, ".migration-receipt.json"))
-	if err != nil || !strings.Contains(string(receipt), fallback) {
-		t.Fatalf("migration receipt does not bind the C source: %q, %v", receipt, err)
+	receiptData, err := os.ReadFile(filepath.Join(preferred, ".migration-receipt.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt migrationReceipt
+	if err := json.Unmarshal(receiptData, &receipt); err != nil {
+		t.Fatalf("invalid migration receipt: %v", err)
+	}
+	if receipt.SchemaVersion != 1 || receipt.Source != fallback {
+		t.Fatalf("migration receipt does not bind the C source: %#v", receipt)
 	}
 	if _, err := os.Stat(oldFile); err != nil {
 		t.Fatalf("C source data was not preserved: %v", err)
@@ -580,6 +589,10 @@ func TestMigrateLegacyDataRejectsDestinationAliasInsideSource(t *testing.T) {
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	sourceMarker := filepath.Join(source, "preserved-source.txt")
+	if err := os.WriteFile(sourceMarker, []byte("preserved-source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	alias := filepath.Join(root, "local-app-data-alias")
 	if err := os.Symlink(source, alias); err != nil {
 		t.Skipf("directory symlinks unavailable: %v", err)
@@ -592,17 +605,31 @@ func TestMigrateLegacyDataRejectsDestinationAliasInsideSource(t *testing.T) {
 	if err := os.MkdirAll(stage, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	stageMarker := filepath.Join(stage, "preserved-stage.txt")
+	if err := os.WriteFile(stageMarker, []byte("preserved-stage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	err := migrateLegacyData(
 		filepath.Join(root, "current"),
 		destination,
 		launchOptions{migrateFrom: source},
 	)
-	if err == nil || !strings.Contains(err.Error(), "must not overlap") {
+	wantReason := "must not overlap"
+	if runtime.GOOS == "windows" {
+		wantReason = "reparse-point aliases"
+	}
+	if err == nil || !strings.Contains(err.Error(), wantReason) {
 		t.Fatalf("expected physical alias overlap rejection, got: %v", err)
 	}
 	if _, err := os.Stat(destination); !os.IsNotExist(err) {
 		t.Fatalf("destination should not have been created: %v", err)
+	}
+	for marker, want := range map[string]string{sourceMarker: "preserved-source", stageMarker: "preserved-stage"} {
+		content, err := os.ReadFile(marker)
+		if err != nil || string(content) != want {
+			t.Fatalf("migration rejection changed protected marker %s: %q, %v", marker, content, err)
+		}
 	}
 }
 

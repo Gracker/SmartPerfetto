@@ -38,7 +38,6 @@ function writeRuntimeAssetOutputs(repoRoot, revision) {
     'backend/data/perfettoSqlDocs.json',
     'backend/data/perfettoStdlibSymbols.json',
     'backend/data/perfettoSqlIndex.light.json',
-    'backend/data/perfettoSqlIndex.json',
   ]) {
     writeJson(path.join(repoRoot, relativePath), {generatedFrom: revision});
   }
@@ -213,7 +212,7 @@ test('runtime asset generation requires an exact immutable revision', () => {
   }
 });
 
-test('public export Perfetto identities match the runtime pin and release artifact', () => {
+test('public export Perfetto identities match the runtime pin and official release', () => {
   const normalizeNewlines = (value) => value.replace(/\r\n/g, '\n');
   assert.equal(normalizeNewlines('a\r\nb\r\n'), 'a\nb\n');
   const pinText = normalizeNewlines(fs.readFileSync(
@@ -234,14 +233,22 @@ test('public export Perfetto identities match the runtime pin and release artifa
   }).trim();
 
   const revision = pinValue('PERFETTO_VERSION');
-  const release = pinValue('PERFETTO_ARTIFACT_VERSION');
+  const artifact = pinValue('PERFETTO_ARTIFACT_VERSION');
+  // The official reference is always a release tag. The runtime artifact is
+  // either that release or, for a main-synced UI, the commit itself. The
+  // binary reports the newest release in its revision's CHANGELOG (a main
+  // commit adds `-<commit[:9]>`, which the release-only field omits).
+  const release = blockValue('official_perfetto', 'tag');
+  assert.match(release, /^v\d+(?:\.\d+)*$/);
+  if (artifact !== revision) assert.equal(artifact, release);
+  const changelogRelease = git('show', `${revision}:CHANGELOG`)
+    .match(/^(v\d+(?:\.\d+)*) - /m)?.[1];
   assert.equal(blockValue('runtime_perfetto', 'revision'), revision);
-  assert.equal(blockValue('runtime_perfetto', 'reported_version'), release);
+  assert.equal(blockValue('runtime_perfetto', 'reported_version'), changelogRelease);
   assert.equal(
     blockValue('runtime_perfetto', 'stdlib_tree'),
     git('rev-parse', `${revision}:src/trace_processor/perfetto_sql/stdlib`),
   );
-  assert.equal(blockValue('official_perfetto', 'tag'), release);
   assert.equal(blockValue('official_perfetto', 'commit'), git('rev-parse', `${release}^{}`));
   assert.equal(
     blockValue('official_perfetto', 'stdlib_tree'),

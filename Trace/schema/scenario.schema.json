@@ -61,10 +61,13 @@
               "atrace-track-instant", "android-input-motion", "android-input-dispatch",
               "atrace-slice", "atrace-counter", "atrace-async-slice", "atrace-async-track-slice",
               "sched-running", "sched-switch", "sched-waking", "process-stats", "battery-counters", "power-rail",
-              "gpu-work-period", "gpu-frequency", "gpu-power-state", "cpu-frequency", "cpu-idle",
+              "gpu-work-period", "gpu-frequency", "gpu-memory-total", "gpu-power-state", "cpu-frequency", "cpu-idle",
               "cpu-frequency-limits", "thermal-temperature", "cdev-update",
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
-              "gpu-compute-kernel", "anr-event", "perf-sample", "android-log"
+              "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
+              "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change",
+              "android-system-info", "android-network-packet", "android-packages-list",
+              "sched-blocked-reason", "binder-transaction"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -74,6 +77,29 @@
           "prev_thread": {"type": ["string", "null"], "description": "Explicit sched-switch source actor; null denotes idle."},
           "next_thread": {"type": ["string", "null"], "description": "Explicit sched-switch destination actor; null denotes idle."},
           "waker_thread": {"type": ["string", "null"]},
+          "irq_context": {"enum": ["hardirq", "softirq"], "description": "sched-waking raised from interrupt context: sets the ftrace common_flags bit trace processor reads as thread_state.irq_context."},
+          "direction": {"enum": ["received", "transmitted"], "description": "android-network-packet traffic direction."},
+          "interface": {"type": "string", "minLength": 1, "description": "android-network-packet network interface name."},
+          "length": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "android-network-packet length in bytes."},
+          "owner_process": {"type": "string", "description": "Actor whose uid owns a battery-stats-span or an android-network-packet socket."},
+          "io_wait": {"type": "boolean", "description": "sched-blocked-reason: whether the thread's latest D state waited on IO."},
+          "server_thread": {"type": "string", "description": "binder-transaction: the thread that receives the call and replies; `thread` is the caller."},
+          "server_cpu": {"type": "integer", "minimum": 0, "description": "binder-transaction: CPU of the server's receive and reply events; defaults to `cpu`."},
+          "code": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "binder-transaction transaction code; defaults to 1."},
+          "packages": {
+            "type": "array",
+            "minItems": 1,
+            "description": "android-packages-list entries: a package name for an actor's uid.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "process"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "process": {"type": "string", "minLength": 1}
+              }
+            }
+          },
           "prev_priority": {"type": "integer", "minimum": -1, "maximum": 139},
           "next_priority": {"type": "integer", "minimum": -1, "maximum": 139},
           "sched_priority": {"type": "integer", "minimum": -1, "maximum": 139},
@@ -87,6 +113,29 @@
           "action": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
           "vsync_id": {"type": "string", "pattern": "^-?[0-9]+$"},
           "target_process": {"type": "string"},
+          "atom": {"enum": ["app_standby_bucket_changed", "app_freeze_changed"], "description": "Statsd atom grafted from the pinned trace processor atoms.descriptor."},
+          "fields": {"type": "object", "description": "Statsd atom fields by snake_case proto name; enum fields take value names."},
+          "event": {"enum": ["longwake"], "description": "BatteryStats history event for battery-stats-span."},
+          "records": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["process", "proc_state"],
+              "properties": {
+                "process": {"type": "string", "minLength": 1},
+                "proc_state": {"type": "string", "pattern": "^PROCESS_STATE_[A-Z_]+$"},
+                "oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647}
+              }
+            }
+          },
+          "prev_proc_state": {"type": "string", "pattern": "^PROCESS_STATE_[A-Z_]+$"},
+          "cur_proc_state": {"type": "string", "pattern": "^PROCESS_STATE_[A-Z_]+$"},
+          "prev_oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+          "cur_oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+          "reason": {"type": "string", "pattern": "^OOM_ADJ_REASON_[A-Z_]+$"},
+          "seq_id": {"type": "integer", "minimum": 0},
           "name": {"type": "string"},
           "error_id": {"type": "string", "minLength": 1},
           "subject": {"type": "string", "minLength": 1},
@@ -113,11 +162,12 @@
           "cdev_type": {"type": "string", "minLength": 1, "description": "Cooling device type string; trace_processor names the counter track after it."},
           "target": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
           "gpu_id": {"type": "integer", "minimum": 0},
+          "size_bytes": {"type": "string", "pattern": "^[0-9]+$", "description": "gpu-memory-total: GPU memory in bytes; with process, that process's share, else the device total."},
           "uid": {"type": "integer", "minimum": 0},
           "irq": {"type": "integer", "minimum": 0},
           "cookie": {"type": "integer", "minimum": 0},
           "token": {"type": "integer", "minimum": 0},
-          "display_frame_token": {"type": "integer", "minimum": 0},
+          "display_frame_token": {"type": "integer", "minimum": -1, "description": "frame-timeline display frame token; -1 marks a frame the device inserted (OEM frame interpolation)."},
           "jank_type": {"type": "integer", "minimum": 0},
           "old_state": {"type": "integer", "minimum": 0},
           "new_state": {"type": "integer", "minimum": 0},
@@ -200,6 +250,10 @@
               }
             }
           },
+          "android_build_fingerprint": {"type": "string", "minLength": 1, "description": "android-system-info: SystemInfo.android_build_fingerprint."},
+          "android_device_manufacturer": {"type": "string", "minLength": 1, "description": "android-system-info: SystemInfo.android_device_manufacturer."},
+          "android_soc_model": {"type": "string", "minLength": 1, "description": "android-system-info: SystemInfo.android_soc_model."},
+          "android_sdk_version": {"type": "integer", "minimum": 1, "description": "android-system-info: SystemInfo.android_sdk_version."},
           "context": {"type": "string", "pattern": "^[1-9][0-9]*$"},
           "kernel": {"type": "string", "minLength": 1},
           "demangled_kernel": {"type": "string", "minLength": 1},
@@ -226,12 +280,32 @@
             "then": {"required": ["event_id", "window_id", "vsync_id"]}
           },
           {
+            "if": {"properties": {"type": {"const": "gpu-memory-total"}}},
+            "then": {"required": ["gpu_id", "size_bytes"]}
+          },
+          {
             "if": {"properties": {"type": {"const": "sched-switch"}}},
             "then": {"required": ["cpu", "prev_thread", "next_thread", "prev_priority", "next_priority", "prev_state_raw"]}
           },
           {
             "if": {"properties": {"type": {"const": "sched-waking"}}},
             "then": {"required": ["cpu", "thread", "waker_thread", "target_cpu", "sched_priority"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-network-packet"}}},
+            "then": {"required": ["direction", "interface", "length", "owner_process"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "sched-blocked-reason"}}},
+            "then": {"required": ["thread", "io_wait"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "binder-transaction"}}},
+            "then": {"required": ["thread", "server_thread", "duration_ns"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-packages-list"}}},
+            "then": {"required": ["packages"]}
           },
           {
             "if": {"properties": {"type": {"const": "cpu-frequency-limits"}}},
@@ -244,6 +318,33 @@
           {
             "if": {"properties": {"type": {"const": "cdev-update"}}},
             "then": {"required": ["cdev_type", "target"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "statsd-atom"}}},
+            "then": {"required": ["atom", "fields"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "battery-stats-span"}}},
+            "then": {"required": ["process", "thread", "duration_ns", "event", "owner_process", "tag"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-system-info"}}},
+            "then": {
+              "anyOf": [
+                {"required": ["android_build_fingerprint"]},
+                {"required": ["android_device_manufacturer"]},
+                {"required": ["android_soc_model"]},
+                {"required": ["android_sdk_version"]}
+              ]
+            }
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-process-state-snapshot"}}},
+            "then": {"required": ["records"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-process-state-change"}}},
+            "then": {"required": ["thread", "target_process", "prev_proc_state", "cur_proc_state"]}
           },
           {
             "if": {"properties": {"type": {"const": "managed-heap-graph"}}},

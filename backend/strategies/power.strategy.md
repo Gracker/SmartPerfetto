@@ -88,86 +88,6 @@ final_report_contract:
         - ['24h', '2h', '1h', 'one hour', 'two hours', 'observed window', 'trace window', '局部', '24\s*小时', '2\s*小时', '1\s*小时', '观测窗口', 'Play vitals', 'Android vitals', 'excessive', 'stuck']
         - ['trace', 'dumpsys alarm', 'android_wakeups', 'android_kernel_wakelock', 'external_aggregate', '外部聚合', 'missing', '缺失', 'permission', 'SCHEDULE_EXACT_ALARM', 'USE_EXACT_ALARM', '置信度', '不能', '不可']
 
-phase_hints:
-  - id: power_data_gate
-    keywords: ['power', 'battery', 'wattson', '功耗', '耗电', '电池', '数据', '采集']
-    constraints: '先检查 Trace 数据完整度中的 power_rails、battery_counters、cpu_freq_idle、gpu_work_period。缺失时必须输出数据采集建议，禁止把空表解释为“没有功耗问题”。需要总览时优先调用 power_consumption_overview；拆开看时先调用 power_rails_energy_breakdown 和 battery_drain_rate_summary。'
-    critical_tools: ['power_consumption_overview', 'power_rails_energy_breakdown', 'battery_drain_rate_summary', 'lookup_knowledge']
-    critical: true
-  - id: wattson_attribution
-    keywords: ['wattson', 'rail', 'thread', '归因', '能耗', 'energy', 'power_rails']
-    constraints: 'Wattson 是估算，不是 ODPM 实测。只有 power_rails/cpu_freq_idle 数据可用时才用 Wattson 归因。先用 power_rails_energy_breakdown 看硬件 rail，再用 wattson_rails_power_breakdown / wattson_thread_power_attribution 做 CPU/线程估算；启动窗口问题再加 wattson_app_startup_power。'
-    critical_tools: ['wattson_rails_power_breakdown', 'wattson_thread_power_attribution', 'wattson_app_startup_power']
-    critical: false
-  - id: battery_drain_chain
-    keywords: ['battery drain', 'standby drain', '掉电', '待机耗电', '后台耗电', 'wakelock', 'doze', 'job', 'network']
-    constraints: '用户问掉电/待机耗电时优先调用 battery_drain_attribution，把 battery drain rate、Doze、suspend/wakeup、wakelock、screen-off CPU、job、network 串起来；缺 rail 数据时只能给事件链归因。'
-    critical_tools: ['battery_drain_attribution', 'wakeup_frequency_summary', 'screen_off_background_cpu_attribution', 'modem_network_correlation_summary']
-    critical: false
-  - id: background_execution_governance
-    keywords: ['JobScheduler', 'WorkManager', 'Foreground Service', 'FGS', 'foreground worker', 'UIDT', 'pending reason', 'stop reason', 'runtime quota', 'standby bucket', 'expedited job', 'dataSync', 'mediaProcessing', 'shortService']
-    constraints: '后台执行治理必须把 JobScheduler pending reason（为何未运行）与 JobParameters/WorkInfo stop reason（为何停止）分开。Perfetto 的 job event 只能证明执行窗口；Android 15/16 quota、FGS timeout、UIDT 和 standby bucket 结论必须标注版本、target/app state、app 日志/API 或 dumpsys 证据缺口。'
-    critical_tools: ['battery_drain_attribution', 'android_job_scheduler_events', 'android_kernel_wakelock_summary', 'battery_doze_state_timeline', 'screen_off_background_cpu_attribution', 'suspend_wakeup_analysis', 'lookup_knowledge']
-    critical: false
-  - id: alarm_wakeup_boundary
-    keywords: ['AlarmManager', 'exact alarm', 'allow-while-idle', 'setExactAndAllowWhileIdle', 'wakeup alarm', 'wakeups', 'wakelock', 'partial wakelock', 'Android vitals', 'Play vitals', 'excessive wakeups']
-    constraints: 'Alarm/wakeup 只能从本地 trace 证明唤醒、wakelock、suspend/Doze 现象；不能仅凭 wakeup 反推 AlarmManager API、exact-alarm 权限或 Play Vitals 违规。Vitals 需要 24h/聚合窗口，短 trace 只能写局部参考。'
-    critical_tools: ['wakeup_frequency_summary', 'suspend_wakeup_analysis', 'android_kernel_wakelock_summary', 'battery_drain_attribution', 'lookup_knowledge']
-    critical: false
-  - id: thermal_chain
-    keywords: ['thermal', 'throttling', '发热', '温控', '降频', '热节流', 'gpu work period', 'mali']
-    constraints: '用户问发热、降频、热导致卡顿时优先调用 thermal_throttling_chain；同时说明温度传感器/DVFS/GPU work period 哪些数据存在，哪些缺失。'
-    critical_tools: ['thermal_throttling_chain']
-    critical: false
-  - id: fallback_state_power
-    keywords: ['wakelock', 'doze', 'battery', 'dvfs', 'thermal', '唤醒', '待机', '降频']
-    constraints: '如果 Wattson 前置数据缺失，退化为状态/事件链分析：battery_drain_rate_summary、battery_charge_timeline、battery_doze_state_timeline、wakeup_frequency_summary、android_kernel_wakelock_summary、screen_off_background_cpu_attribution、android_dvfs_counter_stats、suspend_wakeup_analysis。结论必须标注这是定性分析，不是 rail 级能耗归因。'
-    critical_tools: ['battery_drain_rate_summary', 'battery_charge_timeline', 'battery_doze_state_timeline', 'wakeup_frequency_summary', 'android_kernel_wakelock_summary', 'screen_off_background_cpu_attribution', 'android_dvfs_counter_stats', 'suspend_wakeup_analysis']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: power_data_availability
-      match_keywords: ['power', 'battery', 'wattson', '功耗', '耗电', '电池', '数据完整度', '采集']
-      suggestion: '功耗场景必须先确认 power_rails/battery_counters/cpu_freq_idle/gpu_work_period 是否可用'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: power_rails_energy_breakdown
-        - tool: invoke_skill
-          skill_id: battery_charge_timeline
-        - tool: invoke_skill
-          skill_id: android_dvfs_counter_stats
-        - tool: invoke_skill
-          skill_id: android_gpu_work_period_track
-    - id: power_attribution_or_fallback
-      match_keywords: ['wattson', 'rail', 'thread', 'wakelock', 'doze', '归因', '唤醒', '降频']
-      suggestion: '功耗场景需要包含 Wattson 归因或状态事件 fallback 分析阶段'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: wattson_thread_power_attribution
-        - tool: invoke_skill
-          skill_id: wattson_rails_power_breakdown
-        - tool: invoke_skill
-          skill_id: wakelock_tracking
-        - tool: invoke_skill
-          skill_id: device_state_timeline
-    - id: power_composite_entrypoint
-      match_keywords: ['power_consumption_overview', 'battery_drain_attribution', 'thermal_throttling_chain', '总览', '掉电', '温控链路']
-      suggestion: '复杂功耗问题建议先用 power_consumption_overview / battery_drain_attribution / thermal_throttling_chain 建立统一证据链'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: power_consumption_overview
-        - tool: invoke_skill
-          skill_id: battery_drain_attribution
-        - tool: invoke_skill
-          skill_id: thermal_throttling_chain
-    - id: power_vitals_threshold_context
-      match_keywords: ['wakelock', 'vitals', 'excessive', 'stuck', 'P90', 'P99', '后台']
-      suggestion: 'Wakelock 阈值必须说明时间基准：24h 累计 >=2h excessive，单后台 wakelock >=1h stuck，P90/P99 >60min 重点排查；短 trace 只能作为局部证据或换算参考'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: wakelock_tracking
-        - tool: lookup_knowledge
 ---
 
 #### power Core Strategy
@@ -242,7 +162,7 @@ plan_template:
 | `cpu_freq_idle` | 无 CPU idle/freq 完整状态 | 不做 Wattson CPU 能耗归因；可退化为 CPU 频率/DVFS 定性分析 |
 | `gpu_work_period` | 无 GPU active region | 不做 GPU work period/能耗归因；可退化为 GPU 频率或 Mali power state 分析 |
 | `cpu_freq_limits` | 无 `cpu_max/min_frequency_limit` 轨道 | 不能给限频归因结论；只能用实际 `cpufreq` 做观测，并按 Phase 4(e) 给 `power/cpu_frequency_limits` 采集建议 |
-| `thermal_throttling` | 无热区温度 / cooling device 轨道 | 不能确认热触发；限频结论最多停在 `NON_THERMAL` 或守护进程候选 |
+| `thermal_throttling` | 无热区温度 / cooling device 轨道 | 不能确认热触发；限频结论最多停在守护进程候选或 `THERMAL_EVIDENCE_NOT_CAPTURED`，不能写成非热 |
 
 如果用户明确问“怎么采集”，优先调用：
 ```
@@ -294,7 +214,15 @@ invoke_skill("android_kernel_wakelock_summary")
 invoke_skill("suspend_wakeup_analysis")
 invoke_skill("screen_off_background_cpu_attribution", { package: "<包名>" })
 invoke_skill("modem_network_correlation_summary")
+invoke_skill("android_app_background_power_state", { package: "<包名>" })
 ```
+
+`android_app_background_power_state`（也是 `battery_drain_attribution` 的 `app_background_power` 步骤）是应用级的三层可选证据，先读 `power_state_capability` 再解读：
+- App wakelock（`app_wakelock_summary`，或旧 trace processor 上的 `app_wakelock_summary_battery_stats`）是 PowerManager 持锁，按 uid + tag；它和 `android_kernel_wakelock_summary` 的 kernel wakeup source 是两层，一个应用 wakelock 可以不对应任何可见的 kernel wakelock，不要相加或互相替代。
+- Standby bucket（`standby_bucket_residency`）说明配额环境：长时间 RARE/RESTRICTED 能解释 job/alarm/网络被推迟或合并，ACTIVE/WORKING_SET 下仍频繁唤醒则更可能是应用自身行为。
+- Freezer（`freezer_summary` 或 `freezer_summary_slices`，按有数据的来源二选一）：冻结期间进程不执行代码，频繁解冻（binder、广播、服务绑定等原因）会把后台 CPU 和唤醒带回来；statsd 与 slice 两种来源的解冻原因写法不同（`UFR_BINDER_TXNS` 与 `binder_txns`），引用时保留原文。
+- 需要确认应用当时是否真在后台时，用 `invoke_skill("android_process_state_residency", { process_name: "<包名>" })` 看 framework 进程状态驻留（TOP、FOREGROUND_SERVICE、CACHED_* 等）：前台服务期间的持锁和唤醒与 cached 状态下的持锁是两类问题。
+- `runtime_lacks_*` 表示 trace 有数据但 trace processor 早于对应模块，只能写数据存在和版本缺口；`no_*_data` 表示没采集（statsd atom `app_standby_bucket_changed` / `app_freeze_changed`、atrace `power`/`am`），写成采集建议。
 
 输出要明确标注：这是状态/事件链证据，能说明“是否频繁唤醒、是否无法进入 Doze、是否有 wakelock”，但不是 rail 级功耗量化。
 
@@ -353,14 +281,18 @@ invoke_skill("cpu_frequency_limit_attribution", { package: "<包名>", lookback_
 
 **(b) 读 who_verdict，按证据阶梯收口**
 
-| who_verdict | 证据强度 | 结论写法 |
-|---|---|---|
-| `thermal_cooling_device_confirmed` | 强：cdev 档位跳变与 limit 变化同刻 | 可写“热管理触发的限频”，给出 cdev 名与温度上下文 |
-| `userspace_thermal_daemon_active_before_limit` | 中：limit 变化前窗口内有 thermal 守护进程活动 | 只能写**候选触发源**；说明该平台把限频写进 sysfs，trace 里没有 cdev 事件 |
-| `limit_changed_no_thermal_evidence` | 弱：限频确实发生，但无 cooling/温度证据 | 写 `NON_THERMAL`：PowerHAL/perf service、游戏/省电模式、厂商策略都可能限频，需要补证 |
-| `onset_unknown_capped_at_data_start` | 起点缺失 | 只报受限时长与影响，不报触发者 |
+分类只来自共享 fragment：每次限频写入（上限值变化）单独判定，区段/窗口取最强一级，`onset_trigger_mix` 给出逐次分布（“N 次写入中 M 次由热控施加”，不能说成整段都是）。散热设备与 policy 的对应关系由“档位变更之后 1ms 内该 policy 上限同向变化”的时序配对确定，不看设备名。
 
-对应诊断分级：`THERMAL_LIMIT_CONFIRMED` / `THERMAL_DAEMON_SUSPECTED` / `NON_THERMAL_LIMIT` / `LIMIT_EVIDENCE_MISSING`。
+| trigger_class（who_verdict） | 证据强度 | 结论写法 |
+|---|---|---|
+| `THERMAL_LIMIT_CONFIRMED`（`thermal_cooling_device_confirmed`） | 强：上限收紧紧跟在关联散热设备升档之后 | 可写“热管理触发的限频”，给出散热设备名与温度上下文 |
+| `THERMAL_DAEMON_SUSPECTED` | 中：收紧前窗口内有 thermal 守护进程活动 | 只能写**候选触发源**；该平台把限频写进 sysfs，trace 里没有 cdev 配对 |
+| `THERMAL_COOLING_BACKGROUND` / `THERMAL_COOLING_UNASSOCIATED` | 弱：关联设备只是同期活动，或只有未关联设备活动 | 写“并存的热控活动”，不能写成施加者 |
+| `LIMIT_ONSET_UNKNOWN` | 起点缺失（首样本或无效样本之后） | 只报受限时长与影响，不报触发者，也不写非热 |
+| `NO_THERMAL_EVIDENCE_OBSERVED` / `THERMAL_EVIDENCE_NOT_CAPTURED` | 无热证据：前者采到了 cdev 变化但无关联，后者没采到 | 触发方未确定；PowerHAL/perf service、游戏/省电模式、厂商策略都可能限频，**不能从“没看到”推出非热**；后者给 `thermal/cdev_update` 采集建议 |
+| `LIMIT_RELAXED` | 窗口内只有放宽 | 放宽不是原因；扩大窗口找最初的收紧 |
+
+会话级另有 `NO_LIMIT_EPISODE`（有有效上限样本但无区段）与 `LIMIT_EVIDENCE_MISSING`（无有效最大上限样本：`max_limit_not_captured` / `max_limit_samples_missing`）。
 
 平台差异决定你最多能拿到哪一级证据，不是结论本身：内核热管理平台（Pixel，GKI 上的 MTK 多半也是）会发 cooling device 跳变，可直接对上 limit 变化；高通把限频写在用户态（`thermal-engine` / `android.hardware.thermal-service.qti` 直写 sysfs），**limit 变了却没有任何 cdev 事件**，温度采样也稀疏（每分钟几个点），此时最强结论只能到“守护进程在限频前活跃”。
 

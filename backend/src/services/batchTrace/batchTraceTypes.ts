@@ -4,7 +4,6 @@
 
 import type {
   ComparisonMetricKey,
-  MultiTraceComparisonRun,
   NormalizedMetricValue,
 } from '../../types/multiTraceComparison';
 import type { HeapPathClusterAnalysisV1 } from '../../types/heapPathCluster';
@@ -167,10 +166,4 @@ export interface PromotedBatchSnapshot {
   ordinal: number;
   snapshotId: string;
   metrics: NormalizedMetricValue[];
-}
-
-export interface BatchTraceComparisonBridgeResult {
-  run: BatchTraceRunV1;
-  promotedSnapshots: PromotedBatchSnapshot[];
-  comparison: MultiTraceComparisonRun;
 }

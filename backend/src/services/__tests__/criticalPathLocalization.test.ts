@@ -119,7 +119,7 @@ describe('criticalPathLocalization', () => {
 
     expect(zh.wakeupChain[0].reasons).toEqual(['睡眠', '唤醒来源：网络收包候选', 'stable_slice_name']);
     expect(zh.warnings[0]).toBe('critical path 共 180 个链路段，仅展示前 160 个；阻塞时长、模块占比与反事实估计按完整链路计算。');
-    expect(zh.summary).toContain('最长外部段是 com.demo / OkHttp Dispatch，持续 40.00 ms，关联 网络收包等待候选。');
+    expect(zh.summary).toContain('最长可归因段是 com.demo / OkHttp Dispatch，持续 40.00 ms，关联 网络收包等待候选。');
     expect(zh.summary).toContain('直接唤醒来源：Interrupt。');
     const en = renderCriticalPathAnalysis(zh, 'en');
     expect(renderCriticalPathAnalysis(en, 'en')).toEqual(en);

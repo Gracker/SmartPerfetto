@@ -42,7 +42,7 @@ steps:
     display:
       level: hidden
       layer: overview
-    sql_fragments: [fragments/scene_input_facts.sql]
+    sql_fragments: [fragments/android_input_events_normalized.sql, fragments/scene_input_facts.sql]
     sql: |
       SELECT printf('%d', start_ts) AS start_ts, printf('%d', end_ts) AS end_ts,
         (SELECT COUNT(*) FROM scene_input_facts) AS observed_event_count,
@@ -188,7 +188,7 @@ steps:
         - { name: dur_ns, label: "时长(ns)", type: duration, unit: ns, hidden: true }
         - { name: dur_ms, label: "时长(ms)", type: number }
         - { name: source_status, label: "数据源", type: string, hidden: true }
-    sql_fragments: [fragments/scene_input_facts.sql]
+    sql_fragments: [fragments/android_input_events_normalized.sql, fragments/scene_input_facts.sql]
     sql: |
       WITH segments AS (
         SELECT ts, end_ts, UPPER(gesture_type) AS state, CASE gesture_type WHEN 'touch_move' THEN '连续触摸移动' WHEN 'touch_hold' THEN '持续触摸（长按识别未确认）' WHEN 'tap' THEN '点击接触' WHEN 'cancelled' THEN '触摸取消' WHEN 'key' THEN '按键输入' WHEN 'scroll_input' THEN '滚动轴输入（ACTION_SCROLL）' WHEN 'wheel' THEN '滚轮输入' ELSE '输入活动（动作信息不完整）' END AS state_label,
@@ -232,7 +232,7 @@ steps:
         - { name: dur_ns, label: "时长(ns)", type: duration, unit: ns, hidden: true }
         - { name: dur_ms, label: "时长(ms)", type: number }
         - { name: source_status, label: "数据源", type: string, hidden: true }
-    sql_fragments: [fragments/scene_input_facts.sql]
+    sql_fragments: [fragments/android_input_events_normalized.sql, fragments/scene_input_facts.sql]
     sql: |
       WITH segments AS (
         SELECT ts, end_ts, UPPER(gesture_type) AS state, CASE gesture_type WHEN 'touch_move' THEN '连续触摸移动' WHEN 'touch_hold' THEN '持续触摸（长按识别未确认）' WHEN 'tap' THEN '点击接触' WHEN 'cancelled' THEN '触摸取消' WHEN 'key' THEN '按键输入' WHEN 'scroll_input' THEN '滚动轴输入（ACTION_SCROLL）' WHEN 'wheel' THEN '滚轮输入' ELSE '输入活动（动作信息不完整）' END AS state_label,

@@ -2,22 +2,120 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
+import {afterAll, beforeAll, afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
-import { authenticate } from '../../middleware/auth';
-import {
-  bindWorkspaceRouteContext,
-  requireWorkspaceRouteContext,
-} from '../../middleware/workspaceRouteContext';
-import agentRoutes from '../agentRoutes';
-import providerRoutes from '../providerRoutes';
-import reportRoutes, { reportStore } from '../reportRoutes';
-import traceRoutes from '../simpleTraceRoutes';
+
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
+let authenticate: typeof import('../../middleware/auth')['authenticate'];
+let bindWorkspaceRouteContext: typeof import('../../middleware/workspaceRouteContext')['bindWorkspaceRouteContext'];
+let requireWorkspaceRouteContext: typeof import('../../middleware/workspaceRouteContext')['requireWorkspaceRouteContext'];
+let agentRoutes: typeof import('../agentRoutes').default;
+let providerRoutes: typeof import('../providerRoutes').default;
+let reportRoutes: typeof import('../reportRoutes').default;
+let reportStore: typeof import('../reportRoutes')['reportStore'];
+let traceRoutes: typeof import('../simpleTraceRoutes').default;
+let NO_PRIVATE_CONTEXT: typeof import('../../services/security/analysisPrivateContext')['NO_PRIVATE_CONTEXT'];
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService')['SessionPersistenceService'];
+let resetConversationSessionStoreForTests: typeof import('../../services/conversationSessionStore')['resetConversationSessionStoreForTests'];
+let resetProviderService: typeof import('../../services/providerManager')['resetProviderService'];
+let resetAnalysisRunStoreForTests: typeof import('../../services/analysisRunStore')['resetAnalysisRunStoreForTests'];
+let resetAgentEventStoreForTests: typeof import('../../services/agentEventStore')['resetAgentEventStoreForTests'];
+let resetAnalysisHistoryStoreForTests: typeof import('../../services/analysisHistoryStore')['resetAnalysisHistoryStoreForTests'];
+let resetRunManifestStoreForTests: typeof import('../../services/selfEvolution/runManifestStore')['resetRunManifestStoreForTests'];
+
+const fixtureEnvKeys = ['SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE', 'SCENE_REPORT_DIR',
+  'SCENE_JOB_ARTIFACT_DIR', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR'] as const;
+const fixtureOriginalEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let caseRoot: string;
+const caseRoots = new Set<string>();
+let cleanupFailed = false;
+
+function useFixturePaths(root: string): void {
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(root, 'sessions.sqlite');
+  process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(root, 'data');
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(root, 'logs');
+  process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(root, 'providers');
+  process.env.SMARTPERFETTO_DATA_DIR = path.join(root, 'enterprise-data');
+  process.env.UPLOAD_DIR = path.join(root, 'uploads');
+}
+
+function closeFixtureStores(): void {
+  SessionPersistenceService.resetForTests();
+  resetConversationSessionStoreForTests();
+  resetAnalysisRunStoreForTests();
+  resetAgentEventStoreForTests();
+  resetAnalysisHistoryStoreForTests();
+  resetRunManifestStoreForTests();
+  resetProviderService();
+}
+
+beforeAll(async () => {
+  suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-private-http-'));
+  useFixturePaths(suiteRoot);
+  console.info('[HTTP fixture] workspaceResourceRoutes owns', suiteRoot);
+  // These paths are captured by config/route singletons at import time.
+  process.env.SCENE_REPORT_DIR = path.join(suiteRoot, 'scene-reports');
+  process.env.SCENE_JOB_ARTIFACT_DIR = path.join(suiteRoot, 'scene-jobs');
+  ({authenticate} = await import('../../middleware/auth'));
+  ({bindWorkspaceRouteContext, requireWorkspaceRouteContext} = await import('../../middleware/workspaceRouteContext'));
+  agentRoutes = (await import('../agentRoutes')).default;
+  providerRoutes = (await import('../providerRoutes')).default;
+  reportRoutes = (await import('../reportRoutes')).default;
+  ({reportStore} = await import('../reportRoutes'));
+  traceRoutes = (await import('../simpleTraceRoutes')).default;
+  ({NO_PRIVATE_CONTEXT} = await import('../../services/security/analysisPrivateContext'));
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+  ({resetConversationSessionStoreForTests} = await import('../../services/conversationSessionStore'));
+  ({resetProviderService} = await import('../../services/providerManager'));
+  ({resetAnalysisRunStoreForTests} = await import('../../services/analysisRunStore'));
+  ({resetAgentEventStoreForTests} = await import('../../services/agentEventStore'));
+  ({resetAnalysisHistoryStoreForTests} = await import('../../services/analysisHistoryStore'));
+  ({resetRunManifestStoreForTests} = await import('../../services/selfEvolution/runManifestStore'));
+});
+
+beforeEach(async () => {
+  if (cleanupFailed) throw new Error(`Previous fixture cleanup failed; retained ${suiteRoot}`);
+  caseRoot = await fs.mkdtemp(path.join(suiteRoot, 'case-'));
+  caseRoots.add(caseRoot);
+  useFixturePaths(caseRoot);
+  closeFixtureStores();
+});
+
+async function removeCaseRoots(): Promise<void> {
+  if (cleanupFailed) return;
+  for (const root of caseRoots) {
+    await fs.rm(root, {recursive: true, force: true});
+  }
+  caseRoots.clear();
+}
+
+afterAll(async () => {
+  try {
+    closeFixtureStores();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  } finally {
+    for (const [key, value] of fixtureOriginalEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    if (!cleanupFailed) {
+      const root = suiteRoot;
+      await fs.rm(root, {recursive: true, force: true});
+      console.info('[HTTP fixture] workspaceResourceRoutes cleanup complete', root);
+    }
+  }
+});
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -28,7 +126,7 @@ const API_USER_ID = `api-key-${crypto.createHash('sha256').update(API_KEY).diges
 
 let uploadDir: string;
 
-function makeWorkspaceApp(): express.Express {
+async function makeWorkspaceApp() {
   const app = express();
   const workspaceMiddlewares = [
     bindWorkspaceRouteContext,
@@ -40,7 +138,7 @@ function makeWorkspaceApp(): express.Express {
   app.use('/api/workspaces/:workspaceId/reports', ...workspaceMiddlewares, reportRoutes);
   app.use('/api/workspaces/:workspaceId/agent', ...workspaceMiddlewares, agentRoutes);
   app.use('/api/workspaces/:workspaceId/providers', ...workspaceMiddlewares, providerRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function authHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
@@ -98,35 +196,44 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  reportStore.clear();
-  if (originalApiKey === undefined) {
-    delete process.env.SMARTPERFETTO_API_KEY;
-  } else {
-    process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+  try {
+    await loopbackServers.close();
+    reportStore.clear();
+    closeFixtureStores();
+    caseRoots.add(uploadDir);
+    await removeCaseRoots();
+    if (originalApiKey === undefined) {
+      delete process.env.SMARTPERFETTO_API_KEY;
+    } else {
+      process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+    }
+    if (originalUploadDir === undefined) {
+      delete process.env.UPLOAD_DIR;
+    } else {
+      process.env.UPLOAD_DIR = originalUploadDir;
+    }
+    if (originalOutputLanguage === undefined) {
+      delete process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
+    } else {
+      process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = originalOutputLanguage;
+    }
+    if (originalSsoTrustedHeaders === undefined) {
+      delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
+    } else {
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = originalSsoTrustedHeaders;
+    }
+    useFixturePaths(suiteRoot);
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
   }
-  if (originalUploadDir === undefined) {
-    delete process.env.UPLOAD_DIR;
-  } else {
-    process.env.UPLOAD_DIR = originalUploadDir;
-  }
-  if (originalOutputLanguage === undefined) {
-    delete process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
-  } else {
-    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = originalOutputLanguage;
-  }
-  if (originalSsoTrustedHeaders === undefined) {
-    delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
-  } else {
-    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = originalSsoTrustedHeaders;
-  }
-  await fs.rm(uploadDir, { recursive: true, force: true });
 });
 
 describe('workspace resource routes', () => {
   it('binds trace list ownership to the workspace path without legacy headers', async () => {
     await writeTraceMetadata('trace-a', 'workspace-a');
     await writeTraceMetadata('trace-b', 'workspace-b');
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const res = await authHeaders(
       request(app).get('/api/workspaces/workspace-b/traces'),
@@ -140,7 +247,7 @@ describe('workspace resource routes', () => {
 
   it('rejects trusted SSO requests whose selected workspace differs from the workspace path', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const res = await trustedSsoHeaders(
       request(app).get('/api/workspaces/workspace-b/traces'),
@@ -155,12 +262,13 @@ describe('workspace resource routes', () => {
     reportStore.set('report-b', {
       html: '<html><body>workspace b report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'session-b',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-b',
       userId: API_USER_ID,
     });
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const res = await authHeaders(
       request(app).get('/api/workspaces/workspace-b/reports/report-b'),
@@ -174,7 +282,7 @@ describe('workspace resource routes', () => {
 
   it('mounts provider and agent aliases under the workspace resource root', async () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
-    const app = makeWorkspaceApp();
+    const app = await makeWorkspaceApp();
 
     const providerRes = await trustedSsoHeaders(
       request(app).get('/api/workspaces/workspace-b/providers/templates'),

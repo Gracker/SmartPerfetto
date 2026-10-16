@@ -11,6 +11,312 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [Unreleased]
+
+## [1.16.2] - 2026-10-14
+
+### Fixed
+
+- Malformed claim and investigation locations no longer discard healthy items from the entire semantic review. Invalid root envelopes remain rejected, and incomplete evidence remains explicitly unverified.
+- Scrolling identity recovery accepts an evidence-selected UPID and retains the original time window. Ambiguous identity limits the affected attribution while independent findings and report text remain deliverable.
+- Completed-answer declaration recovery uses the existing delivery reserve instead of an exhausted investigation deadline. Recovery remains bounded, preserves the original answer on failure, and revalidates declarations that could be swallowed by an unclosed comment or fence.
+- Registered report scenes without section requirements receive an authoritative empty requirement set, avoiding an invalid snapshot before review.
+- Current authorized evidence reads retain conservative handling of duplicate anchors, empty tables and exact captured-value rounding without inventing process identity, units or verified proof.
+- Private document retrieval prioritizes complete tag and phrase matches, retains selected knowledge and citation guidance under prompt pressure, and distinguishes delivered passages from citations in Web answers.
+
+### Changed
+
+- Internal performance receipts record canonical declaration state and repair acceptance independently of provider-call completion.
+- The portable packaging guide follows draft upload, exact three-platform smoke, promotion and npm Trusted Publishing in the same order as the release runbook.
+
+### Verification limits
+
+- Real-model startup, scrolling and Binder runs reached the targeted report-recovery checks; full strict claim verification remains incomplete where references, units, content or investigation coverage are insufficient. Delivered reports retain these limitations and actual rejected claims.
+- The corresponding public Perfetto-Skills projection remains deferred; this release does not claim that independent repository has been synchronized.
+
+## [1.16.1] - 2026-10-12
+
+### Fixed
+
+- HTML reports retain complete evidence rows, conversation timelines, nested details and comparison/batch data. Save, copy, expand and row controls work in exported reports and offline reopening.
+- Private-report notices distinguish restricted backend access from the handling of exported files; report contract tests now verify the current notice while retaining secret and canary filtering assertions.
+
+### Changed
+
+- The committed AI Assistant frontend presents ordinary informational metrics as neutral tables instead of green status markers.
+- Default GitHub Actions run clean Linux build, core lifecycle, authentication, privacy and report contracts. Native platform, Rust and Docker checks run for related paths; full Trace/SQL, runtime and performance regression remains available locally and by manual dispatch.
+- Docker nightly builds use the smaller CI gate; version-tag publication retains the complete backend gate. Automatic CI cancels superseded runs and exposes one aggregate gate that preserves failures.
+
+## [1.16.0] - 2026-10-11
+
+### Added
+
+- Scene entry evidence is collected through the shared Skill path before the first model turn, retaining pinned identity and strategy scope.
+- Explicit numeric presentation declarations bind body literals, units, repeated occurrences and fixed-decimal rounding to original captured values using exact arithmetic.
+- Flagship acceptance checks independently distinguish value correctness, complete producer-bound proof and finished delivery.
+- A read-existing draft diagnostic tool reports declaration problems before submission without executing SQL or certifying final acceptance.
+
+### Fixed
+
+- Conclusion declarations retain per-entry validity, native repair diagnostics and original claim precision; a bounded framing repair preserves complete declarations without accepting truncated or duplicated payloads.
+- Startup and scrolling Skills retain authored count, duration, ratio, frequency and frame-rate units through evidence capture and frontend contracts. Frame rate remains distinct from frequency and frame counts.
+- Supported native SQL quantity expressions derive units from pinned formal schemas and sealed executions without acquiring native row identities or clocks.
+- Startup acceptance compares the platform's original classification separately from Skill reclassification; semantic investigation review receives the fixed applicability constraints enforced by its parser.
+- Count equivalence, wait-chain evidence citations and delivery budgeting preserve their evidence, identity and privacy boundaries.
+- Investigation records retain distinct issued artifact identities, and snapshot-bound short references preserve the original ledger provenance.
+- Runtime tool transport preserves schema-declared JSON strings and emits complete unit and evidence guidance within existing description budgets.
+- Malformed reserved declaration comments remain ineligible but enter bounded strict repair without duplicating their payload in the answer body.
+- OpenCode can spend its existing full-mode delivery reserve after a native output limit leaves no answer, retaining the original deadline, provider and strict completion checks.
+- Declaration guidance distinguishes evidence references from required semantic subject cells and includes complete numeric and categorical examples within the existing prompt budget.
+- Draft diagnostics locate conflicting identifier fields, safe JSON error positions and actual UTF-8 input budgets, prioritizing unproved candidates without reading new evidence, rewriting references or certifying a report.
+
+### Changed
+
+- Regenerated the frontend contract and committed production prebuild; refreshed architecture guidance and test ownership.
+- Real-provider verification defaults to the GLM Coding Plan endpoint with pinned main and light models; retired DeepSeek commands stop before making provider calls.
+
+## [1.15.1] - 2026-10-06
+
+### Fixed
+
+- CLI `doctor` now opens, queries and closes an isolated in-memory SQLite database. Missing native bindings and probe/close failures are diagnostic errors, including when AI is disabled, instead of remaining hidden behind successful version/help checks.
+- Agent HTTP fixtures now isolate enterprise/session databases, provider data, logs and scene artifacts before importing runtime modules. Owned sessions, streams and stores finish before temporary directories are removed; shared suite listeners retain their lifecycle.
+
+### Changed
+
+- Public npm smoke explicitly approves reviewed source pins in its own consumer project, checks the SQLite probe and executes a real query against an immutable committed trace fixture. The OIDC publish job and hash-bound tarball boundary remain separate.
+- CLI installation docs explain conditional dependency-script approval for project, global and one-off contexts. A publisher's `allowScripts` does not authorize a consumer installation; Node.js 24 remains required.
+
+## [1.15.0] - 2026-10-06
+
+### Security
+- The backend no longer serves `/uploads/*` as static files. Whenever
+  `NODE_ENV` was `development` (the default for source deployments unless
+  explicitly overridden) it served `backend/uploads`,
+  including uploaded traces and their metadata, outside `/api`: without
+  authentication, trace ownership checks, or the keyless-mode Host check that
+  stops DNS-rebinding pages. Reading a file required knowing its trace id.
+  Default Docker and portable configurations set `NODE_ENV=production` and
+  were not affected. Nothing in the product used the path; download traces through
+  `GET /api/traces/:id/file` (or its workspace-scoped form), which is
+  authenticated and ownership-checked.
+
+### Added
+- Per-turn analysis context in the composer: independently select source
+  codebases and document knowledge bases, with disclosed scope and explicit
+  provider-send consent. Source lookup works on demand without a prebuilt
+  index; source depth controls the bounded lookup budget, not authorization.
+- Document folders can be registered, indexed, searched and read through the
+  Web UI and CLI. The analysis agent uses selected documents as background
+  knowledge and keeps them distinct from trace execution evidence.
+- Source search ranks declarations and trace sites, supports file discovery
+  and bounded reads around a line, and records source locations and per-finding
+  source bindings. The finalizer checks those bindings against actual reads.
+- CPU, click-response and startup detail Skills support exact process-instance
+  scope. Trace SQL regressions execute every admitted exact SQL unit and probe
+  isolation from same-package processes and restarted instances.
+- Heap-dump class growth, framework process-state residency, application
+  wakelock/standby/freezer state and lock-holder intervals retain explicit
+  availability and observation limits.
+- `smp knowledge consent <id> --enable|--disable` grants or revokes a
+  document knowledge base's provider-send consent after registration, through
+  the same registry operation as the Web UI's switch, and prints the same
+  disclosure when granting. Knowledge consent stays a boolean: a knowledge base
+  has no path filters, so the folder is what a grant covers.
+
+### Changed
+- The finalizer owns the final delivery and verification state across all five
+  runtimes. Runtime draft diagnostics only choose a bounded same-run repair;
+  native completion, captured evidence and the semantic assessment remain
+  separate inputs.
+- Web chat streams a revocable answer draft where supported, then displays the
+  finished body while its semantic review runs. The first stop after delivery
+  ends the review; a second stop forces cancellation under a bounded watchdog.
+  In CLI text output, the first Ctrl-C after delivery ends review; the second
+  aborts the turn without saving. JSON/NDJSON abort on the first Ctrl-C and
+  remain terminal-only. Drafts are never saved.
+- Scrolling overviews place present cadence beside frame duration and
+  FrameTimeline jank. Input delivery, monitor copies and speculative frame
+  associations remain distinct; unavailable presentation evidence is explicit.
+- Skill validation, SQL-unit discovery, saved-result reads and the eval runner
+  share the executor's production paths. Every backend suite is reachable from
+  the project gate; orphaned modules and unused production exports are checked.
+- Follow-up turns start a fresh native model context and carry only authorized,
+  typed shared history. Private source and document content is checked against
+  the current run's grant before each model dispatch.
+
+### Removed
+- Strategy `phase_hints` and `plan_template` frontmatter is removed. Existing
+  Self-Evolution overlays targeting phase hints are recorded as unsupported
+  and never applied; new proposals no longer target them.
+- The old Claude verifier timeout and verification toggle are removed from
+  Provider configuration. Final verification follows the shared run deadline
+  and delivery flow.
+- Packages no longer generate or ship the unread full SQL index. The light
+  SQL index, runtime stdlib symbols and SQL documentation remain available.
+- **Breaking:** the Android Internals Wiki is now an ordinary document
+  knowledge base, not a built-in Pack or a connector of its own. Register its
+  public `src/` folder as a document knowledge base (`smp knowledge register`,
+  or "Manage…" in the composer context control) and select it per turn.
+  - The signed built-in Knowledge Pack is gone from npm, Docker, source and
+    portable releases, together with the `smp knowledge-pack` command, the
+    `SMARTPERFETTO_AIW_PACK_*` variables, the background update check, the
+    `androidInternalsKnowledgePack` field of `/health`, and the doctor Pack
+    line, `knowledgePack` field and `android_internals_pack` check of
+    `smp doctor --format json`. In measured DeepSeek runs the model never
+    called it unprompted, and the only unprompted call found in local history
+    retrieved an unrelated article. Background references already stored in sessions, reports and
+    snapshots are kept and still rendered.
+  - The analysis agent's `lookup_blog_knowledge` tool is gone; selected
+    knowledge bases are searched with `search_knowledge` /
+    `read_knowledge_section`. The standalone MCP server keeps its separate
+    blog lookup of the same name.
+  - `/api/rag/android-internals/*` answers 410. Sources registered through the
+    legacy Wiki connector stay listed (retired, not selectable) and can be
+    deleted (`GET /knowledge` marks them `retired: true`; `smp knowledge
+    remove` deletes them too); a consent grant is refused with 409
+    `KNOWLEDGE_SOURCE_RETIRED`, and an analysis that selects one is refused
+    with 409 `ANALYSIS_CONTEXT_SOURCE_RETIRED`. The Wiki article-to-Skill audit
+    (`knowledge:android-internals:audit`) and its capability map are removed.
+- `/api/perfetto-sql/*` now answers 410 in every deployment mode. It had no
+  product caller; its fallback analyses interpolated the request package name
+  into SQL unescaped, matching it as a prefix and as a substring of its last
+  segment, and `/sql` ran caller-supplied SQL without a trace ownership check.
+  Scene endpoints map to `POST /api/skills/execute/<skillId>` with the same
+  `{traceId, packageName}` body (for example `/startup` to `startup_analysis`;
+  in enterprise deployments that route is workspace-scoped too); the response
+  names the successor. `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`,
+  `/input`, `/buffer-flow` and `/systemserver` have no direct successor. The
+  unused `analyze_frame` legacy agent tool, which built the same kind of query,
+  and the SQL knowledge-base code that only these paths read are gone too,
+  including the `PERFETTO_PATH` setting.
+- `/api/perfetto/*` (`/status`, `/start`, `/stop`, `/upload`, `/open-trace`,
+  `/load`) is gone and falls through to the generic JSON 404; nothing called it.
+  It started a second `trace_processor_shell --httpd` on a caller-supplied
+  server path, outside the trace processor pool and trace ownership checks.
+  Load traces through `/api/traces/upload` or the workspace trace API. The
+  backend no longer creates the upload directory at import time.
+- `/api/template-analysis/*` (`/auto`, `/four-quadrant`, `/cpu-core`,
+  `/frame-stats`) now answers 410 in every deployment mode. Nothing called it;
+  it skipped the trace ownership check, interpolated the request's `threadId`,
+  `startTs` and `endTs` into SQL unvalidated, and matched `/frame-stats`
+  packages by substring. No Skill route takes the same request bodies, so the
+  response points to the workspace agent API. The template analyzers and the
+  VSync period helpers only they used are gone.
+- `/api/sql/*` (`/tables`, `/generate`) now answers 410 in every deployment
+  mode. Nothing called it. `/tables` returned a fixed excerpt of five tables
+  instead of the loaded trace's schema, and `/generate` matched a regex
+  template or returned a canned query without reading a trace. No route takes
+  the same request bodies, so the response points to the workspace agent API.
+  The SQL template engine and the generator service only it used are gone.
+- The runtime dashboard (`GET /api/admin/runtime`) no longer returns
+  `llmCost`. Its counters came from a legacy model router that no analysis
+  path called, so they were always zero, while the router itself read
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `DEEPSEEK_API_KEY` around Provider
+  Manager. The router, its session-log telemetry hook and the unread
+  `MODEL_DEFAULT`, `MODEL_FALLBACK_CHAIN`, `MODEL_ENABLE_ENSEMBLE`,
+  `MODEL_ENSEMBLE_THRESHOLD` and `MODEL_NATIVE_*` settings are gone. The
+  enterprise load-test script now reports the LLM counters as missing instead
+  of reading a constant zero.
+- `SMARTPERFETTO_USAGE_MAX_REQUESTS`, `SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS`
+  and `SMARTPERFETTO_USAGE_WINDOW_MS` are gone. The configuration guide and
+  `.env.example` documented them as request rate limiting, but the middleware
+  that read them was never mounted, so they never limited anything. There is
+  no built-in rate limiting: enable OIDC for public deployments and rate-limit
+  at the reverse proxy.
+- Agent endpoints no longer take a request id from a `requestId` field in the
+  request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
+- Skills no longer have model-calling steps. No production path ever gave the
+  Skill executor a model, so `ai_summary`, `ai_decision` and a diagnostic's
+  `ai_assist` fallback always ended as "AI service not available";
+  `scene_reconstruction`'s `scene_summary` step (its only user) failed on every
+  run and is removed. A Skill or Self-Evolution overlay that declares one of
+  these step types now fails validation (`step_type_unsupported`), and
+  `aiPolicy.blockedFeatures` no longer lists `llm_skill_step`.
+- The enterprise acceptance load test and readiness audit no longer require
+  LLM cost and call counters, which the runtime never kept; they project daily
+  scale from completed analysis runs and say that model cost and call totals
+  are not measured.
+
+### Fixed
+- CPU cluster load now subtracts suspend from both the clipped Running spans
+  and the selected window. If any clock conversion is unavailable or invalid,
+  both sides use wall-clock time. A fully suspended window reports zero awake
+  time, zero active cores and no load percentage.
+- CPU cluster metrics are unavailable, with an explicit reason, when local CPU
+  numbers cannot distinguish machines or duplicate metadata. Ordinary
+  single-machine unknown capacity remains measurable; percentages are never
+  clamped to hide an identity or clock mismatch.
+- Linux verification runners install ripgrep for the real source-search
+  backend tests. The source-selection success test now creates the source it
+  selects, while complete empty selections remain rejected.
+- OpenAI and OpenCode delivery calls can finish inside the original run
+  deadline, and a missing answer body can receive one bounded no-tool delivery
+  continuation. GLM declaration repair and classifier request controls retain
+  the actual provider protocol and evidence checks.
+- Registering a document folder again keeps every channel it was registered
+  through. A folder the Web directory picker registered and the CLI then
+  registered again lost the picker's trust, so the server's next reindex
+  failed with `outside_allowlist`; the CLI now records its own `local_cli`
+  channel beside it.
+- A trace processor no longer outlives the process that started it. A backend,
+  CLI or test process that ended without destroying its processors (SIGKILL,
+  a default-handled SIGTERM, a crash, `jest --forceExit`) left
+  `trace_processor_shell` running under init, holding its port, until the next
+  backend start; later runs then failed with `socket hang up` or exhausted
+  their port range. On macOS and Linux processors now start as `server http
+  --idle-start orphaned`, which reaps the server about two seconds after its
+  owner is gone and never while the owner lives. On Windows and for a backend
+  running as PID 1 the server is not bound to its owner, so a processor left
+  behind there still lasts until the next backend start's orphan sweep.
+- The trace processor now accepts the configured Perfetto UI origins. Its
+  support probe read only `--help`, which the pinned binary no longer uses to
+  list the classic CORS flag, so no origin was passed; and that binary's
+  classic `--httpd` form keeps only the last of several comma-separated
+  origins. Processors now start through `server http`, which accepts the whole
+  list, whenever the binary has it; `--httpd` remains only for binaries
+  without it. With a non-default `PERFETTO_UI_ORIGIN` or frontend port, the
+  UI's direct-port trace processor access (`useDirectPort`) was refused by
+  CORS and now works. The default origins (`ui.perfetto.dev`,
+  `localhost:10000`, `127.0.0.1:10000`) were always allowed, and the processor
+  still listens on loopback only.
+- Trace download (`GET /api/traces/:id/file` and its workspace-scoped form)
+  answered 404 whenever the stored trace sat below a directory whose name
+  starts with a dot, such as the Linux portable data root
+  `~/.local/share/smartperfetto`: the file was sent with a dotfile rule applied
+  to every parent directory. Files the server resolved itself (trace files,
+  the report Mermaid asset, the assistant-shell and admin pages) are now sent
+  with that rule applied to the file name only.
+- Every request now has one request id. Without a caller `X-Request-Id`, an
+  Agent request's `X-Request-Id` header, analysis run and logs carried one id
+  and its authenticated request context another, so they could not be
+  correlated. One middleware now resolves it before CORS and body parsing and
+  every consumer reads that id; the header is exposed to cross-origin browsers
+  (see Request IDs in `docs/reference/api.en.md`).
+- `scroll_session_analysis` counts frames of the target app only (issued
+  process scope, else the exact package or its `name:*` subprocesses) instead
+  of every main thread's `doFrame`.
+- Owned HTTP test listeners bind IPv4 before Supertest sends requests to
+  `127.0.0.1`, preventing the reproduced cross-address-family port misrouting
+  on macOS. Tests await listener readiness and closure.
+- Session persistence/export tests, runtime health and Agent route integration
+  fixtures use owned temporary databases instead of the default user database.
+  Route integration also isolates log cleanup and import-time scene stores.
+
+### Known issues
+- Real-provider acceptance is incomplete. Current DeepSeek startup runs on
+  OpenAI and Pi returned answers that did not pass declaration or report
+  checks. The OpenAI scrolling run delivered an answer but did not satisfy the
+  declared-fact acceptance oracle. These results must not be treated as verified
+  reports or as an all-runtime accuracy pass.
+- The current OpenCode startup run returned a declaration without a usable
+  answer body. Finalization rejected it. The saved E2E artifacts do not record
+  whether its bounded body continuation was dispatched and failed or returned
+  another empty body, so a software regression has not been established.
+  Deterministic runtime tests do not replace this missing real-provider
+  acceptance; inspect the terminal delivery status when using OpenCode for
+  long reports.
+
 ## [1.14.0] - 2026-09-24
 
 ### Added

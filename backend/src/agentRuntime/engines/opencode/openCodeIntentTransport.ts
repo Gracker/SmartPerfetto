@@ -2,7 +2,14 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
+import type {OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {
+  intentTransportTextResult,
+  runIntentTransport,
+  type IntentTransportInput,
+  type IntentTransportUnavailableReason,
+} from '../../intentTransport';
+import {getOpenCodeAssistantMessageId, getOpenCodeAssistantMessages} from './openCodeMessages';
 
 export interface OpenCodeIntentModel {
   providerID: string;
@@ -28,6 +35,7 @@ export interface OpenCodeClassifierHost {
           parts: Array<{type: 'text'; text: string}>;
         };
       }): Promise<unknown>;
+      messages(input: SessionRequest): Promise<unknown>;
       abort(input: SessionRequest): Promise<unknown>;
       delete?(input: SessionRequest): Promise<unknown>;
     };
@@ -41,6 +49,8 @@ export interface OpenCodeClassifierHost {
 
 export interface OpenCodeIntentTransportInput extends IntentTransportInput {
   model: OpenCodeIntentModel;
+  /** Selects this call's provider controls; the closeout and empty-body continuation pass none. */
+  purpose?: OpenAITextRequestPurpose;
   /**
    * Reuse the runtime's explicit-env launcher and hardened config. The fresh
    * host must disable built-ins, MCP, instructions, and extra agent steps.
@@ -49,12 +59,27 @@ export interface OpenCodeIntentTransportInput extends IntentTransportInput {
     signal: AbortSignal;
     deadlineMs: number;
     model: OpenCodeIntentModel;
+    purpose?: OpenAITextRequestPurpose;
   }): Promise<OpenCodeClassifierHost>;
+  /** The run's authorization, checked after the host started, right before the prompt is sent. */
+  beforeDispatch?: () => void;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
+}
+
+/**
+ * OpenCode names a failed assistant message by its error type: an output cap
+ * is an incomplete reply, a provider, auth or unknown error is the provider's.
+ * Anything else stays an invalid response.
+ */
+function messageErrorReason(error: unknown): IntentTransportUnavailableReason {
+  const name = object(error)?.name;
+  if (name === 'MessageOutputLengthError') return 'incomplete_output';
+  if (name === 'APIError' || name === 'ProviderAuthError' || name === 'UnknownError') return 'provider_error';
+  return 'invalid_response';
 }
 
 function responseData(value: unknown): Record<string, unknown> | undefined {
@@ -69,7 +94,7 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
     const host = await input.createClassifierHost({
-      signal: scope.signal, deadlineMs: input.deadlineMs, model: input.model,
+      signal: scope.signal, deadlineMs: input.deadlineMs, model: input.model, purpose: input.purpose,
     });
     let removeAbortListener: (() => void) | undefined;
     scope.onCleanup(async signal => {
@@ -104,6 +129,7 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
       scope.onCleanup(signal => host.client.session.delete!({path, query, signal}));
     }
     scope.throwIfInactive();
+    input.beforeDispatch?.();
     const message = responseData(await host.client.session.prompt({
       path, query, signal: scope.signal,
       body: {
@@ -114,7 +140,10 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
     scope.throwIfInactive();
     const info = object(message?.info);
     const completedAt = object(info?.time)?.completed;
-    if (info?.role !== 'assistant' || info.error != null
+    if (info?.role === 'assistant' && info.error != null) {
+      return {status: 'unavailable', reason: messageErrorReason(info.error)};
+    }
+    if (info?.role !== 'assistant'
       || typeof completedAt !== 'number' || !Number.isFinite(completedAt) || !Array.isArray(message?.parts)) {
       return {status: 'unavailable', reason: 'invalid_response'};
     }
@@ -126,6 +155,15 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
     }
     if (finishReason === 'length' || finishReason === 'error') {
       return {status: 'unavailable', reason: 'incomplete_output'};
+    }
+    // The prompt returns only the last step. Another assistant message means
+    // OpenCode ran a step after a tool call, which a no-tool call never accepts.
+    const history = await host.client.session.messages({path, query, signal: scope.signal});
+    scope.throwIfInactive();
+    const replies = getOpenCodeAssistantMessages(object(history)?.error == null ? history : undefined);
+    if (typeof info.id !== 'string' || replies.length === 0) return {status: 'unavailable', reason: 'invalid_response'};
+    if (replies.length > 1 || getOpenCodeAssistantMessageId(replies[0]!) !== info.id) {
+      return {status: 'unavailable', reason: 'tool_use'};
     }
     const text = parts.filter(part => part?.type === 'text' && typeof part.text === 'string')
       .map(part => part!.text).join('');
