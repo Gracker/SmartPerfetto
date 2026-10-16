@@ -488,7 +488,7 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
   assert.match(packageJob, /files\.length !== 1/);
   assert.doesNotMatch(packageJob, /PACKAGE_FILE="\$\(npm pack/);
   assert.match(packageJob, /createHash\('sha512'\)/);
-  assert.match(packageJob, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
+  assert.match(packageJob, /actions\/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9/);
   assert.doesNotMatch(packageJob, /id-token:\s*write/);
 
   assert.equal((workflow.match(/id-token:\s*write/g) || []).length, 1);
