@@ -414,6 +414,7 @@ function stepRows(db: Database.Database, skillFile: string, stepId: string, vars
 describe('cpu_analysis big-group rule', () => {
   const coreStats = (capacities: Array<number | null>, slices: Slice[]) => withTrace(capacities, slices, db =>
     stepRows(db, 'composite/cpu_analysis.skill.yaml', 'core_type_stats', {
+      package: 'com.example.app',
       start_ts: 'NULL', end_ts: 'NULL', 'target_process.data[0].upid': 1, '__process_scope.upid': 1,
     }));
   const RULE = stepOf(loadYaml('composite/cpu_analysis.skill.yaml'), 'cpu_diagnosis');
