@@ -40,32 +40,26 @@ import {
   privateAnalysisQueryMessage,
   projectOwnerSessionStateSnapshot,
   projectOwnerTerminationMessage,
-  sessionUsesPrivateKnowledge,
-  copyAnalysisResultForSnapshot,
-  projectOwnerAnalysisResult,
+  projectStoredAnalysisResultForOwner,
 } from './security/privateAnalysisProjection';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {
   getSessionBackgroundKnowledgeReferences,
-} from './androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+} from './knowledge/sessionBackgroundKnowledgeRegistry';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {AnalysisHistoryStore} from './analysisHistoryStore';
+import {safeCodebaseDisplayName} from './codebase/selectedCodebaseCapabilities';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
 
 const MAX_SQL_RESULTS_PER_MESSAGE = 5;
 const MAX_SQL_RESULT_ENTRY_BYTES = 100 * 1024;
 const MAX_TRUNCATED_CELL_CHARS = 2048;
 const MAX_TRUNCATED_SQL_CHARS = 4096;
 const MAX_SAFE_CODEBASE_DISPLAY_NAME = 120;
-
-function safeCodebaseDisplayName(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, ' ');
-  if (!trimmed || trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('://')) {
-    return undefined;
-  }
-  return trimmed.slice(0, MAX_SAFE_CODEBASE_DISPLAY_NAME);
-}
 
 type PersistableSqlEnvelope = DataEnvelope & {
   sql?: string;
@@ -84,20 +78,21 @@ function buildCodebaseSnapshot(
   return codebaseIds
     .map(id => registry.get(id, scope))
     .filter(Boolean)
-    .map(ref => ({
-      codebaseId: ref!.codebaseId,
-      ...(safeCodebaseDisplayName(ref!.displayName)
-        ? {displayName: safeCodebaseDisplayName(ref!.displayName)}
-        : {}),
-      ...(isCodebaseKind(ref!.kind) ? {kind: ref!.kind} : {}),
-      indexGeneration: ref!.indexGeneration,
-      activeGeneration: activeCodebaseGeneration(ref!),
-      contentFingerprint: ref!.contentFingerprint,
-      indexedRevision: ref!.indexedRevision,
-      indexedDirty: ref!.indexedDirty,
-      commitProvenance: ref!.commitProvenance,
-      consentHash: ref!.consent.consentHash,
-    }));
+    .map(ref => {
+      const displayName = safeCodebaseDisplayName(ref!.displayName, MAX_SAFE_CODEBASE_DISPLAY_NAME);
+      return {
+        codebaseId: ref!.codebaseId,
+        ...(displayName ? {displayName} : {}),
+        ...(isCodebaseKind(ref!.kind) ? {kind: ref!.kind} : {}),
+        indexGeneration: ref!.indexGeneration,
+        activeGeneration: activeCodebaseGeneration(ref!),
+        contentFingerprint: ref!.contentFingerprint,
+        indexedRevision: ref!.indexedRevision,
+        indexedDirty: ref!.indexedDirty,
+        commitProvenance: ref!.commitProvenance,
+        consentHash: ref!.consent.consentHash,
+      };
+    });
 }
 
 function buildKnowledgeSourceSnapshot(
@@ -134,6 +129,8 @@ export interface PersistAgentTurnInput {
    *  existing log-based alerts keyed on that component; CLI defaults to
    *  logComponent so CLI-only log stream is self-identifying. */
   logComponent?: string;
+  /** The persisted run's own marker, fixed at admission. */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 function buildPersistedAssistantMessage(result: PersistAgentTurnInput['result']): string {
@@ -247,7 +244,7 @@ function buildAssistantSqlResult(envelopes: unknown): SqlResultMessageBundle | u
 
 function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boolean): void {
   const { session, sessionId, traceId, query, result, logger } = input;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const privateKnowledge = privateContextRestrictsAudience(input.privateContext);
   const outputLanguage = session.outputLanguage
     ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const logComponent = input.logComponent ?? 'AgentPersistence';
@@ -261,9 +258,7 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
   const finalResult = result.sessionId === sessionId && typeof result.success === 'boolean' &&
     Array.isArray(result.findings) && Array.isArray(result.hypotheses) &&
     typeof result.confidence === 'number' && typeof result.rounds === 'number'
-    ? privateKnowledge
-      ? projectOwnerAnalysisResult(sessionId, result as AnalysisResult, outputLanguage)
-      : copyAnalysisResultForSnapshot(result as AnalysisResult)
+    ? projectStoredAnalysisResultForOwner(privateKnowledge, sessionId, result as AnalysisResult, outputLanguage)
     : undefined;
 
   // History is a finalized product record. Failed durable writes must be visible
@@ -276,10 +271,12 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
     new AnalysisHistoryStore().append({tenantId: session.tenantId, workspaceId: session.workspaceId,
       userId: session.userId, sessionId, traceId, runId}, toAnalysisHistoryTurn({
       id: runId, turnIndex: Math.max(0, (session.runSequence ?? (latest ? latest.turnIndex + 1 : 1)) - 1),
-      timestamp: session.lastRun?.completedAt ?? Date.now(), query: privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : query,
+      // The creator's own history keeps the question: a follow-up under the same
+      // authorization fingerprint reads it. Tenant export omits restricted turns.
+      timestamp: session.lastRun?.completedAt ?? Date.now(), query,
       traceId, result: finalResult,
       analysisContextFingerprint: session.analysisContextFingerprint,
-      sourceDerived: privateKnowledge || session.sourceActivation === 'bounded_explicit' || session.sourceActivation === 'deep_supplement',
+      sourceDerived: privateKnowledge,
     }));
   }
 
@@ -313,9 +310,6 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
             agentRuntimeProviderSnapshotHash: session.providerSnapshotHash,
             continuityBreaks: session.continuityBreaks,
             analysisContextFingerprint: session.analysisContextFingerprint,
-            androidInternalsPackPin: (session as {
-              androidInternalsPackPin?: import('./androidInternalsPack/types').AndroidInternalsPackIdentity;
-            }).androidInternalsPackPin,
             backgroundKnowledgeReferences:
               getSessionBackgroundKnowledgeReferences(sessionId),
             lineage: session.lineage,
@@ -340,7 +334,6 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
             ),
             codeLookupSummary: CodeLookupLedger.restore(
               sessionId,
-              12_000,
               2,
               undefined,
               session.analysisContextFingerprint,
@@ -415,9 +408,8 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
             referenceTraceId: session.referenceTraceId,
             comparisonSource: session.comparisonSource,
           },
-          question: privateKnowledge
-            ? privateAnalysisQueryMessage(outputLanguage)
-            : query,
+          // Like a run row, a private session's row keeps no question text.
+          question: privateKnowledge ? '' : query,
         });
       }
       if (privateKnowledge) {

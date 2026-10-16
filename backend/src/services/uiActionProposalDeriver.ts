@@ -12,6 +12,7 @@ import {
   type UiActionProposalSource,
   type UiActionProposalV1,
 } from '../types/dataContract';
+import {envelopeTraceValue, measuresTrace} from './evidence/envelopeTraceIdentity';
 import {
   DEFAULT_MAX_UI_ACTION_PROPOSALS,
   sanitizeUiActionProposals,
@@ -130,13 +131,7 @@ function parseTimeValueToNs(value: unknown, unit: TimeUnit): bigint | undefined 
 }
 
 function navigationTraceId(env: DataEnvelope, currentTraceId: string | undefined): string | undefined {
-  return env.meta.traceId || currentTraceId;
-}
-
-function canNavigateCurrentTrace(env: DataEnvelope, currentTraceId: string | undefined): boolean {
-  if (env.meta.traceSide === 'reference') return false;
-  if (currentTraceId && env.meta.traceId && env.meta.traceId !== currentTraceId) return false;
-  return true;
+  return envelopeTraceValue(env, 'traceId') ?? currentTraceId;
 }
 
 function rangeProposalForColumn(
@@ -231,7 +226,7 @@ function navigationProposalForEnvelope(
   currentTraceId: string | undefined,
   outputLanguage: OutputLanguage,
 ): UiActionProposalV1 | undefined {
-  if (!canNavigateCurrentTrace(env, currentTraceId)) return undefined;
+  if (!measuresTrace(env, currentTraceId)) return undefined;
   const columns = tableColumns(env);
   if (columns.length === 0) return undefined;
   const rows = tableRows(env, columns);

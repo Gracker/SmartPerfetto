@@ -14,12 +14,25 @@ export type RawSqlDirectProjection =
   | {readonly kind: 'column'; readonly column: string; readonly qualifier?: string; readonly alias?: string}
   | {readonly kind: 'star'; readonly qualifier?: string}
   | {readonly kind: 'scalar'; readonly alias?: string};
+export type RawSqlUnitExpression =
+  | {readonly kind: 'column'; readonly column: string; readonly qualifier?: string}
+  | {readonly kind: 'literal'; readonly value: string}
+  | {readonly kind: 'star'; readonly qualifier?: string}
+  | {readonly kind: 'unknown'}
+  | {readonly kind: 'binary'; readonly operator: string; readonly left: RawSqlUnitExpression; readonly right: RawSqlUnitExpression}
+  | {readonly kind: 'function'; readonly name: string; readonly args: readonly RawSqlUnitExpression[]};
+export interface RawSqlUnitProjection {
+  readonly expression: RawSqlUnitExpression;
+  readonly alias?: string;
+}
 export interface RawSqlDirectProjectionAnalysis {
   readonly pureRead: boolean;
   readonly reason?: string;
   readonly relation?: RawSqlProjectionRelation;
   /** Complete SELECT slots when row lineage is eligible; scalar slots have no source mapping. */
   readonly projections?: readonly RawSqlDirectProjection[];
+  /** Quantity expressions on one relation; these never establish native row identity. */
+  readonly unitExpressions?: readonly RawSqlUnitProjection[];
 }
 export interface RawSqlProjectionColumn {
   readonly outputColumn: string;
@@ -27,7 +40,8 @@ export interface RawSqlProjectionColumn {
 }
 
 type Token = {kind: 'identifier' | 'string' | 'number' | 'parameter' | 'symbol'; value: string; quoted?: boolean};
-type Expression = {direct?: Exclude<RawSqlDirectProjection, {kind: 'scalar'}>};
+type Expression = {direct?: Exclude<RawSqlDirectProjection, {kind: 'scalar'}>; unit?: RawSqlUnitExpression};
+const unknownUnit = (): RawSqlUnitExpression => ({kind: 'unknown'});
 class UnsupportedSql extends Error {}
 const fail = (reason = 'sql_unrecognized'): never => {throw new UnsupportedSql(reason);};
 const canonical = (value: string): string => value.replace(/[A-Z]/g, char => char.toLowerCase());
@@ -189,11 +203,12 @@ class ReadParser {
     }
     if (this.symbol('(')) {
       if (this.subquery(depth)) return {};
-      this.expression(0, depth + 1); this.requireSymbol(')'); return {};
+      const expression = this.expression(0, depth + 1); this.requireSymbol(')'); return {unit: expression.unit};
     }
-    if (allowStar && this.symbol('*')) return {direct: {kind: 'star'}};
+    if (allowStar && this.symbol('*')) return {direct: {kind: 'star'}, unit: {kind: 'star'}};
     const token = this.peek();
-    if (token?.kind === 'number' || token?.kind === 'string' || token?.kind === 'parameter' ||
+    if (token?.kind === 'number') {this.take(); return {unit: {kind: 'literal', value: token.value}};}
+    if (token?.kind === 'string' || token?.kind === 'parameter' ||
       ['null', 'true', 'false'].some(value => keyword(token, value))) {this.take(); return {};}
     if (this.word('cast')) {
       this.requireSymbol('('); this.expression(0, depth + 1); this.requireWord('as');
@@ -204,24 +219,31 @@ class ReadParser {
     if (this.symbol('(')) {
       if (!PURE_FUNCTIONS.has(canonical(name))) fail();
       if (AGGREGATE_FUNCTIONS.has(canonical(name))) this.hasAggregate = true;
+      const args: RawSqlUnitExpression[] = [];
       if (!this.symbol(')')) {
         this.word('distinct');
         if (this.symbol('*')) {
           if (canonical(name) !== 'count') fail();
+          args.push({kind: 'star'});
         } else {
-          this.expression(0, depth + 1);
-          while (this.symbol(',')) this.expression(0, depth + 1);
+          args.push(this.expression(0, depth + 1).unit ?? unknownUnit());
+          while (this.symbol(',')) args.push(this.expression(0, depth + 1).unit ?? unknownUnit());
         }
         this.requireSymbol(')');
       }
-      return {};
+      return {unit: {kind: 'function', name: canonical(name), args}};
     }
     if (this.symbol('.')) {
-      if (allowStar && this.symbol('*')) return {direct: {kind: 'star', qualifier: canonical(name)}};
+      if (allowStar && this.symbol('*')) {
+        const direct = {kind: 'star' as const, qualifier: canonical(name)};
+        return {direct, unit: direct};
+      }
       const column = this.identifier();
-      return {direct: {kind: 'column', qualifier: canonical(name), column}};
+      const direct = {kind: 'column' as const, qualifier: canonical(name), column};
+      return {direct, unit: direct};
     }
-    return {direct: {kind: 'column', column: name}};
+    const direct = {kind: 'column' as const, column: name};
+    return {direct, unit: direct};
   }
   private expression(minPrecedence = 0, depth = 0, allowStar = false): Expression {
     let result = this.primary(depth, allowStar);
@@ -252,8 +274,11 @@ class ReadParser {
       } else if (operator === 'between') {
         this.expression(4, depth + 1); this.requireWord('and'); this.expression(4, depth + 1);
       } else {
-        this.expression(precedence + 1, depth + 1);
+        const right = this.expression(precedence + 1, depth + 1);
         if (operator === 'like' && this.word('escape')) this.expression(4, depth + 1);
+        result = {unit: {kind: 'binary', operator: token.value.toLowerCase(),
+          left: result.unit ?? unknownUnit(), right: right.unit ?? unknownUnit()}};
+        continue;
       }
       result = {};
     }
@@ -263,18 +288,21 @@ class ReadParser {
     this.requireWord('select');
     if (!this.word('distinct')) this.word('all');
     const projections: RawSqlDirectProjection[] = [];
+    const unitExpressions: RawSqlUnitProjection[] = [];
     let preservesRows = true;
+    let singleRelation = true;
     do {
       const expression = this.expression(0, 0, true);
       const alias = this.alias();
       if (expression.direct?.kind === 'star' && alias) fail();
       projections.push({...(expression.direct ?? {kind: 'scalar' as const}), ...(alias ? {alias} : {})});
+      unitExpressions.push({expression: expression.unit ?? unknownUnit(), ...(alias ? {alias} : {})});
     } while (this.symbol(','));
     let relation: RawSqlProjectionRelation | undefined;
     if (this.word('from')) {
       relation = this.relation();
       while (this.peek()) {
-        if (this.symbol(',')) {this.relation(); preservesRows = false; continue;}
+        if (this.symbol(',')) {this.relation(); preservesRows = false; singleRelation = false; continue;}
         const joined = this.word('join');
         if (!joined) {
           const modifier = ['inner', 'left', 'right', 'full', 'cross'].find(value => this.word(value));
@@ -282,7 +310,7 @@ class ReadParser {
           if (['left', 'right', 'full'].includes(modifier)) this.word('outer');
           this.requireWord('join');
         }
-        this.relation(); preservesRows = false;
+        this.relation(); preservesRows = false; singleRelation = false;
         if (this.word('on')) this.expression();
         else if (this.word('using')) {
           this.requireSymbol('('); this.identifier();
@@ -313,6 +341,8 @@ class ReadParser {
     if (this.nestingDepth === 0) this.symbol(';');
     if (this.index !== this.tokens.length) fail();
     return {pureRead: true, ...(relation ? {relation} : {}),
+      ...(singleRelation && !this.hasSubquery && relation && projections.some(slot => slot.kind === 'scalar')
+        ? {unitExpressions} : {}),
       ...(preservesRows && !this.hasAggregate && !this.hasSubquery && relation ? {projections} : {reason: 'projection_not_direct'})};
   }
 }

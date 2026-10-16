@@ -15,11 +15,7 @@ import {parseConclusionContractDeclaration, type ConclusionContract} from '../ag
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {createClaudeMcpServer} from '../agentv3/claudeMcpServer';
 import {ArtifactStore} from '../agentv3/artifactStore';
-import {
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
-} from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import {createRagAdminRoutes} from '../routes/ragAdminRoutes';
 import {CodebaseManagementService} from '../services/codebase/codebaseManagementService';
 import {CodebaseRegistry} from '../services/codebase/codebaseRegistry';
@@ -30,9 +26,10 @@ import {
   finalizeOwnerSourceAwareAnalysisResultWithProjection,
   verifySourceClaimBindings,
 } from '../services/codebase/sourceClaimVerifier';
-import type {
-  SourceReferenceV1,
-  SourceUseDecisionV1,
+import {
+  isBodyLookupKind,
+  type SourceReferenceV1,
+  type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
 import {RagStore} from '../services/ragStore';
 import {clearCodeAwareOutputGuards} from '../services/security/codeAwareOutputRegistry';
@@ -478,7 +475,6 @@ function createSourceHarness(input: {
     ragStore: input.store,
     codeLookupLedger: new CodeLookupLedger(
       input.sessionId,
-      20_000,
       20,
       path.join(input.stateRoot, `${input.sessionId}.jsonl`),
     ),
@@ -577,7 +573,7 @@ async function collectSourceEvidence(input: {
     reference.filePath === filePath &&
     reference.lineRange?.start === input.groundTruth.lineRange.start &&
     reference.lineRange.end === input.groundTruth.lineRange.end &&
-    (reference.lookupKind === 'body' || reference.lookupKind === 'indexed'));
+    isBodyLookupKind(reference.lookupKind));
   if (!exactReference) throw new Error('Actual source handlers did not return the exact CodeRef');
   const indexedReference = isRecord(indexedPayload) && Array.isArray(indexedPayload.sourceReferences)
     ? (indexedPayload.sourceReferences as SourceReferenceV1[]).find(reference => reference.lookupKind === 'indexed')
@@ -585,10 +581,23 @@ async function collectSourceEvidence(input: {
   if (input.indexed && !indexedReference) {
     throw new Error('Indexed setup did not produce an indexed CodeRef');
   }
-  const rawSourceText = isRecord(exactRead) && isRecord(exactRead.reference) &&
-    typeof exactRead.reference.text === 'string'
-    ? exactRead.reference.text
+  // The model reads one line-numbered body; its numbers must be the window's
+  // real lines, and the raw text under them is what echo checks look for.
+  const numberedText = isRecord(exactRead) && isRecord(exactRead.reference) &&
+    typeof exactRead.reference.numberedText === 'string'
+    ? exactRead.reference.numberedText
     : '';
+  const numberedLines = numberedText ? numberedText.split('\n') : [];
+  const numberedLinesMatchWindow = numberedLines.length ===
+    input.groundTruth.lineRange.end - input.groundTruth.lineRange.start + 1 &&
+    numberedLines.every((line, index) => line.startsWith(`${input.groundTruth.lineRange.start + index}: `));
+  if (!numberedLinesMatchWindow) {
+    throw new Error('Actual read handler did not number the returned lines with the window lines');
+  }
+  if (isRecord(exactRead) && isRecord(exactRead.reference) && 'text' in exactRead.reference) {
+    throw new Error('Actual read handler returned the source body twice');
+  }
+  const rawSourceText = numberedLines.map(line => line.replace(/^\d+: /, '')).join('\n');
   const sourceFacts: SourceFacts = {
     exactRelativeFile: exactReference.filePath === filePath,
     exactSymbol: handlerText.includes(`fun ${shortSymbol}`),
@@ -639,7 +648,6 @@ async function verifyTraceSourceBinding(input: {
     sourceReferences: [boundReference],
     sourceClaimBindings: [{
       claimId,
-      mechanismStatus: 'compatible',
       sourceReferenceIds: [boundReference.id],
       traceEvidenceRefIds: [evidenceRefId],
     }],
@@ -688,21 +696,23 @@ async function verifyTraceSourceBinding(input: {
     preparedEvidence,
     policy: 'block',
   });
+  // The answer cites the bound location, so the claim's visible text can be checked.
+  const range = boundReference.lineRange;
+  const body = `The startup marker is emitted at ${boundReference.filePath}:L${range?.start ?? 1}-L${range?.end ?? 1} ` +
+    `and lasted ${input.traceFacts.durationNs} ns.`;
   const sourceClaimVerification = verifySourceClaimBindings({
     conclusionContract: contract,
     actualSourceUseDecision: input.sourceUse,
-    semanticsPolicy: 'declared',
     matchedTraceEvidenceRefIdsByClaimId: claimVerification.matchedTraceEvidenceRefIdsByClaimId,
-    verifiedTraceOccurrenceRefIdsByClaimId:
-      claimVerification.verifiedTraceOccurrenceRefIdsByClaimId,
+    body,
   });
+  // A CodeRef with no same-claim Trace evidence is a source explanation only.
   const codeRefOnlyOccurrence = verifySourceClaimBindings({
     conclusionContract: {...contract, sourceClaimBindings: contract.sourceClaimBindings?.map(binding =>
-      ({...binding, mechanismStatus: 'corroborated'}))},
+      ({...binding, traceEvidenceRefIds: []}))},
     actualSourceUseDecision: input.sourceUse,
-    semanticsPolicy: 'declared',
     matchedTraceEvidenceRefIdsByClaimId: claimVerification.matchedTraceEvidenceRefIdsByClaimId,
-    verifiedTraceOccurrenceRefIdsByClaimId: {},
+    body,
   });
   const wrongDeclaration = structuredClone(declaration);
   wrongDeclaration.claims![0].semantics!.numeric!.value = input.traceFacts.durationNs + 1;
@@ -838,8 +848,8 @@ export async function runDeterministicSemanticDeltaVerification(input: {
       stateRoot,
     });
     sessions.push(quantitativeHarness.sessionId);
-    // This fixture deliberately leaves optional source auditing untouched. A
-    // trace-only answer does not need a record_source_use_decision ceremony.
+    // This fixture deliberately makes no source call: a trace-only answer
+    // leaves the source audit at its initial state.
     const quantitativeDecision = quantitativeHarness.sourceUse.getSourceUseDecision();
     if (!quantitativeDecision) throw new Error('Source harness audit state is unavailable');
 

@@ -20,9 +20,9 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 | 形态 | 产物 | 用户入口 | 关键边界 |
 |---|---|---|---|
-| npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | 需要用户本机 Node.js `>=24 <25`；包含 Skills/Strategies/SQL/trace processor/签名 Knowledge Pack，不包含 Web UI launcher |
-| GitHub 免安装包 | `smartperfetto-v<version>-windows-x64.zip`、`smartperfetto-v<version>-macos-arm64.zip`、`smartperfetto-v<version>-linux-x64.tar.gz` | 包内 launcher | 自带 Node.js 24、原生依赖、预构建 `frontend/`、固定 `trace_processor_shell` 和签名 Knowledge Pack |
-| Docker Hub | workflow 从 `main` 构建的 Linux 镜像 | `docker compose -f docker-compose.hub.yml up -d` | 不读取宿主机 Claude Code 登录态 |
+| npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | 需要用户本机 Node.js `>=24 <25`；包含 Skills/Strategies/SQL/trace processor，不包含 Web UI launcher |
+| GitHub 免安装包 | `smartperfetto-v<version>-windows-x64.zip`、`smartperfetto-v<version>-macos-arm64.zip`、`smartperfetto-v<version>-linux-x64.tar.gz` | 包内 launcher | 自带 Node.js 24、原生依赖、预构建 `frontend/`、固定 `trace_processor_shell` |
+| Docker Hub | Linux 镜像：版本 tag 触发 workflow 发布 SemVer 与 `latest`，`main` 的 schedule/manual 只更新 `nightly` | `docker compose -f docker-compose.hub.yml up -d` | 不读取宿主机 Claude Code 登录态 |
 | 源码 checkout | Git 仓库 | `./start.sh` | 普通使用读提交的 `frontend/`；只改 UI 插件时才需要 `perfetto/` submodule |
 
 ## 正常公开发布
@@ -113,7 +113,6 @@ npm install @gracker/smartperfetto@<version>
 ./node_modules/.bin/smp --version
 ./node_modules/.bin/smartperfetto --help
 ./node_modules/.bin/smp doctor --format json
-./node_modules/.bin/smp knowledge-pack status --format json
 ```
 
 本地 `npm publish` 只作应急回退；它会要求 WebAuthn。必须从 `backend/` 执行
@@ -171,12 +170,12 @@ git status --short --branch
 - 已公开 GitHub release 只读且 asset 集合不可变；不得 clobber、替换或改写。
 - `dist/portable/`、`dist/windows-exe/`、`.cache/smartperfetto-portable/` 都是生成产物，不进 git。
 - `frontend/` 是 Docker、`./start.sh` 和免安装包的用户路径依赖；AI Assistant 插件 UI 变更必须运行 `./scripts/update-frontend.sh`。
-- 如果 root commit 指向 `perfetto/` submodule 新提交，该 submodule commit 必须已经 push 到 Gracker fork。
+- 如果 root commit 指向 `perfetto/` submodule 新提交，该 submodule commit 必须已经 push 到 Gracker fork，并且可从 `fork/main` 到达（`git -C perfetto merge-base --is-ancestor <gitlink> fork/main` 返回 0）；只在某个 feature 分支上可达的 gitlink 会在分支删除后失效。
 - 不提交、不记录、不回显 npm token、provider key 或 GitHub token。
 
 ## 发布后验证
 
-- npm：`npm view @gracker/smartperfetto version --json` 等于新版本；空目录安装后 `smp doctor --format json` 和 `smp knowledge-pack status --format json` 可运行。
+- npm：`npm view @gracker/smartperfetto version --json` 等于新版本；空目录安装后 `smp doctor --format json` 可运行。
 - GitHub：`gh release view v<version>` 返回非 draft release；三个平台 asset 的
   名称、大小、target commit 和远端 `sha256:` digest 与本地已 smoke 归档一致。
 - Docker：稳定版 tag 同时存在 immutable SemVer 和 `latest`；`nightly` 只由

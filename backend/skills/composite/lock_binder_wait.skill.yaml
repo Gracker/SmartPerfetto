@@ -86,10 +86,3 @@ steps:
       end_ts: "${end_ts}"
     save_as: binder_blocking
     optional: true
-
-synthesis:
-  template: |
-    lock_binder_wait 深钻已完成：
-    - blocking_chain: ${blocking_chain.summary}
-    - lock_contention: ${lock_contention.summary}
-    - binder_blocking: ${binder_blocking.summary}

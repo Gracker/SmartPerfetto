@@ -14,6 +14,7 @@ import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/str
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
 import {createDataEnvelope} from '../../../types/dataContract';
 import * as authorization from '../../../services/resolvedAnalysisContext';
+import {ANSWER_DRAFT_FLUSH_INTERVAL_MS} from '../../../services/answerDraftRelay';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {listProductionRuntimeKinds} from '../../../agentRuntime/runtimeKinds';
 import type {AnalysisOptions, AnalysisResult, IOrchestrator} from '../../../agent/core/orchestratorTypes';
@@ -26,6 +27,8 @@ import {resolveRuntimeEvidenceStore} from '../../../agentRuntime/runtimeEvidence
 import {captureEvidenceTable} from '../../../services/evidence/evidenceCapture';
 import {buildTraceProcessorQueryProvenance} from '../../../services/traceProcessorConnectionModel';
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../../agent/core/conclusionContract';
+import {NO_PRIVATE_CONTEXT} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
 const mockFinalize = jest.fn<(input: FinalizeAnalysisResultInput) => Promise<FinalizedAnalysisResult>>();
 jest.mock('../../../services/finalizeAnalysisResult', () => ({
@@ -127,7 +130,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
         artifactStore: store, traceProcessorService: {query} as unknown as TraceProcessorService,
         skillExecutor: new SkillExecutor({query}), analysisNotes: [], hypotheses: [], uncertaintyFlags: [],
         watchdogWarning: {current: null}, lightweight: true, allowNewEvidence: firstTurn,
-        conversationTraceAttached: true, androidInternalsPackStore: null,
+        conversationTraceAttached: true,
         emitUpdate: update => emitter.emit('update', update)});
       const invoke = async (name: string, args: Record<string, unknown>) => {
         const tool = mcp.toolDefinitions.find(definition => definition.name === name);
@@ -148,7 +151,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
         // Select the locator from the actual prompt, not from test-owned history.
         const fetched = await invoke('fetch_artifact', {artifactId: catalog.artifacts[0].artifactId,
           detail: 'rows', offset: 300, limit: 1});
-        expect(fetched).toMatchObject({structuredContent: {success: true, rows: [[300, 7]]}});
+        expect(fetched).toMatchObject({structuredContent: {success: true, rowShape: 'indexed_rows@1', rows: [{rowIndex: 300, values: [300, 7]}]}});
       }
       const body = 'The retained metric is 7.\n';
       const reference = {artifactId: artifactId!, rowIndex: 300, column: 'metric', value: 7};
@@ -160,14 +163,14 @@ describe('Conversation evidence and stream consumer boundaries', () => {
             scope: {population: 'cited_rows', subjectRefs: [reference]}, numeric: {operator: 'eq', value: 7, unit: 'count'}}}]};
       const marker = renderConclusionContractSidecar(contract);
       for (const token of [body, marker.slice(0, 19), marker.slice(19)]) {
-        emitter.emit('update', {type: 'answer_token', content: {token}, timestamp: Date.now()});
+        emitter.emit('update', {type: 'answer_token', content: {token, runId: options.runId, attempt: 0}, timestamp: Date.now()});
       }
       const value = result(body + marker, sessionId);
       rawResults.push(value);
       attachStoreContext(value, options, traceId, store, body, ['metric']);
       return value;
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
     const first = await adapter.run({sessionId: 'conversation', runId: 'first', query: 'Observe the metric', history: [],
       traceContext: {kind: 'attached', traceId: 'trace-1'}});
     expect(query).toHaveBeenCalled();
@@ -175,7 +178,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
     const updates: unknown[] = [];
     const second = await adapter.run({sessionId: 'conversation', runId: 'second', query: 'Use the previous observation',
       history: [{role: 'assistant', content: first.message}], traceContext: {kind: 'attached', traceId: 'trace-1'},
-      onUpdate: update => updates.push(update)});
+      onUpdate: update => updates.push(update), onAnswerDraft: update => updates.push(update)});
     expect(physicalSessions).toEqual(['conversation:first', 'conversation:second']);
     expect(query).not.toHaveBeenCalled();
     expect(second.message).toBe('The retained metric is 7.\n');
@@ -196,17 +199,85 @@ describe('Conversation evidence and stream consumer boundaries', () => {
   it('flushes an ordinary withheld prefix at settlement without inventing native completion', async () => {
     const emitter = createOrchestrator(async () => {
       await nextImmediate();
-      emitter.emit('update', {type: 'answer_token', content: {token: 'Visible\n<', totalChars: 9}, timestamp: Date.now(), id: 'last-sdk-event'});
+      emitter.emit('update', {type: 'answer_token', content: {token: 'Visible\n<', totalChars: 9, runId: 'tail', attempt: 0},
+        timestamp: Date.now(), id: 'last-sdk-event'});
       return result('Visible\n<');
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
     const updates: unknown[] = [];
     await adapter.run({sessionId: 'conversation', runId: 'tail', query: 'question', history: [], traceContext: {kind: 'none'},
-      onUpdate: update => updates.push(update)});
+      onUpdate: update => updates.push(update), onAnswerDraft: update => updates.push(update)});
     expect(updates.map(text).join('')).toBe('Visible\n<');
     expect(updates[updates.length - 1]).not.toHaveProperty('id');
     expect(updates[updates.length - 1]).not.toHaveProperty('content.done');
     await adapter.dispose();
+  });
+
+  it('forwards answer drafts only for a draft-capable runtime, as live drafts rather than runtime updates', async () => {
+    const run = async (draftAnswerStreaming: boolean) => {
+      const emitter = createOrchestrator(async () => {
+        await nextImmediate();
+        emitter.emit('update', {type: 'answer_token', content: {token: 'Draft text', runId: 'r', attempt: 0}, timestamp: 1});
+        emitter.emit('update', {type: 'answer_segment_reset', content: {runId: 'r', attempt: 1}, timestamp: 2});
+        emitter.emit('update', {type: 'answer_token', content: {token: 'Answer', runId: 'r', attempt: 1}, timestamp: 3});
+        // A string payload without the contract never becomes a draft.
+        emitter.emit('update', {type: 'answer_token', content: 'untyped', timestamp: 4});
+        emitter.emit('update', {type: 'progress', content: {message: 'Working'}, timestamp: 5});
+        return result('Answer');
+      });
+      const adapter = new OrchestratorConversationRuntimeAdapter(emitter,
+        {runtimeKind: draftAnswerStreaming ? 'openai-agents-sdk' : 'pi-agent-core'});
+      const updates: unknown[] = [];
+      const drafts: unknown[] = [];
+      await adapter.run({sessionId: 'conversation', runId: 'r', query: 'question', history: [], traceContext: {kind: 'none'},
+        onUpdate: update => updates.push(update), onAnswerDraft: update => drafts.push(update)});
+      await adapter.dispose();
+      return {updates, drafts};
+    };
+    const capable = await run(true);
+    expect(capable.updates.map(update => updateRecord(update).type)).toEqual(['progress']);
+    expect(capable.drafts).toEqual([
+      expect.objectContaining({type: 'answer_segment_reset', content: {runId: 'r', attempt: 1}}),
+      expect.objectContaining({type: 'answer_token', content: {token: 'Answer', runId: 'r', attempt: 1}}),
+    ]);
+    const incapable = await run(false);
+    expect(incapable.updates.map(update => updateRecord(update).type)).toEqual(['progress']);
+    expect(incapable.drafts).toEqual([]);
+  });
+
+  it('gives a private run a draft, and drops what a timer would deliver after authorization is revoked', async () => {
+    let revoked = false;
+    const check = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
+      if (revoked) throw new authorization.AnalysisContextAuthorizationChangedError();
+    });
+    const emitted = deferred<void>();
+    const release = deferred<void>();
+    try {
+      const shown = `${'Visible private draft '.repeat(12)}\n`;
+      const emitter = createOrchestrator(async () => result('unused'));
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, _session, _trace, options = {}) => {
+        // Past the size threshold: delivered at once. The second token waits for the timer.
+        emitter.emit('update', {type: 'answer_token', content: {token: shown, runId: options.runId, attempt: 0}, timestamp: 1});
+        emitter.emit('update', {type: 'answer_token', content: {token: 'BUFFERED_AFTER_REVOCATION', runId: options.runId,
+          attempt: 0}, timestamp: 2});
+        emitted.resolve();
+        await release.promise;
+        return result('unused');
+      });
+      const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk',
+        analysisOptions: {codeAwareMode: 'provider_send', codebaseIds: ['private-app']}});
+      const drafts: unknown[] = [];
+      // Unique ids: a finished run leaves its physical session's guards revoked.
+      const run = adapter.run({sessionId: 'private-draft-conversation', runId: 'private-draft-run', query: 'question',
+        history: [], traceContext: {kind: 'none'}, onAnswerDraft: update => drafts.push(update)});
+      await emitted.promise;
+      revoked = true;
+      await new Promise(resolve => setTimeout(resolve, ANSWER_DRAFT_FLUSH_INTERVAL_MS + 50));
+      expect(drafts.map(text)).toEqual([shown]);
+      release.resolve();
+      await run.catch(() => undefined);
+      await adapter.dispose();
+    } finally {check.mockRestore();}
   });
 
   it('rejects old producer events and delayed abort/cleanup while a replacement physical run is active', async () => {
@@ -224,7 +295,8 @@ describe('Conversation evidence and stream consumer boundaries', () => {
       const old = options.runId === 'old';
       (old ? startedOld : startedNew).resolve();
       await (old ? finishOld : finishNew).promise;
-      emitter.emit('update', {type: 'answer_token', content: {token: old ? 'OLD_EVENT_CANARY' : 'New answer'}, timestamp: Date.now()});
+      emitter.emit('update', {type: 'answer_token', content: {token: old ? 'OLD_EVENT_CANARY' : 'New answer',
+        runId: options.runId, attempt: 0}, timestamp: Date.now()});
       emitter.emit('update', {type: 'data', content: createDataEnvelope({columns: ['run'], rows: [[old ? 'old' : 'new']]},
         {type: 'sql_result', source: 'fixture', title: old ? 'Old envelope' : 'New envelope'}), timestamp: Date.now()});
       const value = result(old ? 'Old answer' : 'New answer', sessionId);
@@ -233,14 +305,14 @@ describe('Conversation evidence and stream consumer boundaries', () => {
       else attachStoreContext(value, options, traceId, store, 'New answer');
       return value;
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
     const old = adapter.run({sessionId: 'conversation', runId: 'old', query: 'first', history: [], traceContext: {kind: 'attached', traceId: 'trace-1'}});
     await startedOld.promise;
     await adapter.cancel('conversation', 'old');
     await expect(old).resolves.toEqual({kind: 'cancelled', message: ''});
     const updates: unknown[] = [];
     const current = adapter.run({sessionId: 'conversation', runId: 'new', query: 'second', history: [], traceContext: {kind: 'attached', traceId: 'trace-1'},
-      onUpdate: update => updates.push(update)});
+      onUpdate: update => updates.push(update), onAnswerDraft: update => updates.push(update)});
     await startedNew.promise;
     await adapter.cancel('conversation', 'old');
     finishOld.resolve();
@@ -311,6 +383,10 @@ describe('Conversation evidence and stream consumer boundaries', () => {
   });
 });
 
+function updateType(update: unknown): unknown {
+  return update && typeof update === 'object' ? (update as {type?: unknown}).type : undefined;
+}
+
 function createOrchestrator(
   analyze: (options: AnalysisOptions) => Promise<AnalysisResult>,
 ): IOrchestrator {
@@ -341,6 +417,23 @@ function result(conclusion: string, sessionId = 'runtime-session'): AnalysisResu
 }
 
 describe('OrchestratorConversationRuntimeAdapter', () => {
+  it.each([
+    ['a public run marker', NO_PRIVATE_CONTEXT, true],
+    ['a private run marker under a public selection', {codebase: false, knowledge: true}, false],
+    ['no run marker', undefined, false],
+  ] as const)('grants cross-session learning from %s only', async (_label, privateContext, granted) => {
+    let receivedOptions: AnalysisOptions | undefined;
+    const orchestrator = createOrchestrator(async (options) => {
+      receivedOptions = options;
+      return result('ok\n<!-- smartperfetto:conversation-control {"kind":"answered"} -->');
+    });
+    await new OrchestratorConversationRuntimeAdapter(orchestrator).run({
+      sessionId: 'conversation-learning', runId: 'run-learning', query: 'q', history: [], traceContext: {kind: 'none'},
+      ...(privateContext ? {privateContext} : {}),
+    });
+    expect(resolveDurableLearningPermission(receivedOptions!)).toEqual(granted ? {runId: 'run-learning'} : undefined);
+  });
+
   it.each(listProductionRuntimeKinds())(
     'applies the same conversation contract to %s',
     async () => {
@@ -532,23 +625,35 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       traceContext: {kind: 'attached', traceId: 'trace-1'}});
 
     expect(receivedOptions).toMatchObject({...analysisOptions, assistantSurface: 'conversation', analysisMode: 'fast'});
-    expect(receivedOptions?.sourceUsePolicy).toBeUndefined();
     expect(mockFinalize.mock.calls[0][0].owner.analysisContextFingerprint).toBe(analysisOptions.analysisContextFingerprint);
     expect(orchestrator.analyze).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves an explicit caller source policy and the total runtime budget', async () => {
+  it('runs each turn at its own source depth, not the one the adapter was built with', async () => {
+    const received: AnalysisOptions[] = [];
+    const orchestrator = createOrchestrator(async options => {
+      received.push(options);
+      return result('answer');
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {
+      codeAwareMode: 'provider_send', codebaseIds: ['private-app'], sourceDepth: 'locate',
+    }});
+    await adapter.run({sessionId: 'conversation', runId: 'run-1', query: 'locate', history: [],
+      traceContext: {kind: 'none'}});
+    await adapter.run({sessionId: 'conversation', runId: 'run-2', query: 'explain', history: [],
+      traceContext: {kind: 'none'}, sourceDepth: 'mechanism'});
+
+    expect(received.map(options => options.sourceDepth)).toEqual(['locate', 'mechanism']);
+  });
+
+  it('preserves the total runtime budget', async () => {
     let receivedOptions: AnalysisOptions | undefined;
     const orchestrator = createOrchestrator(async options => {
       receivedOptions = options;
       return result('answer');
     });
-    const sourceUsePolicy = {phase: 'explicit' as const, maxSearchCalls: 4, maxReadCalls: 5, maxDurationMs: 17_000};
-    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {
-      codeAwareMode: 'provider_send', codebaseIds: ['private-app'], sourceUsePolicy, taskTimeoutMs: 25_000,
-    }});
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {taskTimeoutMs: 25_000}});
     await adapter.run({sessionId: 'conversation', runId: 'run', query: '继续', history: [], traceContext: {kind: 'none'}});
-    expect(receivedOptions?.sourceUsePolicy).toBe(sourceUsePolicy);
     expect(receivedOptions?.taskTimeoutMs).toBe(25_000);
   });
 
@@ -624,7 +729,6 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     try {
       const orchestrator = createOrchestrator(async () => result('answer'));
       orchestrator.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId, traceId, runtimeOptions) => {
-        expect(runtimeOptions?.sourceUsePolicy).toBeUndefined();
         const reader = createRuntimeAnalysisHistoryReader({options: {...runtimeOptions!}, sessionId, traceId,
           getTurns: () => [], assertActive: () => {}});
         expect(reader.getTurns()).toEqual([restoredTurn]);
@@ -711,9 +815,6 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       expect(orchestrator.analyze).toHaveBeenCalledTimes(1);
       expect(mockFinalize).toHaveBeenCalledTimes(1);
       expect(receivedOptions).toMatchObject({codeAwareMode: 'provider_send', codebaseIds: ['private-app']});
-      expect(receivedOptions?.sourceUsePolicy).toBeUndefined();
-      expect(adapter).not.toHaveProperty('shouldStartSourceEnrichment');
-      expect(adapter).not.toHaveProperty('runSourceEnrichment');
     },
   );
 
@@ -849,6 +950,90 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     await adapter.run(input);
     expect(mockFinalize).toHaveBeenCalledTimes(1);
     expect(emitter.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  describe('deliver first, verify after', () => {
+    const reviewPendingFinalizer = (seen: {stopSignal?: AbortSignal}) => mockFinalize.mockImplementationOnce(async input => {
+      try {
+        seen.stopSignal = input.reviewStopSignal;
+        input.onProvisionalAnswer?.({conclusion: input.result.conclusion});
+        await new Promise(resolve => input.reviewStopSignal!.addEventListener('abort', resolve, {once: true}));
+        input.owner.signal.throwIfAborted();
+        return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
+      } finally {input.context?.dispose();}
+    });
+
+    it('forwards the provisional answer once and the session-owned review stop signal', async () => {
+      const seen: {stopSignal?: AbortSignal} = {};
+      reviewPendingFinalizer(seen);
+      const orchestrator = createOrchestrator(async () => result('Trace duration is 12.3 s.'));
+      const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+      const provisional: string[] = [];
+      let delivered!: () => void;
+      const deliveredPromise = new Promise<void>(resolve => {delivered = resolve;});
+      const reviewStop = new AbortController();
+      const completion = adapter.run({sessionId: 'conversation', runId: 'run', query: 'trace 时长', history: [],
+        traceContext: {kind: 'none'}, reviewStopSignal: reviewStop.signal,
+        onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
+      await deliveredPromise;
+      expect(provisional).toEqual(['Trace duration is 12.3 s.']);
+      expect(seen.stopSignal).toBe(reviewStop.signal);
+      reviewStop.abort();
+      await expect(completion).resolves.toMatchObject({kind: 'answered', message: 'Trace duration is 12.3 s.'});
+      expect(orchestrator.abortSession).not.toHaveBeenCalled();
+    });
+
+    it('owner-projects a private provisional answer like the terminal message', async () => {
+      const privateQuery = '请看源码确认 PRIVATE_PROVISIONAL_CANARY 为什么返回空';
+      const seen: {stopSignal?: AbortSignal} = {};
+      reviewPendingFinalizer(seen);
+      const adapter = new OrchestratorConversationRuntimeAdapter(createOrchestrator(async () =>
+        result(`Answer repeats ${privateQuery}`)), {analysisOptions: {codeAwareMode: 'metadata_only', codebaseIds: ['private-app']}});
+      const provisional: string[] = [];
+      let delivered!: () => void;
+      const deliveredPromise = new Promise<void>(resolve => {delivered = resolve;});
+      const reviewStop = new AbortController();
+      const completion = adapter.run({sessionId: 'private-provisional', runId: 'private-provisional-run', query: privateQuery,
+        history: [], traceContext: {kind: 'none'}, reviewStopSignal: reviewStop.signal,
+        onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
+      await deliveredPromise;
+      reviewStop.abort();
+      const outcome = await completion;
+      expect(provisional).toEqual([outcome.message]);
+    });
+
+    it('shows no pending cue and sends no review when the review is not required', async () => {
+      mockFinalize.mockImplementation(jest.requireActual<typeof import('../../../services/finalizeAnalysisResult')>(
+        '../../../services/finalizeAnalysisResult').finalizeAnalysisResult);
+      const dispatchText = jest.fn(async () => ({status: 'ok' as const, text: '{}'}));
+      const orchestrator = createOrchestrator(async options => {
+        const value = result('Trace duration is 12.3 s.');
+        attachContext(value, options.runId!, {}, {dispatchText});
+        return value;
+      });
+      const provisional = jest.fn(() => true);
+      const updates: unknown[] = [];
+      const outcome = await new OrchestratorConversationRuntimeAdapter(orchestrator).run({sessionId: 'conversation',
+        runId: 'no-review', query: 'trace 时长', history: [], traceContext: {kind: 'none'},
+        onProvisionalAnswer: provisional, onUpdate: update => updates.push(update)});
+      expect(dispatchText).not.toHaveBeenCalled();
+      expect(provisional).not.toHaveBeenCalled();
+      expect(JSON.stringify(updates)).not.toContain('final_review');
+      expect(outcome).toMatchObject({kind: 'answered', message: 'Trace duration is 12.3 s.'});
+      expect(outcome.finalResult?.claimVerificationResult?.notCheckedReason).toBe('not_required');
+    });
+
+    it('does not forward the runtime raw conclusion as a second answer source', async () => {
+      const emitter = createOrchestrator(async () => {
+        emitter.emit('update', {type: 'conclusion', content: {conclusion: 'raw runtime conclusion'}, timestamp: Date.now()});
+        emitter.emit('update', {type: 'progress', content: {phase: 'x', message: 'still narrated'}, timestamp: Date.now()});
+        return result('final');
+      });
+      const updates: unknown[] = [];
+      await new OrchestratorConversationRuntimeAdapter(emitter).run({sessionId: 'conversation', runId: 'raw', query: 'q',
+        history: [], traceContext: {kind: 'none'}, onUpdate: update => updates.push(update)});
+      expect(updates.map(update => updateType(update))).toEqual(['progress']);
+    });
   });
 
   it('projects a private final result with its failed @2 status intact and keeps the shell body consistent', async () => {

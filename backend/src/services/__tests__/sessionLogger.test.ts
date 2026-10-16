@@ -26,6 +26,13 @@ describe('sanitizeLogData', () => {
     expect(sanitized.list[0].apiKey).toBe('[REDACTED]');
     expect(sanitized.list[0].keep).toBe('ok');
   });
+
+  it('keeps an own __proto__ key as redacted data instead of a prototype', () => {
+    const sanitized = sanitizeLogData(JSON.parse('[{"__proto__":{"token":"abc","safe":"value"}}]'));
+
+    expect(Object.getPrototypeOf(sanitized[0])).toBe(Object.prototype);
+    expect(JSON.stringify(sanitized)).toBe('[{"__proto__":{"token":"[REDACTED]","safe":"value"}}]');
+  });
 });
 
 describe('SessionLogger', () => {

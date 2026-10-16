@@ -6,13 +6,21 @@ import {createHash} from 'crypto';
 import * as path from 'path';
 
 import {DEFAULT_OUTPUT_LANGUAGE, type OutputLanguage} from '../../agentv3/outputLanguage';
-import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
+import {loadPromptSegment} from '../../agentv3/strategyLoader';
 import type {CodeAwareMode} from './codeAwareFeature';
-import type {CodebaseKind} from './codebaseRegistry';
-import {sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {allSourceExtensions} from './sourceSelectionPolicy';
+import {isRequestedSourceDepth, SOURCE_DEPTH_ORIGINS, SOURCE_NEED_MISSING_REASONS, type SourceDepth,
+  type SourceDepthDecisionV1} from './sourceDepthPolicy';
 
 export const SOURCE_USE_DECISION_SCHEMA_VERSION = 'source_use_decision@1' as const;
 
+/**
+ * A new run derives its status from actual lookups (`pending`, `attempted`,
+ * `located`, `corroborated`, `not_found_complete`, `search_incomplete`) or
+ * starts at `not_needed` when it may acquire no evidence. `disallowed`,
+ * `no_queryable_anchor`, `ambiguous_candidates` and `unverified` came only from
+ * a retired model-declared decision and stay so stored results remain readable.
+ */
 export type SourceUseStatus =
   | 'pending'
   | 'not_needed'
@@ -42,9 +50,21 @@ export interface SourceReferenceV1 {
   symbol?: string;
   buildId?: string;
   commitHash?: string;
+  /**
+   * The content the range came from: an index generation (`codebase_…`), or
+   * for on-demand reads the live content version (`live-…`, keyed per process,
+   * so comparable only within one run, never across a restart).
+   */
   sourceGeneration?: string;
-  lookupKind: 'metadata' | 'body' | 'indexed' | 'graph';
+  /**
+   * How the reference was returned. `search_hit` and `metadata`/`graph` locate
+   * code; only `body` (a read window) and `indexed` deliver it as evidence.
+   */
+  lookupKind: SourceLookupKind;
 }
+
+export const SOURCE_LOOKUP_KIND_VALUES = ['metadata', 'search_hit', 'body', 'indexed', 'graph'] as const;
+export type SourceLookupKind = typeof SOURCE_LOOKUP_KIND_VALUES[number];
 
 export interface SourceUseDecisionV1 {
   schemaVersion: typeof SOURCE_USE_DECISION_SCHEMA_VERSION;
@@ -58,6 +78,20 @@ export interface SourceUseDecisionV1 {
   coverageComplete?: boolean;
   incompleteReasons?: string[];
   references: SourceReferenceV1[];
+  /**
+   * Client surfaces only (`sourceUseDecisionForClient`): how many references
+   * the run returned and how many it read as a body, by `referenceHasReadBody`,
+   * the rule source verdicts use. Derived, so `sanitizeSourceUseDecision`
+   * drops it and decision fingerprints never include it.
+   */
+  referenceCounts?: SourceReferenceCountsV1;
+  /** How deep this run's source access went, and how that was decided. */
+  depth?: SourceDepthDecisionV1;
+}
+
+export interface SourceReferenceCountsV1 {
+  located: number;
+  read: number;
 }
 
 /** Actual MCP access scope, captured privately for this analysis run. */
@@ -66,14 +100,21 @@ export interface SourceExecutionScopeV1 {
   selectedCodebaseIds: string[];
   hasCodebaseAccess: boolean;
   analysisContextFingerprint: string;
+  /** The run's effective source depth. */
+  sourceDepth?: SourceDepth;
 }
 
+/**
+ * A claim bound to the source references (and same-claim Trace evidence) it
+ * relies on. The product computes the claim's source status; the model no
+ * longer declares one. `mechanismStatus` is read only from stored results.
+ */
 export interface SourceClaimBindingV1 {
   claimId: string;
-  mechanismStatus: SourceMechanismStatus;
   sourceReferenceIds: string[];
   traceEvidenceRefIds: string[];
-  reason?: string;
+  /** Retired model-declared status; present only in stored historical results. */
+  mechanismStatus?: SourceMechanismStatus;
 }
 
 /** A decision to skip source cannot erase actual access or incomplete coverage. */
@@ -88,56 +129,12 @@ export function isUnusedSourceDecision(value: SourceUseDecisionV1 | undefined): 
 export const MAX_SOURCE_REFERENCE_COUNT = 100;
 export const MAX_SOURCE_REFERENCE_PATH_LENGTH = 512;
 
-const SOURCE_USE_TOOL_DESCRIPTION_START = '<!-- tool-description:start -->';
-const SOURCE_USE_TOOL_DESCRIPTION_END = '<!-- tool-description:end -->';
-const SOURCE_USE_TOOL_DESCRIPTION_MAX_CHARS = 240;
-
-interface RenderedSourceUseDecisionAsset {
-  prompt: string;
-  toolDescription: string;
-}
-
-function renderSourceUseDecisionAsset(input: {
-  codeAwareMode: Exclude<CodeAwareMode, 'off'>;
-  codebaseIds: readonly string[];
-  outputLanguage: OutputLanguage;
-}): RenderedSourceUseDecisionAsset {
-  const templateName = input.outputLanguage === 'en'
-    ? 'prompt-source-use-decision-en'
-    : 'prompt-source-use-decision-zh';
-  const template = loadPromptTemplate(templateName);
-  if (!template?.trim()) {
-    throw new Error(`Missing required source-use decision prompt template: ${templateName}`);
-  }
-  const rendered = renderTemplate(template, {
-    codeAwareMode: input.codeAwareMode,
-    codebaseIds: input.codebaseIds.join(', '),
-  });
-  const startCount = rendered.split(SOURCE_USE_TOOL_DESCRIPTION_START).length - 1;
-  const endCount = rendered.split(SOURCE_USE_TOOL_DESCRIPTION_END).length - 1;
-  if (startCount !== 1 || endCount !== 1) {
-    throw new Error(`Invalid source-use tool-description markers: ${templateName}`);
-  }
-  const descriptionStart = rendered.indexOf(SOURCE_USE_TOOL_DESCRIPTION_START);
-  const descriptionEnd = rendered.indexOf(SOURCE_USE_TOOL_DESCRIPTION_END);
-  if (descriptionEnd <= descriptionStart) {
-    throw new Error(`Invalid source-use tool-description marker order: ${templateName}`);
-  }
-  const toolDescription = rendered
-    .slice(descriptionStart + SOURCE_USE_TOOL_DESCRIPTION_START.length, descriptionEnd)
-    .trim();
-  if (!toolDescription || toolDescription.length > SOURCE_USE_TOOL_DESCRIPTION_MAX_CHARS) {
-    throw new Error(`Invalid source-use tool description length: ${templateName}`);
-  }
-  return {
-    toolDescription,
-    prompt: `${toolDescription}\n\n${rendered
-      .slice(descriptionEnd + SOURCE_USE_TOOL_DESCRIPTION_END.length)
-      .trim()}`.trim(),
-  };
-}
-
-export function loadSourceUseDecisionPrompt(input: {
+/**
+ * The shared source-use guidance, for a run with selected codebases. The
+ * selection itself, capabilities and budget are run data the caller supplies
+ * separately (`source_authorization`), so this text is the same for every run.
+ */
+export function loadSourceUsePrompt(input: {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: readonly string[];
   outputLanguage?: OutputLanguage;
@@ -145,26 +142,12 @@ export function loadSourceUseDecisionPrompt(input: {
   if (!input.codeAwareMode || input.codeAwareMode === 'off' || !input.codebaseIds?.length) {
     return undefined;
   }
-  return renderSourceUseDecisionAsset({
-    codeAwareMode: input.codeAwareMode,
-    codebaseIds: input.codebaseIds,
-    outputLanguage: input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
-  }).prompt;
-}
-
-export function loadSourceUseDecisionToolDescription(input: {
-  codeAwareMode?: CodeAwareMode;
-  codebaseIds?: readonly string[];
-  outputLanguage?: OutputLanguage;
-}): string | undefined {
-  if (!input.codeAwareMode || input.codeAwareMode === 'off' || !input.codebaseIds?.length) {
-    return undefined;
-  }
-  return renderSourceUseDecisionAsset({
-    codeAwareMode: input.codeAwareMode,
-    codebaseIds: input.codebaseIds,
-    outputLanguage: input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
-  }).toolDescription;
+  const templateName = (input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE) === 'en'
+    ? 'prompt-source-use-en'
+    : 'prompt-source-use-zh';
+  const prompt = loadPromptSegment(templateName);
+  if (!prompt) throw new Error(`Missing required source-use prompt template: ${templateName}`);
+  return prompt;
 }
 
 const MAX_SOURCE_IDENTIFIER_LENGTH = 160;
@@ -174,20 +157,9 @@ const MAX_SOURCE_TOOL_COUNT = 64;
 const MAX_SOURCE_INCOMPLETE_REASON_COUNT = 20;
 const MAX_SOURCE_CLAIM_BINDING_COUNT = 100;
 const MAX_SOURCE_BINDING_REFERENCE_COUNT = 100;
-const MAX_SOURCE_LINE = 2_147_483_647;
+export const MAX_SOURCE_LINE = 2_147_483_647;
 const LEGACY_REFERENCE_ONLY_EXTENSIONS = ['.sql', '.md'] as const;
-const CODEBASE_KINDS = [
-  'app_source',
-  'aosp',
-  'kernel_source',
-  'oem_sdk',
-] as const satisfies readonly CodebaseKind[];
-const SOURCE_LOOKUP_KINDS: ReadonlySet<SourceReferenceV1['lookupKind']> = new Set([
-  'metadata',
-  'body',
-  'indexed',
-  'graph',
-]);
+const SOURCE_LOOKUP_KINDS: ReadonlySet<SourceLookupKind> = new Set(SOURCE_LOOKUP_KIND_VALUES);
 const SOURCE_USE_STATUSES: ReadonlySet<SourceUseStatus> = new Set([
   'pending',
   'not_needed',
@@ -211,7 +183,7 @@ const SOURCE_USE_REASON_CODES = new Set<NonNullable<SourceUseDecisionV1['reasonC
   'unverified',
 ]);
 const SUPPORTED_SOURCE_EXTENSIONS = new Set(
-  [...CODEBASE_KINDS.flatMap(kind => sourceExtensionsForKind(kind)), ...LEGACY_REFERENCE_ONLY_EXTENSIONS]
+  [...allSourceExtensions(), ...LEGACY_REFERENCE_ONLY_EXTENSIONS]
     .map(extension => extension.toLocaleLowerCase('en-US')),
 );
 
@@ -303,13 +275,113 @@ export function normalizeSourceReferencePath(value: unknown): string | undefined
   return SUPPORTED_SOURCE_EXTENSIONS.has(extension) ? normalized : undefined;
 }
 
+/** A reference that locates code without delivering its body as evidence. */
+export function isLocateOnlyLookupKind(kind: SourceLookupKind): boolean {
+  return kind === 'metadata' || kind === 'graph' || kind === 'search_hit';
+}
+
+/** A reference whose body the run delivered: a read window or an indexed chunk. */
+export function isBodyLookupKind(kind: SourceLookupKind): boolean {
+  return kind === 'body' || kind === 'indexed';
+}
+
+/**
+ * Whether the run delivered this reference's whole range as a body: it is a
+ * body reference itself, or an issued body reference of the same file and
+ * the same known source generation (an index generation, or the live content
+ * version on-demand reads carry) together contain its range. An unknown generation
+ * never matches, so a changed file cannot stand in for the one searched. It
+ * never widens a reference beyond its own range.
+ */
+export function referenceHasReadBody(
+  reference: SourceReferenceV1,
+  issued: Iterable<SourceReferenceV1>,
+): boolean {
+  if (isBodyLookupKind(reference.lookupKind)) return true;
+  const range = reference.lineRange;
+  if (!range || reference.sourceGeneration === undefined) return false;
+  // Bodies of the one known version together, as a written citation is judged.
+  return lineRangesCover(readBodyRanges(issued, sourceReferenceIdentity(reference)), range);
+}
+
+/** The body windows the run delivered for one file version (`sourceReferenceIdentity`). */
+export function readBodyRanges(
+  issued: Iterable<SourceReferenceV1>,
+  identity: string,
+): Array<{start: number; end: number}> {
+  const bodies: Array<{start: number; end: number}> = [];
+  for (const other of issued) {
+    if (isBodyLookupKind(other.lookupKind) && other.lineRange && sourceReferenceIdentity(other) === identity) {
+      bodies.push(other.lineRange);
+    }
+  }
+  return bodies;
+}
+
+type LineRange = {start: number; end: number};
+
+/** Inclusive line ranges that share a line. */
+export const lineRangesIntersect = (a: LineRange, b: LineRange): boolean => a.start <= b.end && b.start <= a.end;
+/** The union of `ranges` holds every line of `target`. */
+export function lineRangesCover(ranges: readonly LineRange[], target: LineRange): boolean {
+  let next = target.start;
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    if (range.start > next) break;
+    if (range.end >= next) next = range.end + 1;
+    if (next > target.end) return true;
+  }
+  return false;
+}
+
+/**
+ * One file version: codebase, path and source generation. References of two
+ * identities never prove anything about each other's lines. A reference with
+ * no known generation is its own version: an absent version is not an equal one.
+ */
+export function sourceReferenceIdentity(
+  reference: Pick<SourceReferenceV1, 'id' | 'codebaseId' | 'filePath' | 'sourceGeneration'>,
+): string {
+  return reference.sourceGeneration === undefined
+    ? `${reference.codebaseId}\0${reference.filePath}\0\0${reference.id}`
+    : `${reference.codebaseId}\0${reference.filePath}\0${reference.sourceGeneration}`;
+}
+
+const DERIVABLE_SOURCE_USE_STATUSES: ReadonlySet<SourceUseStatus> = new Set([
+  'pending', 'attempted', 'not_found_complete', 'search_incomplete', 'located', 'corroborated',
+]);
+
+/**
+ * The run's source-use status after one lookup. Positive findings outrank an
+ * incomplete search, which outranks absence: one unfinished search no longer
+ * pins the run, while run coverage (kept separately, monotone) still blocks
+ * negative source claims. A status the product set (not_needed and the like)
+ * yields only to incompleteness.
+ */
+export function mergeSourceUseStatus(input: {
+  current: SourceUseStatus;
+  observedPositive?: 'located' | 'corroborated';
+  observedIncomplete: boolean;
+  runIncomplete: boolean;
+  observedCompleteAbsence: boolean;
+}): SourceUseStatus {
+  if (!DERIVABLE_SOURCE_USE_STATUSES.has(input.current)) {
+    return input.observedIncomplete ? 'search_incomplete' : input.current;
+  }
+  const currentPositive = input.current === 'corroborated' || input.current === 'located' ? input.current : undefined;
+  if (currentPositive === 'corroborated' || input.observedPositive === 'corroborated') return 'corroborated';
+  if (currentPositive ?? input.observedPositive) return 'located';
+  if (input.runIncomplete) return 'search_incomplete';
+  return input.current === 'not_found_complete' || input.observedCompleteAbsence ? 'not_found_complete' : 'attempted';
+}
+
 function sourceReferenceId(reference: Omit<SourceReferenceV1, 'id'>): string {
   const identity = [
     reference.lookupKind,
     reference.codebaseId,
     reference.filePath,
     reference.chunkId ?? '',
-    reference.referenceId ?? '',
+    // Not the internal referenceId: the model cites references without it,
+    // and the range, symbol and generation already make an identity.
     reference.lineRange?.start ?? '',
     reference.lineRange?.end ?? '',
     reference.symbol ?? '',
@@ -330,8 +402,8 @@ export function sanitizeSourceReference(value: unknown): SourceReferenceV1 | und
   const codebaseId = strictIdentifier(value.codebaseId);
   const filePath = normalizeSourceReferencePath(value.filePath);
   const lookupKind = typeof value.lookupKind === 'string' &&
-    SOURCE_LOOKUP_KINDS.has(value.lookupKind as SourceReferenceV1['lookupKind'])
-    ? value.lookupKind as SourceReferenceV1['lookupKind']
+    SOURCE_LOOKUP_KINDS.has(value.lookupKind as SourceLookupKind)
+    ? value.lookupKind as SourceLookupKind
     : undefined;
   if (!codebaseId || !filePath || !lookupKind) return undefined;
 
@@ -438,6 +510,7 @@ export function sanitizeSourceUseDecision(
       .filter((reason): reason is string => Boolean(reason)))]
       .slice(0, MAX_SOURCE_INCOMPLETE_REASON_COUNT)
     : [];
+  const depth = sanitizeSourceDepthDecision(value.depth);
   return {
     schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
     codeAwareMode,
@@ -456,7 +529,60 @@ export function sanitizeSourceUseDecision(
       : {}),
     ...(incompleteReasons.length > 0 ? {incompleteReasons} : {}),
     references,
+    ...(depth ? {depth} : {}),
   };
+}
+
+/** Returned references, and those whose whole range the run read as a body. */
+export function sourceReferenceCounts(references: readonly SourceReferenceV1[]): SourceReferenceCountsV1 {
+  return {
+    located: references.length,
+    read: references.filter(reference => referenceHasReadBody(reference, references)).length,
+  };
+}
+
+/**
+ * A decision as a client receives it: the same decision plus its derived
+ * reference counts, so the Web receipt shows read/located counts without
+ * re-deriving them (or holding the paths and ranges they come from). Applied
+ * only where a payload leaves for a client: stored results, snapshots and
+ * fingerprints never carry the counts.
+ */
+export function sourceUseDecisionForClient<T>(decision: T): T {
+  if (!isRecord(decision) || !Array.isArray(decision.references) || decision.references.length === 0) {
+    return decision;
+  }
+  return {...decision, referenceCounts: sourceReferenceCounts(sanitizeSourceReferences(decision.references))} as T;
+}
+
+/**
+ * Every copy of the source decision a client payload carries — top level, the
+ * conclusion contract's, a snapshot summary's — given its counts, so SSE,
+ * status, replay, turn history, snapshots, reports and the CLI agree.
+ */
+export function withClientSourceUseCounts<T>(payload: T): T {
+  if (!isRecord(payload)) return payload;
+  const next: Record<string, unknown> = {...payload};
+  if (payload.sourceUseDecision !== undefined) {
+    next.sourceUseDecision = sourceUseDecisionForClient(payload.sourceUseDecision);
+  }
+  for (const key of ['conclusionContract', 'summary']) {
+    const nested = payload[key];
+    if (isRecord(nested) && nested.sourceUseDecision !== undefined) {
+      next[key] = {...nested, sourceUseDecision: sourceUseDecisionForClient(nested.sourceUseDecision)};
+    }
+  }
+  return next as T;
+}
+
+function sanitizeSourceDepthDecision(value: unknown): SourceDepthDecisionV1 | undefined {
+  if (!isRecord(value) || !isRequestedSourceDepth(value.requested) ||
+    (value.effective !== 'locate' && value.effective !== 'mechanism') ||
+    !(SOURCE_DEPTH_ORIGINS as readonly unknown[]).includes(value.origin)) return undefined;
+  return {requested: value.requested, effective: value.effective, origin: value.origin as SourceDepthDecisionV1['origin'],
+    ...((SOURCE_NEED_MISSING_REASONS as readonly unknown[]).includes(value.fallbackReason)
+      ? {fallbackReason: value.fallbackReason as NonNullable<SourceDepthDecisionV1['fallbackReason']>} : {}),
+    ...(value.cap === 'metadata_only' ? {cap: 'metadata_only' as const} : {})};
 }
 
 function sourceMechanismStatus(value: unknown): SourceMechanismStatus | undefined {
@@ -464,15 +590,21 @@ function sourceMechanismStatus(value: unknown): SourceMechanismStatus | undefine
     ? value : undefined;
 }
 
+/** Retired binding keys a model may still write: accepted and dropped, never judged. */
+const LEGACY_SOURCE_BINDING_KEYS = ['mechanismStatus', 'reason'];
+const SOURCE_BINDING_KEYS = ['claimId', 'sourceReferenceIds', 'traceEvidenceRefIds', ...LEGACY_SOURCE_BINDING_KEYS];
+
 /** Validate original declaration shape without trimming, dropping, or deduplicating values. */
 export function isSourceClaimBindingDeclaration(value: unknown): value is SourceClaimBindingV1 {
-  const required = ['claimId', 'mechanismStatus', 'sourceReferenceIds', 'traceEvidenceRefIds'];
-  if (!isRecord(value) || required.some(key => !Object.prototype.hasOwnProperty.call(value, key)) ||
-    Object.keys(value).some(key => !required.includes(key) && key !== 'reason') ||
-    typeof value.claimId !== 'string' || strictIdentifier(value.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH) !== value.claimId ||
-    !sourceMechanismStatus(value.mechanismStatus) ||
-    (Object.prototype.hasOwnProperty.call(value, 'reason') && typeof value.reason !== 'string')) return false;
-  for (const references of [value.sourceReferenceIds, value.traceEvidenceRefIds]) {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'claimId') ||
+    !Object.prototype.hasOwnProperty.call(value, 'sourceReferenceIds') ||
+    Object.keys(value).some(key => !SOURCE_BINDING_KEYS.includes(key)) ||
+    typeof value.claimId !== 'string' || strictIdentifier(value.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH) !== value.claimId) {
+    return false;
+  }
+  // An omitted Trace list is empty; a present one must be an array.
+  const traceIds = Object.prototype.hasOwnProperty.call(value, 'traceEvidenceRefIds') ? value.traceEvidenceRefIds : [];
+  for (const references of [value.sourceReferenceIds, traceIds]) {
     if (!Array.isArray(references) || references.length > MAX_SOURCE_BINDING_REFERENCE_COUNT) return false;
     for (const reference of references) {
       if (typeof reference !== 'string' || strictIdentifier(reference, MAX_SOURCE_REFERENCE_ID_LENGTH) !== reference) return false;
@@ -488,6 +620,17 @@ export function isSourceClaimBindingsDeclaration(value: unknown): value is Sourc
   return true;
 }
 
+/** A valid declared array in its current form: retired keys dropped, a missing Trace list empty. */
+export function canonicalSourceClaimBindingDeclarations(value: readonly SourceClaimBindingV1[]): SourceClaimBindingV1[] {
+  return value.map(binding => ({claimId: binding.claimId, sourceReferenceIds: [...binding.sourceReferenceIds],
+    traceEvidenceRefIds: [...(binding.traceEvidenceRefIds ?? [])]}));
+}
+
+/** Whether a value is a status a stored historical binding may carry. */
+export function isSourceMechanismStatus(value: unknown): value is SourceMechanismStatus {
+  return sourceMechanismStatus(value) !== undefined;
+}
+
 export function sanitizeSourceClaimBindings(
   value: unknown,
   options: {
@@ -500,8 +643,9 @@ export function sanitizeSourceClaimBindings(
   for (const candidate of value) {
     if (!isRecord(candidate)) continue;
     const claimId = strictIdentifier(candidate.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH);
+    // Kept only to render stored historical results; never produced or judged now.
     const mechanismStatus = sourceMechanismStatus(candidate.mechanismStatus);
-    if (!claimId || !mechanismStatus) continue;
+    if (!claimId) continue;
     const sourceReferenceIds = uniqueBoundedIdentifiers(
       candidate.sourceReferenceIds,
       MAX_SOURCE_BINDING_REFERENCE_COUNT,
@@ -517,9 +661,9 @@ export function sanitizeSourceClaimBindings(
     seen.add(key);
     bindings.push({
       claimId,
-      mechanismStatus,
       sourceReferenceIds,
       traceEvidenceRefIds,
+      ...(mechanismStatus ? {mechanismStatus} : {}),
     });
     if (bindings.length >= MAX_SOURCE_CLAIM_BINDING_COUNT) break;
   }

@@ -14,7 +14,7 @@ investigation_contract:
       description: "Bind the first relevant MOVE to the first corresponding visible update, keeping event and frame identities. Follow input/Main/render/SF tasks and scheduling on that first-response path."
     - id: scroll_response_dependencies
       domain: dependency_chain
-      description: "Without actual present evidence report a candidate response bound, not confirmed display latency. Do not impose a fixed frame budget or infer response from FPS."
+      description: "Without actual present evidence report a candidate response bound, not confirmed display latency. Do not impose a fixed frame budget or infer response from FPS. Speculative frame matches are unproven candidates and zero rows or NULL latency are unmeasured, not zero; if the app has no FrameTimeline layer (e.g. Flutter SurfaceView), state first-frame response is unmeasurable."
 classification_description: "The initial response to starting a scroll gesture, including time to the first visual update."
 priority: 3
 effort: medium
@@ -57,49 +57,11 @@ final_report_contract:
         - ['证据', '缺失', '不适用', '不能', '边界', 'missing', 'not']
     - id: frame_timeline_confidence
       label: FrameTimeline/上屏置信度
-      description: '说明 frame_id、FrameTimeline、RenderThread、SF/present 链接是否可用；缺失时只能写首帧候选或 dispatch/ACK。'
+      description: '说明 frame_id、FrameTimeline、RenderThread、SF/present 链接是否可用；推测关联的 frame_id 只算候选。缺失时只能写首帧候选或 dispatch/ACK，NULL 延迟写未测量。'
       pattern_groups:
         - ['FrameTimeline', 'frame_id', 'present', '上屏', 'RenderThread', 'SurfaceFlinger', 'SF', '置信']
         - ['可用', '缺失', 'linkage', '关联', '候选', '不适用', 'missing', 'confidence']
 
-phase_hints:
-  - id: scroll_latency_scope_boundary
-    keywords: ['scroll response', 'scroll latency', 'first frame', 'ACTION_MOVE', '首帧', '响应延迟', '滑动响应']
-    constraints: '先声明响应口径：dispatch-to-ACK、ACTION_MOVE 到首帧候选、还是 input-to-present。scroll_response_latency 的默认输出不能在缺少 FrameTimeline/present 链接时被写成硬端到端上屏。'
-    critical_tools: ['input_events_in_range', 'scroll_response_latency']
-    critical: true
-  - id: scroll_input_target_boundary
-    keywords: ['InputDispatcher', 'InputChannel', 'FINISHED', 'ACK', 'wait queue', 'wq', 'stale', 'focused window', 'target window']
-    constraints: '滑动响应异常可能来自输入队列、窗口目标、stale drop 或未完成 ACK。若没有 dumpsys/logcat/WindowManager/InputDispatcher 证据，只能作为缺口，不要把它归因成 App 滑动代码。'
-    critical_tools: ['input_events_in_range']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: input_event_detection
-      match_keywords: ['input', 'gesture', 'motion', 'action_move', '输入', '手势', '触摸', 'input_events']
-      suggestion: '滑动响应场景建议包含输入事件定位阶段 (input event detection)'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: click_response_analysis
-        - tool: invoke_skill
-          skill_id: input_events_in_range
-    - id: latency_breakdown
-      match_keywords: ['latency', 'response', 'delay', '延迟', '响应', '分解', 'breakdown', '首帧', 'FrameTimeline', 'present']
-      suggestion: '滑动响应场景建议包含响应延迟口径和帧/上屏证据边界 (latency scope + frame linkage)'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: scroll_response_latency
-        - tool: invoke_skill
-          skill_id: touch_to_display_latency
-    - id: input_target_boundary
-      match_keywords: ['stale', 'focused window', 'target window', 'InputChannel', 'FINISHED', 'ACK', 'wait queue', 'wq', 'dumpsys', 'logcat']
-      suggestion: '滑动响应场景需要说明输入目标、stale、FINISHED ACK 和窗口/队列证据是否可用或缺失'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: click_response_detail
-        - tool: invoke_skill
-          skill_id: input_events_in_range
 ---
 
 #### scroll_response Core Strategy
@@ -142,6 +104,8 @@ plan_template:
 如果用户问的是持续滑动中的卡顿/掉帧，应引导到 scrolling 策略，而非本策略。
 
 先声明本次使用的延迟口径：`total_latency_dur` 是 dispatch-to-ACK；`scroll_response_latency` 默认是 MOVE dispatch 到首帧开始的候选响应；只有 `end_to_end_latency_dur`、`frame_id`/FrameTimeline 或 RenderThread/SF present 可用时，才能写成 input-to-present / 上屏延迟。
+
+`is_speculative_frame=1` 的 `frame_id` 是同一 UI 线程上事件之后的下一个 `Choreographer#doFrame`，未经证实消费了该事件，只算候选关联，不算已确认的帧/上屏链接；由它推出的 `end_to_end_latency_dur` 只能写成候选值。延迟字段为 NULL 表示未测量，不是 0ms 或响应良好。
 
 **Phase 1 — 输入事件定位：**
 
@@ -294,19 +258,20 @@ LIMIT 20
 
 | 瓶颈段 | 深钻动作 |
 |-------|---------|
-| App frame build 超时 | `invoke_skill("jank_frame_detail", { start_ts, end_ts, process_name })` 查看主线程热点 |
+| App frame build 超时 | `invoke_skill("jank_frame_detail", { start_ts, end_ts, package })` 查看主线程热点 |
 | Render thread 超时 | 检查 GPU 频率：`invoke_skill("gpu_analysis")` |
 | SF composition 超时 | `invoke_skill("surfaceflinger_analysis")` 查看合成策略和 layer 数 |
 | Input dispatch 超时 | 检查 system_server CPU 占用和 InputDispatcher 线程状态 |
 
 **输入目标与队列边界：**
 - `input_events_in_range` / `scroll_response_latency` 只覆盖完成 dispatch→receive→finish→ACK 的事件。没有结果不等于没有输入问题，可能是未完成 ACK、stale drop、focus/window 或 InputChannel 证据缺失。
+- `scroll_response_latency` 按目标进程的 app 层 FrameTimeline 找首帧。输入事件存在但它返回 0 行时，先检查目标进程是否有 app 层 `actual_frame_timeline_slice`：Flutter SurfaceView、GL/游戏等画面不经 HWUI 出帧的管线常常没有，此时首帧响应在本 trace 中不可测量，只报告 dispatch/handling/ACK 和 producer（如 Flutter 1.raster）、SF present 等各自可用的证据。
 - `stale`、`focused window`、`target window`、`iq/oq/wq`、`FINISHED` 需要 dumpsys input、logcat、WindowManager/InputDispatcher 或窗口拓扑证据；缺失时写成数据缺口。
 - 如果只有 ACTION_MOVE 到首帧候选，不要把它推广为真实 panel present 或 HWC 输出。
 
 ### 输出结构必须遵循：
 
-1. **响应延迟口径**：说明使用 dispatch-to-ACK、ACTION_MOVE-to-first-frame，还是 input-to-present；给出总延迟（ms）+ 评级
+1. **响应延迟口径**：说明使用 dispatch-to-ACK、ACTION_MOVE-to-first-frame，还是 input-to-present；给出总延迟（ms）+ 评级。首帧或上屏不可测量时写明原因，不给首帧/上屏延迟评级，也不输出第 2 项的瀑布表；dispatch-to-ACK 仍可按其口径报告
    - 如有多个滑动手势，分别报告每个手势的首帧响应
 
 2. **延迟分解瀑布图**：

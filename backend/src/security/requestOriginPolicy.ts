@@ -73,6 +73,40 @@ export function isSsoCookieMutationOriginAllowed(input: {
     && normalizedRequestOrigin === normalizedBackendOrigin;
 }
 
+/**
+ * How far a request's Origin must be trusted, given the credential that
+ * authenticates it. A credential the browser attaches to any page's request by
+ * itself (a session cookie, a trusted proxy's session, keyless local mode)
+ * needs an admitted Origin when one is sent; a session cookie must send one, as
+ * a cookie mutation must. A credential the page has to hold needs none.
+ */
+export type BrowserOriginRequirement = 'none' | 'if_present' | 'required';
+
+/**
+ * Whether an Origin satisfies a requirement where no CORS check has run, such
+ * as a WebSocket upgrade. Unlike the cookie mutation guard, the backend's own
+ * origin is never inferred from Host: a DNS-rebinding page controls Host and is
+ * same-origin with it. Only an exact admitted origin counts.
+ */
+export function isOriginAllowedForRequirement(
+  requestOrigin: string | undefined,
+  requirement: BrowserOriginRequirement,
+  allowedOrigins: ReadonlySet<string>,
+): boolean {
+  if (requirement === 'none') return true;
+  if (requestOrigin === undefined) return requirement === 'if_present';
+  return isCorsOriginAllowed(requestOrigin, allowedOrigins);
+}
+
+/** A Host header's hostname as Express reads `req.hostname`, or '' when unusable. */
+export function hostnameOfHostHeader(host: string | undefined): string {
+  try {
+    return new URL(`http://${host ?? ''}`).hostname;
+  } catch {
+    return '';
+  }
+}
+
 export function isLoopbackRequestHostname(hostname: string): boolean {
   const normalized = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
   if (normalized === 'localhost' || normalized === '::1') return true;

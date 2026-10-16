@@ -6,6 +6,7 @@ import {describe, expect, it, jest} from '@jest/globals';
 import {createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext,
   resolveAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryReader, type AnalysisHistoryTurn} from '../analysisHistory';
 import {AnalysisHistoryStore, parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
+import {clearCodeAwareOutputGuards, sanitizeCodeAwareText, sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 
 function turn(index = 0): AnalysisHistoryTurn {
   return toAnalysisHistoryTurn({id: `run-${index}`, turnIndex: index, traceId: 'trace', timestamp: index,
@@ -14,7 +15,7 @@ function turn(index = 0): AnalysisHistoryTurn {
 }
 
 describe('typed analysis history', () => {
-  it('carries product-resolved source activation through real runtime wrappers without sourceUsePolicy', () => {
+  it('carries product-resolved source activation through real runtime wrappers', () => {
     const source = {...turn(), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'AUTHORIZED_SOURCE_HISTORY'};
     const missingFingerprint = {...turn(1), sourceDerived: true, answer: 'LEGACY_PRIVATE_HISTORY'};
     const publicTurn = turn(2);
@@ -24,7 +25,6 @@ describe('typed analysis history', () => {
       assertActive: () => {if (!productActive) throw new Error('product_revoked');}});
     const baseOptions = {analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send' as const, codebaseIds: ['A']};
     const bound = withAnalysisHistoryReader(baseOptions, productReader, {includeSourceDerived: true});
-    expect(bound).not.toHaveProperty('sourceUsePolicy');
     const runtime = createRuntimeAnalysisHistoryReader({options: {...bound}, sessionId: 'physical-run', traceId: 'trace',
       getTurns: () => [], assertActive: () => {if (!runtimeActive) throw new Error('runtime_revoked');}});
     expect(runtime.getTurns()).toEqual([source, publicTurn]);
@@ -48,15 +48,87 @@ describe('typed analysis history', () => {
     expect(() => runtime.read({turnId: source.id})).toThrow('product_revoked');
   });
 
-  it('does not recreate product activation or a reader from serialized options', () => {
+  it('keeps pre-acf2 source-derived history stored but out of the model context', () => {
+    const current = `acf2:${'d'.repeat(64)}`;
+    const legacySource = {...turn(), sourceDerived: true, analysisContextFingerprint: 'd'.repeat(64), answer: 'LEGACY_SOURCE'};
+    const currentSource = {...turn(1), sourceDerived: true, analysisContextFingerprint: current, answer: 'CURRENT_SOURCE'};
+    const publicTurn = turn(2);
+    const stored = [legacySource, currentSource, publicTurn];
+    const reader = createRuntimeAnalysisHistoryReader({options: {analysisContextFingerprint: current,
+      codeAwareMode: 'provider_send', codebaseIds: ['A']}, sessionId: 'upgraded', traceId: 'trace',
+      getTurns: () => stored, assertActive: () => {}});
+    expect(reader.getTurns()).toEqual([currentSource, publicTurn]);
+    expect(reader.read({turnId: legacySource.id})).toMatchObject({success: false});
+    expect(renderAnalysisHistoryContext(reader.getTurns())).not.toContain('LEGACY_SOURCE');
+    // Nothing is re-stamped: the stored turn keeps the fingerprint it ran under.
+    expect(stored[0]!.analysisContextFingerprint).toBe('d'.repeat(64));
+  });
+
+  it('does not recreate an issued reader or its restriction from serialized options', () => {
     const source = {...turn(), sourceDerived: true, analysisContextFingerprint: 'scope-A'};
-    const bound = withAnalysisHistoryReader({analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send' as const,
-      codebaseIds: ['A']}, createAnalysisHistoryReader({getTurns: () => [source], assertActive: () => {}}), {includeSourceDerived: true});
+    const productOnly = {...turn(1), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'PRODUCT_READER_ONLY'};
+    const selection = {analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send' as const, codebaseIds: ['A']};
+    const bound = withAnalysisHistoryReader(selection,
+      createAnalysisHistoryReader({getTurns: () => [productOnly], assertActive: () => {}}), {includeSourceDerived: false});
     const json = JSON.parse(JSON.stringify(bound));
-    // Ordinary string keys are neither the issued reader nor the product decision.
-    const runtime = createRuntimeAnalysisHistoryReader({options: {...json, includeSourceDerived: true},
+    // Ordinary string keys are neither the issued reader nor its restriction:
+    // the runtime reads its own turns, activated by the authorized selection.
+    const runtime = createRuntimeAnalysisHistoryReader({options: {...json, includeSourceDerived: false},
       sessionId: 's', traceId: 'trace', getTurns: () => [source], assertActive: () => {}});
-    expect(runtime.getTurns()).toEqual([]);
+    expect(runtime.getTurns()).toEqual([source]);
+  });
+
+  it('activates source-derived history from the authorized selection, partitioned by exact fingerprint', () => {
+    const scopeA = {...turn(0), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'SCOPE_A'};
+    const scopeB = {...turn(1), sourceDerived: true, analysisContextFingerprint: 'scope-B', answer: 'SCOPE_B'};
+    const unscoped = {...turn(2), sourceDerived: true, answer: 'NO_FINGERPRINT'};
+    const publicTurn = turn(3);
+    const read = (options: object) => createRuntimeAnalysisHistoryReader({options, sessionId: 'run', traceId: 'trace',
+      getTurns: () => [scopeA, scopeB, unscoped, publicTurn], assertActive: () => {}}).getTurns();
+    // Web and CLI analyze runs bind no reader; the selection alone activates.
+    expect(read({analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send', codebaseIds: ['A']}))
+      .toEqual([scopeA, publicTurn]);
+    expect(read({analysisContextFingerprint: 'scope-A', knowledgeSourceIds: ['kb']})).toEqual([scopeA, publicTurn]);
+    for (const inactive of [{}, {codeAwareMode: 'off', codebaseIds: ['A']}, {codeAwareMode: 'provider_send', codebaseIds: []}]) {
+      expect(read({analysisContextFingerprint: 'scope-A', ...inactive})).toEqual([publicTurn]);
+    }
+  });
+
+  it('registers every private question the model can read for strict echo, whichever store supplied it', () => {
+    const sessionId = 'history-echo-physical';
+    const privateTurn = (index: number, id: string, fingerprint: string, query: string): AnalysisHistoryTurn =>
+      ({...turn(index), id, sourceDerived: true, analysisContextFingerprint: fingerprint, query});
+    const durableOnly = privateTurn(0, 'durable-only', 'scope-A', 'DURABLE_ONLY_PRIVATE_QUESTION about Foo::bar');
+    const durableOriginal = privateTurn(1, 'same-run', 'scope-A', 'DURABLE_ORIGINAL_PRIVATE_QUESTION about Baz::qux');
+    const otherScope = privateTurn(2, 'other-scope', 'scope-B', 'OTHER_SCOPE_PRIVATE_QUESTION');
+    // An older CLI transcript stored a placeholder under the same run id.
+    const localPlaceholder = {...durableOriginal, query: 'Private source or knowledge analysis request (original content not persisted)'};
+    const archive = jest.spyOn(AnalysisHistoryStore.prototype, 'list').mockReturnValue([durableOnly, durableOriginal, otherScope]);
+    try {
+      const options = {tenantId: 't', workspaceId: 'w', userId: 'u', analysisContextFingerprint: 'scope-A',
+        codeAwareMode: 'provider_send' as const, codebaseIds: ['A']};
+      // The CLI binds its local transcript merged under the backend reader, which wins per run id.
+      const backend = createRuntimeAnalysisHistoryReader({options, sessionId, traceId: 'trace',
+        getTurns: () => [], assertActive: () => {}});
+      const merged = createAnalysisHistoryReader({assertActive: () => {},
+        getTurns: () => [...new Map([localPlaceholder, ...backend.getTurns()].map(entry => [entry.id, entry])).values()]});
+      const runtime = createRuntimeAnalysisHistoryReader({options: withAnalysisHistoryReader(options, merged),
+        sessionId, traceId: 'trace', getTurns: () => [], assertActive: () => {}});
+
+      expect(runtime.getTurns().map(entry => entry.query).sort()).toEqual([durableOnly.query, durableOriginal.query].sort());
+      const echo = `Earlier you asked ${durableOnly.query}; then ${durableOriginal.query}.`;
+      const strict = sanitizeCodeAwareText(sessionId, echo);
+      expect(strict).toContain('[PRIVATE_QUERY_REFERENCE]');
+      expect(strict).not.toContain('DURABLE_ONLY_PRIVATE_QUESTION');
+      expect(strict).not.toContain('DURABLE_ORIGINAL_PRIVATE_QUESTION');
+      // The creator's own question stays readable to them.
+      expect(sanitizeOwnerCodeAwareText(sessionId, echo)).toBe(echo);
+      // A question the model cannot read is neither returned nor registered.
+      expect(sanitizeCodeAwareText(sessionId, otherScope.query)).toBe(otherScope.query);
+    } finally {
+      archive.mockRestore();
+      clearCodeAwareOutputGuards(sessionId);
+    }
   });
 
   it('retains canonical artifactRefs and row selectors through conversion, persistence parsing and full pages', () => {

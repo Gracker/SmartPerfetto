@@ -14,6 +14,12 @@ Code-Aware Analysis 让 SmartPerfetto 在分析 trace 时按需引用本机代�
 
 关闭源码模式时，“添加并用于分析”只启用新库；已有正文模式时追加新库，已有仅定位模式时保持仅定位。旧的未启用选择或仅定位权限不会因此升级。
 
+注册后，每轮分析使用什么由输入框旁的 **本轮分析上下文** 弹层决定：源码模式（`关闭` / `仅定位` /
+`发送正文`，后者只能勾选已允许发送正文的源码库）、要用的源码库、源码深度（`智能` / `快速定位` /
+`完整分析`）和知识库；“数据去向”说明本轮哪些内容会发给哪个 AI 服务，“全部关闭”一次关掉源码和
+知识库，“管理…”打开设置中的源码库页。分析运行期间不能修改。后端设置了
+`SMARTPERFETTO_CODE_AWARE=off` 时，弹层显示“后端已关闭源码分析”。
+
 CLI 示例：
 
 ```bash
@@ -48,14 +54,16 @@ npm run cli:dev -- run --format json \
 | 不传任何 ID | 普通 trace-only；`fast` 可以保持轻量路径 |
 | 只传 `--codebase-id` | 默认授权 `metadata_only`，保留请求的 Fast/Auto/Full 模式 |
 | `--code-aware metadata_only` + codebase ID | 模型可按需定位源码，只接收 `CodeRef` 元数据 |
-| `--code-aware provider_send` + codebase ID | 可在授权交集内按需搜索、读取有界且脱敏的片段 |
-| `--code-aware off` + codebase ID | 输入无效，直接拒绝，不静默忽略源码配置 |
-| 只传 `--knowledge-source-id` | 使用已授权的私有外部 RAG，保留请求的分析预算模式 |
+| `--code-aware provider_send` + codebase ID | 可在当前授权范围内按需搜索、读取有界且脱敏的片段；授权与当前选择范围不一致时拒绝启动（`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`），重新授权即可 |
+| `--code-aware off` + codebase ID | 视为未选择源码：丢弃这些 ID，不授权任何源码访问 |
+| 只传 `--knowledge-source-id` | 使用已授权的文档知识库（`search_knowledge` / `read_knowledge_section`），保留请求的分析预算模式 |
 | codebase ID + knowledge source ID | 使用本次选择授权的源码与知识源，并遵守各自访问边界 |
 
-源码 codebase 只要求已注册根目录仍可访问；缺少 active generation 或索引分片不会阻止分析。外部知识源仍是 RAG 数据源，因此仍要求已授权且索引完成。注册路径被移动、卸载或删除时，Web/CLI 会返回 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，恢复原路径或重新注册即可。
+源码 codebase 只要求已注册根目录仍可访问；缺少 active generation 或索引分片不会阻止分析。文档知识库是独立的 SQLite FTS 文档库，要求已做权利确认、已授权发送给模型服务且有激活的索引（license 只是所有者自填的说明，不是条件）。注册路径被移动、卸载、删除或移出 allowlist 时，Web/CLI 会返回 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，并给出每个库的固定原因（如 `root_missing`、`outside_allowlist`），恢复原路径或重新注册即可。
 
-分析预算和证据权限相互独立：选择源码、对比 Trace 或私有 RAG 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
+修改源码库的选择范围时，可证明的收窄会让发送授权随之收窄；其他变化会撤销发送授权，需要重新授权：`smp codebase authorize-content` 先显示将授权的具体范围与 token，再用 `--confirm <token>` 授权（API 为 consent 接口的 `authorizeContent: true` 加 `contentDisclosureToken`）。实际的授权或范围变化会让正在进行的对话重新开始；重复提交相同授权、修改未选中的库或在别处重建索引都不会打断它。
+
+分析预算和证据权限相互独立：选择源码、对比 Trace 或文档知识库 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册后用 `smp codebase authorize-content` 查看并确认披露范围（Web 端为“添加并用于分析”在注册后按返回的披露授权），且本次分析显式选择 `--code-aware provider_send`。注册本身不能授权正文发送。
 
 ## 什么时候使用源码
 
@@ -65,6 +73,9 @@ npm run cli:dev -- run --format json \
 - 调用遵守当前运行预算、路径过滤、正文授权和结果容量限制。主流程不隐式套用固定的 1 次搜索、2 次读取、6 秒策略。
 - 没有发生调用时，回执不会声称已使用源码。模型先声明不需要源码、后来实际调用时，使用记录仍持续更新。
 - 源码选择或授权变化受会话身份与授权指纹检查约束，不能沿用失效的私有上下文。
+- 授权指纹只覆盖同意、选择范围、生命周期与删除，不含索引代次：别处重建索引不会中断会话或对话，也不会隐藏历史。每次运行固定所选索引的代次；分析途中索引被重建时，索引查找工具会明确拒绝（`codebase_index_generation_changed`，改用无需索引的 `search_codebase`），不会把它当成“没有命中”。固定代次的已存 chunk 或文件丢失时同样明确拒绝。文档知识库在保留的上一代仍完整时继续服务本次运行。
+
+> **升级说明（一次性）**：授权指纹改为 `acf2` 格式。升级前保存的指纹不再与新值相等，也不会被改写：选用了源码或知识库的已有会话会在下一轮重新开始一次；无法恢复升级前的对话（请开新对话）；升级前源码派生的历史仍保存在本地，但不再进入模型上下文。
 
 每次分析保留 `SourceUseDecisionV1`：
 
@@ -91,9 +102,11 @@ npm run cli:dev -- run --format json \
 
 1. 先用当前 trace、匹配的 Skill 和 Perfetto SQL 确认性能现象、时间范围、线程、slice 与 symbol。这些才是性能结论的主证据。
 2. 如果后端发现用户已经安装且当前可用的本地 GitNexus，AI 可以调用 `query_code_graph` / `inspect_code_symbol` 导航候选调用关系和 symbol。代码图只是可选定位加速，不是 trace 证据，也不是源码事实。
-3. 用无需索引的 `search_codebase` 缩小到相对文件与行号，并在当前 consent 允许时用有界的 `read_codebase_file` 核对实际源码。任何影响结论的图关系都必须完成这一步；若权限不允许读取，则保留 `verificationRequired`，不得把候选关系升级为已验证结论。
+3. 用无需索引的 `search_codebase`（结果按声明行、trace 调用点优先排序并带上下文）或按文件名查找的 `find_codebase_files` 缩小到相对文件与行号，并在当前 consent 允许时用有界的 `read_codebase_file` 核对实际源码。任何影响结论的图关系都必须完成这一步；若权限不允许读取，则保留 `verificationRequired`，不得把候选关系升级为已验证结论。
 
-结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。`SourceClaimBindingV1.mechanismStatus` 只允许 `corroborated`、`compatible`、`ambiguous` 或 `unverified`；其中 `corroborated` 要求同一 claim 同时具有已核验的 trace 发生证据和 `provider_send` 正文/索引证据。`metadata_only` 只能定位，不能把机制升级为 `corroborated`。
+结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。模型只声明 claim 绑定了哪些源码引用和同一 claim 的 Trace 证据；每个依赖源码的结论的状态由服务端根据本轮实际返回计算：`源码解释 + Trace 证据`（读过正文且有同一 claim 的已核验 Trace 证据）、`源码解释（未与 Trace 关联）`、`未读取实现`（只有搜索命中或元数据）、`未绑定引用`，以及使答案失败的 `引用无效`。回答中写出的 `path:L10-L20` 位置也逐个与本轮返回比对。`metadata_only` 只能定位。
+
+源码深度决定一轮能检索和读取多少源码：`locate`（快速定位）只找到相关代码的位置，`mechanism`（机制分析）读够实现来解释现象。默认 `auto` 按问题判断（只需定位或不需源码时定位，要解释实现时机制分析），判断不出时按分析预算；也可用 CLI 的 `--source-depth` 或 API 的 `options.sourceDepth` 指定。仅元数据模式最多定位。每轮在分析过程中显示一行「本轮源码深度」及其来源；只有机制分析会提供补丁建议工具。两档都会对答案做语义复核。
 
 `code_pinpoint` Skill 可以先从 trace 中产生更稳定的源码候选锚点：`hot_slices` 只把符合保守规则的 App 主线程 Trace label 升级为 source query hint，其他 slice 只作 generic anchor；可选的 `native_symbols` 从 CPU profiling 样本提取 function/module/build-id。两者都只缩小查询范围，不代替当前 trace 证据或后续有界源码核对。
 
@@ -116,7 +129,7 @@ GitNexus 是独立的第三方可选工具。其[官方项目](https://github.co
 
 源码枚举按 `ripgrep > git > node-walk` 的能力阶梯运行，并在 preview、CLI 与索引审计中返回实际 backend、fidelity 和 coverage。`.git`、`.hg`、`.svn`、`.repo` 与证书/密钥文件始终排除；`node_modules`、`build`、`Pods` 等噪声目录只有在 path filter 显式指向其中时才会进入候选集。AOSP preview 会读取有界的 `.repo/manifest.xml` 元数据，提供 project/group 范围按钮，但 `.repo` 对象库本身永不作为源码遍历。Manifest 缺失表示没有可用的范围建议；读取、解析或身份校验失败会返回 `manifestUnavailableReason`，不会否决已经完成的文件枚举。只有 codebase root 身份漂移仍会阻止 preview。
 
-`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。授权是动态路径范围：当前 selection policy 与注册时冻结的 consent grant 永远取交集。扩大 path filter 或放宽 exclude glob 不会自动扩大 provider 授权；`providerGrantScopeCurrent=false` 时，新增范围先以 metadata-only 使用，用户可显式点击“授权当前范围”。产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言也可以先用于 `metadata_only` 定位，但已有注册项必须显式点击“授权新语言”后才能发送正文；授权新语言会在已有活动索引上提示重建，以补齐可能缺失的语言。
+`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。正文授权只覆盖授予时审阅的路径范围和语言。保存一个可证明落在原授权内的收窄范围时，授权随之收窄；其他范围变化会撤销正文授权（`providerGrantScopeCurrent=false`），需要重新点击“允许发送正文”审阅并确认。语言不属于路径范围：产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言先只能用于 `metadata_only` 定位，授权未覆盖的语言文件在发送正文时逐个被扣下（搜索标记 `provider_grant_scope`），重新“允许发送正文”后才覆盖全部当前可用语言。CLI 另保留 `authorize-selection` / `authorize-extensions`，它们只在已有正文授权时分别更新路径范围或语言。
 
 索引覆盖被拆成独立状态。完整、确定性的候选可直接激活；若已有完整索引，新的确定性截断结果会进入 pending，用户可接受或丢弃，旧完整索引保持服务。枚举超时、遍历错误或不确定结果永不自动激活。索引仍是可选加速，pending 或失败不会阻止 live root 的按需搜索。
 
@@ -137,15 +150,15 @@ list/detail/audit 响应不暴露它、绝对路径或原始运行时错误；�
 
 ## 管理与会话生命周期
 
-Web UI 的 `Codebases` 页不只用于注册：它会展示 root 是否可用、selection/grant revision、活动索引与覆盖、待处理 candidate、provider 授权范围是否过期、工作区与内容指纹。用户可以完整替换 path filter / exclude glob，启用或撤销 provider-send，授权新语言或当前路径范围，用 CAS 接受/拒绝精确 pending generation，reindex，查看安全 audit，以及删除注册项和其全部索引代次。
+Web UI 的 `源码库` 页不只用于注册：它会展示 root 是否可用、selection/grant revision、活动索引与覆盖、待处理 candidate、provider 授权范围是否过期、工作区与内容指纹。用户可以编辑并预览范围后保存、**允许发送正文**（审阅服务端给出的包含范围、排除规则和语言后 **确认允许**；披露在确认前发生变化时要求重新确认）或 **撤销正文授权**、用 CAS 接受/丢弃精确的受限索引候选、构建可选索引、查看安全审计，以及删除注册项和其全部索引代次。
 
-任何改变当前授权或可用内容的成功操作都会递增仅前端使用的 `authorizationEpoch`，退役旧后端 Agent session，并在新安全边界内重置对话。这个 epoch 不发送给后端。只拒绝一个尚未激活的 pending candidate 不会改变当前授权。
+授予或撤销正文授权、保存范围和删除已选源码库会改变授权指纹：前端同时递增仅前端使用的 `authorizationEpoch`，下一轮分析换用新的后端 Agent session，对话在新安全边界内重新开始。这个 epoch 不发送给后端。重建索引、接受或丢弃索引候选、修改未选中的库都不改变授权，不会打断会话。分析运行中授权发生变化时，该 run 在下一次模型请求或工具调用前终止（`analysis_context_changed_restart_required`），不会以部分结果交付。
 
 ## 安全边界
 
-- `metadata_only`：模型可按需搜索，但只看到相对路径、行号和 `referenceId`，不能读取源码正文。
-- `provider_send`：只有本次显式选中、注册时同意 `sendToProvider`，且目标相对路径同时被当前 selection 与 consent grant 允许时，才能搜索和读取有界、脱敏后的片段。selection/grant revision 不一致时，新增范围保持 metadata-only，已授权交集不被扩大。
-- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和 secret 脱敏约束；绝对 root 始终留在后端信任边界内，不进入工具结果、模型上下文、报告或导出。
+- `metadata_only`：模型可按需搜索，但只看到相对路径、行号和引用 `id`，不能读取源码正文。
+- `provider_send`：只有本次显式选中、已经过披露审阅获得正文授权，且目标相对路径和语言都在授权范围内时，才能搜索和读取有界、脱敏后的片段。授权与当前范围不一致时拒绝启动（`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`）；授权未覆盖的语言只能定位。
+- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和凭据脱敏约束；绝对 root 始终留在后端信任边界内，不进入工具结果、模型上下文、报告或导出。凭据脱敏按整份文件的语法识别，只替换凭据的值（凭据命名的键与赋值、凭据 getter 的返回值、`Bearer`/`Basic`、已知前缀令牌、JWT、PEM 私钥、凭据命名的标记元素与属性，以及启发式识别的无键随机串），保留键名、标识符和每个换行，行号不变；只以 `token` 结尾的名字（窗口、帧、词法或模型流的 token）只在值看起来像凭据时才替换。按需读取立即使用这些规则；此前建立的索引仍是旧规则（会连同键名整段替换），重建索引后才使用新规则。
 - 代码图结果始终是 metadata-only。报告、snapshot 和 CLI artifact 可以保留相对 `CodeRef` 及分析引用的源码，但不能把图关系写成 Trace 证据。
 - 系统文件夹选择器的变更请求必须同时具有 loopback Host、socket 与 Origin；只读能力探测可省略 Origin。选择器在 Docker、enterprise 或非 loopback 监听模式下关闭；目录绝对路径和 `rootAuthorization` 不会出现在 codebase list/detail/audit 响应中。
 - 原始 query、工具参数和完整检索载荷不额外写入日志；provider transcript、跨会话学习等后台边界保持独立。用户可见的分析结果和源码引用可以保存在本地历史、报告和快照中。私有知识库正文仍受其独立过滤规则约束。
@@ -190,18 +203,18 @@ npm --prefix backend run verify:codebase-aware
 这个本机 gate 不调用真实 provider，也不代表模型质量验收。配置好凭证后，可另行运行：
 
 ```bash
-node backend/scripts/run-deepseek-agent-e2e.cjs \
+node backend/scripts/run-glm-agent-e2e.cjs \
   --suite code-aware-semantic-delta \
-  --runtime all \
+  --runtime all-glm \
   --repeat 5
 ```
 
-真实 Claude、OpenAI、Pi、OpenCode 和 Qoder 的结果必须分别报告 `PASSED`、`FAILED` 或 `REAL PROVIDER NOT AVAILABLE`；缺少凭证不是通过。
+默认使用 GLM Coding Plan 订阅端点和 `GLM_API_KEY`，主模型 `glm-5.3`、轻量模型 `glm-5.3-flash`；拒绝通用按量付费端点和 DeepSeek 回退。真实 OpenAI、Pi、OpenCode 的结果必须分别报告 `PASSED`、`FAILED` 或 `REAL PROVIDER NOT AVAILABLE`；缺少凭证不是通过。Claude、Qoder 仅在显式选择并具备各自授权时单独运行。
 
 排查单个失败场景时，可以先运行诊断预检；它不替代五轮矩阵，也不会把未覆盖的建议语义标为已验收：
 
 ```bash
-node backend/scripts/run-deepseek-agent-e2e.cjs \
+node backend/scripts/run-glm-agent-e2e.cjs \
   --suite code-aware-semantic-delta --runtime openai-agents-sdk \
   --preflight --query-id explicit-source-location --condition A2
 ```

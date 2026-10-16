@@ -6,6 +6,7 @@ import type { TraceProcessorService } from '../services/traceProcessorService';
 import type { IOrchestrator } from '../agent/core/orchestratorTypes';
 import {
   getProviderService,
+  ProviderStoreUnreadableError,
   type AgentRuntimeKind,
   type ProviderConfig,
   type ProviderScope,
@@ -66,6 +67,24 @@ export function resolveAgentRuntimeSelection(
     throw new Error(`Provider not found: ${providerId}`);
   }
   return selectRuntimeForProvider(provider, runtimeOverride);
+}
+
+/**
+ * The selection a health or doctor report describes: the one an analysis
+ * without an explicit provider would use. While providers.json is unreadable
+ * such an analysis is refused, so this reports the refusal beside the
+ * env/default selection instead of throwing from a status surface.
+ */
+export function resolveAgentRuntimeSelectionForDiagnostics(): {
+  selection: RuntimeSelection;
+  providerStoreError?: ProviderStoreUnreadableError;
+} {
+  try {
+    return {selection: resolveAgentRuntimeSelection()};
+  } catch (error) {
+    if (!(error instanceof ProviderStoreUnreadableError)) throw error;
+    return {selection: resolveAgentRuntimeSelection(null), providerStoreError: error};
+  }
 }
 
 /**

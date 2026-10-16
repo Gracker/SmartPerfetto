@@ -59,20 +59,26 @@ display:
     - name: count
       label: "次数"
       type: number
+      unit: events
       format: compact
     - name: total_dur_ms
       label: "总耗时"
       type: duration
+      unit: ms
       format: duration_ms
     - name: avg_dur_ms
       label: "平均耗时"
       type: duration
+      unit: ms
       format: duration_ms
     - name: percent_of_startup
       label: "启动占比"
       type: percentage
+      unit: "%"
       format: percentage
 
+sql_fragments:
+  - fragments/art_gc_names.sql
 sql: |
   SELECT
     ts.slice_name as gc_type,
@@ -88,7 +94,9 @@ sql: |
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
-    AND (ts.slice_name GLOB '*GC*' OR ts.slice_name GLOB '*gc*')
+    -- ART GC runs and waits on them, by name (fragments/art_gc_names.sql).
+    AND ts.slice_name GLOB '*GC*'
+    AND EXISTS (SELECT 1 FROM art_gc_slice_name_patterns n WHERE ts.slice_name GLOB n.pattern)
   GROUP BY ts.slice_name, ts.is_main_thread
   ORDER BY total_dur_ms DESC
   LIMIT ${top_k|10}

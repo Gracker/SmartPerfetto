@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto
+#
+# Per-run source access budgets by depth. `locate` finds where something is;
+# `mechanism` reads enough code to explain how it behaves. Counts are spent
+# when a call reaches the source; tokens are what is actually delivered.
+# `locates` are locate_trace_anchor calls; each runs a few bounded internal
+# searches that do not spend `searches`.
+# Knowledge-base text has its own token pool, shared by every knowledge
+# surface. `searches`/`reads` count search_knowledge/read_knowledge_section
+# calls on selected document collections; `part_chars` is the most section
+# text one read delivers.
+
+schema_version: source_depth_policy@1
+
+depths:
+  locate:
+    searches: 4
+    reads: 3
+    locates: 2
+    max_read_lines: 80
+    tokens: 12000
+  mechanism:
+    searches: 16
+    reads: 12
+    locates: 6
+    max_read_lines: 200
+    tokens: 60000
+
+knowledge:
+  tokens: 12000
+  searches: 8
+  reads: 8
+  part_chars: 4000

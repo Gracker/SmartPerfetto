@@ -65,8 +65,8 @@ const pinned: EvalPinnedEnvironmentV1 = {
   overlayGeneration: 'builtin:registry',
 };
 const treatmentRef = {
-  category: 'phaseHints' as const,
-  id: 'candidate-phase-hint',
+  category: 'skillNotes' as const,
+  id: 'candidate-skill-note',
   contentHash: 'a'.repeat(64),
 };
 
@@ -94,7 +94,7 @@ function manifest(role: 'baseline' | 'candidate'): RunManifestV1 {
   const injections = role === 'candidate'
     ? {
         ...EMPTY_INJECTIONS,
-        phaseHints: [{
+        skillNotes: [{
           id: treatmentRef.id,
           contentHash: treatmentRef.contentHash,
         }],
@@ -278,7 +278,7 @@ describe('evaluation replay core', () => {
       mode: 'on',
       selected: {
         ...EMPTY_INJECTIONS,
-        phaseHints: [{
+        skillNotes: [{
           id: treatmentRef.id,
           contentHash: treatmentRef.contentHash,
         }],
@@ -563,7 +563,7 @@ describe('evaluation replay core', () => {
       mode: 'on',
       selected: {
         ...EMPTY_INJECTIONS,
-        phaseHints: [{
+        skillNotes: [{
           id: treatmentRef.id,
           contentHash: treatmentRef.contentHash,
         }],

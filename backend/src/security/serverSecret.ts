@@ -4,7 +4,11 @@
 
 import crypto from 'crypto';
 
-import {resolveFeatureConfig} from '../config';
+import {
+  resolveFeatureConfig,
+  selectServerSecretRoot,
+  serverSecretCandidateKeys,
+} from '../config';
 
 let developmentRootSecret: Buffer | undefined;
 
@@ -16,16 +20,10 @@ export function deriveServerSecret(input: {
 }): Buffer {
   const env = input.env || process.env;
   const minimumBytes = input.minimumBytes ?? 32;
-  const configured = [
-    ...(input.preferredEnvKeys || []),
-    'SMARTPERFETTO_SERVER_SECRET',
-    'SMARTPERFETTO_SSO_COOKIE_SECRET',
-    'SMARTPERFETTO_API_KEY',
-  ]
-    .map(key => env[key]?.trim())
-    .find((value): value is string =>
-      typeof value === 'string' && Buffer.byteLength(value, 'utf8') >= minimumBytes,
-    );
+  const configured = selectServerSecretRoot(env, {
+    preferredEnvKeys: input.preferredEnvKeys,
+    minimumBytes,
+  });
 
   let rootSecret: Buffer;
   if (configured) {
@@ -33,7 +31,8 @@ export function deriveServerSecret(input: {
   } else {
     if (resolveFeatureConfig(env).enterprise) {
       throw new Error(
-        `A persistent server secret of at least ${minimumBytes} bytes is required in enterprise mode`,
+        `A persistent server secret of at least ${minimumBytes} bytes is required in enterprise mode; `
+        + `set one of ${serverSecretCandidateKeys(input.preferredEnvKeys).join(', ')}`,
       );
     }
     developmentRootSecret ??= crypto.randomBytes(32);

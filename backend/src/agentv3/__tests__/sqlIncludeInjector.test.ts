@@ -9,6 +9,7 @@ import {
   injectStdlibIncludes,
   _getSymbolIndexForTesting,
 } from '../sqlIncludeInjector';
+import {analyzeSqlStdlibDependencies} from '../../services/sqlStdlibDependencyAnalyzer';
 
 describe('sqlIncludeInjector - happy paths', () => {
   it('injects slices.self_dur when SQL references slice_self_dur', () => {
@@ -168,6 +169,59 @@ describe('sqlIncludeInjector - comment & string masking', () => {
       '-- this query computes self_dur\nSELECT * FROM slice_self_dur'
     );
     expect(injected).toEqual(['slices.self_dur']);
+  });
+});
+
+// A stdlib view is invisible to schema introspection until its module is
+// included, so an existence check the model writes itself used to return zero
+// rows and read as "this trace has no such table". Only an exact string
+// literal names one symbol; LIKE/GLOB patterns stay unresolved by design.
+describe('sqlIncludeInjector - schema introspection by exact literal', () => {
+  it('injects for pragma_table_info / pragma_table_xinfo literals', () => {
+    expect(injectStdlibIncludes(
+      "SELECT name FROM pragma_table_info('android_monitor_contention')",
+    ).injected).toEqual(['android.monitor_contention']);
+    expect(injectStdlibIncludes(
+      "SELECT name, type FROM pragma_table_xinfo( 'ANDROID_BINDER_TXNS' )",
+    ).injected).toEqual(['android.binder']);
+  });
+
+  it('injects for the PRAGMA table_info statement form', () => {
+    expect(injectStdlibIncludes('PRAGMA table_info(android_input_events)').injected)
+      .toEqual(['android.input']);
+    expect(injectStdlibIncludes("PRAGMA main.table_info('android_input_events');").injected)
+      .toEqual(['android.input']);
+  });
+
+  it('injects for sqlite_master / sqlite_schema name predicates', () => {
+    expect(injectStdlibIncludes(
+      "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'android_monitor_contention'",
+    ).injected).toEqual(['android.monitor_contention']);
+    expect(injectStdlibIncludes(
+      "SELECT name FROM sqlite_schema WHERE tbl_name IN ('android_input_events', 'slice', 'not_a_table')",
+    ).injected).toEqual(['android.input']);
+  });
+
+  it('does not resolve GLOB / LIKE patterns or literals outside a schema lookup', () => {
+    expect(injectStdlibIncludes(
+      "SELECT name FROM sqlite_master WHERE name GLOB 'android_monitor*'",
+    ).injected).toEqual([]);
+    expect(injectStdlibIncludes(
+      "SELECT name FROM sqlite_master WHERE name LIKE 'android_monitor_contention%'",
+    ).injected).toEqual([]);
+    expect(injectStdlibIncludes(
+      "SELECT * FROM slice WHERE name = 'android_monitor_contention'",
+    ).injected).toEqual([]);
+    expect(injectStdlibIncludes(
+      "-- pragma_table_info('android_monitor_contention')\nSELECT 1",
+    ).injected).toEqual([]);
+  });
+
+  it('keeps Skill-style dependency analysis free of introspection references', () => {
+    const analysis = analyzeSqlStdlibDependencies(
+      "SELECT 1 FROM sqlite_master WHERE name = 'android_monitor_contention'",
+    );
+    expect(analysis.dependencies).toEqual([]);
   });
 });
 

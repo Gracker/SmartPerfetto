@@ -7,9 +7,9 @@ const TRUE_VALUES = new Set(['1', 'true', 'yes']);
 /**
  * Shared, fail-closed environment reader for learning lifecycles.
  *
- * Case Evolution and Self Evolution deliberately share this parser so their
- * enablement and bounded worker settings cannot drift into parallel config
- * semantics.
+ * Case retrieval and Self-Evolution read every enablement flag through this
+ * parser, and the run manifest records them through the same loaders, so the
+ * record cannot drift from the gate.
  */
 export class LifecycleConfigReader {
   constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
@@ -18,22 +18,5 @@ export class LifecycleConfigReader {
     const value = this.env[key];
     return typeof value === 'string' &&
       TRUE_VALUES.has(value.trim().toLowerCase());
-  }
-
-  positiveInteger(
-    key: string,
-    fallback: number,
-    options: {min?: number; max?: number} = {},
-  ): number {
-    const value = this.env[key];
-    if (typeof value !== 'string' || value.trim() === '') return fallback;
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return fallback;
-    const integer = Math.floor(parsed);
-    const minimum = options.min ?? 1;
-    if (integer < minimum) return fallback;
-    return typeof options.max === 'number'
-      ? Math.min(integer, options.max)
-      : integer;
   }
 }

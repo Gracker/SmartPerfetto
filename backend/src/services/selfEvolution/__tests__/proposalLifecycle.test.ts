@@ -24,13 +24,13 @@ describe('curationCoordinator', () => {
     const retirement = {
       ...candidate('retire_injection', 'b'),
       kind: 'retire_injection' as const,
-      tier: 'T0' as const,
+      tier: 'T1' as const,
       delta: {
         op: 'remove' as const,
         targetKind: 'injection' as const,
-        targetId: 'hint-a',
-        anchor: 'injections.phaseHints[id=\"hint-a\"]',
-        baseContentHash: canonicalContentHash('hint-a'),
+        targetId: 'note-a',
+        anchor: 'injections.skillNotes[id=\"note-a\"]',
+        baseContentHash: canonicalContentHash('note-a'),
         afterMode: 'none' as const,
       },
     };
@@ -379,13 +379,13 @@ describe('ProposalStore fenced lifecycle', () => {
     const proposal = await proposalFor(selectedRetirementCandidate());
     expect(() => parseM6DraftProposal({
       ...proposal,
-      tier: 'T1',
+      tier: 'T0',
     })).toThrow('proposal_retire_mapping_invalid');
     expect(() => parseM6DraftProposal({
       ...proposal,
       deltas: [{
         ...proposal.deltas[0],
-        targetId: 'different-hint',
+        targetId: 'different-note',
       }],
     })).toThrow('proposal_retire_mapping_invalid');
   });
@@ -477,13 +477,13 @@ function selectedRetirementCandidate() {
   const retirement: CurationCandidate = {
     ...candidate('retire_injection', 'retirement-a'),
     kind: 'retire_injection',
-    tier: 'T0',
+    tier: 'T1',
     delta: {
       op: 'remove',
       targetKind: 'injection',
-      targetId: 'hint-a',
-      anchor: 'injections.phaseHints[id=\"hint-a\"]',
-      baseContentHash: canonicalContentHash('hint-a'),
+      targetId: 'note-a',
+      anchor: 'injections.skillNotes[id=\"note-a\"]',
+      baseContentHash: canonicalContentHash('note-a'),
       afterMode: 'none',
     },
   };

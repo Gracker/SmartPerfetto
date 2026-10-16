@@ -32,6 +32,9 @@ function createIndexFixture() {
     {recursive: true},
   );
   fs.mkdirSync(path.join(repoRoot, 'backend/skills'), {recursive: true});
+  writeJson(path.join(repoRoot, 'Trace/skill-sql.inventory.json'), {
+    schemaVersion: 1, source: 'fixture', layout: {skills_root: 'backend/skills'}, skills: {},
+  });
   fs.mkdirSync(path.join(repoRoot, 'backend/strategies'), {recursive: true});
   fs.mkdirSync(path.join(repoRoot, 'backend/data'), {recursive: true});
   fs.mkdirSync(path.join(repoRoot, 'backend/sql/smartperfetto'), {recursive: true});

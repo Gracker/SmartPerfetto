@@ -20,6 +20,12 @@ export type RuntimeToolInvocationEvent = RuntimeToolInvocation & (
 
 export type RuntimeToolObserver = (event: RuntimeToolInvocationEvent) => void | Promise<void>;
 
+/** The runtime-supplied call id, or a fresh one when the runtime supplied none. */
+export function resolveRuntimeToolCallId(extra: RuntimeToolExtra): string {
+  const suppliedId = typeof extra.toolCallId === 'string' ? extra.toolCallId.trim() : '';
+  return suppliedId && suppliedId !== 'unknown' ? suppliedId : randomUUID();
+}
+
 /** Observe an admitted invocation without changing the tool's result or failure. */
 export function withRuntimeToolObserver(
   spec: SharedToolSpec,
@@ -34,8 +40,7 @@ export function withRuntimeToolObserver(
     }
   };
   const handler: SharedToolSpec['handler'] = async (params, extra) => {
-    const suppliedId = typeof extra.toolCallId === 'string' ? extra.toolCallId.trim() : '';
-    const toolCallId = suppliedId && suppliedId !== 'unknown' ? suppliedId : randomUUID();
+    const toolCallId = resolveRuntimeToolCallId(extra);
     const invocation = {
       toolCallId,
       toolName: spec.name,

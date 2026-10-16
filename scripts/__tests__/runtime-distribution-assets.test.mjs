@@ -23,7 +23,7 @@ test('Docker carries static backend surfaces and a host-independent OpenCode bin
   const dockerfile = readFileSync(join(root, 'Dockerfile'), 'utf8');
   assert.match(dockerfile, /COPY backend\/public \.\/backend\/public/);
   assert.match(dockerfile, /COPY backend\/knowledge \.\/backend\/knowledge/);
-  assert.match(dockerfile, /npm run knowledge-pack:fetch && npm run build/);
+  assert.doesNotMatch(dockerfile, /knowledge-pack/);
   assert.match(dockerfile, /opencode-linux-x64-baseline\/bin\/opencode/);
   assert.match(dockerfile, /opencode-linux-arm64\/bin\/opencode/);
   assert.match(dockerfile, /rm -f "\$OPENCODE_DEST"/);
@@ -41,9 +41,6 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
   for (const asset of [
     'public/assistant-shell/index.html',
     'public/admin-control-plane/index.html',
-    'knowledge/android-internals-capability-map.yaml',
-    'knowledge/aiw-pack/1.root.json',
-    'knowledge/aiw-pack/knowledge-packs.lock.json',
   ]) {
     assert.match(cliPackCheck, new RegExp(asset.replaceAll('/', '\\/')));
     assert.match(portableVerifier, new RegExp(asset.replaceAll('/', '\\/')));
@@ -62,6 +59,42 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
       ),
     );
   }
+});
+
+test('npm, Docker, and portable ship the same tracked backend/data runtime assets', () => {
+  // Portable copies `git ls-files backend/data`; the other surfaces must name
+  // exactly that set, so a dropped or added asset cannot reach only some of them.
+  const listed = spawnSync('git', ['ls-files', 'backend/data'], {cwd: root, encoding: 'utf8'});
+  assert.equal(listed.status, 0, listed.stderr);
+  const sorted = values => [...values].sort();
+  const tracked = sorted(listed.stdout.split('\n').filter(Boolean).map(file => file.slice('backend/data/'.length)));
+  assert.ok(tracked.includes('perfettoSqlIndex.light.json'));
+
+  const backendPackage = JSON.parse(readFileSync(join(root, 'backend/package.json'), 'utf8'));
+  assert.deepEqual(
+    sorted(backendPackage.files.filter(entry => entry.startsWith('data/')).map(entry => entry.slice('data/'.length))),
+    tracked,
+  );
+
+  const cliPackCheck = readFileSync(join(root, 'backend/scripts/check-cli-pack.cjs'), 'utf8');
+  assert.deepEqual(sorted([...cliPackCheck.matchAll(/'data\/([^'/]+)'/g)].map(match => match[1])), tracked);
+
+  const dockerignore = readFileSync(join(root, '.dockerignore'), 'utf8');
+  assert.deepEqual(
+    sorted([...dockerignore.matchAll(/^!backend\/data\/(\S+)$/gm)].map(match => match[1])),
+    tracked,
+  );
+  const dockerfile = readFileSync(join(root, 'Dockerfile'), 'utf8');
+  const builderCopy = dockerfile.match(/^COPY ((?:backend\/data\/\S+ )+)\.\/data\/$/m);
+  assert.ok(builderCopy, 'Dockerfile builder stage copies backend/data assets into ./data/');
+  assert.deepEqual(
+    sorted(builderCopy[1].trim().split(/\s+/).map(file => file.slice('backend/data/'.length))),
+    tracked,
+  );
+  const runtimeCopies = [...dockerfile.matchAll(
+    /^COPY --from=backend-builder \/app\/backend\/data\/(\S+) \.\/backend\/data\/\1$/gm,
+  )];
+  assert.deepEqual(sorted(runtimeCopies.map(match => match[1])), tracked);
 });
 
 test('Pi provider-explicit runtime ships exact aligned optional dependencies and a real integration gate', () => {
@@ -434,6 +467,11 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
   const workflow = readFileSync(workflowPath, 'utf8');
   const {packageJob, publishJob, propagationJob, smokeJob} =
     splitNpmPublishJobs(workflow);
+  const lfWorkflow = workflow.replace(/\r\n/g, '\n');
+  assert.deepEqual(
+    splitNpmPublishJobs(lfWorkflow.replace(/\n/g, '\r\n')),
+    splitNpmPublishJobs(lfWorkflow),
+  );
 
   assert.match(workflow, /release:\s+types:\s+\[published\]/);
   assert.match(workflow, /workflow_dispatch:[\s\S]*?release_id:/);
@@ -505,6 +543,7 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
 });
 
 function splitNpmPublishJobs(workflow) {
+  workflow = workflow.replace(/\r\n/g, '\n');
   const starts = ['  package:', '  publish:', '  propagation:', '  smoke:'].map(
     (header) => workflow.indexOf(`\n${header}\n`),
   );
@@ -687,22 +726,16 @@ test('npm registry wait is bounded by its sleep budget', REGISTRY_STEP_TEST, () 
   assert.match(result.stderr, /gh run rerun 4242 --failed/);
 });
 
-test('backend gate installs every dependency tree consumed by verify:pr', () => {
-  const workflow = readFileSync(
-    join(root, '.github/workflows/backend-agent-regression-gate.yml'),
-    'utf8',
-  );
-  const gate = workflow.slice(
-    workflow.indexOf('  gate:'),
-    workflow.indexOf('  cross-platform-contracts:'),
-  );
-
-  assert.match(
-    gate,
-    /cache-dependency-path: \|\s+package-lock\.json\s+backend\/package-lock\.json/,
-  );
-  assert.match(gate, /run: npm ci && npm --prefix backend ci/);
-  assert.match(gate, /run: npm --prefix backend run verify:pr/);
+test('backend CI installs both dependency trees for the fast and manual full gates', () => {
+  const workflow = loadYaml(readFileSync(
+    join(root, '.github/workflows/backend-agent-regression-gate.yml'), 'utf8',
+  ));
+  const steps = workflow.jobs.backend.steps;
+  const setup = steps.find(step => step.uses === 'actions/setup-node@v7');
+  assert.match(setup.with['cache-dependency-path'], /package-lock\.json\s+backend\/package-lock\.json/);
+  assert.ok(steps.some(step => step.run === 'npm ci && npm --prefix backend ci'));
+  assert.ok(steps.some(step => step.run === 'npm --prefix backend run verify:ci'));
+  assert.ok(steps.some(step => step.run === 'npm --prefix backend run verify:pr'));
 });
 
 test('Windows cross-platform contracts build and inject the fixed Go gate helper', () => {
@@ -745,10 +778,21 @@ test('Windows cross-platform contracts build and inject the fixed Go gate helper
     crossPlatform,
     /Verify Windows cross-platform runtime contracts[\s\S]*?npm run test:governance/,
   );
-  assert.match(
-    crossPlatform,
-    /Test and build the Windows portable launcher[\s\S]*?go test \.\/scripts\/portable-launcher[\s\S]*?go build[\s\S]*?\.\/scripts\/portable-launcher/,
+  const steps = loadYaml(workflow).jobs['cross-platform-contracts'].steps;
+  const testStep = steps.find((step) => step.name === 'Test the Windows portable launcher');
+  const buildStep = steps.find((step) => step.name === 'Build the Windows portable launcher');
+  assert.equal(testStep?.run, 'go test ./scripts/portable-launcher');
+  assert.equal(
+    buildStep?.run,
+    'go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher',
   );
+  for (const step of [testStep, buildStep]) {
+    assert.equal(step.shell, 'pwsh');
+    assert.deepEqual(step.env, {GO111MODULE: 'off'});
+    assert.equal(step.if, "${{ matrix.os == 'windows-latest' }}");
+    assert.notEqual(step['continue-on-error'], true);
+  }
+  assert.ok(steps.indexOf(testStep) < steps.indexOf(buildStep));
   assert.match(
     crossPlatform,
     /Test Windows Provider secret storage[\s\S]*?localSecretStore\.test\.ts/,
@@ -756,13 +800,13 @@ test('Windows cross-platform contracts build and inject the fixed Go gate helper
   assert.doesNotMatch(crossPlatform, /upload-artifact/);
 });
 
-test('local Deepseek E2E owns the source and RAG context matrix', () => {
+test('local GLM Coding Plan E2E owns the source and RAG context matrix', () => {
   assert.equal(
     existsSync(join(root, '.github/workflows/agent-deepseek-e2e.yml')),
     false,
   );
   const runner = readFileSync(
-    join(root, 'backend/scripts/run-deepseek-agent-e2e.cjs'),
+    join(root, 'backend/scripts/run-glm-agent-e2e.cjs'),
     'utf8',
   );
   assert.match(
@@ -775,13 +819,13 @@ test('local Deepseek E2E owns the source and RAG context matrix', () => {
     readFileSync(join(root, 'backend/package.json'), 'utf8'),
   );
   for (const scriptName of [
-    'verify:e2e:deepseek',
-    'verify:e2e:deepseek-startup',
-    'verify:e2e:deepseek-scrolling',
-    'verify:e2e:deepseek-external-issue',
-    'verify:e2e:deepseek-dual-trace',
-    'verify:e2e:deepseek-context',
+    'verify:e2e:glm',
+    'verify:e2e:glm-startup',
+    'verify:e2e:glm-scrolling',
+    'verify:e2e:glm-external-issue',
+    'verify:e2e:glm-dual-trace',
+    'verify:e2e:glm-context',
   ]) {
-    assert.match(backendPackage.scripts[scriptName], /--runtime all-deepseek/);
+    assert.match(backendPackage.scripts[scriptName], /--runtime all-glm/);
   }
 });

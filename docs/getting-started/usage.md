@@ -18,12 +18,25 @@ SmartPerfetto 最适合 Android 12+ trace，尤其是包含 FrameTimeline 数据
 
 ## UI 分析流程
 
-1. 打开运行入口给出的地址；Windows 免安装包使用启动器打印的实际 `Open:` URL，Docker 默认是 `http://localhost:10000`。
+1. 打开运行入口给出的地址；Windows 免安装包使用启动器打印的实际 `Open:` URL，Docker 默认是 `http://127.0.0.1:10000`。
 2. 加载 `.pftrace` 或 `.perfetto-trace`。
 3. 打开 SmartPerfetto AI Assistant 面板。
 4. 选择分析模式：对话、快速、完整或智能。
 5. 输入自然语言问题。
 6. 等待 SSE 流式输出、表格证据和最终结论。
+
+结论正文一生成就会显示，并标注“结论已生成，正在核验”；核验（一次无工具语义复核）
+仍在后台进行，完成后同一条消息补上核验结果，正文不会被改写。核验期间点“停止”只结束
+核验：结论照常保存，核验状态记为“已按用户要求停止语义复核”（未核验）。再次点“停止”会强制
+结束本轮，SmartPerfetto 仍会等待几秒让结论保存；若在这段时间内没能保存，你读到的结论会作为
+未核验、不完整的回合保留（使用注册源码或知识库时不保留）。若运行在给出核验结果前出错或中断，
+结论保留并标为“未完成核验”。
+
+CLI（`smp run`、`smp ask`、`smp compare`、`smp capture --analyze` 与 REPL）的 Ctrl-C 按回合
+同样处理：文本结论打印出来之后，第一次 Ctrl-C 只停止核验，本轮照常保存；结论出现之前或再按一次
+Ctrl-C，会中止本轮且不保存（退出码 130，REPL 回到提示符）；继续按 Ctrl-C，或本轮约 2 秒内没有
+停下，会立即以 130 退出。`--format json`/`ndjson` 不提前打印结论，第一次 Ctrl-C 即中止。本轮保存之后，
+Ctrl-C 不再作用于它。
 
 智能模式会先返回“场景盘点”，按时间顺序列出 trace 中识别到的启动、滑动、点击、导航、设备状态、ANR 等场景，并显示可深钻的范围按钮。选择“全部”或某一类场景后，才会进入对应的启动/滑动/点击等深钻分析。
 
@@ -166,26 +179,42 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 这个 slice 前后有没有 Binder 或调度问题？
 ```
 
-多轮追问会复用 session。切换 conversation/fast/full/auto 模式会开启新的 SDK session，避免轻量上下文和完整上下文混用。
+多轮追问会复用 session。切换对话、快速、完整、智能模式会开启新的后端 agent session，避免轻量上下文和完整上下文混用。
 
 `/anr` 和 `/jank` 使用与普通分析相同的后端证据、claim verification 和报告链路；AI 被策略禁用时，这两个命令也会被阻止。
 
-## 源码与 Android Internals 背景
+## 源码与文档知识库
 
-- 要把 trace 结论映射到本机源码，先在 UI `Codebases` 或 CLI
-  `smp codebase preview/register` 注册，再在本次分析显式选择 codebase。注册的 live root 无索引也能有界搜索/读取；`reindex` 只是可选加速。
-- 内置 Android Internals Knowledge Pack 随产品分发；用
-  `smp knowledge-pack status` 查看版本，用 `update --check` 只检查更新。
-- 私有 Android Internals checkout 与内置 Pack 不同，必须配置路径 allowlist、
-  权利确认、provider 同意，并在请求中选择 source id。
+- 要把 trace 结论映射到本机源码，先在 **设置 → 源码库** 或 CLI
+  `smp codebase preview/register` 注册。注册的 live root 无索引也能有界搜索/读取；
+  构建索引只是可选加速。
+- 要让分析参考 Android Internals Wiki 或团队文档，把目录注册为文档知识库
+  （**设置 → 源码库 → 文档知识库**，或 CLI `smp knowledge register`），建立索引后再选用。
 
-源码和知识背景都不能替代当前 trace 的 SQL/Skill 证据。Code-Aware 默认只给模型
-`CodeRef`；完整边界见 [Code-Aware](code-aware-analysis.md) 和
+注册只让来源变得可选，不会自动用于分析。输入框旁的 **本轮分析上下文** 弹层按轮
+决定本轮使用什么：
+
+- **源码**：`关闭`、`仅定位`（只把文件、符号、行号发给 AI 服务）或 `发送正文`
+  （相关源码片段会发给 AI 服务，只能勾选已允许发送正文的源码库），再勾选源码库。
+- **源码深度**：`智能`（按问题判断要不要读实现）、`快速定位` 或 `完整分析`
+  （读实现解释机制，耗时更长）。
+- **知识库**：勾选已建索引且允许发送正文的知识库。
+- **数据去向**：按当前选择说明哪些内容会发给哪个 AI 服务。
+- **全部关闭** 一次关掉源码和知识库；**管理…** 打开设置中的源码库页。
+
+分析运行期间上下文不能修改。源码和知识背景都不能替代当前 trace 的 SQL/Skill 证据；
+完整边界见 [Code-Aware](code-aware-analysis.md) 和
 [Android Internals 知识](android-internals-knowledge.md)。
 
-选中源码后，full 分析会先用 Trace/Skill/SQL 确认发生事实。如果存在可查询的符号、slice、Binder 描述符或 build-id 锚点，它必须进行有界源码 lookup；否则留下 `not_needed`、`disallowed`、`no_queryable_anchor` 等结构化原因。分析结果中的源码回执会区分已选、已查询和实际使用的 codebase，并标明 coverage 与 `corroborated|compatible|ambiguous|unverified` 机制状态。Trace 证明“发生了什么”，`CodeRef` 解释“实现上为什么可能发生”；只有 `CodeRef` 时不能把 trace 现象升级为已验证根因。
+选中源码只把已授权的源码工具交给模型：是否检索、检索多少由模型按问题和预算决定，
+完成分析不要求一定检索。源码回执按本轮实际发生的调用记录状态（`pending`、`attempted`、
+`located`、`corroborated`、`not_found_complete`、`search_incomplete`，不能取得新证据的回合为
+`not_needed`），并区分已选、已查询和实际使用的 codebase、检索覆盖范围，以及
+`corroborated|compatible|ambiguous|unverified` 机制状态。Trace 证明“发生了什么”，`CodeRef`
+解释“实现上为什么可能发生”；只有 `CodeRef` 时不能把 trace 现象升级为已验证根因。
 
-Web chat 只保留安全的折叠回执，不包含文件路径、源码片段、检索 query 或自由文本原因。HTML report、CLI artifact 和 snapshot/API 可保留安全的相对 `CodeRef` 与绑定，但同样不保留绝对 root 或源码正文。
+Web chat 只显示折叠的源码回执，不含 `CodeRef`。授权分析引用的源码片段会随结果保存在本机
+历史、HTML report、CLI artifact 和 snapshot 中；这些产物不保存注册时的绝对 root 或凭据。
 
 ## CLI Batch 与 Android Capture
 
@@ -223,6 +252,10 @@ SmartPerfetto 的回答通常包含三类证据：
 随后解释机制、影响和限制。结论表格是证据摘要，不是上方中间结果表的全量复制；
 数值仍须有原始引用，单位、两侧身份、时间窗与变化方向应明确。缺失值不视为零，
 不适合比较的数据不强行计算差值或比例。表格不替代重要发现与因果解释。
+
+正文可把原始 `32.57614380379747 ms` 显示为 `32.6 ms`。新声明可用 `numeric.presentation` 绑定正文中的数字与具体证据单元格、单位和小数位；程序在语义复核前独立校验，写成 `32.7 ms` 时，复核模型同意也不能使其通过。机器引用和命题仍保留原始值或精确单位换算值；显示校验不会修补错误声明。
+
+显示正确与正文含义正确是两项检查。主体、总量与分项、范围及因果仍需语义复核；单次 `130 ms` 不能证明总计 `380 ms`。绑定无法定位、单位未知或复核不可用时，保留未核实状态。旧声明没有显式绑定时，仍可用“约 `32.6 ms`”；无近似标记的忠实舍入只在既有严格条件下记为显示警告，不自动核验通过。
 
 结论是主要交付内容：先概括，再完整说明重要发现、依据和不确定性。快速/完整预算不会切换成不同的结论合同，也不限定结论字数、表格行数或声明数。中间表格预览限制只影响展示。模型仍能获得全部证据条目的索引，按需读取后续结果；空结果与未采集状态也会保留。若模型输出或核验达到实际容量限制，结果会明确标记不完整，不会把前半段冒充完整、已核验的结论。
 

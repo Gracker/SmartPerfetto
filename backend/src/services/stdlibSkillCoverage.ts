@@ -27,7 +27,8 @@ import {
   ensureSkillRegistryInitialized,
   skillRegistry,
 } from './skillEngine/skillLoader';
-import type {SkillDefinition, SkillStep} from './skillEngine/types';
+import type {SkillDefinition} from './skillEngine/types';
+import {executableSqlUnits} from './skillEngine/processScopeSql';
 import {
   makeSparkProvenance,
   type StdlibModuleEntry,
@@ -44,8 +45,8 @@ import {
  */
 const EXPLICIT_INCLUDE_REGEX = /\bINCLUDE\s+PERFETTO\s+MODULE\s+([\w.]+)/gi;
 
-/** Walk all SQL fragments inside a skill, returning lowercase module names. */
-function detectStdlibModulesUsedBySkill(skill: SkillDefinition): Set<string> {
+/** @internal The stdlib modules, lowercase, a Skill's SQL units read; the SQL-unit contract test reads it. */
+export function detectStdlibModulesUsedBySkill(skill: SkillDefinition): Set<string> {
   const detected = new Set<string>();
 
   const visit = (sql: string | undefined): void => {
@@ -67,24 +68,9 @@ function detectStdlibModulesUsedBySkill(skill: SkillDefinition): Set<string> {
     }
   };
 
-  // Atomic skills carry a single SQL block.
-  if (skill.sql) visit(skill.sql);
-
-  // Composite / iterator / parallel skills carry SQL inside steps.
-  const walkStep = (step: SkillStep | undefined): void => {
-    if (!step) return;
-    const anyStep = step as any;
-    if (typeof anyStep.sql === 'string') visit(anyStep.sql);
-    if (Array.isArray(anyStep.steps)) {
-      for (const child of anyStep.steps) walkStep(child);
-    }
-    if (Array.isArray(anyStep.branches)) {
-      for (const branch of anyStep.branches) walkStep(branch);
-    }
-  };
-
-  if (Array.isArray(skill.steps)) {
-    for (const step of skill.steps) walkStep(step);
+  // Every SQL the executor runs, named and exact (executableSqlUnits).
+  for (const unit of executableSqlUnits(skill)) {
+    if (typeof unit.source.sql === 'string') visit(unit.source.sql);
   }
 
   return detected;

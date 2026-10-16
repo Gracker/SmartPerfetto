@@ -11,8 +11,9 @@ import {
   resolveAuthConfig,
   resolveFeatureConfig,
 } from '../config';
-import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
+import { openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import { ENTERPRISE_MINIMAL_SCHEMA_TABLES } from './enterpriseSchema';
+import { getUploadRoot } from './traceUploadPaths';
 
 export const ENTERPRISE_MIGRATION_PHASE_ENV = 'SMARTPERFETTO_ENTERPRISE_MIGRATION_PHASE';
 export const ENTERPRISE_MIGRATION_SNAPSHOT_DIR_ENV = 'SMARTPERFETTO_ENTERPRISE_MIGRATION_SNAPSHOT_DIR';
@@ -108,7 +109,6 @@ interface FilesystemSource {
 const DATA_DIR_ENV = 'SMARTPERFETTO_DATA_DIR';
 const LOGS_DIR_ENV = 'SMARTPERFETTO_LOGS_DIR';
 const PROVIDER_DATA_DIR_ENV = 'PROVIDER_DATA_DIR_OVERRIDE';
-const UPLOAD_DIR_ENV = 'UPLOAD_DIR';
 
 function parseEnterpriseMigrationPhase(
   value: string | undefined,
@@ -141,6 +141,8 @@ export function resolveEnterpriseMigrationPlan(
       `Built-in OIDC requires DB-authoritative storage; unset ${ENTERPRISE_MIGRATION_PHASE_ENV} or set it to retired`,
     );
   }
+  // Deliberately narrower than parseFlagValue: confirming an irreversible
+  // cutover accepts only 1/true/yes/on, so do not fold it into the shared set.
   if (
     phase === 'cutover' &&
     !['1', 'true', 'yes', 'on'].includes(
@@ -207,16 +209,12 @@ export function enterpriseDbWritesEnabled(env: NodeJS.ProcessEnv = process.env):
   return resolveEnterpriseMigrationPlan(env).writeDb;
 }
 
-export function legacyFilesystemReadAuthorityEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return resolveEnterpriseMigrationPlan(env).readAuthority === 'filesystem';
-}
-
 export function legacyFilesystemWritesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return resolveEnterpriseMigrationPlan(env).writeFilesystem;
 }
 
 function resolveUploadRoot(env: NodeJS.ProcessEnv): string {
-  return path.resolve(env[UPLOAD_DIR_ENV] || './uploads');
+  return path.resolve(getUploadRoot(env));
 }
 
 function resolveDataRoot(env: NodeJS.ProcessEnv): string {
@@ -645,15 +643,3 @@ export function describeEnterpriseMigrationRollback(
   }
   return 'P-C rollback: restore the pre-retirement filesystem snapshot and SQLite DB snapshot; reverse conversion is not promised.';
 }
-
-export const ENTERPRISE_MIGRATION_ENV_KEYS = [
-  ENTERPRISE_FEATURE_FLAG_ENV,
-  ENTERPRISE_MIGRATION_PHASE_ENV,
-  ENTERPRISE_MIGRATION_SNAPSHOT_DIR_ENV,
-  ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV,
-  ENTERPRISE_DB_PATH_ENV,
-  DATA_DIR_ENV,
-  LOGS_DIR_ENV,
-  PROVIDER_DATA_DIR_ENV,
-  UPLOAD_DIR_ENV,
-] as const;

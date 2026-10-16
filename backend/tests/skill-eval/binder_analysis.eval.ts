@@ -4,40 +4,31 @@
  * Tests the binder_analysis skill against known trace files.
  * Validates SQL queries produce correct structure and data.
  *
- * Note: binder_analysis requires Perfetto stdlib android_binder tables.
- * If the trace file lacks android_binder_txns table, some tests will be skipped.
+ * Runs on the heavy launch trace, whose android_binder_txns the suite asserts
+ * before any test.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 // Use Android trace file that should have Binder transactions.
-// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
-const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+const TRACE_FILE = 'android-startup-heavy';
+// The launched app: its main thread makes the startup's synchronous Binder calls.
+const STARTUP_APP = 'com.example.launch.aosp.heavy';
+// The one app whose main thread blocks in Binder for more than 5ms (16.1ms).
+const LONG_BINDER_APP = 'com.miui.home';
 
 describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
-  let hasBinderData = false;
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('binder_analysis');
     await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
 
-    // Check if trace has Binder data
-    try {
-      const result = await evaluator.executeSQL(`
-        SELECT COUNT(*) as count
-        FROM android_binder_txns
-        LIMIT 1
-      `);
-      hasBinderData = !result.error && result.rows.length > 0 && result.rows[0][0] > 0;
-    } catch (e) {
-      hasBinderData = false;
-    }
-
-    if (!hasBinderData) {
-      console.warn(`[Test Warning] Trace ${TRACE_FILE} does not have Binder data. Some tests will be skipped.`);
-    }
+    // Every Binder assertion below reads this fixture's transactions.
+    const result = await evaluator.executeSQL('SELECT COUNT(*) FROM android_binder_txns');
+    expect(result.error).toBeUndefined();
+    expect(result.rows[0][0]).toBeGreaterThan(0);
   }, 60000); // 60s timeout for trace loading
 
   afterAll(async () => {
@@ -61,26 +52,17 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
         expect(result.data[0]).toHaveProperty('status');
       }, 30000);
 
-      it('should report correct status based on data presence', async () => {
+      it('should report the fixture Binder data as available', async () => {
         const result = await evaluator.executeStep('check_binder');
         const check = result.data[0];
 
-        if (hasBinderData) {
-          expect(check.status).toBe('available');
-          expect(check.txn_count).toBeGreaterThan(0);
-        } else {
-          expect(check.status).toBe('unavailable');
-        }
+        expect(check.status).toBe('available');
+        expect(check.txn_count).toBeGreaterThan(0);
       }, 30000);
     });
 
     describe('binder_overview step', () => {
       it('should return Binder transaction summary', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('binder_overview');
 
         expect(result.success).toBe(true);
@@ -88,11 +70,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       }, 30000);
 
       it('should have valid transaction counts', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('binder_overview');
         const overview = result.data[0];
 
@@ -103,11 +80,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       }, 30000);
 
       it('should have valid duration metrics', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('binder_overview');
         const overview = result.data[0];
 
@@ -118,11 +90,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       }, 30000);
 
       it('should have valid rating', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('binder_overview');
         const overview = result.data[0];
 
@@ -130,11 +97,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       }, 30000);
 
       it('should show blocking transaction stats', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('binder_overview');
         const overview = result.data[0];
 
@@ -147,11 +109,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
 
     describe('get_process step', () => {
       it('should select target process with most activity', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('get_process');
 
         expect(result.success).toBe(true);
@@ -159,11 +116,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       }, 30000);
 
       it('should have process name and transaction count', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('get_process');
         const process = result.data[0];
 
@@ -181,225 +133,131 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
   describe('L2: List Layer', () => {
     describe('main_thread_sync_binder step', () => {
       it('should list blocking Binder transactions', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
+        const result = await evaluator.executeStep('main_thread_sync_binder', {package: STARTUP_APP});
 
-        const result = await evaluator.executeStep('main_thread_sync_binder');
-
-        // May fail if trace has different schema (e.g., missing aidl_interface column)
-        // or succeed with data
-        if (result.success) {
-          expect(Array.isArray(result.data)).toBe(true);
-        } else {
-          // Schema mismatch is acceptable - log for diagnosis
-          console.log('Step failed (possibly schema mismatch):', result.error);
-          expect(result.error).toBeDefined();
-        }
+        expect(result.success).toBe(true);
+        expect(Array.isArray(result.data)).toBe(true);
       }, 30000);
 
-      it('should include caller/callee info when data exists', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
+      it('should include caller/callee info', async () => {
+        const result = await evaluator.executeStep('main_thread_sync_binder', {package: STARTUP_APP});
 
-        const result = await evaluator.executeStep('main_thread_sync_binder');
+        expect(result.data.length).toBeGreaterThan(0);
+        const txn = result.data[0];
 
-        if (result.data.length > 0) {
-          const txn = result.data[0];
+        // Should have caller (client) info
+        expect(txn.process_name).toBeDefined();
+        expect(typeof txn.process_name).toBe('string');
 
-          // Should have caller (client) info
-          expect(txn.process_name).toBeDefined();
-          expect(typeof txn.process_name).toBe('string');
+        // Should have callee (server) info
+        expect(txn.server_process).toBeDefined();
+        expect(typeof txn.server_process).toBe('string');
 
-          // Should have callee (server) info
-          expect(txn.server_process).toBeDefined();
-          expect(typeof txn.server_process).toBe('string');
-
-          // Should have AIDL method/interface info
-          expect(txn.aidl_name !== undefined || txn.aidl_interface !== undefined).toBe(true);
-        }
+        // Should have AIDL method/interface info
+        expect(txn.aidl_name !== undefined || txn.aidl_interface !== undefined).toBe(true);
       }, 30000);
 
       it('should show duration for each transaction', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
+        const result = await evaluator.executeStep('main_thread_sync_binder', {package: STARTUP_APP});
 
-        const result = await evaluator.executeStep('main_thread_sync_binder');
-
-        if (result.data.length > 0) {
-          for (const txn of result.data) {
-            expect(typeof txn.dur_ms).toBe('number');
-            expect(txn.dur_ms).toBeGreaterThan(0);
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const txn of result.data) {
+          expect(typeof txn.dur_ms).toBe('number');
+          expect(txn.dur_ms).toBeGreaterThan(0);
         }
       }, 30000);
 
       it('should have valid timestamps for timeline navigation', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
+        const result = await evaluator.executeStep('main_thread_sync_binder', {package: STARTUP_APP});
 
-        const result = await evaluator.executeStep('main_thread_sync_binder');
+        expect(result.data.length).toBeGreaterThan(0);
+        const txn = result.data[0];
 
-        if (result.data.length > 0) {
-          const txn = result.data[0];
-
-          // binder_ts should be a timestamp string
-          expect(txn.binder_ts).toBeDefined();
-          const ts = BigInt(txn.binder_ts);
-          expect(ts).toBeGreaterThan(0n);
-        }
+        // binder_ts should be a timestamp string
+        expect(txn.binder_ts).toBeDefined();
+        const ts = BigInt(txn.binder_ts);
+        expect(ts).toBeGreaterThan(0n);
       }, 30000);
 
       it('should have severity classification', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
+        const result = await evaluator.executeStep('main_thread_sync_binder', {package: STARTUP_APP});
 
-        const result = await evaluator.executeStep('main_thread_sync_binder');
-
-        if (result.data.length > 0) {
-          for (const txn of result.data) {
-            expect(['critical', 'warning', 'notice', 'normal']).toContain(txn.severity);
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const txn of result.data) {
+          expect(['critical', 'warning', 'notice', 'normal']).toContain(txn.severity);
         }
       }, 30000);
     });
 
     describe('outgoing_by_interface step', () => {
       it('should group calls by AIDL interface', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('outgoing_by_interface');
 
-        // May fail if trace has different schema (e.g., missing aidl_interface column)
-        if (result.success) {
-          expect(Array.isArray(result.data)).toBe(true);
-        } else {
-          console.log('Step failed (possibly schema mismatch):', result.error);
-          expect(result.error).toBeDefined();
-        }
+        expect(result.success).toBe(true);
+        expect(Array.isArray(result.data)).toBe(true);
       }, 30000);
 
-      it('should have interface aggregation stats when data exists', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
+      it('should have interface aggregation stats', async () => {
         const result = await evaluator.executeStep('outgoing_by_interface');
 
-        if (result.data.length > 0) {
-          const row = result.data[0];
+        expect(result.data.length).toBeGreaterThan(0);
+        const row = result.data[0];
 
-          expect(row.call_count).toBeGreaterThan(0);
-          expect(typeof row.total_dur_ms).toBe('number');
-          expect(typeof row.avg_dur_ms).toBe('number');
-          expect(typeof row.max_dur_ms).toBe('number');
-        }
+        expect(row.call_count).toBeGreaterThan(0);
+        expect(typeof row.total_dur_ms).toBe('number');
+        expect(typeof row.avg_dur_ms).toBe('number');
+        expect(typeof row.max_dur_ms).toBe('number');
       }, 30000);
     });
 
     describe('binder_blocking_analysis step', () => {
       it('should analyze thread state during Binder blocking', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('binder_blocking_analysis');
 
-        // May fail if trace has different schema (e.g., missing bt.id column)
-        if (result.success) {
-          expect(Array.isArray(result.data)).toBe(true);
-        } else {
-          console.log('Step failed (possibly schema mismatch):', result.error);
-          expect(result.error).toBeDefined();
-        }
+        expect(result.success).toBe(true);
+        expect(Array.isArray(result.data)).toBe(true);
       }, 30000);
 
-      it('should show state distribution when data exists', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
+      it('should show state distribution', async () => {
+        const result = await evaluator.executeStep('binder_blocking_analysis', {package: LONG_BINDER_APP});
 
-        const result = await evaluator.executeStep('binder_blocking_analysis');
+        expect(result.data.length).toBeGreaterThan(0);
+        const row = result.data[0];
 
-        if (result.data.length > 0) {
-          const row = result.data[0];
-
-          expect(row.state).toBeDefined();
-          expect(typeof row.state_dur_ms).toBe('number');
-          expect(typeof row.state_percent).toBe('number');
-          expect(row.state_percent).toBeGreaterThanOrEqual(0);
-          expect(row.state_percent).toBeLessThanOrEqual(100);
-        }
+        expect(row.state).toBeDefined();
+        expect(typeof row.state_dur_ms).toBe('number');
+        expect(typeof row.state_percent).toBe('number');
+        expect(row.state_percent).toBeGreaterThanOrEqual(0);
+        expect(row.state_percent).toBeLessThanOrEqual(100);
       }, 30000);
     });
 
     describe('server_response_analysis step', () => {
       it('should analyze server-side processing time', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('server_response_analysis');
 
-        // May fail if trace has different schema (e.g., missing aidl_interface column)
-        if (result.success) {
-          expect(Array.isArray(result.data)).toBe(true);
-        } else {
-          console.log('Step failed (possibly schema mismatch):', result.error);
-          expect(result.error).toBeDefined();
-        }
+        expect(result.success).toBe(true);
+        expect(Array.isArray(result.data)).toBe(true);
       }, 30000);
 
       it('should compare client wait vs server process time', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('server_response_analysis');
 
-        if (result.data.length > 0) {
-          const row = result.data[0];
+        expect(result.data.length).toBeGreaterThan(0);
+        const row = result.data[0];
 
-          expect(typeof row.total_client_wait_ms).toBe('number');
-          expect(typeof row.total_server_process_ms).toBe('number');
-          expect(typeof row.avg_transport_overhead_ms).toBe('number');
-        }
+        expect(typeof row.total_client_wait_ms).toBe('number');
+        expect(typeof row.total_server_process_ms).toBe('number');
+        expect(typeof row.avg_transport_overhead_ms).toBe('number');
       }, 30000);
     });
 
     describe('incoming_calls step', () => {
       it('should list incoming Binder calls received by process', async () => {
-        if (!hasBinderData) {
-          console.log('Skipping: no Binder data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('incoming_calls');
 
-        // May fail if trace has different schema (e.g., missing aidl_interface column)
-        if (result.success) {
-          expect(Array.isArray(result.data)).toBe(true);
-        } else {
-          console.log('Step failed (possibly schema mismatch):', result.error);
-          expect(result.error).toBeDefined();
-        }
+        expect(result.success).toBe(true);
+        expect(Array.isArray(result.data)).toBe(true);
       }, 30000);
     });
   });
@@ -426,11 +284,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
     }, 120000);
 
     it('should verify layered structure', async () => {
-      if (!hasBinderData) {
-        console.log('Skipping: no Binder data in trace');
-        return;
-      }
-
       const result = await evaluator.executeSkill();
 
       // Verify structure has both overview and list layers
@@ -441,18 +294,13 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       const overviewKeys = Object.keys(result.layers.overview || {});
       expect(overviewKeys.length).toBeGreaterThan(0);
 
-      // List should contain main_thread_sync_binder or other list items
-      const listKeys = Object.keys(result.layers.list || {});
-      // May be empty if no main thread binder calls
-      expect(Array.isArray(listKeys)).toBe(true);
+      expect(Object.keys(result.layers.list || {}).length).toBeGreaterThan(0);
     }, 120000);
 
-    it('should handle traces with minimal Binder activity', async () => {
-      // This test ensures the skill doesn't crash with low data
-      const result = await evaluator.executeSkill({ package: 'com.nonexistent.app' });
-
-      // Should succeed even with no matching data
-      expect(result.success).toBe(true);
+    it('should analyse one process and refuse a package that names none', async () => {
+      expect((await evaluator.executeSkill({package: STARTUP_APP})).success).toBe(true);
+      expect((await evaluator.executeSkill({package: 'com.nonexistent.app'})).error)
+        .toMatch(/Process identity could not be verified.*status=not_found/);
     }, 120000);
 
     it('should produce consistent normalized output', async () => {
@@ -467,11 +315,6 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
     }, 120000);
 
     it('should support time range filtering', async () => {
-      if (!hasBinderData) {
-        console.log('Skipping: no Binder data in trace');
-        return;
-      }
-
       // Get the trace time range first
       const traceRange = await evaluator.executeSQL(`
         SELECT MIN(ts) as start_ts, MAX(ts) as end_ts
@@ -479,18 +322,17 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
         WHERE dur > 0
       `);
 
-      if (traceRange.rows.length > 0) {
-        const startTs = traceRange.rows[0][0];
-        const endTs = traceRange.rows[0][1];
-        const midTs = BigInt(startTs) + (BigInt(endTs) - BigInt(startTs)) / 2n;
+      expect(traceRange.rows.length).toBe(1);
+      const startTs = traceRange.rows[0][0];
+      const endTs = traceRange.rows[0][1];
+      const midTs = BigInt(startTs) + (BigInt(endTs) - BigInt(startTs)) / 2n;
 
-        const result = await evaluator.executeSkill({
-          start_ts: startTs.toString(),
-          end_ts: midTs.toString(),
-        });
+      const result = await evaluator.executeSkill({
+        start_ts: startTs.toString(),
+        end_ts: midTs.toString(),
+      });
 
-        expect(result.success).toBe(true);
-      }
+      expect(result.success).toBe(true);
     }, 120000);
   });
 
@@ -505,19 +347,12 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
         FROM android_binder_txns
       `);
 
-      // May error if table doesn't exist, or return count
-      if (!result.error) {
-        expect(result.rows.length).toBe(1);
-        expect(typeof result.rows[0][0]).toBe('number');
-      }
+      expect(result.error).toBeUndefined();
+      expect(result.rows.length).toBe(1);
+      expect(result.rows[0][0]).toBeGreaterThan(0);
     }, 30000);
 
     it('should execute main thread sync Binder query', async () => {
-      if (!hasBinderData) {
-        console.log('Skipping: no Binder data in trace');
-        return;
-      }
-
       const result = await evaluator.executeSQL(`
         SELECT
           client_process,
@@ -531,15 +366,10 @@ describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
       `);
 
       expect(result.error).toBeUndefined();
-      // Results may be empty if no main thread sync binder
+      expect(result.rows.length).toBe(5);
     }, 30000);
 
     it('should execute interface grouping query', async () => {
-      if (!hasBinderData) {
-        console.log('Skipping: no Binder data in trace');
-        return;
-      }
-
       const result = await evaluator.executeSQL(`
         SELECT
           server_process,
@@ -567,7 +397,7 @@ describeWithTrace('binder_analysis edge cases', TRACE_FILE, () => {
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('binder_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+      await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
     }, 60000);
 
     afterAll(async () => {
@@ -581,61 +411,9 @@ describeWithTrace('binder_analysis edge cases', TRACE_FILE, () => {
       expect(result.data.length).toBeGreaterThan(0);
     }, 30000);
 
-    it('should handle non-matching package filter gracefully', async () => {
-      const result = await evaluator.executeStep('check_binder', {
-        package: 'com.nonexistent.app.that.does.not.exist',
-      });
-
-      // Should succeed but may have zero transactions
-      expect(result.success).toBe(true);
-      if (result.data.length > 0) {
-        // If data returned, txn_count may be 0 for non-matching package
-        expect(typeof result.data[0].txn_count).toBe('number');
-      }
-    }, 30000);
-  });
-
-  describe('with startup trace (may have different Binder patterns)', () => {
-    let evaluator: SkillEvaluator;
-    let hasBinderData = false;
-
-    beforeAll(async () => {
-      evaluator = createSkillEvaluator('binder_analysis');
-      // Renamed from app_start_heavy.pftrace in commit 52feac55.
-      await evaluator.loadTrace(getTestTracePath('lacunh_heavy.pftrace'));
-
-      try {
-        const result = await evaluator.executeSQL(`
-          SELECT COUNT(*) as count FROM android_binder_txns LIMIT 1
-        `);
-        hasBinderData = !result.error && result.rows.length > 0 && result.rows[0][0] > 0;
-      } catch (e) {
-        hasBinderData = false;
-      }
-    }, 60000);
-
-    afterAll(async () => {
-      await evaluator.cleanup();
-    });
-
-    it('should execute skill on startup trace', async () => {
-      const result = await evaluator.executeSkill();
-
-      expect(result.success).toBe(true);
-    }, 120000);
-
-    it('should detect startup-related Binder activity', async () => {
-      if (!hasBinderData) {
-        console.log('Skipping: no Binder data in startup trace');
-        return;
-      }
-
-      const result = await evaluator.executeStep('binder_overview');
-
-      expect(result.success).toBe(true);
-      // Startup fixture has known Binder traffic; empty indicates extraction or schema regression.
-      expect(result.data.length).toBeGreaterThan(0);
-      // Startup traces typically have Binder activity for service binding
+    it('should refuse a package that names no process', async () => {
+      await expect(evaluator.executeStep('check_binder', {package: 'com.nonexistent.app.that.does.not.exist'}))
+        .rejects.toThrow(/Process identity could not be verified.*status=not_found/);
     }, 30000);
   });
 });

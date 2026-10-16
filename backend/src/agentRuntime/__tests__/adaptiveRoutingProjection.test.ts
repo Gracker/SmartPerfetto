@@ -14,8 +14,6 @@ import {
 } from '../adaptiveRoutingProjection';
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import type {RuntimeSelection} from '../runtimeSelection';
-import {buildQuickDirectAcknowledgementAnalysisResult} from '../quickDirectResult';
-import {resolveQuickTurnBudget} from '../quickBudget';
 
 const selection: RuntimeSelection = {
   kind: 'openai-agents-sdk',
@@ -176,6 +174,29 @@ describe('adaptive routing runtime projection', () => {
     expect(JSON.stringify(post)).not.toContain('private');
   });
 
+  it('does not treat a designed condition skip as schema uncertainty', () => {
+    const previous = buildAdaptiveRoutingPreflight({
+      requestedMode: 'auto',
+      resolvedMode: 'quick',
+      classifierSource: 'hard_rule',
+      quickAcknowledgementDirectAnswer: false,
+      directEvidenceAvailable: true,
+      hasReferenceTrace: false,
+      privateContext: false,
+    });
+    const schemaStatus = (meta: Partial<DataEnvelope['meta']>) => buildAdaptiveRoutingPostEvidence({
+      previous,
+      result: result(),
+      dataEnvelopes: [envelope(), envelope(meta)],
+    }).evidence?.schemaStatus;
+
+    expect(schemaStatus({
+      executionStatus: 'skipped',
+      executionMessage: 'Step skipped: its condition was not met (${has_input} > 0)',
+    })).toBe('ready');
+    expect(schemaStatus({executionStatus: 'optional_error'})).toBe('uncertain');
+  });
+
   it('records the selected light model for quick and primary model for full', () => {
     for (const [resolvedMode, expectedModel] of [
       ['quick', 'flash-model'],
@@ -211,45 +232,6 @@ describe('adaptive routing runtime projection', () => {
         model: expectedModel,
       }));
     }
-  });
-
-  it('attributes zero-LLM acknowledgement to the runtime path, not the light model', () => {
-    const recordRuntime = jest.fn();
-    const sink = {
-      identity: {
-        runId: 'run-direct',
-        sessionId: 'session-direct',
-        scope: {tenantId: 'local', workspaceId: 'local'},
-      },
-      recordScene: jest.fn(),
-      recordRuntime,
-      recordMode: jest.fn(),
-    } as unknown as RunManifestAttributionSink;
-    const options = {runManifestAttributionSink: sink, analysisMode: 'fast' as const};
-    const spec = createAnalysisRunSpec({
-      query: 'Thanks.',
-      sessionId: 'session-direct',
-      traceId: 'trace-a',
-      options,
-      runtimeSelection: selection,
-      sceneType: 'general',
-      outputLanguage: 'en',
-      resolvedMode: 'quick',
-      budget: {model: 'pro-model', lightModel: 'flash-model'},
-    });
-    buildQuickDirectAcknowledgementAnalysisResult({
-      sessionId: 'session-direct',
-      options,
-      outputLanguage: 'en',
-      startedAt: Date.now(),
-      analysisRunSpec: spec,
-      budget: resolveQuickTurnBudget({targetTurns: 1, hardCapTurns: 1}),
-      previousTurns: [],
-    });
-    expect(spec.runtime.actualModel).toBe('runtime-acknowledgement');
-    expect(recordRuntime).toHaveBeenLastCalledWith(expect.objectContaining({
-      model: 'runtime-acknowledgement',
-    }));
   });
 
   it('records a shadow preflight receipt from the typed intent of every run', () => {

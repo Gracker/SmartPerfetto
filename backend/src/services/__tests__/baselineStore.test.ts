@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {describe, it, expect, beforeEach, afterEach} from '@jest/globals';
+import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
 
 import {
   BaselineStore,
@@ -255,14 +256,19 @@ describe('BaselineStore — persistence', () => {
     expect(parsed.baselines).toHaveLength(1);
   });
 
-  it('preserves corrupted on-disk JSON and refuses to overwrite it', () => {
-    fs.writeFileSync(storagePath, 'not-json{', 'utf-8');
-    const store = new BaselineStore(storagePath);
-    expect(store.getBaseline('b1')).toBeUndefined();
-    expect(fs.existsSync(storagePath)).toBe(true);
-    expect(() => store.addBaseline(makeBaseline({baselineId: 'b1'})))
-      .toThrow(/unreadable/);
-    expect(fs.readFileSync(storagePath, 'utf-8')).toBe('not-json{');
+  it('preserves corrupted on-disk JSON and refuses to overwrite it, quoting none of it', () => {
+    // Unquoted, so the parser quotes the text around it: another user's baseline.
+    const corrupt = '{"baselines":[{"appId":[BASELINE-CANARY-2a7c x]}]}';
+    fs.writeFileSync(storagePath, corrupt, 'utf-8');
+    const warnings = warningsDuring(() => {
+      const store = new BaselineStore(storagePath);
+      expect(store.getBaseline('b1')).toBeUndefined();
+      expect(fs.existsSync(storagePath)).toBe(true);
+      expect(() => store.addBaseline(makeBaseline({baselineId: 'b1'})))
+        .toThrow(/^Baseline store is unreadable$/);
+    });
+    expect(JSON.stringify(warnings)).not.toContain('BASELINE-CANARY');
+    expect(fs.readFileSync(storagePath, 'utf-8')).toBe(corrupt);
   });
 
   it('atomic write does not leave the temp file around', () => {

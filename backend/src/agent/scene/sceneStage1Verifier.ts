@@ -11,7 +11,7 @@
  * reproducible while still giving us a hook for ambiguous vendor traces.
  */
 
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { claudeSdkQuery as sdkQuery } from '../../agentRuntime/engines/claude/claudeSdkQuery';
 import { sceneStoryConfig } from '../../config';
 import {createSdkEnv, loadClaudeConfig} from '../../agentv3/claudeConfig';
 import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader';

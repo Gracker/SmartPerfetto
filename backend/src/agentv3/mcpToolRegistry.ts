@@ -39,11 +39,13 @@ import {
   compactSharedToolSpec,
   createClaudeSdkToolFromSharedSpec,
   sharedToolSpecFromClaudeSdkTool,
+  withRuntimeToolAuthorization,
   withRuntimeToolConcurrency,
   withRuntimeToolGuard,
   withRuntimeToolTiming,
   type SharedToolSpec,
 } from '../agentRuntime/runtimeToolSpec';
+import type {RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
 import {
   createRuntimeToolConcurrencyCoordinator,
   type RuntimeToolConcurrencyCoordinator,
@@ -54,9 +56,10 @@ import {
   makeSparkProvenance,
   type McpPublicApiContract,
 } from '../types/sparkContracts';
-import {getPlanToolCapability, type PlanToolCapability} from './types';
+import {getPlanToolCapability} from './types';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {withRuntimeToolObserver, type RuntimeToolInvocationEvent, type RuntimeToolObserver} from '../agentRuntime/runtimeToolObserver';
+import {withRuntimeToolInvocationScope} from '../agentRuntime/runtimeToolInvocationContext';
 import {createRuntimeToolResult} from '../agentRuntime/runtimeToolResult';
 import type {RuntimeToolResult} from '../agentRuntime/runtimeToolSpec';
 
@@ -86,20 +89,12 @@ export interface McpToolDefinition {
   summary?: string;
   /** Required env vars or capability flags. */
   requires?: string[];
-  /** Provider-neutral planning role derived from the canonical tool name. */
-  planCapability?: PlanToolCapability;
   evidenceEffect?: SharedToolSpec['evidenceEffect'];
 }
 
-export type McpToolRegistration = Omit<McpToolDefinition, 'shared' | 'planCapability'> & {
+export type McpToolRegistration = Omit<McpToolDefinition, 'shared'> & {
   shared?: SharedToolSpec;
 };
-
-export function resolveMcpToolPlanCapability(
-  definition: Pick<McpToolDefinition, 'name' | 'planCapability'>,
-): PlanToolCapability {
-  return definition.planCapability ?? getPlanToolCapability(definition.name);
-}
 
 export interface ToolRequestScope {
   readonly sessionId: string;
@@ -108,15 +103,20 @@ export interface ToolRequestScope {
   readonly allowNewEvidence?: boolean;
 }
 
-function isToolAllowedForScope(
+/**
+ * Whether a request scope admits a tool with this access. The registry gates
+ * every registered tool with it; product-owned acquisition outside the
+ * registry (scene entry evidence) asks it about `invoke_skill`'s access.
+ */
+export function isToolAllowedForScope(
   tool: Pick<McpToolDefinition, 'exposure' | 'evidenceEffect'>,
   scope: ToolRequestScope | undefined,
 ): boolean {
   if (!scope) return true;
   if (tool.exposure === 'deprecated') return false;
   if (tool.exposure === 'requires_codebase_permission' && !scope.hasCodebaseAccess) return false;
-  return scope.allowNewEvidence !== false ||
-    tool.evidenceEffect === 'none' || tool.evidenceEffect === 'read_existing';
+  return scope.allowNewEvidence !== false || tool.evidenceEffect === 'none' ||
+    tool.evidenceEffect === 'read_existing' || tool.evidenceEffect === 'background';
 }
 
 /**
@@ -208,6 +208,8 @@ export class McpToolRegistry {
   private readonly requestScope?: ToolRequestScope;
   private readonly canInvokeTool?: () => boolean;
   private readonly acquisitionPolicy?: RuntimeAcquisitionPolicy;
+  private readonly runId?: string;
+  private readonly runAuthorization?: RunAuthorizationCheck;
 
   constructor(options: {
     toolConcurrencyCoordinator?: RuntimeToolConcurrencyCoordinator;
@@ -217,6 +219,9 @@ export class McpToolRegistry {
     requestScope?: ToolRequestScope;
     canInvokeTool?: () => boolean;
     acquisitionPolicy?: RuntimeAcquisitionPolicy;
+    runId?: string;
+    /** The run's pinned authorization, checked around every tool call. */
+    runAuthorization?: RunAuthorizationCheck;
   } = {}) {
     this.toolConcurrencyCoordinator = options.toolConcurrencyCoordinator
       ?? createRuntimeToolConcurrencyCoordinator();
@@ -225,6 +230,8 @@ export class McpToolRegistry {
     this.acquisitionObserver = options.acquisitionObserver;
     this.canInvokeTool = options.canInvokeTool;
     this.acquisitionPolicy = options.acquisitionPolicy;
+    this.runId = options.runId;
+    this.runAuthorization = options.runAuthorization;
     this.requestScope = options.requestScope && Object.freeze({
       ...options.requestScope,
       ...(options.requestScope.capabilities
@@ -276,8 +283,9 @@ export class McpToolRegistry {
       }
       if (this.toolObserver) await this.toolObserver(event);
     } : this.toolObserver;
+    const scoped = withRuntimeToolInvocationScope(withRuntimeToolObserver(guarded, observer), this.runId);
     const runtimeShared = withRuntimeToolConcurrency(
-      withRuntimeToolObserver(guarded, observer),
+      this.runAuthorization?.enforced ? withRuntimeToolAuthorization(scoped, this.runAuthorization) : scoped,
       this.toolConcurrencyCoordinator,
       {runManifestAttributionSink: this.runManifestAttributionSink},
     );
@@ -288,7 +296,6 @@ export class McpToolRegistry {
       exposure: runtimeShared.exposure,
       summary: runtimeShared.summary,
       requires: runtimeShared.requires,
-      planCapability,
       evidenceEffect: runtimeShared.evidenceEffect,
     }));
   }

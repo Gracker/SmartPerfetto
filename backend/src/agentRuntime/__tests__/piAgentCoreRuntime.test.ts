@@ -5,12 +5,12 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { z } from 'zod';
 import type { StreamingUpdate } from '../../agent/types';
+import type { SessionStateSnapshot } from '../../agentv3/sessionStateSnapshot';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import {
   createPiAgentCoreToolFromSharedSpec,
   buildPiAnalysisCompletion,
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  getPiAgentCorePlanCompletionStatus,
   getPiAgentCoreEngineCapabilities,
   PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV,
   PI_AGENT_CORE_MODULE_PATH_ENV,
@@ -30,6 +30,8 @@ import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
+import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import {
   createRuntimeSourceFinalizationFixture,
   SOURCE_FINALIZATION_CANARY,
@@ -43,18 +45,28 @@ import type {AnalysisTurnIntentDecision} from '../analysisTurnIntent';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as sceneEntryEvidence from '../sceneEntryEvidence';
+import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
+import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
+import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
+import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
-import * as qualityGateModule from '../../services/finalResultQualityGate';
+import * as finalizationModule from '../analysisFinalizationContext';
+import * as runtimeCallStats from '../../services/runtimeCallStats';
 import {takeFinalizationContext} from '../analysisFinalizationContext';
+import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} from '../../../tests/helpers/runtimeDraftTerminalState';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {loadPiProviderRuntimeModules} from '../engines/pi/piAgentCoreProvider';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
 jest.mock('../engines/claude/claudeVerifier', () => {
@@ -181,7 +193,13 @@ class FakePiAgent {
   }
 }
 
+const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+
+// Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
+// estimates; budget skips have their own tests below.
 beforeEach(() => {
+  jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
+    realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
   piClassifierDecision = {schemaVersion: 1, taskKind: 'fact', sceneId: 'general',
     scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new'};
   piClassifierResponses = [];
@@ -225,6 +243,15 @@ const PI_TEST_MODEL_JSON = JSON.stringify({
   maxTokens: 4096,
   apiKey: 'sk-pi-test-secret',
 });
+
+/** A document-knowledge search result as `search_knowledge` returns it; its excerpt is the canary. */
+function piKnowledgeSearchResult(canary: string): string {
+  return JSON.stringify({success: true, hits: [{
+    id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+    title: 'Handler', headingPath: ['Handler'], relativePath: 'private/notes.md',
+    lineRange: {start: 3, end: 9}, excerpt: canary,
+  }]});
+}
 
 function createSharedSpec(handler?: SharedToolSpec['handler']): SharedToolSpec {
   return {
@@ -282,6 +309,7 @@ function createEffectiveRuntimeRegistrySnapshot(): EffectiveRuntimeRegistrySnaps
     getSkillOrigin: () => undefined,
     getAppliedOverlayIds: () => [],
     getVendorOverride: () => undefined,
+    hasVendorOverrides: () => false,
     getVendorOverridesForSkill: () => [],
     getVendorOverrideLoadIssues: () => [],
     findMatchingSkill: () => undefined,
@@ -336,14 +364,13 @@ function rejectAfter(ms: number, onTimeout?: () => void): Promise<never> {
   });
 }
 
-/** Provider activity timing uses real MCP tools, without machine-local AIW corpus verification. */
+/**
+ * Provider activity timing uses real MCP tools. It once switched off the
+ * built-in Knowledge Pack's machine-local verification; with the Pack removed
+ * there is nothing to switch, and the wrapper only marks these cases.
+ */
 async function withProviderActivityTimingFixture<T>(run: () => Promise<T>): Promise<T> {
-  const previous = process.env.SMARTPERFETTO_AIW_PACK_ENABLED;
-  process.env.SMARTPERFETTO_AIW_PACK_ENABLED = '0';
-  try {return await run();} finally {
-    if (previous === undefined) delete process.env.SMARTPERFETTO_AIW_PACK_ENABLED;
-    else process.env.SMARTPERFETTO_AIW_PACK_ENABLED = previous;
-  }
+  return run();
 }
 
 function delay(ms: number): Promise<void> {
@@ -481,6 +508,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       production: false,
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
   });
 
@@ -694,13 +722,13 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(plan.toolCallLog).toEqual([]);
   });
 
-  it('projects private wiki results before recording Pi plan evidence', async () => {
+  it('records a document knowledge call as Pi plan evidence without its content', async () => {
     const plan = {
       phases: [{
         id: 'p-knowledge',
         name: '知识解释',
-        goal: '查询 Android 系统知识',
-        expectedTools: ['lookup_blog_knowledge'],
+        goal: '查询内部资料',
+        expectedTools: ['search_knowledge'],
         status: 'in_progress',
         summary: '',
       }],
@@ -709,34 +737,21 @@ describe('experimental Pi agent-core runtime contract', () => {
       toolCallLog: [],
     } as any;
     const spec: SharedToolSpec = {
-      name: 'lookup_blog_knowledge',
-      description: 'Lookup private Android knowledge',
+      name: 'search_knowledge',
+      description: 'Search the selected document knowledge bases',
       exposure: 'public',
       inputSchema: {query: z.string()},
-      handler: jest.fn(async () => ({content: [{type: 'text', text: JSON.stringify({
-        result: {
-          query: 'Handler',
-          probed: ['android_internals_wiki'],
-          retrievedAt: 1,
-          legacyPath: false,
-          hits: [{
-            chunkId: 'wiki-1',
-            score: 1,
-            metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-            snippet: 'PI_PLAN_PRIVATE_WIKI_CANARY',
-          }],
-        },
-      })}]} as RuntimeToolResult)),
+      handler: jest.fn(async () => ({content: [{type: 'text', text: piKnowledgeSearchResult('PI_PLAN_PRIVATE_KNOWLEDGE_CANARY')}]} as RuntimeToolResult)),
     };
     const tool = createPiAgentCoreToolFromSharedSpec(spec, {
       allowedToolNames: new Set([spec.name]),
       analysisPlan: {current: plan},
     });
 
-    await tool.execute('wiki-call', {query: 'Handler'}, undefined);
+    await tool.execute('knowledge-call', {query: 'Handler'}, undefined);
 
-    const serialized = JSON.stringify(plan.toolCallLog);
-    expect(serialized).not.toContain('PI_PLAN_PRIVATE_WIKI_CANARY');
+    expect(plan.toolCallLog).toHaveLength(1);
+    expect(JSON.stringify(plan.toolCallLog)).not.toContain('PI_PLAN_PRIVATE_KNOWLEDGE_CANARY');
   });
 
   it('repairs recoverable Pi submit_plan argument drift before shared tool validation', () => {
@@ -792,6 +807,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
   });
 
@@ -911,45 +927,33 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_SOURCE|privateToolResultReceipt/);
   });
 
-  it('projects private wiki results before emitting Pi agent responses', () => {
+  it('projects document knowledge results before emitting Pi agent responses', () => {
     const update = projectPiAgentCoreEventToStreamingUpdate({
       type: 'tool_execution_end',
-      toolName: 'lookup_blog_knowledge',
-      toolCallId: 'wiki-call',
-      result: {content: [{type: 'text', text: JSON.stringify({result: {
-        query: 'Handler',
-        probed: ['android_internals_wiki'],
-        retrievedAt: 1,
-        legacyPath: false,
-        hits: [{
-          chunkId: 'wiki-1',
-          score: 1,
-          metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-          snippet: 'PI_PRIVATE_WIKI_CANARY',
-        }],
-      }})}]},
+      toolName: 'search_knowledge',
+      toolCallId: 'knowledge-call',
+      result: {content: [{type: 'text', text: piKnowledgeSearchResult('PI_PRIVATE_KNOWLEDGE_CANARY')}]},
     });
 
-    const serialized = JSON.stringify(update);
-    expect(serialized).not.toContain('PI_PRIVATE_WIKI_CANARY');
-    expect(serialized).toContain('snippetHash');
+    expect(JSON.stringify(update)).not.toContain('PI_PRIVATE_KNOWLEDGE_CANARY');
+    expect(JSON.parse(String(update?.content.result))).toMatchObject({knowledge: {referenceCount: 1}});
   });
 
-  it('never emits raw private wiki partial tool updates', () => {
+  it('never emits raw document knowledge partial tool updates', () => {
     const update = projectPiAgentCoreEventToStreamingUpdate({
       type: 'tool_execution_update',
-      toolName: 'lookup_blog_knowledge',
-      toolCallId: 'wiki-call',
-      partialResult: 'PI_PRIVATE_WIKI_PARTIAL_CANARY',
+      toolName: 'read_knowledge_section',
+      toolCallId: 'knowledge-call',
+      partialResult: 'PI_PRIVATE_KNOWLEDGE_PARTIAL_CANARY',
     });
 
-    expect(JSON.stringify(update)).not.toContain('PI_PRIVATE_WIKI_PARTIAL_CANARY');
+    expect(JSON.stringify(update)).not.toContain('PI_PRIVATE_KNOWLEDGE_PARTIAL_CANARY');
     expect(update).toEqual(expect.objectContaining({
       type: 'progress',
       content: expect.objectContaining({
         update: expect.objectContaining({
           outcome: 'rejected',
-          toolName: 'lookup_blog_knowledge',
+          toolName: 'read_knowledge_section',
         }),
       }),
     }));
@@ -1057,6 +1061,50 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
   });
 
+  // The same options carry the run's own learning grant, under which
+  // execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint from its own options, and the run grant', async () => {
+    const runtime = typedRuntime();
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
+    try {
+      await runtime.analyze('分析启动性能', 'session-pi-vendor-hint', 'trace-pi',
+        withDurableLearningPermission({analysisMode: 'full' as const, runId: 'run-pi-mcp'}, NO_PRIVATE_CONTEXT));
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally {
+      mcp.mockRestore();
+    }
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-pi-mcp');
+    await expectRuntimeVendorHintParity({
+      createMcpServer: createClaudeMcpServer, runtimeOptions});
+  });
+
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const runtime = typedRuntime();
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'startup_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpModule.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    try {
+      await runtime.analyze('分析启动性能', 'session-pi-scene-entry', 'trace-pi', {analysisMode: 'full', runId: 'run-pi-scene'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({traceId: 'trace-pi', turnIntent: expect.any(Object)});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence === evidence)).toBe(true);
+    } finally {
+      scene.mockRestore(); mcp.mockRestore(); prompt.mockRestore();
+    }
+  });
+
   it('builds a real Pi analysis context from shared SmartPerfetto prompt and tools', async () => {
     const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
     const runtime = new PiAgentCoreRuntime(
@@ -1124,6 +1172,37 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(providerRuntimeLoader).toHaveBeenCalledTimes(1);
   });
 
+  it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
+    piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', scope: 'scene_wide',
+      recommendedComplexity: 'full', deliverable: 'report'};
+    const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+    const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+    const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
+    const buildPrompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: jest.fn(loadFakePiProviderRuntime),
+      },
+    );
+    try {
+      await runtime.analyze('Analyze the scrolling session', 'session-pi-private-experience', 'trace-pi', admitted({
+        analysisMode: 'full', codeAwareMode: 'metadata_only', codebaseIds: ['cb-pi-private-experience'],
+      }));
+      expect(patterns).toHaveBeenCalledTimes(1);
+      expect(negative).toHaveBeenCalledTimes(1);
+      expect(buildPrompt).toHaveBeenCalledWith(expect.objectContaining({
+        patternContext: 'PATTERN_MEMORY_SECTION', negativePatternContext: 'NEGATIVE_MEMORY_SECTION',
+        caseBackgroundContext: 'CASE_BACKGROUND_SECTION'}));
+    } finally {
+      patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); buildPrompt.mockRestore();
+      sessionContextManager.remove('session-pi-private-experience');
+    }
+  });
+
   it('passes the active code-aware mode and selected codebases into the Pi quick prompt', async () => {
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
@@ -1135,18 +1214,18 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
 
-    const result = await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', {
+    const result = await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', admitted({
       analysisMode: 'fast',
       assistantSurface: 'conversation',
       conversationTraceAttached: true,
       codeAwareMode: 'provider_send',
       codebaseIds: ['cb-pi-quick'],
-    });
+    }));
 
     const agent = FakePiAgent.instances[FakePiAgent.instances.length - 1]!;
     expect(agent.state.systemPrompt).toContain('cb-pi-quick');
     expect(agent.state.systemPrompt).toContain('provider_send');
-    expect(agent.state.systemPrompt).toContain('源码使用决策契约');
+    expect(agent.state.systemPrompt).toContain('## 源码使用');
     expect(result).toMatchObject({
       success: true,
       partial: undefined,
@@ -1188,22 +1267,22 @@ describe('experimental Pi agent-core runtime contract', () => {
     }];
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
-      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-pi', {
+      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-pi', admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
       const context = takeFinalizationContext(terminal)!;
       try {
         expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
-      const next = await runtime.analyze('public second run', sessionId, 'trace-pi', {
+      const next = await runtime.analyze('public second run', sessionId, 'trace-pi', admitted({
         analysisMode: 'fast',
         codeAwareMode: 'off',
-      });
+      }));
 
       expect(terminal.success).toBe(true);
       expect(terminal.sourceUseDecision).toEqual(decision);
@@ -1253,11 +1332,11 @@ describe('experimental Pi agent-core runtime contract', () => {
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
 
-      const result = await runtime.analyze('source timeout run', sessionId, 'trace-pi', {
+      const result = await runtime.analyze('source timeout run', sessionId, 'trace-pi', admitted({
         analysisMode: 'full',
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
 
       expect(result).toMatchObject({
         success: false,
@@ -1553,6 +1632,21 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.details).toBe(original);
   });
 
+
+  it('rejects an unparsable model JSON by position, never quoting it: it can hold an API key', async () => {
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        // Unquoted, so the parser would quote the key around it.
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: '{"provider":"openai","apiKey":sk-PI-CANARY-3d9}'},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
+      },
+    );
+    await expect(runtime.analyze('question', 'session-pi-model-json', 'trace-pi', {analysisMode: 'fast'}))
+      .rejects.toThrow(new RegExp(`^${PI_AGENT_CORE_MODEL_JSON_ENV} must be valid JSON: Pi model JSON is not valid JSON$`));
+  });
   it('clears failed Pi SDK module loads so the next request can retry the same fingerprint', async () => {
     FakePiAgent.promptMessages = [{
       role: 'assistant',
@@ -1754,6 +1848,31 @@ describe('experimental Pi agent-core runtime contract', () => {
     const providerCache = (runtime as any).providerRuntimeCache as Map<string, unknown>;
     expect(providerCache.size).toBe(2);
     expect([...providerCache.values()]).toEqual(expect.arrayContaining([firstLoad, secondLoad]));
+  });
+
+  it('keys the Pi provider cache on content under an own __proto__ key', async () => {
+    const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader,
+      },
+    );
+    // JSON.parse keeps __proto__ as an own data key; the two configs differ only there.
+    const withCompat = (value: string) => ({
+      model: {...JSON.parse(PI_TEST_MODEL_JSON), compat: JSON.parse(`{"__proto__":{"mode":"${value}"}}`)},
+      apiKey: 'redacted-test-key',
+    });
+
+    const firstLoad = (runtime as any).getProviderRuntime(withCompat('a'));
+    const secondLoad = (runtime as any).getProviderRuntime(withCompat('b'));
+
+    expect(secondLoad).not.toBe(firstLoad);
+    await Promise.all([firstLoad, secondLoad]);
+    expect(providerRuntimeLoader).toHaveBeenCalledTimes(2);
   });
 
   it('selects native Pi parallel by admitted scheduler and preserves per-tool sequential descriptors', () => {
@@ -2184,7 +2303,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         llmIssues: [],
         durationMs: 1,
       }));
-    FakePiAgent.promptHandler = async (agent, input, promptIndex) => {
+    FakePiAgent.promptHandler = async (agent, _input, promptIndex) => {
       if (promptIndex === 1) {
         await submitCompletedMinimalPlan(agent);
         return [{
@@ -2287,10 +2406,6 @@ describe('experimental Pi agent-core runtime contract', () => {
       await second;
       await delay(25);
       expect(JSON.stringify(updates)).not.toContain('LATE_ABORT_IGNORING_PROVIDER_TEXT');
-      const snapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-      expect(snapshot.engineState?.kind === 'pi-agent-core'
-        ? snapshot.engineState.pi.opaque
-        : undefined).toBeUndefined();
     } finally {
       releasePrompt.resolve([{
         role: 'assistant',
@@ -2365,10 +2480,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(JSON.stringify(updates)).not.toContain('LATE_MESSAGE_CANARY');
     expect(JSON.stringify(updates)).not.toContain('LATE_TOOL_CANARY');
     expect(JSON.stringify(updates)).not.toContain('LATE_ERROR_CANARY');
-    const postAbortSnapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-    expect(postAbortSnapshot.engineState?.kind === 'pi-agent-core'
-      ? postAbortSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
 
     releasePrompt.resolve([{
       role: 'assistant',
@@ -2473,10 +2584,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(runtime.getSessionNotes(sessionId)).toEqual([]);
     expect(runtime.getSessionPlan(sessionId)).toBeNull();
     expect(runtime.getSessionUncertaintyFlags(sessionId)).toEqual([]);
-    const postAbortSnapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-    expect(postAbortSnapshot.engineState?.kind === 'pi-agent-core'
-      ? postAbortSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
     sessionContextManager.remove(sessionId);
   });
 
@@ -2530,10 +2637,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(runtime.getSessionNotes(sessionId)).toEqual([]);
     expect(runtime.getSessionPlan(sessionId)).toBeNull();
     expect(runtime.getSessionUncertaintyFlags(sessionId)).toEqual([]);
-    const postAbortSnapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-    expect(postAbortSnapshot.engineState?.kind === 'pi-agent-core'
-      ? postAbortSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
     sessionContextManager.remove(sessionId);
   });
 
@@ -2788,7 +2891,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
   });
 
-  it('inherits logical history without replaying Pi opaque transcripts on follow-up', async () => {
+  it('inherits logical history and ignores a transcript stored by an older snapshot', async () => {
     FakePiAgent.promptMessages = [
       {
         role: 'assistant',
@@ -2814,16 +2917,28 @@ describe('experimental Pi agent-core runtime contract', () => {
       createSnapshotFields(),
     );
 
-    expect(snapshot.engineState?.kind).toBe('pi-agent-core');
-    const piOpaque = snapshot.engineState?.kind === 'pi-agent-core'
-      ? snapshot.engineState.pi.opaque
-      : undefined;
-    expect(piOpaque?.messages).toEqual([
-      {
-        role: 'assistant', stopReason: 'stop',
-        content: [{ type: 'text', text: 'First Pi answer' }],
+    expect(snapshot.engineState).toEqual({
+      kind: 'pi-agent-core',
+      provider: {providerId: null, providerSnapshotHash: null},
+      pi: {},
+    });
+    // Snapshots written before the transcript was dropped still carry it.
+    const legacySnapshot = {
+      ...snapshot,
+      engineState: {
+        ...snapshot.engineState,
+        pi: {
+          opaque: {
+            version: 1,
+            messages: [{role: 'assistant', content: [{type: 'text', text: 'LEGACY_TRANSCRIPT_CANARY'}]}],
+            messageCount: 81,
+            originalMessageCount: 120,
+            truncated: true,
+            degradedReason: 'too_large',
+          },
+        },
       },
-    ]);
+    } as SessionStateSnapshot;
 
     FakePiAgent.promptMessages = [
       {
@@ -2840,7 +2955,9 @@ describe('experimental Pi agent-core runtime contract', () => {
         providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
-    secondRuntime.restoreFromSnapshot('session-pi-resume', 'trace-pi', snapshot);
+    secondRuntime.restoreFromSnapshot('session-pi-resume', 'trace-pi', legacySnapshot);
+    const updates: StreamingUpdate[] = [];
+    secondRuntime.on('update', update => updates.push(update));
 
     await secondRuntime.analyze('follow-up question', 'session-pi-resume', 'trace-pi', {
       analysisMode: 'fast',
@@ -2852,6 +2969,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         messages: [],
       }),
     });
+    expect(JSON.stringify(restoredAgent.options)).not.toContain('LEGACY_TRANSCRIPT_CANARY');
+    expect(updates.map(update => update.type)).not.toContain('degraded');
     expect(restoredAgent.prompts[0]).toContain('follow-up question');
     expect(restoredAgent.prompts[0]).toContain('first question');
     expect(restoredAgent.prompts[0]).toContain('First Pi answer');
@@ -2901,7 +3020,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(current.conclusion).not.toContain('Previous-turn root cause');
   });
 
-  it('never reuses or retains opaque Pi transcripts across private analysis boundaries', async () => {
+  it('never carries a Pi transcript across private analysis boundaries', async () => {
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
       {kind: 'pi-agent-core', source: 'env'},
@@ -2923,11 +3042,11 @@ describe('experimental Pi agent-core runtime contract', () => {
       role: 'assistant',
       content: [{type: 'text', text: 'PRIVATE_SOURCE_CANARY'}],
     }];
-    await runtime.analyze('private', 'session-private-boundary', 'trace-pi', {
+    await runtime.analyze('private', 'session-private-boundary', 'trace-pi', admitted({
       analysisMode: 'full',
       codeAwareMode: 'metadata_only',
       codebaseIds: ['private-codebase'],
-    });
+    }));
     expect((FakePiAgent.instances[1].options?.initialState as any).messages).toEqual([]);
 
     const privateSnapshot = runtime.takeSnapshot(
@@ -2939,10 +3058,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         codebaseIds: ['private-codebase'],
       },
     );
-    expect(privateSnapshot.engineState?.kind).toBe('pi-agent-core');
-    expect(privateSnapshot.engineState?.kind === 'pi-agent-core'
-      ? privateSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
+    expect(privateSnapshot.engineState).toMatchObject({kind: 'pi-agent-core', pi: {}});
+    expect(JSON.stringify(privateSnapshot)).not.toContain('PRIVATE_SOURCE_CANARY');
 
     FakePiAgent.promptMessages = [{
       role: 'assistant',
@@ -2953,16 +3070,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
     expect((FakePiAgent.instances[2].options?.initialState as any).messages).toEqual([]);
     expect(JSON.stringify(FakePiAgent.instances[2].options)).not.toContain('PRIVATE_SOURCE_CANARY');
-
-    runtime.cleanupSession('session-private-boundary');
-    const cleanupSnapshot = runtime.takeSnapshot(
-      'session-private-boundary',
-      'trace-pi',
-      createSnapshotFields(),
-    );
-    expect(cleanupSnapshot.engineState?.kind === 'pi-agent-core'
-      ? cleanupSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
   });
 
   it('keeps Pi quick mode on shared core tools without preview verification metadata', async () => {
@@ -3012,34 +3119,6 @@ describe('experimental Pi agent-core runtime contract', () => {
       {role: 'assistant', content: [{type: 'text', text: 'All phases are complete.'}]},
     ])).toBe('All phases are complete.');
   });
-
-  it('does not treat a completed Pi phase as closed when required tool evidence is missing', () => {
-    const plan = {
-      phases: [
-        {
-          id: 'p-frame-detail',
-          name: '代表帧深钻',
-          goal: '调用 jank_frame_detail 获取代表掉帧调用栈',
-          expectedTools: ['invoke_skill'],
-          expectedCalls: [{ tool: 'invoke_skill', skillId: 'jank_frame_detail' }],
-          status: 'completed',
-          summary: '已完成代表帧根因分析，并整理出主线程阻塞调用栈证据。',
-        },
-      ],
-      successCriteria: '完整解释代表掉帧根因',
-      submittedAt: 1,
-      toolCallLog: [],
-    } as any;
-
-    const status = getPiAgentCorePlanCompletionStatus(plan);
-
-    expect(status.complete).toBe(false);
-    expect(status.pendingPhases.map(phase => phase.id)).toEqual(['p-frame-detail']);
-    expect(status.evidenceGaps?.[0].missingExpectedCalls).toEqual([
-      { tool: 'invoke_skill', skillId: 'jank_frame_detail' },
-    ]);
-  });
-
 
   function typedRuntime(input: {trace?: any; env?: Record<string, string>; loader?: any} = {}) {
     return new PiAgentCoreRuntime(input.trace ?? createFakeTraceProcessorService(),
@@ -3159,6 +3238,23 @@ describe('experimental Pi agent-core runtime contract', () => {
     } finally { buildPrompt.mockRestore(); }
   });
 
+  it('renders an issued focus-app evidence locator that the run store resolves', async () => {
+    passVerification();
+    FakePiAgent.promptMessages = [{role: 'assistant', content: [{type: 'text', text: 'Focus answer'}]}];
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockResolvedValue({
+      method: 'frame_timeline', confidence: 'medium', primaryApp: 'com.example.pi',
+      apps: [{packageName: 'com.example.pi', totalDurationNs: 10, switchCount: 3, score: 30}],
+    });
+    try {
+      const runtime = typedRuntime();
+      await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () => runtime.analyze(
+        '哪个应用在前台', 'typed-pi-focus-evidence', 'trace-pi', {analysisMode: 'full', runId: 'run-pi-focus'}));
+      const resolution = await resolveFocusPackageCell((runtime as any).artifactStores.get('typed-pi-focus-evidence'),
+        FakePiAgent.instances[0].state.systemPrompt, 'trace-pi', 'run-pi-focus');
+      expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.pi'}});
+    } finally { focus.mockRestore(); }
+  });
+
   it('uses the same pinned healthy main model after an unavailable classifier without memory prefetch', async () => {
     passVerification();
     piClassifierResponses.push(new Error('model_not_found'));
@@ -3195,9 +3291,9 @@ describe('experimental Pi agent-core runtime contract', () => {
     passVerification();
     piClassifierDecision = {...piClassifierDecision, evidenceAccess: 'existing_only'};
     const trace = createFakeTraceProcessorService();
-    const result = await typedRuntime({trace}).analyze('继续解释上一轮证据', 'typed-pi-existing', 'trace-pi', {
+    const result = await typedRuntime({trace}).analyze('继续解释上一轮证据', 'typed-pi-existing', 'trace-pi', admitted({
       analysisMode: 'full', referenceTraceId: 'trace-ref', codeAwareMode: 'provider_send', codebaseIds: ['selected-source'],
-    });
+    }));
     expect(result.turnIntent?.evidenceAccess).toBe('existing_only');
     expect(trace.query).not.toHaveBeenCalled();
     const names = FakePiAgent.instances[0].state.tools.map((tool: any) => tool.name);
@@ -3337,6 +3433,154 @@ describe('experimental Pi agent-core runtime contract', () => {
     conclusions: [{rank: 1, statement: 'The marker is present.'}], clusters: [], evidenceChain: [],
     claims: [], uncertainties: [], nextSteps: []} as ConclusionContract);
 
+  it.each(['complete', 'length', 'invalid', 'no-declaration', 'no-reserve', 'deferred', 'tool-call', 'error', 'expired'] as const)(
+    'gives native output_limit one bounded delivery opportunity only when eligible: %s', async outcome => {
+      passVerification();
+      const first = `Observed ten 195 ms lock waits.\n${protocolSidecar.slice(0, -4)}`;
+      const complete = `Observed ten 195 ms lock waits. The owner chain is supported by existing rows.\n${protocolSidecar}`;
+      let clock: jest.SpiedFunction<typeof Date.now> | undefined;
+      FakePiAgent.promptHandler = async (agent, prompt, index) => {
+        if (index === 2) {
+          expect(agent.state.tools).toEqual([]);
+          expect(prompt).toContain('continue_output');
+          expect(prompt).toContain('Observed ten 195 ms lock waits.');
+          expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
+        }
+        if (outcome === 'expired' && index === 1) clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+        return [{role: 'assistant', stopReason: index === 1 || outcome === 'length' ? 'length' : 'stop',
+          ...(index === 1 && outcome === 'deferred' ? {deferred: {pending: true}} : {}),
+          ...(index === 1 && outcome === 'error' ? {errorMessage: 'private provider failure'} : {}),
+          content: [{type: 'text', text: index === 1 ? (outcome === 'no-declaration' ? 'Observed ten 195 ms lock waits.' : first)
+            : outcome === 'invalid' ? first : outcome === 'no-declaration' ? 'Observed ten 195 ms lock waits.' : complete},
+            ...(index === 1 && outcome === 'tool-call' ? [{type: 'toolCall', name: 'execute_sql', arguments: {}}] : [])]}];
+      };
+      const eligible = ['complete', 'length', 'invalid', 'no-declaration'].includes(outcome);
+      try {
+        const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: outcome === 'no-reserve' ? '1' : '2',
+          AGENT_QUICK_TIMEOUT_SECONDS: '1'}}).analyze('query', `pi-output-limit-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
+        expect(FakePiAgent.instances[0].promptCount).toBe(eligible ? 2 : 1);
+        if (outcome === 'complete') {
+          expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop', attemptId: '2',
+            conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
+          expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+        } else {
+          expect(result.completion).toMatchObject({status: outcome === 'error' ? 'failed' : 'incomplete', attemptId: '1'});
+          expect(result.completion?.reason).toBe(outcome === 'error' ? 'provider_error' : 'output_limit');
+        }
+      } finally {clock?.mockRestore();}
+    });
+
+  it('forwards the no-tool delivery policy through the pinned authorization fence', async () => {
+    passVerification();
+    const purposes: Array<{purpose: string; outputOnly?: boolean}> = [];
+    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON}, moduleLoader: async () => ({Agent: FakePiAgent}),
+      providerRuntimeLoader: async config => {
+        const base = await loadFakePiProviderRuntime(config);
+        return {...base, streamFnForPurpose: (purpose, policy) => {
+          purposes.push({purpose, outputOnly: policy?.outputOnly}); return base.streamFn;
+        }};
+      },
+    });
+    FakePiAgent.promptHandler = async (agent, _prompt, index) => {
+      if (index === 2) await (agent.options!.streamFn as any)(agent.state.model, {messages: [], tools: []}, {}).result();
+      return [{role: 'assistant', stopReason: index === 1 ? 'length' : 'stop', content: [{type: 'text',
+        text: index === 1 ? `Observed lock waits.\n${protocolSidecar.slice(0, -4)}` : `Observed lock waits.\n${protocolSidecar}`}]}];
+    };
+    const result = await runtime.analyze('query', 'pi-delivery-policy-fence', 'trace-pi');
+    expect(result.completion?.status).toBe('completed');
+    expect(purposes).toContainEqual({purpose: 'continuation', outputOnly: true});
+  });
+
+  it('stops native delivery after its one turn even with unused acquisition budget and a rogue tool call', async () => {
+    passVerification();
+    FakePiAgent.promptHandler = async (agent, _prompt, index) => {
+      const message = {role: 'assistant', stopReason: index === 1 ? 'length' : 'toolUse', content: index === 1
+        ? [{type: 'text', text: `Observed waits.\n${protocolSidecar.slice(0, -4)}`}]
+        : [{type: 'toolCall', name: 'execute_sql', arguments: {}}]};
+      if (index === 2) {
+        expect(agent.state.tools).toEqual([]);
+        expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}})).toMatchObject({block: true});
+      }
+      agent.emitForTest({type: 'turn_end', message});
+      expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(index === 2);
+      return [message];
+    };
+    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '50'}})
+      .analyze('query', 'pi-single-delivery-turn', 'trace-pi', {analysisMode: 'fast'});
+    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit', attemptId: '1'});
+  });
+
+  it.each(['accepted', 'incomplete', 'claims-dropped', 'relations-dropped', 'relations-swapped'] as const)(
+    'uses one reserved no-tool turn for a bodyless 35-claim invalid relation: %s', async outcome => {
+      passVerification();
+      const claims = Array.from({length: 35}, (_, i) => declaredClaim(`claim:${i}`));
+      const base = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+        evidenceChain: [], claims, uncertainties: [], nextSteps: []};
+      const proposal = {schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:lock', kind: 'lock_owner',
+        direction: 'subject_to_object', subject: {evidenceRefId: 'evidence:subject'},
+        object: {evidenceRefId: 'evidence:object'}, proof: {evidenceRefId: 'evidence:proof'}};
+      const first = renderConclusionContractSidecar({...base, relationProposals: [{...proposal,
+        proofBindings: {subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'}}}]} as any);
+      const second = `Ten waits lasted 195 ms each; the captured owner is identified.\n` +
+        renderConclusionContractSidecar({...base, claims: outcome === 'claims-dropped' ? claims.slice(1) : claims,
+          relationProposals: outcome === 'relations-dropped' ? [] : [{...proposal,
+            ...(outcome === 'relations-swapped' ? {id: 'proposal:replacement'} : {}), proofBindings: {
+            subject: {endpointColumn: 'tid', proofColumn: 'owner_tid'},
+            object: {endpointColumn: 'tid', proofColumn: 'waiter_tid'}}}]} as any);
+      FakePiAgent.promptHandler = async (agent, prompt, index) => {
+        if (index === 2) {
+          expect(agent.state.tools).toEqual([]);
+          expect(prompt).toContain('proofBindings');
+          expect(prompt).toContain('invalid_proof_bindings');
+          expect(await (agent.options!.beforeToolCall as any)({toolCall: {name: 'execute_sql'}}))
+            .toMatchObject({block: true});
+        }
+        const message = {role: 'assistant', stopReason: index === 2 && outcome === 'incomplete' ? 'length' : 'stop',
+          content: [{type: 'text', text: index === 1 ? first : second}]};
+        agent.emitForTest({type: 'turn_end', message});
+        expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(true);
+        return [message];
+      };
+      const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
+        .analyze('query', `pi-pifix-relation-${outcome}`, 'trace-pi', {analysisMode: 'fast'});
+      expect(FakePiAgent.instances[0].promptCount).toBe(2);
+      expect(result.rounds).toBe(2);
+      if (outcome === 'accepted') {
+        expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid', sidecar: {bindingEligibility: 'eligible'}});
+        expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims).toHaveLength(35);
+        const context = takeFinalizationContext(result)!;
+        try {expect(inspectCandidateProtocol(context.getNativeDeclaration(result, new AbortController().signal)?.raw ?? '').status).toBe('valid');}
+        finally {context.dispose();}
+      } else {
+        expect(result.completion?.attemptId).toBe('1');
+        // The rejected correction leaves the first candidate delivered; its one
+        // invalid proposal is item-scoped now (plan A.1), so the 35 claims stay eligible.
+        expect(inspectCandidateProtocol(result.conclusion).sidecar.bindingEligibility).toBe('eligible');
+      }
+    });
+
+  it('repairs closed invalid framing at the acquisition limit without changing its body or claim IDs', async () => {
+    passVerification();
+    const body = 'The one slow Binder transaction is blocked in WMS relayoutWindow.';
+    const good = declaredCandidateWithClaims(body, [declaredClaim('binder:slow'), declaredClaim('wms:lock')]);
+    const first = good.replace('```json', '```json ');
+    FakePiAgent.promptHandler = async (agent, prompt, index) => {
+      if (index === 2) {expect(agent.state.tools).toEqual([]); expect(prompt).toContain('invalid_framing');}
+      const message = {role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: index === 1 ? first : good}]};
+      agent.emitForTest({type: 'turn_end', message});
+      expect(await (agent.options!.shouldStopAfterTurn as any)({message})).toBe(true);
+      return [message];
+    };
+    const result = await typedRuntime({env: {AGENT_QUICK_MAX_TURNS: '2'}})
+      .analyze('query', 'pi-pifix-framing', 'trace-pi', {analysisMode: 'fast'});
+    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(result.rounds).toBe(2);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(inspectCandidateProtocol(result.conclusion).sidecar.contract?.claims?.map(claim => claim.id)).toEqual(['binder:slow', 'wms:lock']);
+  });
+
   it('uses the reserved delivery turn to repair a rejected declaration around the unchanged body', async () => {
     passVerification();
     const body = 'Frame 12 missed its deadline.';
@@ -3351,6 +3595,27 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(completionPrompt).toContain('invalid_declaration');
     expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+  });
+
+  it('does not send a declaration repair that cannot finish in the time left, and records why', async () => {
+    // The real assessment with one second left: the run's own deadline is far longer in this fixture.
+    jest.mocked(runtimeCallStats.admitDeliveryCall).mockImplementation((recorder, input) =>
+      realAdmitDeliveryCall(recorder, {...input, remainingMs: 1_000}));
+    passVerification();
+    const body = 'Frame 12 missed its deadline.';
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
+      text: candidateWithPopulation(body, 'everywhere')}]}];
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    const result = await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () =>
+      typedRuntime().analyze('query', 'pi-repair-budget', 'trace-pi',
+        {runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder)}));
+    expect(FakePiAgent.instances[0].promptCount).toBe(1);
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(runtimeCallStats.admitDeliveryCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      model: 'pi-test-model', purpose: 'declaration_repair', inputBytes: expect.any(Number),
+      remainingMs: expect.any(Number), failOpen: false}));
+    expect(runtimePerformanceRecorder.seal().deliveryBudgets).toEqual([{purpose: 'declaration_repair', decision: 'skip',
+      source: 'default', estimateMs: 90_000, remainingMs: 1_000, diagnostic: 'stats_not_configured'}]);
   });
 
   it('uses the reserved no-tools delivery turn to attach declarations to a full multilingual body', async () => {
@@ -3388,6 +3653,33 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(JSON.stringify(updates)).not.toContain('DECLARATION_COMPLETION_MUST_STAY_BUFFERED');
   });
 
+  it('repairs an oversized rejected declaration when the unchanged body fits the Pi output cap', async () => {
+    passVerification();
+    const body = 'Frame 12 missed its deadline.';
+    const valid = candidateWithPopulation(body, 'cited_rows');
+    const payload = inspectCandidateProtocol(valid).sidecar.rawPayload;
+    const rejected = valid.replace('```json\n', `\`\`\`JSON\n${' '.repeat(80 * 1024)}`);
+    expect(Buffer.byteLength(rejected, 'utf8')).toBeGreaterThan(64 * 1024);
+    expect(inspectCandidateProtocol(rejected).canonicalBody.trim()).toBe(body);
+    let completionPrompt = '';
+    FakePiAgent.promptHandler = async (agent, prompt, index) => {
+      if (index === 2) {
+        completionPrompt = prompt;
+        expect(agent.state.tools).toEqual([]);
+      }
+      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text',
+        text: index === 1 ? rejected : JSON.stringify(payload)}]}];
+    };
+    const result = await typedRuntime().analyze('query', 'pi-oversized-rejected-sidecar', 'trace-pi');
+    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(completionPrompt).toContain('invalid_declaration');
+    expect(completionPrompt).toContain('只输出完整声明 JSON 对象');
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed', attemptId: '2'});
+    expect(Buffer.byteLength(result.conclusion, 'utf8')).toBeLessThan(64 * 1024);
+  });
+
   it('does not dispatch declaration completion when the original body cannot fit the Pi output cap', async () => {
     passVerification();
     const body = 'x'.repeat(64 * 1024);
@@ -3419,6 +3711,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     let originalPrompt = '';
     const authorizationChecksAtDispatch: number[] = [];
     FakePiAgent.promptHandler = async (agent, _input, index) => {
+      // The request Pi's own loop sends through the runtime's streamFn.
+      (agent.options!.streamFn as (...args: unknown[]) => unknown)(agent.state.model, {marker: 'repair'}, {});
       authorizationChecksAtDispatch.push(authorization.mock.calls.length);
       if (index === 1) originalPrompt = agent.state.systemPrompt;
       else {
@@ -3431,7 +3725,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
     const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization');
     try {
-      const result = await runtime.analyze('query', `pi-protocol-${kind}`, 'trace-pi', {runId: `pi-protocol-${kind}`});
+      const result = await runtime.analyze('query', `pi-protocol-${kind}`, 'trace-pi', admitted({runId: `pi-protocol-${kind}`,
+        codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}));
       expect(FakePiAgent.instances[0].promptCount).toBe(2);
       expect(authorizationChecksAtDispatch[0]).toBeGreaterThan(0);
       expect(authorizationChecksAtDispatch[1]).toBeGreaterThan(authorizationChecksAtDispatch[0]);
@@ -3452,14 +3747,22 @@ describe('experimental Pi agent-core runtime contract', () => {
 
   it('gives the existing Pi relation correction the shared closed schema without a third call', async () => {
     passVerification();
+    const semantics = {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+      discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}};
+    const claim = (id: string, claimSemantics: unknown = semantics): ConclusionContractClaimItem =>
+      ({id, kind: 'numeric', text: `${id} holds.`, references: [],
+        semantics: claimSemantics as ConclusionContractClaimItem['semantics']});
     const base: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
+      conclusions: [], clusters: [], evidenceChain: [], claims: [claim('claim-1')], uncertainties: [], nextSteps: [],
       relationProposals: [{schemaVersion: 'evidence_relation_candidate@1', id: 'proposal:relation_1',
         kind: 'overlap', direction: 'symmetric', subject: {evidenceRefId: 'evidence-subject'}}]};
-    const first = `The marker is present.\n${renderConclusionContractSidecar({...base, relationProposals: [{
-      ...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY',
-    }]} as any)}`;
-    const complete = `The marker is present.\n${renderConclusionContractSidecar(base)}`;
+    // The repair needs a repairable invalid claim (plan A.3); the invalid proposal
+    // rides the same correction and gets the exact relation schema.
+    const first = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2', {...semantics, polarity: 'sometimes'})],
+      relationProposals: [{...base.relationProposals![0], PRIVATE_RELATION_KEY_CANARY: 'PRIVATE_RELATION_VALUE_CANARY'}]} as any)}`;
+    const complete = `The marker is present.\n${renderConclusionContractSidecar({...base,
+      claims: [claim('claim-1'), claim('claim-2')]})}`;
     let recoveryPrompt = '';
     FakePiAgent.promptHandler = async (_agent, input, index) => {
       if (index === 2) recoveryPrompt = input;
@@ -3491,7 +3794,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     finally {context.dispose();}
     expect(result.completion?.attemptId).toBe('1');
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
-    expect(result.terminationMessage).not.toContain('candidate_protocol_diagnostic@1');
+    // A rejected repair leaves no runtime-written terminal message; finalization assesses the candidate.
+    expect(result.terminationMessage).toBeUndefined();
   });
 
   it('does not retry a Pi candidate invalidated only by the application projection', async () => {
@@ -3514,10 +3818,18 @@ describe('experimental Pi agent-core runtime contract', () => {
     } finally { project.mockRestore(); }
   });
 
+  const PRIVATE_SELECTION = {codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+
   it('does not redispatch Pi source context after authorization changes', async () => {
     passVerification();
     let revoked = false;
-    FakePiAgent.promptHandler = async () => {
+    let sent = 0;
+    FakePiAgent.promptHandler = async agent => {
+      // Pi's loop sends each prompt through the runtime's streamFn; a refused request sends nothing.
+      try {
+        (agent.options!.streamFn as (...args: unknown[]) => unknown)(agent.state.model, {marker: 'protocol'}, {});
+        sent += 1;
+      } catch { return []; }
       revoked = true;
       return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: protocolSidecar}]}];
     };
@@ -3527,17 +3839,64 @@ describe('experimental Pi agent-core runtime contract', () => {
       return realAuthorization(...args);
     });
     try {
-      const result = await typedRuntime().analyze('query', 'pi-protocol-revoked', 'trace-pi');
-      expect(FakePiAgent.instances[0].promptCount).toBe(1);
-      expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
-      const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(protocolSidecar);}
-      finally {context.dispose();}
-      expect(result.completion?.attemptId).toBe('1');
+      await expect(typedRuntime().analyze('query', 'pi-protocol-revoked', 'trace-pi', admitted(PRIVATE_SELECTION)))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(sent).toBe(1);
+      expect(FakePiAgent.instances[0].aborted).toBe(true);
     } finally { authorization.mockRestore(); }
   });
 
-  it('rejects a Pi declaration returned after authorization changes without replacing the first candidate', async () => {
+  describe('authorization is checked before every model request', () => {
+    // The fake agent drives the runtime's streamFn the way Pi's native loop does.
+    const mainDispatches = () => piClassifierCalls.filter(call =>
+      (call.context as {marker?: string} | undefined)?.marker === 'main');
+    const dispatch = (agent: FakePiAgent) =>
+      (agent.options!.streamFn as (...args: unknown[]) => unknown)(agent.state.model, {marker: 'main'}, {});
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+
+    it('ends the run when authorization changes after a body read, before the continuation that resends it', async () => {
+      let revoked = false;
+      let continuation: unknown;
+      FakePiAgent.promptHandler = async agent => {
+        dispatch(agent);
+        revoked = true; // A source body was read and returned; consent is withdrawn before the next request.
+        try { dispatch(agent); } catch (error) { continuation = error; }
+        return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: protocolSidecar}]}];
+      };
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(typedRuntime().analyze('query', 'pi-revoked-continuation', 'trace-pi', admitted(PRIVATE_SELECTION)))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(continuation).toBeInstanceOf(contextAuthorization.AnalysisContextAuthorizationChangedError);
+        expect(mainDispatches()).toHaveLength(1);
+        expect(FakePiAgent.instances[0].aborted).toBe(true);
+        expect(FakePiAgent.instances[0].promptCount).toBe(1);
+      } finally { authorization.mockRestore(); }
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the first request', async () => {
+      let revoked = false;
+      FakePiAgent.promptHandler = async agent => {
+        revoked = true;
+        expect(() => dispatch(agent)).toThrow('analysis_context_changed_restart_required');
+        return [];
+      };
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(typedRuntime().analyze('query', 'pi-revoked-before-dispatch', 'trace-pi', admitted(PRIVATE_SELECTION)))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(mainDispatches()).toHaveLength(0);
+      } finally { authorization.mockRestore(); }
+    });
+  });
+
+  it('ends the run when authorization changes during a declaration repair', async () => {
     passVerification();
     const body = 'Authorized candidate body.';
     const repaired = `${body}\n${protocolSidecar}`;
@@ -3552,11 +3911,9 @@ describe('experimental Pi agent-core runtime contract', () => {
       return realAuthorization(...args);
     });
     try {
-      const result = await typedRuntime().analyze('query', 'pi-declaration-authorization-change', 'trace-pi');
+      await expect(typedRuntime().analyze('query', 'pi-declaration-authorization-change', 'trace-pi', admitted(PRIVATE_SELECTION)))
+        .rejects.toThrow('analysis_context_changed_restart_required');
       expect(FakePiAgent.instances[0].promptCount).toBe(2);
-      expect(FakePiAgent.instances[0].state.messages).toHaveLength(1);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
     } finally { authorization.mockRestore(); }
   });
 
@@ -3577,6 +3934,39 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(FakePiAgent.instances[0].promptCount).toBe(2);
     expect(correctionPrompt).not.toContain('invalid_declaration');
     expect(correctionPrompt).toContain('candidateProtocolDiagnostic');
+  });
+
+  it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => {
+    passVerification();
+    const trace = createFakeTraceProcessorService();
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: declaredPiCandidate('No trace is attached.')}]}];
+    const sessionId = 'pi-no-trace';
+    try {
+      const result = await typedRuntime({trace}).analyze('A question', sessionId, `conversation-no-trace:${sessionId}`,
+        {assistantSurface: 'conversation', conversationTraceAttached: false, analysisMode: 'full'});
+      expect(trace.query).not.toHaveBeenCalled();
+      const context = takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({});
+      context?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
+  });
+
+  it('leaves the terminal state to the finalizer when a draft diagnostic has no repair', async () => {
+    mockClaudeVerifierVerifyConclusion.mockImplementation(async () => ({passed: false,
+      heuristicIssues: [UNREPAIRABLE_DRAFT_ISSUE], llmIssues: []}));
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: declaredPiCandidate('Frame 12 missed its deadline.')}]}];
+    const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
+    const sessionId = 'pi-draft-terminal-state';
+    try {
+      const result = await runtime.analyze('same question', sessionId, 'trace-pi', {runId: 'r-draft', analysisMode: 'fast'});
+      expect(FakePiAgent.instances[0].promptCount).toBe(1);
+      expect(result.completion).toMatchObject({status: 'completed'});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: false},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace-pi')?.getAllTurns().slice(-1)[0]?.result});
+      takeFinalizationContext(result)?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
   });
 
   it('binds a shorter unheaded correction to its own successful SDK attempt without reclassifying', async () => {
@@ -3607,23 +3997,25 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.conclusion).toBe('Original evidence gap');
     expect(result.completion).toMatchObject({status: 'completed', attemptId: '1',
       conclusionFingerprint: analysisDeliveryFingerprint('Original evidence gap')});
-    expect(result.partial).toBe(true);
+    // The draft diagnostic chose the correction only; the completed native answer is not partial.
+    expect(result.partial).toBeUndefined();
+    expect(result.terminationReason).toBeUndefined();
   });
 
   function observePiProjection() {
     const projection = jest.spyOn(sourceProjectionModule, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const gate = jest.spyOn(qualityGateModule, 'applyFinalResultQualityGate');
+    const attach = jest.spyOn(finalizationModule, 'attachFinalizationContext');
     return {
-      projection, gate,
+      projection, attach,
       assertReturnedContext(result: unknown) {
         const projected = projection.mock.results.map(entry => entry.value as ReturnType<typeof sourceProjectionModule.finalizeOwnerSourceAwareAnalysisResultWithProjection>)
           .find(entry => entry?.result === result);
-        const gateInput = gate.mock.calls.map(([input]) => input).find(input => input.result === result);
+        const attached = attach.mock.calls.find(([target]) => target === result)?.[1];
         expect(projected).toBeDefined();
-        expect(gateInput?.context).toBe(projected?.deliveryContext);
+        expect(attached?.deliveryContext).toBe(projected?.deliveryContext);
         return projected!;
       },
-      restore() { projection.mockRestore(); gate.mockRestore(); },
+      restore() { projection.mockRestore(); attach.mockRestore(); },
     };
   }
 
@@ -3688,6 +4080,22 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(projected.deliveryContext).toMatchObject({outputOrigin: 'runtime_fallback', completion: result.completion});
       expect(result.completion?.candidateRef).not.toBe(`replaced-${id}:pi:1`);
     } finally { observation.restore(); clearCodeAwareOutputGuards(sessionId); }
+  });
+
+  it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => {
+    const sessionId = 'pi-replaced-terminal-state';
+    FakePiAgent.promptHandler = async () => {
+      revokeCodeAwareOutputGuards(sessionId);
+      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Native model conclusion'}]}];
+    };
+    const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
+    try {
+      const result = await runtime.analyze('context only', sessionId, 'trace-pi', {runId: 'replaced-terminal', analysisMode: 'fast'});
+      expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace-pi')?.getAllTurns().slice(-1)[0]?.result});
+      takeFinalizationContext(result)?.dispose();
+    } finally {clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);}
   });
 
   it('keeps an empty native answer ineligible after a revoked-session replacement', async () => {
@@ -3801,6 +4209,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(takeFinalizationContext(result)).toBeUndefined();
       expect(context.deliveryContext).toEqual(projected.deliveryContext);
       expect(context.traceIdentity).toEqual({currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'});
+      expect(context.deliveryCall).toEqual({model: 'pi-test-model'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context.runId);
       expect(readView.mock.calls[0][0].allowedTraces).toEqual([
@@ -3819,7 +4228,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         expect(piClassifierCalls[1].model).toBe(FakePiAgent.instances[0].state.model);
         expect(piClassifierCalls[1].context.tools).toEqual([]);
         expect(piClassifierCalls[1].context.messages).toHaveLength(1);
-        expect(piClassifierCalls[1].options).not.toHaveProperty('maxTokens');
+        // The review's output cap follows its byte limit (8 KiB -> 2048 tokens * 1.25), under the model cap.
+        expect(piClassifierCalls[1].options.maxTokens).toBe(2560);
         expect(piClassifierCalls[1].model).toMatchObject({maxTokens: 4096});
         expect(piClassifierCalls[0].options.maxTokens).toBe(1024);
         expect(trace.query.mock.calls.length).toBe(queriesBefore);
@@ -3844,7 +4254,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(context).toBeDefined();
       expect(context.deadlineMs).toBeGreaterThanOrEqual(beforeRun + 1000);
       expect(context.deadlineMs).toBeLessThan(Date.now() + 1000);
-      expect(context.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
     } finally { context.dispose(); }
   });
 
@@ -3863,7 +4273,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(context).toBeDefined();
     try {
       expect(context.runId).toBe('pi-cancelled-run');
-      expect(context.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
       expect(context.hasSemanticTransport).toBe(false);
       expect(context.getSelection(new AbortController().signal)).toEqual({present: true, kind: 'track_event',
         context: {kind: 'track_event', eventId: 7, ts: 42},

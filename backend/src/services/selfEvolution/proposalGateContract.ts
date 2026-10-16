@@ -278,12 +278,6 @@ function gateResultPassed(proposal: CurationProposalV1): boolean {
     && proposal.gateResult.checks.every(check => check.verdict === 'passed');
 }
 
-export function createRepositoryTargetBindingV1(
-  value: Omit<RepositoryTargetBindingV1, 'schemaVersion' | 'contentHash'>,
-): RepositoryTargetBindingV1 {
-  return parseRepositoryTargetBindingV1(withHash(value));
-}
-
 export function parseRepositoryTargetBindingV1(
   value: unknown,
 ): RepositoryTargetBindingV1 {

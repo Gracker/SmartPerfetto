@@ -20,11 +20,15 @@ import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import type {OutputLanguage} from '../../../agentv3/outputLanguage';
 import {
   MCP_NAME_PREFIX,
-  resolveMcpToolPlanCapability,
   type McpToolDefinition,
 } from '../../../agentv3/mcpToolRegistry';
 import type {CodeAwareMode} from '../../../services/codebase/codeAwareFeature';
-import {loadSourceUseDecisionPrompt} from '../../../services/codebase/sourceUseDecision';
+import {loadSourceUsePrompt} from '../../../services/codebase/sourceUseDecision';
+import {
+  sourceAuthorizationPayload,
+  type SourceAuthorizationPromptData,
+} from '../../../services/codebase/selectedCodebaseCapabilities';
+import {knowledgeUsePrompt} from '../../../services/knowledge/knowledgePrompt';
 
 /** Tools that are orchestrator-only — sub-agents collect evidence, not plan/hypothesize.
  * These are excluded when deriving sub-agent tools from the full allowedTools list. */
@@ -49,16 +53,17 @@ const ORCHESTRATOR_ONLY_TOOLS = new Set([
  */
 function deriveSubAgentTools(
   allowedTools: string[],
-  toolDefinitions: readonly Pick<McpToolDefinition, 'name' | 'exposure' | 'planCapability'>[],
-  sourceContractAvailable: boolean,
+  toolDefinitions: readonly Pick<McpToolDefinition, 'name' | 'exposure'>[],
+  sourceGuidanceAvailable: boolean,
 ): string[] {
   const definitions = new Map(toolDefinitions.map(definition => [definition.name, definition]));
   return allowedTools.filter(t => {
     const shortName = t.replace(MCP_NAME_PREFIX, '');
     const definition = definitions.get(shortName);
     if (!definition) return false;
-    if (resolveMcpToolPlanCapability(definition) === 'control') return false;
-    if (definition.exposure === 'requires_codebase_permission' && !sourceContractAvailable) {
+    // allowedTools is already the request's registry view (codebase permission
+    // and evidence access applied); source tools also need the guidance below.
+    if (definition.exposure === 'requires_codebase_permission' && !sourceGuidanceAvailable) {
       return false;
     }
     return !ORCHESTRATOR_ONLY_TOOLS.has(shortName);
@@ -72,9 +77,11 @@ export interface SubAgentContext {
   /** Full allowedTools from createClaudeMcpServer — sub-agent tools are derived from this. */
   allowedTools?: string[];
   /** Request-shaped registry definitions paired with allowedTools. */
-  toolDefinitions?: readonly Pick<McpToolDefinition, 'name' | 'exposure' | 'planCapability'>[];
+  toolDefinitions?: readonly Pick<McpToolDefinition, 'name' | 'exposure'>[];
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
+  /** The orchestrator's per-codebase capabilities and run source budget, shared by sub-agents. */
+  sourceAuthorization?: SourceAuthorizationPromptData;
   outputLanguage?: OutputLanguage;
   /** Override sub-agent model shorthand. Defaults to 'sonnet'.
    *  Accepted values: 'haiku' | 'sonnet' | 'opus' | 'inherit' (inherit from orchestrator).
@@ -245,15 +252,15 @@ export function buildAgentDefinitions(
   sceneType: SceneType,
   ctx?: SubAgentContext,
 ): Record<string, AgentDefinition> {
-  const sourceContract = loadSourceUseDecisionPrompt({
+  const sourceGuidance = loadSourceUsePrompt({
     codeAwareMode: ctx?.codeAwareMode,
     codebaseIds: ctx?.codebaseIds,
     outputLanguage: ctx?.outputLanguage,
   });
   // Auto-derive sub-agent tools from orchestrator's allowedTools, excluding orchestrator-only tools.
-  // Missing registry metadata falls back to no tools so control/source capabilities fail closed.
+  // Missing registry metadata falls back to no tools so source tools fail closed.
   const subAgentTools = ctx?.allowedTools && ctx.toolDefinitions
-    ? deriveSubAgentTools(ctx.allowedTools, ctx.toolDefinitions, Boolean(sourceContract))
+    ? deriveSubAgentTools(ctx.allowedTools, ctx.toolDefinitions, Boolean(sourceGuidance))
     : [];
   const agents: Record<string, AgentDefinition> = {};
 
@@ -282,11 +289,16 @@ export function buildAgentDefinitions(
       break;
   }
 
-  if (sourceContract) {
-    for (const agent of Object.values(agents)) {
-      agent.prompt = `${agent.prompt}\n\n${sourceContract}`;
-    }
-  }
+  // Sub-agents do not see the system prompt's data segments; each guidance comes
+  // with the same selection facts.
+  const appendDataSegment = (guidance: string, context: string, data: unknown): void => {
+    const segment = JSON.stringify({context, data});
+    for (const agent of Object.values(agents)) agent.prompt = `${agent.prompt}\n\n${guidance}\n\n${segment}`;
+  };
+  if (sourceGuidance) appendDataSegment(sourceGuidance, 'source_authorization', sourceAuthorizationPayload(ctx ?? {}));
+  // Knowledge tools reach sub-agents with the run's tool view, source off included.
+  const knowledge = knowledgeUsePrompt(ctx?.sourceAuthorization, ctx?.outputLanguage);
+  if (knowledge) appendDataSegment(knowledge.guidance, 'knowledge_authorization', knowledge.authorization);
 
   return agents;
 }

@@ -13,6 +13,25 @@ import {projectOwnerAnalysisResult} from '../../security/privateAnalysisProjecti
 const CANARY = 'PRIVATE_CREDENTIAL_CANARY';
 
 describe('analysis evidence presentation', () => {
+  test('round-trips explicit display bindings and independent checks without accepting extra receipt fields', () => {
+    const input = fixture();
+    const presentation = {schemaVersion: 'numeric_presentation@1' as const, unit: 'ms', decimalPlaces: 1,
+      rounding: 'half_away_from_zero' as const, quotes: [{text: '32.6 ms', occurrence: 0}]};
+    input.result.conclusionContract!.claims![0].semantics!.numeric = {operator: 'eq', value: 32.576, unit: 'ms', presentation};
+    const assessment = {schemaVersion: 'numeric_presentation_assessment@1' as const, status: 'matched' as const,
+      reason: 'display_matches', binding: {candidate: {runId: 'run', attemptId: 'attempt', candidateRef: 'candidate',
+        conclusionFingerprint: 'a'.repeat(64)}, claimFingerprint: 'b'.repeat(64)},
+      source: {anchorId: 'anchor-1', captureId: 'capture-1', rowIndex: 0, column: 'duration'}, locations: [{start: 0, end: 7}]};
+    input.result.claimVerificationResult!.claimResults[0].numericPresentation = assessment;
+    const projected = projectAnalysisEvidenceForDisplay(input)!;
+    const restored = parseClosedAnalysisEvidencePresentation(jsonClone(projected))!;
+    expect(restored.claims[0].semantics?.numeric?.presentation).toEqual(presentation);
+    expect(restored.claimVerificationResult?.claimResults[0].numericPresentation).toEqual(assessment);
+    const invalid = jsonClone(projected);
+    addUnknown(invalid.claimVerificationResult!.claimResults[0].numericPresentation!, 'verified', true);
+    expect(parseClosedAnalysisEvidencePresentation(invalid)).toBeUndefined();
+  });
+
   test('projects every formal evidence family without changing status or null/zero/false values', () => {
     const {result, sourceProvenance} = fixture();
     addUnknown(result.conclusionContract!.claims![0], 'rawSemantics', {apiKey: CANARY});
@@ -34,7 +53,13 @@ describe('analysis evidence presentation', () => {
     expect(projected?.claims[0].references[0]).toMatchObject({rowIndex: 0, value: null});
     expect(projected?.claimSupport[0].anchors[0].cells?.[0]).toMatchObject({
       rowIndex: 0, actualValue: null, isSqlNull: false,
+      producer: {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+        metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'},
     });
+    // The producer tuple survives the writer and the strict reader round-trip.
+    expect(parseClosedAnalysisEvidencePresentation(JSON.parse(JSON.stringify(projected)))?.claimSupport[0].anchors[0].cells?.[0]?.producer)
+      .toEqual({skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+        metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'});
     expect(projected?.claimVerificationResult?.claimResults[0].deterministicProof?.nativeRows?.[0])
       .toMatchObject({id: 0, anchorId: 'anchor-1'});
     expect(projected?.investigationAssessment?.evidenceRecords?.[0]).toMatchObject({
@@ -42,6 +67,28 @@ describe('analysis evidence presentation', () => {
     });
     expect({result, sourceProvenance}).toEqual(before);
     expect(Object.isFrozen(projected)).toBe(true);
+  });
+
+  test('carries a recorded knowledge_use@1 through the writer and the strict reader, and drops a malformed one', () => {
+    const {result, sourceProvenance} = fixture();
+    const base = `eks_${'a'.repeat(24)}`;
+    const knowledgeUse = {schemaVersion: 'knowledge_use@1' as const,
+      sources: [{knowledgeBaseId: base, kind: 'document_collection' as const, generation: `dc_${'1'.repeat(32)}`,
+        deliveredReferenceCount: 1}],
+      citations: [{citation: 'kb:a b.md#L3', relativePath: 'a b.md', lineRange: {start: 3, end: 3},
+        status: 'delivered' as const, knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'},
+      {citation: 'kb:c.md#L9-L2', relativePath: 'c.md', status: 'unmatched' as const}]};
+    const projected = projectAnalysisEvidenceForDisplay({result: {...result, knowledgeUse}, sourceProvenance});
+    expect(projected?.knowledgeUse).toEqual(knowledgeUse);
+    expect(parseClosedAnalysisEvidencePresentation(JSON.parse(JSON.stringify(projected)))?.knowledgeUse).toEqual(knowledgeUse);
+    // Historical bundles have none; a malformed record never blocks the rest.
+    expect(projectAnalysisEvidenceForDisplay({result, sourceProvenance})).not.toHaveProperty('knowledgeUse');
+    const malformed = projectAnalysisEvidenceForDisplay({result: {...result,
+      knowledgeUse: {...knowledgeUse, sources: [{...knowledgeUse.sources[0], kind: 'blog'}]} as never}, sourceProvenance});
+    expect(malformed).toBeDefined();
+    expect(malformed).not.toHaveProperty('knowledgeUse');
+    expect(parseClosedAnalysisEvidencePresentation({...JSON.parse(JSON.stringify(projected)),
+      knowledgeUse: {...knowledgeUse, citations: [{...knowledgeUse.citations[0], status: 'unmatched'}]}})).toBeUndefined();
   });
 
   test('keeps not-checked triage detail through the writer and the strict reader', () => {
@@ -99,6 +146,10 @@ describe('analysis evidence presentation', () => {
       value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: {outer: {key: undefined}}}]; },
       value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: {outer: [{key: undefined}]}}]; },
       value => { value.claims[0].self = value.claims[0]; },
+      // JSON.parse keeps __proto__ as an own key, which zod (strictObject included) drops silently.
+      value => { value.claims[0] = {...value.claims[0], ...JSON.parse('{"__proto__":"unknown"}')}; },
+      value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: JSON.parse('{"__proto__":{"k":1}}')}]; },
+      value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: {outer: [JSON.parse('{"__proto__":1}')]}}]; },
     ];
     for (const change of cases) {
       const value = jsonClone(valid) as Record<string, any>;
@@ -127,6 +178,18 @@ describe('analysis evidence presentation', () => {
       artifactId: 'artifact', rowSelector: {outer: [{bad: undefined}]},
     }];
     expect(projectAnalysisEvidenceForDisplay(nestedArray)).toBeUndefined();
+
+    // zod drops an own __proto__ key, so the projection would no longer match the claim it shows.
+    const protoSelector = fixture();
+    protoSelector.result.conclusionContract!.claims![0].references[0].rowSelector =
+      JSON.parse('{"__proto__":"main","pid":1}');
+    expect(projectAnalysisEvidenceForDisplay(protoSelector)).toBeUndefined();
+
+    const nestedProto = fixture();
+    nestedProto.result.conclusionContract!.claims![0].artifactRefs = [{
+      artifactId: 'artifact', rowSelector: {outer: [JSON.parse('{"__proto__":{"k":1}}')]},
+    }];
+    expect(projectAnalysisEvidenceForDisplay(nestedProto)).toBeUndefined();
   });
 
   test('accepts a full owner-projected result with scope provenance and retained investigation rows', () => {
@@ -182,7 +245,9 @@ function fixture(): {result: AnalysisResult; sourceProvenance: SafeSourceProvena
       anchors: [{
         anchorId: 'anchor-1', version: 'evidence_contract@1', evidenceRefId: 'evidence-1',
         context: {traceId: 'trace-1', captureId: 'capture-1', producerKind: 'execute_sql'},
-        cells: [{column: 'value', rowIndex: 0, value: 0, actualValue: null, isSqlNull: false}],
+        cells: [{column: 'value', rowIndex: 0, value: 0, actualValue: null, isSqlNull: false,
+          producer: {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+            metricId: 'render.frame.timeline.trace_frames', aggregation: 'trace_wide_all_processes'}}],
         confidence: 0,
       }],
     }],

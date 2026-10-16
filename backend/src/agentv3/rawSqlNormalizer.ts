@@ -197,10 +197,6 @@ function readOptionalSqlAliasToken(sql: string, index: number): { value: string;
   return token;
 }
 
-function readOptionalSqlAlias(sql: string, index: number): string | null {
-  return readOptionalSqlAliasToken(sql, index)?.value ?? null;
-}
-
 const THREAD_SLICE_FROM = /\bFROM\s+thread_slice(?:\s+(?:AS\s+)?(?!WHERE\b|JOIN\b|LEFT\b|RIGHT\b|INNER\b|OUTER\b|CROSS\b|GROUP\b|ORDER\b|LIMIT\b|ON\b|USING\b)([A-Za-z_]\w*))?/i;
 const SLICE_FROM_WITH_ALIAS = /\bFROM\s+slice\s+(?:AS\s+)?([A-Za-z_]\w*)\b/i;
 

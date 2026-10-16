@@ -13,6 +13,8 @@ import {type CaseEdge} from '../../types/sparkContracts';
 
 let tmpDir: string;
 let storagePath: string;
+/** These tests exercise the graph alone; no case of theirs is retired. */
+const NO_RETIRED_CASES = {retiredCaseIds: () => new Set<string>()};
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'case-graph-test-'));
@@ -37,21 +39,21 @@ function makeEdge(overrides: Partial<CaseEdge> = {}): CaseEdge {
 
 describe('CaseGraph — basic CRUD', () => {
   it('adds and reads back edges via getEdgesFrom / getEdgesTo', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     g.addEdge(makeEdge());
     expect(g.getEdgesFrom('a')).toHaveLength(1);
     expect(g.getEdgesTo('b')).toHaveLength(1);
   });
 
   it('rejects self-loops', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     expect(() =>
       g.addEdge(makeEdge({edgeId: 'self', fromCaseId: 'x', toCaseId: 'x'})),
     ).toThrow(/self-loop/i);
   });
 
   it('deduplicates on (from, to, relation) — replaces in place', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     g.addEdge(makeEdge({edgeId: 'e1', weight: 0.5, note: 'first'}));
     g.addEdge(makeEdge({edgeId: 'e1-updated', weight: 0.9, note: 'second'}));
     const edges = g.getEdgesFrom('a');
@@ -62,21 +64,21 @@ describe('CaseGraph — basic CRUD', () => {
   });
 
   it('treats different relations between same pair as separate edges', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     g.addEdge(makeEdge({edgeId: 'e1', relation: 'similar_root_cause'}));
     g.addEdge(makeEdge({edgeId: 'e2', relation: 'before_after_fix'}));
     expect(g.getEdgesFrom('a')).toHaveLength(2);
   });
 
   it('removeEdge by edgeId returns true when present, false otherwise', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     g.addEdge(makeEdge({edgeId: 'e1'}));
     expect(g.removeEdge('e1')).toBe(true);
     expect(g.removeEdge('e1')).toBe(false);
   });
 
   it('size reflects current edge count', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     expect(g.size()).toBe(0);
     g.addEdge(makeEdge({edgeId: 'e1'}));
     g.addEdge(makeEdge({edgeId: 'e2', relation: 'before_after_fix'}));
@@ -84,8 +86,8 @@ describe('CaseGraph — basic CRUD', () => {
   });
 
   it('preserves writes from graph instances created before either mutation', () => {
-    const first = new CaseGraph(storagePath);
-    const second = new CaseGraph(storagePath);
+    const first = new CaseGraph(storagePath, NO_RETIRED_CASES);
+    const second = new CaseGraph(storagePath, NO_RETIRED_CASES);
 
     first.addEdge(makeEdge({edgeId: 'e1'}));
     second.addEdge(makeEdge({
@@ -94,7 +96,7 @@ describe('CaseGraph — basic CRUD', () => {
       toCaseId: 'c',
     }));
 
-    expect(new CaseGraph(storagePath).listEdges().map(edge => edge.edgeId)).toEqual(['e1', 'e2']);
+    expect(new CaseGraph(storagePath, NO_RETIRED_CASES).listEdges().map(edge => edge.edgeId)).toEqual(['e1', 'e2']);
   });
 });
 
@@ -125,28 +127,28 @@ describe('CaseGraph — findRelated', () => {
   }
 
   it("default direction='both' returns out + in edges", () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     seed(g);
     const related = g.findRelated('a');
     expect(related.map(r => r.caseId).sort()).toEqual(['b', 'c', 'd']);
   });
 
   it("direction='out' returns only outgoing", () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     seed(g);
     const related = g.findRelated('a', {direction: 'out'});
     expect(related.map(r => r.caseId).sort()).toEqual(['b', 'c']);
   });
 
   it("direction='in' returns only incoming", () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     seed(g);
     const related = g.findRelated('a', {direction: 'in'});
     expect(related.map(r => r.caseId)).toEqual(['d']);
   });
 
   it('relations filter narrows the result', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     seed(g);
     const related = g.findRelated('a', {
       relations: ['before_after_fix'],
@@ -155,7 +157,7 @@ describe('CaseGraph — findRelated', () => {
   });
 
   it('orders by edge weight descending; unweighted edges sort to the back', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     seed(g);
     g.addEdge(
       makeEdge({
@@ -173,7 +175,7 @@ describe('CaseGraph — findRelated', () => {
   });
 
   it('respects topK', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     seed(g);
     expect(g.findRelated('a', {topK: 1})).toHaveLength(1);
   });
@@ -181,7 +183,7 @@ describe('CaseGraph — findRelated', () => {
 
 describe('CaseGraph — listEdges deterministic order', () => {
   it('lists edges sorted by canonical key', () => {
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     g.addEdge(makeEdge({edgeId: 'z', fromCaseId: 'b', toCaseId: 'c'}));
     g.addEdge(makeEdge({edgeId: 'a', fromCaseId: 'a', toCaseId: 'b'}));
     const edges = g.listEdges();
@@ -191,15 +193,15 @@ describe('CaseGraph — listEdges deterministic order', () => {
 
 describe('CaseGraph — persistence', () => {
   it('persists across instances', () => {
-    const g1 = new CaseGraph(storagePath);
+    const g1 = new CaseGraph(storagePath, NO_RETIRED_CASES);
     g1.addEdge(makeEdge({edgeId: 'e1'}));
-    const g2 = new CaseGraph(storagePath);
+    const g2 = new CaseGraph(storagePath, NO_RETIRED_CASES);
     expect(g2.size()).toBe(1);
   });
 
   it('preserves corrupted JSON and refuses to overwrite it', () => {
     fs.writeFileSync(storagePath, 'not-json{', 'utf-8');
-    const g = new CaseGraph(storagePath);
+    const g = new CaseGraph(storagePath, NO_RETIRED_CASES);
     expect(g.size()).toBe(0);
     expect(fs.existsSync(storagePath)).toBe(true);
     expect(() => g.addEdge(makeEdge({edgeId: 'e1'}))).toThrow(/unreadable/);

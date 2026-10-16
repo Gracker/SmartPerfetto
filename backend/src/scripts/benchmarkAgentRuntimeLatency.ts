@@ -19,11 +19,15 @@ import {
   PRODUCTION_RUNTIME_KINDS,
   type AgentRuntimeKind,
 } from '../agentRuntime/runtimeKinds';
-import type {
-  RuntimePerformancePhaseReceiptV1,
-  RuntimePerformanceReceiptV1,
+import {
+  RUNTIME_DECLARATION_STATUSES,
+  RUNTIME_DECLARATION_REPAIR_OUTCOMES,
+  type RuntimePerformancePhaseReceiptV1,
+  type RuntimePerformanceReceiptV1,
+  type RuntimePerformanceDeclarationReceiptV1,
 } from '../agentRuntime/runtimePerformance';
 import {canonicalContentHash, canonicalJsonString} from '../services/selfEvolution/canonicalJson';
+import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
 
 export type BenchmarkSampleKind = 'real' | 'deterministic';
 export type BenchmarkJudgmentStatus = 'PASS' | 'FAIL' | 'INCONCLUSIVE';
@@ -758,12 +762,21 @@ function parseProviderUsage(value: unknown): ProviderUsageReceiptV1 | undefined 
 
 const PHASE_NAMES = new Set<string>(CANDIDATE_TARGET_PHASES.task4
   .concat(CANDIDATE_TARGET_PHASES.task5, CANDIDATE_TARGET_PHASES.task6, CANDIDATE_TARGET_PHASES.task7, CANDIDATE_TARGET_PHASES.task8, CANDIDATE_TARGET_PHASES.task9)
-  .concat(['architecture', 'completeness', 'finalization']));
+  .concat(['architecture', 'completeness', 'finalization', 'scene_evidence']));
 
 function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefined {
   if (value === undefined) return undefined;
   const record = asRecord(value, 'benchmark_runtime_performance_invalid');
-  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'truncated'], 'benchmark_runtime_performance_unknown_field');
+  // Per-call model records, the review decision and delivery budget decisions are diagnostic
+  // receipt fields; the latency scorer does not read them, so they are accepted and dropped.
+  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'finalReview',
+    'deliveryBudgets', 'sceneEvidence', 'declaration', 'truncated'],
+    'benchmark_runtime_performance_unknown_field');
+  const sceneEvidence = parseSceneEvidenceReceipt(record.sceneEvidence);
+  const declaration = parseDeclarationReceipt(record.declaration);
+  if (record.modelCalls !== undefined && !Array.isArray(record.modelCalls)) {
+    throw new Error('benchmark_runtime_performance_arrays_invalid');
+  }
   if (record.schemaVersion !== 1) throw new Error('benchmark_runtime_performance_version_invalid');
   if (!Array.isArray(record.phases) || !Array.isArray(record.tools) || !Array.isArray(record.sql)) {
     throw new Error('benchmark_runtime_performance_arrays_invalid');
@@ -824,7 +837,7 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
   let truncated: RuntimePerformanceReceiptV1['truncated'];
   if (record.truncated !== undefined) {
     const raw = asRecord(record.truncated, 'benchmark_runtime_truncated_invalid');
-    assertKnownFields(raw, ['phases', 'tools', 'sql'], 'benchmark_runtime_truncated_unknown_field');
+    assertKnownFields(raw, ['phases', 'tools', 'sql', 'modelCalls'], 'benchmark_runtime_truncated_unknown_field');
     truncated = {
       phases: nonnegativeInteger(raw.phases, 'benchmark_runtime_truncated_phases_invalid'),
       tools: nonnegativeInteger(raw.tools, 'benchmark_runtime_truncated_tools_invalid'),
@@ -839,7 +852,49 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
     phases,
     tools,
     sql,
+    ...(sceneEvidence ? {sceneEvidence} : {}),
+    ...(declaration ? {declaration} : {}),
     ...(truncated ? {truncated} : {}),
+  };
+}
+
+/** Closed declaration facts stay diagnostic; they never influence latency admission. */
+function parseDeclarationReceipt(value: unknown): RuntimePerformanceDeclarationReceiptV1 | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value, 'benchmark_runtime_declaration_invalid');
+  assertKnownFields(record, ['status', 'declaredClaimCount', 'repair'], 'benchmark_runtime_declaration_unknown_field');
+  if (!(RUNTIME_DECLARATION_STATUSES as readonly unknown[]).includes(record.status)) {
+    throw new Error('benchmark_runtime_declaration_status_invalid');
+  }
+  if (!(RUNTIME_DECLARATION_REPAIR_OUTCOMES as readonly unknown[]).includes(record.repair)) {
+    throw new Error('benchmark_runtime_declaration_repair_invalid');
+  }
+  return {
+    status: record.status as RuntimePerformanceDeclarationReceiptV1['status'],
+    declaredClaimCount: nonnegativeInteger(record.declaredClaimCount, 'benchmark_runtime_declaration_count_invalid'),
+    repair: record.repair as RuntimePerformanceDeclarationReceiptV1['repair'],
+  };
+}
+
+/** The run's scene entry evidence receipt: closed fields, checked and kept; the scorer does not read it. */
+function parseSceneEvidenceReceipt(value: unknown): RuntimePerformanceSceneEvidenceReceiptV1 | undefined {
+  if (value === undefined) return undefined;
+  const record = asRecord(value, 'benchmark_runtime_scene_evidence_invalid');
+  assertKnownFields(record, ['skillId', 'status', 'reason', 'durationMs', 'artifactCount', 'captureCount'],
+    'benchmark_runtime_scene_evidence_unknown_field');
+  const skillId = boundedString(record.skillId, 'benchmark_runtime_scene_evidence_skill_invalid');
+  if (!/^[a-z][a-z0-9_]{0,127}$/.test(skillId)) throw new Error('benchmark_runtime_scene_evidence_skill_invalid');
+  if (record.status !== 'ran' && record.status !== 'not_run') throw new Error('benchmark_runtime_scene_evidence_status_invalid');
+  if (record.status === 'not_run' ? !isSceneEntryNotRunReason(record.reason) : record.reason !== undefined) {
+    throw new Error('benchmark_runtime_scene_evidence_reason_invalid');
+  }
+  return {
+    skillId,
+    status: record.status,
+    ...(record.status === 'not_run' ? {reason: record.reason as RuntimePerformanceSceneEvidenceReceiptV1['reason']} : {}),
+    durationMs: boundedMs(record.durationMs, 'benchmark_runtime_scene_evidence_duration_invalid'),
+    artifactCount: nonnegativeInteger(record.artifactCount, 'benchmark_runtime_scene_evidence_artifacts_invalid'),
+    captureCount: nonnegativeInteger(record.captureCount, 'benchmark_runtime_scene_evidence_captures_invalid'),
   };
 }
 
@@ -3139,13 +3194,6 @@ function realScenarios(options: AgentLatencyBenchmarkOptions): RuntimeBenchmarkS
       mode: 'fast',
     },
   ];
-}
-
-function candidatesForRuntime(runtime: AgentRuntimeKind): BenchmarkCandidate[] {
-  if (runtime === 'claude-agent-sdk' || runtime === 'openai-agents-sdk') return ['task4', 'task5', 'task6'];
-  if (runtime === 'pi-agent-core') return ['task4', 'task5', 'task7'];
-  if (runtime === 'opencode') return ['task4', 'task5', 'task8'];
-  return ['task4', 'task5', 'task9'];
 }
 
 function relativeOutputRoot(options: AgentLatencyBenchmarkOptions): string {

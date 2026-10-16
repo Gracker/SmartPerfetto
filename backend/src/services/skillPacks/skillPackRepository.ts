@@ -12,6 +12,8 @@ import type {
   InstalledSkillPackRecord,
   SkillPackRecordMetadata,
 } from './skillPackTypes';
+import {parseStoredJson} from '../../utils/storedData';
+import { SkillPackRequestError } from './skillPackRequestError';
 
 export interface SkillRegistryEntryRow extends Record<string, unknown> {
   id: string;
@@ -35,7 +37,7 @@ function recordId(scope: EnterpriseRepositoryScope, packId: string): string {
 
 function parseMetadata(row: SkillRegistryEntryRow): SkillPackRecordMetadata | null {
   if (!row.metadata_json) return null;
-  const parsed: unknown = JSON.parse(row.metadata_json);
+  const parsed: unknown = parseStoredJson(row.metadata_json, 'skill pack metadata');
   if (!parsed || typeof parsed !== 'object') return null;
   const metadata = parsed as Partial<SkillPackRecordMetadata>;
   if (metadata.schemaVersion !== 1 || typeof metadata.packId !== 'string') return null;
@@ -108,11 +110,11 @@ export class SkillPackRepository {
       metadata_json: JSON.stringify(record.metadata),
     });
     if (changes === 0) {
-      throw new Error('skill_pack_not_found');
+      throw new SkillPackRequestError('skill_pack_not_found', 404);
     }
     const saved = this.get(scope, record.id);
     if (!saved) {
-      throw new Error('skill_pack_not_found');
+      throw new SkillPackRequestError('skill_pack_not_found', 404);
     }
     return saved;
   }

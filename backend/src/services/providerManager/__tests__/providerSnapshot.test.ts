@@ -6,7 +6,11 @@ import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
 import { ProviderService } from '../providerService';
-import { resolveProviderRuntimeSnapshot } from '../providerSnapshot';
+import {
+  hashProviderRuntimeSnapshot,
+  resolveProviderRuntimeSnapshot,
+  type ProviderRuntimeSnapshot,
+} from '../providerSnapshot';
 import type { ProviderCreateInput } from '../types';
 
 function makeTmpDir(): string {
@@ -147,6 +151,38 @@ describe('provider runtime snapshot hash', () => {
     }
   });
 
+  it('ignores the retired Claude verifier knobs a stored profile may still carry', async () => {
+    const claudeProvider: ProviderCreateInput = {
+      name: 'Claude Provider',
+      category: 'official',
+      type: 'anthropic',
+      models: { primary: 'claude-main', light: 'claude-light' },
+      connection: { agentRuntime: 'claude-agent-sdk', claudeApiKey: 'sk-claude-secret-value' },
+      tuning: { fullPerTurnMs: 90000, classifierTimeoutMs: 20000 },
+    };
+    const provider = svc.create(claudeProvider);
+    const before = resolveProviderRuntimeSnapshot(svc, provider.id);
+
+    svc.update(provider.id, {
+      tuning: { ...claudeProvider.tuning, verifierTimeoutMs: 70000, enableVerification: false } as any,
+    });
+
+    const after = resolveProviderRuntimeSnapshot(svc, provider.id);
+    expect(after.snapshotHash).toBe(before.snapshotHash);
+    expect(after.snapshot.resolvedTimeouts).toEqual({ fullPerTurnMs: 90000, classifierTimeoutMs: 20000 });
+    expect(after.snapshot.environment).not.toHaveProperty('CLAUDE_VERIFIER_TIMEOUT_MS');
+    expect(after.snapshot.environment).not.toHaveProperty('CLAUDE_ENABLE_VERIFICATION');
+    // Dropped on the way in, so no surface lists them and the store keeps none.
+    expect(svc.getRawProvider(provider.id)!.tuning).toEqual(claudeProvider.tuning);
+
+    // A profile saved before their removal reads without them too.
+    const filePath = path.join(dir, 'providers.json');
+    const stored = JSON.parse(await fsp.readFile(filePath, 'utf8'));
+    stored[0].tuning = {...stored[0].tuning, verifierTimeoutMs: 70000, enableVerification: false};
+    await fsp.writeFile(filePath, JSON.stringify(stored));
+    expect(new ProviderService(filePath).getRawProvider(provider.id)!.tuning).toEqual(claudeProvider.tuning);
+  });
+
   it('ignores OpenAI snapshot fields that the OpenAI runtime does not consume', () => {
     const provider = svc.create(openAIProvider);
     const before = resolveProviderRuntimeSnapshot(svc, provider.id);
@@ -157,18 +193,14 @@ describe('provider runtime snapshot hash', () => {
         ...openAIProvider.tuning,
         maxBudgetUsd: 25,
         effort: 'max',
-        verifierTimeoutMs: 70000,
         enableSubAgents: true,
-        enableVerification: false,
       },
     });
 
     const after = resolveProviderRuntimeSnapshot(svc, provider.id);
     expect(after.snapshotHash).toBe(before.snapshotHash);
     expect(after.snapshot.resolvedModels.subAgent).toBeUndefined();
-    expect(after.snapshot.resolvedTimeouts.verifierTimeoutMs).toBeUndefined();
     expect(after.snapshot.environment.OPENAI_SUB_AGENT_MODEL).toBeUndefined();
-    expect(after.snapshot.environment.OPENAI_ENABLE_VERIFICATION).toBeUndefined();
   });
 
   it('ignores Pi and OpenCode connection fields that the OpenAI runtime does not consume', () => {
@@ -531,7 +563,6 @@ describe('provider runtime snapshot hash', () => {
         tuning: {
           fullPerTurnMs: 90000,
           quickPerTurnMs: 45000,
-          verifierTimeoutMs: 70000,
           classifierTimeoutMs: 30000,
         },
       });
@@ -654,5 +685,37 @@ describe('provider runtime snapshot hash', () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  describe('canonical hash input', () => {
+    const snapshot: ProviderRuntimeSnapshot = {
+      version: 1,
+      providerId: 'p',
+      providerType: 'openai',
+      runtimeKind: 'openai-agents-sdk',
+      resolvedModels: { primary: 'm', light: 'l', subAgent: undefined },
+      resolvedTimeouts: { fullPerTurnMs: 1 },
+      baseUrl: 'https://x.example/v1',
+      openaiProtocol: undefined,
+      environment: { OPENAI_MODEL: 'm' },
+      secretVersion: 'sha256:abc',
+    };
+
+    // Session snapshots persist this hash and compare it on restore, so an
+    // ordinary snapshot must keep hashing exactly as before.
+    it('keeps the persisted hash of an ordinary snapshot', () => {
+      expect(hashProviderRuntimeSnapshot(snapshot))
+        .toBe('a3560d81463fd14c3f78b77012048bc074767010f3dfa119e8178cd03daab537');
+    });
+
+    it('hashes content under an own __proto__ key', () => {
+      const withEnvironment = (json: string) => hashProviderRuntimeSnapshot({
+        ...snapshot,
+        environment: JSON.parse(json),
+      });
+      expect(withEnvironment('{"__proto__":{"X":"1"}}'))
+        .not.toBe(withEnvironment('{"__proto__":{"X":"2"}}'));
+      expect(withEnvironment('{"__proto__":"1"}')).not.toBe(withEnvironment('{"__proto__":"2"}'));
+    });
   });
 });

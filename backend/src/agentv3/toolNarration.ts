@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from '../agentRuntime/runtimeToolResult';
+import { normalizeWaitChainSelectors } from '../services/criticalPathSelectors';
+import { waitClassText } from '../services/criticalPathText';
+import { KNOWLEDGE_REFUSAL_ACTIONS, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape } from '../services/knowledge/knowledgeTools';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import type { TracePaneSide, TracePairContext, TraceSource } from './types';
 
@@ -35,6 +38,12 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+/** A positive integer a model may send as a number or a decimal string, as text. */
+function readPositiveInteger(value: unknown): string {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : '';
+  return typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value.trim()) ? value.trim() : '';
 }
 
 /** A numeric selector a model may send as a number or a decimal string. */
@@ -406,6 +415,8 @@ export function formatToolCallNarration(
         ? localize(language, `标记不确定性：${reason}`, `Flag uncertainty: ${reason}`)
         : localize(language, '标记不确定性：说明当前结论还缺哪类证据', 'Flag uncertainty: note which evidence is still missing'));
     }
+    case 'check_conclusion_draft':
+      return localize(language, '检查草稿的数字与引用绑定', 'Check draft numeric and reference bindings');
     case 'fetch_artifact': {
       const artifactId = readString(args.artifactId || args.id) || '?';
       const detail = readString(args.detail || args.level) || 'rows';
@@ -427,12 +438,15 @@ export function formatToolCallNarration(
     case 'detect_architecture':
       return localize(language, '检测渲染架构：判断后续该按哪条渲染链路分析', 'Detect rendering architecture: choose the rendering pipeline to analyze');
     case 'analyze_wait_chain': {
-      const process = readString(args.process_name);
-      const thread = readString(args.thread_name)
-        || (args.main_thread === true ? localize(language, '主线程', 'the main thread') : '');
+      // The same reading as the handler: a filled-in `utid: "0"` or
+      // `thread_name: ""` names nothing and is not narrated as a target.
+      const selectors = normalizeWaitChainSelectors(args);
+      const process = readString(selectors.processName);
+      const thread = readString(selectors.threadName)
+        || (selectors.mainThread ? localize(language, '主线程', 'the main thread') : '');
       const target = [process, thread].filter(Boolean).join(' / ')
-        || readIdentifier(args.utid, 'utid')
-        || readIdentifier(args.thread_state_id, 'thread_state');
+        || readIdentifier(selectors.utid, 'utid')
+        || readIdentifier(selectors.threadStateId, 'thread_state');
       return shorten(target
         ? localize(
           language,
@@ -481,9 +495,22 @@ export function formatToolCallNarration(
         ? localize(language, `搜索源码：${query}，确认 trace 现象对应的实现`, `Search source: ${query} to find the implementation behind the trace behaviour`)
         : localize(language, '搜索源码：确认 trace 现象对应的实现', 'Search source: find the implementation behind the trace behaviour'));
     }
+    case 'locate_trace_anchor': {
+      const anchor = readString(args.anchor);
+      return shorten(anchor
+        ? localize(language, `在源码中定位 trace 名称：${anchor}`, `Locate the trace name in source: ${anchor}`)
+        : localize(language, '在源码中定位 trace 名称', 'Locate the trace name in source'));
+    }
+    case 'find_codebase_files': {
+      const pattern = readString(args.pattern);
+      return shorten(pattern
+        ? localize(language, `查找源码文件：${pattern}`, `Find source files: ${pattern}`)
+        : localize(language, '查找源码文件', 'Find source files'));
+    }
     case 'read_codebase_file': {
       const filePath = readString(args.file_path || args.filePath);
-      const startLine = readString(args.start_line || args.startLine);
+      const startLine = [args.start_line, args.startLine, args.around_line, args.aroundLine]
+        .map(readPositiveInteger).find(Boolean) ?? '';
       const location = filePath
         ? `${filePath}${startLine ? `:${startLine}` : ''}`
         : '';
@@ -535,14 +562,6 @@ export function formatToolCallNarration(
     }
     case 'list_codebases':
       return shorten(localize(language, '列出可用源码库：确认哪些实现可以查', 'List available codebases: see which implementations can be inspected'));
-    case 'record_source_use_decision': {
-      const status = readString(args.status);
-      const reason = readString(args.reason);
-      const detail = [status, reason].filter(Boolean).join(localize(language, '，', ', '));
-      return shorten(detail
-        ? localize(language, `记录源码使用结论：${detail}`, `Record source-use decision: ${detail}`)
-        : localize(language, '记录源码使用结论：说明源码是否参与了本次判断', 'Record source-use decision: state whether source informed this analysis'));
-    }
     case 'recall_similar_case': {
       const scene = readString(args.scene) || readString(args.cuj);
       return shorten(scene
@@ -594,11 +613,26 @@ export function formatToolCallNarration(
         ? localize(language, `读取 ${scene} 场景方法论：确认这类问题的标准判据`, `Read the ${scene} methodology: confirm the standard criteria for this problem class`)
         : localize(language, '读取场景方法论：确认这类问题的标准判据', 'Read the scene methodology: confirm the standard criteria for this problem class'));
     }
+    // Registered only by the standalone public MCP server
+    // (bin/smartperfetto-mcp.ts), which OpenCode reaches behind its standalone
+    // gate; the analysis server has no such tool.
     case 'lookup_blog_knowledge': {
       const query = readString(args.query);
       return shorten(query
         ? localize(language, `检索外部知识：${query}`, `Search external knowledge: ${query}`)
         : localize(language, '检索外部知识：补充官方文档之外的解释', 'Search external knowledge: add context beyond the official docs'));
+    }
+    case 'search_knowledge': {
+      const query = readString(args.query);
+      return shorten(query
+        ? localize(language, `检索内部资料：${query}，作为背景依据`, `Search internal knowledge: ${query}, as background`)
+        : localize(language, '检索内部资料：作为背景依据', 'Search internal knowledge as background'));
+    }
+    case 'read_knowledge_section': {
+      const part = readPositiveInteger(args.part);
+      return part && part !== '1'
+        ? localize(language, `继续读取内部资料章节（第 ${part} 段）`, `Continue reading the internal knowledge section (part ${part})`)
+        : localize(language, '读取内部资料章节', 'Read the internal knowledge section');
     }
     default:
       if (options.privateContext) return '';
@@ -638,6 +672,67 @@ export interface ToolResultNarrationInput {
   language?: OutputLanguage;
   /** Only deterministic outcome fields may enter private-run progress. */
   privateContext?: boolean;
+  /**
+   * The tool's own result, for owner-only narration of source tools (counts,
+   * relative file names, line ranges). Strict surfaces never use the text this
+   * produces: for a private run they narrate from the projection or a receipt.
+   */
+  ownerResult?: unknown;
+}
+
+/** What a budget stop leads to, shared by the projected refusal and the owner narration. */
+const CONTINUE_WITH_SOURCE_EVIDENCE = ['继续使用已取得的源码证据',
+  'analysis continues with the source evidence already collected'] as const;
+const CONTINUE_WITH_KNOWLEDGE = ['继续使用已取得的资料', 'analysis continues with what was already read'] as const;
+
+/**
+ * A refused code-aware source call, in words. The projection keeps only the
+ * closed `action_required` token, never the requested path, so the line says
+ * why nothing was read without naming what was asked for. Any other refusal
+ * keeps its existing narration.
+ */
+function narrateSourceAccessRefusal(result: unknown, language: OutputLanguage): string | undefined {
+  if (!isPolicyRefusalResult(result)) return undefined;
+  switch (readString(readToolResultBody(result).action_required)) {
+    case 'locate_path_with_search_codebase':
+      return localize(language, '该路径不在已注册的源码范围内，未读取',
+        'That path is outside the registered source scope; nothing was read');
+    case 'retry_search_without_path_prefix':
+      return localize(language, '该路径前缀不在已注册的源码范围内，未搜索，不能据此判断源码中没有',
+        'That path prefix is outside the registered source scope; nothing was searched, so this is not evidence of absence');
+    case 'continue_without_this_path_prefix':
+      return localize(language, '该路径前缀已注册但未授权发送给模型，未搜索，不能据此判断源码中没有',
+        'That path prefix is registered but not authorized for sending to the model; nothing was searched, so this is not evidence of absence');
+    case 'continue_without_this_file':
+      return localize(language, '该文件不在发送给模型的授权范围内，未读取正文',
+        'That file is outside the grant for sending source to the model; its content was not read');
+    case 'continue_with_existing_source_evidence':
+      return localize(language, `源码访问已达本次上限，${CONTINUE_WITH_SOURCE_EVIDENCE[0]}`,
+        `Source access reached its limit for this run; ${CONTINUE_WITH_SOURCE_EVIDENCE[1]}`);
+    case 'continue_without_this_codebase':
+      return localize(language, '该代码库未授权把源码发送给模型，未读取',
+        'This codebase has no consent to send source to the model; nothing was read');
+    case 'use_search_codebase':
+      return localize(language, '该代码库没有本轮可用的索引（未建立或已重建），未查询索引，可改用源码搜索',
+        'This codebase has no index this run can use (none, or rebuilt since); the index was not queried, so search the source instead');
+    case KNOWLEDGE_REFUSAL_ACTIONS.unauthorizedKnowledgeBase:
+      return localize(language, '该知识库不在本轮所选范围内，未检索',
+        'That knowledge base is not selected for this run; nothing was searched');
+    case KNOWLEDGE_REFUSAL_ACTIONS.unknownReference:
+      return localize(language, '该引用不是本轮检索返回的，未读取',
+        'That reference was not returned by a search in this run; nothing was read');
+    case KNOWLEDGE_REFUSAL_ACTIONS.partOutOfRange:
+      return localize(language, '请求的分段超出该章节范围，未读取',
+        'The requested part is beyond the section; nothing was read');
+    case KNOWLEDGE_REFUSAL_ACTIONS.budgetExhausted:
+      return localize(language, `内部资料额度已用完，${CONTINUE_WITH_KNOWLEDGE[0]}`,
+        `Internal knowledge reached its limit for this run; ${CONTINUE_WITH_KNOWLEDGE[1]}`);
+    case KNOWLEDGE_REFUSAL_ACTIONS.evaluationFiltered:
+      return localize(language, '该资料在本次评估中被排除，未读取',
+        'This material is excluded in this evaluation run; nothing was read');
+    default:
+      return undefined;
+  }
 }
 
 function privateToolOutcome(
@@ -647,8 +742,11 @@ function privateToolOutcome(
   language: OutputLanguage,
 ): string {
   if (toolResultIsFailure(input)) {
-    return localize(language, '本次工具执行未完成，正在保留已获取的证据', 'This tool call did not complete; collected evidence is retained');
+    return narrateSourceAccessRefusal(input.result, language)
+      ?? localize(language, '本次工具执行未完成，正在保留已获取的证据', 'This tool call did not complete; collected evidence is retained');
   }
+  const knowledge = narrateKnowledgeProjection(toolName, asRecord(body.knowledge), language);
+  if (knowledge !== undefined) return knowledge;
   const sourceRefs = Array.isArray(body.sourceRefs) ? body.sourceRefs : undefined;
   const chunkRefs = Array.isArray(body.chunkRefs) ? body.chunkRefs : undefined;
   const references = sourceRefs ?? chunkRefs;
@@ -672,6 +770,30 @@ function privateToolOutcome(
     return localize(language, '全部计划阶段已完成', 'All plan phases complete');
   }
   return '';
+}
+
+/**
+ * A knowledge tool's outcome from its projection: counts and part position
+ * only, which is all a strict surface may say. Undefined for any other tool.
+ */
+function narrateKnowledgeProjection(
+  toolName: string,
+  knowledge: Record<string, unknown>,
+  language: OutputLanguage,
+): string | undefined {
+  if (!KNOWLEDGE_TOOL_NAMES.has(toolName) || Object.keys(knowledge).length === 0) return undefined;
+  if (toolName === 'search_knowledge') {
+    const count = readCount(knowledge.referenceCount) ?? 0;
+    return count === 0
+      ? localize(language, '内部资料中没有找到匹配', 'No match in the internal knowledge')
+      : localize(language, `找到 ${count} 条内部资料，仅作背景依据`,
+        `Found ${count} internal knowledge item${count === 1 ? '' : 's'}, background only`);
+  }
+  if (knowledge.alreadyDelivered === true) {
+    return localize(language, '该资料片段本轮已读过，未重复发送', 'That part was already read in this run; not sent again');
+  }
+  return localize(language, '已读取内部资料章节，仅作背景依据', 'Read an internal knowledge section, background only') +
+    (knowledge.truncated === true ? localize(language, '（额度不足，内容已截断）', ' (cut short by the knowledge budget)') : '');
 }
 
 const privateToolResultReceipts = new WeakMap<object, Readonly<{
@@ -709,7 +831,194 @@ export function readPrivateToolResultNarrationReceipt(
   return {message: language === 'en' ? receipt.en : receipt.zh, isError: receipt.isError};
 }
 
-/** Decode the intact, already privacy-projected result before transport truncation. */
+/** Each run budget stop: which budget ran out, and what the analysis continues with. */
+const BUDGET_STOPS: ReadonlyMap<string, {subject: readonly [string, string]; next: readonly [string, string]}> = new Map([
+  ['source_search_budget_exceeded', {subject: ['本轮源码检索次数已用完', 'This run\'s source searches are used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['source_read_budget_exceeded', {subject: ['本轮源码读取次数已用完', 'This run\'s source reads are used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['source_locate_budget_exceeded', {subject: ['本轮源码定位次数已用完', 'This run\'s source locates are used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['budget_exceeded', {subject: ['本轮源码额度已用完', 'This run\'s source budget is used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['knowledge_search_budget_exceeded', {subject: ['本轮内部资料检索次数已用完', 'This run\'s knowledge searches are used up'],
+    next: CONTINUE_WITH_KNOWLEDGE}],
+  ['knowledge_read_budget_exceeded', {subject: ['本轮内部资料读取次数已用完', 'This run\'s knowledge reads are used up'],
+    next: CONTINUE_WITH_KNOWLEDGE}],
+  ['knowledge_budget_exceeded', {subject: ['本轮内部资料额度已用完', 'This run\'s knowledge budget is used up'],
+    next: CONTINUE_WITH_KNOWLEDGE}],
+]);
+
+/** A run budget stop, said as which budget ran out and what happens next, not as an error. */
+function narrateBudgetStop(reason: string, language: OutputLanguage): string | undefined {
+  const stop = BUDGET_STOPS.get(reason);
+  return stop ? localize(language, `${stop.subject[0]}，${stop.next[0]}`, `${stop.subject[1]}; ${stop.next[1]}`)
+    : undefined;
+}
+
+/** `《Title › Heading》`, from a knowledge reference the owner may see. */
+function knowledgeLocation(reference: Record<string, unknown>): string {
+  const headings = Array.isArray(reference.headingPath)
+    ? reference.headingPath.map(readString).filter(Boolean)
+    : [];
+  const title = readString(reference.title);
+  const path = [title, ...headings.filter(heading => heading !== title)].filter(Boolean).join(' › ');
+  return path ? `《${path}》` : '';
+}
+
+/**
+ * Owner-only narration of a document-collection tool from its own result: how
+ * many items came back and from which document, or which section part was
+ * read. Undefined falls back to the projection-based narration.
+ */
+function narrateOwnerKnowledgeResult(
+  toolName: string,
+  body: Record<string, unknown>,
+  language: OutputLanguage,
+): string | undefined {
+  if (body.success === false) return narrateBudgetStop(readString(body.unsupportedReason), language);
+  // Only a result the shared shape check accepts is narrated as a success.
+  if (!knowledgeResultShape(toolName, body)) return undefined;
+  if (toolName === 'search_knowledge') {
+    const hits = Array.isArray(body.hits) ? body.hits : [];
+    if (hits.length === 0) return localize(language, '内部资料中没有找到匹配', 'No match in the internal knowledge');
+    const first = knowledgeLocation(asRecord(hits[0]));
+    return localize(language, `找到 ${hits.length} 条内部资料${first ? `（${first}${hits.length > 1 ? ' 等' : ''}）` : ''}`,
+      `Found ${hits.length} internal knowledge item${hits.length === 1 ? '' : 's'}${first ? ` (${first}${hits.length > 1 ? ' and others' : ''})` : ''}`) +
+      (body.truncated === true ? localize(language, '，额度不足未全部返回', '; the knowledge budget cut the rest') : '');
+  }
+  const location = knowledgeLocation(asRecord(body.reference));
+  const part = readPositiveInteger(body.part);
+  const partCount = readPositiveInteger(body.partCount);
+  const position = part && partCount && partCount !== '1'
+    ? localize(language, `第 ${part}/${partCount} 段`, `part ${part}/${partCount}`)
+    : '';
+  if (body.alreadyDelivered === true) {
+    return localize(language, `${location || '该段'}${position}本轮已读过，未重复发送`,
+      `${location || 'That part'} ${position} was already read in this run; not sent again`.replace(/\s+/g, ' '));
+  }
+  return localize(language, `读取 ${location}${position}`, `Read ${location} ${position}`.trim()) +
+    (body.truncated === true ? localize(language, '（额度不足，已截断）', ' (cut short by the knowledge budget)') : '');
+}
+
+const ANCHOR_MATCH_LABELS: Readonly<Record<string, readonly [string, string]>> = {
+  trace_call: ['trace 调用点', 'trace call site'],
+  constant_definition: ['常量定义', 'constant definition'],
+  thread_creation: ['线程创建处', 'thread creation'],
+  method_declaration: ['方法声明', 'method declaration'],
+  framework_override: ['App 覆写的框架方法', 'app override of the framework hook'],
+  template: ['同形字面量', 'same-shape literal'],
+  literal: ['字面量', 'literal'],
+};
+
+function fileName(filePath: unknown): string {
+  return readString(filePath).split('/').pop() ?? '';
+}
+
+function sourceFileNames(items: unknown): string[] {
+  return Array.isArray(items)
+    ? [...new Set(items.map(item => fileName(asRecord(item).filePath)).filter(Boolean))]
+    : [];
+}
+
+/** `A.kt`, or `A.kt 等 3 个文件` / `A.kt and 2 more files`. */
+function fileSummary(names: readonly string[], fileCount: number, language: OutputLanguage): string {
+  if (fileCount <= 1) return names[0] ?? '';
+  return localize(language, `${names[0]} 等 ${fileCount} 个文件`,
+    `${names[0]} and ${fileCount - 1} more file${fileCount - 1 === 1 ? '' : 's'}`);
+}
+
+/**
+ * Owner-only narration of a source tool from its own result: what was found,
+ * where, and whether more exists. Undefined falls back to the shared
+ * projection-based narration (refusals, unknown shapes).
+ */
+function narrateOwnerSourceResult(
+  toolName: string,
+  body: Record<string, unknown>,
+  language: OutputLanguage,
+): string | undefined {
+  if (body.success === false) return narrateBudgetStop(readString(body.unsupportedReason), language);
+  const incomplete = body.coverageComplete === false;
+  const incompleteNote = localize(language, '；检索未完整覆盖', '; the search did not cover every file');
+  switch (toolName) {
+    case 'search_codebase': {
+      const matches = Array.isArray(body.matches) ? body.matches : [];
+      if (matches.length === 0) {
+        if (incomplete) return localize(language, '检索未完整覆盖，结果可能不全', 'The search did not cover every file; results may be missing');
+        return body.coverageComplete === true && body.coverageScope !== 'path_prefix'
+          ? localize(language, '未找到匹配（已搜索全部授权文件）', 'No match (every authorized file was searched)')
+          : localize(language, '在指定范围内未找到匹配', 'No match in the requested scope');
+      }
+      const names = sourceFileNames(matches);
+      const count = readCount(body.totalMatches) ?? matches.length;
+      const files = fileSummary(names, readCount(body.fileCount) ?? names.length, language);
+      return localize(language, `找到 ${count} 处匹配（${files}）`, `Found ${count} match${count === 1 ? '' : 'es'} (${files})`) +
+        (body.moreResults === true ? localize(language, '，还有更多', '; more exist') : '') +
+        (incomplete ? incompleteNote : '');
+    }
+    case 'locate_trace_anchor': {
+      const matches = Array.isArray(body.matches) ? body.matches : [];
+      const framework = Object.keys(asRecord(body.framework)).length > 0;
+      if (matches.length === 0) {
+        return framework
+          ? localize(language, '该 slice 由框架（AOSP）实现，App 中没有可覆写的方法',
+            'This slice is implemented by the framework (AOSP); the app has no override of it')
+          : localize(language, '没有定位到对应源码', 'No source location was found for it') +
+            (incomplete ? incompleteNote : '');
+      }
+      const top = asRecord(matches[0]);
+      const line = Array.isArray(top.matchLines) ? readPositiveInteger(top.matchLines[0]) : undefined;
+      const [zh, en] = ANCHOR_MATCH_LABELS[readString(top.matchedBy)] ?? ANCHOR_MATCH_LABELS.literal!;
+      const where = `${fileName(top.filePath)}${line ? `:${line}` : ''}`;
+      return localize(language, `定位到 ${where}（${zh}）`, `Located at ${where} (${en})`) +
+        (matches.length > 1 ? localize(language, `，另有 ${matches.length - 1} 个候选`,
+          `; ${matches.length - 1} more candidate${matches.length === 2 ? '' : 's'}`) : '') +
+        (body.ambiguous === true
+          ? localize(language, '；多个模块都有候选，未能唯一确定', '; candidates in several modules, not pinned to one') : '') +
+        (framework ? localize(language, '；该 slice 由框架实现，这里是 App 的覆写', '; the slice itself is a framework one') : '') +
+        (incomplete ? incompleteNote : '');
+    }
+    case 'read_codebase_file': {
+      const reference = asRecord(body.reference);
+      const range = asRecord(reference.lineRange);
+      const start = readPositiveInteger(range.start);
+      const end = readPositiveInteger(range.end);
+      const name = fileName(reference.filePath);
+      if (!name || !start || !end) return undefined;
+      const window = asRecord(body.window);
+      const total = readPositiveInteger(window.totalLines);
+      const more = readPositiveInteger(window.nextStartLine) !== '';
+      return localize(language, `读取 ${name} L${start}–L${end}`, `Read ${name} L${start}–L${end}`) +
+        (more && total ? localize(language, `（共 ${total} 行，后面还有）`, ` (of ${total} lines; more follow)`) : '');
+    }
+    case 'find_codebase_files': {
+      const files = Array.isArray(body.files) ? body.files : [];
+      if (files.length === 0) return localize(language, '没有找到匹配的文件', 'No matching file');
+      const names = sourceFileNames(files);
+      return localize(language, `找到 ${files.length} 个文件（${names[0]}${files.length > 1 ? ' 等' : ''}）`,
+        `Found ${files.length} files (${names[0]}${files.length > 1 ? ' and others' : ''})`) +
+        (body.moreResults === true ? localize(language, '，还有更多', '; more exist') : '') +
+        (incomplete ? incompleteNote : '');
+    }
+    default:
+      return undefined;
+  }
+}
+
+type OwnerNarrator = (toolName: string, body: Record<string, unknown>, language: OutputLanguage) => string | undefined;
+
+/**
+ * Tools whose owner view is narrated from their own result (relative names,
+ * counts, read ranges). Only private runs have them, and strict surfaces never
+ * use this text: they narrate from the projection or the private receipt.
+ */
+const OWNER_NARRATORS: ReadonlyMap<string, OwnerNarrator> = new Map<string, OwnerNarrator>([
+  ...['search_codebase', 'locate_trace_anchor', 'read_codebase_file', 'find_codebase_files']
+    .map(name => [name, narrateOwnerSourceResult] as const),
+  ...[...KNOWLEDGE_TOOL_NAMES].map(name => [name, narrateOwnerKnowledgeResult] as const),
+]);
+
 function readToolResultBody(result: unknown): Record<string, unknown> {
   return decodeRuntimeToolResult(result).body ?? {};
 }
@@ -725,6 +1034,54 @@ function readCount(value: unknown): number | undefined {
 
 function readErrorText(body: Record<string, unknown>): string {
   return readString(body.error) || readString(body.message) || readString(body.reason);
+}
+
+/**
+ * What an `analyze_wait_chain` refusal asks the model to change, in words. The
+ * generic "failed: <code>" line names a code without saying what happens
+ * next; each of these is a selector the model fixes, not a broken tool.
+ */
+function narrateWaitChainRefusal(body: Record<string, unknown>, language: OutputLanguage): string | undefined {
+  switch (readString(body.error)) {
+    case 'ambiguous_thread_selection':
+      return localize(language, '线程选择匹配到多个线程，需要用 tid 或 utid 指定其中一个',
+        'The thread selection matched several threads; a tid or utid must pick one');
+    case 'no_thread_selector':
+      return localize(language, '没有指定要分析的线程，需要给出线程或 thread_state_id',
+        'No thread was named; a thread or a thread_state_id is needed');
+    case 'thread_not_found':
+      return localize(language, '没有找到匹配的线程，需要换一个进程名或线程名',
+        'No thread matched; a different process or thread name is needed');
+    case 'missing_window':
+      return localize(language, '缺少分析区间，需要同时给出 start_ts 和 end_ts',
+        'The window is missing; both start_ts and end_ts are needed');
+    case 'invalid_window':
+    case 'non_positive_duration':
+      return localize(language, '区间长度不为正，需要结束时间晚于开始时间',
+        'The window has no positive length; end_ts must be after start_ts');
+    case 'selector_conflict':
+      return localize(language, 'thread_state_id 不属于指定的线程或区间，需要去掉它或改用它所属的线程',
+        'The thread_state_id does not belong to the requested thread or window; drop it or use its own thread');
+    case 'no_thread_state_in_window': {
+      const candidate = asRecord(Array.isArray(body.candidates) ? body.candidates[0] : undefined);
+      const name = [readString(candidate.processName), readString(candidate.threadName)].filter(Boolean).join(' / ');
+      return shorten(name
+        ? localize(language, `该线程在区间内没有调度数据，需要换一个有数据的线程，如 ${name}`,
+          `That thread has no scheduling data in the window; a thread with data is needed, such as ${name}`)
+        : localize(language, '该线程在区间内没有调度数据，需要换一个有数据的线程',
+          'That thread has no scheduling data in the window; a thread with data is needed'));
+    }
+    case 'invalid_thread_state_id':
+    case 'thread_state_not_found':
+      return localize(language, 'thread_state_id 无效或不存在，需要换一个存在的行或改用线程和区间',
+        'The thread_state_id is invalid or missing; use an existing row, or a thread and a window');
+    case 'invalid_integer':
+      return localize(language, 'id 或时间戳不是整数，需要改成整数', 'An id or timestamp is not an integer');
+    case 'invalid_name':
+      return localize(language, '线程或进程名含控制字符或过长，需要改名', 'A thread or process name has control characters or is too long');
+    default:
+      return undefined;
+  }
 }
 
 function narrateToolFailure(
@@ -787,6 +1144,7 @@ export function isPolicyRefusalResult(result: unknown): boolean {
 const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'lookup_sql_schema',
   'lookup_knowledge',
+  // Standalone public MCP server only (bin/smartperfetto-mcp.ts).
   'lookup_blog_knowledge',
   'lookup_strategy_detail',
   'lookup_app_source',
@@ -797,6 +1155,8 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'query_perfetto_source',
   'query_code_graph',
   'search_codebase',
+  'locate_trace_anchor',
+  'find_codebase_files',
   'inspect_code_symbol',
   'resolve_symbol',
   'recall_similar_case',
@@ -805,6 +1165,7 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'recall_project_memory',
   'list_stdlib_modules',
   'list_codebases',
+  'search_knowledge',
 ]);
 
 /**
@@ -814,7 +1175,7 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
  * is not the same as zero.
  */
 function retrievalHitCount(body: Record<string, unknown>): number | undefined {
-  const counts = ['results', 'references', 'chunks', 'matches', 'entries', 'hits', 'items', 'skills', 'cases', 'candidates']
+  const counts = ['results', 'references', 'chunks', 'matches', 'entries', 'hits', 'items', 'skills', 'cases', 'candidates', 'files', 'fileRefs']
     .map((field) => readCount(body[field]))
     .filter((count): count is number => count !== undefined);
   return counts.length === 0 ? undefined : Math.max(...counts);
@@ -824,6 +1185,16 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
   const language = input.language ?? DEFAULT_OUTPUT_LANGUAGE;
   const toolName = shortToolName(readString(input.toolName) || 'unknown');
   const args = asRecord(input.args);
+  const ownerNarrator = OWNER_NARRATORS.get(toolName);
+  if (!input.privateContext && input.ownerResult !== undefined && ownerNarrator) {
+    const ownerBody = readToolResultBody(input.ownerResult);
+    // The authoritative failure (an error result or a failed receipt) wins over
+    // whatever the body says; a refusal body still narrates its own stop.
+    const failed = input.isError === true || readRuntimeToolResultFacts(input.ownerResult).success === false ||
+      readRuntimeToolResultFacts(input.result).success === false;
+    const owner = failed && ownerBody.success !== false ? undefined : ownerNarrator(toolName, ownerBody, language);
+    if (owner !== undefined) return shorten(owner);
+  }
   const body = readToolResultBody(input.result);
 
   if (toolName === 'read_session_history' && !toolResultIsFailure(input)) {
@@ -841,7 +1212,9 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
   if (input.privateContext) return privateToolOutcome(input, toolName, body, language);
 
   if (toolResultIsFailure(input)) {
-    return narrateToolFailure(toolName, body, language);
+    return (toolName === 'analyze_wait_chain' ? narrateWaitChainRefusal(body, language) : undefined)
+      ?? narrateSourceAccessRefusal(input.result, language)
+      ?? narrateToolFailure(toolName, body, language);
   }
 
   // Nothing parsed and no call context to fall back on.
@@ -858,6 +1231,8 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
         ? localize(language, 'SQL 未查到匹配数据', 'SQL matched no rows')
         : '';
     }
+    case 'check_conclusion_draft':
+      return '';
     case 'fetch_artifact': {
       const rows = readCount(body.rows) ?? readCount(body.totalRows);
       return rows === 0
@@ -881,9 +1256,11 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
       ));
     }
     case 'analyze_wait_chain': {
-      // The dispatch line already named the thread and the window. Only two
-      // outcomes change what the model does next: there is no chain to follow,
-      // or the thread never waited — both send it somewhere else entirely.
+      // The dispatch line already named the thread and the window. Only the
+      // outcomes that change what the model does next speak: there is no chain
+      // to follow, the thread never waited, the wait was idle, or the chain
+      // ends in another thread waiting for an external event. A window with no
+      // scheduling data never gets here: the handler answers it as a refusal.
       if (body.available === false) {
         switch (readString(body.unavailableReason)) {
           case 'task_state_running':
@@ -892,10 +1269,30 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
           case 'no_waiting_time':
             return localize(language, '所选区间内没有等待时间，没有等待链可追',
               'The selected window has no waiting time; there is no wait chain to follow');
+          case 'wait_open_at_trace_end':
+            return localize(language, '这段等待到 trace 结束都没有结束，没有唤醒者可追',
+              'The wait never ended before the trace did; there is no waker to follow');
           default:
             return localize(language, '这段区间取不到等待链，trace 可能缺少 sched_waking',
               'No wait chain was available for that window; the trace may lack sched_waking');
         }
+      }
+      const anomalyIds = new Set((Array.isArray(body.anomalies) ? body.anomalies : [])
+        .map((anomaly) => readString(asRecord(anomaly).id)));
+      if (anomalyIds.has('idle_wait')) {
+        return localize(language, '这段等待位于两个 slice 之间，更像线程空闲而不是卡顿耗时',
+          'The wait sits between slices; it reads as idle time rather than slowness');
+      }
+      if (anomalyIds.has('peer_event_wait')) {
+        const leaf = asRecord(body.longestEventWait);
+        const thread = [readString(leaf.processName), readString(leaf.threadName)].filter(Boolean).join(' / ');
+        const waitClass = readString(leaf.wakeSourceClass);
+        const wake = waitClass ? waitClassText(waitClass, language) : '';
+        return shorten(thread
+          ? localize(language, `等待链终止于 ${thread} 等待外部事件${wake ? `（${wake}）` : ''}，这是要追的阻塞点`,
+            `The chain ends in ${thread} waiting for an external event${wake ? ` (${wake})` : ''}; that is the blocker to follow`)
+          : localize(language, '等待链终止于其他线程等待外部事件，这是要追的阻塞点',
+            'The chain ends in another thread waiting for an external event; that is the blocker to follow'));
       }
       // Both, so a result that carried no state breakdown at all stays silent
       // rather than claiming the thread never waited.
@@ -933,12 +1330,16 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
     case 'flag_uncertainty':
     case 'list_skills':
     case 'write_analysis_note':
-    case 'record_source_use_decision':
       // These restate their own dispatch line. The skill engine reports its own
       // completion, and the `data` event lists the evidence that arrived.
       return '';
     default:
       if (RETRIEVAL_TOOLS.has(toolName)) {
+        // An incomplete search (a budget stop, a match withheld outside the
+        // provider grant) cannot say nothing matched.
+        if (body.coverageComplete === false) {
+          return localize(language, '检索未完整覆盖，结果可能不全', 'The search did not cover everything; results may be partial');
+        }
         return retrievalHitCount(body) === 0
           ? localize(language, '未查到相关资料', 'No matching reference material')
           : '';

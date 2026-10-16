@@ -25,6 +25,7 @@ function historyDb(): Database.Database {
   return defaultDb;
 }
 
+/** @internal Test seam. */
 export function resetAnalysisHistoryStoreForTests(): void {
   defaultDb?.close(); defaultDb = undefined; defaultPath = undefined;
 }

@@ -59,7 +59,7 @@ display:
   columns:
     - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
     - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
-    - {name: total_observed_threads, label: "total_observed_threads", type: number, hidden: true}
+    - {name: total_observed_threads, label: "total_observed_threads", type: number, unit: count, hidden: true}
     - {name: upid, label: "UPID", type: number}
     - {name: utid, label: "UTID", type: number}
     - name: thread_name
@@ -76,6 +76,7 @@ display:
       type: duration
       format: duration_ms
       unit: ms
+    - {name: returned_total_cpu_ms, label: "返回线程 CPU 时间合计", type: duration, format: duration_ms, unit: ms, hidden: true}
     - name: q1_big_running_ms
       label: "Q1 大核运行"
       type: duration
@@ -111,24 +112,28 @@ display:
     - name: running_pct
       label: "运行占比"
       type: percentage
+      unit: "%"
       format: percentage
     - name: big_core_pct
       label: "大核占比"
       type: percentage
+      unit: "%"
       format: percentage
-    - {name: observed_cross_cluster_migrations, label: "已确认跨Cluster迁移", type: number, hidden: true}
-    - {name: unknown_cluster_migrations, label: "Cluster关系未知迁移", type: number, hidden: true}
+    - {name: observed_cross_cluster_migrations, label: "已确认跨Cluster迁移", type: number, hidden: true, unit: "count"}
+    - {name: unknown_cluster_migrations, label: "Cluster关系未知迁移", type: number, hidden: true, unit: "count"}
     - {name: migration_evidence, label: "迁移证据范围", type: string, hidden: true}
     - name: migrations
       label: "核迁移次数"
       type: number
+      unit: "count"
     - name: cross_cluster_migrations
       label: "跨 cluster 迁移"
       type: number
+      unit: "count"
     - {name: priority_min, label: "最小 kernel priority", type: number}
     - {name: priority_max, label: "最大 kernel priority", type: number}
-    - {name: priority_value_count, label: "观测 priority 值数", type: number}
-    - {name: preemption_count, label: "窗口内 R+ 切出次数", type: number}
+    - {name: priority_value_count, label: "观测 priority 值数", type: number, unit: count}
+    - {name: preemption_count, label: "窗口内 R+ 切出次数", type: number, unit: events}
     - {name: runnable_preempted_ms, label: "R+ 等待(ms)", type: duration, format: duration_ms, unit: ms}
     - {name: scheduling_policy_evidence, label: "调度策略证据", type: string}
     - {name: pid, label: "PID", type: number, hidden: true}
@@ -265,8 +270,9 @@ sql: |
     WHERE ss.dur > 0 AND ss.end_state = 'R+'
       AND ss.ts + ss.dur >= ${start_ts} AND ss.ts + ss.dur < ${end_ts}
     GROUP BY ss.utid
-  )
+  ),
   -- Final: 合并四象限 + 摆核数据
+  returned AS (
   SELECT
     (SELECT window_start_ts FROM system_windows) AS window_start_ts,
     (SELECT window_end_ts FROM system_windows) AS window_end_ts,
@@ -315,5 +321,11 @@ sql: |
     CASE tq.role WHEN 'main' THEN 0 ELSE 1 END,
     tq.total_cpu_ms DESC
   LIMIT ${top_k|15}
+  )
+  -- CPU time of the returned threads, summed once so a caller can cite it
+  -- without template arithmetic.
+  SELECT returned.*, ROUND(SUM(total_cpu_ms) OVER (), 2) AS returned_total_cpu_ms
+  FROM returned
+  ORDER BY CASE role WHEN 'main' THEN 0 ELSE 1 END, total_cpu_ms DESC
 output:
   format: structured

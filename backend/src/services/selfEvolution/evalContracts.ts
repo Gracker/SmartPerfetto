@@ -518,14 +518,6 @@ export function parseEvalScore(value: unknown): EvalScoreV1 {
   } satisfies EvalScoreV1);
 }
 
-export function evalCaseContentHash(value: EvalCaseV1): string {
-  return canonicalContentHash(parseEvalCase(value));
-}
-
-export function evalScoreContentHash(value: EvalScoreV1): string {
-  return canonicalContentHash(parseEvalScore(value));
-}
-
 export function semanticEvalCaseFingerprint(value: EvalCaseV1): string {
   const evalCase = parseEvalCase(value);
   return canonicalContentHash({

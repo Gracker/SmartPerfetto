@@ -74,6 +74,10 @@ Provider connection fields map to runtime-specific env:
 | `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 
+Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`). Unsupported settings are rejected before SDK dispatch instead of silently clamping to another level. Main analysis and closeout preserve the main reasoning configuration. With no explicit thinkingLevel, declaration-only repair, no-tool body delivery continuation and the single semantic review use low if the configured wire API supports it, otherwise off, reserving output for the complete JSON. Explicit thinkingLevel remains binding for those calls. Truncated review output remains incomplete; it is never accepted as verification. For main analysis and closeout on official GLM origins, an omitted level preserves the provider default rather than sending `thinking: disabled` solely because Pi Agent defaults to off. Explicit off remains a disable request; provider support is authoritative. `thinkingLevelMap` retains native mappings. To send GLM `reasoning_effort`, explicitly set model `compat.supportsReasoningEffort: true` for models confirmed to support that field.
+
+Classification has its own existing output/time limits: use low where the wire API can express it, otherwise retain an explicitly disabled fast classification request. If configuration disallows both, classification is unavailable rather than upgraded. Classification does not mutate main-model settings. Arbitrary gateways still require explicit compatibility settings; elapsed time does not establish actual reasoning strength.
+
 ## M10 Independent Feedback Triage
 
 Agent-assisted GitHub feedback does not resume the main analysis session. New
@@ -111,23 +115,25 @@ for the user-visible contract.
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | Private finalization context, original deadline, authorized capture reads and cross-turn leases |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
 | `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
+| `backend/src/agentRuntime/runtimeToolResultAudit.ts` | Internal RunManifest tool-result handoff receipt: text size each call handed to its runtime and whether audited fields sit verbatim in it |
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | Request-scoped fair read/write scheduling with an exclusive default |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto tool implementation and composition |
 | `backend/src/agentv3/mcpToolRegistry.ts` | Tool descriptors, exposure levels, and allowlists |
-| `backend/src/services/agentResultNormalizer.ts` | Shared final result, client projection, and report-data boundary |
 | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | Original-proposition canonical results and the single product-owned asynchronous finalizer |
 | `backend/src/services/finalSemanticAssessment.ts`, `evidence/evidenceReadView.ts` | Bounded no-tool semantic review and original execution-capture reads |
 | `backend/src/services/finalReportContractGate.ts` | Strategy-owned `final_report_contract` validation |
 | `backend/src/services/providerManager/` | Provider configuration and runtime/protocol/env mapping |
-| `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot for SDK and Pi/OpenCode/Qoder runtime state |
+| `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot: every runtime's provider pin, product state and its own `engineState` |
 | `backend/src/services/externalIssueReporting/providerPin.ts` | M10 source-run provider snapshot validation |
 | `backend/src/services/externalIssueReporting/triageRunner.ts` | M10 no-tool Agent triage and deterministic fallback |
 
 `backend/src/agentOpenAI/` and individual files such as
 `agentv3/claudeRuntime.ts` retain compatibility re-exports for old import paths.
 MCP, strategy and planning remain canonical shared layers. The `claudeVerifier`
-compatibility entry points to shared structured delivery diagnostics; the
-finalizer owns content meaning and claim support.
+compatibility entry points to shared structured delivery diagnostics, which
+runtimes read through `agentRuntime/runtimeDraftDiagnostics.ts` only to choose a
+same-run repair; the finalizer owns content meaning, claim support and the
+terminal state.
 
 ## Tool Layer
 
@@ -149,8 +155,9 @@ or denied. Qoder uses the SDK's in-process MCP bridge with built-in SDK tools
 disabled and projects every answer token through the shared private-output
 guard before SSE emission. Each engine uses its pinned provider's native no-tool
 transport for the same typed intent and hands its result to the same
-product-owned finalizer/report boundary. SDK/server resume, streaming, tool
-cadence and cost/timeout semantics still differ.
+product-owned finalizer/report boundary. Every engine starts each turn in a
+fresh native context; streaming, tool cadence and cost/timeout semantics still
+differ.
 
 The tool surface follows actual request scope, artifact-store availability,
 codebase permission, `referenceTraceId`, comparison context and evidence access.
@@ -173,6 +180,19 @@ queue/execution timing in the internal `RunManifest.performance` field. This
 also does not expose admission-grade model, provider snapshot, provider usage,
 or performance fields. The receipt supports internal attribution and controlled
 benchmarks; by itself it does not prove real-provider speed or accuracy.
+
+Tool results in SSE and session logs are cut to 2000 characters, so they cannot
+show whether the model received a trailing hint such as `vendorOverride`. The
+internal `RunManifest.toolResults` receipt answers that. It records what each
+call handed to its runtime at the outermost shared tool boundary: after every
+product wrapper, including pacing reminders, and before transport truncation.
+Each entry holds the tool name, the call id when the adapter supplies one
+(OpenAI, Pi, OpenCode), outcome, receipt facts (plan phase id presence only),
+and the text size before adapter serialization. For each field in
+`RUNTIME_TOOL_RESULT_AUDITED_FIELDS`, it also records whether the field's
+serialized key and value appear verbatim in that text. No payload values are
+copied. The receipt proves the handoff to the runtime adapter. Runtime-native
+output caps are outside the product's view.
 
 Performance branches are controlled by the strict maintainer-only
 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` boundary and default to no admitted
@@ -235,9 +255,10 @@ worker path. The BYOK key reaches only the SDK `resolveModel` callback, not the
 SDK subprocess environment, diagnostics, or plaintext snapshots. Provider,
 base URL, and style remain non-secret snapshot inputs, while key changes update
 the secret fingerprint used by provider pinning, resume, external issue, and
-Self-Evolution proof boundaries. Public logical follow-ups use product history and a fresh model context. A run authorized for private codebase or external knowledge never resumes
-or stores that opaque provider session, and its intermediate state is excluded
-from durable snapshots.
+Self-Evolution proof boundaries. Logical follow-ups use product history and a
+fresh model context; no provider session is resumed or stored. A run authorized
+for private codebase or external knowledge also keeps its intermediate state out
+of durable snapshots.
 
 ## Source-Aware Runtime Parity
 
@@ -255,14 +276,16 @@ RAG tools for new acquisition. Trace captures support referenced observations;
 source evidence provides mechanism-analysis background, while `CodeRef` metadata
 only locates code. `SourceUseDecision.status: corroborated` only audits an
 authorized body lookup with references in this run. It does not prove a Trace
-occurrence, mechanism or causal relationship, and is a different field from a
-claim binding's `mechanismStatus`.
+occurrence, mechanism or causal relationship.
 
-The shared finalizer uses `semanticsPolicy: declared`. Even with matched Trace
-references and source bodies, a model-declared `mechanismStatus: corroborated`
-is downgraded to `compatible` with `source_binding_mechanism_unverified`.
-This path has no native proof that establishes a general mechanism. Unknown
-mechanisms remain unverified/partial; a lookup-audit status cannot replace proof.
+A model's claim binding declares only `claimId`, `sourceReferenceIds` and
+optional same-claim `traceEvidenceRefIds`; it no longer declares a mechanism
+status (the legacy field is accepted and dropped). The shared finalizer's
+`source_claim_verifier@2` computes each source-dependent claim's standing from
+the actual ledger: `invalid` fails the answer; `unbound`, `location_only` and
+`source_only` stay partial; `trace_linked` means a read body linked to verified
+same-claim Trace evidence. No native proof establishes a general mechanism, and
+a lookup-audit status cannot replace proof.
 
 One canonical safe projector carries the same decision and binding through
 initial and replayed SSE, HTML reports, CLI JSON/Markdown/HTML,
@@ -291,16 +314,59 @@ Schema validation does not establish semantic correctness or widen permission.
 `RuntimeTurnPolicy.preflight` is three-valued and independent of budget: `none`
 (`existing_only`) gathers nothing, `full` (resolved `scene_wide` read) adds
 memory-type prefetch, and `trace_facts` — a bounded question, or an unavailable
-classification — still detects focus app, architecture, vendor and trace
-completeness. Planning is on
+classification — still detects focus app, architecture and trace
+completeness. A Conversation without a mounted trace probes nothing and binds no
+trace identity or evidence trace (`resolveRunTurnPolicy`,
+`runtimeTraceAttachment.ts`, shared by all five runtimes). Vendor is not a preflight phase: `invoke_skill` resolves it only
+for a Skill with vendor overrides, after that Skill's own queries, through the
+shared cached `traceVendorResolver` (trace metadata only) with a bounded wait,
+and attaches a `vendorOverride` hint; the rule is the same in all five runtimes. Focus detection scores candidate processes once over the
+analysis window (foreground time, frames, launches, battery `top`, CPU),
+excludes processes with no activity and reports `high`/`medium`/`ambiguous`
+confidence. All five runtimes resolve the effective package through
+`focusAppTarget`: a user-named package is `user`, a high/medium inference is
+`auto_detected`, and an ambiguous ranking sets no package, only candidates. Only
+`user` packages and selections bind the analysis target; an inferred package is a
+default Skill scope (reported as `appliedDefaultProcess`), never the expected
+identity of the comparison gate, and the answer may switch to a candidate with
+evidence when it says why. The completeness prober loads the defining stdlib
+module before checking a stdlib view (capabilities declare `requiredModules`
+statically, guarded by a test); a capability whose module or query failed carries
+a `reasonCode` meaning unprobed, not missing. Planning is on
 demand; completed phases require real successful evidence or an explicit valid
 disposition. Unfinished exploration plans and hypotheses retain their state;
 they neither trigger automatic continuation nor determine answer completeness alone.
 
+**Scene entry evidence (product-owned).** Strategy frontmatter may declare
+`entry_skill` (a Skill id plus closed parameter bindings: `focus_app`,
+`user_target`, `trace_start`, `trace_end`, `selection_start`, `selection_end`).
+For a resolved `scene_wide` `read_new` investigation of a mounted trace (no
+comparison turn and no reference trace), every
+runtime's preflight runs that Skill (`agentRuntime/sceneEntryEvidence.ts`)
+before it builds the acquisition-capable MCP server. A package binding takes only
+a user-named package or a high/medium focus app, and the Skill's own identity
+gate (`prepareInvocation`) must report `verified`; an `ambiguous` gate puts only
+its candidates into the prompt. It shares the core layer `agentv3/skillRunCore.ts`
+with the model's `invoke_skill`, so the same parameters produce the same
+evidenceRefId, artifact, capture and queryReview, yet it is not a model tool
+call: it never enters RunManifest `toolResults`, the registry tool observer,
+acquisition pacing, tool timing or plan tool-call records. Its guards run in
+order: request scope, `canInvokeTool`, lease and deadline, the auth-only
+`withRunAuthorizationOnly`, and the core's re-check after the Skill returns and
+before anything is written; one attempt is capped at 20 s. Captures join the
+investigation ledger through the product call id `scene-entry:<skill>:<hash>`
+observed as started then completed or failed. The model reads the result in the
+tier-2 `scene_evidence` segment, never dropped whole (at most 24 cells and 2 KiB;
+summary cells go before key cells), and `RuntimePerformance` records a
+`scene_evidence` phase and the closed `sceneEvidence` receipt.
+`allowMemoryPrefetch` gates only the memory tier and has nothing to do with it.
+String cells shortened upstream are not offered to the model as exact values;
+artifact locators remain available for reading the original evidence.
+
 ## Turn Budgets And Closeout
 
 Full mode defaults to 100 turns and quick mode to 50; the five-turn quick target
-is advisory. A budget above one reserves one no-tool delivery call. Early normal
+is advisory. A budget above one reserves one no-tool delivery call. Native length/output_limit may use that same reserved call within the original deadline to complete its body and declaration. A new candidate needs its own completed/stop receipt and valid protocol; failed, cancelled, unknown or pending tool/deferred states cannot use this recovery. Failure retains the first incomplete receipt. Early normal
 completion adds no call when it carries the required valid declaration, or when
 typed intent is an acknowledgement. A completed non-acknowledgement candidate
 without a declaration may use that reserved call so the same author can attach
@@ -310,16 +376,36 @@ retain the original candidate. Tools and duplicate visible-body streaming stay
 disabled during this completion. At investigation exhaustion, closeout uses the selected
 model, pinned provider, current authorization and original deadline to explain
 the supported findings, missing evidence and useful follow-up questions.
+Declaration JSON alone is not readable delivery. A completed Pi declaration-only candidate uses the same reserved delivery call to add a body, retaining existing claim count and IDs. Readable unheaded answers need no rewrite. A single completely closed malformed declaration may be isolated for repair; interrupted frames and duplicate markers cannot use declaration-only repair. Repaired output still requires strict parsing and independent verification.
+
 It cannot query again or certify completion: `partial`, `turn_limit` completion
 and `max_turns` termination remain. No model semantic review follows this closeout;
 deterministic evidence checks can still run.
 
-A failed closeout or declaration completion retains the original candidate. Cancellation, timeout, revoked
-authorization or an exhausted explicit cost budget cannot start another call.
+OpenAI's acquisition deadline may advance with actual progress without consuming
+the reserved delivery and finalization budgets. An acquisition timeout with
+returned data may use one no-tool closeout inside the delivery reserve, retaining
+`partial/timeout` and adding no semantic model review. A failed closeout or
+declaration completion retains the original candidate. Cancellation, an expired
+hard deadline, revoked authorization or an exhausted explicit cost budget cannot
+start another call.
 A one-turn configuration has no extra delivery allowance. OpenCode stops acquisition
 after observing native messages and can overshoot between observations. It records
 actual turns and skips the summary when no allowance remains; this is not a strict
 model-call cap.
+
+Before dispatch, review, declaration repair and continuation use
+`services/runtimeCallStats.ts` to estimate duration from successful calls' p75
+for the same provider origin, model, purpose and input-size bucket. Insufficient
+samples use the current provider defaults (GLM 180 s, DeepSeek 120 s, others
+90 s). A call that does not fit the time left is skipped; review records
+`not_checked/budget_insufficient` and preserves the body. Report delivery and
+continuation when the body is missing may still dispatch, bounded by the original
+deadline. An estimate cannot extend the deadline or bypass cancellation,
+authorization or cost limits. Server samples come from successful calls in sealed
+RunManifests; CLI does not aggregate samples, uses defaults, and records
+`stats_not_configured`. Admission decisions and actual durations are internal
+performance receipts, neither proof nor public SSE.
 
 ## SSE Events
 
@@ -356,6 +442,18 @@ exact runtime result + private RuntimeFinalizationContext
   -> frontend visible projection
 ```
 
+A runtime records only native facts on its result and on the turn it adds to
+the session (completion status, turn limit, timeout, provider failure,
+cancellation, an empty body, a privacy replacement). It never applies the
+quality gate, never marks a result `quality_gate_failed` and emits no draft
+`degraded` update. The finalizer records a quality termination only for a missing
+body or actual native delivery failure; the route and CLI annotate that turn.
+Claim, report, source and identity verification remain independent annotations.
+They never make a completed body partial, lower finding confidence or mark
+flagged claims verified. The Web flow completes with a verification notice and
+expandable details; CLI `~` denotes delivered output with unresolved checks or
+flagged contradictions.
+
 The product takes the context from the exact result before copying it. The
 context fixes the provider, original absolute deadline, trace identity and
 evidence-read scope. The owner checks current-run identity, cancellation and
@@ -364,9 +462,56 @@ and uses the original absolute run deadline. Starting or rereading the review
 does not reset or extend that budget. User cancellation or context disposal
 aborts the review. A timeout records unavailable assurance while preserving the body
 and native completion; review does not rewrite the body or reduce causal
-propositions to numeric ones. Unknown review alone does not fail a focused answer;
-full reports still require their report-assessment contract. The body, native completion and original claims
+propositions to numeric ones. Unknown or failed review does not block answer or
+report delivery; report-contract gaps remain visible annotations. The body, native completion and original claims
 are independent inputs; valid JSON and model agreement alone are not proof.
+
+A malformed review location cannot establish that the body is wrong: an
+unresolvable claim or required issue location leaves that judgment unknown.
+Duplicate claim judgments retain the exact validated locations of their
+contradictions, without creating enclosing spans. Report requirements parse
+independently: a bad reference or missing row leaves only its pinned requirement
+unresolved; other judgments remain available, and required report gaps still
+block complete acceptance. Within one evidence-read batch, the same immutable
+registration, row and fields reuse metadata and cell budget already spent.
+Every reference still checks identity, authorization, cancellation and deadline;
+new registrations, rows or fields remain charged, with no credit across batches.
+
+Raw numeric equality remains separate from prose display precision. The optional
+`numeric.presentation` declaration (`numeric_presentation@1`) binds body literals,
+occurrences, units and decimal places. Before semantic review,
+`numericPresentationAssessment.ts` checks fixed-decimal rounding with exact
+rationals, complete finite proof, immutable captures and producer units.
+Chinese time labels `纳秒/微秒/毫秒/秒` also resolve to their standard display
+units; these spellings never confer unit authority on a producer. Each
+claim's separate `numericPresentation` records `matched/mismatch/not_checked`,
+bound to the canonical candidate, original declaration fingerprint and captured
+cell. It changes neither the body nor the machine proposition. Identifiers are
+not rounded, counts stay integral, and nonzero displayed as zero remains unchecked.
+Unsupported or missing display protocols supply no proof.
+`final_semantics@3` receives these results but still checks subject, scope,
+aggregation, negation, comparison and causality. Model agreement cannot override
+a deterministic display mismatch. A numeric dispute located entirely within a
+matched literal becomes `numeric_presentation_review_disagreement` and stays
+partial; other semantic errors retain their standing. Every bound literal must
+also lie inside the semantic review's claim locations before joint verification.
+Declaration recovery retains the complete semantics. Reports, CLI and owner
+snapshots retain separate outcomes; strict privacy projections omit display
+locations and binding receipts, as they do semantic locations. Frontend types
+are generated from the backend contracts.
+
+Older declarations without explicit display bindings keep their existing path. When the
+single semantic review reports a faithful rounding as `numeric_mismatch`, the
+finalizer may retain a display warning. A `numeric.cell` path requires complete
+finite proof and unique immutable cell identity through its private reference
+binding, original row, column and proof anchor, with the captured producer unit.
+Each exact claim and issue location must select one faithful display candidate;
+separately located repetitions must all pass, while broad spans with competing
+values do not qualify. This checks display arithmetic, not subject or scope
+agreement, and the numeric display must actually lose precision. Exact repetitions, other semantic
+errors, wrong values and components used as totals do not qualify. The claim
+stays partial: no original proposition, body or review is rewritten and the
+display rule grants no verified standing. Reports, CLI and snapshots share it.
 
 The same context binds the frozen input selection to semantic review. Review
 checks the answer against the question, intent and selected event or range;
@@ -378,10 +523,11 @@ workspace focus does not establish which trace supplied the selection, so its
 origin remains unknown. A privacy projection that cannot preserve the admitted
 selection exactly leaves review incomplete rather than silently changing scope.
 
-Semantic review adds no application output-token cap. OpenAI sends only an
+Semantic review output limits are mapped by each adapter. OpenAI sends only an
 explicit `maxOutputTokens` captured for this run; Claude preserves the captured
-SDK environment; Pi uses the pinned model's native SDK capability when no
-explicit cap is supplied. Classifiers retain their separate small-protocol
+SDK environment; without an explicit cap, Pi derives a token allowance from
+the response byte limit, bounded by the pinned model's `maxTokens`. Classifiers
+retain their separate small-protocol
 budgets. Provider and SDK output limits still apply, as do complete-terminal-state
 checks and the 64 KiB guard on the completed review JSON.
 The shared OpenCode model configuration does not invent context/output capacity:
@@ -401,6 +547,33 @@ captured evidence with semantic review of the current proposition. Reports, CLI
 artifacts and snapshots keep provenance. Chat projects the body, machine
 sidecars and structured runtime appendix separately without mechanically editing
 natural-language conclusions.
+
+Declaration validity is per entry. Framing, root schema, duplicate IDs, an invalid
+proposal collection and `sourceClaimBindings` reference failures still make the
+whole declaration `ineligible`. An individual claim or proposal failure affects
+only that entry: the declaration is `partially_valid` and its root remains
+`eligible`. Invalid claims retain their positions with parser-owned `valid: false`
+and closed `invalidCodes`; they create no evidence anchors, receive no semantic
+review, and retain a `not_checked/invalid_claim` verifier row. Other valid claims
+can complete review and proof independently. Repair targets only invalid claims
+with a usable ID and joins the returned declaration to the original body.
+Acceptance preserves the claim ID set, the position and semantics of valid items,
+and corresponding relation proposals, while reducing invalid items. A repair may
+remain `partially_valid`; unresolved entries stay visible rather than disappearing
+or changing the body to obtain a pass.
+
+A semantic location defect keeps only that judgment unknown. Other claims may
+still be verified when their current candidate binding, complete body review,
+finite proof, proposition coverage and located agreement are intact. Whole-answer
+acceptance still requires complete body and declaration coverage. An inconsistent
+judgment needs valid body locations and nonempty locations for every issue;
+unlocated non-expression or unclear semantics stay unknown, including during
+duplicate merging. OpenAI retains the body when declaration completion fails or
+is not admitted by the budget, and explicitly reports incomplete claim verification
+through progress messages without changing native completion or making another call.
+The parser privately separates reviewed body scope from omission coverage: an
+unusable omission location still blocks whole-answer acceptance without revoking
+other claims reviewed over the complete body. Models cannot submit this receipt.
 
 Conclusion presentation retains the complete body rather than removing semantic
 sections by headings such as “Evidence Index” or “Claim Verification”. Web stores
@@ -463,9 +636,8 @@ affect the next turn.
 Raw trace comparison sessions must also persist `referenceTraceId`,
 `comparisonSource`, and `comparisonReportSection`. A comparison session cannot
 silently downgrade to single-trace mode or switch to a different reference
-trace. Claude/OpenAI SDK session keys must be read and written with the
-comparison identity, and Pi/OpenCode/Qoder runtime state must preserve the same
-provider/runtime identity.
+trace. Restore must read and write the provider/runtime identity with the
+comparison identity.
 
 ## Platform Boundaries
 

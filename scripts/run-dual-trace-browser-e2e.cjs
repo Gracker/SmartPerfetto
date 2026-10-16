@@ -20,6 +20,7 @@ const {
   validateBackendHealth,
   writeJson,
 } = require('./e2e/dual-trace-e2e-environment.cjs');
+const {resolveRealProvider} = require('./e2e/dual-trace-e2e-services.cjs');
 const {startHangingOpenAIStub} = require('./e2e/hanging-openai-stub.cjs');
 const {ProcessHarness} = require('./e2e/process-harness.cjs');
 
@@ -74,38 +75,24 @@ async function run() {
 
   try {
     if (harness.receivedSignal) throw new Error(`Interrupted by ${harness.receivedSignal}`);
-    const credential = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
-    if (realProvider && !credential) {
-      throw new Error('DEEPSEEK_API_KEY or OPENAI_API_KEY is required for --real-provider');
-    }
+    const provider = realProvider ? resolveRealProvider() : null;
     if (!realProvider) {
       stub = await startHangingOpenAIStub(
         path.join(workspace.artifactDir, 'provider-stub.log'),
         DUMMY_OPENAI_API_KEY,
       );
     }
-    const providerBaseUrl = realProvider
-      ? process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1'
-      : stub.baseUrl;
+    const providerBaseUrl = provider ? provider.baseUrl : stub.baseUrl;
     const services = await configureServices(
       workspace,
-      realProvider
-        ? {
-            baseUrl: providerBaseUrl,
-            apiKey: credential,
-            model: process.env.DEEPSEEK_MODEL || 'deepseek-v4-pro',
-            lightModel: process.env.DEEPSEEK_LIGHT_MODEL || 'deepseek-flash',
-            maxOutputTokens: 16384,
-            maxTurns: 100,
-          }
-        : stub.baseUrl,
+      provider || stub.baseUrl,
     );
     const environments = childEnvironments(workspace, services, providerBaseUrl);
     if (realProvider) environments.playwright.SMARTPERFETTO_E2E_REAL_PROVIDER = '1';
     Object.assign(summary, {
       status: 'services_starting',
       ports: serviceEvidence(services, providerBaseUrl),
-      providerMode: realProvider ? 'deepseek' : 'hanging-stub',
+      providerMode: realProvider ? 'glm-coding-plan' : 'hanging-stub',
     });
     writeJson(summaryPath, summary);
 

@@ -135,6 +135,9 @@ describe('RunManifestBuilder', () => {
     builder.recordToolAllowlist(['query_trace', 'invoke_skill', 'query_trace']);
     builder.recordInjection('patterns', 'pattern-b', 'hash-b');
     builder.recordInjection('patterns', 'pattern-a', 'hash-a');
+    // Phase hints reach no analysis; a run never records one.
+    expect(() => builder.recordInjection('phaseHints', 'hint-a', 'hash-a'))
+      .toThrow('run_manifest_unknown_injection_category:phaseHints');
     builder.recordPromptTemplate('strategy-template', 'template-hash');
     builder.recordTurnCount(3);
     builder.recordRuntime({
@@ -171,6 +174,7 @@ describe('RunManifestBuilder', () => {
       'pattern-a',
       'pattern-b',
     ]);
+    expect(manifest.injections.phaseHints).toEqual([]);
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest.skills)).toBe(true);
   });
@@ -179,7 +183,25 @@ describe('RunManifestBuilder', () => {
     const builder = createBuilder();
     recordEmptyRegistry(builder);
 
-    expect(builder.seal()).not.toHaveProperty('performance');
+    const manifest = builder.seal();
+    expect(manifest).not.toHaveProperty('performance');
+    expect(manifest).not.toHaveProperty('toolResults');
+  });
+
+  it('seals the tool-result handoff receipt and ignores later calls', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+    builder.toolResultAuditRecorder.record(() => ({toolName: 'invoke_skill', outcome: 'returned',
+      payloadFields: {vendorOverride: 'verbatim'}}));
+
+    const manifest = builder.seal();
+    builder.toolResultAuditRecorder.record(() => ({toolName: 'late_tool', outcome: 'threw'}));
+
+    expect(manifest.toolResults).toEqual({
+      schemaVersion: 1,
+      results: [{toolName: 'invoke_skill', outcome: 'returned', payloadFields: {vendorOverride: 'verbatim'}}],
+    });
+    expect(builder.seal()).toBe(manifest);
   });
 
   it('seals a privacy-safe immutable performance receipt before the run manifest closes', () => {
@@ -285,5 +307,18 @@ describe('RunManifestBuilder', () => {
       'late_attribution_rejected',
       {operation: 'record_sql_statement'},
     );
+  });
+
+  it('notifies seal observers once with the sealed manifest and ignores a throwing observer', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+    const seen: unknown[] = [];
+    builder.addSealObserver(() => { throw new Error('observer failure'); });
+    builder.addSealObserver(manifest => seen.push(manifest));
+    const manifest = builder.seal();
+    expect(builder.seal()).toBe(manifest);
+    expect(seen).toEqual([manifest]);
+    builder.addSealObserver(other => seen.push(other));
+    expect(seen).toHaveLength(1);
   });
 });

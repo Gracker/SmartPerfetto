@@ -7,42 +7,7 @@ import path from 'path';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import type {SkillDefinition} from './skillEngine/types';
 import {humanizeSkillIdentifier} from './skillLocalizationLabels';
-
-interface LocalizedText {
-  'zh-CN': string;
-  en: string;
-}
-
-interface CatalogColumn {
-  label: LocalizedText;
-  tooltip?: LocalizedText;
-}
-
-interface CatalogStep {
-  title: LocalizedText;
-  description?: LocalizedText;
-  columns: Record<string, CatalogColumn>;
-  synthesizeLabels: Record<string, LocalizedText>;
-}
-
-interface CatalogSkill {
-  displayName: LocalizedText;
-  description: LocalizedText;
-  type: string;
-  steps: Record<string, CatalogStep>;
-}
-
-interface SkillLocalizationCatalog {
-  schemaVersion: 1;
-  inventory: {
-    skillCount: number;
-    pipelineDefinitionCount: number;
-    moduleExpertCount: number;
-    stepCount: number;
-    explicitColumnCount: number;
-  };
-  skills: Record<string, CatalogSkill>;
-}
+import type {CatalogSkill, CatalogStep, LocalizedText, SkillLocalizationCatalog} from './skillLocalizationCatalog';
 
 export interface LocalizableSkillListItem {
   id: string;
@@ -129,7 +94,6 @@ export function localizedSchemaLabel(
 function catalogStep(
   skill: CatalogSkill,
   stepId: string | undefined,
-  outputLanguage: OutputLanguage,
 ): CatalogStep {
   const normalized = stepId || 'root';
   const entry = skill.steps[normalized];
@@ -203,8 +167,9 @@ function localizeColumnDefinitions(
     const name = typeof typed.name === 'string' ? typed.name : '';
     if (!name) return column;
     const catalogColumn = step.columns[name];
+    const {label_i18n: _labelTranslations, ...authored} = typed;
     return {
-      ...typed,
+      ...authored,
       label: catalogColumn?.label[outputLanguage] ||
         localizedSchemaLabel(name, outputLanguage),
       ...(catalogColumn?.tooltip
@@ -293,14 +258,15 @@ export function localizeSkillDefinition(
   options: SkillLocalizationOptions = {},
 ): SkillDefinition {
   const catalogSkill = getCatalogSkill(skill.name, options);
-  if (!catalogSkill) return skill;
+  // Authoring metadata belongs to the localization catalog, like display.title_i18n.
+  const {display_name_i18n: _displayName, description_i18n: _description, ...meta} = skill.meta;
+  if (!catalogSkill) return {...skill, meta};
   const projectSteps = (steps: SkillDefinition['steps']): SkillDefinition['steps'] =>
     steps?.map(definition => {
       const raw = definition as unknown as Record<string, unknown>;
       const step = catalogStep(
         catalogSkill,
         typeof raw.id === 'string' ? raw.id : undefined,
-        outputLanguage,
       );
       const display = raw.display && typeof raw.display === 'object' && !Array.isArray(raw.display)
         ? {...raw.display as Record<string, unknown>} : undefined;
@@ -323,7 +289,7 @@ export function localizeSkillDefinition(
   return {
     ...skill,
     meta: {
-      ...skill.meta,
+      ...meta,
       display_name: catalogSkill.displayName[outputLanguage],
       description: catalogSkill.description[outputLanguage],
     },
@@ -348,7 +314,7 @@ export function localizeSkillDisplayResults<T extends {
   const skill = getCatalogSkill(skillId, options);
   if (!skill) return results;
   return results.map(result => {
-    const step = catalogStep(skill, result.stepId, outputLanguage);
+    const step = catalogStep(skill, result.stepId);
     return {
       ...result,
       title: substituteDisplayTitleParameters(
@@ -420,7 +386,7 @@ export function localizeSkillLayeredResult<T extends {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
     const raw = value as Record<string, unknown>;
     const stepId = typeof raw.stepId === 'string' ? raw.stepId : undefined;
-    const step = catalogStep(skill, stepId, outputLanguage);
+    const step = catalogStep(skill, stepId);
     const display = raw.display && typeof raw.display === 'object'
       ? raw.display as Record<string, unknown>
       : undefined;
@@ -501,8 +467,4 @@ export function assertBuiltInSkillLocalizationCoverage(
 
 export function skillLocalizationInventory(): SkillLocalizationCatalog['inventory'] {
   return {...loadCatalog().inventory};
-}
-
-export function resetSkillLocalizationCatalogForTests(): void {
-  cachedCatalog = undefined;
 }

@@ -7,4 +7,4 @@
 
 提案顶层可选 `value` 只能是字符串、有限数字或布尔值，不能是 null。可选 `metricColumn`、`unit` 必须是非空字符串；可选 `deltaDirection` 只能是 `current_minus_reference`。如果存在 `proofBindings`，它必须恰好同时包含 `subject` 和 `object`；两侧都必须恰好包含非空字符串 `endpointColumn` 和 `proofColumn`。
 
-保持提案含义和已签发引用不变。该格式只声明候选关系，不授予证据、验证、关系成立或因果权威。
+保持每个提案、有效 ID、含义和已签发引用不变，不得删除或替换提案绕过校验。该格式只声明候选关系，不授予证据、验证、关系成立或因果权威。

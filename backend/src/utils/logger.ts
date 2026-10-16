@@ -28,7 +28,7 @@ const envLevel: LogLevel = parseLevel(process.env.LOG_LEVEL);
 
 function parseLevel(raw?: string | null): LogLevel {
   const level = (raw || 'info').toLowerCase();
-  return (level in LOG_LEVELS) ? level as LogLevel : 'info';
+  return Object.prototype.hasOwnProperty.call(LOG_LEVELS, level) ? level as LogLevel : 'info';
 }
 
 /** Get the current effective log level. */
@@ -42,7 +42,7 @@ function getCurrentLevel(): number {
 
 /** Set log level at runtime. Pass null to revert to env var default. */
 export function setLogLevel(level: LogLevel | null): void {
-  if (level !== null && !(level in LOG_LEVELS)) {
+  if (level !== null && !Object.prototype.hasOwnProperty.call(LOG_LEVELS, level)) {
     throw new Error(`Invalid log level: ${level}. Valid: ${Object.keys(LOG_LEVELS).join(', ')}`);
   }
   runtimeLevel = level;

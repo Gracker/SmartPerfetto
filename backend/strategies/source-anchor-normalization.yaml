@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto
+#
+# How locate_trace_anchor turns a name seen in a trace (a slice, marker,
+# thread or native frame) into source searches, and how it ranks the lines it
+# finds. Patterns are regular expressions matched against one source line.
+# Ranking: a trace call site emitting the anchor, then a definition (a constant
+# holding it, a thread being named, a method declaration), then any other line.
+
+schema_version: source_anchor_normalization@1
+
+# Internal searches one locate may run; it spends one `locates` from the run's
+# source budget, never `searches`.
+max_internal_searches: 4
+# A literal piece shorter than this is too common to search for on its own.
+min_literal_chars: 3
+# Linux keeps at most 15 bytes of a thread name; a 15-character thread anchor
+# may be the prefix of a longer name in source.
+thread_name_max_chars: 15
+
+# A line that emits a trace section.
+trace_call_patterns:
+  - '\bTrace\.(?:beginSection|beginAsyncSection|traceBegin|asyncTraceBegin)\s*\('
+  - '\bTraceCompat\.(?:beginSection|beginAsyncSection)\s*\('
+  - '\b(?:trace|traceAsync|traceSection)\s*\('
+  - '\bATRACE_(?:NAME|BEGIN|CALL|INT|INT64|ASYNC_BEGIN|ASYNC_FOR_TRACK_BEGIN)\s*\('
+  - '\b(?:SCOPED_TRACE|TRACE_EVENT\w*|PERFETTO_TE_SCOPED|TRACE_EVENT_BEGIN)\s*\('
+
+# A constant that holds a string literal. The `name` group is searched once more
+# so the call sites that use the constant are found too.
+constant_definition_patterns:
+  - '\bconst\s+val\s+(?<name>[A-Za-z_]\w*)\s*(?::\s*String\s*)?='
+  - '\bstatic\s+final\s+String\s+(?<name>[A-Za-z_]\w*)\s*='
+  - '\bfinal\s+static\s+String\s+(?<name>[A-Za-z_]\w*)\s*='
+  - '#\s*define\s+(?<name>[A-Za-z_]\w*)\s+"'
+  - '\b(?:static\s+)?(?:constexpr|const)\s+(?:char|std::string_view|std::string)\s*\*?\s*(?:const\s+)?(?<name>[A-Za-z_]\w*)\s*(?:\[\s*\])?\s*='
+
+# A line that creates or names a thread.
+thread_creation_patterns:
+  - '\bThread\s*\('
+  - '\bthread\s*\('
+  - '\bsetName\s*\('
+  - '\bHandlerThread\s*\('
+  - '\bnewThread\s*\('
+  - '\bpthread_setname_np\s*\('
+  - '\bprctl\s*\(\s*PR_SET_NAME'
+
+# What a number in a trace name may have been built from in source: a literal
+# number, a Kotlin or shell template, a format specifier, a string
+# concatenation (inside the literal, or closing it at the end) or an indexed
+# placeholder.
+template_placeholder: '(?:\d+|\$\{[^}]{0,80}\}|\$\w+|%[-+ 0#]{0,4}\d{0,4}(?:l{0,2})[dsuxX]|"\s*\+[^"]{0,200}\+\s*"|"\s*\+|\{\d{0,3}\})'
+
+# Slices the Android framework emits. `symbols` are app methods that override
+# the framework hook (searched in the app codebase instead of the slice name);
+# `framework: true` marks a slice whose implementation lives in AOSP, so the
+# result says so rather than presenting an app line as its source.
+framework_slices:
+  - match: 'RV OnBindView'
+    symbols: [onBindViewHolder]
+    framework: true
+  - match: 'RV CreateView'
+    symbols: [onCreateViewHolder]
+    framework: true
+  - match: 'RV Prefetch'
+    framework: true
+  - match: 'RV Scroll'
+    framework: true
+  - match: 'RV OnLayout'
+    framework: true
+  - match: 'Choreographer#doFrame'
+    framework: true
+  - match: 'traversal'
+    framework: true
+  - match: 'measure'
+    symbols: [onMeasure]
+    framework: true
+  - match: 'layout'
+    symbols: [onLayout]
+    framework: true
+  - match: 'draw'
+    symbols: [onDraw]
+    framework: true
+  - match: 'Record View#draw()'
+    symbols: [onDraw]
+    framework: true
+  - match: 'inflate'
+    framework: true
+  - match: 'animation'
+    framework: true
+  - match: 'input'
+    framework: true
+  - match: 'bindApplication'
+    symbols: [onCreate]
+    framework: true
+  - match: 'activityStart'
+    symbols: [onCreate, onStart]
+    framework: true
+  - match: 'activityResume'
+    symbols: [onResume]
+    framework: true
+  - match: 'activityPause'
+    symbols: [onPause]
+    framework: true
+  - prefix: 'Lock contention on '
+    framework: true
+  - prefix: 'binder transaction'
+    framework: true
+  - prefix: 'Choreographer#'
+    framework: true

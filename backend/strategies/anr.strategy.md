@@ -11,10 +11,15 @@ investigation_contract:
   requirements:
     - id: anr_critical_path
       domain: critical_path
-      description: "Check recorded ANR type, target UPID and timeout window when available. If no ANR is recorded but the user asks about unresponsiveness, discover long main-thread waits with anr_main_thread_blocking without process_name/anr_ts, then correlate candidate UPID and exact wait window with target input dispatch and FINISHED acknowledgements; absence of an ANR anchor must not stop this investigation. Identify blocked task, main-thread work and relevant owner/peer tasks rather than equating the longest wait with the full timeout."
+      description: "Check recorded ANR type, target UPID and timeout window when available. Keep timer_delay (expiry-to-record delay, ns) separate from the ANR timeout/duration: 50000000 ns is 50 ms, not 50 s. If no ANR is recorded but the user asks about unresponsiveness, discover long main-thread waits with anr_main_thread_blocking without process_name/anr_ts, then correlate candidate UPID and exact wait window with target input dispatch and FINISHED acknowledgements; absence of an ANR anchor must not stop this investigation. Identify blocked task, main-thread work and relevant owner/peer tasks rather than equating the longest wait with the full timeout."
     - id: anr_dependencies
       domain: dependency_chain
       description: "Trace Binder transactions, lock ownership, IO and wakeup dependencies where available; distinguish observed waiting from an established blocking chain and from ANR trigger attribution."
+# Run by the product for a scene-wide investigation before the model's first turn.
+entry_skill:
+  id: anr_analysis
+  params:
+    package: focus_app
 classification_description: "Application unresponsiveness, ANR triggers, deadlocks and timeout-related blocking."
 priority: 1
 effort: medium
@@ -54,26 +59,6 @@ final_report_contract:
         - ['API\s*3[067]', 'Android\s*1[167]', 'version', '版本', 'reason', 'trigger type', 'timeout', 'ANR window', 'event window', 'timestamp', 'artifact']
         - ['current trace', 'Perfetto', 'direct_blocker', 'logcat', 'Binder', 'lock', 'align', '对齐', 'missing', '缺失', 'confidence', '不能', '不可', 'not replace']
 
-phase_hints:
-  - id: freeze_verdict
-    keywords: ['verdict', '判定', 'freeze', 'diagnosis', '诊断', '原因', 'anr_analysis', '系统', 'system']
-    constraints: '有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树。无 ANR 窗口或 verdict 不可得时继续无锚点主线程调查，并保留系统健康证据缺口。'
-    critical_tools: ['anr_analysis']
-    critical: true
-  - id: anr_diagnostic_api_boundary
-    keywords: ['ApplicationExitInfo', 'getHistoricalProcessExitReasons', 'getAnrInfo', 'REASON_ANR', 'ProfilingManager', 'ProfilingTrigger', 'TRIGGER_TYPE_ANR', 'Play Vitals', 'Android Vitals', 'client watchdog', 'SDK watchdog']
-    constraints: 'ApplicationExitInfo、ProfilingTrigger 产物、Play/Android Vitals、客户端 watchdog 都只能补充 ANR 证据。必须说明 API/Android 版本、reason/trigger type、record/artifact 时间、事件窗口对齐；根因仍需 Perfetto ANR window、direct_blocker、logcat、Binder/lock/IO/GC/scheduler 证据闭环。'
-    critical_tools: ['anr_analysis', 'lookup_knowledge']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: anr_root_cause
-      match_keywords: ['anr', 'deadlock', 'block', '死锁', '阻塞', 'not_responding', 'anr_analysis']
-      suggestion: 'ANR 场景建议包含 ANR 原因定位阶段 (anr_analysis)'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: anr_analysis
 ---
 
 #### anr Core Strategy
@@ -91,7 +76,7 @@ plan_template:
 - anr_root_cause: ANR 场景建议包含 ANR 原因定位阶段 (anr_analysis) (required: invoke_skill(anr_analysis))
 
 **Phase reminders**
-- freeze_verdict: 有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树。无 ANR 窗口或 verdict 不可得时继续无锚点主线程调查，并保留系统健康证据缺口。 工具: anr_analysis
+- freeze_verdict: 有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树；undetermined（system_server 主线程不可评估且无停滞证据）或 verdict 不可得时继续 App 决策树与无锚点主线程调查，保留系统健康证据缺口，既不排除也不断言系统冻结。 工具: anr_analysis
 - anr_diagnostic_api_boundary: ApplicationExitInfo、ProfilingTrigger 产物、Play/Android Vitals、客户端 watchdog 都只能补充 ANR 证据。必须说明 API/Android 版本、reason/trigger type、record/artifact 时间、事件窗口对齐；根因仍需 Perfetto ANR window、direct_blocker、logcat、Binder/lock/IO/GC/scheduler 证据闭环。 工具: anr_analysis, lookup_knowledge
 
 **无 ANR 锚点仍须调查无响应**
@@ -161,7 +146,8 @@ invoke_skill("anr_analysis")
   - `trigger_classification`：Perfetto ANR 类型到 SmartPerfetto `trigger_type` 的规范化映射，并输出候选根因提示（非最终结论）
   - `cpu_health`：系统 CPU 负载（大核/小核利用率、是否过载）
   - `memory_pressure`：ANR 窗口内的 LMK 事件
-  - `io_load`：各进程的 D-state 不可中断等待基线；不能单独作为 IO 根因
+  - `io_load`：各进程的 D-state 不可中断等待基线，只是系统背景；不能单独作为 IO 根因
+  - `anr_io_wait`：ANR 进程自己的 D/DK 等待（主线程、进程合计、最长线程、IO 等待点、冻结等待、blocked_function 覆盖率）；缺少 ANR 进程 upid 时不运行，不能读成「没有 D 态」
   - `lock_waits`：futex/mutex 锁等待分布（P95/max）
   - **`freeze_check`**（from `system_freeze_check`）：**系统冻结判定（最关键）**
   - `overview` / `anr_events`：ANR 分类统计、逐事件窗口、`timeout_source` 与跳转范围
@@ -179,16 +165,17 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 
 | freeze_verdict | 含义 | 后续分析方向 |
 |---------------|------|-------------|
-| `system_server_freeze` | system_server 冻结（running_pct < 5%） | **系统级问题**：system_server watchdog、kernel panic、硬件故障。报告为系统问题，不是 App Bug |
-| `system_freeze` | 多数应用冻结（frozen_pct > 70%）但 system_server 未冻结 | **系统级问题**：可能是 CPU 饥饿（thermal throttling、后台负载）、内存压力（大量 LMK）、IO 风暴。交叉检查 `cpu_health` 和 `memory_pressure` |
-| `app_specific` | 仅目标应用受影响 | **应用级问题**：进入 Phase 3 详细分析主线程阻塞原因 |
+| `system_server_freeze` | system_server 主线程过半存活时间处于可运行等待或不可中断等待（R/R+/D/DK） | **系统级问题**：system_server watchdog、kernel panic、硬件故障。报告为系统问题，不是 App Bug |
+| `system_freeze` | ≥3 个有运行需求的应用主线程（不含 ANR 进程）中过半停滞（stalled_pct > 50%） | **系统级问题**：可能是 CPU 饥饿（后台负载；频率上限只是候选，是否限频以 `cpu_throttling_in_range` 的限频证据为准）、内存压力（大量 LMK）、IO 风暴。交叉检查 `cpu_health` 和 `memory_pressure` |
+| `app_specific` | system_server 可评估且未停滞，未见系统级停滞证据（主线程处于 S 睡眠不算停滞证据；`demanding_apps` < 3 时应用侧系统停滞未评估） | **应用级排查**：进入 Phase 3 详细分析主线程阻塞原因；它不证明系统无问题，S 态死锁要靠逐 ANR 阻塞证据 |
+| `undetermined` | system_server 主线程在 ANR 窗口内不可评估（缺失或存活不足 90% 窗口），且没有停滞证据 | **系统/应用未判定**：不能仅凭 freeze_check 判定为 App 问题或系统冻结；进入 Phase 3，由逐 ANR 证据闭环定因，结论中保留系统健康证据缺口 |
 
 **当 `freeze_verdict = system_server_freeze` 或 `system_freeze` 时：**
 - 如果 `detection.total_anr_count === 1`：可报告为系统级问题，不要深入推测 App 代码；交叉检查 `cpu_health`、`memory_pressure`、`io_load` 和系统侧日志后到 Phase 4 输出
 - 如果 `detection.total_anr_count > 1`：`freeze_check` 只代表首个 ANR 窗口 baseline context，不能直接推广到全部 ANR。必须继续读取逐 ANR `direct_blocker_candidates`、`direct_blocker_slice_candidates`、`logcat_event_context` 和 `app_freeze_check`，逐事件确认是否同属系统冻结链路
 - 多 ANR 只有在每个关键事件窗口都有系统侧线程/日志/资源压力证据闭环时，才能升级为整体系统根因；否则按事件分别输出系统背景 + App/对端候选
 
-**Phase 3 — App 级根因诊断决策树（当 freeze_verdict = app_specific）：**
+**Phase 3 — App 级根因诊断决策树（当 freeze_verdict = app_specific；为 undetermined 或缺少 freeze_check 时也进入，但不排除系统冻结）：**
 
 ### 第一步：看四象限分布（来自 anr_detail 的 `quadrant`）
 
@@ -238,7 +225,7 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 | BROADCAST_OF_INTENT | `onReceive()` 内是否有网络/IO/数据库操作在主线程执行 | `direct_blocker_candidates`、`main_slices`（查找 onReceive 相关 slice）、事件级 ActivityManager/Broadcast 日志 |
 | START_FOREGROUND_SERVICE / EXECUTING_SERVICE / FOREGROUND_SERVICE_TIMEOUT | Service 生命周期、前台服务启动和冷启动链路 | `direct_blocker_candidates`、`main_slices`、Service/ActivityManager 日志 |
 | JOB_SERVICE_START / STOP / BIND | JobService 回调或绑定链路，不要简化成普通 Service | `direct_blocker_candidates`、`logcat_event_context`、事件级 JobScheduler 日志 |
-| CONTENT_PROVIDER_NOT_RESPONDING | provider publish、query/CRUD 或跨进程 Provider 访问阻塞 | `direct_blocker_candidates`、`main_slices`、`io_load` |
+| CONTENT_PROVIDER_NOT_RESPONDING | provider publish、query/CRUD 或跨进程 Provider 访问阻塞 | `direct_blocker_candidates`、`main_slices`、`anr_io_wait` |
 | SYSTEM_SERVER_WATCHDOG_TIMEOUT | system_server Handler/锁/Binder 线程，默认不是 App Bug | `freeze_check`、system_server 线程状态、monitor contention |
 | GPU_HANG | GPU/fence/buffer 或 RenderThread/SF 链路 | `render_thread`、SurfaceFlinger 日志、frame/fence slice |
 
@@ -258,6 +245,7 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 - **CPU 负载** (`cpu_health`)：大核 avg_util_pct > 90% → CPU 饥饿参与因素
 - **内存压力** (`memory_pressure`)：ANR 窗口内有 LMK → 可能是 GC 压力或进程被回收重启
 - **不可中断等待基线** (`io_load`)：多进程 D-state 高只能说明系统/内核等待压力；只有结合 block IO、blocked_function 或文件/SQLite slice 证据，才能升级为系统级 IO 瓶颈
+- **ANR 进程不可中断等待** (`anr_io_wait`)：这个 ANR 的 D 态证据只看 ANR 进程本身，主线程优先；`blocked_function_coverage_pct` 为空或低时等待点未记录，不能据此说「不是 IO」；`frozen_ms` 是 cgroup 冻结，不是 IO
 - **锁等待** (`lock_waits`)：futex/mutex P95 偏高只作为包名级候选信号；最终定因必须结合逐 ANR `direct_blocker_candidates`、当前进程主线程 `lock_contention` 或锁链证据
 - **blocked_function 机制解释**：报告 D-state、`io_wait` 或 kernel blocked_function 时，调用 `lookup_knowledge("thread-state-blocked-reason")`；说明它是 kernel wchan 单帧，不是完整调用栈。
 
@@ -295,7 +283,7 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 4. **优化建议**：
    - 按影响面排序
    - 区分系统侧 vs 应用侧建议
-   - 系统冻屏：建议检查 system_server watchdog、thermal、内存压力
+   - 系统冻屏：建议检查 system_server watchdog、CPU 限频证据、内存压力
    - 应用锁等待：建议减少 synchronized 范围、使用异步 Binder
    - 应用 IO/page-cache 候选：先补齐 io_wait/blocked_function 与文件/数据库/Provider 证据，再建议将同步 IO 移到后台线程
    - CPU 饥饿：建议检查后台进程、调整线程优先级

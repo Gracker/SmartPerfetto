@@ -138,21 +138,110 @@ export function getTraceProcessorPath(): string {
   return getUserTraceProcessorPath();
 }
 
-const traceProcessorCorsFlagSupportCache = new Map<string, boolean>();
+const traceProcessorHelpCache = new Map<string, string>();
 
-export function supportsTraceProcessorCorsOriginsFlag(binaryPath = getTraceProcessorPath()): boolean {
-  const cached = traceProcessorCorsFlagSupportCache.get(binaryPath);
+function readTraceProcessorHelp(binaryPath: string, args: readonly string[]): string {
+  const key = `${binaryPath}\0${args.join('\0')}`;
+  const cached = traceProcessorHelpCache.get(key);
   if (cached !== undefined) return cached;
-
-  const result = spawnSync(binaryPath, ['--help'], {
+  // Binaries that predate the subcommand interface treat `help` as a trace
+  // path; an empty stdin keeps them from waiting in an interactive shell.
+  const result = spawnSync(binaryPath, [...args], {
     encoding: 'utf-8',
+    input: '',
     timeout: 5000,
   });
   const help = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
-  const supported = help.includes('--http-additional-cors-origins') || help.includes('additional-cors');
-  traceProcessorCorsFlagSupportCache.set(binaryPath, supported);
-  return supported;
+  traceProcessorHelpCache.set(key, help);
+  return help;
 }
+
+/**
+ * Whether the classic `--httpd` launch accepts `--http-additional-cors-origins`
+ * (added after v47; older binaries exit with code 1 on the unknown flag). Only
+ * binaries without `server http` take that launch, and their `--help` lists the
+ * classic flags; newer ones move them to `--help-classic`.
+ */
+export function supportsTraceProcessorCorsOriginsFlag(binaryPath = getTraceProcessorPath()): boolean {
+  const help = readTraceProcessorHelp(binaryPath, ['--help']);
+  return help.includes('--http-additional-cors-origins') || help.includes('additional-cors');
+}
+
+/** Idle period after which a server whose owner is gone reaps itself. */
+const ORPHANED_SERVER_IDLE_TIMEOUT = '2s';
+
+function readTraceProcessorServerHelp(binaryPath: string): string {
+  return readTraceProcessorHelp(binaryPath, ['help', 'server']);
+}
+
+/**
+ * The HTTP RPC server launch for this binary.
+ *
+ * trace_processor_shell keeps an HTTP server alive forever by default, and the
+ * child of a Node process does not die with it: an owner that exits without
+ * destroying its processor (SIGKILL, a default-handled SIGTERM, a crash,
+ * `process.exit` under `jest --forceExit`) leaves the server under init,
+ * holding its port. `server http --idle-start orphaned` makes the server watch
+ * the parent that started it and reap itself once that parent is gone and it
+ * has been idle for ORPHANED_SERVER_IDLE_TIMEOUT; a live owner never loses it.
+ * That covers every exit, including those that run no cleanup hook.
+ *
+ * Only on POSIX for now. On Windows the server finds its owner by opening the
+ * parent's process handle; if that fails it treats itself as ownerless and,
+ * with `orphaned`, would reap a live backend's processor after two idle
+ * seconds. Until that path has run evidence, Windows starts a server that is
+ * not owner-bound and relies on the startup orphan sweep (killOrphanProcessors).
+ *
+ * A binary with `server http` uses it on every platform: without the idle flags
+ * its HTTP server never reaps itself, the classic lifetime. The classic
+ * `--httpd` form is only for binaries without it, because on binaries that
+ * have both it forwards each comma-separated CORS origin as a repeated
+ * `--additional-cors-origins` flag and only the last one survives.
+ */
+export function buildTraceProcessorHttpServerLaunch(input: {
+  binaryPath: string;
+  port: number;
+  tracePath: string;
+  /** Comma-separated origins. */
+  corsOrigins: string;
+  /** The process the server will see as its parent; defaults to this one. */
+  ownerPid?: number;
+  platform?: NodeJS.Platform;
+}): {ownerBound: boolean; args: string[]} {
+  const serverHelp = readTraceProcessorServerHelp(input.binaryPath);
+  if (!/^\s*--port\b/m.test(serverHelp)) {
+    return {
+      ownerBound: false,
+      args: [
+        '--httpd',
+        '--http-port', String(input.port),
+        ...(supportsTraceProcessorCorsOriginsFlag(input.binaryPath)
+          ? ['--http-additional-cors-origins', input.corsOrigins]
+          : []),
+        input.tracePath,
+      ],
+    };
+  }
+  // trace_processor_shell treats a parent of PID 1 as "no owner" and would arm
+  // the idle clock at once, reaping a live backend's processor whenever it
+  // idles. A backend running as a container's init is not owner-bound.
+  const ownerPid = input.ownerPid ?? process.pid;
+  const posix = (input.platform ?? process.platform) !== 'win32';
+  const ownerBound = posix && ownerPid > 1 &&
+    serverHelp.includes('--idle-start') && serverHelp.includes('--idle-timeout');
+  return {
+    ownerBound,
+    args: [
+      'server', 'http',
+      '--port', String(input.port),
+      ...(ownerBound ? ['--idle-timeout', ORPHANED_SERVER_IDLE_TIMEOUT, '--idle-start', 'orphaned'] : []),
+      ...(serverHelp.includes('--additional-cors-origins') ? ['--additional-cors-origins', input.corsOrigins] : []),
+      input.tracePath,
+    ],
+  };
+}
+
+let warnedTraceProcessorNotOwnerBound = false;
 
 export function isTraceProcessorReadyMessage(text: string): boolean {
   return text.includes('Starting HTTP server') ||
@@ -265,7 +354,7 @@ export function parseTraceProcessorProcessTable(
   return processes;
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -568,7 +657,8 @@ async function probeDedicatedHealthQuery(
  * A working Trace Processor that uses trace_processor_shell in HTTP mode.
  *
  * This implementation:
- * 1. Starts trace_processor_shell with --httpd flag
+ * 1. Starts trace_processor_shell as an HTTP RPC server bound to this process's
+ *    lifetime (see buildTraceProcessorHttpServerLaunch)
  * 2. Loads the trace file once at initialization
  * 3. Executes queries via HTTP requests (fast, no reload)
  * 4. Properly cleans up the process on destroy
@@ -598,6 +688,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     return this._httpPort;
   }
   private isDestroyed = false;
+  private portRetired = false;
   private serverReady = false;
   private _activeQueries = 0;
   private readonly sqlWorker: TraceProcessorSqlWorker;
@@ -776,16 +867,23 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     return new Promise((resolve, reject) => {
       // Build CORS origins string from config
       const corsOrigins = `${traceProcessorConfig.perfettoUiOrigin},${traceProcessorConfig.perfettoUiOrigin.replace('localhost', '127.0.0.1')}`;
-      const args = [
-        '--httpd',
-        '--http-port', String(this.httpPort),
-        // Only pass --http-additional-cors-origins when supported (added after v47);
-        // older binaries (≤v47) don't enforce CORS and exit with code 1 on unknown flags.
-        ...(supportsTraceProcessorCorsOriginsFlag(binarySelection.selectedPath) ? ['--http-additional-cors-origins', corsOrigins] : []),
-        this.tracePath
-      ];
-
       const traceProcessorPath = binarySelection.selectedPath;
+      const {ownerBound, args} = buildTraceProcessorHttpServerLaunch({
+        binaryPath: traceProcessorPath,
+        port: this.httpPort,
+        tracePath: this.tracePath,
+        corsOrigins,
+      });
+      if (!ownerBound && !warnedTraceProcessorNotOwnerBound) {
+        warnedTraceProcessorNotOwnerBound = true;
+        console.warn(
+          '[TraceProcessor] Starting a server that is not owner-bound (Windows, PID 1, or a ' +
+            'binary without `server http --idle-start`): a processor whose owner ' +
+            'exits without destroying it keeps running until the next backend start removes ' +
+            'orphaned processors.',
+        );
+      }
+
       console.log(`[TraceProcessor] Starting: ${traceProcessorPath} ${args.join(' ')}`);
 
       this.process = spawn(traceProcessorPath, args, {
@@ -1188,55 +1286,64 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     this.status = 'error';
     this.sqlWorker.destroy();
 
-    if (this.process) {
-      try {
-        const processorKey = this.processorKey;
-        const proc = this.process;
-        let released = false;
-        const releasePortOnce = (): void => {
-          if (released) return;
-          released = true;
-          getPortPool().release(processorKey);
-        };
+    this.stopProcessAndRetirePort();
+    this.removeAllListeners();
+  }
 
-        // Force kill after timeout (fallback).
-        const killTimer = setTimeout(() => {
-          if (!proc.killed) {
-            try {
-              proc.kill('SIGKILL');
-            } catch {
-              // ignore
-            }
-          }
-          // Ensure port is eventually released even if close event is missed.
-          releasePortOnce();
-        }, traceProcessorConfig.killTimeoutMs);
-
-        // Release the port as soon as the process actually exits.
-        // Also clears the kill timer to avoid late callbacks/noisy logs in tests.
-        proc.once('close', () => {
-          clearTimeout(killTimer);
-          releasePortOnce();
-        });
-
-        // In Jest, don't let this timer keep the event loop alive.
-        if (IS_TEST_ENV && typeof (killTimer as any).unref === 'function') {
-          (killTimer as any).unref();
-        }
-
-        // Try graceful shutdown last (after handlers are registered)
-        proc.kill('SIGTERM');
-      } catch (e) {
-        // Process may already be dead, still release port
-        getPortPool().release(this.processorKey);
-      }
-      this.process = null;
-    } else {
-      // No process, but still release port
-      getPortPool().release(this.processorKey);
+  /**
+   * Stop the process and return this instance's port exactly once, and only
+   * the port it allocated.
+   *
+   * destroy() can run twice (initialize() failure, then the factory's cleanup)
+   * and the factory can allocate a retry or replacement under the same key
+   * before the killed process exits. The key is therefore detached at once,
+   * while the port itself stays reserved until the process has exited.
+   */
+  private stopProcessAndRetirePort(): void {
+    // Null when the key no longer owns this port (a repeated destroy, or a pool
+    // reset); the process is still stopped, but nothing is returned to the pool.
+    const finishRetirement = this.portRetired ? null : getPortPool().retire(this.processorKey, this._httpPort);
+    this.portRetired = true;
+    const releaseRetiredPort = (): void => {finishRetirement?.();};
+    const proc = this.process;
+    this.process = null;
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
+      releaseRetiredPort();
+      return;
     }
 
-    this.removeAllListeners();
+    try {
+      // Force kill after timeout (fallback).
+      const killTimer = setTimeout(() => {
+        if (!proc.killed) {
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // ignore
+          }
+        }
+        // Ensure the port is eventually returned even if close event is missed.
+        releaseRetiredPort();
+      }, traceProcessorConfig.killTimeoutMs);
+
+      // Return the port as soon as the process actually exits.
+      // Also clears the kill timer to avoid late callbacks/noisy logs in tests.
+      proc.once('close', () => {
+        clearTimeout(killTimer);
+        releaseRetiredPort();
+      });
+
+      // In Jest, don't let this timer keep the event loop alive.
+      if (IS_TEST_ENV && typeof (killTimer as any).unref === 'function') {
+        (killTimer as any).unref();
+      }
+
+      // Try graceful shutdown last (after handlers are registered)
+      proc.kill('SIGTERM');
+    } catch {
+      // Process may already be dead; nothing else can hold the port.
+      releaseRetiredPort();
+    }
   }
 }
 
@@ -1354,16 +1461,14 @@ export class TraceProcessorFactory {
         this.processors.delete(processorKey);
 
         // Retry with a different port if the chosen port is already in use by another process.
+        // destroy() already detached this attempt's port from processorKey, so
+        // the next attempt allocates a different port. Never release by key
+        // here: that would free whatever a later attempt holds under the key.
         const msg = String(error?.message || '');
         if (msg.startsWith('PORT_IN_USE:')) {
-          const portStr = msg.split(':')[1];
-          const port = Number(portStr);
-          if (Number.isFinite(port)) {
-            getPortPool().blockPort(port);
-          } else {
-            // Fallback: release any allocation for this processor key so next attempt can allocate again.
-            getPortPool().release(processorKey);
-          }
+          const port = Number(msg.split(':')[1]);
+          // Another process owns it; keep it out of this pool for the process lifetime.
+          getPortPool().blockPort(Number.isInteger(port) ? port : processor.httpPort);
           continue;
         }
 

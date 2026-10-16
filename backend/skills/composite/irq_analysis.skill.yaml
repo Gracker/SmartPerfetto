@@ -625,7 +625,7 @@ steps:
         diagnosis: "中断负载较重 (总计 ${root_cause.data[0].total_irq_count} 次，耗时 ${root_cause.data[0].total_dur_ms}ms)"
         confidence: high
         suggestions:
-          - "检查高频中断源，评估是否可以合并或降频"
+          - "检查高频中断源，评估是否可以合并或降低其触发频率"
           - "使用 IRQ affinity 分散中断负载"
           - "检查网络和存储 IO 是否导致过多中断"
 

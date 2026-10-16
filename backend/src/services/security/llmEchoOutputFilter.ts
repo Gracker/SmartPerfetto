@@ -142,6 +142,11 @@ export class LLMEchoOutputStream {
     return this.overflowed;
   }
 
+  /** Output so far differs from its input: a replacement, a dropped unit, or overflow. */
+  get altered(): boolean {
+    return this.overflowed || this.redactedBytes > 0;
+  }
+
   registerSnippet(snippet: string, ref: CodeRef): void {
     this.assertActive();
     this.registerDerivedPatterns(snippet, ref);
@@ -157,6 +162,21 @@ export class LLMEchoOutputStream {
   registerPrivateSnippet(snippet: string, replacement: string): void {
     this.assertActive();
     this.registerDerivedPatterns(snippet, undefined, replacement);
+    this.sortPatterns();
+  }
+
+  /**
+   * Whole values matched exactly wherever they recur, with no derived windows
+   * and no length floor of their own: short names (a title, a heading, a
+   * relative path) that the derived windows never index. Callers bound how
+   * short a value may be.
+   */
+  registerPrivateValues(values: readonly string[], replacement: string): void {
+    this.assertActive();
+    for (const value of values) {
+      if (this.overflowed) break;
+      this.addPattern(value, 'exact', undefined, replacement);
+    }
     this.sortPatterns();
   }
 

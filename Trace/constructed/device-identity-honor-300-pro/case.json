@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "id": "device-identity-honor-300-pro",
+  "kind": "constructed",
+  "title": "HONOR 300 Pro device identity metadata",
+  "description": "Device identity only: replays the SystemInfo android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version that a HONOR 300 Pro capture recorded, over the android-startup-light real base. It is not a HONOR 300 Pro trace: apart from this identity and the case marker slice, every packet comes from the base.",
+  "scene": "general",
+  "purpose": "fixture",
+  "tags": [
+    "android",
+    "constructed",
+    "device-identity",
+    "metadata-only"
+  ],
+  "known_issues": [
+    "Derived metadata, not a device trace: only android_build_fingerprint, android_device_manufacturer, android_soc_model, android_sdk_version come from the HONOR 300 Pro capture; processes, scheduling, slices and all other metadata belong to the android-startup-light base.",
+    "The source capture is kept outside this repository. Its device serial number and every other per-unit identifier were removed; only build-level identity is kept."
+  ],
+  "aliases": [],
+  "trace": {
+    "file": "trace.overlay.pftrace",
+    "format": "perfetto-protobuf",
+    "sha256": "e7604cf5c6994be04080c1997aa0fa3d2517d585ca21ffc5ebf7d0df0222ebe0",
+    "materialization": "base-plus-overlay"
+  },
+  "android": {
+    "release": "16",
+    "api_level": 36,
+    "device": "HONOR 300 Pro identity over Google raven base",
+    "build_fingerprint": "HONOR/AMP-AN00/HNAMP:16/HONORAMP-AN00/10DLDLD111C00E110:user/release-keys",
+    "compatibility": {
+      "min_api": 36,
+      "max_api": 36
+    }
+  },
+  "source": {
+    "origin": "SmartPerfetto deterministic trace generator; device identity values copied from a maintainer device capture that is not committed",
+    "captured_at": null,
+    "imported_at": "2026-10-04T00:00:00.000Z",
+    "license": "AGPL-3.0-or-later",
+    "consent": "maintainer decision 2026-10-04: commit build-level device identity only",
+    "privacy_review": "approved",
+    "sanitization_review": "approved",
+    "publication": "public",
+    "evidence_tier": "R3"
+  },
+  "analysis": {
+    "results": [
+      "analysis/expected.json"
+    ],
+    "logs": []
+  },
+  "construction": {
+    "base_case_id": "android-startup-light",
+    "scenario_file": "scenario.json",
+    "generator_version": 1,
+    "seed": "device-identity-honor-300-pro-v1",
+    "output": "Trace/.generated/constructed/device-identity-honor-300-pro/trace.pftrace",
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+  },
+  "coverage": {
+    "skills": [],
+    "strategies": [],
+    "expectations": []
+  }
+}

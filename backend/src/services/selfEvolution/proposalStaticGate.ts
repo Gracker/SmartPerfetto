@@ -8,6 +8,7 @@ import {
   buildStrategyRegistrySnapshot,
   type StrategyRegistryContribution,
 } from '../../agentv3/strategyLoader';
+import type {StrategySkillInputs} from '../../agentv3/strategySkillCalls';
 import type {
   CurationProposalV1,
   ProposalCandidateMaterializationV1,
@@ -28,14 +29,20 @@ import {
   type EffectiveSkillCompositionResult,
 } from './effectiveSkillComposer';
 import {
+  PREDATING_RULE_CODES,
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
 } from './inProcessValidator';
+import {stepNodesOf} from '../skillEngine/skillSteps';
 import {
   parseProposalSqlRegressionProofV1,
   parseProposalCandidateMaterializationV1,
 } from './proposalGateContract';
-import {parseM6DraftProposal} from './proposalContract';
+import {
+  INERT_INJECTION_TARGET,
+  parseM6DraftProposal,
+  proposalTargetsInertInjection,
+} from './proposalContract';
 import {runManagedProposalSqlRegression} from './proposalSqlRegression';
 import {buildSkillRegistryAttribution} from './skillFingerprint';
 import type {ProposalBaseSnapshotV1} from './proposalSemanticGate';
@@ -68,7 +75,7 @@ export interface ProposalStaticGateOptions {
   };
   strategySnapshot?: {
     existingContributions?: readonly StrategyRegistryContribution[];
-    knownSkillIds: ReadonlySet<string>;
+    skills: ReadonlyMap<string, StrategySkillInputs>;
   };
   sqlRegression?: {
     repoRoot: string;
@@ -100,7 +107,9 @@ export async function validateProposalStatic(input: {
     throw new Error('static_validation_policy_fingerprint_invalid');
   }
 
-  if (proposal.kind === 'new_skill_draft') {
+  if (proposalTargetsInertInjection(proposal)) {
+    errors.add(INERT_INJECTION_TARGET);
+  } else if (proposal.kind === 'new_skill_draft') {
     const parsed = normalizeSkillDefinition(
       yaml.load(candidate.serializedContent),
       'proposal/new-skill.skill.yaml',
@@ -109,7 +118,7 @@ export async function validateProposalStatic(input: {
       errors.add('static_skill_yaml_invalid');
     } else {
       const existing = input.options.skillSnapshot?.definitions ?? [];
-      collectSkillValidation([...existing, parsed], errors, warnings);
+      collectSkillValidation([...existing, parsed], input.options.skillSnapshot?.fragments, errors, warnings, [parsed.name]);
     }
   } else if (
     proposal.kind === 'skill_overlay_delta'
@@ -145,10 +154,13 @@ export async function validateProposalStatic(input: {
           candidateComposition,
           snapshot,
         );
+        const target = (JSON.parse(candidate.serializedContent) as {baseSkillId?: unknown}).baseSkillId;
         collectSkillValidation(
           candidateComposition.skills,
+          snapshot.fragments,
           errors,
           warnings,
+          typeof target === 'string' ? [target] : [],
         );
       }
     }
@@ -158,6 +170,9 @@ export async function validateProposalStatic(input: {
       errors.add('static_effective_strategy_snapshot_unavailable');
     } else {
       try {
+        const contribution = JSON.parse(
+          candidate.serializedContent,
+        ) as StrategyRegistryContribution;
         const existing = buildStrategyRegistrySnapshot({
           scope: proposal.scope,
           overlayGeneration: proposal.expectedOverlayGeneration,
@@ -168,7 +183,7 @@ export async function validateProposalStatic(input: {
           overlayGeneration: proposal.expectedOverlayGeneration,
           contributions: [
             ...(snapshot.existingContributions ?? []),
-            JSON.parse(candidate.serializedContent),
+            contribution,
           ],
         });
         if (
@@ -179,11 +194,18 @@ export async function validateProposalStatic(input: {
         } else {
           effectiveRegistryFingerprint =
             candidateSnapshot.registryFingerprint;
+          // The candidate changes only its own scene; a published
+          // contribution elsewhere is not this proposal's to fix, and
+          // runtime composition still validates it.
           const validation = validateStrategyDefinitionsInProcess({
             definitions: candidateSnapshot.getAllStrategies(),
-            knownSkillIds: snapshot.knownSkillIds,
+            affectedScenes: [contribution.scene],
+            skills: snapshot.skills,
+            undeclaredSkillParamSeverity: 'error',
           });
-          for (const issue of validation.issues) errors.add(issue.code);
+          for (const issue of validation.issues) {
+            (issue.severity === 'error' ? errors : warnings).add(issue.code);
+          }
         }
       } catch {
         errors.add('static_effective_strategy_composition_invalid');
@@ -215,7 +237,15 @@ export async function validateProposalStatic(input: {
       ) {
         errors.add('static_skill_base_snapshot_mismatch');
       } else {
-        collectSkillValidation(existing.skills, errors, warnings);
+        // The candidate is SQL for one step: validate the registry that SQL
+        // would make, charging the target Skill with what it reads.
+        const delta = proposal.deltas[0];
+        const candidateSkills = withCandidateStepSql(existing.skills, delta, candidate.serializedContent);
+        if (typeof candidateSkills === 'string') {
+          errors.add(candidateSkills);
+        } else {
+          collectSkillValidation(candidateSkills, snapshot.fragments, errors, warnings, [delta.targetId]);
+        }
       }
     }
     const sql = candidate.serializedContent;
@@ -374,13 +404,64 @@ function skillRegistryFingerprint(
   }).registryFingerprint;
 }
 
+/**
+ * The registry as a `skill_sql` candidate would make it: the anchored step of
+ * the target Skill runs `sql`, step `root` naming an atomic Skill's top-level
+ * SQL as the Trace corpus does. The step must still run the SQL the proposal
+ * replaces; otherwise the error code says why there is nothing to replace.
+ */
+function withCandidateStepSql(
+  skills: readonly SkillDefinition[],
+  delta: {targetId: string; operationId: string; before?: string},
+  sql: string,
+): SkillDefinition[] | 'static_skill_sql_target_step_missing' | 'static_skill_sql_anchor_stale' {
+  const target = skills.find(skill => skill.name === delta.targetId);
+  if (!target) return 'static_skill_sql_target_step_missing';
+  const candidate = structuredClone(target);
+  let outcome: 'missing' | 'stale' | 'replaced' = 'missing';
+  const replace = (owner: {sql?: string}) => {
+    if (owner.sql !== delta.before) {
+      outcome = 'stale';
+      return;
+    }
+    owner.sql = sql;
+    outcome = 'replaced';
+  };
+  if (delta.operationId === 'root' && typeof candidate.sql === 'string') replace(candidate);
+  for (const {node: step} of stepNodesOf(candidate)) {
+    if (step.id === delta.operationId && 'sql' in step) replace(step);
+  }
+  if (outcome === 'missing') return 'static_skill_sql_target_step_missing';
+  if (outcome === 'stale') return 'static_skill_sql_anchor_stale';
+  return skills.map(skill => skill === target ? candidate : skill);
+}
+
+/**
+ * Validates the composed registry. A predating-rule finding (a saved-result
+ * read, unsupported heat or cap wording) the candidate did not write is not
+ * this proposal's to fix (a published overlay or pack may predate the rule),
+ * so it is a warning everywhere but in the Skills the candidate defines or
+ * changes.
+ */
 function collectSkillValidation(
   definitions: readonly SkillDefinition[],
+  // The snapshot's fragments: without them, fragment references and the
+  // stdlib reads inside fragments would go unchecked.
+  fragments: ReadonlyMap<string, string> | undefined,
   errors: Set<string>,
   warnings: Set<string>,
+  candidateSkillIds: readonly string[] = [],
 ): void {
-  const validation = validateSkillDefinitionsInProcess({definitions});
-  for (const issue of validation.issues) {
+  const fragmentCache = fragments ?? new Map<string, string>();
+  // Both passes read the same registry; its evidence readers are computed once (registryCauseWordingReaders).
+  const issues = [
+    ...validateSkillDefinitionsInProcess({definitions, fragmentCache, predatingRuleSeverity: 'warning'}).issues,
+    ...(candidateSkillIds.length > 0
+      ? validateSkillDefinitionsInProcess({definitions, fragmentCache, affectedSkillIds: candidateSkillIds}).issues
+        .filter(issue => PREDATING_RULE_CODES.has(issue.code))
+      : []),
+  ];
+  for (const issue of issues) {
     if (issue.severity === 'error') errors.add(issue.code);
     else warnings.add(issue.code);
   }

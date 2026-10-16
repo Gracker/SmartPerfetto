@@ -14,9 +14,8 @@ import {
 } from '../../types/multiTraceComparison';
 import {
   authenticate,
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
 } from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID} from '../../utils/localDevIdentity';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
@@ -27,6 +26,10 @@ import analysisResultRoutes from '../analysisResultRoutes';
 import comparisonRoutes from '../comparisonRoutes';
 import { reportStore } from '../reportRoutes';
 import workspaceWindowRoutes from '../workspaceWindowRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalComparisonAiDisabled = process.env.SMARTPERFETTO_COMPARISON_AI_DISABLED;
@@ -42,7 +45,7 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function app(): express.Express {
+async function app() {
   const server = express();
   server.use(express.json());
   server.use(
@@ -66,7 +69,7 @@ function app(): express.Express {
     requireWorkspaceRouteContext,
     comparisonRoutes,
   );
-  return server;
+  return loopbackServers.listen(server);
 }
 
 function metrics(startupMs: number): NormalizedMetricValue[] {
@@ -94,6 +97,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSna
     runId: 'run-current',
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze startup',
@@ -177,6 +181,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   restoreEnvValue('SMARTPERFETTO_ENTERPRISE_DB_PATH', originalDbPath);
   restoreEnvValue('SMARTPERFETTO_COMPARISON_AI_DISABLED', originalComparisonAiDisabled);
   reportStore.clear();
@@ -185,7 +190,7 @@ afterEach(async () => {
 
 describe('analysis result comparison flow', () => {
   test('supports current window result comparison against one active peer window result', async () => {
-    const server = app();
+    const server = await app();
 
     await request(server)
       .post('/api/workspaces/workspace-a/windows/window-other/heartbeat')

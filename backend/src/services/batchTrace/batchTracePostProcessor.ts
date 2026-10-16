@@ -15,6 +15,7 @@ import {
   type BatchTraceResultStatus,
 } from './batchTraceTypes';
 import { clusterHeapPaths } from './heapPathClusterService';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 export interface BatchPostProcessorTraceInput {
   ordinal: number;
@@ -64,7 +65,7 @@ function evidenceValue(value: unknown): BatchTraceDomainEvidenceValue {
 function rowRecord(row: unknown, columns: string[]): Record<string, unknown> | null {
   if (isRecord(row)) return row;
   if (!Array.isArray(row) || columns.length === 0) return null;
-  return Object.fromEntries(columns.map((column, index) => [column, row[index]]));
+  return rowObject(columns, row);
 }
 
 function envelopeRows(envelope: DataEnvelope): {columns: string[]; rows: unknown[]} {

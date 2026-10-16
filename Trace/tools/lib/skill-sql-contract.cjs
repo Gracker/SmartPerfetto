@@ -1,273 +1,74 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-const crypto = require('node:crypto');
+// The SQL contract of each built-in Skill, read from the committed
+// Trace/skill-sql.inventory.json. The backend generates it with the readers
+// the runtime and the validator use (backend/src/services/skillEngine/
+// skillSqlInventory.ts: executableSqlUnits, sqlScopeDeclarationError,
+// boundSqlPlaceholders, the structural SQL readers, SKILL_LAYOUT), and
+// `validate:skills` fails when it is stale. This file only reads it: it keeps
+// no SQL parser, unit walk or scope check of its own, so the tooling runs on a
+// clean checkout without the TypeScript build.
 
-function sqlSha256(sql) {
-  return crypto.createHash('sha256').update(String(sql)).digest('hex');
-}
+const fs = require('node:fs');
+const path = require('node:path');
 
-function displayColumns(display) {
-  if (!display || display === false || !Array.isArray(display.columns)) return [];
-  return [...new Set(display.columns
-    .map((column) => column?.name)
-    .filter((name) => typeof name === 'string' && name.trim() !== ''))];
-}
+const INVENTORY_FILE = 'Trace/skill-sql.inventory.json';
+const INVENTORY_SCHEMA_VERSION = 1;
 
-function maskSqlLiteralsAndComments(sql) {
-  let out = '';
-  let index = 0;
-  while (index < sql.length) {
-    const char = sql[index];
-    const next = sql[index + 1];
-    if (char === '-' && next === '-') {
-      while (index < sql.length && sql[index] !== '\n') {
-        out += ' ';
-        index += 1;
-      }
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      out += '  ';
-      index += 2;
-      while (index < sql.length && !(sql[index] === '*' && sql[index + 1] === '/')) {
-        out += sql[index] === '\n' ? '\n' : ' ';
-        index += 1;
-      }
-      if (index < sql.length) {
-        out += '  ';
-        index += 2;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"' || char === '`') {
-      const quote = char;
-      out += ' ';
-      index += 1;
-      while (index < sql.length) {
-        if (sql[index] === quote) {
-          if (sql[index + 1] === quote) {
-            out += '  ';
-            index += 2;
-            continue;
-          }
-          out += ' ';
-          index += 1;
-          break;
-        }
-        out += sql[index] === '\n' ? '\n' : ' ';
-        index += 1;
-      }
-      continue;
-    }
-    out += char;
-    index += 1;
+function loadSkillSqlInventory(repoRoot) {
+  const filePath = path.join(repoRoot, INVENTORY_FILE);
+  let inventory;
+  try {
+    inventory = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    throw new Error(`${INVENTORY_FILE} is missing or invalid (run: npm --prefix backend run generate:skill-sql-inventory): ${error.message}`);
   }
-  return out;
-}
-
-function projectedColumns(sql) {
-  const masked = maskSqlLiteralsAndComments(String(sql));
-  let depth = 0;
-  let selectEnd = -1;
-  let fromStart = -1;
-  for (let index = 0; index < masked.length;) {
-    const char = masked[index];
-    if (char === '(') {
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (char === ')') {
-      depth = Math.max(0, depth - 1);
-      index += 1;
-      continue;
-    }
-    if (depth === 0 && /[A-Za-z_]/.test(char)) {
-      const match = masked.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/);
-      const word = match[0];
-      const upper = word.toUpperCase();
-      if (selectEnd < 0 && upper === 'SELECT') selectEnd = index + word.length;
-      else if (selectEnd >= 0 && upper === 'FROM') {
-        fromStart = index;
-        break;
-      }
-      index += word.length;
-      continue;
-    }
-    index += 1;
+  if (inventory?.schemaVersion !== INVENTORY_SCHEMA_VERSION || !inventory.skills || !inventory.layout) {
+    throw new Error(`${INVENTORY_FILE} has an unsupported schema; run: npm --prefix backend run generate:skill-sql-inventory`);
   }
-  if (selectEnd < 0) return [];
-  const end = fromStart >= 0 ? fromStart : masked.length;
-  const projectionMasked = masked.slice(selectEnd, end);
-  const projectionSource = String(sql).slice(selectEnd, end);
-  const expressions = [];
-  let expressionStart = 0;
-  depth = 0;
-  for (let index = 0; index <= projectionMasked.length; index += 1) {
-    const char = projectionMasked[index];
-    if (char === '(') depth += 1;
-    else if (char === ')') depth = Math.max(0, depth - 1);
-    if ((char === ',' && depth === 0) || index === projectionMasked.length) {
-      expressions.push(projectionSource.slice(expressionStart, index).trim());
-      expressionStart = index + 1;
-    }
-  }
-  const reserved = new Set(['ASC', 'DESC', 'END', 'NULL', 'TRUE', 'FALSE']);
-  return [...new Set(expressions.map((expression) => {
-    const asAlias = expression.match(/\bAS\s+["`\[]?([A-Za-z_][A-Za-z0-9_$]*)["`\]]?\s*$/i);
-    if (asAlias) return asAlias[1];
-    const identifier = expression.match(/^(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_$]*)\s*$/);
-    if (identifier) return identifier[1];
-    const bareAlias = expression.match(/\s+([A-Za-z_][A-Za-z0-9_$]*)\s*$/);
-    if (bareAlias && !reserved.has(bareAlias[1].toUpperCase())) return bareAlias[1];
-    return null;
-  }).filter(Boolean))];
+  return inventory;
 }
 
-function resultColumns(sql, display) {
-  const declared = displayColumns(display);
-  return declared.length > 0 ? declared : projectedColumns(sql);
-}
-
-function isReadOnlySql(sql) {
-  const withoutComments = String(sql).replace(/--.*$/gm, '').trim();
-  const withoutIncludes = withoutComments.replace(
-    /^(?:INCLUDE\s+PERFETTO\s+MODULE\s+[^;]+;\s*)+/i,
-    '',
-  );
-  if (!/^(SELECT|WITH)\b/i.test(withoutIncludes)) return false;
-  return !/\b(?:ALTER|ATTACH|CREATE|DELETE|DETACH|DROP|INSERT|PRAGMA|REPLACE|UPDATE|VACUUM)\b/i
-    .test(withoutIncludes);
-}
-
-function collectStepSql(steps) {
-  const sqlSteps = [];
-  const topLevelSqlIndexes = new Set();
-  const visit = (step, topLevelIndex) => {
-    if (!step || typeof step !== 'object') return;
-    if (typeof step.sql === 'string' && step.sql.trim() !== '') {
-      sqlSteps.push({
-        id: step.id,
-        sql: step.sql,
-        condition: typeof step.condition === 'string' ? step.condition : null,
-        process_scope: step.process_scope,
-        sql_fragments: step.sql_fragments,
-        topLevelIndex,
-        requiredColumns: resultColumns(step.sql, step.display),
-      });
-      topLevelSqlIndexes.add(topLevelIndex);
-    }
-    for (const child of Array.isArray(step.steps) ? step.steps : []) visit(child, topLevelIndex);
-    for (const condition of Array.isArray(step.conditions) ? step.conditions : []) {
-      if (condition?.then && typeof condition.then === 'object') visit(condition.then, topLevelIndex);
-    }
-    if (step.else && typeof step.else === 'object') visit(step.else, topLevelIndex);
-  };
-  steps.forEach((step, index) => visit(step, index));
-  return {sqlSteps, topLevelSqlIndexes};
-}
-
-function referencedSqlVariables(sql) {
-  return [...String(sql).matchAll(/\$\{([^}]+)\}/g)].map((match) => {
-    const expression = match[1].trim();
-    return {token: match[0], name: expression.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:(?:\.|\[|\?)|(?:\|[^}]*$)|$)/)?.[1]
-      ?? null};
-  });
-}
-
-function hasRuntimeProcessScopeBinding(step) {
-  const scope = step.process_scope;
-  if (!scope || typeof scope !== 'object' || Array.isArray(scope) ||
-      Object.keys(scope).some(key => !['role', 'binding', 'context_fields', 'exact_unavailable', 'limitations'].includes(key)) ||
-      !['target', 'global_context', 'peer_context', 'identity_metadata'].includes(scope.role)) return false;
-  if (scope.exact_unavailable !== undefined) {
-    return typeof scope.exact_unavailable === 'string' && scope.exact_unavailable.trim().length > 0;
-  }
-  if (scope.context_fields !== undefined && (!scope.context_fields || typeof scope.context_fields !== 'object' ||
-      Array.isArray(scope.context_fields) || Object.entries(scope.context_fields).some(([role, fields]) =>
-        !['global_context', 'peer_context', 'identity_metadata'].includes(role) || !Array.isArray(fields) ||
-        fields.some(field => typeof field !== 'string' || !field.trim())))) return false;
-  if (scope.limitations !== undefined && (!Array.isArray(scope.limitations) ||
-      scope.limitations.some(reason => typeof reason !== 'string' || !reason.trim()))) return false;
-  if (scope.role !== 'target') return scope.binding === undefined;
-  const executableSql = maskSqlLiteralsAndComments(step.sql);
-  if (scope.binding === 'native_upid') return executableSql.includes('${__process_scope.upid}');
-  return scope.binding === 'effective_target_processes' &&
-    Array.isArray(step.sql_fragments) && step.sql_fragments.includes('fragments/effective_target_processes.sql') &&
-    /\b(?:FROM|JOIN)\s+effective_target_processes\b/i.test(executableSql);
-}
-
-function producedVariablesBefore(steps, topLevelIndex) {
-  const names = new Set();
-  for (const step of steps.slice(0, topLevelIndex)) {
-    if (!step || typeof step !== 'object') continue;
-    if (typeof step.id === 'string' && step.id) names.add(step.id);
-    if (typeof step.save_as === 'string' && step.save_as) names.add(step.save_as);
-  }
-  return names;
-}
-
-function skillSqlContract(definition) {
-  const steps = Array.isArray(definition?.steps) ? definition.steps : [];
-  const hasRootSql = typeof definition?.sql === 'string' && definition.sql.trim() !== '';
-  const {sqlSteps, topLevelSqlIndexes} = collectStepSql(steps);
-  const inputNames = new Set(
-    (Array.isArray(definition?.inputs) ? definition.inputs : [])
-      .map((input) => input?.name)
-      .filter(Boolean),
-  );
-  const canForceProbe = (step) => {
-    const availableNames = producedVariablesBefore(steps, step.topLevelIndex);
-    return isReadOnlySql(step.sql)
-      && referencedSqlVariables(step.sql).every(({name, token}) =>
-        name === '__process_scope'
-          ? token === '${__process_scope.upid}' && hasRuntimeProcessScopeBinding(step)
-          : name !== null && (inputNames.has(name) || availableNames.has(name)));
-  };
-  const stepSqlIds = sqlSteps.map((step) => step.id).filter(Boolean);
-  const sqlIds = [...(hasRootSql ? ['root'] : []), ...stepSqlIds];
-  const sqlSourceSteps = [
-    ...(hasRootSql ? [{
-      id: 'root',
-      sha256: sqlSha256(definition.sql),
-      requiredColumns: resultColumns(definition.sql, definition.display),
-    }] : []),
-    ...sqlSteps.map((step) => ({
-      id: step.id,
-      sha256: sqlSha256(step.sql),
-      requiredColumns: step.requiredColumns,
-    })),
-  ];
-  const declaredModules = [...new Set(
-    (Array.isArray(definition?.prerequisites?.modules)
-      ? definition.prerequisites.modules
-      : [])
-      .filter((moduleName) => typeof moduleName === 'string' && moduleName.trim() !== ''),
-  )].sort();
-  const forcedSqlStepIds = sqlSteps
-      .filter((step) => step.condition && canForceProbe(step))
-      .map((step) => step.id)
-      .filter(Boolean);
-  const conditionOnlySqlStepIds = sqlSteps
-      .filter((step) => step.condition && !canForceProbe(step))
-      .map((step) => step.id)
-      .filter(Boolean);
-  const lastSqlTopLevelIndex = topLevelSqlIndexes.size > 0
-    ? Math.max(...topLevelSqlIndexes)
-    : -1;
+/**
+ * The contract the corpus checks of one inventory entry: the SQL the executor
+ * runs as written (root SQL, or each SQL step at any depth with its top-level
+ * step), its hashes and result columns, and which conditional SQL the corpus
+ * may force (read-only, every placeholder resolvable) or must leave to its
+ * production branch.
+ */
+function skillSqlContract(entry) {
+  const units = Array.isArray(entry?.units) ? entry.units : [];
+  const rootUnit = units.find((unit) => unit.id === 'root');
+  const sqlSteps = units.filter((unit) => unit !== rootUnit).map((unit) => ({
+    id: unit.id ?? undefined,
+    topLevelIndex: unit.top_level_index,
+    hasCondition: unit.has_condition === true,
+    forceable: unit.forceable === true,
+    requiredColumns: unit.required_columns,
+  }));
+  const conditional = (forceable) => sqlSteps
+    .filter((step) => step.hasCondition && step.forceable === forceable)
+    .map((step) => step.id)
+    .filter(Boolean);
+  const topLevelIndexes = sqlSteps.map((step) => step.topLevelIndex);
   return {
-    hasRootSql,
+    hasRootSql: Boolean(rootUnit),
     hasStepSql: sqlSteps.length > 0,
-    steps,
+    unexecutedSql: entry?.unexecuted_sql === true,
+    topLevelStepIds: Array.isArray(entry?.top_level_steps) ? entry.top_level_steps : [],
     sqlSteps,
-    sqlIds,
-    sqlSourceSteps,
-    declaredModules,
-    forcedSqlStepIds,
-    conditionOnlySqlStepIds,
-    lastSqlTopLevelIndex,
+    sqlIds: [...(rootUnit ? ['root'] : []), ...sqlSteps.map((step) => step.id).filter(Boolean)],
+    sqlSourceSteps: units.map((unit) => ({
+      id: unit.id ?? undefined,
+      sha256: unit.sha256,
+      requiredColumns: unit.required_columns,
+    })),
+    declaredModules: Array.isArray(entry?.declared_modules) ? entry.declared_modules : [],
+    forcedSqlStepIds: conditional(true),
+    conditionOnlySqlStepIds: conditional(false),
+    lastSqlTopLevelIndex: topLevelIndexes.length > 0 ? Math.max(...topLevelIndexes) : -1,
   };
 }
 
-module.exports = {isReadOnlySql, skillSqlContract};
+module.exports = {INVENTORY_FILE, loadSkillSqlInventory, skillSqlContract};

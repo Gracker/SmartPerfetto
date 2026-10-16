@@ -6,7 +6,13 @@ import os from 'os';
 
 import { uuidv4 } from '../../utils/uuid';
 import logger from '../../utils/logger';
-import { ProviderStore } from './providerStore';
+import {
+  ProviderStore,
+  ProviderStoreUnreadableError,
+  type ProviderStoreStatus,
+} from './providerStore';
+import { invalidProviderRequest, providerNotFound } from './providerRequestError';
+import { isPlainJsonObject } from '../../utils/isPlainJsonObject';
 import type {
   AgentRuntimeKind,
   OpenAIProtocol,
@@ -33,6 +39,7 @@ import type {
   ProviderMutationScope,
 } from './providerMutationGeneration';
 import {isPiProviderEnvKey, isQoderByokEnvKey} from './envIsolation';
+import { withoutRetiredTuning } from './retiredTuning';
 
 const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'apiKey',
@@ -90,14 +97,14 @@ function assertSafeCustomEnvOverrides(
     const piRuntimeOverride = runtime === 'pi-agent-core' && isPiProviderEnvKey(key);
     const qoderByokOverride = runtime === 'qoder-agent-sdk' && isQoderByokEnvKey(key);
     if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key) && !piRuntimeOverride && !qoderByokOverride) {
-      throw new Error(`Custom provider env override is not allowed: ${key}`);
+      throw invalidProviderRequest(`Custom provider env override is not allowed: ${key}`);
     }
     if (qoderByokOverride && key === 'QODER_BYOK_BASE_URL') {
       let url: URL;
       try {
         url = new URL(value);
       } catch {
-        throw new Error(
+        throw invalidProviderRequest(
           'QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment',
         );
       }
@@ -108,7 +115,7 @@ function assertSafeCustomEnvOverrides(
         || url.search
         || url.hash
       ) {
-        throw new Error(
+        throw invalidProviderRequest(
           'QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment',
         );
       }
@@ -192,7 +199,7 @@ function assertCredentialsReconfirmedForEndpointChange(
     if (!existing[field]) continue;
     const replacement = input[field];
     if (replacement === undefined || String(replacement).startsWith('****')) {
-      throw new Error(
+      throw invalidProviderRequest(
         `Provider endpoint origin changed; re-enter or clear credential field '${field}'`,
       );
     }
@@ -211,6 +218,10 @@ export class ProviderService {
       host: os.hostname(),
     };
     this.store.load();
+  }
+
+  getStoreStatus(): ProviderStoreStatus {
+    return this.store.getStatus();
   }
 
   list(scope?: ProviderScope): ProviderConfig[] {
@@ -237,14 +248,16 @@ export class ProviderService {
   ];
 
   create(input: ProviderCreateInput, scope?: ProviderScope): ProviderConfig {
-    if (!input.name?.trim()) throw new Error('Provider name is required');
-    if (!input.type) throw new Error('Provider type is required');
+    if (!isPlainJsonObject(input as unknown)) throw invalidProviderRequest('Request body must be an object');
+    if (typeof input.name !== 'string' || !input.name.trim()) throw invalidProviderRequest('Provider name is required');
+    if (!input.type) throw invalidProviderRequest('Provider type is required');
     if (!ProviderService.VALID_TYPES.includes(input.type as ProviderType)) {
-      throw new Error(`Invalid provider type: ${input.type}. Must be one of: ${ProviderService.VALID_TYPES.join(', ')}`);
+      throw invalidProviderRequest(`Invalid provider type: ${input.type}. Must be one of: ${ProviderService.VALID_TYPES.join(', ')}`);
     }
     if (!input.models?.primary || !input.models?.light) {
-      throw new Error('models.primary and models.light are required');
+      throw invalidProviderRequest('models.primary and models.light are required');
     }
+    if (!isPlainJsonObject(input.connection as unknown)) throw invalidProviderRequest('connection is required');
     this.assertRuntimeSupported(input.type, input.connection.agentRuntime);
     assertSafeCustomEnvOverrides(
       input.custom,
@@ -262,7 +275,7 @@ export class ProviderService {
       updatedAt: now,
       models: input.models,
       connection: input.connection,
-      ...(input.tuning ? { tuning: input.tuning } : {}),
+      ...(input.tuning ? { tuning: withoutRetiredTuning(input.tuning) } : {}),
       ...(input.custom ? { custom: input.custom } : {}),
     };
 
@@ -276,11 +289,21 @@ export class ProviderService {
   }
 
   update(id: string, input: ProviderUpdateInput, scope?: ProviderScope): ProviderConfig {
+    if (!isPlainJsonObject(input as unknown)) throw invalidProviderRequest('Request body must be an object');
+    if (input.name !== undefined && typeof input.name !== 'string') {
+      throw invalidProviderRequest('Provider name must be a string');
+    }
+    if (input.models !== undefined && !isPlainJsonObject(input.models as unknown)) {
+      throw invalidProviderRequest('models must be an object');
+    }
+    if (input.connection !== undefined && !isPlainJsonObject(input.connection as unknown)) {
+      throw invalidProviderRequest('connection must be an object');
+    }
     return this.runProviderMutation(
       () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
       () => {
         const existing = this.store.get(id, scope);
-        if (!existing) throw new Error(`Provider not found: ${id}`);
+        if (!existing) throw providerNotFound(id);
 
         const updated: ProviderConfig = {
           ...existing,
@@ -302,7 +325,7 @@ export class ProviderService {
           }
           updated.connection = merged;
         }
-        if (input.tuning !== undefined) updated.tuning = input.tuning ?? undefined;
+        if (input.tuning !== undefined) updated.tuning = withoutRetiredTuning(input.tuning) ?? undefined;
         if (input.custom !== undefined) {
           updated.custom = input.custom ?? undefined;
         }
@@ -319,9 +342,9 @@ export class ProviderService {
       () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
       () => {
         const existing = this.store.get(id, scope);
-        if (!existing) throw new Error(`Provider not found: ${id}`);
+        if (!existing) throw providerNotFound(id);
         if (existing.isActive) {
-          throw new Error('Cannot delete the active provider. Deactivate or switch first.');
+          throw invalidProviderRequest('Cannot delete the active provider. Deactivate or switch first.');
         }
         this.store.delete(id, scope);
       },
@@ -333,10 +356,10 @@ export class ProviderService {
       () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
       () => {
         const existing = this.store.get(id, scope);
-        if (!existing) throw new Error(`Provider not found: ${id}`);
+        if (!existing) throw providerNotFound(id);
         const version = this.store.rotateSecret(id, scope);
         if (version === undefined) {
-          throw new Error('Secret rotation is only available for the enterprise provider store');
+          throw invalidProviderRequest('Secret rotation is only available for the enterprise provider store');
         }
         return version;
       },
@@ -348,7 +371,7 @@ export class ProviderService {
       () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
       () => {
         const target = this.store.get(id, scope);
-        if (!target) throw new Error(`Provider not found: ${id}`);
+        if (!target) throw providerNotFound(id);
 
         const current = this.store.getActivePeer(id, scope);
         if (current && current.id !== id) {
@@ -369,6 +392,9 @@ export class ProviderService {
   }
 
   deactivateAll(scope?: ProviderScope): void {
+    // An unreadable store has no visible active provider; succeeding here would
+    // leave the file's active profile in place once it is repaired.
+    this.store.assertWritable();
     const current = this.store.getActiveWriteScope(scope);
     if (current) {
       this.runProviderMutation(
@@ -392,19 +418,19 @@ export class ProviderService {
 
   switchAgentRuntime(id: string, runtime: AgentRuntimeKind, scope?: ProviderScope): ProviderConfig {
     if (!isAgentRuntimeKind(runtime)) {
-      throw new Error(`Invalid agent runtime: ${runtime}`);
+      throw invalidProviderRequest(`Invalid agent runtime: ${runtime}`);
     }
     return this.update(id, { connection: { agentRuntime: runtime } }, scope);
   }
 
   getEffectiveEnv(scope?: ProviderScope): Record<string, string> | null {
-    const active = this.store.getActive(scope);
+    const active = this.getRawEffectiveProvider(scope);
     if (!active) return null;
     return this.toEnvVars(active);
   }
 
   getEnvForProvider(id: string, scope?: ProviderScope): Record<string, string> | null {
-    const provider = this.store.get(id, scope);
+    const provider = this.getRawProvider(id, scope);
     if (!provider) return null;
     return this.toEnvVars(provider);
   }
@@ -414,12 +440,30 @@ export class ProviderService {
     return this.toEnvVars(provider);
   }
 
+  /**
+   * The active provider an analysis without an explicit provider follows
+   * (undefined: none, so the env/default runtime applies).
+   */
   getRawEffectiveProvider(scope?: ProviderScope): ProviderConfig | undefined {
-    return this.store.getActive(scope);
+    return this.readAnalysisProvider(undefined, scope);
   }
 
+  /** The provider an analysis pinned to `id` uses (undefined: deleted). */
   getRawProvider(id: string, scope?: ProviderScope): ProviderConfig | undefined {
-    return this.store.get(id, scope);
+    return this.readAnalysisProvider(id, scope);
+  }
+
+  /**
+   * While providers.json is unreadable, the provider an analysis would use is
+   * unknown, not absent: the file may name a gateway env does not reach, and a
+   * pinned profile may still be in it. Throwing `ProviderStoreUnreadableError`
+   * keeps callers from falling back to env or treating a pin as deleted.
+   * `providerId: null` (explicit env) never reads the store.
+   */
+  private readAnalysisProvider(id: string | undefined, scope?: ProviderScope): ProviderConfig | undefined {
+    const read = this.store.readProvider(id, scope);
+    if (read.status === 'unreadable') throw new ProviderStoreUnreadableError('read');
+    return read.provider;
   }
 
   getMutationGeneration(
@@ -455,6 +499,8 @@ export class ProviderService {
     begin: () => ProviderMutationLease,
     operation: () => T,
   ): T {
+    // Refuse before the lease, which would otherwise bump the mutation generation.
+    this.store.assertWritable();
     const lease = begin();
     try {
       const result = operation();
@@ -714,10 +760,8 @@ export class ProviderService {
       if (provider.tuning?.maxBudgetUsd) env.CLAUDE_MAX_BUDGET_USD = String(provider.tuning.maxBudgetUsd);
       if (provider.tuning?.fullPerTurnMs) env.CLAUDE_FULL_PER_TURN_MS = String(provider.tuning.fullPerTurnMs);
       if (provider.tuning?.quickPerTurnMs) env.CLAUDE_QUICK_PER_TURN_MS = String(provider.tuning.quickPerTurnMs);
-      if (provider.tuning?.verifierTimeoutMs) env.CLAUDE_VERIFIER_TIMEOUT_MS = String(provider.tuning.verifierTimeoutMs);
       if (provider.tuning?.classifierTimeoutMs) env.CLAUDE_CLASSIFIER_TIMEOUT_MS = String(provider.tuning.classifierTimeoutMs);
       if (provider.tuning?.enableSubAgents !== undefined) env.CLAUDE_ENABLE_SUB_AGENTS = String(provider.tuning.enableSubAgents);
-      if (provider.tuning?.enableVerification !== undefined) env.CLAUDE_ENABLE_VERIFICATION = String(provider.tuning.enableVerification);
     }
 
     return env;

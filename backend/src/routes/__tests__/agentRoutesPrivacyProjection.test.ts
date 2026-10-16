@@ -2,37 +2,143 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {afterEach, describe, expect, it, jest} from '@jest/globals';
+import {beforeEach, afterAll, afterEach, beforeAll, describe, expect, it, jest} from '@jest/globals';
 import {EventEmitter} from 'events';
+import express from 'express';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import request from 'supertest';
 import ts from 'typescript';
-import {
-  agentRoutesPrivacyProjectionTestSeam,
-  agentRoutesReceiptTestSeam,
-  agentRoutesCancellationTestSeam,
-} from '../agentRoutes';
-import {
-  clearCodeAwareOutputGuards,
-  registerCodeAwareCanary,
-  sanitizeCodeAwareText,
-} from '../../services/security/codeAwareOutputRegistry';
-import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
-import {ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} from '../../services/enterpriseDb';
-import {resetAnalysisRunStoreForTests} from '../../services/analysisRunStore';
-import {resetAgentEventStoreForTests} from '../../services/agentEventStore';
-import {routeAdaptiveEvidencePreflight} from '../../agentRuntime/adaptiveEvidenceRouter';
-import {createDataEnvelope} from '../../types/dataContract';
-import * as claimPreparation from '../../services/evidence/analysisRelationPreparation';
-import * as qualityGate from '../../services/finalResultQualityGate';
-import * as finalizer from '../../services/finalizeAnalysisResult';
-import * as reportRoutes from '../reportRoutes';
-import * as snapshots from '../../services/analysisResultSnapshotPipeline';
-import * as eventStore from '../../services/agentEventStore';
-import {SessionPersistenceService} from '../../services/sessionPersistenceService';
-import {registerAgentReportRoutes} from '../agentReportRoutes';
-import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
+let agentRoutes: typeof import('../agentRoutes').default;
+let agentRoutesPrivacyProjectionTestSeam: typeof import('../agentRoutes')['agentRoutesPrivacyProjectionTestSeam'];
+let agentRoutesReceiptTestSeam: typeof import('../agentRoutes')['agentRoutesReceiptTestSeam'];
+let agentRoutesCancellationTestSeam: typeof import('../agentRoutes')['agentRoutesCancellationTestSeam'];
+let clearCodeAwareOutputGuards: typeof import('../../services/security/codeAwareOutputRegistry')['clearCodeAwareOutputGuards'];
+let registerCodeAwareCanary: typeof import('../../services/security/codeAwareOutputRegistry')['registerCodeAwareCanary'];
+let sanitizeCodeAwareText: typeof import('../../services/security/codeAwareOutputRegistry')['sanitizeCodeAwareText'];
+let ENTERPRISE_FEATURE_FLAG_ENV: typeof import('../../config')['ENTERPRISE_FEATURE_FLAG_ENV'];
+let ENTERPRISE_DB_PATH_ENV: typeof import('../../services/enterpriseDb')['ENTERPRISE_DB_PATH_ENV'];
+let openEnterpriseDb: typeof import('../../services/enterpriseDb')['openEnterpriseDb'];
+let resetAnalysisRunStoreForTests: typeof import('../../services/analysisRunStore')['resetAnalysisRunStoreForTests'];
+let resetAgentEventStoreForTests: typeof import('../../services/agentEventStore')['resetAgentEventStoreForTests'];
+let routeAdaptiveEvidencePreflight: typeof import('../../agentRuntime/adaptiveEvidenceRouter')['routeAdaptiveEvidencePreflight'];
+let createDataEnvelope: typeof import('../../types/dataContract')['createDataEnvelope'];
+let claimPreparation: typeof import('../../services/evidence/analysisRelationPreparation');
+let qualityGate: typeof import('../../services/finalResultQualityGate');
+let finalizer: typeof import('../../services/finalizeAnalysisResult');
+let reportRoutes: typeof import('../reportRoutes');
+let snapshots: typeof import('../../services/analysisResultSnapshotPipeline');
+let eventStore: typeof import('../../services/agentEventStore');
+let traceMetadataStore: typeof import('../../services/traceMetadataStore');
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService')['SessionPersistenceService'];
+let registerAgentReportRoutes: typeof import('../agentReportRoutes')['registerAgentReportRoutes'];
+let analysisDeliveryFingerprint: typeof import('../../types/analysisDelivery')['analysisDeliveryFingerprint'];
+let analysisHasPrivateContext: typeof import('../../services/security/analysisPrivateContext')['analysisHasPrivateContext'];
+let resetConversationSessionStoreForTests: typeof import('../../services/conversationSessionStore')['resetConversationSessionStoreForTests'];
+let resetProviderService: typeof import('../../services/providerManager')['resetProviderService'];
+let resetAnalysisHistoryStoreForTests: typeof import('../../services/analysisHistoryStore')['resetAnalysisHistoryStoreForTests'];
+let resetRunManifestStoreForTests: typeof import('../../services/selfEvolution/runManifestStore')['resetRunManifestStoreForTests'];
+
+const fixtureEnvKeys = ['SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE', 'SCENE_REPORT_DIR',
+  'SCENE_JOB_ARTIFACT_DIR', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR'] as const;
+const fixtureOriginalEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let caseRoot: string;
+const caseRoots = new Set<string>();
+let cleanupFailed = false;
+
+function useFixturePaths(root: string): void {
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(root, 'sessions.sqlite');
+  process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(root, 'data');
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(root, 'logs');
+  process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(root, 'providers');
+  process.env.SMARTPERFETTO_DATA_DIR = path.join(root, 'enterprise-data');
+  process.env.UPLOAD_DIR = path.join(root, 'uploads');
+}
+
+function closeFixtureStores(): void {
+  SessionPersistenceService.resetForTests();
+  resetConversationSessionStoreForTests();
+  resetAnalysisRunStoreForTests();
+  resetAgentEventStoreForTests();
+  resetAnalysisHistoryStoreForTests();
+  resetRunManifestStoreForTests();
+  resetProviderService();
+}
+
+beforeAll(async () => {
+  suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-private-http-'));
+  useFixturePaths(suiteRoot);
+  console.info('[HTTP fixture] agentRoutesPrivacyProjection owns', suiteRoot);
+  // These paths are captured by config/route singletons at import time.
+  process.env.SCENE_REPORT_DIR = path.join(suiteRoot, 'scene-reports');
+  process.env.SCENE_JOB_ARTIFACT_DIR = path.join(suiteRoot, 'scene-jobs');
+  agentRoutes = (await import('../agentRoutes')).default;
+  ({agentRoutesPrivacyProjectionTestSeam, agentRoutesReceiptTestSeam, agentRoutesCancellationTestSeam} = await import('../agentRoutes'));
+  ({clearCodeAwareOutputGuards, registerCodeAwareCanary, sanitizeCodeAwareText} = await import('../../services/security/codeAwareOutputRegistry'));
+  ({ENTERPRISE_FEATURE_FLAG_ENV} = await import('../../config'));
+  ({ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} = await import('../../services/enterpriseDb'));
+  ({resetAnalysisRunStoreForTests} = await import('../../services/analysisRunStore'));
+  ({resetAgentEventStoreForTests} = await import('../../services/agentEventStore'));
+  ({routeAdaptiveEvidencePreflight} = await import('../../agentRuntime/adaptiveEvidenceRouter'));
+  ({createDataEnvelope} = await import('../../types/dataContract'));
+  claimPreparation = await import('../../services/evidence/analysisRelationPreparation');
+  qualityGate = await import('../../services/finalResultQualityGate');
+  finalizer = await import('../../services/finalizeAnalysisResult');
+  reportRoutes = await import('../reportRoutes');
+  snapshots = await import('../../services/analysisResultSnapshotPipeline');
+  eventStore = await import('../../services/agentEventStore');
+  traceMetadataStore = await import('../../services/traceMetadataStore');
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+  ({registerAgentReportRoutes} = await import('../agentReportRoutes'));
+  ({analysisDeliveryFingerprint} = await import('../../types/analysisDelivery'));
+  ({analysisHasPrivateContext} = await import('../../services/security/analysisPrivateContext'));
+  ({resetConversationSessionStoreForTests} = await import('../../services/conversationSessionStore'));
+  ({resetProviderService} = await import('../../services/providerManager'));
+  ({resetAnalysisHistoryStoreForTests} = await import('../../services/analysisHistoryStore'));
+  ({resetRunManifestStoreForTests} = await import('../../services/selfEvolution/runManifestStore'));
+});
+
+beforeEach(async () => {
+  if (cleanupFailed) throw new Error(`Previous fixture cleanup failed; retained ${suiteRoot}`);
+  caseRoot = fs.mkdtempSync(path.join(suiteRoot, 'case-'));
+  caseRoots.add(caseRoot);
+  useFixturePaths(caseRoot);
+  closeFixtureStores();
+});
+
+async function removeCaseRoots(): Promise<void> {
+  if (cleanupFailed) return;
+  for (const root of caseRoots) {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+  caseRoots.clear();
+}
+
+afterAll(async () => {
+  try {
+    closeFixtureStores();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  } finally {
+    for (const [key, value] of fixtureOriginalEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    if (!cleanupFailed) {
+      const root = suiteRoot;
+      fs.rmSync(root, {recursive: true, force: true});
+      console.info('[HTTP fixture] agentRoutesPrivacyProjection cleanup complete', root);
+    }
+  }
+});
 
 const sessionId = 'private-route-projection';
 
@@ -70,7 +176,19 @@ function completedSnapshotInputFromRoute(): ts.ObjectLiteralExpression | undefin
   return snapshotInput;
 }
 
-afterEach(() => {clearCodeAwareOutputGuards(sessionId); jest.restoreAllMocks();});
+afterEach(async () => {
+  try {
+    await loopbackServers.close();
+    closeFixtureStores();
+    await removeCaseRoots();
+    clearCodeAwareOutputGuards(sessionId);
+    jest.restoreAllMocks();
+    useFixturePaths(suiteRoot);
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  }
+});
 
 describe('agent route private projections', () => {
   it.each([false, true])('uses native completion and delivery state consistently in SSE, turn history and report (qualityFailure=%s)', qualityFailure => {
@@ -84,16 +202,18 @@ describe('agent route private projections', () => {
     const session = {sessionId, traceId: 'trace', query: 'original query', status: 'completed', createdAt: 1,
       tenantId: 'tenant', workspaceId: 'workspace', userId: 'user', codeAwareMode: 'provider_send', codebaseIds: ['app'],
       outputLanguage: 'en', result, hypotheses: [], dataEnvelopes: [], scenes: [],
-      completedAnalysisFinalArtifacts: {}, logger: {warn: () => {}}, runSequence: 1} as any;
+      completedAnalysisFinalArtifacts: {}, logger: {warn: () => {}, getLogFilePath: () => '/logs/session.jsonl'}, runSequence: 1} as any;
     const events = agentRoutesPrivacyProjectionTestSeam.ensureCompletedAnalysisSseEvents(session);
     const completed = events.find(event => event.eventType === 'analysis_completed');
     expect(completed).toBeDefined();
     const payload = JSON.parse(completed!.eventData).data;
+    // A completed analysis ends its stream.
+    expect(events[events.length - 1].eventType).toBe('end');
     const turn = agentRoutesPrivacyProjectionTestSeam.buildTurnSummary({id: 'turn', turnIndex: 1, timestamp: 1,
       query: 'original query', completed: true, result: {...result, message: conclusion}} as any, sessionId, 'en');
     const get = jest.fn();
     registerAgentReportRoutes({get} as any, {getSession: () => session, recoverResultForSessionIfNeeded: () => result,
-      normalizeNarrativeForClient: text => text, buildClientFindings: () => [], buildSessionResultContract: () => ({})});
+      buildClientFindings: () => [], buildSessionResultContract: () => ({})});
     const response = {json: jest.fn(), status: jest.fn().mockReturnThis()};
     const handler = get.mock.calls[0][1] as (req: any, res: any) => void;
     handler({params: {sessionId}, requestContext: {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user'}}, response);
@@ -133,6 +253,7 @@ describe('agent route private projections', () => {
       const eventData = JSON.stringify({data: {conclusion: '', terminalRunStatus}});
       const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
         session, {eventType: 'analysis_completed', eventData} as any,
+        analysisHasPrivateContext(session),
       );
       expect(JSON.parse(projected.eventData).data.terminalRunStatus).toBe(terminalRunStatus);
     },
@@ -267,12 +388,54 @@ describe('agent route private projections', () => {
         }),
         createdAt: 1,
       } as any,
+      true,
     );
     const persistedContract = JSON.parse(persisted.eventData).data.conclusionContract;
     expect(persistedContract?.claims).toBeDefined();
     expect(JSON.parse(persisted.eventData).data.deliveryAssurance).toBeUndefined();
     expect(persisted.eventData).not.toContain('SECRET_');
     expect(persisted.eventData).not.toContain('/Users/chris');
+  });
+
+  it.each([true, false])('replays knowledge_use@1 for the owner only from a trusted private event (trusted=%s)', trusted => {
+    const base = `eks_${'a'.repeat(24)}`;
+    const knowledgeUse = {schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}],
+      citations: [{citation: 'kb:render/fence.md#L2', relativePath: 'render/fence.md', lineRange: {start: 2, end: 2},
+        status: 'located', knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'}]};
+    const replayed = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
+      {sessionId: 'session-knowledge-replay', query: 'q', traceId: 'trace-knowledge-replay',
+        knowledgeSourceIds: [base], dataEnvelopes: []} as any,
+      {eventType: 'analysis_completed', createdAt: 1, eventData: JSON.stringify({type: 'analysis_completed', data: {
+        ...(trusted ? {privateProjectionVersion: 1} : {}), success: true, conclusion: 'See kb:render/fence.md#L2.',
+        knowledgeUse}, timestamp: 1})} as any,
+      true,
+    );
+    const data = JSON.parse(replayed.eventData).data;
+    if (trusted) expect(data.knowledgeUse).toEqual(knowledgeUse);
+    // An event without the private projection marker supplies no delivery metadata.
+    else expect(data.knowledgeUse).toBeUndefined();
+  });
+
+  it('replays a private source decision with its derived read/located counts', () => {
+    const decision = {schemaVersion: 'source_use_decision@1', codeAwareMode: 'provider_send',
+      selectedCodebaseIds: ['cb-private'], status: 'corroborated', attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['cb-private'], usedCodebaseIds: ['cb-private'], references: [
+        {referenceId: 'r-body', codebaseId: 'cb-private', filePath: 'src/A.kt', lineRange: {start: 1, end: 40},
+          sourceGeneration: 'live-1', lookupKind: 'body'},
+        {referenceId: 'r-hit', codebaseId: 'cb-private', filePath: 'src/A.kt', lineRange: {start: 5, end: 6},
+          sourceGeneration: 'live-1', lookupKind: 'search_hit'},
+        {referenceId: 'r-other', codebaseId: 'cb-private', filePath: 'src/B.kt', lineRange: {start: 5, end: 6},
+          sourceGeneration: 'live-1', lookupKind: 'search_hit'},
+      ]};
+    const replayed = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
+      {sessionId: 'session-source-replay', query: 'q', traceId: 'trace-source-replay',
+        codeAwareMode: 'provider_send', codebaseIds: ['cb-private'], dataEnvelopes: []} as any,
+      {eventType: 'analysis_completed', createdAt: 1, eventData: JSON.stringify({type: 'analysis_completed', data: {
+        privateProjectionVersion: 1, success: true, conclusion: 'done', sourceUseDecision: decision}, timestamp: 1})} as any,
+      true,
+    );
+    expect(JSON.parse(replayed.eventData).data.sourceUseDecision.referenceCounts).toEqual({located: 3, read: 2});
   });
 
   it('passes the durable actual source decision into completed snapshot persistence', () => {
@@ -289,7 +452,7 @@ describe('agent route private projections', () => {
     );
   });
 
-  it('whitelists stored capability attribution in private persisted SSE projection', () => {
+  it.each([false, true])('whitelists stored capability attribution in private persisted SSE projection (trusted=%s)', trusted => {
     const canary = '/private/SSE_CAPABILITY_CANARY';
     const hash = 'a'.repeat(64);
     const session = {
@@ -303,6 +466,7 @@ describe('agent route private projections', () => {
       {
         eventType: 'analysis_completed',
         eventData: JSON.stringify({data: {
+          ...(trusted ? {privateProjectionVersion: 1} : {}),
           success: true,
           conclusion: 'safe conclusion',
           analysisReceipt: {
@@ -319,7 +483,7 @@ describe('agent route private projections', () => {
             nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
             claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
             qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
-            outputs: {reportError: canary, cliTurnPath: canary},
+            outputs: {reportError: 'report generation failed', cliTurnPath: '/tmp/turns/001.md'},
             capabilityManifest: {
               schemaVersion: 'capability_manifest_attribution@1',
               resolution: {
@@ -337,6 +501,7 @@ describe('agent route private projections', () => {
           },
         }}),
       } as any,
+      analysisHasPrivateContext(session),
     );
 
     const projectedData = JSON.parse(projected.eventData).data;
@@ -347,7 +512,10 @@ describe('agent route private projections', () => {
         manifestId: `capability_manifest:${hash}`,
       }),
     }));
-    expect(projectedData.analysisReceipt.outputs).toEqual({});
+    // A trusted owner-only event keeps the receipt outputs; an untrusted legacy
+    // event keeps only its identifiers.
+    expect(projectedData.analysisReceipt.outputs).toEqual(trusted
+      ? {reportError: 'report generation failed', cliTurnPath: '/tmp/turns/001.md'} : {});
   });
 
   it('carries sealed RunManifest capability attribution into the HTTP receipt', () => {
@@ -395,6 +563,39 @@ describe('agent route private projections', () => {
     }));
   });
 
+  it('keeps each run on the private context it was admitted with after the session moves on', () => {
+    const session = {
+      sessionId: 'marker-run-binding',
+      traceId: 'trace-marker',
+      tenantId: 'tenant-marker',
+      workspaceId: 'workspace-marker',
+      userId: 'user-marker',
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['cb-private'],
+      knowledgeSourceIds: undefined,
+      conversationSteps: [],
+      logger: {warn: () => undefined, setMetadata: () => undefined},
+    } as any;
+    const first = agentRoutesPrivacyProjectionTestSeam.startSessionRun(session, 'first', 'request-first')!;
+    // The next run is admitted with a public selection; the first run's artifacts are not.
+    session.codeAwareMode = 'off';
+    session.codebaseIds = undefined;
+    const second = agentRoutesPrivacyProjectionTestSeam.startSessionRun(session, 'second', 'request-second')!;
+
+    expect(first.privateContext).toEqual({codebase: true, knowledge: false});
+    expect(second.privateContext).toEqual({codebase: false, knowledge: false});
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, first.runId)?.privateContext)
+      .toEqual({codebase: true, knowledge: false});
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.privateContext)
+      .toEqual({codebase: false, knowledge: false});
+    // Each run's records carry that run's question and marker; the run store
+    // keeps no question text for the private one.
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, first.runId)?.query)
+      .toBe('first');
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.query)
+      .toBe('second');
+  });
+
   it('reports private feedback as locally stored without public projection', () => {
     expect(agentRoutesPrivacyProjectionTestSeam.privateFeedbackResponse({
       durable: true,
@@ -404,38 +605,7 @@ describe('agent route private projections', () => {
       durableFeedbackStored: true,
       storageDisposition: 'stored_private_local',
       patternStatus: null,
-      caseCandidateFeedbackAdded: null,
     });
-  });
-
-  it.each([
-    ['zh-CN', '## 证据索引', '关键数据来源：', '（execute_sql / ev-1）'],
-    ['en', '## Evidence Index', 'Key data sources:', '(execute_sql / ev-1)'],
-  ] as const)('localizes generated evidence indexes for %s', (language, heading, prefix, item) => {
-    const evidenceIndex = agentRoutesPrivacyProjectionTestSeam.buildConclusionEvidenceIndex([
-      {
-        meta: {source: 'execute_sql', evidenceRefId: 'ev-1'},
-        display: {title: 'Frame timeline'},
-      } as any,
-    ], 3, language);
-
-    expect(evidenceIndex).toContain(heading);
-    expect(evidenceIndex).toContain(prefix);
-    expect(evidenceIndex).toContain(item);
-    expect(evidenceIndex).not.toContain(language === 'en' ? '关键数据来源' : 'Key data sources');
-  });
-
-  it.each([
-    '## 证据索引\n\n关键数据来源：帧时间。',
-    '## Evidence Index\n\nKey data sources: frame timing.',
-    'Evidence Index: frame timing',
-  ])('recognizes an existing bilingual evidence index without duplicating it', (conclusion) => {
-    expect(agentRoutesPrivacyProjectionTestSeam.conclusionHasEvidenceIndex(conclusion)).toBe(true);
-    expect(agentRoutesPrivacyProjectionTestSeam.appendEvidenceIndexIfMissing(
-      conclusion,
-      [{meta: {source: 'execute_sql'}, display: {title: 'Frame timeline'}} as any],
-      'en',
-    )).toBe(conclusion);
   });
 
   it('scrubs model-authored state before retiring an authorization-changed session', () => {
@@ -444,7 +614,6 @@ describe('agent route private projections', () => {
       sessionId,
       traceId: 'trace-private',
       query: canary,
-      agentQuery: canary,
       result: {conclusion: canary},
       error: canary,
       hypotheses: [{description: canary}],
@@ -512,22 +681,25 @@ describe('agent route private projections', () => {
     expect(session.orchestratorUpdateHandler).toBeUndefined();
   });
 
-  it('never returns the raw private query in an SSE connected payload', () => {
+  it('shows the creator their own question in an SSE connected payload, under the owner guard', () => {
     const canary = 'PRIVATE_CONNECTED_QUERY_CANARY';
+    registerCodeAwareCanary(sessionId, canary);
     const projected = agentRoutesPrivacyProjectionTestSeam.connectedStreamQuery({
-      query: canary,
+      sessionId,
+      query: 'session question',
       outputLanguage: 'en',
       codeAwareMode: 'provider_send',
       codebaseIds: ['cb-private'],
     } as any, {
-      query: `run ${canary}`,
+      query: `run question ${canary} api_key="secret-value-123456"`,
     } as any);
 
+    expect(projected).toContain('run question');
     expect(projected).not.toContain(canary);
-    expect(projected).toContain('original content not persisted');
+    expect(projected).not.toContain('secret-value-123456');
   });
 
-  it('removes private query, intent, and quality artifacts from turn list and detail payloads', () => {
+  it('shows the creator their turn question and intent under the owner guard, keeping quality artifacts projected', () => {
     const canary = 'PRIVATE_TURN_CANARY';
     registerCodeAwareCanary(sessionId, canary);
     const turn = {
@@ -553,8 +725,9 @@ describe('agent route private projections', () => {
     const detail = agentRoutesPrivacyProjectionTestSeam.buildTurnDetail(turn, sessionId);
 
     expect(JSON.stringify({summary, detail})).not.toContain(canary);
-    expect(summary.query).toMatch(/原始内容未持久化|original content not persisted/);
-    expect(summary.intent).toEqual({primaryGoal: '', followUpType: 'initial', aspects: []});
+    expect(summary.query).toBe('query [REDACTED_CODE_ECHO]');
+    expect(summary.intent).toEqual({primaryGoal: '[REDACTED_CODE_ECHO]', followUpType: '[REDACTED_CODE_ECHO]',
+      aspects: ['[REDACTED_CODE_ECHO]']});
     expect(summary.findingCount).toBe(1);
     expect(detail.findings).toHaveLength(1);
     expect(detail.result).toHaveProperty('claimSupport');
@@ -585,6 +758,7 @@ describe('agent route private projections', () => {
     const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
       session,
       {eventType: 'analysis_completed', eventData} as any,
+      analysisHasPrivateContext(session),
     );
 
     expect(JSON.stringify(projected)).not.toContain('PRIVATE_REPLAY_CANARY');
@@ -615,7 +789,7 @@ describe('agent route private projections', () => {
         source: 'passed', identity: 'passed', report: 'passed', investigation: 'passed', investigationEvidence: 'passed'},
     }});
     const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
-      session, {eventType: 'analysis_completed', eventData} as any);
+      session, {eventType: 'analysis_completed', eventData} as any, analysisHasPrivateContext(session));
     const data = JSON.parse(projected.eventData).data;
     expect(data.investigationAssessment).toBeUndefined();
     expect(data.deliveryAssurance).toBeUndefined();
@@ -625,7 +799,7 @@ describe('agent route private projections', () => {
 
   it('persists generic private run metadata and projected replay events in enterprise SQLite', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'private-route-db-'));
-    const originalEnterprise = process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+    const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
     const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
     process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
     process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
@@ -647,6 +821,7 @@ describe('agent route private projections', () => {
         query: `run query ${canary}`,
         startedAt: 1,
         status: 'running',
+        privateContext: {codebase: true, knowledge: false},
       },
       logger: {warn: () => undefined},
     } as any;
@@ -675,6 +850,8 @@ describe('agent route private projections', () => {
 
       const db = openEnterpriseDb();
       try {
+        expect(db.prepare('SELECT private_context FROM analysis_runs WHERE id = ?').get('run-private-runtime'))
+          .toEqual({private_context: 1});
         const graph = {
           run: db.prepare('SELECT question, error_json FROM analysis_runs WHERE id = ?')
             .get('run-private-runtime'),
@@ -684,8 +861,7 @@ describe('agent route private projections', () => {
             .all('run-private-runtime'),
         };
         expect(JSON.stringify(graph)).not.toContain(canary);
-        expect((graph.run as any).question)
-          .toMatch(/原始内容未持久化|original content not persisted/);
+        expect((graph.run as any).question).toBe('');
       } finally {
         db.close();
       }
@@ -696,7 +872,7 @@ describe('agent route private projections', () => {
       else process.env[ENTERPRISE_FEATURE_FLAG_ENV] = originalEnterprise;
       if (originalDbPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV];
       else process.env[ENTERPRISE_DB_PATH_ENV] = originalDbPath;
-      fs.rmSync(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -782,7 +958,133 @@ describe('agent route private projections', () => {
       } else {
         process.env[ENTERPRISE_DB_PATH_ENV] = originalDbPath;
       }
-      fs.rmSync(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
+  });
+
+  describe('scene reconstruction status compatibility endpoint', () => {
+    const canary = 'PRIVATE_SCENE_STATUS_CANARY';
+    const credential = 'sk-scenestatusfallback0123456789';
+    const owner = {tenantId: 'tenant-scene-status', workspaceId: 'workspace-scene-status', userId: 'user-scene-status'};
+    const envKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', 'SMARTPERFETTO_ENTERPRISE'] as const;
+    const originalEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+    const sessionIds: string[] = [];
+    const sceneStatusServers = createLoopbackServerFixture();
+    const app = express();
+    let server: Awaited<ReturnType<typeof loopbackServers.listen>>;
+    const get = (url: string) => request(server).get(`/api/agent/v1${url}`)
+      .set('X-SmartPerfetto-SSO-User-Id', owner.userId)
+      .set('X-SmartPerfetto-SSO-Email', 'scene-status@example.test')
+      .set('X-SmartPerfetto-SSO-Tenant-Id', owner.tenantId)
+      .set('X-SmartPerfetto-SSO-Workspace-Id', owner.workspaceId)
+      .set('X-SmartPerfetto-SSO-Roles', 'analyst')
+      .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,agent:run,report:read');
+    // A session without a scene timeline takes the endpoint's fallback branch:
+    // any owned ordinary analysis, or a scene run that committed no segment.
+    const addSession = (id: string, privateKnowledge: boolean, fields: Record<string, unknown>) => {
+      sessionIds.push(id);
+      if (privateKnowledge) registerCodeAwareCanary(id, canary);
+      agentRoutesCancellationTestSeam.setSession(id, {sessionId: id, traceId: `trace-${id}`, query: 'why is it slow',
+        createdAt: 1, lastActivityAt: 1, ...owner, outputLanguage: 'en',
+        ...(privateKnowledge ? {codeAwareMode: 'provider_send', codebaseIds: ['cb-private']} : {}),
+        scenes: [], hypotheses: [], dataEnvelopes: [], sseClients: [], sseEventBuffer: [], sseEventSeq: 0,
+        logger: {info: () => {}, warn: () => {}, error: () => {}}, ...fields} as any);
+    };
+
+    beforeAll(async () => {
+      app.use(express.json());
+      app.use('/api/agent/v1', agentRoutes);
+      server = await sceneStatusServers.listen(app);
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+    });
+    afterEach(() => {
+      for (const id of sessionIds.splice(0)) {
+        agentRoutesCancellationTestSeam.deleteSession(id);
+        clearCodeAwareOutputGuards(id);
+      }
+    });
+    afterAll(async () => {
+      try {
+        await sceneStatusServers.close();
+      } catch (error) {
+        cleanupFailed = true;
+        throw error;
+      }
+      for (const [key, value] of originalEnv) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    });
+
+    it.each([true, false])('serves the same projected body as the ordinary status (private=%s)', async privateKnowledge => {
+      const id = `scene-status-body-${privateKnowledge}`;
+      const conclusion = `Main thread blocked ${canary}; token ${credential}; evidence ev_0123456789ab.`;
+      addSession(id, privateKnowledge, {status: 'completed', result: {sessionId: id, success: true, conclusion,
+        findings: [], hypotheses: [], confidence: 0.7, rounds: 1, totalDurationMs: 5}});
+      const scene = await get(`/scene-reconstruct/${id}/status`);
+      const ordinary = await get(`/${id}/status`);
+      expect(scene.status).toBe(200);
+      expect(ordinary.status).toBe(200);
+      expect(scene.body.result.narrative).toBe(ordinary.body.result.conclusion);
+      if (privateKnowledge) {
+        expect(JSON.stringify(scene.body)).not.toContain(canary);
+        expect(JSON.stringify(scene.body)).not.toContain(credential);
+      } else {
+        expect(scene.body.result.narrative).toBe(conclusion);
+      }
+    });
+
+    it.each([true, false])('serves the owner-projected scene timeline from /tracks (private=%s)', async privateKnowledge => {
+      const id = `scene-tracks-timeline-${privateKnowledge}`;
+      const unresolved = `segment window unresolved near ${canary}; token ${credential}`;
+      const sceneTimeline = {schemaVersion: 'scene_timeline@1', runId: 'run-scene', sessionId: id,
+        traceId: `trace-${id}`, revision: 1, status: 'partial', coverage: {status: 'complete'},
+        segments: [], unresolved: [unresolved], diagnostics: []};
+      addSession(id, privateKnowledge, {status: 'completed', result: {sessionId: id, success: true,
+        conclusion: 'Scene timeline', findings: [], hypotheses: [], confidence: 0.7, rounds: 1, totalDurationMs: 5,
+        sceneTimeline}});
+      // A scene-timeline session must still own a readable trace.
+      jest.spyOn(traceMetadataStore, 'readTraceMetadataForContext')
+        .mockResolvedValue({id: `trace-${id}`} as Awaited<ReturnType<typeof traceMetadataStore.readTraceMetadataForContext>>);
+      const tracks = await get(`/scene-reconstruct/${id}/tracks`);
+      const status = await get(`/scene-reconstruct/${id}/status`);
+      expect(tracks.status).toBe(200);
+      expect(tracks.body.sceneTimeline).toEqual(status.body.result.sceneTimeline);
+      if (privateKnowledge) {
+        expect(JSON.stringify(tracks.body)).not.toContain(canary);
+        expect(JSON.stringify(tracks.body)).not.toContain(credential);
+        expect(tracks.body.sceneTimeline.diagnostics).toContainEqual({code: 'scene_output_projection_restricted'});
+      } else {
+        expect(tracks.body.sceneTimeline.unresolved).toEqual([unresolved]);
+      }
+    });
+
+    it('does not serve a stored result that belongs to another run', async () => {
+      const id = 'scene-status-other-run';
+      const run = {runId: 'run-current', requestId: 'request-current', sequence: 2, query: 'q', startedAt: 1,
+        status: 'completed'};
+      addSession(id, false, {status: 'completed', lastRun: run, runRegistry: {[run.runId]: run},
+        result: {sessionId: id, success: true, conclusion: 'An earlier run answer', findings: [], hypotheses: [],
+          confidence: 0.7, rounds: 1, totalDurationMs: 5, completion: {runId: 'run-earlier'}}});
+      const scene = await get(`/scene-reconstruct/${id}/status`);
+      expect(scene.status).toBe(200);
+      expect(scene.body.result).toBeUndefined();
+    });
+
+    it('projects a stored raw failure message on every read surface', async () => {
+      const id = 'scene-status-private-failure';
+      addSession(id, true, {status: 'failed', error: `lease failed ${canary} ${credential}`});
+      const scene = await get(`/scene-reconstruct/${id}/status`);
+      const ordinary = await get(`/${id}/status`);
+      const stream = await get(`/${id}/stream`);
+      expect(scene.body.error).toEqual(expect.any(String));
+      expect(scene.body.error).toBe(ordinary.body.error);
+      for (const text of [JSON.stringify(scene.body), JSON.stringify(ordinary.body), stream.text]) {
+        expect(text).not.toContain(canary);
+        expect(text).not.toContain(credential);
+      }
+      expect(stream.text).toContain('event: error');
+    });
   });
 });

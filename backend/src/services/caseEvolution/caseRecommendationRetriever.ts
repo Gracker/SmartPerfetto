@@ -2,20 +2,22 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {
-  CaseEvidenceSignature,
-  CaseKnowledgeMatchStrength,
-  CaseKnowledgeRecommendation,
-  CaseKnowledgeReportRecommendation,
-  CaseKnowledgeResponsibility,
-  CaseKnowledgeStatus,
+import {
+  caseKnowledgeQualityRank,
+  caseStatusRank,
+  type CaseEvidenceSignature,
+  type CaseKnowledgeMatchStrength,
+  type CaseKnowledgeRecommendation,
+  type CaseKnowledgeReportRecommendation,
+  type CaseKnowledgeResponsibility,
+  type CuratedCaseStatus,
+  CURATED_CASE_STATUSES,
 } from '../../types/caseKnowledge';
 import type { CaseNode } from '../../types/sparkContracts';
+import { caseAppliesToArchitecture } from '../caseArchitecture';
 import { CaseLibrary } from '../caseLibrary';
 import { RagStore } from '../ragStore';
 import type { KnowledgeScope } from '../scopedKnowledgeStore';
-import { caseKnowledgeQualityRank } from './caseCandidateIngester';
-import { recordCaseEvolutionRetrieverQuery } from './caseEvolutionRuntimeMetrics';
 
 export interface CaseRecommendationQuery {
   scene: string;
@@ -24,11 +26,18 @@ export interface CaseRecommendationQuery {
   secondaryRootCauses?: string[];
   responsibility?: CaseKnowledgeResponsibility;
   audiences: Array<'app' | 'oem'>;
+  /**
+   * The trace's detected rendering architecture; cases declared for another
+   * one are not retrieved. Required so each caller states whether it knows it.
+   */
+  architectureType: string | undefined;
   context?: Record<string, unknown>;
   evidenceSignatures: Record<string, unknown>;
+  /** Trace evidence `evidenceSignatures` were read from; absent when a caller supplied the values itself. */
+  evidenceRefIds?: readonly string[];
   textQuery?: string;
   topK?: number;
-  includeStatuses?: CaseKnowledgeStatus[];
+  includeStatuses?: readonly CuratedCaseStatus[];
 }
 
 export interface CaseRecommendationHit extends CaseKnowledgeReportRecommendation {
@@ -60,7 +69,7 @@ type RankedCase = {
   keywordScore: number;
 };
 
-const DEFAULT_STATUSES: CaseKnowledgeStatus[] = ['published'];
+const DEFAULT_STATUSES: readonly CuratedCaseStatus[] = ['published'];
 
 export function evaluateCaseEvidenceSignature(
   signature: CaseEvidenceSignature,
@@ -96,13 +105,15 @@ export function evaluateCaseEvidenceSignature(
 }
 
 export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: CaseRecommendationQuery): CaseRecommendationHit[] } {
+  // A retriever serves one retrieval, so the admitted cases are listed once for all its queries.
+  let admitted: CaseNode[] | undefined;
   return {
     retrieve(query: CaseRecommendationQuery) {
-      const startedAt = Date.now();
-      const statuses = query.includeStatuses && query.includeStatuses.length > 0
+      const statuses: readonly string[] = query.includeStatuses && query.includeStatuses.length > 0
         ? query.includeStatuses
         : DEFAULT_STATUSES;
-      const cases = statuses.flatMap(status => deps.library.listCases({ status }, deps.scope));
+      admitted ??= deps.library.listAdmittedCases(CURATED_CASE_STATUSES, deps.scope);
+      const cases = admitted.filter(caseNode => statuses.includes(caseNode.status));
       const keywordScores = buildKeywordScoreMap(deps.ragStore, query, deps.scope);
       const ranked: RankedCase[] = [];
       for (const caseNode of cases) {
@@ -115,12 +126,7 @@ export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: 
         });
       }
       ranked.sort(rankCases);
-      const hits = ranked.slice(0, query.topK ?? 8).map(toHit);
-      recordCaseEvolutionRetrieverQuery({
-        latencyMs: Date.now() - startedAt,
-        strongHits: hits.filter(hit => hit.matchStrength === 'strong').length,
-      });
-      return hits;
+      return ranked.slice(0, query.topK ?? 8).map(item => toHit(item, query.evidenceRefIds));
     },
   };
 }
@@ -155,7 +161,7 @@ function matchesStructuredQuery(caseNode: CaseNode, query: CaseRecommendationQue
   const rootCauses = new Set([query.rootCause, ...(query.secondaryRootCauses ?? [])]);
   if (!rootCauses.has(taxonomy.primary_root_cause)) return false;
   if (query.responsibility && !responsibilityCompatible(taxonomy.responsibility, query.responsibility)) return false;
-  return true;
+  return caseAppliesToArchitecture(caseNode, query.architectureType);
 }
 
 function responsibilityCompatible(caseResp: CaseKnowledgeResponsibility, queryResp: CaseKnowledgeResponsibility): boolean {
@@ -224,16 +230,13 @@ function buildKeywordScoreMap(
 }
 
 function caseIdFromCaseUri(uri: string): string | null {
-  if (uri.startsWith('case://learned/')) return uri.slice('case://learned/'.length);
-  if (uri.startsWith('case://')) return uri.slice('case://'.length);
-  return null;
+  return uri.startsWith('case://') ? uri.slice('case://'.length) : null;
 }
 
 function rankCases(a: RankedCase, b: RankedCase): number {
   return matchStrengthRank(b.matchStrength) - matchStrengthRank(a.matchStrength)
-    || statusRank(b.caseNode.status) - statusRank(a.caseNode.status)
+    || caseStatusRank(b.caseNode.status) - caseStatusRank(a.caseNode.status)
     || caseKnowledgeQualityRank(b.caseNode.knowledge?.quality) - caseKnowledgeQualityRank(a.caseNode.knowledge?.quality)
-    || learnedSupportedRank(b.caseNode) - learnedSupportedRank(a.caseNode)
     || b.keywordScore - a.keywordScore
     || a.caseNode.caseId.localeCompare(b.caseNode.caseId);
 }
@@ -242,29 +245,7 @@ function matchStrengthRank(value: CaseKnowledgeMatchStrength): number {
   return value === 'strong' ? 3 : value === 'partial' ? 2 : 1;
 }
 
-function statusRank(status: string): number {
-  return status === 'published' ? 3 : status === 'reviewed' ? 2 : status === 'draft' ? 1 : 0;
-}
-
-function learnedSupportedRank(caseNode: CaseNode): number {
-  return learnedProvenance(caseNode)?.supported ? 1 : 0;
-}
-
-function learnedProvenance(caseNode: CaseNode): CaseKnowledgeReportRecommendation['learnedProvenance'] | undefined {
-  const marker = caseNode.knowledge?.context?.['caseEvolution.v1'];
-  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return undefined;
-  const record = marker as Record<string, unknown>;
-  const candidateId = typeof record.candidateId === 'string' ? record.candidateId : undefined;
-  if (!candidateId) return undefined;
-  return {
-    candidateId,
-    supportingEvidence: Number(record.supportingEvidence ?? 0),
-    contradictingEvidence: Number(record.contradictingEvidence ?? 0),
-    supported: Boolean(record.supported),
-  };
-}
-
-function toHit(item: RankedCase): CaseRecommendationHit {
+function toHit(item: RankedCase, evidenceRefIds: readonly string[] | undefined): CaseRecommendationHit {
   const knowledge = item.caseNode.knowledge!;
   return {
     caseId: item.caseNode.caseId,
@@ -275,8 +256,7 @@ function toHit(item: RankedCase): CaseRecommendationHit {
     matchedSignatures: item.matchedSignatures,
     missingRequiredSignatures: item.missingRequiredSignatures,
     evidenceGap: item.evidenceGap,
-    evidenceRefs: item.matchedSignatures,
+    ...(evidenceRefIds?.length ? { evidenceRefs: [...evidenceRefIds] } : {}),
     recommendations: knowledge.recommendations,
-    learnedProvenance: learnedProvenance(item.caseNode),
   };
 }

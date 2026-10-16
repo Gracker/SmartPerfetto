@@ -25,7 +25,6 @@ import {
   getRegisteredScenes,
   getStrategyContent,
   getVerifierMisdiagnosisPatterns,
-  getPhaseHints,
   parseFinalReportContract,
   invalidateStrategyCache,
   loadPromptTemplate,
@@ -48,9 +47,6 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     }]);
     expect(parseFinalReportContract({required_sections: [null, {description: 'No stable identity'}]})
       ?.requiredSections).toEqual([]);
-    expect(parseFinalReportContract({required_sections: [{id: 'case_ref',
-      condition: {kind: 'strong_case_retrieval'}}]})?.requiredSections[0].condition)
-      .toEqual({kind: 'strong_case_retrieval'});
     expect(parseFinalReportContract({required_sections: [{id: 'optional_scope',
       condition: {kind: 'semantic', description: 'Only when the requested scope includes launch.'}}]})
       ?.requiredSections[0].condition).toEqual({kind: 'semantic', description: 'Only when the requested scope includes launch.'});
@@ -61,8 +57,10 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
   });
 
   it('keeps legacy or invalid conditions unresolved instead of requiring them unconditionally', () => {
+    // `strong_case_retrieval` is retired: case retrieval never decides a report requirement.
     for (const declaration of [{trigger_patterns: ['case']}, {condition: null},
-      {condition: {kind: 'semantic', description: ''}}, {condition: {kind: 'unknown'}}]) {
+      {condition: {kind: 'semantic', description: ''}}, {condition: {kind: 'unknown'}},
+      {condition: {kind: 'strong_case_retrieval'}}]) {
       const condition = parseFinalReportContract({required_sections: [{id: 'conditional', ...declaration}]})
         ?.requiredSections[0].condition;
       expect(condition).toEqual({kind: 'unresolved',
@@ -70,7 +68,7 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     }
   });
 
-  it('ships semantic or typed conditions instead of unresolved lexical report triggers', () => {
+  it('ships semantic conditions instead of unresolved lexical report triggers', () => {
     for (const definition of getRegisteredScenes()) {
       const sections = getFinalReportContract(definition.scene)?.requiredSections ?? [];
       expect(new Set(sections.map(section => section.id)).size).toBe(sections.length);
@@ -80,8 +78,9 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
         if (section.condition?.kind === 'semantic') expect(section.condition.description.trim().length).toBeGreaterThan(0);
       }
     }
-    expect(getFinalReportContract('scrolling')?.requiredSections.find(section => section.id === 'case_recommendations')
-      ?.condition).toEqual({kind: 'strong_case_retrieval'});
+    // Case recommendations reach a report from the server's retrieval, never as a content obligation.
+    expect(getFinalReportContract('scrolling')?.requiredSections.map(section => section.id))
+      .not.toContain('case_recommendations');
   });
 
   it('returns non-empty content for known scenes', () => {
@@ -90,15 +89,6 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
       expect(content).toBeDefined();
       expect((content || '').length).toBeGreaterThan(100);
     }
-  });
-
-  it('returns parsed phase_hints for scenes that declare them', () => {
-    // Use ranges, not exact counts, so that strategy edits that add or remove
-    // hints do not break this regression test (which only asserts that the
-    // SPDX-tolerant parser still recognises phase_hints at all).
-    expect(getPhaseHints('scrolling').length).toBeGreaterThan(0);
-    expect(getPhaseHints('startup').length).toBeGreaterThan(0);
-    expect(getPhaseHints('anr').length).toBeGreaterThan(0);
   });
 
   it('keeps network packet data optional so missing-data guidance can still run', () => {
@@ -243,7 +233,6 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     const scenes = getRegisteredScenes();
     expect(scenes).not.toContain('smart');
     expect(getStrategyContent('smart')).toBeUndefined();
-    expect(getPhaseHints('smart')).toEqual([]);
 
     const contract = getFinalReportContract('smart');
     expect(contract?.requiredSections.map(section => section.id)).toEqual(expect.arrayContaining([
@@ -251,122 +240,6 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
       'per_scene_summary',
       'cross_scene_narrative',
       'bottleneck_ranking',
-    ]));
-  });
-
-  it('returns empty phase_hints array for scenes without hints', () => {
-    expect(getPhaseHints('general')).toEqual([]);
-  });
-
-  it('loads memory phase_hints for evidence-boundary reminders', () => {
-    const hints = getPhaseHints('memory');
-    expect(hints.map(hint => hint.id)).toEqual(expect.arrayContaining([
-      'memory_evidence_gate',
-      'lmk_freezer_oom_boundary',
-      'gc_churn_boundary',
-      'memory_diagnostic_api_boundary',
-    ]));
-    expect(hints.find(hint => hint.id === 'memory_evidence_gate')?.criticalTools).toContain('memory_analysis');
-    expect(hints.find(hint => hint.id === 'memory_diagnostic_api_boundary')?.criticalTools).toEqual(expect.arrayContaining([
-      'memory_analysis',
-      'lookup_knowledge',
-    ]));
-  });
-
-  it('loads startup and ANR phase_hints for diagnostic API evidence boundaries', () => {
-    const startupHints = getPhaseHints('startup');
-    expect(startupHints.map(hint => hint.id)).toContain('startup_diagnostic_api_boundary');
-    expect(startupHints.find(hint => hint.id === 'startup_diagnostic_api_boundary')?.criticalTools).toEqual(expect.arrayContaining([
-      'startup_analysis',
-      'lookup_knowledge',
-    ]));
-
-    const startupDetailHint = startupHints.find(hint => hint.id === 'detail_breakdown');
-    expect(startupDetailHint?.constraints).toMatch(/start_ts.*end_ts.*dur_ms.*startup_type/);
-    expect(startupDetailHint?.constraints).not.toMatch(/ttid_ts|ttfd_ts/);
-
-    const anrHints = getPhaseHints('anr');
-    expect(anrHints.map(hint => hint.id)).toContain('anr_diagnostic_api_boundary');
-    expect(anrHints.find(hint => hint.id === 'anr_diagnostic_api_boundary')?.criticalTools).toEqual(expect.arrayContaining([
-      'anr_analysis',
-      'lookup_knowledge',
-    ]));
-  });
-
-  it('loads io phase_hints for storage evidence boundaries', () => {
-    const hints = getPhaseHints('io');
-    expect(hints.map(hint => hint.id)).toEqual(expect.arrayContaining([
-      'io_evidence_ladder',
-      'sqlite_sharedprefs_provider_boundary',
-    ]));
-    expect(hints.find(hint => hint.id === 'io_evidence_ladder')?.criticalTools).toContain('block_io_analysis');
-  });
-
-  it('loads interaction phase_hints for input ACK and focus/window boundaries', () => {
-    const hints = getPhaseHints('interaction');
-    expect(hints.map(hint => hint.id)).toEqual(expect.arrayContaining([
-      'input_ack_queue_boundary',
-      'focus_window_stale_boundary',
-      'display_present_boundary',
-    ]));
-    expect(hints.find(hint => hint.id === 'input_ack_queue_boundary')?.criticalTools).toContain('click_response_analysis');
-  });
-
-  it('loads rendering pipeline phase_hints for BufferQueue, fence, and refresh policy boundaries', () => {
-    const pipelineHints = getPhaseHints('pipeline');
-    expect(pipelineHints.map(hint => hint.id)).toEqual(expect.arrayContaining([
-      'buffer_fence_lifecycle',
-      'refresh_policy_boundary',
-      'graphics_memory_boundary',
-    ]));
-    expect(pipelineHints.find(hint => hint.id === 'buffer_fence_lifecycle')?.criticalTools).toContain('fence_wait_decomposition');
-
-    const scrollingHints = getPhaseHints('scrolling');
-    expect(scrollingHints.map(hint => hint.id)).toContain('display_pipeline_boundary');
-    const displayBoundary = scrollingHints.find(hint => hint.id === 'display_pipeline_boundary');
-    // The boundary decomposition tools stay declared...
-    expect(displayBoundary?.criticalTools).toEqual(
-      expect.arrayContaining(['surfaceflinger_analysis', 'buffer_transaction_lifecycle', 'fence_wait_decomposition']),
-    );
-    // ...but optional supplementary tools must NOT be pre-declared as
-    // unconditional expectedCalls. The hint's own constraints say to reuse the
-    // scrolling_analysis vsync_config artifact and only call the standalone
-    // tools when that evidence is missing.
-    expect(displayBoundary?.criticalTools).not.toContain('vsync_config');
-    expect(displayBoundary?.criticalTools).not.toContain('present_fence_timing');
-  });
-
-  it('loads network phase_hints for request-stage and stack-policy boundaries', () => {
-    const hints = getPhaseHints('network');
-    expect(hints.map(hint => hint.id)).toEqual(expect.arrayContaining([
-      'network_packets',
-      'request_stage_boundary',
-      'network_state_policy_boundary',
-    ]));
-    expect(hints.find(hint => hint.id === 'request_stage_boundary')?.criticalTools).toEqual(expect.arrayContaining([
-      'network_analysis',
-      'lookup_knowledge',
-    ]));
-    expect(hints.find(hint => hint.id === 'network_state_policy_boundary')?.criticalTools).toEqual(expect.arrayContaining([
-      'network_analysis',
-      'lookup_knowledge',
-    ]));
-  });
-
-  it('loads power phase_hints for background execution and alarm wakeup boundaries', () => {
-    const hints = getPhaseHints('power');
-    expect(hints.map(hint => hint.id)).toEqual(expect.arrayContaining([
-      'background_execution_governance',
-      'alarm_wakeup_boundary',
-    ]));
-    expect(hints.find(hint => hint.id === 'background_execution_governance')?.criticalTools).toEqual(expect.arrayContaining([
-      'android_job_scheduler_events',
-      'suspend_wakeup_analysis',
-      'lookup_knowledge',
-    ]));
-    expect(hints.find(hint => hint.id === 'alarm_wakeup_boundary')?.criticalTools).toEqual(expect.arrayContaining([
-      'wakeup_frequency_summary',
-      'android_kernel_wakelock_summary',
     ]));
   });
 
@@ -428,6 +301,17 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     expect(guidance).toContain('fetch detail="summary" first');
     expect(guidance).toContain('Previews do not limit conclusion coverage');
     expect(guidance).toContain('do not end analysis or drop findings');
+  });
+
+  it('aligns numeric rounding dispute locations without narrowing semantic review', () => {
+    const guidance = loadPromptTemplate('prompt-final-semantic-assessment')?.replace(/\s+/g, ' ');
+    expect(guidance).toContain('single-cell `captured.cell` or `numeric.cell` claim');
+    expect(guidance).toContain('both claim-level and `numeric_mismatch` issue-level `contentLocations` must quote those exact displayed values');
+    expect(guidance).toContain('Locate every disputed occurrence separately');
+    expect(guidance).toContain('do not select an entire catalog line containing other metrics or comparison words');
+    expect(guidance).toContain('still read the complete body to assess subject, scope and qualifiers');
+    expect(guidance).toContain('Report nonnumeric subject/scope issues independently');
+    expect(guidance).toContain('Never omit a wrong repeated value or another contradiction');
   });
 
 });

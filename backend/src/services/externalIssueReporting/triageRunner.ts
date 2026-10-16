@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {query as sdkQuery} from '@anthropic-ai/claude-agent-sdk';
+import {claudeSdkQuery as sdkQuery} from '../../agentRuntime/engines/claude/claudeSdkQuery';
 
 import {buildChatCompletionsUrl} from '../../agentOpenAI/openAiComplexityClassifier';
 import {
@@ -453,6 +453,7 @@ function isCredentialError(error: unknown): boolean {
     error.message === 'provider_credentials_unavailable';
 }
 
+/** @internal Test seam. */
 export const __testing = {
   DEFAULT_TIMEOUT_MS,
   MAX_OUTPUT_TOKENS,

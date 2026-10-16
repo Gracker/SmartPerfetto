@@ -7,8 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it, jest } from '@jest/globals';
 import { computePaths, ensureLayout, ensureSessionLayout, sessionPaths } from '../../io/paths';
-import { commitSourceSupplementOutput, commitTurnOutputs } from '../turnPersistence';
-import {loadCliAnalysisEvidence} from '../analysisResultPresentation';
+import { commitTurnOutputs } from '../turnPersistence';
 import {latestCliSceneReportPath, loadCliSceneReport, turnCliSceneReportPath} from '../sceneReportReference';
 import type { Renderer } from '../../repl/renderer';
 import type { RunTurnOutput } from '../cliAnalyzeService';
@@ -28,7 +27,7 @@ function rendererStub(): Renderer {
 }
 
 describe('commitTurnOutputs', () => {
-  it('persists a bound scene reference, rebinds supplements and clears latest on an ordinary next turn', () => {
+  it('persists a bound scene reference and clears latest on an ordinary next turn', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-scene-'));
     const paths = computePaths(home); ensureLayout(paths);
     const sessionId = 'scene-cli-session', sp = sessionPaths(paths, sessionId), renderer = rendererStub();
@@ -45,65 +44,18 @@ describe('commitTurnOutputs', () => {
       indexEntry: {sessionId, createdAt: 1, lastTurnAt: turn, tracePath: '/tmp/trace', traceFilename: 'trace',
         firstQuery: 'query', turnCount: turn, status: 'completed'}});
     try {
-      const analysisEvidence = commit(1, initial);
+      commit(1, initial);
       expect(JSON.parse(fs.readFileSync(turnCliSceneReportPath(sp, 1), 'utf8'))).toMatchObject({status: 'available', reference: sceneReport});
       expect(renderer.printCompletion).toHaveBeenCalledWith(expect.objectContaining({sceneReport, sceneReportStatus: 'partial'}));
       expect(fs.readFileSync(sp.transcript, 'utf8')).not.toContain('RAW_SCENE_HISTORY_CANARY');
       expect(JSON.parse(fs.readFileSync(sp.transcript, 'utf8').trim()).history).not.toHaveProperty('sceneReport');
-      commitSourceSupplementOutput({sp, renderer, sessionId, turn: 1, analysisEvidence,
-        supplement: {message: 'Source supplement.', metrics: {searchCalls: 1, readCalls: 1, durationMs: 1}}});
-      const supplemented = fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf8');
-      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: supplemented, latest: true}).status).toBe('available');
+      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: initial, latest: true}).status).toBe('available');
       delete result.result.sceneReport; delete result.result.sceneTimeline;
       commit(2, '# Turn 2\n\nbody\n');
       expect(JSON.parse(fs.readFileSync(latestCliSceneReportPath(sp), 'utf8'))).toMatchObject({status: 'none', reference: null, binding: {turn: 2}});
-      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: supplemented}).status).toBe('available');
+      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: initial}).status).toBe('available');
     } finally {fs.rmSync(home, {recursive: true, force: true});}
   });
-  it('rebinds per-turn and latest evidence after appending a source supplement', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-source-supplement-'));
-    const paths = computePaths(home);
-    ensureLayout(paths);
-    const sessionId = 'session-source-supplement';
-    const sp = sessionPaths(paths, sessionId);
-    ensureSessionLayout(sp);
-    const renderer = rendererStub();
-    const result: RunTurnOutput = {
-      sessionId,
-      traceId: 'trace-1',
-      codeAwareMode: 'provider_send',
-      result: {
-        sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Primary conclusion.',
-        confidence: 0.8, rounds: 1, totalDurationMs: 1,
-      },
-    };
-    const initialMarkdown = '# Turn 1\n\nPrimary conclusion.\n';
-    try {
-      const analysisEvidence = commitTurnOutputs({
-        paths, sp, renderer, sessionId, turn: 1, query: 'query', result,
-        config: {sessionId, tracePath: '/tmp/trace', traceId: 'trace-1', createdAt: 1, lastTurnAt: 2, turnCount: 1},
-        turnMarkdown: initialMarkdown,
-        indexEntry: {sessionId, createdAt: 1, lastTurnAt: 2, tracePath: '/tmp/trace', traceFilename: 'trace',
-          firstQuery: 'query', turnCount: 1, status: 'completed'},
-      });
-      commitSourceSupplementOutput({
-        sp, renderer, sessionId, turn: 1, analysisEvidence,
-        supplement: {message: 'Bounded source follow-up.', metrics: {searchCalls: 1, readCalls: 2, durationMs: 3}},
-      });
-
-      const turnMarkdown = fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf8');
-      expect(turnMarkdown).toContain('Bounded source follow-up.');
-      expect(loadCliAnalysisEvidence({sp, sessionId, turn: 1, conclusion: 'Primary conclusion.', turnMarkdown}))
-        .toMatchObject({status: 'available'});
-      expect(loadCliAnalysisEvidence({sp, sessionId, turn: 1, conclusion: 'Primary conclusion.', turnMarkdown, latest: true}))
-        .toMatchObject({status: 'available'});
-      expect(JSON.parse(fs.readFileSync(path.join(sp.dir, 'analysis-evidence.json'), 'utf8')))
-        .toEqual(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.analysis-evidence.json'), 'utf8')));
-    } finally {
-      fs.rmSync(home, {recursive: true, force: true});
-    }
-  });
-
   it('keeps the conclusion durable when evidence projection is unavailable', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-evidence-unavailable-'));
     const paths = computePaths(home);
@@ -228,6 +180,17 @@ describe('commitTurnOutputs', () => {
       },
     };
 
+    // The scene entry evidence phase and receipt travel with the sealed receipt.
+    const runtimePerformance = {schemaVersion: 1 as const,
+      phases: [{name: 'scene_evidence' as const, startOffsetMs: 0, durationMs: 1, outcome: 'ok' as const}], tools: [], sql: [],
+      modelCalls: [{purpose: 'answer_turn' as const, startOffsetMs: 1, durationMs: 2, outcome: 'ok' as const}],
+      sceneEvidence: {skillId: 'startup_analysis', status: 'ran' as const, durationMs: 1, artifactCount: 3, captureCount: 3}};
+    result.runtimePerformance = runtimePerformance;
+    const toolResultAudit = {schemaVersion: 1 as const, results: [{
+      toolName: 'invoke_skill', skillId: 'startup_analysis', outcome: 'returned' as const,
+      payloadFields: {vendorOverride: 'verbatim' as const}, vendorOverride: {vendor: 'xiaomi', additionalStepCount: 1},
+    }]};
+    result.toolResultAudit = toolResultAudit;
     try {
       commitTurnOutputs({
         paths,
@@ -261,6 +224,10 @@ describe('commitTurnOutputs', () => {
 
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.investigation-assessment.json'), 'utf-8'))).toBeNull();
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.delivery-assurance.json'), 'utf-8'))).toBeNull();
+      expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.runtime-performance.json'), 'utf-8')))
+        .toEqual({...runtimePerformance, budgetEstimate: {source: 'default', note: 'stats NOT CONFIGURED for CLI'}});
+      expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.tool-results.json'), 'utf-8')))
+        .toEqual(toolResultAudit);
       const latest = JSON.parse(fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'));
       const turn = JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.analysis-receipt.json'), 'utf-8'));
       const latestActions = JSON.parse(fs.readFileSync(path.join(sp.dir, 'ui-action-proposals.json'), 'utf-8'));
@@ -324,6 +291,11 @@ describe('commitTurnOutputs', () => {
         totalDurationMs: 20,
         sourceUseDecision,
         sourceReferences: sourceUseDecision.references,
+        // Only bindings a verifier saw are shown; this one is the product's own judgment.
+        sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@2', status: 'partial',
+          bindings: [{claimId: 'claim-1', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1']}],
+          claims: [{claimId: 'claim-1', status: 'source_only', sourceReferenceIds: [reference.id],
+            traceEvidenceRefIds: ['trace-evidence-1']}], citations: [], issues: []},
         conclusionContract: {
           schemaVersion: 'conclusion_contract_v1',
           mode: 'focused_answer',
@@ -346,7 +318,7 @@ describe('commitTurnOutputs', () => {
             sourceReferenceIds: [reference.id],
             traceEvidenceRefIds: ['trace-evidence-1'],
             reason: 'SECRET_BINDING_REASON_CANARY',
-          }],
+          } as any],
           uncertainties: [],
           nextSteps: [],
         },
@@ -406,7 +378,6 @@ describe('commitTurnOutputs', () => {
       }));
       expect(storedBindings).toEqual([{
         claimId: 'claim-1',
-        mechanismStatus: 'compatible',
         sourceReferenceIds: [reference.id],
         traceEvidenceRefIds: ['trace-evidence-1'],
       }]);
@@ -423,7 +394,8 @@ describe('commitTurnOutputs', () => {
           claims: [{id: 'claim-1', references: [{rowIndex: 0, value: null}]}],
           sourceUseDecision: {status: 'corroborated'},
           sourceReferences: [{id: reference.id}],
-          sourceClaimBindings: [{claimId: 'claim-1', mechanismStatus: 'compatible'}],
+          sourceClaimBindings: [{claimId: 'claim-1', sourceReferenceIds: [reference.id]}],
+          sourceClaimStatuses: [{claimId: 'claim-1', status: 'source_only'}],
         },
       });
       expect(JSON.stringify(evidence)).not.toContain('RAW_SEMANTICS_CANARY');
@@ -562,7 +534,7 @@ describe('commitTurnOutputs', () => {
     }
   });
 
-  it('keeps every private session artifact free of raw query, model, and quality canaries', () => {
+  it('keeps the question only as resume history and every displayed private artifact under the owner guard', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-private-'));
     const paths = computePaths(home);
     ensureLayout(paths);
@@ -606,7 +578,7 @@ describe('commitTurnOutputs', () => {
           nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
           claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
           qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
-          outputs: {reportError: canary, cliTurnPath: canary},
+          outputs: {reportError: canary, cliTurnPath: path.join(sp.turnsDir, '001.md')},
           capabilityManifest: {
             schemaVersion: 'capability_manifest_attribution@1',
             resolution: {
@@ -624,6 +596,10 @@ describe('commitTurnOutputs', () => {
         },
         uiActionProposals: [{title: canary}] as any,
       },
+      // A user-defined skill pack id can carry private names.
+      toolResultAudit: {schemaVersion: 1, results: [
+        {toolName: 'invoke_skill', skillId: canary, outcome: 'returned', facts: {planPhaseIdPresent: true}},
+      ]},
     };
 
     const renderer = rendererStub();
@@ -660,14 +636,25 @@ describe('commitTurnOutputs', () => {
         },
       });
 
+      // The transcript is resume history, which the model reads as the
+      // authorized original; everything displayed passes the owner guard.
+      expect(JSON.parse(fs.readFileSync(sp.transcript, 'utf-8'))).toMatchObject({
+        question: `query ${canary}`, history: {query: `query ${canary}`, sourceDerived: true},
+      });
       const persistedText = [
-        ...readTextFiles(sp.dir),
-        ...readTextFiles(paths.home),
+        ...readTextFiles(sp.dir, [sp.transcript]),
+        ...readTextFiles(paths.home, [sp.transcript]),
       ].join('\n');
       expect(persistedText).not.toContain(canary);
+      expect(fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf-8')).toContain('query [REDACTED_CODE_ECHO]');
+      expect(JSON.parse(fs.readFileSync(paths.indexFile, 'utf-8')).sessions[sessionId].firstQuery)
+        .toBe('query [REDACTED_CODE_ECHO]');
       expect(JSON.stringify(jest.mocked(renderer.printCompletion).mock.calls)).not.toContain(canary);
+      expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.tool-results.json'), 'utf-8'))).toEqual({
+        schemaVersion: 1,
+        results: [{toolName: 'invoke_skill', outcome: 'returned', facts: {planPhaseIdPresent: true}}],
+      });
       expect(renderer.printCompletion).toHaveBeenCalledWith(expect.objectContaining({terminationMessage: expect.any(String)}));
-      expect(persistedText).toMatch(/原始内容未持久化|original content not persisted/);
       const privateReceipt = JSON.parse(
         fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'),
       );
@@ -677,7 +664,8 @@ describe('commitTurnOutputs', () => {
           manifestId: `capability_manifest:${'a'.repeat(64)}`,
         }),
       }));
-      expect(privateReceipt.outputs).toEqual({});
+      // The owner keeps their turn path and the report error, under the owner guard.
+      expect(privateReceipt.outputs).toEqual({reportError: '[REDACTED_CODE_ECHO]', cliTurnPath: path.join(sp.turnsDir, '001.md')});
     } finally {
       clearCodeAwareOutputGuards(sessionId);
       fs.rmSync(home, {recursive: true, force: true});
@@ -685,13 +673,13 @@ describe('commitTurnOutputs', () => {
   });
 });
 
-function readTextFiles(root: string): string[] {
+function readTextFiles(root: string, exclude: string[] = []): string[] {
   if (!fs.existsSync(root)) return [];
   const output: string[] = [];
   for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
     const target = path.join(root, entry.name);
-    if (entry.isDirectory()) output.push(...readTextFiles(target));
-    else if (entry.isFile()) output.push(fs.readFileSync(target, 'utf-8'));
+    if (entry.isDirectory()) output.push(...readTextFiles(target, exclude));
+    else if (entry.isFile() && !exclude.includes(target)) output.push(fs.readFileSync(target, 'utf-8'));
   }
   return output;
 }

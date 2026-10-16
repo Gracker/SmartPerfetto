@@ -8,13 +8,14 @@ import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import {describe, it, expect} from '@jest/globals';
 import {createSkillExecutor} from '../skillExecutor';
-import {normalizeSkillDefinition} from '../skillLoader';
+import {normalizeSkillDefinition, SkillRegistry} from '../skillLoader';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
-import {captureEvidenceTable, evidenceTableFor, getCapturedAnchorFacts} from '../../evidence/evidenceCapture';
+import {captureEvidenceTable, capturedEvidenceTable, evidenceTableFor, getCapturedAnchorFacts} from '../../evidence/evidenceCapture';
 import {investigationCaptureFields} from '../../evidence/investigationEvidenceLedger';
 import {prepareClaimEvidence} from '../../evidence/claimEvidencePreparation';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
+import {buildColumnDefinitions, validateColumnDefinition} from '../../../types/dataContract';
 
 describe('startup display unit contracts', () => {
   const loadYaml = (relativePath: string) => {
@@ -90,7 +91,8 @@ describe('startup display unit contracts', () => {
     const db = new Database(':memory:');
     try {
       db.exec(`
-        CREATE TABLE android_startups(startup_id INTEGER, package TEXT, startup_type TEXT, ts INTEGER, dur INTEGER);
+        CREATE TABLE android_startups(startup_id INTEGER, package TEXT, startup_type TEXT, ts INTEGER, ts_end INTEGER, dur INTEGER);
+        CREATE TABLE _startup_events(ts INTEGER, dur INTEGER, ts_end INTEGER, package_name TEXT);
         CREATE TABLE android_startup_time_to_display(startup_id INTEGER, time_to_initial_display INTEGER, time_to_full_display INTEGER);
         CREATE TABLE android_startup_threads(startup_id INTEGER, utid INTEGER, is_main_thread INTEGER, ts INTEGER, dur INTEGER);
         CREATE TABLE thread_track(id INTEGER, utid INTEGER);
@@ -98,14 +100,26 @@ describe('startup display unit contracts', () => {
         CREATE TABLE android_startup_processes(startup_id INTEGER, upid INTEGER);
         CREATE TABLE process(upid INTEGER, start_ts INTEGER);
         INSERT INTO android_startups VALUES
-          (1, 'com.example', 'cold', 100, 1000),
-          (2, 'com.example', 'warm', 200, 2000),
-          (3, 'com.example', 'hot', 300, 3000);
+          (1, 'com.example', 'cold', 100, 1100, 1000),
+          (2, 'com.example', 'warm', 200, 2200, 2000),
+          (3, 'com.example', 'hot', 300, 3300, 3000);
+        -- Startup 1 opens on another package's trampoline launch; 2 has only its own.
+        INSERT INTO _startup_events VALUES
+          (100, 50, 150, 'com.trampoline'),
+          (160, 900, 1060, 'com.example'),
+          (1200, 1000, 2200, 'com.example');
         INSERT INTO android_startup_processes VALUES (1, 42), (1, 42), (2, 43), (2, 44), (3, NULL);
         INSERT INTO process VALUES (42, 100), (43, 200), (44, 200);
       `);
-      const rows = db.prepare(sql).all() as Array<{startup_id: number; upid: number | null}>;
+      const rows = db.prepare(sql).all() as Array<{
+        startup_id: number; upid: number | null; dur_without_trampoline_ms: number; trampoline_ms: number;
+      }>;
       expect(Object.fromEntries(rows.map(row => [row.startup_id, row.upid]))).toEqual({1: 42, 2: null, 3: null});
+      // Mirrors android_startups.dur_without_trampoline: only the launch that
+      // follows an earlier one inside the span is split off; otherwise dur.
+      expect(Object.fromEntries(rows.map(row =>
+        [row.startup_id, [row.dur_without_trampoline_ms * 1e6, row.trampoline_ms * 1e6].map(Math.round)])))
+        .toEqual({1: [900, 100], 2: [2000, 0], 3: [3000, 0]});
     } finally {
       db.close();
     }
@@ -569,6 +583,7 @@ describe('startup display unit contracts', () => {
         expect(data.rows).toHaveLength(rawRows[source].length);
         expect(fetched.rows).toHaveLength(rawRows[source].length);
         for (const [index, raw] of rawRows[source].entries()) {
+          expect(fetched.rows[index].rowIndex).toBe(index);
           for (const [column, value] of Object.entries(raw)) {
             expect(data.columns).toContain(column);
             expect(fetched.columns).toContain(column);
@@ -576,7 +591,7 @@ describe('startup display unit contracts', () => {
             // evidence status survives so unavailable never means numeric zero.
             const displayedValue = value === null ? '-' : value;
             expect(data.rows[index][data.columns.indexOf(column)]).toBe(displayedValue);
-            expect(fetched.rows[index][fetched.columns.indexOf(column)]).toBe(displayedValue);
+            expect(fetched.rows[index].values[fetched.columns.indexOf(column)]).toBe(displayedValue);
           }
         }
       }
@@ -618,8 +633,8 @@ describe('nullable thread-state evidence', () => {
       INSERT INTO slice VALUES(10,1,10000000,12000000,'selected',0);
       CREATE TABLE android_startups(startup_id INTEGER,package TEXT,startup_type TEXT,ts INTEGER,dur INTEGER);
       INSERT INTO android_startups VALUES(7,'com.example.app','cold',10000000,12000000);
-      CREATE TABLE android_startup_threads(startup_id INTEGER,utid INTEGER,is_main_thread INTEGER,ts INTEGER,dur INTEGER);
-      INSERT INTO android_startup_threads VALUES(7,1,1,10000000,12000000);
+      CREATE TABLE android_startup_threads(startup_id INTEGER,upid INTEGER,utid INTEGER,is_main_thread INTEGER,ts INTEGER,dur INTEGER);
+      INSERT INTO android_startup_threads VALUES(7,42,1,1,10000000,12000000);
       CREATE TABLE thread_state(id INTEGER PRIMARY KEY,ts INTEGER,dur INTEGER,cpu INTEGER,ucpu INTEGER,
         utid INTEGER,state TEXT,io_wait INTEGER,blocked_function TEXT,waker_utid INTEGER,irq_context INTEGER);
       INSERT INTO thread_state VALUES
@@ -811,6 +826,140 @@ describe('startup frequency and causal candidate boundaries', () => {
 });
 
 
+describe('Skill literal unit authority', () => {
+  it.each([
+    ['atomic/startup_freq_rampup.skill.yaml', undefined, 'early_avg_freq_mhz', 'MHz'],
+    ['composite/startup_detail.skill.yaml', 'freq_rampup', 'early_avg_freq_mhz', 'MHz'],
+    ['atomic/startup_freq_rampup.skill.yaml', undefined, 'steady_avg_freq_mhz', 'MHz'],
+    ['composite/startup_detail.skill.yaml', 'freq_rampup', 'steady_avg_freq_mhz', 'MHz'],
+    ['atomic/startup_freq_rampup.skill.yaml', undefined, 'max_freq_mhz', 'MHz'],
+    ['composite/startup_detail.skill.yaml', 'freq_rampup', 'max_freq_mhz', 'MHz'],
+    ['atomic/startup_freq_rampup.skill.yaml', undefined, 'rampup_pct', '%'],
+    ['composite/startup_detail.skill.yaml', 'freq_rampup', 'rampup_pct', '%'],
+    ['atomic/startup_hot_slice_states.skill.yaml', undefined, 'state_pct', '%'],
+    ['composite/startup_detail.skill.yaml', 'hot_slice_states', 'state_pct', '%'],
+    ['atomic/startup_hot_slice_states.skill.yaml', undefined, 'state_coverage_pct', '%'],
+    ['composite/startup_detail.skill.yaml', 'hot_slice_states', 'state_coverage_pct', '%'],
+    ['atomic/startup_critical_tasks.skill.yaml', undefined, 'migrations', 'count'],
+    ['composite/startup_detail.skill.yaml', 'critical_tasks', 'migrations', 'count'],
+    ['atomic/startup_critical_tasks.skill.yaml', undefined, 'cross_cluster_migrations', 'count'],
+    ['composite/startup_detail.skill.yaml', 'critical_tasks', 'cross_cluster_migrations', 'count'],
+    ['atomic/startup_critical_tasks.skill.yaml', undefined, 'observed_cross_cluster_migrations', 'count'],
+    ['composite/startup_detail.skill.yaml', 'critical_tasks', 'observed_cross_cluster_migrations', 'count'],
+    ['atomic/startup_critical_tasks.skill.yaml', undefined, 'unknown_cluster_migrations', 'count'],
+    ['composite/startup_detail.skill.yaml', 'critical_tasks', 'unknown_cluster_migrations', 'count'],
+    ['composite/startup_detail.skill.yaml', 'actionable_main_thread_slices', 'count', 'count'],
+    ['composite/startup_detail.skill.yaml', 'actionable_main_thread_slices', 'percent', '%'],
+    ['composite/startup_detail.skill.yaml', 'actionable_main_thread_slices', 'self_percent', '%'],
+    ['atomic/startup_gc_in_range.skill.yaml', undefined, 'total_dur_ms', 'ms'],
+    ['atomic/startup_main_thread_slices_in_range.skill.yaml', undefined, 'count', 'events'],
+    ['atomic/startup_binder_in_range.skill.yaml', undefined, 'all_percent_of_startup', '%'],
+    ['atomic/startup_critical_tasks.skill.yaml', undefined, 'preemption_count', 'events'],
+    ['atomic/cpu_system_context_in_range.skill.yaml', undefined, 'avg_freq_khz', 'kHz'],
+    ['composite/startup_detail.skill.yaml', 'cpu_freq_analysis', 'avg_freq_mhz', 'MHz'],
+    ['composite/scrolling_analysis.skill.yaml', 'smoothness_basis', 'frames', 'frames'],
+    ['composite/scrolling_analysis.skill.yaml', 'smoothness_basis', 'buffer_stuffing_frames', 'frames'],
+    ['composite/startup_analysis.skill.yaml', 'startup_quality', 'sample_count', 'events'],
+    ['composite/startup_analysis.skill.yaml', 'startup_quality', 'blocker_count', 'count'],
+    ['composite/startup_analysis.skill.yaml', 'startup_quality', 'warning_count', 'count'],
+  ])('keeps the registered %s %s producer unit in an unchanged captured value', async (file, stepId, column, unit) => {
+    const definition = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills', file!), 'utf8')) as any;
+    const node = stepId ? definition.steps.find((step: any) => step.id === stepId) : definition;
+    const executor = createSkillExecutor({query: async () => ({columns: [column!], rows: [[2]], durationMs: 1})});
+    // Exercise the authored display contract without inheriting unrelated
+    // process gates or undefined composite members into this atomic fixture.
+    const skill = normalizeSkillDefinition({name: 'authored_unit_capture', type: 'atomic',
+      sql: `SELECT 2 AS ${column}`, display: {layer: 'list', columns: [
+        node.display.columns.find((field: any) => field.name === column)]},
+      process_scope: {role: 'global_context'}}, file!)!;
+    executor.registerSkill(skill);
+    const result = await executor.execute(skill.name, 'trace', {});
+    expect(result.error).toBeUndefined();
+    const captured = capturedEvidenceTable(evidenceTableFor(result.displayResults[0])!);
+    expect(captured?.rows).toEqual([[2]]);
+    expect(captured?.fields[column!]).toMatchObject({unit, origin: {kind: 'skill_literal'}});
+  });
+
+  it.each([
+    ['ms', 'ms', 'proved'], ['kHz', 'kHz', 'proved'], ['Hz', 'Hz', 'proved'],
+    ['frames', 'frames', 'proved'], ['events', 'events', 'proved'], ['%', '%', 'proved'],
+    ['ratio', 'ratio', 'proved'], ['KiB', 'KiB', 'proved'],
+    ['fps', 'fps', 'proved'], ['frames/s', 'fps', 'proved'], ['prio', 'prio', 'candidate'],
+    ['ms', 'ms', 'candidate', 'string'], ['frames', 'frames', 'candidate', 'duration'],
+    [undefined, 'ms', 'candidate'],
+  ])('captures only registered authored units: %s', async (producerUnit, declaredUnit, status, columnType = 'number') => {
+    const executor = createSkillExecutor({query: async () => ({columns: ['value'], rows: [[2]], durationMs: 1,
+      // A response's model-facing metadata never supplies producer authority.
+      columnUnits: {value: declaredUnit}})});
+    const skill = normalizeSkillDefinition({name: 'literal_unit', version: '1', type: 'atomic', category: 'test',
+      meta: {display_name: 'Literal unit', description: 'Unit capture contract'}, inputs: [],
+      process_scope: {role: 'global_context'}, sql: 'SELECT 2 AS value',
+      display: {layer: 'list', columns: [{name: 'value', type: columnType, format: 'duration_ms',
+        ...(producerUnit ? {unit: producerUnit} : {})}]}}, 'literal_unit.skill.yaml')!;
+    executor.registerSkill(skill);
+    const result = await executor.execute('literal_unit', 'trace');
+    expect(result.success).toBe(true);
+    const display = result.displayResults[0];
+    const store = new ArtifactStore();
+    const artifactId = store.store({skillId: skill.name, data: display.data, scopeProvenance: display.scopeProvenance,
+      sourceToolCallId: 'invoke:literal-unit',
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'literal-unit'})).toBe(true);
+    const reference = {artifactId, rowIndex: 0, column: 'value', value: 2};
+    const contract: any = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
+      clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], bindingEligibility: 'eligible',
+      claims: [{id: 'value', kind: 'numeric', text: `Observed 2 ${declaredUnit}`, references: [reference],
+        semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+          discourse: 'asserted', quantifier: 'one', modality: 'certain',
+          scope: {population: 'cited_rows', subjectRefs: [reference]},
+          numeric: {operator: 'eq', value: 2, unit: declaredUnit}}}]};
+    const preparedEvidence = await prepareClaimEvidence({conclusionContract: contract,
+      evidenceReadView: store.createEvidenceReadView({ownerKey: 'test', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]})});
+    const verified = runClaimVerification({conclusionContract: contract, preparedEvidence});
+    expect(verified.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status,
+      reason: status === 'proved' ? 'numeric_operator_proved' : 'unit_authority_unknown'});
+    const field = getCapturedAnchorFacts(verified.claimSupport[0].anchors[0])?.fields.value;
+    if (status === 'proved') expect(field).toMatchObject({unit: producerUnit, origin: {kind: 'skill_literal',
+      skillId: 'literal_unit', definitionFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      selectedSqlHash: expect.stringMatching(/^[a-f0-9]{64}$/)}});
+    else expect(field).toBeUndefined();
+  });
+
+  it('preserves reviewed units through real Skill loading and display conversion', async () => {
+    const registry = new SkillRegistry();
+    await registry.loadSkills(path.join(process.cwd(), 'skills'));
+    expect(registry.getDisplayContractIssues().filter(issue =>
+      ['scrolling_analysis', 'thread_system_summary_in_range'].includes(issue.skillName))).toEqual([]);
+    const scrolling = registry.getSkill('scrolling_analysis') as any;
+    expect(scrolling).toBeDefined();
+    const column = (stepId: string, name: string) => scrolling.steps.find((step: any) => step.id === stepId)
+      .display.columns.find((entry: any) => entry.name === name);
+    for (const [step, name, unit] of [
+      ['frame_timeline_population', 'total_frames', 'frames'], ['frame_timeline_population', 'jank_frames', 'frames'],
+      ['performance_summary', 'perceived_jank_frames', 'frames'], ['performance_summary', 'buffer_stuffing_frames', 'frames'],
+      ['performance_summary', 'jank_rate', '%'], ['performance_summary', 'refresh_rate', 'Hz'],
+      ['input_data_check', 'total_input_events', 'events'], ['input_latency_summary', 'input_backlog_frames', 'frames'],
+      ['batch_frame_root_cause', 'dur_ms', 'ms'], ['batch_frame_root_cause', 'top_slice_ms', 'ms'],
+      ['batch_frame_root_cause', 'root_cause_coverage_ratio', 'ratio'],
+    ]) expect(column(step, name)).toMatchObject({unit});
+    expect(column('performance_summary', 'actual_fps')).toMatchObject({unit: 'fps'});
+    const columns = scrolling.steps.find((step: any) => step.id === 'performance_summary').display.columns;
+    const projectedColumns = buildColumnDefinitions(columns.map((entry: any) => entry.name), columns);
+    expect(projectedColumns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({name: 'perceived_jank_frames', unit: 'frames'}),
+        expect.objectContaining({name: 'jank_rate', unit: '%'}),
+        expect.objectContaining({name: 'actual_fps', unit: 'fps'}),
+        expect.objectContaining({name: 'refresh_rate', unit: 'Hz'}),
+      ]));
+    for (const projected of projectedColumns) expect(validateColumnDefinition(projected)).toEqual([]);
+    const summary = registry.getSkill('thread_system_summary_in_range') as any;
+    expect(summary.display.columns.find((entry: any) => entry.name === 'avg_freq_khz')).toMatchObject({unit: 'kHz'});
+    for (const name of ['priority_min', 'priority_max'])
+      expect(summary.display.columns.find((entry: any) => entry.name === name)).not.toHaveProperty('unit');
+  });
+});
+
 describe('startup primitive unit authority', () => {
   it.each([
     ['startup_main_thread_slices_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
@@ -819,7 +968,37 @@ describe('startup primitive unit authority', () => {
     ['startup_breakdown_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
     ['startup_breakdown_in_range', 'avg_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
     ['startup_breakdown_in_range', 'max_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
-    ['startup_breakdown_in_range', 'percent', '%', 'candidate', 'unit_authority_unknown'],
+    ['startup_breakdown_in_range', 'count', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_breakdown_in_range', 'percent', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_breakdown_in_range', 'category_percent', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_states_in_range', 'count', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_states_in_range', 'percent', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'avg_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'max_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'all_total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'count', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_file_io_in_range', 'all_percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_sync_binder_in_range', 'call_count', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_sync_binder_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_sync_binder_in_range', 'avg_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_sync_binder_in_range', 'max_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_sync_binder_in_range', 'percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_sync_binder_in_range', 'all_percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_class_loading_in_range', 'count', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_class_loading_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_class_loading_in_range', 'avg_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_class_loading_in_range', 'percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
+    ['startup_sched_latency_in_range', 'count', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_sched_latency_in_range', 'severe_delays', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_sched_latency_in_range', 'all_severe_delays', 'events', 'proved', 'numeric_operator_proved'],
+    ['startup_sched_latency_in_range', 'all_max_wait_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_main_thread_binder_blocking_in_range', 'dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_binder_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_binder_in_range', 'avg_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_binder_in_range', 'max_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
+    ['startup_binder_in_range', 'all_percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
   ])('retains %s explicit units without inferring ambiguous percentage scale',
     async (name, column, unit, status, reason) => {
     const skill = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic', `${name}.skill.yaml`), 'utf8')) as any;
@@ -830,17 +1009,25 @@ describe('startup primitive unit authority', () => {
     executor.setFragmentRegistry(new Map((skill.sql_fragments ?? []).map((fragment: string) =>
       [fragment, fs.readFileSync(path.join(process.cwd(), 'skills', fragment), 'utf8').trim()])));
     executor.registerSkill(normalizeSkillDefinition(skill, `${name}.skill.yaml`)!);
-    const params = {package: 'example.app', startup_id: 1, startup_type: 'cold', start_ts: 0, end_ts: 10000000, min_dur_ns: 0, top_k: 15};
+    // A named run of a target-scoped Skill cites evidence that needs a verified
+    // process identity, and this harness registers no resolver; unscoped, it needs none.
+    const selector = skill.process_scope?.role === 'target' ? {} : {package: 'example.app'};
+    const params = {...selector, startup_id: 1, startup_type: 'cold', start_ts: 0, end_ts: 10000000, min_dur_ns: 0, top_k: 15};
     let executedSkill = name;
     let inputNames = skill.inputs.map((input: any) => input.name);
-    if (name === 'startup_breakdown_in_range') {
+    const parentStepId: Record<string, string> = {startup_breakdown_in_range: 'startup_breakdown',
+      startup_main_thread_file_io_in_range: 'main_thread_file_io', startup_binder_in_range: 'startup_binder',
+      startup_main_thread_states_in_range: 'main_thread_state_during_startup',
+      startup_main_thread_sync_binder_in_range: 'main_thread_sync_binder', startup_class_loading_in_range: 'class_loading',
+      startup_sched_latency_in_range: 'sched_latency_during_startup', startup_main_thread_binder_blocking_in_range: 'main_thread_binder_blocking'};
+    if (parentStepId[name]) {
       const parent = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/startup_analysis.skill.yaml'), 'utf8')) as any;
-      const parentStep = parent.steps.find((step: any) => step.id === 'startup_breakdown');
+      const parentStep = parent.steps.find((step: any) => step.id === parentStepId[name]);
       const fixture = normalizeSkillDefinition({
-        name: 'startup_breakdown_parent_fixture', version: '1.0', type: 'composite', category: 'app_lifecycle', tier: 'B',
-        meta: {display_name: 'startup breakdown parent fixture', description: 'test fixture'}, inputs: parent.inputs,
+        name: 'startup_unit_parent_fixture', version: '1.0', type: 'composite', category: 'app_lifecycle', tier: 'B',
+        meta: {display_name: 'startup unit parent fixture', description: 'test fixture'}, inputs: parent.inputs,
         steps: [{...parentStep, condition: undefined, synthesize: undefined}],
-      }, 'startup_breakdown_parent_fixture.skill.yaml')!;
+      }, 'startup_unit_parent_fixture.skill.yaml')!;
       executor.registerSkill(fixture);
       executedSkill = fixture.name;
       inputNames = parent.inputs.map((input: any) => input.name);
@@ -880,16 +1067,68 @@ describe('startup primitive unit authority', () => {
     const atomic = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic/startup_breakdown_in_range.skill.yaml'), 'utf8')) as any;
     const parentSkill = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/startup_analysis.skill.yaml'), 'utf8')) as any;
     const parent = parentSkill.steps.find((step: any) => step.id === 'startup_breakdown');
-    for (const [column, unit] of [['total_dur_ms', 'ms'], ['avg_dur_ms', 'ms'], ['max_dur_ms', 'ms']]) {
+    for (const [column, unit] of [['total_dur_ms', 'ms'], ['avg_dur_ms', 'ms'], ['max_dur_ms', 'ms'],
+      ['count', 'events'], ['percent', '%'], ['category_percent', '%']]) {
       expect(atomic.display.columns.find((item: any) => item.name === column)?.unit).toBe(unit);
       expect(parent.display.columns.find((item: any) => item.name === column)?.unit).toBe(unit);
     }
     for (const producer of [atomic.display, parent.display]) {
       expect(producer.columns.find((item: any) => item.name === 'percent')).toMatchObject({
-        type: 'percentage', format: 'percentage',
+        type: 'percentage', format: 'percentage', unit: '%',
       });
-      expect(producer.columns.find((item: any) => item.name === 'percent')).not.toHaveProperty('unit');
     }
+  });
+
+  it('computes authored breakdown percentages in the 0–100 scale before top-k projection', () => {
+    const atomic = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic/startup_breakdown_in_range.skill.yaml'), 'utf8')) as any;
+    const sql = atomic.sql.replace(/\$\{package\}/g, '').replace(/\$\{(?:startup_id|start_ts|end_ts)\}/g, 'NULL')
+      .replace('${top_k|15}', '1');
+    const db = new Database(':memory:');
+    try {
+      db.exec(`CREATE TABLE android_startups(startup_id INTEGER, package TEXT, ts INTEGER, dur INTEGER);
+        CREATE TABLE android_startup_opinionated_breakdown(startup_id INTEGER, reason TEXT, dur INTEGER);
+        INSERT INTO android_startups VALUES(1,'app',0,500000000);
+        INSERT INTO android_startup_opinionated_breakdown VALUES
+          (1,'activity_start',300000000),(1,'activity_resume',150000000),(1,'binder',50000000);`);
+      expect(db.prepare(sql).all()).toEqual([{reason: 'activity_start', count: 1, total_dur_ms: 300,
+        avg_dur_ms: 300, max_dur_ms: 300, percent: 60, category: 'AppPhase', category_percent: 90}]);
+    } finally {db.close();}
+  });
+
+  it('matches authored units throughout direct startup child and parent displays without assigning flag units', () => {
+    const parent = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/startup_analysis.skill.yaml'), 'utf8')) as any;
+    for (const step of parent.steps.filter((item: any) => item.type === 'skill')) {
+      const child = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic', `${step.skill}.skill.yaml`), 'utf8')) as any;
+      for (const column of step.display.columns) {
+        if (column.unit === undefined || !['number', 'duration', 'percentage', 'bytes'].includes(column.type)) continue;
+        const producer = child.display.columns.find((item: any) => item.name === column.name);
+        expect(producer?.unit).toBe(column.unit);
+      }
+    }
+    const detail = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/composite/startup_detail.skill.yaml'), 'utf8')) as any;
+    for (const [file, stepId, names] of [
+      ['startup_freq_rampup', 'freq_rampup', ['ucpu', 'cpu', 'machine_id']],
+      ['startup_hot_slice_states', 'hot_slice_states', ['upid', 'utid', 'pid', 'tid', 'left_censored', 'right_censored', 'is_unfinished', 'io_wait']],
+      ['startup_critical_tasks', 'critical_tasks', ['upid', 'utid', 'priority_min', 'priority_max']],
+    ] as const) {
+      const child = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic', `${file}.skill.yaml`), 'utf8')) as any;
+      const step = detail.steps.find((item: any) => item.id === stepId);
+      for (const column of step.display.columns) {
+        if (column.unit !== undefined)
+          expect(child.display.columns.find((item: any) => item.name === column.name)?.unit).toBe(column.unit);
+      }
+      for (const producer of [child.display, step.display]) {
+        for (const name of names) {
+          const column = producer.columns.find((item: any) => item.name === name);
+          if (column) expect(column).not.toHaveProperty('unit');
+        }
+      }
+    }
+    const states = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic/startup_main_thread_states_in_range.skill.yaml'), 'utf8')) as any;
+    expect(states.display.columns.find((item: any) => item.name === 'io_wait')).not.toHaveProperty('unit');
+    const eventStep = parent.steps.find((item: any) => item.id === 'get_startups');
+    for (const name of ['startup_id', 'upid', 'type_reclassified'])
+      expect(eventStep.display.columns.find((item: any) => item.name === name)).not.toHaveProperty('unit');
   });
 
   it('declares the system busy percentage as an authoritative Skill value', async () => {

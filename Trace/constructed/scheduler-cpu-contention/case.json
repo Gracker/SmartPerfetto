@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "80e8c763c38675a7a7f205f9834374009486e939192416ce05e6e2580a22f278",
+    "sha256": "d659fd516ff1bc10c215394f12af064da6f51e81ec923f4a53b00fc748d274e0",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "scheduler-cpu-contention-v1",
     "output": "Trace/.generated/constructed/scheduler-cpu-contention/trace.pftrace",
-    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
   },
   "coverage": {
     "skills": [
@@ -238,7 +238,11 @@
         "semantic_step": "cluster_load",
         "required_columns": [
           "cluster",
+          "load_status",
+          "clock_basis",
           "core_count",
+          "active_core_count",
+          "awake_ms",
           "running_ms",
           "total_capacity_ms",
           "load_pct",
@@ -560,6 +564,7 @@
           "total_cpu_ms",
           "big_core_ms",
           "little_core_ms",
+          "unknown_core_ms",
           "slice_count",
           "avg_slice_ms"
         ],
@@ -675,7 +680,40 @@
           "interpretation",
           "throttle_detected"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "max_rows": 1,
+        "assertions": [
+          {
+            "column": "core_type",
+            "operator": "eq",
+            "value": "未知"
+          },
+          {
+            "column": "min_freq_mhz",
+            "operator": "eq",
+            "value": 960
+          },
+          {
+            "column": "max_freq_mhz",
+            "operator": "eq",
+            "value": 1200
+          },
+          {
+            "column": "freq_drop_pct",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "frequency_variation_detected",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "interpretation",
+            "operator": "contains",
+            "value": "不代表小核"
+          }
+        ]
       },
       {
         "id": "execute-cpu_time_per_frame",
@@ -1006,7 +1044,17 @@
           "long_wait_count",
           "severe_count"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-process_slice_cpu_hotspots",
@@ -1044,7 +1092,17 @@
           "first_ts",
           "last_ts"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 1
+            }
+          ]
+        }
       },
       {
         "id": "execute-sched_latency_in_range",
@@ -1079,7 +1137,17 @@
           "avg_latency_ms",
           "long_wait_count"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-scheduler_module",
@@ -1116,7 +1184,22 @@
           "max_runnable_ms",
           "preempted_runnable_ms"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "runnable_analysis",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "core_distribution",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-scheduling_analysis",
@@ -1155,7 +1238,17 @@
           "max_runnable_ms",
           "long_runnable_count"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-screen_off_background_cpu_attribution",
@@ -1240,7 +1333,22 @@
           "migrations",
           "cross_cluster_migrations"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "running_thread_quadrants",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "running_process_ranking",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-system_load_in_range",
@@ -1302,9 +1410,20 @@
           "big_to_little",
           "little_to_big",
           "big_core_pct",
+          "unknown_core_ns",
           "unique_cpus"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "migration_analysis",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-thread_affinity_violation",
@@ -1392,7 +1511,17 @@
           "placement_evidence",
           "evidence_scope"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "root",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       },
       {
         "id": "execute-util_tracking_analysis",

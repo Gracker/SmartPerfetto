@@ -43,7 +43,6 @@ import type {
   IoSignal,
   MonitorContentionSummary,
   SegmentSemantics,
-  SemanticSourceName,
   SemanticSourceStatus,
   SemanticSources,
   WaitClass,
@@ -498,6 +497,7 @@ export async function enrichSegmentsWithSemantics(
 }
 
 // Exported for unit-test reach into otherwise-private helpers.
+/** @internal Test seam. */
 export const __INTERNAL__ = {
   classifyError,
   segmentKeyOf,

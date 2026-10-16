@@ -62,7 +62,7 @@ export function recordSceneSseEvent(state: SceneSseObservation, event: string, p
     for (const candidate of candidates) {
       const meta = object(object(candidate)?.meta);
       if (!meta || meta.traceId !== scope.traceId || meta.traceSide !== 'current' || !id(meta.sourceToolCallId) ||
-          ['unavailable', 'optional_error'].includes(meta.executionStatus)) continue;
+          ['unavailable', 'optional_error', 'skipped'].includes(meta.executionStatus)) continue;
       const key = String(meta.evidenceRefId || meta.artifactId || meta.sourceToolCallId);
       if (state.acquisitionIds.includes(key)) continue;
       if (state.acquisitionIds.length >= 4096) {issue('scene_acquisition_observation_budget_exhausted'); break;}

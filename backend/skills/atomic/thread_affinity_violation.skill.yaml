@@ -81,6 +81,11 @@ display:
       label: "亲和性异常"
       type: boolean
 
+process_scope:
+  role: target
+  binding: effective_target_processes
+sql_fragments:
+  - fragments/effective_target_processes.sql
 sql: |
   WITH target_threads AS (
     SELECT
@@ -90,8 +95,9 @@ sql: |
       p.pid,
       t.tid
     FROM thread t
-    JOIN process p ON t.upid = p.upid
-    WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
+    JOIN effective_target_processes p ON t.upid = p.upid
+    WHERE (${__process_scope.upid} IS NOT NULL
+        OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       AND (
         t.tid = p.pid
         OR t.name = 'RenderThread'

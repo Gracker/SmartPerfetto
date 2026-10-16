@@ -13,6 +13,8 @@ import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
  * metric — not the wording of the answer — establishes that the mechanism is
  * in play.
  */
+export const INVESTIGATION_CONDITION_OPERATORS = ['gt', 'gte', 'lt', 'lte'] as const;
+
 export type AnalysisInvestigationCondition =
   | {kind: 'semantic'; description: string}
   | {
@@ -20,7 +22,7 @@ export type AnalysisInvestigationCondition =
       description: string;
       /** Trusted producer metric ID; never inferred from a column name. */
       metricId: string;
-      operator: 'gt' | 'gte' | 'lt' | 'lte';
+      operator: typeof INVESTIGATION_CONDITION_OPERATORS[number];
       value: number;
     };
 

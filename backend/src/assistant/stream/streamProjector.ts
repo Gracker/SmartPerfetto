@@ -39,17 +39,63 @@ export interface BroadcastStreamingUpdateOptions {
   /** Called with the buffered event so the caller can push it to the ring buffer. */
   onBufferedEvent?: (event: BufferedSseEvent) => void;
   onValidDataEnvelopes?: (envelopes: DataEnvelope[]) => void;
-  onDataEnvelopeValidationWarning?: (payload: {
-    sessionId: string;
-    envelopeIndex: number;
-    errors: ValidationError[];
+  /** Called per rejected envelope with log-safe fields only (`dataEnvelopeValidationLogFields`). */
+  onDataEnvelopeValidationWarning?: (payload: DataEnvelopeValidationWarning) => void;
+}
+
+/**
+ * What a log may record about an envelope that failed validation: where each
+ * error is and what it says, and the envelope's schema identity. Never the
+ * envelope itself or an error's `value`, which can hold its rows, columns or
+ * a source-derived string.
+ */
+export interface DataEnvelopeValidationWarning {
+  sessionId: string;
+  envelopeIndex: number;
+  errors: Array<{path: string; message: string}>;
+  totalErrors: number;
+  envelope: {
+    metaType?: string;
+    metaVersion?: string;
+    metaSource?: string;
+    skillId?: string;
+    stepId?: string;
+    displayLayer?: string;
+    displayFormat?: string;
+  };
+}
+
+const LOGGED_VALIDATION_ERRORS = 5;
+const LOGGED_FIELD_CHARS = 160;
+
+function loggedIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.slice(0, LOGGED_FIELD_CHARS) : undefined;
+}
+
+function dataEnvelopeValidationLogFields(
+  sessionId: string,
+  envelopeIndex: number,
+  envelope: any,
+  errors: ValidationError[],
+): DataEnvelopeValidationWarning {
+  return {
+    sessionId,
+    envelopeIndex,
+    errors: errors.slice(0, LOGGED_VALIDATION_ERRORS).map(error => ({
+      path: String(error.path).slice(0, LOGGED_FIELD_CHARS),
+      message: String(error.message).slice(0, LOGGED_FIELD_CHARS),
+    })),
+    totalErrors: errors.length,
     envelope: {
-      metaType?: string;
-      metaSource?: string;
-      displayLayer?: string;
-      displayFormat?: string;
-    };
-  }) => void;
+      metaType: loggedIdentifier(envelope?.meta?.type),
+      metaVersion: loggedIdentifier(envelope?.meta?.version),
+      metaSource: loggedIdentifier(envelope?.meta?.source),
+      skillId: loggedIdentifier(envelope?.meta?.skillId),
+      stepId: loggedIdentifier(envelope?.meta?.stepId),
+      displayLayer: loggedIdentifier(envelope?.display?.layer),
+      displayFormat: loggedIdentifier(envelope?.display?.format),
+    },
+  };
 }
 
 export class StreamProjector {
@@ -144,17 +190,7 @@ export class StreamProjector {
       for (let i = 0; i < validationResults.length; i++) {
         const {envelope, errors} = validationResults[i];
         if (errors.length > 0) {
-          options.onDataEnvelopeValidationWarning?.({
-            sessionId,
-            envelopeIndex: i,
-            errors,
-            envelope: {
-              metaType: envelope?.meta?.type,
-              metaSource: envelope?.meta?.source,
-              displayLayer: envelope?.display?.layer,
-              displayFormat: envelope?.display?.format,
-            },
-          });
+          options.onDataEnvelopeValidationWarning?.(dataEnvelopeValidationLogFields(sessionId, i, envelope, errors));
         }
       }
 

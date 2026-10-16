@@ -25,8 +25,10 @@ import {
   SkillInputValidationError,
   ValidatedParams,
 } from './types';
-import { extractRootVariables } from './expressionUtils';
-import { sqlScopeDeclarationError } from './processScopeSql';
+import { CONTEXTUAL_KEYWORDS, extractRootVariables } from './expressionUtils';
+import { executableSqlUnits, sqlScopeDeclarationError } from './processScopeSql';
+import { stepNodesOf } from './skillSteps';
+import { sqlReads } from './normalizedSourceReads';
 
 // =============================================================================
 // Validation Types
@@ -202,14 +204,45 @@ function coerceValue(
 // =============================================================================
 
 /**
- * Implicit parameters always available in the execution context,
- * injected by the runtime (not declared in skill inputs).
+ * Parameters the runtime and tooling pass to every Skill without a
+ * declaration: what a Skill's SQL and conditions may read undeclared.
  */
-const IMPLICIT_PARAMS = new Set([
-  'package', 'vendor', 'start_ts', 'end_ts', 'item',
+export const RUNTIME_SKILL_PARAMS: readonly string[] = ['package', 'vendor', 'start_ts', 'end_ts'];
+
+/**
+ * Implicit parameters always available in a condition's execution context:
+ * the runtime parameters and the iterator context.
+ */
+const IMPLICIT_PARAMS: ReadonlySet<string> = new Set([
+  ...RUNTIME_SKILL_PARAMS, 'item',
   // Iterator context variables
   'currentItem', 'currentItemIndex',
 ]);
+
+/**
+ * Names a condition may read without a declaration: contextual keywords, which
+ * also act as keywords, and host names existing Skill packs read undeclared.
+ * The evaluator still resolves both through the Skill scopes like any name.
+ */
+const UNCHECKED_CONDITION_NAMES: ReadonlySet<string> = new Set([...CONTEXTUAL_KEYWORDS, 'console', 'globalThis', 'window']);
+/**
+ * Only ASCII names are checked: without a parser, a local declaration reads
+ * as a root, and existing packs may declare non-ASCII locals.
+ */
+const CHECKED_CONDITION_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Whether a root a Skill expression reads needs no declaration: a runtime
+ * parameter, an exempt name, or a name validation does not check.
+ */
+export function isUncheckedConditionRoot(name: string): boolean {
+  return !CHECKED_CONDITION_NAME.test(name) || UNCHECKED_CONDITION_NAMES.has(name) || IMPLICIT_PARAMS.has(name);
+}
+
+/** The names a Skill declares for its expressions to read: its inputs and context dependencies. */
+export function declaredSkillNames(skill: SkillDefinition): Set<string> {
+  return new Set([...(skill.inputs ?? []).map(input => input.name), ...(skill.context ?? [])]);
+}
 
 /**
  * Validate all condition expressions in a skill definition.
@@ -221,80 +254,61 @@ const IMPLICIT_PARAMS = new Set([
  *   - A context dependency (skill.context[])
  *   - A prior step ID (context.results[stepId])
  *   - A prior step's save_as variable
- *   - A JS built-in (filtered by extractRootVariables)
+ *   - A language global or local name (not returned by extractRootVariables)
+ *   - An unchecked name (UNCHECKED_CONDITION_NAMES, non-ASCII names)
  *
  * Also validates iterator step `source` references.
  */
 export function validateSkillConditions(skill: SkillDefinition): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
 
-  if (!skill.steps || skill.steps.length === 0) return warnings;
-
   // Build the set of known variable sources
-  const declaredInputs = new Set(
-    (skill.inputs || []).map(i => i.name)
-  );
-  const contextDeps = new Set(skill.context || []);
-  const availableStepIds = new Set<string>();
-  const availableSaveAs = new Set<string>();
+  const declared = declaredSkillNames(skill);
+  const declaredInputs = new Set((skill.inputs || []).map(i => i.name));
+  const available = new Set<string>();
 
-  for (const step of skill.steps) {
-    const stepAny = step as any;
-
-    // Check condition expression if present
-    if (typeof stepAny.condition === 'string' && stepAny.condition.trim()) {
-      const vars = extractRootVariables(stepAny.condition);
-      for (const v of vars) {
-        if (
-          declaredInputs.has(v) ||
-          IMPLICIT_PARAMS.has(v) ||
-          contextDeps.has(v) ||
-          availableStepIds.has(v) ||
-          availableSaveAs.has(v)
-        ) {
-          continue;
+  // A step reads what the top-level steps before its own recorded, at any
+  // depth: its condition runs in executeStep wherever the step sits.
+  const nodes = stepNodesOf(skill);
+  for (const top of stepNodesOf(skill, { topLevelOnly: true })) {
+    for (const { node: step, name } of nodes.filter(node => node.topLevelIndex === top.topLevelIndex)) {
+      if (typeof step.condition === 'string' && step.condition.trim()) {
+        for (const v of extractRootVariables(step.condition)) {
+          if (isUncheckedConditionRoot(v) || declared.has(v) || available.has(v)) continue;
+          warnings.push({
+            stepId: name,
+            message: `Condition references unknown variable '${v}' in expression: ${step.condition}`,
+          });
         }
-        warnings.push({
-          stepId: step.id,
-          message: `Condition references unknown variable '${v}' in expression: ${stepAny.condition}`,
-        });
+      }
+
+      // Validate iterator source reference
+      if (step.type === 'iterator' && typeof step.source === 'string') {
+        const src = step.source;
+        if (!available.has(src) && !declaredInputs.has(src) && !IMPLICIT_PARAMS.has(src)) {
+          warnings.push({
+            stepId: name,
+            message: `Iterator source '${src}' references undefined step or variable`,
+          });
+        }
       }
     }
-
-    // Validate iterator source reference
-    if (stepAny.type === 'iterator' && typeof stepAny.source === 'string') {
-      const src = stepAny.source;
-      if (
-        !availableStepIds.has(src) &&
-        !availableSaveAs.has(src) &&
-        !declaredInputs.has(src) &&
-        !IMPLICIT_PARAMS.has(src)
-      ) {
-        warnings.push({
-          stepId: step.id,
-          message: `Iterator source '${src}' references undefined step or variable`,
-        });
-      }
-    }
-
-    // Accumulate step ID and save_as for subsequent steps
-    if (step.id) {
-      availableStepIds.add(step.id);
-    }
-    if (typeof stepAny.save_as === 'string') {
-      availableSaveAs.add(stepAny.save_as);
-    }
-
-    // Also accumulate from nested parallel steps
-    if (stepAny.type === 'parallel' && Array.isArray(stepAny.steps)) {
-      for (const nested of stepAny.steps) {
-        if (nested.id) availableStepIds.add(nested.id);
-        if (typeof nested.save_as === 'string') availableSaveAs.add(nested.save_as);
-      }
-    }
+    for (const name of recordedStepNames(top.node)) available.add(name);
   }
 
   return warnings;
+}
+
+/**
+ * The names a top-level step makes readable to the steps after it once it ran
+ * (the executor's recordStepResult): its id and save_as, and the ids (and
+ * save_as) of a parallel step's own steps, which executeParallelStep records
+ * as results too.
+ */
+export function recordedStepNames(step: any): string[] {
+  const recorders = [step, ...(step?.type === 'parallel' ? stepNodesOf(step, { topLevelOnly: true }).map(({ node }) => node) : [])];
+  return recorders.flatMap(recorder => [recorder.id, recorder.save_as])
+    .filter((name): name is string => typeof name === 'string' && name !== '');
 }
 
 // =============================================================================
@@ -310,20 +324,76 @@ export function validateFragmentReferences(
   availableFragments: Set<string>,
 ): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
-
-  const visit = (node: any, path: string): void => {
-    if (!node || typeof node !== 'object') return;
-    for (const fragPath of node.sql_fragments || []) {
+  for (const {path, source} of executableSqlUnits(skill)) {
+    for (const fragPath of source.sql_fragments || []) {
       if (!availableFragments.has(fragPath)) {
         warnings.push({ stepId: path, message: `SQL fragment '${fragPath}' not found in fragments directory` });
       }
     }
-    if (node.exact_sql !== undefined) visit(node.exact_sql, `${path}.exact_sql`);
-    for (const child of node.steps || []) visit(child, child.id || path);
-    for (const branch of node.conditions || []) visit(branch.then, path);
-    visit(node.else, path);
+  }
+  return warnings;
+}
+
+/**
+ * The fragment that owns the only raw read of a source, the relation it
+ * defines, and the names or types of the counter tracks that source reads.
+ */
+interface NormalizedReadOwner {
+  fragment: string;
+  relation: string;
+  trackSelectors?: readonly string[];
+}
+
+/**
+ * Stdlib relations whose raw values differ across trace-processor runtimes or
+ * writers and must be read through one normalizing fragment.
+ * android_gpu_frequency returns the gpufreq counter as written: kHz, Hz or MHz,
+ * and selecting that track by name or type reads the same raw values.
+ */
+const NORMALIZED_STDLIB_READS: ReadonlyMap<string, NormalizedReadOwner> = new Map([
+  ['android_input_events', {
+    fragment: 'fragments/android_input_events_normalized.sql', relation: 'android_input_events_normalized',
+  }],
+  ['android_gpu_frequency', {
+    fragment: 'fragments/gpu_frequency_intervals.sql', relation: 'gpu_frequency_intervals',
+    trackSelectors: ['gpufreq', 'gpu_frequency'],
+  }],
+]);
+
+/**
+ * Reject a read of a normalized stdlib relation, or a selection of its track
+ * by name or type, in Skill SQL or in a referenced fragment other than the
+ * owning fragment. The check follows the SQL structure
+ * (normalizedSourceReads.ts): a wrapped or aliased column (LOWER(t.name),
+ * track_name) and an exact comparison in a conditional aggregate select as
+ * surely as a bare filter, while an exclusion (!=, NOT IN) or a CASE label
+ * does not. Its accepted limits are listed there.
+ */
+export function validateNormalizedStdlibReads(
+  skill: SkillDefinition,
+  fragments: ReadonlyMap<string, string> = new Map(),
+): SkillValidationWarning[] {
+  const warnings: SkillValidationWarning[] = [];
+  const check = (sql: string, path: string, where: string, exemptFragment?: string): void => {
+    const reads = sqlReads(sql);
+    for (const [source, owner] of NORMALIZED_STDLIB_READS) {
+      if (owner.fragment === exemptFragment) continue;
+      if (reads.readsRelation(source)) {
+        warnings.push({ stepId: path, message: `${where} reads ${source} directly; read ${owner.relation} via sql_fragments: [${owner.fragment}]` });
+      }
+      const selector = owner.trackSelectors?.find(value => reads.selectsTrack(value));
+      if (selector) {
+        warnings.push({ stepId: path, message: `${where} selects the ${selector} counter track directly; read ${owner.relation} via sql_fragments: [${owner.fragment}]` });
+      }
+    }
   };
-  visit(skill, 'root');
+  for (const {path, source} of executableSqlUnits(skill)) {
+    if (typeof source.sql === 'string') check(source.sql, path, 'SQL');
+    for (const fragPath of source.sql_fragments || []) {
+      const body = fragments.get(fragPath);
+      if (body !== undefined) check(body, path, `Fragment '${fragPath}'`, fragPath);
+    }
+  }
   return warnings;
 }
 
@@ -333,21 +403,15 @@ export function validateProcessScopeDeclarations(
   fragments: ReadonlyMap<string, string>,
 ): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
-  const visit = (node: any, path: string): void => {
-    if (!node || typeof node !== 'object') return;
-    if (node.process_scope) {
-      const reason = sqlScopeDeclarationError(node, fragments);
-      if (reason) warnings.push({ stepId: path, message: reason });
-    }
+  for (const {path, source} of executableSqlUnits(skill)) {
+    const reason = source.process_scope ? sqlScopeDeclarationError(source, fragments) : undefined;
+    if (reason) warnings.push({ stepId: path, message: reason });
+  }
+  for (const {node, name} of [{node: skill as any, name: 'root'}, ...stepNodesOf(skill)]) {
     if ([...(node.inputs || []).map((input: SkillInput) => input.name), node.save_as]
-      .some(name => typeof name === 'string' && name.startsWith('__process_scope'))) {
-      warnings.push({ stepId: path, message: '__process_scope is reserved for trusted execution bindings' });
+      .some(binding => typeof binding === 'string' && binding.startsWith('__process_scope'))) {
+      warnings.push({ stepId: name, message: '__process_scope is reserved for trusted execution bindings' });
     }
-    if (node.exact_sql !== undefined) visit(node.exact_sql, `${path}.exact_sql`);
-    for (const child of node.steps || []) visit(child, child.id || path);
-    for (const branch of node.conditions || []) visit(branch.then, path);
-    visit(node.else, path);
-  };
-  visit(skill, 'root');
+  }
   return warnings;
 }

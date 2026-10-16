@@ -13,6 +13,7 @@ import {resolveRuntimeEvidenceStore} from '../../src/agentRuntime/runtimeEvidenc
 import {proposeSceneTimeline} from '../../src/agent/scene/sceneTimelineProposal';
 import type {SceneTimelineSegment} from '../../src/agent/scene/sceneTimelineContract';
 import {sceneRunState} from '../../src/agent/scene/sceneRunContext';
+import {androidInputEventsTableDdl} from '../helpers/androidInputEventsFixture';
 
 const start = 9007199254740993n;
 const end = start + 10000000000n;
@@ -21,7 +22,7 @@ function inputTrace(): Database.Database {
   db.exec(`CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
     CREATE TABLE android_motion_events(id INTEGER, event_id INTEGER, ts INTEGER, action INTEGER, device_id INTEGER, display_id INTEGER, source INTEGER);
     CREATE TABLE android_key_events(id INTEGER, event_id INTEGER, ts INTEGER, action INTEGER, device_id INTEGER, display_id INTEGER, source INTEGER);
-    CREATE TABLE android_input_events(input_event_id TEXT, event_seq TEXT, event_channel TEXT, dispatch_ts INTEGER, receive_ts INTEGER, read_time INTEGER, event_type TEXT, event_action TEXT, upid INTEGER, process_name TEXT);`);
+    ${androidInputEventsTableDdl()}`);
   db.prepare('INSERT INTO trace_bounds VALUES (?, ?)').run(start, end);
   const insert = db.prepare('INSERT INTO android_motion_events VALUES (?, ?, ?, ?, 1, 0, 4098)');
   insert.run(1, 1, start + 1600000000n, 0);

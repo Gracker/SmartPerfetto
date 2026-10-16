@@ -21,7 +21,9 @@ and agent evidence are not maintained as permanent documentation.
 - [Agent-Assisted GitHub Feedback](getting-started/agent-assisted-feedback.en.md)
 - [Self-Evolution Usage And Acceptance](getting-started/self-evolution.en.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.en.md)
+- [Private Device And Team Knowledge](getting-started/private-knowledge.en.md)
 - [Multi-Trace Analysis Result Comparison](getting-started/multi-trace-result-comparison.en.md)
+- [Critical Path And Flamegraph](getting-started/critical-path-and-flamegraph.en.md)
 - [Android Internals Knowledge](getting-started/android-internals-knowledge.en.md)
 - [Troubleshooting](operations/troubleshooting.en.md)
 
@@ -42,6 +44,7 @@ and agent evidence are not maintained as permanent documentation.
 - [Technical Architecture](architecture/technical-architecture.en.md): component boundaries and change map.
 - [Agent Runtime](architecture/agent-runtime.en.md): runtime, provider, and session semantics.
 - [Dual Trace Workspace](architecture/dual-trace-workspace.en.md): dual-pane and comparison state machine.
+- [Scene Reconstruction](architecture/scene-reconstruction.en.md): acquisition, assessment, presentation, and historical access of the scene timeline.
 - [Private Analysis Context](architecture/private-analysis-context.en.md): authorization, continuity, and deletion.
 - [Self-Improving](architecture/self-improving-design.md): currently integrated and explicitly unavailable capabilities.
 - Use the [Self-Evolution guide](getting-started/self-evolution.en.md) for the

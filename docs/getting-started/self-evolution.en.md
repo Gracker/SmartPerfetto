@@ -50,7 +50,7 @@ analysis run
 | M5 | Run baseline and candidate with the same inputs, budgets, and concurrency, then score L0/L1/L3 and apply Pareto comparison | Provider failure or missing evidence becomes inconclusive rather than being presented as an improvement |
 | M6 | Attribute effective public feedback with deterministic rules and generate one minimal `hypothesis_only` proposal | Administrators see an explainable ownership hypothesis and minimal change; online statistics alone cannot modify the system |
 | M7 | Enforce eight gates for schema, containment, injection, size, semantics, concurrency, static validation, and paired replay | Escaping, malicious, oversized, stale, or regressing candidates cannot qualify for apply |
-| M8 | Publish an accepted, still-qualified proposal as a content-addressed overlay with three local delivery channels, upgrade reconciliation, and explicit revert | Only new runs use the new generation; upgrade drift is quarantined, rollback is explicit, and no commit or push happens automatically |
+| M8 | Publish an accepted, still-qualified proposal as a content-addressed overlay with runtime overlay apply and local contribution-bundle export, upgrade reconciliation, and explicit revert | Only new runs use the new generation; upgrade drift is quarantined, rollback is explicit, and no commit or push happens automatically |
 | M9 | Add the Evolution admin UI, SSE progress, diffs, permissions, metrics, operations guidance, and bilingual docs while leaving the external L2 judge unconfigured | Administrators can inspect every state, reject a change, export local artifacts, and accept it only with evidence |
 | M10 | Detect feedback opportunities from the same completed run, pin no-tool Agent triage to the original provider/runtime, validate its output, and create only a user-confirmed GitHub draft | Regular users learn whether to report, who likely owns the problem, what is missing, and what they can contribute; GitHub is never submitted automatically |
 
@@ -87,7 +87,7 @@ for the detailed data contracts, overlay operations, and legacy boundaries.
 | Analyst | With `self_evolution:read`, can inspect status, proposals, overlays, and reconciliation, but cannot apply |
 | Workspace/Org Admin | After a deployer enables the feature, can explicitly curate, gate, accept/reject, export, apply, and revert |
 | Deployer | Chooses whether to enable the two switches and must provide writable external storage that survives upgrades before apply is available |
-| Skill/Strategy maintainer | Can review a structured minimal delta and paired evidence; repository patches and contribution bundles remain local and never enter Git automatically |
+| Skill/Strategy maintainer | Can review a structured minimal delta and paired evidence; contribution bundles remain local and never enter Git automatically |
 
 This is not a promise that the system improves itself without supervision. The
 direct benefit for regular users is safer feedback attribution and correction;

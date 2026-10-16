@@ -156,6 +156,29 @@ function globMatches(globSegments: readonly string[], candidate: string): boolea
   return globIndex === globSegments.length;
 }
 
+/**
+ * A caller-supplied file glob over relative paths, in the same safe subset as
+ * registered exclude globs (`*`, `?`, whole-segment `**`; no classes, braces
+ * or negation). A glob without `/` matches a file name at any depth.
+ */
+export function compileSourcePathGlob(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): (relativePath: string) => boolean {
+  if (value.length > 256) throw new Error('source_file_glob_invalid');
+  let normalized: string;
+  try {
+    normalized = normalizeExcludeGlob(value);
+  } catch {
+    throw new Error('source_file_glob_invalid');
+  }
+  const comparable = (text: string): string => platform === 'win32'
+    ? text.toLocaleLowerCase('en-US')
+    : text;
+  const segments = comparable(normalized.includes('/') ? normalized : `**/${normalized}`).split('/');
+  return relativePath => globMatches(segments, comparable(relativePath));
+}
+
 interface CompiledSourceSelection {
   comparable: (value: string) => string;
   hardExcludes: ReadonlySet<string>;
@@ -196,6 +219,14 @@ function compiledSelection(
 
 export function sourceExtensionsForKind(kind: CodebaseKind): readonly string[] {
   return EXTENSIONS_BY_KIND[kind];
+}
+
+/** Every codebase kind; the extension table's type keeps it exhaustive. */
+export const CODEBASE_KINDS = Object.freeze(Object.keys(EXTENSIONS_BY_KIND) as CodebaseKind[]);
+
+/** Every extension some codebase kind admits. */
+export function allSourceExtensions(): string[] {
+  return [...new Set(CODEBASE_KINDS.flatMap(kind => EXTENSIONS_BY_KIND[kind]))];
 }
 
 export function buildSourceSelectionIR(input: BuildSourceSelectionInput): SourceSelectionIR {
@@ -333,4 +364,48 @@ export function sourceSelectionRipgrepArguments(
     ...(policy.ignoreMode === 'include_ignored' ? ['--no-ignore'] : []),
     ...globs.flatMap(glob => [globOption, glob]),
   ];
+}
+
+/**
+ * The first noise directory a relative path passes through that none of
+ * `includePrefixes` selects explicitly, the same rule `sourceSelectionAdmits`
+ * applies to files; undefined when there is none.
+ */
+function unselectedNoiseDirectory(
+  relativePath: string,
+  includePrefixes: readonly string[],
+  platform: NodeJS.Platform,
+): string | undefined {
+  const comparable = (value: string): string => platform === 'win32'
+    ? value.toLocaleLowerCase('en-US')
+    : value;
+  const noise = new Set(NOISE_EXCLUDE_DIRS.map(comparable));
+  const prefixes = includePrefixes.map(comparable);
+  const segments = comparable(relativePath).split('/');
+  for (let index = 0; index < segments.length; index += 1) {
+    if (!noise.has(segments[index]!)) continue;
+    const noisePath = segments.slice(0, index + 1).join('/');
+    if (!prefixes.some(prefix => pathHasPrefix(noisePath, prefix))) return noisePath;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a new path selection provably admits nothing a grant did not: every
+ * new include prefix lies under a granted one (or the grant is the whole
+ * root), it reaches into no noise directory the grant left out, and every
+ * granted exclusion is still an exclusion. Prefixes compare exactly (no case
+ * or Unicode folding) and noise names case-insensitively, so any doubt answers
+ * no. Extensions are not part of a path selection; a grant keeps its own.
+ */
+export function sourceSelectionWithinGrant(
+  selection: Pick<SourceSelectionIR, 'includePrefixes' | 'excludeGlobs'>,
+  grant: {includePrefixes: readonly string[]; excludeGlobs: readonly string[]},
+): boolean {
+  if (grant.excludeGlobs.some(glob => !selection.excludeGlobs.includes(glob))) return false;
+  if (grant.includePrefixes.length > 0 && selection.includePrefixes.length === 0) return false;
+  return selection.includePrefixes.every(prefix =>
+    (grant.includePrefixes.length === 0 ||
+      grant.includePrefixes.some(granted => pathHasPrefix(granted, prefix))) &&
+    unselectedNoiseDirectory(prefix, grant.includePrefixes, 'win32') === undefined);
 }

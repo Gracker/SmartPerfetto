@@ -10,11 +10,8 @@ import {
   buildQuickMemoryContext,
   buildQuickMemoryContextPayload,
   buildTraceContextDataEnvelopes,
-  buildRuntimeSessionMapKey,
-  collectRecentFindings,
   decorateTraceContextDatasets,
   formatTraceContext,
-  isFreshRuntimeEntry,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
   setLruCacheEntry,
@@ -44,16 +41,6 @@ describe('runtimeCommon', () => {
     });
     expect(providerScopeFromAnalysisOptions({ tenantId: 'tenant-only' })).toBeUndefined();
     expect(knowledgeScopeFromAnalysisOptions({ workspaceId: 'workspace-only' })).toBeUndefined();
-  });
-
-  it('centralizes runtime session keys and freshness checks', () => {
-    const now = 1_700_000_000_000;
-
-    expect(buildRuntimeSessionMapKey('s1')).toBe('s1');
-    expect(buildRuntimeSessionMapKey('s1', 'trace-b')).toBe('s1:ref:trace-b');
-    expect(isFreshRuntimeEntry({ updatedAt: now - 10 }, 100, now)).toBe(true);
-    expect(isFreshRuntimeEntry({ updatedAt: now - 101 }, 100, now)).toBe(false);
-    expect(isFreshRuntimeEntry(undefined, 100, now)).toBe(false);
   });
 
   it('formats explicit request trace datasets once for both runtimes', () => {
@@ -180,19 +167,6 @@ describe('runtimeCommon', () => {
     expect(payload.tokenEstimate).toBeGreaterThan(0);
   });
 
-  it('collects the most recent findings consistently', () => {
-    const sessionContext = {
-      getAllTurns: () => [
-        { findings: [{ title: 'old' }] },
-        { findings: [{ title: 'recent-1' }, { title: 'recent-2' }] },
-      ],
-    };
-
-    expect(collectRecentFindings(sessionContext, { maxTurns: 1, maxFindings: 1 })).toEqual([
-      { title: 'recent-2' },
-    ]);
-  });
-
   it.each<RuntimeHypothesisSource>([
     'claude',
     'openai',
@@ -306,7 +280,6 @@ describe('runtimeCommon', () => {
       "export * from './runtimeEntities';",
       "export * from './runtimeHypothesis';",
       "export * from './runtimeSkillNotes';",
-      "export * from './runtimeFinalReportRecovery';",
     ]);
     expect(source).not.toMatch(/^\s*import\b/m);
     expect(source).not.toMatch(/^\s*(export\s+)?(function|const|class|interface|type)\s+/m);
@@ -328,10 +301,7 @@ describe('runtimeCommon', () => {
         'knowledgeScopeFromAnalysisOptions',
       ],
       runtimeCache: [
-        'SDK_SESSION_FRESHNESS_MS',
         'DEFAULT_RUNTIME_CACHE_LIMIT',
-        'buildRuntimeSessionMapKey',
-        'isFreshRuntimeEntry',
         'getLruCacheEntry',
         'setLruCacheEntry',
       ],
@@ -339,7 +309,6 @@ describe('runtimeCommon', () => {
         'formatTraceContext',
         'buildQuickConversationContext',
         'buildQuickMemoryContext',
-        'collectRecentFindings',
       ],
       runtimeEntities: [
         'buildEntityContext',

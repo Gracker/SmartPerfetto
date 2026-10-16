@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-start",
+    "duration_ns": "10000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "0",
+      "duration_ns": "1000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::device-identity-honor-300-pro"
+    },
+    {
+      "type": "android-system-info",
+      "at_ns": "0",
+      "android_build_fingerprint": "HONOR/AMP-AN00/HNAMP:16/HONORAMP-AN00/10DLDLD111C00E110:user/release-keys",
+      "android_device_manufacturer": "HONOR",
+      "android_soc_model": "SM8650",
+      "android_sdk_version": 36
+    }
+  ]
+}

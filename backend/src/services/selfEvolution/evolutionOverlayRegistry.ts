@@ -20,6 +20,7 @@ import type {
   SelfEvolutionPersistenceCapability,
   UpgradeReconciliationReportV1,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {
   canonicalJsonString,
   immutableCanonicalSnapshot,
@@ -32,6 +33,9 @@ import {
   parseEvolutionRollbackReceiptV1,
   parseUpgradeReconciliationReportV1,
 } from './evolutionOverlayContract';
+
+const OVERLAY_ENTRY = 'overlay registry entry';
+const GENERATION_RECORD = 'overlay generation record';
 
 interface EvolutionOverlayRegistryOptions {
   databasePath?: string;
@@ -136,7 +140,9 @@ export class EvolutionOverlayRegistry {
       entryId,
     ) as {entry_json: string} | undefined;
     return row
-      ? parseEvolutionOverlayRegistryEntryV1(JSON.parse(row.entry_json))
+      ? parseEvolutionOverlayRegistryEntryV1(
+          parseStoredJson(row.entry_json, OVERLAY_ENTRY),
+        )
       : undefined;
   }
 
@@ -158,7 +164,9 @@ export class EvolutionOverlayRegistry {
           ORDER BY overlay_id, entry_id
         `).all(scope.tenantId, scope.workspaceId);
     return (rows as Array<{entry_json: string}>).map(row =>
-      parseEvolutionOverlayRegistryEntryV1(JSON.parse(row.entry_json)));
+      parseEvolutionOverlayRegistryEntryV1(
+        parseStoredJson(row.entry_json, OVERLAY_ENTRY),
+      ));
   }
 
   listScopes(): RunManifestScope[] {
@@ -337,8 +345,10 @@ export class EvolutionOverlayRegistry {
         input.fence,
       ) as {record_json: string} | undefined;
       if (!row) throw new Error('evolution_generation_prepared_missing');
-      const prepared = JSON.parse(row.record_json) as
-        EvolutionGenerationRecordV1;
+      const prepared = parseStoredJson<EvolutionGenerationRecordV1>(
+        row.record_json,
+        GENERATION_RECORD,
+      );
       const published = immutableCanonicalSnapshot({
         ...prepared,
         publishedGeneration: input.candidateGeneration,
@@ -398,7 +408,10 @@ export class EvolutionOverlayRegistry {
       if (!row) {
         throw new Error('evolution_generation_abort_fence_lost');
       }
-      const record = JSON.parse(row.record_json) as Record<string, unknown>;
+      const record = parseStoredJson<Record<string, unknown>>(
+        row.record_json,
+        GENERATION_RECORD,
+      );
       const updated = this.db.prepare(`
         UPDATE evolution_generation_records
         SET state = 'aborted',
@@ -456,7 +469,9 @@ export class EvolutionOverlayRegistry {
     `).get(scope.tenantId, scope.workspaceId) as
       {artifact_json: string} | undefined;
     return row
-      ? parseUpgradeReconciliationReportV1(JSON.parse(row.artifact_json))
+      ? parseUpgradeReconciliationReportV1(
+          parseStoredJson(row.artifact_json, 'upgrade reconciliation report'),
+        )
       : undefined;
   }
 
@@ -515,8 +530,9 @@ export class EvolutionOverlayRegistry {
       scope.workspaceId,
       actionId,
     ) as Array<{artifact_json: string}>;
-    return rows.map(row =>
-      parseEvolutionRollbackReceiptV1(JSON.parse(row.artifact_json)));
+    return rows.map(row => parseEvolutionRollbackReceiptV1(
+      parseStoredJson(row.artifact_json, 'rollback receipt'),
+    ));
   }
 
   saveDegradationAlert(
@@ -542,8 +558,9 @@ export class EvolutionOverlayRegistry {
       ORDER BY created_at, alert_id
     `).all(scope.tenantId, scope.workspaceId) as
       Array<{artifact_json: string}>;
-    return rows.map(row =>
-      parseEvolutionDegradationAlertV1(JSON.parse(row.artifact_json)));
+    return rows.map(row => parseEvolutionDegradationAlertV1(
+      parseStoredJson(row.artifact_json, 'degradation alert'),
+    ));
   }
 
   close(): void {
@@ -567,7 +584,7 @@ export class EvolutionOverlayRegistry {
       }>;
       for (const row of rows) {
         const current = parseEvolutionOverlayRegistryEntryV1(
-          JSON.parse(row.entry_json),
+          parseStoredJson(row.entry_json, OVERLAY_ENTRY),
         );
         const updated = parseEvolutionOverlayRegistryEntryV1({
           ...current,

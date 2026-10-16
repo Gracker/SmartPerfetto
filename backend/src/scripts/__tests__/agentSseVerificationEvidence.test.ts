@@ -12,8 +12,12 @@ import {
 } from '../agentSseVerificationEvidence';
 import {
   collectAgentSseOracleRows,
+  evaluateAgentSseAcceptance,
   evaluateAgentSseExpectation,
   evaluateAgentSseInvestigationExpectation,
+  agentSseExpectationHash,
+  resolveAgentSseRunIdentity,
+  traceProcessorVersionKey,
   parseAgentSseExpectation,
   taskAcceptanceStatus,
   assertVerificationTraceReady,
@@ -35,6 +39,8 @@ import {
   type TerminalAnalysisEvidence,
 } from '../verifyAgentSseScrolling';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {stepNodesOf} from '../../services/skillEngine/skillSteps';
+import yaml from 'js-yaml';
 import * as nativeCapture from '../../services/evidence/rawSqlNativeProvenance';
 import type {PerfettoSqlDocsAsset} from '../../services/perfettoSqlDocs';
 import type {RunningNativeProcessorObservation, TraceInfo} from '../../services/traceProcessorService';
@@ -423,6 +429,18 @@ describe('owned SSE verifier lifecycle', () => {
     expect(summary.analysisCompletedPartial).toBe(true);
   });
 
+  it('counts a provisional conclusion apart from the terminal conclusion payload', async () => {
+    const events = 'event: conclusion\ndata: {"data":{"conclusion":"Final body","provisional":true,"verification":"pending"}}\n\n' +
+      'event: analysis_completed\ndata: {"success":true,"conclusion":"Final body"}\n\n';
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(events));
+    const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
+      {requiredText: [], forbiddenText: []}, {runId: 'run'});
+    expect(summary.provisionalConclusionCount).toBe(1);
+    expect(summary.firstProvisionalConclusionMs).toEqual(expect.any(Number));
+    expect(summary.conclusionCount).toBe(0);
+    expect(summary.analysisCompletedConclusionChars).toBe('Final body'.length);
+  });
+
   it('turns a stalled owned stream into a typed timeout and releases its reader', async () => {
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => new Response(new ReadableStream({
       start(controller) {
@@ -445,8 +463,27 @@ describe('owned SSE verifier lifecycle', () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(`event: analysis_completed\ndata: ${JSON.stringify(payload)}\n\n`));
     const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
       {requiredText: [], forbiddenText: []}, {runId: 'run'});
-    expect(summary.analysisCompletedVerifiedSourceBindings).toEqual([binding]);
+    // A historical result reports its stored mechanism status as the row status.
+    const {mechanismStatus, ...identity} = binding;
+    expect(summary.analysisCompletedVerifiedSourceBindings).toEqual([{...identity, status: mechanismStatus}]);
     expect(JSON.stringify(summary)).not.toContain('private source content');
+  });
+
+  it('reports the current verifier\'s per-claim standing as the row status', async () => {
+    const claim = {claimId: 'duration', status: 'trace_linked',
+      sourceReferenceIds: ['source-ref-v1-issued'], traceEvidenceRefIds: ['data-marker']};
+    const payload = {success: true, conclusion: 'Safe conclusion.',
+      sourceUseDecision: {references: [{id: 'source-ref-v1-issued'}]},
+      sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@2', status: 'partial', bindings: [],
+        claims: [claim, {claimId: 'other', status: 'unbound', sourceReferenceIds: [], traceEvidenceRefIds: []}],
+        citations: [], issues: []}};
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(`event: analysis_completed\ndata: ${JSON.stringify(payload)}\n\n`));
+    const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
+      {requiredText: [], forbiddenText: []}, {runId: 'run'});
+    expect(summary.analysisCompletedSourceClaimStatuses).toEqual(['trace_linked', 'unbound']);
+    // An unbound claim cites nothing, which does not void the membership of the others.
+    expect(summary.analysisCompletedSourceReferenceMembershipPassed).toBe(true);
+    expect(summary.analysisCompletedVerifiedSourceBindings?.[0]).toEqual(claim);
   });
 
   it('retains private tool telemetry and safe actual source use when a failed terminal has no conclusion contract', async () => {
@@ -485,7 +522,7 @@ describe('owned SSE verifier lifecycle', () => {
     expect(assessment.checks.taskCompleted).toBe(false);
     expect(assessment.checks.originalClaimsVerified).toBe(false);
     expect(taskAcceptanceStatus(Object.values(assessment.checks).every(Boolean), assessment.uncoveredFacets).completeAcceptance).toBe(false);
-    const wrapper = require('../../../scripts/run-deepseek-agent-e2e.cjs');
+    const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
     const evaluated = wrapper.evaluateSemanticConditionReport({condition: 'A2',
       query: wrapper.semanticDeltaQueries()[0], sourceRoot,
       report: {passed: false, analysisContext: {codebaseIds: ['cb-source']}, taskVerification: assessment, summary}});
@@ -565,9 +602,9 @@ describe('system investigation terminal acceptance', () => {
   it('preserves isolated runtime session logs and lifecycle codes without credentials', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verification-logs-'));
     const previous = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
-    const oldKey = process.env.DEEPSEEK_API_KEY;
+    const oldKey = process.env.GLM_API_KEY;
     process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(directory, 'runtime-logs');
-    process.env.DEEPSEEK_API_KEY = 'provider-key-must-not-appear';
+    process.env.GLM_API_KEY = 'provider-key-must-not-appear';
     try {
       fs.mkdirSync(path.join(process.env.SMARTPERFETTO_BACKEND_LOG_DIR, 'sessions'), {recursive: true});
       const source = path.join(process.env.SMARTPERFETTO_BACKEND_LOG_DIR, 'sessions/session_owned_2026.jsonl');
@@ -586,7 +623,7 @@ describe('system investigation terminal acceptance', () => {
       expect(failure).toMatchObject({errorCode: 'analysis_history_parent_not_authorized', lifecycleErrorCode: 'analysis_history_parent_not_authorized'});
     } finally {
       if (previous === undefined) delete process.env.SMARTPERFETTO_BACKEND_LOG_DIR; else process.env.SMARTPERFETTO_BACKEND_LOG_DIR = previous;
-      if (oldKey === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = oldKey;
+      if (oldKey === undefined) delete process.env.GLM_API_KEY; else process.env.GLM_API_KEY = oldKey;
       fs.rmSync(directory, {recursive: true, force: true});
     }
   });
@@ -625,7 +662,7 @@ describe('system investigation terminal acceptance', () => {
     expect(check('reference-trace')).toBe(false);
   });
   it('loads every declarative real/constructed suite through the same closed expectation parser', () => {
-    const wrapper = require('../../../scripts/run-deepseek-agent-e2e.cjs');
+    const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
     for (const scenario of wrapper.systemAnalysisScenarios()) {
       const value = scenario.args[scenario.args.indexOf('--expectation-json') + 1];
       expect(parseAgentSseExpectation(JSON.parse(fs.readFileSync(value.slice(1), 'utf8'))).investigation?.requirements.length)
@@ -1207,12 +1244,12 @@ describe('Agent SSE verification evidence', () => {
 
     expect(successfulCodeLookupToolCounts([
       entry('lookup_app_source', 'success', ['chunk-app']),
-      entry('lookup_blog_knowledge', 'success', ['chunk-rag']),
+      entry('lookup_aosp_source', 'success', ['chunk-rag']),
       entry('lookup_app_source', 'unresolved', []),
       entry('lookup_kernel_source', 'success', []),
     ])).toEqual({
       lookup_app_source: 1,
-      lookup_blog_knowledge: 1,
+      lookup_aosp_source: 1,
     });
   });
 });
@@ -1307,5 +1344,385 @@ describe('task fact oracle (deterministic composition, not a model semantic benc
     expect(query).toHaveBeenCalledTimes(1);
     await expect(collectAgentSseOracleRows(expectation, async () => ({columns: ['other'], rows: [[1912]]})))
       .rejects.toThrow('Task fact oracle unavailable');
+  });
+});
+
+describe('grouped acceptance: wrong answer, unproved answer and undelivered answer stay apart', () => {
+  // The GLM Coding Plan scrolling shape: the value is right and bound to its cell, the finite proof is still a candidate.
+  function unprovedTerminal() {
+    const terminal = terminalFixture();
+    const result = terminal.claimVerificationResult!;
+    Object.assign(result, {status: 'partial', passed: false});
+    Object.assign(result.claimResults[0], {status: 'partial'});
+    result.claimResults[0].deterministicProof!.status = 'candidate';
+    result.claimResults[0].propositionCoverage = {status: 'partial', covered: [], uncovered: ['numeric'], reason: 'candidate'};
+    terminal.deliveryAssurance!.claims = 'coverage_incomplete';
+    return terminal;
+  }
+  type Checks = Record<string, boolean>;
+  const accept = (terminal: TerminalAnalysisEvidence, extra: {value?: Checks; delivery?: Checks; proof?: Checks;
+    ungrouped?: Checks; hard?: Checks; strict?: boolean} = {}) => evaluateAgentSseAcceptance({task: evaluate(terminal),
+    observedGroups: {value: {hasTerminalConclusionPayload: true, hasNoSseErrors: true, ...extra.value},
+      delivery: {hasAnalysisCompletedEvent: true, ...extra.delivery}, proof: extra.proof},
+    ungroupedChecks: extra.ungrouped ?? {}, hardChecks: extra.hard ?? {}, strict: extra.strict});
+
+  it('keeps a right but unproved value at the value tier: INCONCLUSIVE, and the run exits by its hard flags', () => {
+    const result = evaluate(unprovedTerminal());
+    expect(result.facts.frame_count).toMatchObject({tier: 'value', matched: true, proposition: 'unknown',
+      matchedClaimIds: ['frames'], matchedAnchorIds: ['anchor:frames']});
+    expect(result.checkGroups.value['fact:frame_count']).toBe(true);
+    expect(result.checkGroups.proof['fact:frame_count:proved']).toBe(false);
+    expect(result.checkGroups.value.deliveryClaimsNotContradicted).toBe(true);
+    expect(result.checkGroups.proof).toMatchObject({originalClaimsVerified: false, deliveryClaimsVerified: false});
+    const observed = accept(unprovedTerminal());
+    expect(observed).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', proofAcceptance: 'INCOMPLETE', observedChecksPassed: true,
+      passed: true, completeAcceptance: false});
+    expect(observed.uncoveredFacets).toEqual(expect.arrayContaining(['frame_count: proposition not proved (tier=value)',
+      'proof check not passed: originalClaimsVerified']));
+    const hard = accept(unprovedTerminal(), {proof: {claimVerifierPassed: false}, hard: {claimVerifierPassed: false}});
+    expect(hard).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', hardGatesPassed: false, passed: false});
+    expect(hard.checkGroups.proof.claimVerifierPassed).toBe(false);
+  });
+
+  it('fails a wrong value even when everything else was delivered', () => {
+    const terminal = unprovedTerminal();
+    terminal.conclusionContract!.claims![0].semantics!.numeric!.value = 1913;
+    terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
+    const result = evaluate(terminal);
+    expect(result.facts.frame_count).toMatchObject({tier: 'none', matched: false, matchedClaimIds: []});
+    expect(accept(terminal)).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
+  });
+
+  it('fails contradicted claims or source, and never reads a missing or restored assurance as not contradicted', () => {
+    const contradicted = unprovedTerminal();
+    contradicted.deliveryAssurance!.claims = 'failed';
+    expect(evaluate(contradicted).checkGroups.value.deliveryClaimsNotContradicted).toBe(false);
+    expect(accept(contradicted)).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
+    const source = unprovedTerminal();
+    source.deliveryAssurance!.source = 'failed';
+    expect(accept(source).semanticAcceptance).toBe('FAILED');
+    const restored = unprovedTerminal();
+    restored.deliveryAssurance!.entry = 'historical_restore';
+    expect(evaluate(restored).checkGroups.value).toMatchObject({deliveryClaimsNotContradicted: false, deliverySourceNotContradicted: false});
+    const missing = unprovedTerminal();
+    delete missing.deliveryAssurance;
+    expect(evaluate(missing).checkGroups.value).toMatchObject({deliveryClaimsNotContradicted: false, deliverySourceNotContradicted: false});
+  });
+
+  it('passes only when value, delivery and proof all hold, and --strict refuses anything less', () => {
+    const proved = evaluate();
+    expect(proved.facts.frame_count).toMatchObject({tier: 'proved', proposition: 'proved'});
+    expect(accept(terminalFixture(), {strict: true})).toMatchObject({semanticAcceptance: 'PASSED', proofAcceptance: 'PASSED',
+      completeAcceptance: true, strict: true, passed: true, uncoveredFacets: []});
+    expect(accept(unprovedTerminal(), {strict: true})).toMatchObject({semanticAcceptance: 'INCONCLUSIVE', strict: true, passed: false});
+    expect(accept(terminalFixture(), {strict: true, delivery: {analysisCompletedNotPartial: false},
+      hard: {analysisCompletedNotPartial: false}})).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
+    expect(evaluateAgentSseAcceptance({observedGroups: {value: {hasNoSseErrors: true}}, ungroupedChecks: {}, hardChecks: {}, strict: true}))
+      .toMatchObject({semanticAcceptance: 'INCONCLUSIVE', uncoveredFacets: ['task semantics not evaluated'], passed: false});
+  });
+
+  it('blocks an unfinished run in the delivery group and keeps ungrouped observed gates', () => {
+    const observed = accept(terminalFixture(), {delivery: {hasAnalysisCompletedEvent: false}, ungrouped: {'requiresTool:invoke_skill': true}});
+    expect(observed.checkGroups.delivery.hasAnalysisCompletedEvent).toBe(false);
+    expect(observed).toMatchObject({semanticAcceptance: 'FAILED', passed: false});
+    const tool = accept(terminalFixture(), {ungrouped: {'requiresTool:invoke_skill': false}});
+    expect(tool.ungroupedChecks).toEqual({'requiresTool:invoke_skill': false});
+    expect(tool).toMatchObject({semanticAcceptance: 'PASSED', observedChecksPassed: false, passed: false});
+    expect(evaluateAgentSseAcceptance({task: evaluate(), observedGroups: {}, ungroupedChecks: {}, hardChecks: {},
+      additionalGatesPassed: false}).passed)
+      .toBe(false);
+  });
+
+  it('requires a passed report only for report deliverables and blocks a failed report for any deliverable', () => {
+    const answer = terminalFixture();
+    answer.deliveryAssurance!.report = 'not_checked';
+    const answerResult = evaluate(answer);
+    expect(answerResult.checkGroups.delivery).toEqual({deliveryReportNotFailed: true});
+    expect(answerResult.checks.deliveryReportPassed).toBe(false);
+    answer.deliveryAssurance!.report = 'failed';
+    expect(accept(answer).semanticAcceptance).toBe('FAILED');
+    const reportExpectation = parseAgentSseExpectation({...expectation, intent: {...expectation.intent, deliverable: 'report'}});
+    const report = terminalFixture();
+    report.turnIntent = {...report.turnIntent!, deliverable: 'report'};
+    report.deliveryAssurance!.report = 'not_checked';
+    const reportResult = evaluateAgentSseExpectation({terminal: report, expectation: reportExpectation, traceId: 'trace-current',
+      oracleRows: {frame_count: [{total_frames: 1912}]}});
+    expect(reportResult.checkGroups.delivery).toEqual({deliveryReportNotFailed: true, deliveryReportPassed: false});
+  });
+
+  it('keeps every earlier flat check key, so existing readers of the flat union keep their meaning', () => {
+    const result = evaluate(unprovedTerminal());
+    for (const key of ['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed', 'deliveryIdentityPassed',
+      'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified', 'intent:taskKind', 'fact:frame_count']) {
+      expect(result.checks).toHaveProperty([key]);
+    }
+    expect(Object.values(result.checks).every(Boolean)).toBe(false);
+    expect(Object.values(evaluate().checks).every(Boolean)).toBe(true);
+    const grouped = {...result.checkGroups.value, ...result.checkGroups.proof, ...result.checkGroups.delivery};
+    for (const [key, value] of Object.entries(grouped)) expect(result.checks[key]).toBe(value);
+  });
+
+  it('accepts a frame count declared as a plain count for a frames oracle', () => {
+    const terminal = unprovedTerminal();
+    terminal.conclusionContract!.claims![0].semantics!.numeric!.unit = 'count';
+    terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
+    expect(evaluate(terminal).facts.frame_count.tier).toBe('value');
+  });
+
+  it.each([
+    // Generic declared/cell `count` accepts any counted oracle dimension at 1:1.
+    {declared: 'count', cell: 'count', oracle: 'events', bound: true},
+    // A concrete declaration or cell never accepts a generic or different counted oracle unit.
+    {declared: 'frames', cell: 'frames', oracle: 'count', bound: false},
+    {declared: 'count', cell: 'frames', oracle: 'events', bound: false},
+    {declared: 'events', cell: 'events', oracle: 'frames', bound: false},
+  ] as const)('binds declared $declared and cell $cell against oracle $oracle only one-directionally',
+    ({declared, cell, oracle, bound}) => {
+      const terminal = terminalFixture();
+      terminal.conclusionContract!.claims![0].semantics!.numeric!.unit = declared;
+      terminal.claimSupport![0].semantics = JSON.parse(JSON.stringify(terminal.conclusionContract!.claims![0].semantics));
+      terminal.claimSupport![0].anchors[0].cells![0].unit = cell;
+      const counted = parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
+        oracle: {...expectation.facts[0].oracle!, unit: oracle}}]});
+      const result = evaluateAgentSseExpectation({terminal, expectation: counted, traceId: 'trace-current',
+        oracleRows: {frame_count: [{total_frames: 1912}]}});
+      expect(result.facts.frame_count.tier === 'none').toBe(!bound);
+      expect(result.checks['fact:frame_count']).toBe(bound);
+    });
+
+  function startupTypeFixture(column: string) {
+    const flagship = parseAgentSseExpectation(JSON.parse(fs.readFileSync(
+      path.resolve(__dirname, '../../../tests/e2e/flagship/startup-heavy.expectation.json'), 'utf8')));
+    const startup = {...flagship, facts: flagship.facts.filter(fact => fact.id === 'startup_type')};
+    const terminal = terminalFixture('The platform classified this startup as warm.');
+    const reference = {evidenceRefId: 'data:startup', rowIndex: 0, column, value: 'warm'};
+    const semantics = {...terminal.conclusionContract!.claims![0].semantics!, predicate: 'captured.cell',
+      scope: {population: 'cited_rows' as const, subjectRefs: [reference]}};
+    delete semantics.numeric;
+    terminal.conclusionContract!.claims = [{id: 'type', kind: 'categorical', text: terminal.conclusion!, references: [reference], semantics}];
+    terminal.claimSupport = [{claimId: 'type', kind: 'categorical', text: terminal.conclusion!, semantics: JSON.parse(JSON.stringify(semantics)),
+      supportLevel: 'verified', anchors: [{anchorId: 'anchor:startup', evidenceRefId: 'data:startup', version: 'evidence_contract@1',
+        context: {traceId: 'trace-current', traceSide: 'current', producerKind: 'invoke_skill'},
+        timeRange: {startTs: '564166786132658', endTs: '564168124787136', unit: 'ns', source: 'row'}, identity: {upid: 948},
+        cells: [{column, rowIndex: 0, value: 'warm', actualValue: 'warm'}]}]}];
+    terminal.claimVerificationResult!.claimResults = [{claimId: 'type', status: 'verified',
+      referenceCells: [{anchorId: 'anchor:startup', evidenceRefId: 'data:startup', column, status: 'matched'}],
+      deterministicProof: {kind: 'captured_cell', status: 'proved', reason: 'captured_cell_value_proved',
+        anchorIds: ['anchor:startup'], evidenceRefIds: ['data:startup']},
+      propositionCoverage: {status: 'complete', covered: ['captured_cell'], uncovered: [], reason: 'proved'}}];
+    return {startup, terminal, reference, oracle: {startup_type: 'warm', start_ts: 564166786132658, upid: 948}};
+  }
+
+  it.each(['startup_type', 'original_type'])('binds the platform startup type through %s to the same startup and process', column => {
+    const fixture = startupTypeFixture(column);
+    const {terminal} = fixture;
+    const startup = {...fixture.startup, facts: fixture.startup.facts.map(fact => ({...fact, verification: 'reference_only' as const}))};
+    const check = (rows: Array<Record<string, unknown>>) => evaluateAgentSseExpectation({terminal, expectation: startup,
+      traceId: 'trace-current', oracleRows: {startup_type: rows}});
+    const matched = check([{startup_type: 'warm', start_ts: 564166786132658, upid: 948}]);
+    expect(matched.facts.startup_type).toMatchObject({tier: 'value', matched: true});
+    expect(matched.checkGroups.proof).not.toHaveProperty(['fact:startup_type:proved']);
+    expect(matched.uncoveredFacets).toEqual(['startup_type: proposition proof unavailable']);
+    expect(check([{startup_type: 'cold', start_ts: 564166786132658, upid: 948}]).facts.startup_type.tier).toBe('none');
+    expect(check([{startup_type: 'warm', start_ts: 564166786132658, upid: 949}]).facts.startup_type.tier).toBe('none');
+    expect(check([{startup_type: 'warm', start_ts: 1, upid: 948}]).facts.startup_type.tier).toBe('none');
+  });
+
+  it.each(['startup_type', 'original_type'])('proves %s only with a complete captured-cell proposition and the same oracle identity', column => {
+    const {startup, terminal, reference, oracle} = startupTypeFixture(column);
+    const check = (candidate = terminal, row = oracle) => evaluateAgentSseExpectation({terminal: candidate, expectation: startup,
+      traceId: 'trace-current', oracleRows: {startup_type: [row]}});
+    expect(check().facts.startup_type).toMatchObject({tier: 'proved', proposition: 'proved'});
+    expect(check().checkGroups.proof['fact:startup_type:proved']).toBe(true);
+    expect(check().uncoveredFacets).toEqual([]);
+    for (const row of [{...oracle, startup_type: 'cold'}, {...oracle, upid: 949}, {...oracle, start_ts: 1}]) {
+      expect(check(terminal, row).facts.startup_type.tier).toBe('none');
+    }
+    for (const failure of ['proof_kind', 'proof_status', 'claim_status', 'coverage', 'anchors', 'references', 'subject', 'predicate']) {
+      const candidate = JSON.parse(JSON.stringify(terminal)) as TerminalAnalysisEvidence;
+      const proof = candidate.claimVerificationResult!.claimResults[0];
+      const claim = candidate.conclusionContract!.claims![0];
+      if (failure === 'proof_kind') proof.deterministicProof!.kind = 'numeric_cell';
+      if (failure === 'proof_status') proof.deterministicProof!.status = 'candidate';
+      if (failure === 'claim_status') proof.status = 'partial';
+      if (failure === 'coverage') proof.propositionCoverage!.uncovered.push('subject');
+      if (failure === 'anchors') proof.deterministicProof!.anchorIds = [];
+      if (failure === 'references') proof.referenceCells = [];
+      if (failure === 'subject') claim.semantics!.scope.subjectRefs = [{...reference, rowIndex: 1}];
+      if (failure === 'predicate') claim.semantics!.predicate = 'unknown.category';
+      candidate.claimSupport![0].semantics = JSON.parse(JSON.stringify(claim.semantics!));
+      expect(check(candidate).facts.startup_type.tier).toBe('value');
+      expect(check(candidate).checkGroups.proof['fact:startup_type:proved']).toBe(false);
+    }
+  });
+
+  it('fingerprints the run by content, pinned processor revision and stdlib, never by reported version text', async () => {
+    const reordered = parseAgentSseExpectation(JSON.parse(JSON.stringify({facts: expectation.facts, intent: expectation.intent,
+      schemaVersion: 1})));
+    expect(agentSseExpectationHash(reordered)).toBe(agentSseExpectationHash(expectation));
+    expect(agentSseExpectationHash(parseAgentSseExpectation({...expectation, uncoveredFacets: ['x']})))
+      .not.toBe(agentSseExpectationHash(expectation));
+    expect(traceProcessorVersionKey({source: 'bundled', gitRevision: 'a'.repeat(40), reportedVersion: 'v1'})).toBe(`bundled:${'a'.repeat(40)}`);
+    expect(traceProcessorVersionKey({source: 'custom', binarySha256: 'b'.repeat(64)})).toBe(`custom:${'b'.repeat(64)}`);
+    expect(traceProcessorVersionKey({source: 'unknown', unavailableReason: 'external_rpc_binary_unavailable'}))
+      .toBe('unknown:external_rpc_binary_unavailable');
+    const identity = await resolveAgentSseRunIdentity({tracePath: '/trace', runtime: 'openai-agents-sdk', query: 'q', expectation,
+      processorInput: {source: 'local_binary', selectedPath: '/tp', selectionOrigin: 'default'}}, {
+      resolveTrace: async () => ({status: 'ready', identity: {fingerprintSha256: 'c'.repeat(64),
+        fingerprintKind: 'trace_bytes_sha256', traceSide: 'current'}}),
+      resolveProcessor: async () => ({source: 'bundled', gitRevision: 'd'.repeat(40), stdlibRevision: 'stdlib-rev', reportedVersion: 'v59'})});
+    expect(identity).toEqual({schemaVersion: 1, gateSchemaVersion: 'agent_sse_gate@2', verificationSchemaVersion: 'claim_verifier@2',
+      runtime: 'openai-agents-sdk', query: 'q', traceSha256: 'c'.repeat(64), expectationHash: agentSseExpectationHash(expectation),
+      traceProcessorVersion: `bundled:${'d'.repeat(40)}`, stdlibRevision: 'stdlib-rev', reportedVersion: 'v59'});
+    const failed = await resolveAgentSseRunIdentity({tracePath: '/trace', runtime: 'r', query: 'q'}, {
+      resolveTrace: async () => ({status: 'unavailable', reason: 'trace_file_unavailable'}),
+      resolveProcessor: async () => {throw new Error('boom');}});
+    expect(failed).toMatchObject({traceSha256: null, expectationHash: null, stdlibRevision: null,
+      traceProcessorVersion: 'unknown:identity_resolution_failed'});
+  });
+
+  it('leaves the quick frame expectation and every earlier flat check key in place', () => {
+    const wrapper = require('../../../scripts/run-glm-agent-e2e.cjs');
+    const quick = wrapper.frameFactExpectation({taskKind: 'investigation', withJank: true});
+    expect(quick.intent).toEqual({sceneId: 'scrolling', taskKind: 'investigation', scope: 'bounded_question', deliverable: 'answer'});
+    expect(quick.facts.map((fact: any) => [fact.id, fact.columns, fact.verification, fact.unit]))
+      .toEqual([['total_frames', ['total_frames'], 'proved', 'frames'], ['jank_frames', ['jank_frames'], 'proved', 'frames']]);
+    const keys = Object.keys(evaluateAgentSseExpectation({expectation: parseAgentSseExpectation(quick), traceId: 'trace'}).checks);
+    expect(keys).toEqual(expect.arrayContaining(['taskCompleted', 'deliveryCompletionPassed', 'deliveryClaimsPassed',
+      'deliveryIdentityPassed', 'deliverySourcePassed', 'deliveryReportPassed', 'intentResolved', 'originalClaimsVerified',
+      'intent:sceneId', 'intent:taskKind', 'intent:scope', 'intent:deliverable', 'fact:total_frames', 'fact:jank_frames']));
+  });
+
+  it('parses --strict and keeps it away from the scene route', () => {
+    expect(parseVerificationArgs(['--strict']).strict).toBe(true);
+    expect(parseVerificationArgs([]).strict).toBeUndefined();
+    expect(() => parseVerificationArgs(['--entry', 'scene-reconstruction', '--strict'])).toThrow('Scene entry cannot borrow');
+  });
+});
+
+describe('producer-bound flagship facts', () => {
+  const frameProducer = {skillId: 'scrolling_analysis', stepId: 'frame_timeline_population',
+    metricId: 'render.frame.timeline.trace_frames'};
+  type CellInput = {column: string; producer?: {skillId: string; stepId: string; metricId: string; aggregation?: string};
+    unit?: string; actualValue?: string | number | boolean | null};
+
+  /** The base fixture with the cited column renamed and the cell carrying producer metadata. */
+  function producerFixture(cell: CellInput, options: {unproved?: boolean; extraCells?: CellInput[]} = {}) {
+    const terminal = terminalFixture();
+    const claim = terminal.conclusionContract!.claims![0];
+    const support = terminal.claimSupport![0];
+    for (const reference of [claim.references[0], ...claim.semantics!.scope.subjectRefs!]) reference.column = cell.column;
+    support.semantics = JSON.parse(JSON.stringify(claim.semantics));
+    const all = [cell, ...(options.extraCells ?? [])];
+    support.anchors[0].cells = all.map(item => ({rowIndex: 0, value: item.actualValue ?? 1912,
+      actualValue: item.actualValue ?? 1912, ...(item.unit ? {unit: item.unit} : {}),
+      ...(item.producer ? {producer: item.producer} : {}), column: item.column}));
+    terminal.claimVerificationResult!.claimResults[0].referenceCells = [{anchorId: 'anchor:frames',
+      evidenceRefId: 'data:frames', column: cell.column, status: 'matched'}];
+    if (options.unproved) {
+      Object.assign(terminal.claimVerificationResult!, {status: 'partial', passed: false});
+      Object.assign(terminal.claimVerificationResult!.claimResults[0], {status: 'partial'});
+      terminal.claimVerificationResult!.claimResults[0].deterministicProof!.status = 'candidate';
+      terminal.claimVerificationResult!.claimResults[0].propositionCoverage =
+        {status: 'partial', covered: [], uncovered: ['numeric'], reason: 'candidate'};
+      terminal.deliveryAssurance!.claims = 'coverage_incomplete';
+    }
+    return terminal;
+  }
+  const producerExpectation = (producer: typeof frameProducer | undefined) => parseAgentSseExpectation({...expectation,
+    facts: [{...expectation.facts[0], ...(producer ? {producer} : {})}]});
+  const evaluateProducer = (terminal: ReturnType<typeof producerFixture>, producer: typeof frameProducer | undefined,
+    rows: Array<Record<string, unknown>> = [{total_frames: 1912}]) => evaluateAgentSseExpectation({terminal,
+    expectation: producerExpectation(producer), traceId: 'trace-current', oracleRows: {frame_count: rows}});
+
+  it.each([false, true])('binds a producer tuple across an aliased column at the proved and value tiers (unproved=%s)',
+    unproved => {
+      const terminal = producerFixture({column: 'total_rows', producer: frameProducer, unit: 'frames'}, {unproved});
+      const result = evaluateProducer(terminal, frameProducer);
+      expect(result.facts.frame_count).toMatchObject({tier: unproved ? 'value' : 'proved',
+        matchedClaimIds: ['frames'], matchedAnchorIds: ['anchor:frames']});
+      expect(result.checks['fact:frame_count']).toBe(true);
+    });
+
+  it('keeps the column allowlist fallback for facts without a producer tuple', () => {
+    const whitelisted = producerFixture({column: 'total_frames', producer: frameProducer, unit: 'frames'});
+    expect(evaluateProducer(whitelisted, undefined).facts.frame_count.tier).toBe('proved');
+    // The fallback never consults producer metadata: an out-of-list column stays unbound.
+    const aliased = producerFixture({column: 'total_rows', producer: frameProducer, unit: 'frames'});
+    expect(evaluateProducer(aliased, undefined).facts.frame_count.tier).toBe('none');
+  });
+
+  it.each([
+    ['a wrong value', {rows: [{total_frames: 9999}]}],
+    ['a cross-family cell unit', {cell: {column: 'total_rows', producer: frameProducer, unit: 'ns'}}],
+    ['a producer tuple from another skill with the same metric id', {cell: {column: 'total_rows', unit: 'frames',
+      producer: {skillId: 'thread_system_summary_in_range', stepId: 'summary', metricId: 'render.frame.timeline.trace_frames'}}}],
+    ['a producer tuple from another step of the same skill', {cell: {column: 'total_rows', unit: 'frames',
+      producer: {skillId: 'scrolling_analysis', stepId: 'other_step', metricId: 'render.frame.timeline.trace_frames'}}}],
+    ['a cell with no producer declaration at all', {cell: {column: 'total_rows', unit: 'frames'}}],
+  ] as const)('does not bind %s', (_label, options) => {
+    const rows: Array<Record<string, unknown>> = 'rows' in options ? [...options.rows] : [{total_frames: 1912}];
+    const cell = 'cell' in options ? options.cell : {column: 'total_rows', producer: frameProducer, unit: 'frames'};
+    const terminal = producerFixture(cell);
+    const result = evaluateProducer(terminal, frameProducer, rows);
+    expect(result.facts.frame_count.tier).toBe('none');
+    expect(result.checks['fact:frame_count']).toBe(false);
+  });
+
+  it('does not bind the same row\'s same-valued other metric when the model cites it instead', () => {
+    const terminal = producerFixture({column: 'smooth_frames', unit: 'frames',
+      producer: {...frameProducer, metricId: 'render.frame.timeline.smooth_frames'}},
+      {extraCells: [{column: 'total_rows', unit: 'frames', producer: frameProducer}]});
+    // The identity gate passes for the cited smooth_frames cell; only the producer tuple rejects it.
+    expect(evaluateProducer(terminal, frameProducer).facts.frame_count.tier).toBe('none');
+    const swapped = producerFixture({column: 'total_rows', unit: 'frames', producer: frameProducer},
+      {extraCells: [{column: 'smooth_frames', unit: 'frames',
+        producer: {...frameProducer, metricId: 'render.frame.timeline.smooth_frames'}}]});
+    expect(evaluateProducer(swapped, frameProducer).facts.frame_count.tier).toBe('proved');
+  });
+
+  it('requires the declared aggregation when the fact states one', () => {
+    const declared = {...frameProducer, aggregation: 'trace_wide_all_processes'};
+    const matching = producerFixture({column: 'total_rows', unit: 'frames',
+      producer: {...frameProducer, aggregation: 'trace_wide_all_processes'}});
+    expect(evaluateProducer(matching, declared).facts.frame_count.tier).toBe('proved');
+    const other = producerFixture({column: 'total_rows', unit: 'frames',
+      producer: {...frameProducer, aggregation: 'per_process_max'}});
+    expect(evaluateProducer(other, declared).facts.frame_count.tier).toBe('none');
+  });
+
+  it('rejects malformed producer tuples in the closed expectation schema', () => {
+    for (const producer of [null, {}, {...frameProducer, skillId: ''}, {...frameProducer, metricId: 1},
+      {...frameProducer, aggregation: ' '}, {...frameProducer, extra: true}]) {
+      expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
+        producer: producer as any}]})).toThrow('Invalid --expectation-json');
+    }
+  });
+
+  it('validates every flagship producer tuple against the skill YAML that declares it', () => {
+    const files = ['tests/e2e/flagship/startup-heavy.expectation.json', 'tests/e2e/flagship/scrolling-customer.expectation.json'];
+    let producerFacts = 0;
+    for (const file of files) {
+      const flagship = parseAgentSseExpectation(JSON.parse(fs.readFileSync(path.resolve(process.cwd(), file), 'utf8')));
+      for (const fact of flagship.facts) {
+        if (!fact.producer) continue;
+        producerFacts += 1;
+        const declared = fact.producer;
+        const skillFile = ['composite', 'atomic', 'modules', 'comparison', 'deep', 'pipelines']
+          .map(directory => path.join(process.cwd(), 'skills', directory, `${declared.skillId}.skill.yaml`))
+          .find(candidate => fs.existsSync(candidate));
+        expect(skillFile).toBeDefined();
+        const skill = yaml.load(fs.readFileSync(skillFile!, 'utf8')) as any;
+        const step = stepNodesOf(skill).find(entry => entry.node?.id === declared.stepId);
+        expect(step).toBeDefined();
+        const metric = (step!.node?.investigation_evidence?.metrics ?? [])
+          .find((entry: any) => entry.metric_id === declared.metricId);
+        expect(metric).toBeDefined();
+        expect(metric.value).toEqual(expect.any(String));
+        if (declared.aggregation !== undefined) expect(metric.aggregation).toBe(declared.aggregation);
+      }
+    }
+    // The scrolling gate binds by producer; startup stays on the column allowlist to pin the fallback.
+    expect(producerFacts).toBeGreaterThanOrEqual(2);
   });
 });

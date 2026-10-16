@@ -8,6 +8,14 @@ import path from 'path';
 import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
+import {ragChunkAudience} from './rag/ragChunkAudience';
+import {PATTERN_BUCKET_KNOWLEDGE_KIND, projectPatternBucketForExport} from '../agentv3/analysisPatternMemory';
+import {isRetiredRagChunk} from './retiredCaseData';
+import {
+  decodePrivateContextColumn,
+  privateContextRestrictsAudience,
+} from './security/analysisPrivateContext';
+import { stableStringify } from '../utils/stableJson';
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
@@ -73,6 +81,7 @@ interface TenantExportReportRow {
   created_by: string | null;
   created_at: number;
   expires_at: number | null;
+  private_context: number | null;
 }
 
 interface TenantExportAnalysisSessionRow {
@@ -102,6 +111,7 @@ interface TenantExportAnalysisRunRow {
   error_json: string | null;
   heartbeat_at: number | null;
   updated_at: number | null;
+  private_context: number | null;
 }
 
 interface TenantExportConversationTurnRow {
@@ -165,7 +175,8 @@ interface TenantExportAuditRow {
 }
 
 export interface TenantExportBundle {
-  schemaVersion: 1;
+  /** v2: content appears only for records positively attributable to a public context. */
+  schemaVersion: 2;
   generatedAt: string;
   tenantIdentityProof: {
     tenantId: string;
@@ -186,6 +197,13 @@ export interface TenantExportBundle {
     auditEventCount: number;
     providerCredentialCount: number;
     providerSnapshotCount: number;
+    contentPolicy: 'public_context_only';
+    contentOmitted: {
+      reports: number;
+      runs: number;
+      turns: number;
+      memoryRecords: number;
+    };
   };
   tenant: {
     organization: Record<string, JsonValue> | null;
@@ -233,27 +251,8 @@ function sanitizeJson(value: unknown): JsonValue {
     return value;
   }
   if (typeof value !== 'object') return null;
-  const out: Record<string, JsonValue> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = SENSITIVE_KEY_RE.test(key) ? '[redacted]' : sanitizeJson(child);
-  }
-  return out;
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-  const input = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(input).sort()) {
-    const child = input[key];
-    if (child !== undefined) out[key] = canonicalize(child);
-  }
-  return out;
-}
-
-export function stableStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) =>
+    [key, SENSITIVE_KEY_RE.test(key) ? '[redacted]' : sanitizeJson(child)]));
 }
 
 function sha256(value: string): string {
@@ -334,11 +333,16 @@ function traceManifestExport(row: TenantExportTraceRow): Record<string, JsonValu
   };
 }
 
+/**
+ * The compliance bundle is an administrative copy. Content that a private or
+ * unknown context may have derived from registered source or knowledge stays
+ * out of it; the record's metadata remains so the inventory is complete.
+ */
+const CONTENT_OMITTED = 'private_context';
+
 async function reportExport(row: TenantExportReportRow): Promise<Record<string, JsonValue>> {
-  const html = await tryReadText(row.local_path);
-  const jsonPath = path.join(path.dirname(row.local_path), 'report.json');
-  const reportJson = parseJson(await tryReadText(jsonPath));
-  return {
+  const privateContext = decodePrivateContextColumn(row.private_context);
+  const metadata = {
     id: row.id,
     tenantId: row.tenant_id,
     workspaceId: row.workspace_id,
@@ -349,9 +353,15 @@ async function reportExport(row: TenantExportReportRow): Promise<Record<string, 
     createdBy: row.created_by,
     createdAt: toIso(row.created_at),
     expiresAt: toIso(row.expires_at),
-    html,
-    json: reportJson,
+    privateContext,
   };
+  if (privateContextRestrictsAudience(privateContext)) {
+    return {...metadata, html: null, json: null, contentOmitted: CONTENT_OMITTED};
+  }
+  const html = await tryReadText(row.local_path);
+  const jsonPath = path.join(path.dirname(row.local_path), 'report.json');
+  const reportJson = parseJson(await tryReadText(jsonPath));
+  return {...metadata, html, json: reportJson};
 }
 
 function sessionExport(row: TenantExportAnalysisSessionRow): Record<string, JsonValue> {
@@ -371,6 +381,8 @@ function sessionExport(row: TenantExportAnalysisSessionRow): Record<string, Json
 }
 
 function runExport(row: TenantExportAnalysisRunRow): Record<string, JsonValue> {
+  const privateContext = decodePrivateContextColumn(row.private_context);
+  const restricted = privateContextRestrictsAudience(privateContext);
   return {
     id: row.id,
     tenantId: row.tenant_id,
@@ -378,16 +390,28 @@ function runExport(row: TenantExportAnalysisRunRow): Record<string, JsonValue> {
     sessionId: row.session_id,
     mode: row.mode,
     status: row.status,
-    question: row.question,
+    question: restricted ? null : row.question,
     startedAt: toIso(row.started_at),
     completedAt: toIso(row.completed_at),
     heartbeatAt: toIso(row.heartbeat_at),
     updatedAt: toIso(row.updated_at),
-    error: parseJson(row.error_json),
+    error: restricted ? null : parseJson(row.error_json),
+    privateContext,
+    ...(restricted ? {contentOmitted: CONTENT_OMITTED} : {}),
   };
 }
 
-function turnExport(row: TenantExportConversationTurnRow): Record<string, JsonValue> {
+/**
+ * Runs known to be public. A record written by a run carries content only
+ * when its run is one of them; a missing or unlinked run is unknown.
+ */
+type PublicRunIds = ReadonlySet<string>;
+
+function turnExport(
+  row: TenantExportConversationTurnRow,
+  publicRunIds: PublicRunIds,
+): Record<string, JsonValue> {
+  const restricted = !publicRunIds.has(row.run_id);
   return {
     id: row.id,
     tenantId: row.tenant_id,
@@ -395,22 +419,58 @@ function turnExport(row: TenantExportConversationTurnRow): Record<string, JsonVa
     sessionId: row.session_id,
     runId: row.run_id,
     role: row.role,
-    content: parseJson(row.content_json),
+    content: restricted ? null : parseJson(row.content_json),
     createdAt: toIso(row.created_at),
+    ...(restricted ? {contentOmitted: CONTENT_OMITTED} : {}),
   };
 }
 
-function memoryExport(row: TenantExportMemoryRow): Record<string, JsonValue> {
+/**
+ * The content a memory row may carry out, or undefined to withhold it. RAG
+ * chunks are registered material: only the `public` audience leaves; a
+ * user's codebase or retired private knowledge never does. A pattern bucket
+ * carries only its admitted entries (projectPatternBucketForExport). Every
+ * other record carries content only when it was written by a run known to
+ * be public.
+ */
+function exportableMemoryContent(
+  row: TenantExportMemoryRow,
+  envelope: unknown,
+  publicRunIds: PublicRunIds,
+): unknown {
+  // Unparseable content reads as null, which no rule vouches for.
+  if (envelope === null) return undefined;
+  const {kind, record} = envelope as {kind?: unknown; record?: {kind?: unknown; registryOrigin?: unknown; codebaseId?: unknown}};
+  if (kind === PATTERN_BUCKET_KNOWLEDGE_KIND) return projectPatternBucketForExport(envelope as {record?: unknown});
+  if (kind === 'rag_chunk') {
+    return !record || typeof record.kind !== 'string' || ragChunkAudience(record) !== 'public' || isRetiredRagChunk(record)
+      ? undefined : envelope;
+  }
+  return row.source_run_id && publicRunIds.has(row.source_run_id) ? envelope : undefined;
+}
+
+function memoryExport(
+  row: TenantExportMemoryRow,
+  publicRunIds: PublicRunIds,
+): Record<string, JsonValue> {
+  let envelope: unknown = null;
+  try {
+    envelope = JSON.parse(row.content_json);
+  } catch {
+    // Unparseable content stays null.
+  }
+  const content = exportableMemoryContent(row, envelope, publicRunIds);
   return {
     id: row.id,
     tenantId: row.tenant_id,
     workspaceId: row.workspace_id,
     scope: row.scope,
     sourceRunId: row.source_run_id,
-    content: parseJson(row.content_json),
+    content: content === undefined ? null : sanitizeJson(content),
     embeddingRef: row.embedding_ref,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
+    ...(content === undefined ? {contentOmitted: CONTENT_OMITTED} : {}),
   };
 }
 
@@ -494,24 +554,30 @@ export async function buildTenantExportBundle(
     context.tenantId,
     'workspace_id ASC, created_at ASC, id ASC',
   ).map(sessionExport);
-  const runs = tenantRows<TenantExportAnalysisRunRow>(
+  const runRows = tenantRows<TenantExportAnalysisRunRow>(
     db,
     'analysis_runs',
     context.tenantId,
     'workspace_id ASC, started_at ASC, id ASC',
-  ).map(runExport);
+  );
+  const publicRunIds: PublicRunIds = new Set(runRows
+    .filter(row => !privateContextRestrictsAudience(decodePrivateContextColumn(row.private_context)))
+    .map(row => row.id));
+  const runs = runRows.map(runExport);
   const turns = tenantRows<TenantExportConversationTurnRow>(
     db,
     'conversation_turns',
     context.tenantId,
     'workspace_id ASC, created_at ASC, id ASC',
-  ).map(turnExport);
+  ).map(row => turnExport(row, publicRunIds));
   const memoryEntries = tenantRows<TenantExportMemoryRow>(
     db,
     'memory_entries',
     context.tenantId,
     'workspace_id ASC, updated_at ASC, id ASC',
-  ).map(memoryExport);
+  ).map(row => memoryExport(row, publicRunIds));
+  const omitted = (records: Array<Record<string, JsonValue>>) =>
+    records.filter(record => record.contentOmitted === CONTENT_OMITTED).length;
   const auditEvents = tenantRows<TenantExportAuditRow>(
     db,
     'audit_events',
@@ -552,7 +618,7 @@ export async function buildTenantExportBundle(
     requestId: context.requestId,
   };
   const bundle: TenantExportBundle = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt,
     tenantIdentityProof: {
       tenantId: context.tenantId,
@@ -573,6 +639,13 @@ export async function buildTenantExportBundle(
       auditEventCount: auditEvents.length,
       providerCredentialCount: providerCredentials.length,
       providerSnapshotCount: providerSnapshots.length,
+      contentPolicy: 'public_context_only',
+      contentOmitted: {
+        reports: omitted(reports),
+        runs: omitted(runs),
+        turns: omitted(turns),
+        memoryRecords: omitted(memoryEntries),
+      },
     },
     tenant,
     traces,

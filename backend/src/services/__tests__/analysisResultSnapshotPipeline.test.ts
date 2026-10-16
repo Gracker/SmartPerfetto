@@ -8,7 +8,6 @@ import path from 'path';
 import type { DataEnvelope } from '../../types/dataContract';
 import {createDataEnvelope} from '../../types/dataContract';
 import type {ConclusionContract} from '../../agent/core/conclusionContract';
-import {deriveEvidenceBackedConclusionContractForNarrative} from '../agentResultNormalizer';
 import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {
   buildCompletedAnalysisResultSnapshot,
@@ -31,6 +30,7 @@ import {
   createSourceAuthoredAnalysisResult,
   SOURCE_FINALIZATION_CANARY,
 } from '../../agentRuntime/__tests__/sourceFinalizationFixture';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const tmpDirs: string[] = [];
@@ -99,7 +99,7 @@ describe('analysis result snapshot pipeline', () => {
     const sourceVerification = {schemaVersion: 'source_claim_verifier@1' as const, status: 'failed' as const,
       bindings: contract.sourceClaimBindings!, issues: [{severity: 'error' as const, code: 'source_claim_missing' as const, message: 'No current source proof.'}]};
     try {
-      const result = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+      const result = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
         traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: 'a narrow question',
         conclusion, conclusionContract: contract, completion, outputOrigin: 'sdk_final',
         sourceClaimVerificationResult: sourceVerification,
@@ -121,7 +121,7 @@ describe('analysis result snapshot pipeline', () => {
     registerCodeAwareCanary(sessionId, conclusion);
     try {
       const stored = persistCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
-        traceId: 'trace-a', sessionId, runId: 'run-a', query: 'private query', privateKnowledge: true,
+        traceId: 'trace-a', sessionId, runId: 'run-a', query: 'private query', privateContext: {codebase: true, knowledge: false},
         conclusion, completion: {schemaVersion: 1, runtimeKind: 'openai-agents-sdk', status: 'failed', reason: 'provider_error',
           candidateRef: 'candidate-a', runId: 'run-a', attemptId: 'attempt-a', conclusionFingerprint: analysisDeliveryFingerprint(conclusion)},
         deliveryAssurance: {schemaVersion: 1, entry: 'new_finalization', completion: 'failed', claims: 'passed',
@@ -135,7 +135,7 @@ describe('analysis result snapshot pipeline', () => {
 
   test('legacy snapshot safety projection invalidates old claim, source and report positives together', () => {
     const conclusion = 'An unchanged historical statement';
-    const snapshot = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
       sessionId: 'session-a', traceId: 'trace-a', runId: 'run-a', query: 'old query', conclusion,
       conclusionContract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
         claims: [{id: 'claim-a', text: conclusion, references: []}], uncertainties: [], nextSteps: [],
@@ -160,7 +160,7 @@ describe('analysis result snapshot pipeline', () => {
       taskKind: 'fact' as const, sceneId: 'general', scope: 'bounded_question' as const, recommendedComplexity: 'quick' as const,
       deliverable: 'answer' as const, evidenceAccess: 'existing_only' as const, registryFingerprint: 'registry-a'};
     const candidate = {candidateRef: 'candidate-a', runId: 'run-a', attemptId: 'attempt-a', conclusionFingerprint: analysisDeliveryFingerprint(conclusion)};
-    const snapshot = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
       traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: 'current query', conclusion, conclusionContract: contract, turnIntent: intent,
       completion: {...candidate, schemaVersion: 1, runtimeKind: 'pi-agent-core', status: 'completed'},
       analysisReceipt: {schemaVersion: 1, runId: 'run-a', sessionId: 'session-a', traceId: 'trace-a', mode: 'fast', resolvedMode: 'quick', providerId: null, generatedAt: 1,
@@ -196,22 +196,21 @@ describe('analysis result snapshot pipeline', () => {
       ]}], uncertainties: [], nextSteps: [],
     };
     const conclusion = 'TTID=9999ms，事件计数1912次。';
-    const normalized = deriveEvidenceBackedConclusionContractForNarrative(conclusion, [data], {existingContract: contract});
     const store = new ArtifactStore();
     store.registerStandaloneEvidenceCapture(captureEvidenceTable(data.data, {
       ttid_ms: {unit: 'ms', origin: {kind: 'native_producer', definitionFingerprint: 'snapshot-ttid-v1'}},
     }), {meta: data.meta, display: data.display});
-    const preparedEvidence = await prepareClaimEvidence({conclusionContract: normalized, bindingEligibility: 'eligible',
+    const preparedEvidence = await prepareClaimEvidence({conclusionContract: contract, bindingEligibility: 'eligible',
       evidenceReadView: store.createEvidenceReadView({allowedTraces: [{traceId: 'trace-a', traceSide: 'current'}], ownerKey: 'run-a'})});
-    const verification = runPreparedAnalysisClaimVerification({conclusionContract: normalized, dataEnvelopes: [data],
+    const verification = runPreparedAnalysisClaimVerification({conclusionContract: contract, dataEnvelopes: [data],
       preparedEvidence, bindingEligibility: 'eligible'});
     expect(verification.claimVerificationResult.claimResults[0].referenceCells).toEqual([
       expect.objectContaining({status: 'value_mismatch'}),
     ]);
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a',
       traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: '核对 TTID',
-      conclusion, conclusionContract: normalized, dataEnvelopes: [data],
+      conclusion, conclusionContract: contract, dataEnvelopes: [data],
       claimSupport: verification.claimSupport, claimVerificationResult: verification.claimVerificationResult,
     });
     expect(snapshot?.conclusionContract).toEqual(contract);
@@ -247,7 +246,7 @@ describe('analysis result snapshot pipeline', () => {
       resultDigestSha256: '4'.repeat(64),
       availableMetricIds: ['metric_a'], missingMetricIds: [],
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -380,7 +379,7 @@ describe('analysis result snapshot pipeline', () => {
       resolution: {status: 'failed', reason: 'capability_manifest_build_failed'},
       probeCache: {hits: 0, misses: 0, bypasses: 1},
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -412,7 +411,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('returns null when tenant, workspace, or run metadata is missing', () => {
-    expect(buildCompletedAnalysisResultSnapshot({
+    expect(buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       traceId: 'trace-a',
       sessionId: 'session-a',
       query: 'analyze',
@@ -420,7 +419,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('extracts startup metrics from structured DataEnvelope rows', () => {
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -455,7 +454,7 @@ describe('analysis result snapshot pipeline', () => {
 
   test('preserves runtime partial warning even when startup metrics are present', () => {
     const message = '最终结果质量闸门发现 provider 没有产出可独立交付的完整结论';
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -483,7 +482,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('extracts scrolling metrics and normalizes fractional jank rate to percent', () => {
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -520,6 +519,64 @@ describe('analysis result snapshot pipeline', () => {
       expect.objectContaining({ key: 'scrolling.avg_fps', value: 58.5, unit: 'fps' }),
       expect.objectContaining({ key: 'scrolling.jank_rate_pct', value: 5, unit: '%' }),
       expect.objectContaining({ key: 'scrolling.p95_frame_ms', value: 28, unit: 'ms' }),
+    ]));
+  });
+
+  test.each<[string, (env: DataEnvelope) => void]>([
+    ['meta', env => { env.meta.traceSide = 'reference'; }],
+    ['the envelope', env => { (env as any).traceSide = 'reference'; }],
+    ['trace provenance', env => { (env as any).traceProvenance = {traceSide: 'reference'}; }],
+    ['another trace id', env => { env.meta.traceId = 'trace-b'; }],
+  ])('reads no metric from an envelope of the other trace, marked by %s', (_name, mark) => {
+    const startupEnvelope = (stepId: string, rows: unknown[][]): DataEnvelope => {
+      const base = envelope();
+      return {...base, meta: {...base.meta, stepId}, data: {columns: ['total_ms', 'first_frame_ms', 'running_ms'], rows}};
+    };
+    const reference = startupEnvelope('reference_summary', [[9999, 8888, 7777]]);
+    mark(reference);
+    const snapshotOf = (dataEnvelopes: DataEnvelope[]) => buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', traceId: 'trace-a', sessionId: 'session-a',
+      runId: 'run-a', query: 'compare startup', dataEnvelopes, createdAt: 1234, privateContext: NO_PRIVATE_CONTEXT,
+    });
+
+    expect(snapshotOf([reference])?.metrics).toEqual([]);
+    const current = startupEnvelope('summary', [[1450.5, 620, 300]]);
+    current.meta.traceId = 'trace-a';
+    const snapshot = snapshotOf([reference, current]);
+    expect(snapshot?.metrics.map(({key, value, source}) => ({key, value, stepId: source.stepId}))).toEqual([
+      {key: 'startup.total_ms', value: 1450.5, stepId: 'summary'},
+      {key: 'startup.first_frame_ms', value: 620, stepId: 'summary'},
+      {key: 'cpu.main_thread_running_ms', value: 300, stepId: 'summary'},
+    ]);
+    // The reference envelope stays in the evidence refs for comparison provenance.
+    expect(snapshot?.evidenceRefs.map(ref => ref.metadata?.stepId)).toContain('reference_summary');
+  });
+
+  test('keeps trace-wide frame counts out of app scrolling metrics', () => {
+    const scoped = (stepId: string, rows: Record<string, unknown>[], role: 'target' | 'global_context') => ({
+      ...envelope(),
+      meta: {...envelope().meta, source: 'scrolling_analysis', skillId: 'scrolling_analysis', stepId,
+        evidenceRefId: `data:${stepId}`, scopeProvenance: {version: 'process_scope_evidence@1' as const, entries: [{role,
+          scope: role === 'target'
+            ? {mode: 'exact_upid' as const, upid: 885, traceId: 'trace-a', traceSide: 'current' as const}
+            : {mode: 'unscoped' as const, traceId: 'trace-a', traceSide: 'current' as const}}]}},
+      data: {rows} as any,
+    });
+    const snapshot = buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a',
+      privateContext: NO_PRIVATE_CONTEXT,
+      query: '分析滑动性能',
+      dataEnvelopes: [
+        scoped('frame_timeline_population', [{total_frames: 697, jank_frames: 21, trace_duration_ms: 7816}], 'global_context'),
+        scoped('performance_summary', [{total_frames: 347, janky_frames: 7}], 'target'),
+      ],
+      createdAt: 1234,
+    });
+
+    expect(snapshot?.metrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({key: 'scrolling.frame_count', value: 347}),
+      expect.objectContaining({key: 'scrolling.jank_count', value: 7}),
+      expect.objectContaining({key: 'trace.duration_ms', value: 7816}),
     ]));
   });
 
@@ -572,7 +629,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     };
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -651,7 +708,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     };
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -705,7 +762,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     }));
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -763,7 +820,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     }));
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -796,7 +853,7 @@ describe('analysis result snapshot pipeline', () => {
   test('persists snapshot when the parent run graph does not exist yet', () => {
     useTempEnterpriseDb();
 
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -971,21 +1028,21 @@ describe('analysis result snapshot pipeline', () => {
           } as any,
         },
         uiActionProposals: [{title: canary}] as any,
-        privateKnowledge: true,
+        privateContext: {codebase: true, knowledge: false},
         outputLanguage: 'en',
         sceneType: 'startup',
       });
 
       expect(snapshot).not.toBeNull();
       expect(JSON.stringify(snapshot)).not.toContain(canary);
-      expect(snapshot?.userQuery).toBe(
-        'Private source or knowledge analysis request (original content not persisted)',
-      );
-      expect(snapshot?.traceLabel).toBe('trace-private');
+      // The creator's snapshot keeps their question and trace label under the owner guard.
+      expect(snapshot?.userQuery).toBe('query [REDACTED_CODE_ECHO]');
+      expect(snapshot?.traceLabel).toBe('label [REDACTED_CODE_ECHO]');
       expect(snapshot?.sceneType).toBe('startup');
       expect(snapshot?.capabilityManifest).toEqual(receiptCapabilityManifest);
       expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(receiptCapabilityManifest);
-      expect(snapshot?.summary.analysisReceipt?.outputs).toEqual({});
+      // The owner's snapshot keeps the receipt outputs under the owner guard.
+      expect(snapshot?.summary.analysisReceipt?.outputs).toEqual({reportError: '[REDACTED_CODE_ECHO]', cliTurnPath: '[REDACTED_CODE_ECHO]'});
       const storedSourceDecision = snapshot?.summary.sourceUseDecision;
       expect(snapshot?.conclusionContract).not.toHaveProperty('sourceUseDecision');
       expect(storedSourceDecision).toEqual(expect.objectContaining({
@@ -1015,6 +1072,8 @@ describe('analysis result snapshot pipeline', () => {
         `).all(sessionId);
         const run = db.prepare('SELECT question FROM analysis_runs WHERE id = ?').get('run-private');
         expect(JSON.stringify({rows, run})).not.toContain(canary);
+        // The run store keeps no question text for a private run.
+        expect(run).toEqual({question: ''});
         expect(rows).toHaveLength(1);
         expect((rows[0] as any).conclusion_contract_json).not.toBeNull();
         expect((rows[0] as any).claim_support_json).not.toBeNull();
@@ -1056,7 +1115,7 @@ describe('analysis result snapshot pipeline', () => {
         partial: result.partial,
         terminationReason: result.terminationReason,
         terminationMessage: result.terminationMessage,
-        privateKnowledge: true,
+        privateContext: {codebase: true, knowledge: false},
         outputLanguage: 'en',
       });
 
@@ -1101,7 +1160,7 @@ describe('analysis result snapshot pipeline', () => {
         snippet: 'raw-source-canary',
       } as any],
     };
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -1193,7 +1252,7 @@ describe('analysis result snapshot pipeline', () => {
       metadata: {legacy: true},
     };
 
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -1240,7 +1299,7 @@ describe('analysis result snapshot pipeline', () => {
       usedCodebaseIds: ['app-source'],
       references: [bodyReference],
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-metadata-only',
       workspaceId: 'workspace-metadata-only',
       traceId: 'trace-metadata-only',
@@ -1293,7 +1352,7 @@ test('persists bound system investigation without new acquisition and preserves 
     requirements: [{requirementId: 'scheduler', domain: 'thread_state', applicability: 'applicable', coverage: 'covered',
       evidenceStatus: 'insufficient', acquisition: 'insufficient', scopeMatch: 'matched',
       contentLocations: [{start: 0, end: conclusion.length}], evidenceRecordIds: ['capture-system']}]};
-  const input = {tenantId: 'tenant-system', workspaceId: 'workspace-system', traceId: 'trace-system',
+  const input = {privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-system', workspaceId: 'workspace-system', traceId: 'trace-system',
     sessionId: 'session-system', runId: 'run-system', query: 'Why did the task wait?', conclusion};
   const snapshot = buildCompletedAnalysisResultSnapshot({...input, investigationAssessment,
     deliveryAssurance: {schemaVersion: 1, entry: 'new_finalization', completion: 'passed', claims: 'not_checked',
@@ -1309,7 +1368,7 @@ describe('scene archive references in comparison snapshots', () => {
   const reference = () => ({schemaVersion: 'scene_report_ref@1' as const, reportId: 'scene-v3-report',
     traceId: 'trace-scene', sessionId: 'session-scene', runId: 'run-scene', revision: 7,
     expiresAt: 1_800_000_000_000, manifestSha256: 'a'.repeat(64)});
-  const input = () => ({tenantId: 'tenant-scene', workspaceId: 'workspace-scene',
+  const input = () => ({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-scene', workspaceId: 'workspace-scene',
     traceId: 'trace-scene', sessionId: 'session-scene', runId: 'run-scene', query: 'reconstruct',
     sceneType: 'scene_reconstruction', sceneReport: reference(), sceneTimelineRevision: 7});
 

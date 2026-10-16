@@ -2,179 +2,151 @@
 
 ## Proportionate Verification
 
-- Choose the smallest applicable tier below and complete its required checks.
-  Use commands defined by this repository's rules, scripts, or documentation
-  that the current environment can execute. Record missing entrypoints as
-  `NOT CONFIGURED` and unavailable prerequisites as `NOT AVAILABLE`.
-- Do not add tests for reversible, low-impact changes merely to restate the
-  implementation. Add or update tests when they protect an observable behavior,
-  regression boundary, or maintained contract; an existing contract test must
-  still match an intentionally changed contract.
-- After applicable checks pass, repeat or broaden them only for new changes,
-  failures, unresolved doubts, or a required PR/release gate. Reuse evidence only
-  when the relevant files, dependencies, configuration, and execution environment
-  are unchanged. The PR and exact-archive release gates below still apply.
-- Before committing code, simplify only task-owned changes without changing
-  behavior: use an available `/simplify`, then a project-defined executable
-  simplification script, then `code-simplifier` on PATH. If none is available,
-  perform a manual simplification review plus `git diff --check`; record the
-  unavailable tool without treating it as a blocker.
-- Preserve evidence needed for acceptance. Remove only disposable temporary
-  files created by this task; do not clean unrelated work or shared caches.
+During development, run the affected owning tier. For combined fast root/backend
+checks use `npm run verify:dev`; it expands the existing two `verify:ci` scripts,
+not the full suite or target/native/provider acceptance. Before opening or
+landing a PR, run root `npm run verify:pr`. Public releases also require their
+exact-artifact gates in [release](release.md).
+
+Use repository-defined runnable commands. Missing entrypoints are
+`NOT CONFIGURED`; missing prerequisites are `NOT AVAILABLE`. Reuse passing
+checks while covered files, dependencies, configuration and environment remain
+unchanged; rerun for changed evidence, failures, unresolved risk or a required
+acceptance boundary. Review/simplify only the task-owned diff before final
+checks; preserve unrelated work and inspect `git diff --check`.
+
+Tests should establish observable behavior or maintained regression contracts,
+not repeat literals/layout. Removing a case requires preserving its unique
+assertions or proving the feature retired. Share expensive suite fixtures/results
+only when trace, inputs, options and lifecycle are identical; parameter changes,
+mutation/cancellation and replay behavior need independent execution. Do not
+hide missing data, accept success and failure alike, or loosen assertions for speed.
 
 ## Default PR Gate
-
-Before opening or landing a PR, run from the repository root:
 
 ```bash
 npm run verify:pr
 ```
 
-This runs root quality checks, Rust checks, backend Skill/Strategy validation,
-typecheck, build, CLI package checks, core, architecture, Self-Evolution, and
-external issue-reporting tests, trace-processor availability, the constructed
-Trace SQL regression, and the 6-trace scene regression gate.
+Root/backend `package.json` define its current selection and dependencies:
+governance, docs/i18n/runtime assets, quality, Rust, Skill/Strategy validation,
+typecheck/build, CLI packaging, every registered test tier and Trace/SQL
+regression. Read those scripts rather than duplicating their full chain here.
 
-## New Test Files Must Be Registered
+## Hosted CI and Local Verification
 
-`test:core`, `test:architecture`, and `test:self-evolution` enumerate their
-targets; new subsystems may use a directory-scoped gate such as
-`test:external-issue-reporting`. `tsconfig.json` excludes
-`src/**/__tests__/**` and `src/**/*.test.ts`.
-Therefore `npm run typecheck` cannot catch a type break inside a test file, and
-an unregistered suite never runs in `verify:pr`.
+| Boundary | Selection | Evidence |
+| --- | --- | --- |
+| Development | Affected owner tier; `npm run verify:dev` for combined fast checks | Local functional/type/build/privacy checks, not full acceptance |
+| PR/main Actions | Root and backend `verify:ci` | Clean hosted install/build plus essential lifecycle/auth/privacy/output contracts |
+| Relevant hosted paths | Rust, macOS/Windows native contracts, Docker smoke | OS/container boundaries a local macOS run cannot establish |
+| Pre-PR/landing | Root `verify:pr` plus applicable surface checks | Complete local deterministic regression |
+| Hosted full reproduction | `backend-agent-regression-gate.yml`, `full=true` | Full backend and Trace corpus plus all environment jobs |
+| Feature acceptance | Applicable browser, real-provider and performance gates below | Actual rendering/model/target-workload evidence |
+| Public release | npm, version-tag Docker and exact-archive native smoke | Exact published bytes, independently per surface |
 
-When adding a test file, register it in the matching `test:*` script in the same
-change, and make sure that script is reachable from `test:gate`. For a new
-subsystem, add a directory-scoped `test:<subsystem>` script and wire it into
-`test:gate` rather than listing files one by one. During development, verify
-registration from the repository root:
+Hosted scopes come from `scripts/ci-change-scope.cjs` and
+`.github/ci-scopes.json`: PR test merge diff, push `before..HEAD`, both sides of
+renames, all environments for manual/first push, missing history fails closed.
+Keep a stable `always()` aggregate gate without workflow PR path filters; reject
+failed/cancelled jobs and skipped mandatory jobs. Superseded automatic runs may
+cancel; manual runs remain independent. Native jobs need not repeat Linux
+checks. Docker nightly/manual uses fast checks; version tags retain full backend
+`verify:pr`. Workflow edits/local runs are not hosted passing evidence.
+
+CI subsets select existing owned suites, not extra local owners. Credential-filter
+functional cases remain in `test:ci-privacy`; pathological-input performance
+belongs to `test:secret-patterns:performance` in the architecture/full chain.
+After changing gate/scope wiring, compare before/after suite selection and fixture
+preparation, then run registration and both fast scripts via `verify:dev`.
+
+## Test Ownership and Registration
+
+Every backend suite must be reachable from root `verify:pr`, preferably through
+one `test:*` owner in backend `test:gate`. Focused scripts alone do not establish
+default coverage; helpers/fixtures cannot live where Jest matches them as suites.
+After adding/moving/deleting suites or wiring:
 
 ```bash
 npm run check:test-registration
 ```
 
-Then run the owning `test:*` entrypoint for the new or changed suite. Keep the
-full `npm run verify:pr` gate before opening or landing a PR; reuse its passing
-result only under the unchanged-evidence conditions above.
+Keep its baseline empty; accepted debt needs explicit justification. Run affected
+owning tiers and preserve preparation/execution dependencies. Jest/ts-jest does
+not typecheck; backend `npm run typecheck` covers source/tests, build emits source.
+Trace evals belong to `test:analysis-accuracy`, which materializes the corpus.
+`describeWithTrace` fails unknown/missing fixtures; assert actual expected results.
 
-A suite that is green locally but absent from `test:gate` remains unguarded by
-the project gate and cannot satisfy integration acceptance.
+## Production Reachability
 
-Asking people to remember this did not work: when the rule was first written,
-237 of 573 backend suites — 41% — were unreachable from any `test:*`/`verify:*`
-script, and six of them were failing while `verify:pr` stayed green. One had
-rotted outright: a member added to `RagSourceKind` left a fixture in
-`sparkContracts.test.ts` type-broken, invisible because the file is both
-unregistered and excluded from typecheck.
-
-`npm run check:test-registration` now answers the question mechanically, and
-`test:governance` runs it first in `verify:pr`. All 573 suites are registered
-and `scripts/test-registration-baseline.json` is empty, so the check is
-currently zero-tolerance: any new suite that no script can reach fails the gate.
-
-Keep it that way. The baseline exists so the check could be introduced without
-a 237-file bang; it is not a parking space. `--update-baseline` records
-deliberately accepted debt and must be justified in the commit that does it —
-a baselined suite is still untested, and the file records what is unguarded
-rather than blessing it.
-
-## Dead Code Must Not Keep A Green Suite
-
-`check:test-registration` asks which suites the gate cannot run.
-`check:orphaned-modules` asks the mirror question: which modules production no
-longer imports while a registered suite still tests them. Both failures look
-the same from `verify:pr` — everything green — and the second is worse, because
-a passing suite reads as proof the behaviour works.
+After removing a caller, module or export, run owning tests plus:
 
 ```bash
 npm run check:orphaned-modules
+npm run check:unused-exports
 ```
 
-`phaseHintMatcher.ts` sat in that state with 17 passing tests after the commit
-that replaced prescribed plans removed its only call site. The strategy field it
-served kept accepting authored `critical_tools`, and Self-Evolution kept
-proposing patches to it, with no effect on any analysis.
-
-The check matches a module by its own source path, never by basename: the test
-path was itself registered in `package.json`, so a basename match would have
-cleared the very module that was dead. Re-export shims and script-invoked
-entrypoints are exempt.
-
-`scripts/orphaned-modules-baseline.json` records 36 modules already in this
-state. They are accepted debt, not blessed: each is behaviour the product does
-not run while a suite vouches for it. Shrink the list by restoring the call site
-or deleting the module with its suite; `--update-baseline` grows it only with a
-justification in the same commit.
-
-Suites that no focused tier owns live in `test:unit-sweep` (233 of them, ~39s).
-Prefer the tier that matches the change; the sweep is the home for everything
-else. Directory-scoped patterns are also supported by the check, but note two
-costs before reaching for one: a directory pattern re-runs suites already owned
-by another tier (the same 233 cost five minutes that way rather than 39
-seconds), and Jest's `testMatch` treats every `.ts` under `__tests__/` as a
-suite, so a fixture such as `sourceFinalizationFixture.ts` fails with "must
-contain at least one test".
+Tests do not make unused code production-reachable. Register retained tool
+entrypoints; test-only exports may use `@internal` but cannot rescue dead modules.
+Baselines are explicit accepted debt, never acceptance. Keep `knip.json` aligned;
+`test:unit-sweep` owns only suites without a more specific owner.
 
 ## Verification by Change Type
 
-| Change type | Required verification |
+Commands below are from root unless a backend prefix is shown. Combine only
+applicable rows; full `verify:pr` covers deterministic owner tiers at landing.
+
+| Change | Development/surface verification |
 | --- | --- |
-| Docs-only, not runtime-read | `git diff --check` |
-| Removing a call site or a module | `npm run check:orphaned-modules` plus the owning `test:*` tier |
-| Docs that define commands, release/package workflow, or runtime-read paths | `git diff --check` plus the smallest command/path smoke that proves the doc did not drift |
-| Build/type fix | `cd backend && npm run typecheck` plus affected tests |
-| Contract/type-only change | `cd backend && npx tsc --noEmit` plus relevant contract tests |
-| CRUD-only service, no agent/runtime path | That service's `__tests__/<name>.test.ts` |
-| MCP, memory, report, provider, session, or agent runtime | `cd backend && npm run test:scene-trace-regression` |
-| Raw SQL capture units or native processor provenance | `npm --prefix backend run test:raw-sql-provenance` plus affected parser, worker lifecycle, RPC and capture tests; this gate ensures the pinned binary and materializes the Trace fixture |
-| Skill YAML | `cd backend && npm run validate:skills` plus scene trace regression |
-| Strategy/template Markdown | `cd backend && npm run validate:strategies` plus scene trace regression |
-| Trace corpus, Skill/Strategy coverage, or generator | `npm run trace:regression`; it includes `npm run trace:tooling:test` plus generated-corpus build and SQL execution |
-| SQL-bearing Skill or default backend gate wiring | `cd backend && npm run trace:sql-regression`; `npm run verify:pr` includes this gate |
-| Frontend generated types | `cd backend && npm run generate:frontend-types` plus relevant tests |
-| AI plugin UI | Browser verification in `start-dev.sh`, relevant `perfetto/ui` tests/typecheck, then `./scripts/update-frontend.sh` |
-| Self-Evolution control plane | `npm --prefix backend run test:self-evolution`, `npm --prefix backend run typecheck`, and scene trace regression; add the AI plugin UI gate when the panel changes. That script covers RBAC/scope isolation, disabled and dependency fail-closed cases, and fixed validation + holdout replay selection. It is wired into `test:gate`, so `npm run verify:pr` runs it too |
-| Agent-assisted external issue reporting | `npm --prefix backend run test:external-issue-reporting`, `npm --prefix backend run typecheck`, strategy validation, scene trace regression, AI plugin typecheck/unit tests, browser verification in `start-dev.sh`, and `./scripts/update-frontend.sh`; verify private/security fail-closed and that no GitHub write occurs |
-| Perfetto upstream sync, trace processor pin, SQL/stdlib index, or committed UI prebuild | Follow `.claude/rules/perfetto-sync.md`; normally `git diff --check`, `npm run check:frontend-prebuild`, `npm --prefix backend run cli:e2e`, scene trace regression, submodule remote reachability, and Skill/Strategy validation when those files changed |
-| Code-aware analysis, codebase registry, source ingestion, symbol resolution, source-use decisions/bindings, or CodeRef report/export | `npm --prefix backend run verify:codebase-aware`, `npm --prefix backend run test:source-claim-contract`, `npm --prefix backend run test:report-contracts`, `npm --prefix backend run verify:code-aware-semantic-delta`, plus `npm run verify:pr` before landing |
-| npm CLI package/release | `npm --prefix backend run cli:pack-check` plus isolated install smoke |
-| Portable-impacting code or packaging | Focused launcher/packaging tests, shell and Node syntax/static checks, launcher cross-compile, full package build, package manifest verification, and `npm run verify:pr` before landing; exact-archive target-OS runtime smoke is additionally required for a public release |
-
-## npm CLI Release Verification
-
-When changing CLI packaging, bin entrypoints, CLI runtime assets, Node engine
-rules, or npm release docs, run:
-
-```bash
-npm --prefix backend run cli:pack-check
-```
-
-For a public npm release, additionally verify the published package from an
-empty temp directory:
-
-```bash
-npm install @gracker/smartperfetto@<version>
-./node_modules/.bin/smp --version
-./node_modules/.bin/smartperfetto --help
-./node_modules/.bin/smp doctor --format json
-```
+| Non-runtime docs/rules | `git diff --check`, `npm run verify:docs`; `verify:i18n` for bilingual structure; relevant governance contracts for rule/adapter changes |
+| Command/path/runtime-read docs | Above plus smallest smoke of the changed command/path |
+| Test registration/preparation | Registration checker, before/after selection/dependencies, affected owner tier; SQL gate only when its contracts/wiring change |
+| Build/types | Backend `typecheck` plus relevant tests |
+| CRUD outside runtime | Service's owning tests |
+| MCP/memory/report/provider/session/runtime | Backend `test:scene-trace-regression` plus affected owner tests |
+| HTML report/layout/controls | Owning report tests plus `npm run test:e2e:reports` (pinned UI Playwright + installed Chrome; narrow layouts, all templates, CSP downloads, offline/print; `output/playwright/html-reports/`) |
+| Raw SQL capture units/native provenance | Backend `test:raw-sql-provenance` plus affected parser/worker/RPC/capture tests |
+| Skill YAML | Backend `validate:skills` and scene trace regression; SQL-bearing changes also `trace:sql-regression` |
+| Strategy/templates | Backend `validate:strategies` and scene trace regression; relevant authenticated E2E for behavior |
+| Trace corpus/coverage/generator | `npm run trace:regression` (tooling, generated build, SQL execution) |
+| SQL regression/preparation wiring | Backend `trace:sql-regression` |
+| Frontend generated contracts | Backend `generate:frontend-types` plus contract tests |
+| AI plugin UI | [frontend](frontend.md): dev browser, affected Perfetto UI tests/typecheck, production build, refresh/check prebuild |
+| Self-Evolution | Backend `test:self-evolution`, typecheck, scene regression; UI row if panel changes |
+| Agent external issue flow | Backend `test:external-issue-reporting`, typecheck, strategy/scene gates; UI row; prove private/security fail-closed and no GitHub write |
+| Processor pin/upstream/UI prebuild | [perfetto-sync](perfetto-sync.md): prebuild, CLI, scene, SQL/Skill validation if affected, submodule anchor |
+| Code-aware source/knowledge/references | [codebase-aware](codebase-aware.md#verification): codebase-aware, source-claim, report-contract and semantic-delta tiers; UI row if affected |
+| npm CLI assets/bin/engine/package | Backend `cli:pack-check`, `cli:e2e`; public registry isolated smoke in [release](release.md) |
+| Portable lifecycle/paths/assets/signing | Portable static/launcher/package gates below; matching-OS exact final archives additionally required for public release |
 
 ## Portable Packaging Verification
 
-When changing portable packaging, release scripts, version synchronization,
-trace-processor handling, bundled runtime assets, or docs that define
-the release process, run:
+For portable packaging, release scripts, version synchronization,
+trace-processor handling or bundled runtime changes, run the relevant source
+checks below. Documentation-only changes need the affected command/flag smoke
+and governance checks; do not rebuild, sign or upload archives when their inputs
+and behavior are unchanged.
 
 ```bash
-bash -n scripts/package-portable.sh scripts/release-portable.sh scripts/package-windows-exe.sh scripts/release-windows-exe.sh
+for script in scripts/package-portable.sh scripts/release-portable.sh scripts/package-windows-exe.sh scripts/release-windows-exe.sh; do
+  bash -n "$script" || exit
+done
 shellcheck -x scripts/package-portable.sh scripts/release-portable.sh scripts/package-windows-exe.sh scripts/release-windows-exe.sh
-node --check scripts/sync-version.cjs scripts/verify-portable-package.cjs scripts/verify-windows-package.cjs scripts/smoke-portable-archive.cjs
+for script in scripts/sync-version.cjs scripts/verify-portable-package.cjs scripts/verify-windows-package.cjs scripts/smoke-portable-archive.cjs; do
+  node --check "$script" || exit
+done
 npm run version:sync -- --check
 GO111MODULE=off go test ./scripts/portable-launcher
 GO111MODULE=off GOOS=windows GOARCH=amd64 go build -o /tmp/smartperfetto-launcher.exe ./scripts/portable-launcher
 GO111MODULE=off GOOS=darwin GOARCH=arm64 go build -o /tmp/SmartPerfetto-macos ./scripts/portable-launcher
 GO111MODULE=off GOOS=linux GOARCH=amd64 go build -o /tmp/SmartPerfetto-linux ./scripts/portable-launcher
+```
+
+Changes to archive layout, packaged assets, native compatibility or signing
+add package construction and final archive verification. Public releases
+always require the complete three-target set and the exact native gate below:
+
+```bash
 npm run package:portable
 node scripts/verify-portable-package.cjs \
   --asset "dist/portable/smartperfetto-v<version>-windows-x64.zip" \
@@ -388,48 +360,27 @@ bash -n scripts/release-portable.sh
 shellcheck scripts/release-portable.sh
 ```
 
-## Canonical Scene Regression
+## Canonical Scene and Trace Regression
 
-Run:
+Backend `test:scene-trace-regression` uses canonical startup, standard/customer
+scrolling and separate Flutter TextureView/SurfaceView cases through
+`Trace/catalog.json`; do not reintroduce retired flat fixture paths. Backend
+`trace:sql-regression` materializes committed overlays without the Perfetto
+source tree and runs production SQL, branch/probe and exact-UPID contracts.
+Missing/skipped SQL or unbound admitted exact units fail. Full generator/tooling
+acceptance uses root `trace:regression`. Inventory assignment, definition-only,
+expected-empty, execution-only and positive semantic coverage stay distinct;
+see [skills](skills.md) for exact process bindings and shared walkers.
 
-```bash
-cd backend
-npm run test:scene-trace-regression
-```
+## Test Process and Data Isolation
 
-The regression uses 6 canonical traces:
-
-| Scene | Trace |
-| --- | --- |
-| Heavy launch | `lacunh_heavy.pftrace` |
-| Light launch | `launch_light.pftrace` |
-| Standard scrolling | `scroll_Standard-AOSP-App-Without-PreAnimation.pftrace` |
-| Customer scrolling | `scroll-demo-customer-scroll.pftrace` |
-| Flutter TextureView | `Scroll-Flutter-327-TextureView.pftrace` |
-| Flutter SurfaceView | `Scroll-Flutter-SurfaceView-Wechat-Wenyiwen.pftrace` |
-
-The aliases above resolve through `Trace/catalog.json`; maintained source must not add paths to the retired flat fixture directory. The default backend gate runs `trace:sql-regression`, which materializes committed overlays without the Perfetto source submodule and executes every discovered Skill SQL contract through the production path, explicit read-only/context probes, or isolated state-changing branch probes. Skipped or unavailable SQL fails the gate. Full generator/release verification is `npm run trace:regression`. It runs the registered Trace tooling tests before generated-corpus build and SQL execution. Its report keeps source-column-backed positive semantic coverage, expected-empty negative coverage, deferred prerequisites, execution-only composition, and definition-only contracts separate; inventory assignment alone is not an execution or semantic pass.
-
-## Focused Unit Tests
-
-Useful focused suites:
-
-```bash
-cd backend
-npx jest src/agentRuntime/__tests__/runtimeSelection.test.ts
-npx jest src/agentOpenAI/__tests__/openAiConfig.test.ts src/agentOpenAI/__tests__/openAiRuntime.test.ts src/agentOpenAI/__tests__/openAiToolAdapter.test.ts
-npx jest src/assistant/application/__tests__/agentAnalyzeSessionService.test.ts
-npx jest src/services/__tests__/agentResultNormalizer.test.ts src/services/__tests__/finalResultQualityGate.test.ts
-npx jest src/services/verifier/__tests__/claimVerificationRunner.test.ts src/services/__tests__/analysisResultSnapshotStore.test.ts
-npx jest src/cli-user/services/__tests__/cliAnalyzeService.runTurn.test.ts src/cli-user/services/__tests__/cliAnalyzeService.test.ts
-npx jest src/services/providerManager/__tests__/providerService.test.ts src/services/providerManager/__tests__/providerRoutes.test.ts
-npm run test:runtime-resilience
-```
-
-Use the result-quality suites when changing final report contract enforcement,
-agent result normalization, evidence/claim verification, identity resolution,
-analysis-result snapshots, CLI turn persistence, or visible-vs-report
-projection behavior.
+Use `backend/tests/helpers/loopbackServer.ts` for owned Supertest servers. Await
+IPv4 listener readiness and pass the server, never an unbound Express app that
+Supertest implicitly listens on. Stop owned streams/sessions, close listeners
+and stores, then restore env and delete owned temporary data. Set path overrides
+before imports that capture paths; never clear the default user database. Keep
+fixture data if cleanup cannot confirm released connections. Preserve explicit
+native TCP/WebSocket cleanup and assert response identity/port release.
 
 ## Runtime Concurrency And Latency Admission
 
@@ -511,175 +462,63 @@ PAT or locally authenticated `qodercli`.
 
 ## Agent SSE E2E
 
-Run Agent SSE e2e when changing startup, scrolling, Flutter, strategy prompt,
-verifier, MCP tools, or scene-critical Skills.
+Run applicable authenticated E2E for startup/scrolling/Flutter/strategy/verifier/
+MCP/scene-critical changes. Backend scripts define the maintained selections:
+`verify:e2e:glm-startup`, `verify:e2e:glm-scrolling`,
+`verify:e2e:glm-flagship`, `verify:e2e:glm-flagship:strict`,
+`verify:e2e:glm-external-issue`, and full `verify:e2e:glm`.
+Use `backend/scripts/run-glm-agent-e2e.cjs` with ignored credentials; it selects
+the subscribed GLM Coding Plan and explicit provider/model pins, never DeepSeek
+or generic OpenAI-key fallback. Pin the Coding Plan endpoint/catalog; native
+reasoning/output limits stay unchanged unless explicitly configured. Keep keys
+out of command logs and public artifacts. Normal selected runtimes execute
+sequentially; separate authenticated runs use at most two concurrent runtimes.
+Qoder additionally needs PAT/local CLI authentication; BYOK does not replace it.
 
-Startup:
+Observation timeout must cover the real native deadline/finalization; extending
+observation changes neither budget nor acceptance. Runtime/provider/scene lists,
+model pin defaults and implementation ownership live in
+[Agent Runtime](../../docs/architecture/agent-runtime.md).
 
-```bash
-cd backend
-npx tsx src/scripts/verifyAgentSseScrolling.ts \
-  --trace ../Trace/real/android-startup-heavy/trace.pftrace \
-  --query "分析启动性能" \
-  --output test-output/e2e-startup.json \
-  --keep-session
-```
+Flagship expectations come from `backend/tests/e2e/flagship/*.expectation.json`
+and independent trace oracles, not model output. Preserve original startup
+classification even when a Skill offers a corrected category. Value, delivery
+and proof are separate check groups: value/delivery failure is FAILED; only
+missing proof is INCONCLUSIVE; strict PASSED requires all groups and hard flags.
+No judged report/unsettled verification is undelivered. Non-strict diagnostic
+success, readable output and honest verification annotations are not strict
+proof. Lifecycle/authorization/privacy failures still fail their own gates.
 
-Deepseek-backed OpenAI runtime startup final-report gate:
+Delta baselines bind suite/runtime/trace/query/expectations/provider/model/gate/
+processor/stdlib fingerprints (only commit may differ), refuse invalid comparisons
+and record staleness. A delta proves regression status, never current acceptance.
+Inspect output JSON, session logs, terminal/error events and evidence-supported
+conclusion; `answerTokenCount` is streamed chunks, not provider usage/cost. Missing
+cross-runtime model/token/cost receipts are `NOT CONFIGURED`; functional matrix
+passes are not accuracy/latency/token benchmarks.
 
-```bash
-cd backend
-OPENAI_API_KEY=... npm run verify:e2e:deepseek-startup
-```
-
-Qoder DeepSeek BYOK startup gate (requires both the DeepSeek provider key and
-Qoder PAT or local `qodercli` login; BYOK does not replace Qoder auth):
-
-```bash
-cd backend
-npm run qoder:install -- --accept-terms
-DEEPSEEK_API_KEY=... QODER_PERSONAL_ACCESS_TOKEN=... \
-  npm run verify:e2e:qoder-deepseek-startup
-```
-
-When Qoder auth is unavailable, record this real-provider gate as unavailable;
-do not treat unit/type/build/PR checks as an authenticated Qoder E2E result.
-
-Agent SSE E2E runs that exercise the OpenAI runtime should use Deepseek by
-default, not GLM. The canonical wrapper is
-`backend/scripts/run-deepseek-agent-e2e.cjs`; it loads `backend/.env`, prefers
-`DEEPSEEK_API_KEY` over `OPENAI_API_KEY`, passes `--provider-id env` so the
-verification request ignores active Provider Manager profiles, and pins:
-
-- `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`
-- `OPENAI_BASE_URL=https://api.deepseek.com/v1`
-- `OPENAI_AGENTS_PROTOCOL=chat_completions`
-- `OPENAI_MODEL=deepseek-v4-pro`
-- `OPENAI_LIGHT_MODEL=deepseek-flash`
-- No implicit OpenAI main-answer output cap; an explicit
-  `OPENAI_MAX_OUTPUT_TOKENS` must be a positive safe integer. Prompt guidance
-  controls normal answer length; provider limits remain authoritative.
-
-Keep API keys out of committed files. Pass `DEEPSEEK_API_KEY` or
-`OPENAI_API_KEY` through the shell environment or a local untracked env file
-only. `npm run verify:e2e:openai-startup` is a compatibility alias for the
-Deepseek startup gate.
-
-Scrolling:
-
-```bash
-cd backend
-OPENAI_API_KEY=... npm run verify:e2e:deepseek-scrolling
-```
-
-M10 Agent-assisted external issue triage:
-
-```bash
-cd backend
-OPENAI_API_KEY=... npm run verify:e2e:deepseek-external-issue
-```
-
-This suite requires a persisted source-run provider snapshot, an actionable
-deterministic signal, a validated live-Agent review, and either an unsubmitted
-GitHub draft or an Agent decision that intentionally blocks public drafting.
-The verifier creates that deterministic signal inside its isolated user-data
-root by posting a negative conclusion rating through the production feedback
-API before requesting the opportunity; it does not inject a synthetic signal
-or write to GitHub.
-Also verify in browser that a durable public thumbs-down refreshes the same
-message into an explicit Agent-triage opportunity without invoking the Agent
-or opening GitHub automatically. It never calls the GitHub API.
-
-Complete real-provider matrix:
-
-```bash
-cd backend
-OPENAI_API_KEY=... npm run verify:e2e:deepseek
-```
-
-For CI-backed real-provider validation, use the manual GitHub Actions workflow
-`Agent Deepseek E2E`. It requires the repository secret `DEEPSEEK_API_KEY` and
-accepts `suite=all|startup|scrolling|external-issue|context`; keep it manual
-because it consumes provider quota and secrets.
-
-Flutter TextureView and SurfaceView must be verified separately because their
-rendering pipelines differ:
-
-```bash
-cd backend
-npx tsx src/scripts/verifyAgentSseScrolling.ts \
-  --trace "../Trace/real/flutter-scroll-texture-view/trace.pftrace" \
-  --query "分析 Flutter 滑动性能" \
-  --output test-output/e2e-flutter-textureview.json \
-  --keep-session
-
-npx tsx src/scripts/verifyAgentSseScrolling.ts \
-  --trace "../Trace/real/flutter-scroll-surface-view/trace.pftrace" \
-  --query "分析 Flutter 滑动性能" \
-  --output test-output/e2e-flutter-surfaceview.json \
-  --keep-session
-```
-
-Fast/full mode:
-
-```bash
-cd backend
-npx tsx src/scripts/verifyAgentSseScrolling.ts \
-  --mode fast \
-  --trace ../Trace/real/android-scroll-customer/trace.pftrace \
-  --query "这个 trace 的应用包名和主要进程是什么？" \
-  --output test-output/e2e-fast.json
-
-npx tsx src/scripts/verifyAgentSseScrolling.ts \
-  --mode full \
-  --trace ../Trace/real/android-scroll-customer/trace.pftrace \
-  --query "分析滑动性能" \
-  --output test-output/e2e-full.json
-```
-
-After e2e runs, inspect:
-
-- `backend/test-output/e2e-*.json`
-- `backend/logs/sessions/session_*.jsonl`
-- SSE terminal event counts and error events
-- Whether the final conclusion is supported by Skill/SQL evidence
-
-`answerTokenCount` counts streamed SSE answer chunks, not provider tokens. The
-current cross-runtime E2E artifact does not provide a common provider-reported
-input/output/cache/reasoning-token, TTFT, or cost receipt. Treat mode/model cost
-comparison as `NOT CONFIGURED` until those fields and the actual selected model
-are recorded; a 21/21 functional matrix is not an accuracy or token benchmark.
+For custom scene/Flutter/fast/full reproduction use the existing
+`verifyAgentSseScrolling.ts` with an explicit catalog trace, query, mode and
+fresh output. Flutter rendering pipelines need separate runs. Stop-semantics
+verification starts no backend: run `verify:e2e:stop-semantics` against a
+separately isolated real-provider backend and retain pass/legal-race/not-exercised/
+fail outcomes. External-issue E2E creates its signal through the production
+feedback API in isolated user data, pins the source run, and never writes GitHub;
+verify the explicit per-message browser opportunity separately.
 
 ## Code-Aware Semantic Delta
 
-The registered deterministic gate is:
+Backend `verify:code-aware-semantic-delta` prepares the real-processor fixture
+and exercises production registration/audit, A0 no source, A1/A2 on-demand,
+A3 indexed, A4 wrong-source and source bindings. Source-result attachment and
+output provenance remain owned by `test:source-claim-contract` and
+`test:report-contracts`; all three are default-chain reachable without duplicates.
+Its deterministic artifact is not provider acceptance. With available credentials,
+run the separate repeated matrix:
 
 ```bash
-npm --prefix backend run verify:code-aware-semantic-delta
+node backend/scripts/run-glm-agent-e2e.cjs --suite code-aware-semantic-delta --runtime all-glm --repeat 5
 ```
 
-It materializes the constructed source-analysis trace, runs the real trace
-processor, exercises production registration/audit, on-demand and indexed
-handlers, and verifies A0–A4 plus source-claim bindings. Its default artifact is
-`backend/test-output/code-aware-semantic-delta/deterministic-summary.json`.
-This is local deterministic evidence, not provider acceptance.
-
-With credentials safely available, run the separate repeated provider matrix:
-
-```bash
-node backend/scripts/run-deepseek-agent-e2e.cjs \
-  --suite code-aware-semantic-delta \
-  --runtime all \
-  --repeat 5
-```
-
-Report Claude, OpenAI, Pi, OpenCode, and Qoder independently. Missing auth must
-remain `REAL PROVIDER NOT AVAILABLE`; never replace it with a unit, fixture, or
-deterministic five-runtime execution result.
-
-## Fixture Skip Behavior
-
-Some historical skill-eval fixtures are intentionally not included in the
-repository. Suites that load optional traces should use `describeWithTrace(...)`
-so missing fixture files skip cleanly. The PR gate does not depend on those
-historical fixtures; it depends on `test:core` and `test:scene-trace-regression`.
+Report runtime outcomes separately; Claude/Qoder need separate authenticated
+runs. Missing auth remains `REAL PROVIDER NOT AVAILABLE`, never a fixture pass.

@@ -69,6 +69,24 @@ describe('PathSecurityGate', () => {
     expect(preview.acceptedFiles.map(file => file.relativePath)).toEqual(['SRC/Visible.KT']);
   });
 
+  it('answers a policy-refused relative source path as data and still throws a malformed one', () => {
+    const gate = new PathSecurityGate({allowlistRoots: [tmpDir]});
+
+    expect(gate.admitRelativeSourcePath('./src//Main.kt')).toEqual({admitted: true, path: 'src/Main.kt'});
+    expect(gate.admitRelativeSourcePath('build/Generated.kt'))
+      .toEqual({admitted: false, reason: 'source_path_excluded'});
+    expect(gate.admitRelativeSourcePath('build/Generated.kt', {enforceConfiguredExcludes: false}))
+      .toEqual({admitted: true, path: 'build/Generated.kt'});
+    expect(gate.admitRelativeSourcePath('docs/README.md'))
+      .toEqual({admitted: false, reason: 'source_extension_not_allowed'});
+    for (const malformed of ['', '../outside/Main.kt', '/abs/Main.kt', 'src/\0.kt']) {
+      expect(() => gate.admitRelativeSourcePath(malformed)).toThrow('source_path_invalid');
+    }
+    // The throwing validator keeps its contract for callers that treat a refusal as a skip.
+    expect(() => gate.validateRelativeSourcePath('build/Generated.kt')).toThrow('source_path_excluded');
+    expect(() => gate.validateRelativeSourcePath('docs/README.md')).toThrow('source_extension_not_allowed');
+  });
+
   it('rejects roots outside the allowlist', async () => {
     const root = path.join(tmpDir, 'repo');
     fs.mkdirSync(root);
@@ -198,5 +216,20 @@ describe('PathSecurityGate', () => {
 
     expect(() => readAcceptedTextFileSync(registeredRoot, 'Main.kt'))
       .toThrow('codebase_root_realpath_drift');
+  });
+
+  it('reports filesystem failures as codes that never name the registered root', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'registered-')));
+    const failureOf = (rootPath: string, relativePath: string): string => {
+      try {
+        readAcceptedTextFileSync(rootPath, relativePath);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('expected the read to fail');
+    };
+
+    expect(failureOf(root, 'Missing.kt')).toBe('source_file_not_found');
+    expect(failureOf(path.join(root, 'gone'), 'Main.kt')).toBe('codebase_root_unavailable');
   });
 });

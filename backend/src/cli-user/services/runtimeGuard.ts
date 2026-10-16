@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { spawnSync } from 'child_process';
 import {
   resolveAgentRuntimeSelection,
+  resolveAgentRuntimeSelectionForDiagnostics,
   type BackendAgentRuntimeKind,
   type RuntimeSelection,
 } from '../../agentRuntime/runtimeSelection';
@@ -34,12 +35,6 @@ import {
 import { parseAdbDevices } from './androidCapture';
 import { resolveAdbTool, resolveTraceboxTool } from './captureTools';
 import type { CaptureToolResolution } from '../types';
-import {
-  getAndroidInternalsPackStatus,
-} from '../../services/androidInternalsPack/knowledgePackStatus';
-import type {
-  AndroidInternalsPackStatus,
-} from '../../services/androidInternalsPack/types';
 
 export interface RuntimeGuardResult {
   selection: RuntimeSelection;
@@ -60,6 +55,33 @@ function chosenSdkBinaryPath(sdkBinary: unknown): string | undefined {
   if (typeof sdkBinary !== 'object' || sdkBinary === null) return undefined;
   const chosenPath = (sdkBinary as { chosenPath?: unknown }).chosenPath;
   return typeof chosenPath === 'string' ? chosenPath : undefined;
+}
+
+function buildSqliteNativeCheck(): DoctorCheck {
+  try {
+    const Database = require('better-sqlite3') as typeof import('better-sqlite3');
+    const database = new Database(':memory:');
+    try {
+      const row = database.prepare('SELECT 1 AS value').get() as {value: number} | undefined;
+      if (row?.value !== 1) throw new Error('SQLite native probe returned an unexpected result');
+    } finally {
+      database.close();
+    }
+    return {
+      name: 'sqlite_native',
+      ok: true,
+      status: 'ok',
+      message: 'SQLite native binding can open, query and close an in-memory database',
+    };
+  } catch (error) {
+    return {
+      name: 'sqlite_native',
+      ok: false,
+      status: 'error',
+      message: 'SQLite native binding is unavailable. Review dependency installation scripts and rebuild under Node.js 24; see docs/reference/cli.md.',
+      details: {error: error instanceof Error ? error.message : String(error)},
+    };
+  }
 }
 
 export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): RuntimeGuardResult {
@@ -168,13 +190,12 @@ export interface DoctorReport {
       type: string;
     };
   };
-  knowledgePack: AndroidInternalsPackStatus;
   checks: DoctorCheck[];
 }
 
 export function collectDoctorReport(cliHome: string): DoctorReport {
   const aiPolicy = getAiCapabilityPolicy();
-  const selection = resolveAgentRuntimeSelection();
+  const {selection, providerStoreError} = resolveAgentRuntimeSelectionForDiagnostics();
   const runtimeDiagnostics = getRuntimeDiagnostics(selection);
   const traceProcessorPath = getTraceProcessorPath();
   const traceProcessorExists = fs.existsSync(traceProcessorPath);
@@ -186,11 +207,11 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
   const providers = providerSvc.list();
   const active = providers.find((p) => p.isActive);
   const nodeMajor = Number.parseInt(process.version.replace(/^v/, '').split('.')[0] || '0', 10);
-  const knowledgePack = getAndroidInternalsPackStatus();
 
   const qoderSdkInstalled = selection.kind !== QODER_AGENT_RUNTIME_KIND ||
     runtimeDiagnostics.sdkInstalled === true;
-  const runtimeConfigured = qoderSdkInstalled && (
+  // Analyses following the active provider are refused while providers.json is unreadable.
+  const runtimeConfigured = !providerStoreError && qoderSdkInstalled && (
     runtimeDiagnostics.configured ||
     selection.kind === QODER_AGENT_RUNTIME_KIND
   );
@@ -203,7 +224,9 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
     : 'warn';
   const runtimeOk = aiPolicy.aiEnabled ? runtimeConfigured : true;
   const runtimeMessage = aiPolicy.aiEnabled
-    ? runtimeDiagnostics.configured
+    ? providerStoreError
+      ? providerStoreError.message
+      : runtimeDiagnostics.configured
       ? `${selection.kind} credentials/configuration detected`
       : selection.kind === QODER_AGENT_RUNTIME_KIND && !qoderSdkInstalled
         ? 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly'
@@ -227,6 +250,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       status: nodeMajor >= 24 && nodeMajor < 25 ? 'ok' : 'error',
       message: `Node.js ${process.version} (expected >=24 <25)`,
     },
+    buildSqliteNativeCheck(),
     {
       name: 'ai_policy',
       ok: aiPolicy.aiEnabled || aiPolicy.env?.valid === true,
@@ -244,6 +268,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       ok: runtimeOk,
       status: runtimeStatus,
       message: aiPolicy.aiEnabled &&
+        !providerStoreError &&
         !runtimeDiagnostics.configured &&
         selection.kind !== QODER_AGENT_RUNTIME_KIND
         ? `${runtimeMessage} ${providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli')}`
@@ -252,32 +277,12 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
         source: selection.source,
         providerId: selection.providerId,
         providerName: selection.providerName,
+        ...(providerStoreError ? {code: providerStoreError.code} : {}),
       },
     },
     ...(aiPolicy.aiEnabled && selection.kind === 'claude-agent-sdk'
       ? [buildClaudeSdkBinaryCheck(runtimeDiagnostics.sdkBinary)]
       : []),
-    {
-      name: 'android_internals_pack',
-      ok: knowledgePack.availability === 'available' || knowledgePack.availability === 'disabled',
-      status: knowledgePack.availability === 'available'
-        ? 'ok'
-        : knowledgePack.availability === 'disabled'
-          ? 'warn'
-          : knowledgePack.availability === 'revoked' || knowledgePack.availability === 'invalid'
-            ? 'error'
-            : 'warn',
-      message: knowledgePack.active
-        ? `${knowledgePack.active.contentVersion} (${knowledgePack.active.origin}, ${knowledgePack.licenseExpression})`
-        : `Knowledge Pack is ${knowledgePack.availability}`,
-      details: {
-        version: knowledgePack.active?.contentVersion ?? null,
-        fingerprint: knowledgePack.active?.contentFingerprint ?? null,
-        sourceRevision: knowledgePack.active?.sourceRevision ?? null,
-        license: knowledgePack.licenseExpression,
-        lastError: knowledgePack.lastError ?? null,
-      },
-    },
     {
       name: 'trace_processor_shell',
       ok: traceProcessorExists && traceProcessorExecutable,
@@ -335,7 +340,6 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       count: providers.length,
       ...(active ? { active: { id: active.id, name: active.name, type: active.type } } : {}),
     },
-    knowledgePack,
     checks,
   };
 }

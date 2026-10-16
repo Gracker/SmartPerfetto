@@ -8,12 +8,41 @@ import {
   RAW_SQL_DIRECT_PROJECTION_LIMITS,
   resolveRawSqlDirectProjection,
 } from '../rawSqlDirectProjection';
+import {resolveRawSqlExpressionUnits} from '../rawSqlExpressionUnits';
 
 const columns = ['id', 'ts', 'dur', 'name'];
 const mapped = (sql: string, output: string[], schema: string[] = columns) =>
   resolveRawSqlDirectProjection(analyzeRawSqlDirectProjection(sql), output, schema);
 
 describe('raw SQL direct projection', () => {
+  const typedColumns = [{name: 'id', type: 'ID'}, {name: 'ts', type: 'TIMESTAMP'}, {name: 'dur', type: 'DURATION'}];
+  it.each([
+    ['COUNT(*)', 'count'], ['COUNT(DISTINCT id)', 'count'], ['SUM(dur)', 'ns'],
+    ['MIN(dur)', 'ns'], ['MAX(dur)', 'ns'], ['AVG(dur)', 'ns'],
+    ['dur / 1e6', 'ms'], ['SUM(dur) / 1000', 'us'], ['dur * 0.000000001', 's'],
+    ['SUM(MIN(ts + dur, 100000000) - MAX(ts, 0))', 'ns'],
+  ])('resolves typed quantity %s without supplying direct row correspondence', (expression, unit) => {
+    const parsed = analyzeRawSqlDirectProjection(`SELECT ${expression} AS quantity FROM slice`);
+    expect(parsed.pureRead).toBe(true);
+    expect(resolveRawSqlExpressionUnits(parsed, ['quantity'], typedColumns)).toEqual({quantity: unit});
+    expect(resolveRawSqlDirectProjection(parsed, ['quantity'], columns)).toBeUndefined();
+  });
+
+  it.each([
+    '1 / 1000000', 'id / 1000000', 'dur / 2', 'dur / 42', 'dur / 0', 'ts + dur', 'SUM(ts)',
+    'ts - 1000', 'dur + 1000', 'dur / 1000000 + dur', 'ABS(dur)', 'CAST(dur AS REAL)',
+  ])('does not derive a duration or identity from an untyped expression: %s', expression => {
+    expect(resolveRawSqlExpressionUnits(analyzeRawSqlDirectProjection(`SELECT ${expression} AS dur FROM slice`),
+      ['dur'], typedColumns)).toEqual({});
+  });
+  it('validates actual aliases, output cardinality and qualified columns independently of unit propagation', () => {
+    const parsed = analyzeRawSqlDirectProjection('SELECT SUM(s.dur) / 1000000 AS arbitrary FROM slice s');
+    expect(resolveRawSqlExpressionUnits(parsed, ['arbitrary'], typedColumns)).toEqual({arbitrary: 'ms'});
+    expect(resolveRawSqlExpressionUnits(parsed, ['dur_ms'], typedColumns)).toEqual({});
+    expect(resolveRawSqlExpressionUnits(parsed, ['arbitrary', 'extra'], typedColumns)).toEqual({});
+    expect(resolveRawSqlExpressionUnits(analyzeRawSqlDirectProjection('SELECT SUM(other.dur) AS quantity FROM slice s'),
+      ['quantity'], typedColumns)).toEqual({});
+  });
   it('maps an executed direct projection by formal source column and exact output alias', () => {
     const sql = 'SELECT s.dur AS elapsed, s.id FROM main.slice AS s WHERE s.id = 11140 ORDER BY s.ts DESC LIMIT 1 OFFSET 0;';
     const parsed = analyzeRawSqlDirectProjection(sql);

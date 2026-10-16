@@ -176,11 +176,47 @@ describe('raw SQL native provenance', () => {
     expect(readRawSqlCaptureFields(capture(await ready()))).toBeUndefined();
   });
 
-  it('preserves pure reads without inferring units for expressions or unknown output columns', async () => {
+  it('derives a scaled duration from its formal native operand, not its output name', async () => {
     const native = await ready();
-    expect(readRawSqlCaptureFields(capture(native, 'SELECT dur / 1000000 AS elapsed FROM slice', ['elapsed']))).toBeUndefined();
+    expect(readRawSqlCaptureFields(capture(native, 'SELECT dur / 1000000 AS elapsed FROM slice', ['elapsed']))?.elapsed)
+      .toMatchObject({unit: 'ms', origin: {kind: 'native_producer'}});
+    expect(readRawSqlCaptureFields(capture(native, 'SELECT dur / 1000000 AS unrelated FROM slice', ['unrelated']))?.unrelated.unit).toBe('ms');
+    expect(readRawSqlCaptureFields(capture(native, 'SELECT id / 1000000 AS elapsed_ms FROM slice', ['elapsed_ms']))).toBeUndefined();
+    expect(readRawSqlCaptureFields(capture(native, 'SELECT 42 / 1000000 AS dur_ms FROM slice', ['dur_ms']))).toBeUndefined();
     expect(readRawSqlCaptureFields(capture(native, 'SELECT dur FROM slice', ['unexpected']))).toBeUndefined();
     expect(readRawSqlCaptureFields(capture(native))).toBeDefined();
+  });
+
+  it.each([
+    ['COUNT(*)', 'count'], ['SUM(dur)', 'ns'], ['AVG(dur)', 'ns'], ['MIN(dur)', 'ns'], ['MAX(dur)', 'ns'],
+    ['SUM(MIN(ts + dur, 100000000) - MAX(ts, 0))', 'ns'],
+  ])('signs the sealed %s quantity without signing a native row identity', async (expression, unit) => {
+    const native = await ready();
+    const sql = `SELECT ${expression} AS quantity FROM slice`;
+    const result = capture(native, sql, ['quantity']);
+    const metadata = readRawSqlCaptureMetadata(result)!;
+    expect(metadata.fields.quantity).toMatchObject({unit, origin: {kind: 'native_producer',
+      definitionFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+      selectedSqlHash: createHash('sha256').update(sql).digest('hex').slice(0, 12)}});
+    expect(metadata.fields.quantity).not.toHaveProperty('clock');
+    expect(metadata.fields.quantity).not.toHaveProperty('timeRole');
+    expect(metadata.nativeRows).toEqual([]);
+    expect(readRawSqlCaptureMetadata(structuredClone(result))).toBeUndefined();
+    result.rows[0][0] = 43;
+    expect(readRawSqlCaptureMetadata(result)).toBeUndefined();
+  });
+
+  it('does not lend aggregate authority to an unpinned view, a changed epoch or unsupported CASE', async () => {
+    const native = await ready();
+    expect(readRawSqlCaptureFields(capture(native, 'SELECT COUNT(*) AS n FROM unknown_view', ['n']))).toBeUndefined();
+    const query = beginRawSqlNativeQuery(native.provenance, 'SELECT SUM(dur) AS quantity FROM slice');
+    invalidateRawSqlNativeProvenance(native.provenance);
+    const result = {columns: ['quantity'], rows: [[42]]};
+    sealRawSqlNativeQuery(query, result);
+    expect(readRawSqlCaptureMetadata(result)).toBeUndefined();
+    const other = await ready('case');
+    expect(beginRawSqlNativeQuery(other.provenance, 'SELECT SUM(CASE WHEN dur > 0 THEN 1 ELSE 0 END) AS n FROM slice')).toBeUndefined();
+    expect(readRawSqlNativeProvenanceSnapshot(other.provenance).status).toBe('tainted');
   });
 
   async function nativeResult(sql: string, outputColumns: string[], rows: unknown[][], traceId: string | undefined = 'trace-a') {

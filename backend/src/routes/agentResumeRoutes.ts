@@ -9,9 +9,10 @@ import { getTraceProcessorService } from '../services/traceProcessorService';
 import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
-import { getProviderService } from '../services/providerManager';
+import { getProviderService, ProviderStoreUnreadableError } from '../services/providerManager';
 import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteError } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   normalizeResourceOwner,
@@ -20,15 +21,22 @@ import {
 import {
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
+  continuityBreaksAfterRestore,
   getSnapshotRuntimeProviderSnapshotHash,
+  snapshotProvesNoPrivateContext,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
-import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
+import {registerSessionBackgroundKnowledgeReferences} from '../services/knowledge/sessionBackgroundKnowledgeRegistry';
+import {projectStoredAnalysisResultForOwner} from '../services/security/privateAnalysisProjection';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
   requireAiEnabledForHttp,
   sendAiDisabledErrorIfPresent,
 } from './aiCapabilityPolicyHttp';
+import {
+  decodePrivateContextJson,
+  privateContextRestrictsAudience,
+} from '../services/security/analysisPrivateContext';
 
 interface AssistantSessionStore {
   getSession(sessionId: string): any;
@@ -95,8 +103,11 @@ export function registerAgentResumeRoutes(
 
     try {
       const persistenceService = SessionPersistenceService.getInstance();
-
-      if (!persistenceService.hasSessionContext(sessionId)) {
+      // Runtime state comes back only from a session that proves it read no
+      // private material; any other session starts over, as a missing one does.
+      const snapshot = persistenceService.hasSessionContext(sessionId)
+        ? persistenceService.loadSessionStateSnapshot(sessionId) : null;
+      if (!snapshotProvesNoPrivateContext(snapshot)) {
         return res.status(404).json({
           success: false,
           error: 'Session not found in persistence',
@@ -155,7 +166,6 @@ export function registerAgentResumeRoutes(
         workspaceId: requestContext.workspaceId,
         userId: requestContext.userId,
       };
-      const snapshot = persistenceService.loadSessionStateSnapshot(sessionId);
       const snapshotRuntimeKind = getSnapshotRuntimeKind(snapshot);
       const snapshotProviderId = getSnapshotRuntimeProviderId(snapshot);
       const snapshotProviderHash = getSnapshotRuntimeProviderSnapshotHash(snapshot);
@@ -170,15 +180,22 @@ export function registerAgentResumeRoutes(
           hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
         });
       }
-      const restoredProviderSnapshotHash = resolveProviderRuntimeSnapshot(
-        providerSvc,
-        restoredProviderId,
-        restoredProviderId ? undefined : snapshotRuntimeKind,
-        providerScope,
-      ).snapshotHash;
+      const {snapshotHash: restoredProviderSnapshotHash, snapshot: {runtimeKind: restoredRuntimeKind}} =
+        resolveProviderRuntimeSnapshot(
+          providerSvc,
+          restoredProviderId,
+          restoredProviderId ? undefined : snapshotRuntimeKind,
+          providerScope,
+        );
       const providerSnapshotChanged = Boolean(
         snapshotProviderHash &&
         snapshotProviderHash !== restoredProviderSnapshotHash,
+      );
+      // A provider change is recorded here, since the resumed session already
+      // carries the new hash the next analysis sees.
+      const continuityBreaks = continuityBreaksAfterRestore(
+        snapshot?.continuityBreaks,
+        providerSnapshotChanged ? snapshotProviderHash : undefined,
       );
       const orchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
@@ -211,7 +228,7 @@ export function registerAgentResumeRoutes(
         turnCount: restoredContext.getAllTurns().length,
       });
       if (providerSnapshotChanged) {
-        logger.warn('AgentRoutes', 'Provider snapshot changed; SDK session state will not be restored', {
+        logger.warn('AgentRoutes', 'Provider snapshot changed since the snapshot was saved; continuity break recorded', {
           providerId: restoredProviderId,
           previousProviderSnapshotHash: snapshotProviderHash,
           nextProviderSnapshotHash: restoredProviderSnapshotHash,
@@ -221,14 +238,16 @@ export function registerAgentResumeRoutes(
       const restoredTurns = restoredContext.getAllTurns();
       const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
       const snapshotRun = snapshot?.lastRun ?? snapshot?.activeRun;
+      // A run serialized before markers existed carries none: it is unknown.
+      const snapshotRunPrivateContext = decodePrivateContextJson(snapshotRun?.privateContext);
       const storedFinal = snapshot?.finalResult;
       const storedFinalRunId = storedFinal?.completion?.runId ?? storedFinal?.analysisReceipt?.runId;
       const matchingStoredFinal = storedFinal?.sessionId === sessionId && snapshotRun?.runId &&
         (!storedFinalRunId || storedFinalRunId === snapshotRun.runId);
       const recoveredResult = matchingStoredFinal
-        ? (sessionUsesPrivateKnowledge(snapshot!)
-            ? projectOwnerAnalysisResult(sessionId, storedFinal!, snapshot?.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
-            : copyAnalysisResultForSnapshot(storedFinal!))
+        ? projectStoredAnalysisResultForOwner(privateContextRestrictsAudience(snapshotRunPrivateContext),
+            sessionId, storedFinal!,
+            snapshot?.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
         : deps.buildRecoveredResultFromContext(sessionId, restoredContext);
       const restoredRunSequence = Math.max(0, restoredTurns.length);
       const fallbackRestoredRun: AnalyzeSessionRunContext | undefined = restoredRunSequence > 0
@@ -240,15 +259,19 @@ export function registerAgentResumeRoutes(
             startedAt: latestTurn?.timestamp || persistedSession.createdAt,
             completedAt: persistedSession.updatedAt,
             status: 'completed',
+            privateContext: 'unknown',
           }
         : undefined;
-      const restoredRun = (snapshot?.lastRun || snapshot?.activeRun || fallbackRestoredRun) as AnalyzeSessionRunContext | undefined;
+      const restoredRun = snapshotRun
+        ? {...snapshotRun as AnalyzeSessionRunContext, privateContext: snapshotRunPrivateContext}
+        : fallbackRestoredRun;
       const restoredStatus = restoredSessionStatus(restoredRun, Boolean(recoveredResult));
       const owner = normalizeResourceOwner(persistedSession.metadata);
 
       // Unified snapshot restoration — all fields populated from single source
-      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture, engine state)
-      if (snapshot && !providerSnapshotChanged && typeof orchestrator.restoreFromSnapshot === 'function') {
+      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture).
+      // They hold no provider-bound engine state, so a provider snapshot change restores them unchanged.
+      if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
         orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
         logger.info('AgentRoutes', 'ClaudeRuntime Maps restored from snapshot', {
           notes: snapshot.analysisNotes.length,
@@ -262,6 +285,9 @@ export function registerAgentResumeRoutes(
         orchestrator.restoreArchitectureCache(effectiveTraceId, persistedSession.metadata.architectureSnapshot);
       }
 
+      // As a restore through analysis does, once nothing can fail any more:
+      // later snapshots read the session's knowledge references from this registry.
+      registerSessionBackgroundKnowledgeReferences(sessionId, snapshot?.backgroundKnowledgeReferences ?? []);
       deps.sessionStore.setSession(sessionId, {
         orchestrator,
         sessionId,
@@ -276,11 +302,21 @@ export function registerAgentResumeRoutes(
         workspaceId: owner.workspaceId,
         userId: owner.userId,
         providerId: restoredProviderId,
+        runtimeKind: restoredRuntimeKind,
         providerSnapshotHash: restoredProviderSnapshotHash,
         providerSnapshotChanged: providerSnapshotChanged || undefined,
         providerSnapshotChangeReason: providerSnapshotChanged
           ? 'provider_snapshot_hash_mismatch'
           : undefined,
+        // The next analysis compares its authorization with the one this
+        // session ran under; without it every resumed session looked changed
+        // and was replaced, losing its history.
+        analysisContextFingerprint: snapshot?.analysisContextFingerprint,
+        outputLanguage: snapshot?.outputLanguage,
+        codeAwareMode: snapshot?.codeAwareMode,
+        codebaseIds: snapshot?.codebaseIds,
+        knowledgeSourceIds: snapshot?.knowledgeSourceIds,
+        continuityBreaks: continuityBreaks.length > 0 ? continuityBreaks : undefined,
         lineage: snapshot?.lineage ?? persistedSession.metadata?.lineage,
         referenceTraceId: snapshot?.referenceTraceId,
         comparisonSource: snapshot?.comparisonSource,
@@ -351,15 +387,16 @@ export function registerAgentResumeRoutes(
             : null,
         },
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (sendAiDisabledErrorIfPresent(res, error)) {
         return;
       }
-      console.error('[AgentRoutes] Session restore failed:', error);
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to restore session',
-      });
+      // providers.json unreadable: the active or pinned provider is unknown.
+      sendRouteError(res, error, {
+        code: 'session_restore_failed',
+        error: 'Failed to restore session',
+        logLabel: '[AgentRoutes] Session restore failed',
+      }, [ProviderStoreUnreadableError]);
     }
   });
 }

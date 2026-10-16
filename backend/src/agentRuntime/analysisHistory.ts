@@ -6,6 +6,8 @@ import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
 import {AnalysisHistoryStore, parseAnalysisHistoryEvidenceLocator, type AnalysisHistoryScope} from '../services/analysisHistoryStore';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
+import {registerPrivateAnalysisQueryForEcho} from '../services/security/codeAwareOutputRegistry';
 
 /** Historical declarations and locators, never execution witnesses or verification authority. */
 export interface AnalysisHistoryEvidenceLocator {
@@ -204,9 +206,9 @@ export function createRuntimeAnalysisHistoryReader(input: {
     ? {tenantId, workspaceId, userId, sessionId: input.sessionId, traceId: input.traceId} : undefined;
   const fingerprint = input.options.analysisContextFingerprint;
   const binding = resolveHistoryBinding(input.options);
-  const defaultActivation = input.includeSourceDerived ?? Boolean(input.options.sourceUsePolicy &&
-    ((input.options.codeAwareMode && input.options.codeAwareMode !== 'off' && input.options.codebaseIds?.length) ||
-      input.options.knowledgeSourceIds?.length));
+  // A run with authorized source or private knowledge reads its own derived
+  // history; the exact fingerprint below is what partitions it.
+  const defaultActivation = input.includeSourceDerived ?? analysisHasPrivateContext(input.options);
   // A product's explicit activation survives physical runtime wrappers. A later
   // wrapper can restrict it, but cannot turn a dormant product run into source use.
   const includeSourceDerived = binding?.includeSourceDerived !== undefined
@@ -225,7 +227,15 @@ export function createRuntimeAnalysisHistoryReader(input: {
     return [...merged.values()];
   }});
   const resolved = binding?.reader ?? fallback;
-  return createAnalysisHistoryReader({getTurns: () => resolved.getTurns().filter(sourceAllowed), assertActive: input.assertActive});
+  return createAnalysisHistoryReader({getTurns: () => {
+    const turns = resolved.getTurns().filter(sourceAllowed);
+    // Every model-visible history read passes here, so strict output learns to
+    // replace an echo of a private question before the model can repeat it.
+    for (const turn of turns) {
+      if (turn.sourceDerived) registerPrivateAnalysisQueryForEcho(input.sessionId, turn.query);
+    }
+    return turns;
+  }, assertActive: input.assertActive});
 }
 
 /** Bounded prompts preserve native completion before prose; full text remains pageable. */

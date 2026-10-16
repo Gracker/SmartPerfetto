@@ -16,7 +16,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "0cb2fa2d6f901bf8616ac75e0fbffc4dd03b251023ff17f09c590d04740a1188",
+    "sha256": "352dff3dacdd3f39af29ab10b0ff23f23706fb61e384fddc9c8ea9b970b9398a",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -52,7 +52,7 @@
     "generator_version": 1,
     "seed": "main-thread-frame-work-v1",
     "output": "Trace/.generated/constructed/main-thread-frame-work/trace.pftrace",
-    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
   },
   "coverage": {
     "skills": [
@@ -534,6 +534,65 @@
           }
         ],
         "required_marker": "SmartPerfetto::CASE::main-thread-frame-work"
+      },
+      {
+        "id": "main_thread_frame_work-trace-window-exact-scope",
+        "type": "skill",
+        "target": "main_thread_frame_work",
+        "mode": "execution",
+        "source_file": "backend/skills/composite/main_thread_frame_work.skill.yaml",
+        "parameters": {
+          "package": "com.smartperfetto.fixture",
+          "start_ts": "${trace_start}",
+          "end_ts": "${trace_end}"
+        },
+        "required_steps": [
+          "system_context_window",
+          "system_cpu_context",
+          "system_task_summary",
+          "system_task_handoffs",
+          "main_thread_work_summary",
+          "main_thread_work_tasks",
+          "main_thread_work_sources",
+          "main_thread_work_cadence"
+        ],
+        "required_sql_steps": [
+          "system_context_window",
+          "main_thread_work_summary",
+          "main_thread_work_tasks",
+          "main_thread_work_sources",
+          "main_thread_work_cadence"
+        ],
+        "forced_sql_steps": [],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "main_thread_work_tasks",
+        "required_marker": "SmartPerfetto::CASE::main-thread-frame-work",
+        "exact_scope": {
+          "process_name": "com.smartperfetto.fixture",
+          "units": [
+            {
+              "unit": "main_thread_work_summary",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "main_thread_work_tasks",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "main_thread_work_sources",
+              "mode": "execution",
+              "min_rows": 0
+            },
+            {
+              "unit": "main_thread_work_cadence",
+              "mode": "execution",
+              "min_rows": 0
+            }
+          ]
+        }
       }
     ]
   }

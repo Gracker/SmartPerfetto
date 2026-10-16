@@ -133,7 +133,7 @@ publication stage in the M0-M9 Self-Evolution control plane:
 npm --prefix backend run test:external-issue-reporting
 npm --prefix backend run typecheck
 npm --prefix backend run validate:strategies
-npm --prefix backend run verify:e2e:deepseek-external-issue
+GLM_API_KEY=... npm --prefix backend run verify:e2e:glm-external-issue
 
 cd perfetto/ui
 node build.mjs --typecheck

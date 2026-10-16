@@ -4,7 +4,6 @@
 
 import crypto from 'crypto';
 
-import {resolveAuthConfig, resolveFeatureConfig} from '../config';
 import type {RequestContext, RequestContextAuthType} from '../middleware/auth';
 import {deriveServerSecret, resetServerSecretForTests} from '../security/serverSecret';
 
@@ -33,29 +32,12 @@ export interface TraceProcessorProxyCapability {
   expiresAt: number;
 }
 
-let devProcessSecret: Buffer | undefined;
-
 function capabilitySecret(): Buffer {
-  if (resolveAuthConfig(process.env).oidcEnabled) {
-    return deriveServerSecret({
-      purpose: 'trace-processor-capability',
-      preferredEnvKeys: [TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
-      minimumBytes: MIN_SECRET_BYTES,
-    });
-  }
-  const configured = [
-    process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
-    process.env.SMARTPERFETTO_SSO_COOKIE_SECRET,
-    process.env.SMARTPERFETTO_API_KEY,
-  ].find(value => typeof value === 'string' && value.length >= MIN_SECRET_BYTES);
-  if (configured) return Buffer.from(configured, 'utf8');
-  if (resolveFeatureConfig().enterprise) {
-    throw new Error(
-      `${TRACE_PROCESSOR_CAPABILITY_SECRET_ENV} must contain at least ${MIN_SECRET_BYTES} bytes in enterprise mode`,
-    );
-  }
-  devProcessSecret ??= crypto.randomBytes(32);
-  return devProcessSecret;
+  return deriveServerSecret({
+    purpose: 'trace-processor-capability',
+    preferredEnvKeys: [TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
+    minimumBytes: MIN_SECRET_BYTES,
+  });
 }
 
 function sign(encodedPayload: string): string {
@@ -132,7 +114,7 @@ export function resolveTraceProcessorProxyCapability(
   protocolHeader: string | string[] | undefined,
   leaseId: string,
   now = Date.now(),
-): RequestContext | null {
+): Omit<RequestContext, 'requestId'> | null {
   const protocols = splitProtocols(protocolHeader);
   const protocol = protocols.find(value => value.startsWith(CAPABILITY_PROTOCOL_PREFIX));
   if (!protocol) return null;
@@ -158,7 +140,6 @@ export function resolveTraceProcessorProxyCapability(
     authType: payload.authType,
     roles: ['analyst'],
     scopes: ['trace:read'],
-    requestId: `ws-cap-${crypto.randomUUID()}`,
     ...(payload.windowId ? {windowId: payload.windowId} : {}),
   };
 }
@@ -177,11 +158,12 @@ export function stripTraceProcessorCapabilityProtocols(
     .filter(value => !value.startsWith(CAPABILITY_PROTOCOL_PREFIX));
 }
 
+/** @internal Test seam. */
 export function resetTraceProcessorProxyCapabilitiesForTests(): void {
-  devProcessSecret = undefined;
   resetServerSecretForTests();
 }
 
+/** @internal Test seam. */
 export const __testing = {
   CAPABILITY_PROTOCOL_PREFIX,
   DEFAULT_CAPABILITY_TTL_MS,

@@ -3,7 +3,7 @@
 # This file is part of SmartPerfetto. See LICENSE for details.
 
 name: android_memory_v57_ai_diagnostics
-version: "1.0"
+version: "1.1"
 type: composite
 category: memory
 tier: B
@@ -28,13 +28,16 @@ prerequisites:
     - prelude.after_eof.views
     - android.memory.heap_graph.heap_graph_stats
     - android.memory.heap_graph.class_summary_tree
-    - android.memory.heap_profile.summary_tree
 
 inputs:
   - name: process_name
     type: string
     required: false
-    description: "Optional process name substring for heap graph rows"
+    description: "Optional process name, exact or name:* subprocess (fragments/heap_target_process.sql); scopes heap graph and heap profile rows"
+  - name: upid
+    type: integer
+    required: false
+    description: "Optional stable process identity"
   - name: graph_sample_ts
     type: timestamp
     required: false
@@ -60,9 +63,15 @@ steps:
       SELECT
         (SELECT COUNT(*) FROM android_heap_graph_stats) AS heap_graph_samples,
         (SELECT COUNT(*) FROM android_heap_graph_class_summary_tree) AS heap_graph_class_rows,
-        (SELECT COUNT(*) FROM heap_graph_object) AS heap_graph_objects,
-        (SELECT COUNT(*) FROM heap_profile_allocation) AS heap_profile_allocations,
-        (SELECT COUNT(*) FROM android_heap_profile_summary_tree) AS heap_profile_summary_rows
+        objects.heap_graph_objects,
+        objects.heap_graph_placeholder_objects,
+        (SELECT COUNT(*) FROM heap_profile_allocation) AS heap_profile_allocations
+      FROM (
+        SELECT
+          COUNT(*) AS heap_graph_objects,
+          COALESCE(SUM(self_size = -1), 0) AS heap_graph_placeholder_objects
+        FROM heap_graph_object
+      ) AS objects
     save_as: data_check
 
   - id: heap_graph_repeated_objects
@@ -103,12 +112,15 @@ steps:
         - name: single_object_cumulative_size
           label: "Retained Size"
           type: number
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       WITH input AS (
         SELECT MIN(MAX(COALESCE(${max_rows|40}, 40), 1), 500) AS max_rows
       )
       SELECT
-        COALESCE(p.name, printf('upid:%d', h.upid)) AS process_name,
+        d.process_name,
         printf('%d', h.graph_sample_ts) AS graph_sample_ts,
         h.name AS class_name,
         COALESCE(h.root_type, '') AS root_type,
@@ -118,10 +130,7 @@ steps:
         MIN(h.self_size) AS single_object_self_size,
         MIN(h.cumulative_size) AS single_object_cumulative_size
       FROM android_heap_graph_class_summary_tree AS h
-      LEFT JOIN process AS p
-        ON p.upid = h.upid
-      WHERE ('${process_name|}' = '' OR LOWER(COALESCE(p.name, '')) GLOB '*' || LOWER('${process_name|}') || '*')
-        AND (${graph_sample_ts} IS NULL OR h.graph_sample_ts = ${graph_sample_ts})
+      JOIN heap_graph_dump_scope AS d USING (upid, graph_sample_ts)
       GROUP BY h.upid, h.graph_sample_ts, h.name, h.root_type
       ORDER BY path_count DESC, total_objects DESC, total_retained_mb DESC
       LIMIT (SELECT max_rows FROM input)
@@ -159,101 +168,55 @@ steps:
         - name: reachable_count
           label: "Reachable"
           type: number
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       WITH input AS (
         SELECT MIN(MAX(COALESCE(${max_rows|40}, 40), 1), 500) AS max_rows
       )
       SELECT
-        COALESCE(p.name, printf('upid:%d', hgo.upid)) AS process_name,
+        d.process_name,
         printf('%d', hgo.graph_sample_ts) AS graph_sample_ts,
         hgc.name AS class_name,
         hgo.self_size AS single_object_self_size,
         COUNT(*) AS occurrence_count,
         ROUND(SUM(hgo.self_size) / 1048576.0, 2) AS total_self_mb,
         SUM(CASE WHEN hgo.reachable THEN 1 ELSE 0 END) AS reachable_count
-      FROM heap_graph_object AS hgo
+      -- Real objects of scoped dumps only (no self_size = -1 placeholders).
+      FROM heap_graph_scoped_objects AS hgo
+      JOIN heap_graph_dump_scope AS d USING (upid, graph_sample_ts)
       JOIN heap_graph_class AS hgc
         ON hgo.type_id = hgc.id
-      LEFT JOIN process AS p
-        ON p.upid = hgo.upid
-      WHERE ('${process_name|}' = '' OR LOWER(COALESCE(p.name, '')) GLOB '*' || LOWER('${process_name|}') || '*')
-        AND (${graph_sample_ts} IS NULL OR hgo.graph_sample_ts = ${graph_sample_ts})
       GROUP BY hgo.upid, hgo.graph_sample_ts, hgc.name, hgo.self_size
       ORDER BY occurrence_count DESC, total_self_mb DESC
       LIMIT (SELECT max_rows FROM input)
     save_as: heap_graph_size_frequencies
 
+  # Per-(process, heap) heapprofd attribution lives in one Skill: Java
+  # (com.android.art) profiles record no frees and are churn-only there.
   - id: heap_profile_hotspots
-    type: atomic
+    type: skill
     name: "Heap profile allocation hotspots"
+    skill: native_heap_breakdown
     optional: true
-    condition: "data_check.data[0]?.heap_profile_summary_rows > 0"
+    condition: "data_check.data[0]?.heap_profile_allocations > 0"
+    params:
+      min_size_mb: "${min_size_mb}"
+      max_rows: "${max_rows}"
+      process_name: "${process_name}"
+      upid: "${upid}"
     display:
       level: detail
       layer: list
-      title: "Heap Profile Allocation Hotspots"
-      columns:
-        - name: scope
-          label: "Scope"
-          type: string
-        - name: name
-          label: "Frame"
-          type: string
-        - name: mapping_name
-          label: "Mapping"
-          type: string
-        - name: self_size_mb
-          label: "Self Retained(MB)"
-          type: number
-        - name: cumulative_size_mb
-          label: "Cumulative Retained(MB)"
-          type: number
-        - name: self_alloc_mb
-          label: "Self Alloc(MB)"
-          type: number
-        - name: cumulative_alloc_mb
-          label: "Cumulative Alloc(MB)"
-          type: number
-        - name: allocation_signal
-          label: "Signal"
-          type: string
-        - name: source_file
-          label: "Source"
-          type: string
-    sql: |
-      WITH input AS (
-        SELECT
-          COALESCE(${min_size_mb|1}, 1) AS min_size_mb,
-          MIN(MAX(COALESCE(${max_rows|40}, 40), 1), 500) AS max_rows
-      )
-      SELECT
-        'all_profiled_processes' AS scope,
-        COALESCE(name, '[unknown]') AS name,
-        COALESCE(mapping_name, '') AS mapping_name,
-        ROUND(self_size / 1048576.0, 2) AS self_size_mb,
-        ROUND(cumulative_size / 1048576.0, 2) AS cumulative_size_mb,
-        ROUND(self_alloc_size / 1048576.0, 2) AS self_alloc_mb,
-        ROUND(cumulative_alloc_size / 1048576.0, 2) AS cumulative_alloc_mb,
-        CASE
-          WHEN self_size >= input.min_size_mb * 1048576.0 THEN 'unreleased_leaf_retention'
-          WHEN cumulative_size >= input.min_size_mb * 1048576.0 THEN 'unreleased_cumulative_retention'
-          WHEN cumulative_alloc_size >= input.min_size_mb * 1048576.0 * 5 THEN 'allocation_churn'
-          ELSE 'inspect_if_relevant'
-        END AS allocation_signal,
-        COALESCE(source_file, '') AS source_file
-      FROM android_heap_profile_summary_tree, input
-      WHERE self_size >= input.min_size_mb * 1048576.0
-        OR cumulative_size >= input.min_size_mb * 1048576.0
-        OR cumulative_alloc_size >= input.min_size_mb * 1048576.0 * 5
-      ORDER BY self_size DESC, cumulative_size DESC, cumulative_alloc_size DESC
-      LIMIT (SELECT max_rows FROM input)
+      title: "Heap Profile Allocation Hotspots (per process × heap)"
     save_as: heap_profile_hotspots
 
   - id: no_data_contract
     type: atomic
     name: "Memory v57 no-data contract"
     optional: true
-    condition: "data_check.data[0]?.heap_graph_class_rows === 0 && data_check.data[0]?.heap_graph_objects === 0 && data_check.data[0]?.heap_profile_summary_rows === 0"
+    condition: "data_check.data[0]?.heap_graph_class_rows === 0 && data_check.data[0]?.heap_graph_objects === 0 && data_check.data[0]?.heap_profile_allocations === 0"
     display:
       level: summary
       layer: overview
@@ -282,6 +245,6 @@ output:
     - name: heap_graph_repeated_objects
       description: "Repeated class/root paths translated from upstream query_most_repeated_objects.sql"
     - name: heap_graph_size_frequencies
-      description: "Object size frequency rows translated from upstream query_size_frequencies.sql"
+      description: "Object size frequency rows translated from upstream query_size_frequencies.sql; self_size = -1 placeholder objects of incomplete dumps are excluded (data_check.heap_graph_placeholder_objects counts them)"
     - name: heap_profile_hotspots
-      description: "Heap profile summary-tree allocation hotspots for Java/native allocation profile workflows"
+      description: "native_heap_breakdown per (process, heap): inventory plus hotspots attributed to the first app/library frame above allocator frames; com.android.art is allocation churn only"

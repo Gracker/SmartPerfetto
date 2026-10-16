@@ -451,6 +451,62 @@ describe('CapabilityManifest contract', () => {
     );
   });
 
+  it.each(['probe_module_unavailable', 'probe_query_failed'] as const)(
+    'maps an unprobed %s result to an unprobed source, not a missing schema',
+    reasonCode => {
+      const input = baseInput();
+      input.legacyProbe.missingConfig[1].reasonCode = reasonCode;
+      const entry = buildCapabilityManifest(input).content.capabilities
+        .find(capability => capability.id === 'startup');
+      expect(entry).toEqual({
+        id: 'startup',
+        displayName: 'Startup',
+        primaryTable: 'android_startups',
+        status: 'missing',
+        sourceState: 'unprobed',
+        reasonCode,
+      });
+    },
+  );
+
+  it('rejects a reason code that contradicts its bucket or row estimate', () => {
+    const routineCode = baseInput();
+    (routineCode.legacyProbe.missingConfig[1] as unknown as Record<string, unknown>).reasonCode = 'schema_missing';
+    expectErrorCode(routineCode, 'capability_manifest_invalid_reason_code:missingConfig:startup');
+
+    const wrongBucket = baseInput();
+    const [startup] = wrongBucket.legacyProbe.missingConfig.splice(1, 1);
+    wrongBucket.legacyProbe.insufficient.push({
+      ...startup, status: 'insufficient_or_scene_absent', rowEstimate: 1, reasonCode: 'probe_query_failed',
+    });
+    expectErrorCode(wrongBucket, 'capability_manifest_invalid_reason_code:insufficient:startup');
+
+    const unprobedWithRows = baseInput();
+    unprobedWithRows.legacyProbe.missingConfig[0].reasonCode = 'probe_query_failed';
+    expectErrorCode(unprobedWithRows, 'capability_manifest_invalid_row_estimate:missingConfig:frame_rendering');
+  });
+
+  it('accepts raw-event rows only from a declared fallback, and records the fallback query', () => {
+    const fallback = {table: 'slice', probeSql: "SELECT COUNT(*) AS cnt FROM (SELECT 1 FROM slice WHERE name GLOB 'x*' LIMIT 3)"};
+    const undeclared = baseInput();
+    undeclared.legacyProbe.missingConfig = [undeclared.legacyProbe.missingConfig[0]];
+    undeclared.legacyProbe.available = [{...legacyResult('startup', 'available', 'android_startups', 3),
+      rowSource: 'raw_event_fallback'}];
+    expectErrorCode(undeclared, 'capability_manifest_invalid_row_source:available:startup');
+
+    const declared = baseInput();
+    declared.definitions[1] = {...declared.definitions[1], rawEventFallback: fallback};
+    declared.legacyProbe.missingConfig = [declared.legacyProbe.missingConfig[0]];
+    declared.legacyProbe.available = [{...legacyResult('startup', 'available', 'android_startups', 3),
+      rowSource: 'raw_event_fallback'}];
+    const entry = buildCapabilityManifest(declared).content.capabilities.find(cap => cap.id === 'startup');
+    expect(entry).toMatchObject({status: 'available', rowSource: 'raw_event_fallback', rawEventFallback: fallback});
+
+    const badSql = baseInput();
+    badSql.definitions[1] = {...badSql.definitions[1], rawEventFallback: {table: 'slice', probeSql: 'DELETE FROM slice'}};
+    expectErrorCode(badSql, 'capability_manifest_invalid_raw_event_fallback:startup');
+  });
+
   it('rejects a primary-table mismatch', () => {
     const input = baseInput();
     input.legacyProbe.missingConfig[0].primaryTable = 'wrong_table';

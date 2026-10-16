@@ -10,6 +10,7 @@ import {
   type AnalysisResultSnapshot,
 } from '../../../types/multiTraceComparison';
 import { rankSnapshotSimilarityHints } from '../similarityMatcher';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 function snapshot(overrides: Partial<AnalysisResultSnapshot> = {}): AnalysisResultSnapshot {
   const id = overrides.id ?? 'snapshot-a';
@@ -22,6 +23,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot> = {}): AnalysisResu
     sessionId: `${id}-session`,
     runId: `${id}-run`,
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType,
     title: id,
     userQuery: 'analyze',

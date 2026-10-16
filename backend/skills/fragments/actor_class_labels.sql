@@ -1,5 +1,8 @@
 -- SPDX-License-Identifier: AGPL-3.0-or-later
 -- Copyright (C) 2024-2026 Gracker (Chris)
+-- process-identity: label-only
+-- (identityGate: its name comparisons label actors, they select no target
+-- process, so they do not make a consuming Skill verify process identity.)
 
 -- Inputs: ${package}, ${process_name} (string parameters; empty when no
 -- target process was selected). Requires the android.process_metadata

@@ -17,6 +17,12 @@ import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpr
 import type { SkillPackAssetKind, SkillPackManifestV1 } from '../../services/skillPacks/skillPackTypes';
 import { SKILL_PACK_MANIFEST_FILE } from '../../services/skillPacks/skillPackManifest';
 import skillPackRoutes from '../skillPackRoutes';
+import { SkillPackInstallService } from '../../services/skillPacks/skillPackInstallService';
+import { SkillPackRequestError } from '../../services/skillPacks/skillPackRequestError';
+
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 interface AssetInput {
   kind: SkillPackAssetKind;
@@ -53,7 +59,7 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use(
@@ -63,7 +69,7 @@ function makeApp(): express.Express {
     requireWorkspaceRouteContext,
     skillPackRoutes,
   );
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function ssoHeaders(
@@ -152,6 +158,7 @@ describe('skill pack workspace routes', () => {
   });
 
   afterEach(async () => {
+    await loopbackServers.close();
     restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
     restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnv.enterpriseDbPath);
     restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalEnv.backendDataDir);
@@ -160,7 +167,7 @@ describe('skill pack workspace routes', () => {
   });
 
   it('previews, installs, lists, disables, and removes a workspace pack', async () => {
-    const app = makeApp();
+    const app = await makeApp();
     const preview = await ssoHeaders(
       request(app).post('/api/workspaces/workspace-a/skill-packs/preview').send({ sourcePath: packDir }),
     );
@@ -210,9 +217,50 @@ describe('skill pack workspace routes', () => {
     await expect(fs.stat(sourcePath)).rejects.toThrow();
   });
 
+  it('answers an unknown pack with its reason and a storage failure with fixed text', async () => {
+    const missing = await ssoHeaders(
+      request(await makeApp()).patch('/api/workspaces/workspace-a/skill-packs/no-such-pack').send({ enabled: false }),
+    );
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({
+      success: false,
+      code: 'skill_pack_not_found',
+      error: 'skill_pack_not_found',
+      requestId: expect.any(String),
+    });
+
+    const conflict = jest.spyOn(SkillPackInstallService.prototype, 'installSkillPack')
+      .mockRejectedValue(new SkillPackRequestError('installed_pack_content_hash_mismatch', 409));
+    try {
+      const reinstall = await ssoHeaders(
+        request(await makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({ sourcePath: packDir }),
+      );
+      expect(reinstall.status).toBe(409);
+      expect(reinstall.body.code).toBe('installed_pack_content_hash_mismatch');
+    } finally {
+      conflict.mockRestore();
+    }
+
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const install = jest.spyOn(SkillPackInstallService.prototype, 'installSkillPack')
+      .mockRejectedValue(new Error('skill_pack_persist_failed'));
+    try {
+      const failed = await ssoHeaders(
+        request(await makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({ sourcePath: packDir }),
+      );
+      expect(failed.status).toBe(500);
+      expect(failed.body).toMatchObject({ success: false, code: 'skill_pack_operation_failed' });
+      expect(failed.text).not.toContain('skill_pack_persist_failed');
+      expect(errorLog.mock.calls.flat()).toContainEqual(new Error('skill_pack_persist_failed'));
+    } finally {
+      install.mockRestore();
+      errorLog.mockRestore();
+    }
+  });
+
   it('requires runtime manage permission', async () => {
     const res = await ssoHeaders(
-      request(makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({ sourcePath: packDir }),
+      request(await makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({ sourcePath: packDir }),
       { role: 'analyst', scopes: 'trace:read' },
     );
 
@@ -222,7 +270,7 @@ describe('skill pack workspace routes', () => {
 
   it('rejects malformed route bodies', async () => {
     const res = await ssoHeaders(
-      request(makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({}),
+      request(await makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({}),
     );
 
     expect(res.status).toBe(400);

@@ -5,7 +5,6 @@
 import { describe, expect, it } from '@jest/globals';
 import type { AnalysisPlanV3 } from '../types';
 import {
-  countDispatchedToolCalls,
   findCompletedPhaseEvidenceGaps,
   recordPlanToolCall,
   recordPlanOrPrePlanToolCall,
@@ -16,7 +15,6 @@ import {
 } from '../planToolCallRecorder';
 import {getAnalysisPlanCompletionStatus} from '../planCompletionStatus';
 import {verifyPlanAdherence} from '../../agentRuntime/engines/claude/claudeVerifier';
-import {getSourceLookupCodeReferences} from '../../services/codebase/sourceLookupTools';
 
 describe('producer-owned tool facts', () => {
   it.each([true, false, undefined])('keeps typed success=%s independent of decorated content', success => {
@@ -56,23 +54,23 @@ describe('producer-owned tool facts', () => {
   });
 });
 
-describe('optional plan completion across budgets', () => {
-  it.each([true, false])('has no missing-plan obligation with quickMode=%s', quickMode => {
+describe('optional plan completion', () => {
+  it('has no missing-plan obligation', () => {
     for (const plan of [null, undefined]) {
-      expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+      expect(getAnalysisPlanCompletionStatus(plan))
         .toEqual({complete: true, hasPlan: false, pendingPhases: []});
     }
   });
 
-  it.each([true, false])('keeps empty or malformed submitted plans incomplete with quickMode=%s', quickMode => {
+  it('keeps empty or malformed submitted plans incomplete', () => {
     for (const phases of [[], undefined, {}, [null], [{id: 'p1'}]]) {
       const plan = {phases, successCriteria: 'Resolve', submittedAt: 1, toolCallLog: []} as unknown as AnalysisPlanV3;
-      expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+      expect(getAnalysisPlanCompletionStatus(plan))
         .toMatchObject({complete: false, hasPlan: true});
     }
   });
 
-  it.each([true, false])('requires actual successful evidence for submitted plans with quickMode=%s', quickMode => {
+  it('requires actual successful evidence for submitted plans', () => {
     const plan: AnalysisPlanV3 = {
       phases: [{id: 'p1', name: 'Inspect', goal: 'Read requested evidence', status: 'completed',
         summary: 'The evidence was inspected.', expectedTools: ['execute_sql']}],
@@ -81,14 +79,42 @@ describe('optional plan completion across budgets', () => {
     recordPlanOrPrePlanToolCall({current: plan}, {
       toolName: 'execute_sql', toolCallId: 'denied', resultFacts: {success: false, planPhaseId: 'p1'},
     });
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+    expect(getAnalysisPlanCompletionStatus(plan))
       .toMatchObject({complete: false, hasPlan: true});
     recordPlanOrPrePlanToolCall({current: plan}, {
       toolName: 'execute_sql', toolCallId: 'success', resultFacts: {success: true, planPhaseId: 'p1'},
     });
     plan.phases[0].status = 'completed';
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+    expect(getAnalysisPlanCompletionStatus(plan))
       .toMatchObject({complete: true, hasPlan: true});
+  });
+
+  it('closes a skipped phase only with a valid disposition', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [
+        {id: 'p1', name: 'Review', goal: 'Assess available evidence', expectedTools: [], status: 'completed'},
+        {id: 'p2', name: 'Optional follow-up', goal: 'Resolve additional evidence', expectedTools: [],
+          status: 'skipped', skipDisposition: {kind: 'evidence_unavailable'}},
+      ],
+      successCriteria: 'Answer within available evidence', submittedAt: 1, toolCallLog: [],
+    };
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({complete: true, pendingPhases: []});
+
+    delete plan.phases[1].skipDisposition;
+    expect(getAnalysisPlanCompletionStatus(plan).pendingPhases.map(phase => phase.id)).toEqual(['p2']);
+  });
+
+  it('reports the missing skill call of a completed phase as an evidence gap', () => {
+    const status = getAnalysisPlanCompletionStatus({
+      phases: [{
+        id: 'p-frame-detail', name: '代表帧深钻', goal: '调用 jank_frame_detail 获取代表掉帧调用栈',
+        expectedTools: ['invoke_skill'], expectedCalls: [{tool: 'invoke_skill', skillId: 'jank_frame_detail'}],
+        status: 'completed', summary: '已完成代表帧根因分析，并整理出主线程阻塞调用栈证据。',
+      }],
+      successCriteria: 'Resolve', submittedAt: 1, toolCallLog: [],
+    });
+    expect(status).toMatchObject({complete: false, pendingPhases: [expect.objectContaining({id: 'p-frame-detail'})]});
+    expect(status.evidenceGaps?.[0].missingExpectedCalls).toEqual([{tool: 'invoke_skill', skillId: 'jank_frame_detail'}]);
   });
 });
 
@@ -146,35 +172,33 @@ describe('actual call identity and evidence completion', () => {
     expect(plan.phases[1].status).toBe('in_progress');
     expect(updates).toEqual(['p1']);
     expect(plan.phases[0].summary).toBeUndefined();
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 15}).pendingPhases.map(phase => phase.id))
+    expect(getAnalysisPlanCompletionStatus(plan).pendingPhases.map(phase => phase.id))
       .toEqual(['p2']);
     recordPlanOrPrePlanToolCall(tracker, {toolName: 'execute_sql', toolCallId: 'current', resultFacts: {success: true, planPhaseId: 'p2'}});
     plan.phases[1].status = 'completed';
     plan.phases[1].summary = 'The requested current-phase evidence was collected.';
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 15}).complete).toBe(true);
+    expect(getAnalysisPlanCompletionStatus(plan).complete).toBe(true);
     expect(verifyPlanAdherence(plan).filter(issue => issue.type === 'missing_reasoning')).toEqual([]);
     const backfill = plan.toolCallLog.find(call => call.toolCallId === 'backfill')!;
     backfill.success = false;
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 15}).pendingPhases.map(phase => phase.id))
+    expect(getAnalysisPlanCompletionStatus(plan).pendingPhases.map(phase => phase.id))
       .toEqual(['p1']);
   });
 
-  it('deduplicates real IDs before counting, including replay and trimmed log history', () => {
+  it('deduplicates real IDs, including replay and trimmed log history', () => {
     const tracker: AnalysisPlanTracker = {current: null};
     const input = (toolCallId: string) => ({toolName: 'execute_sql', input: {sql: 'SELECT 1'}, resultFacts: {success: true}, toolCallId});
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeDefined();
     tracker.current = planWithTwoPhases();
     replayPrePlanToolCalls(tracker);
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeUndefined();
     expect(tracker.current.toolCallLog).toHaveLength(1);
     for (let index = 0; index < 110; index++) recordPlanOrPrePlanToolCall(tracker, input(`call-${index}`));
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
-    expect(countDispatchedToolCalls(tracker)).toBe(111);
+    // The first call has been trimmed from the log; its ID is still remembered.
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeUndefined();
     expect(tracker.current.toolCallLog).toHaveLength(100);
     resetPrePlanToolCallsForNewRun(tracker);
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeDefined();
   });
 
   it.each([undefined, '', 'unknown'])('does not merge two calls with unavailable ID %s', toolCallId => {
@@ -182,7 +206,7 @@ describe('actual call identity and evidence completion', () => {
     const input = {toolName: 'execute_sql', resultFacts: {success: true}, toolCallId};
     recordPlanOrPrePlanToolCall(tracker, input);
     recordPlanOrPrePlanToolCall(tracker, input);
-    expect(countDispatchedToolCalls(tracker)).toBe(2);
+    expect(tracker.prePlanToolCallLog).toHaveLength(2);
   });
 });
 
@@ -251,102 +275,6 @@ function createPlan(): AnalysisPlanV3 {
 }
 
 describe('recordPlanToolCall', () => {
-  it('records source-use decisions as control calls without satisfying source or trace evidence', () => {
-    const plan: AnalysisPlanV3 = {
-      phases: [
-        {
-          id: 'source',
-          name: 'Source decision',
-          goal: 'Investigate the trace-supported source candidate',
-          expectedTools: ['search_codebase'],
-          expectedCalls: [{tool: 'search_codebase'}],
-          status: 'completed',
-          completedAt: 10,
-          summary: 'Recorded a bounded source-use control decision for this run.',
-        },
-        {
-          id: 'trace',
-          name: 'Trace evidence',
-          goal: 'Collect trace evidence with the required Skill',
-          expectedTools: ['invoke_skill'],
-          expectedCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}],
-          status: 'completed',
-          completedAt: 20,
-          summary: 'Attempted to close the trace phase without running its Skill.',
-        },
-      ],
-      successCriteria: 'Control calls remain separate from evidence calls',
-      submittedAt: 1,
-      toolCallLog: [],
-    };
-
-    const record = recordPlanToolCall(plan, {
-      toolName: 'record_source_use_decision',
-      input: {
-        status: 'not_needed',
-        reason: 'Trace evidence already resolves the question without source lookup.',
-      },
-      resultText: JSON.stringify({success: true, status: 'not_needed'}),
-      returnedCodeReferences: true,
-      timestamp: 30,
-    });
-
-    expect(record).toMatchObject({
-      toolName: 'record_source_use_decision',
-      planCapability: 'control',
-      matchedPhaseId: 'source',
-      success: true,
-    });
-    expect(record).not.toHaveProperty('returnedCodeReferences');
-    expect(findCompletedPhaseEvidenceGaps(plan).map(gap => gap.phase.id))
-      .toEqual(['source', 'trace']);
-  });
-
-  it('retains pre-plan source-use controls without replaying them as evidence', () => {
-    const tracker: {current: AnalysisPlanV3 | null; prePlanToolCallLog?: AnalysisPlanV3['toolCallLog']} = {
-      current: null,
-    };
-    const recorded = recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'record_source_use_decision',
-      input: {
-        status: 'unverified',
-        reason: 'No stable source anchor can be verified within the bounded run.',
-      },
-      resultText: JSON.stringify({success: true, status: 'unverified'}),
-    });
-
-    expect(recorded).toMatchObject({planCapability: 'control'});
-    expect(tracker.prePlanToolCallLog).toHaveLength(1);
-
-    const plan: AnalysisPlanV3 = {
-      phases: [{
-        id: 'trace',
-        name: 'Trace evidence',
-        goal: 'Collect trace-only evidence',
-        expectedTools: ['execute_sql'],
-        status: 'completed',
-        completedAt: 10,
-        summary: 'Closed only after collecting the required trace SQL evidence.',
-      }],
-      successCriteria: 'Trace evidence remains mandatory',
-      submittedAt: 1,
-      toolCallLog: [{
-        toolName: 'execute_sql',
-        timestamp: 5,
-        success: true,
-        matchedPhaseId: 'trace',
-      }],
-    };
-    tracker.current = plan;
-
-    expect(replayPrePlanToolCalls(tracker)).toBe(1);
-    expect(plan.toolCallLog).toContainEqual(expect.objectContaining({
-      toolName: 'record_source_use_decision',
-      planCapability: 'control',
-    }));
-    expect(findCompletedPhaseEvidenceGaps(plan)).toEqual([]);
-  });
-
   it('keeps dispatch attribution without using it to fill a different completed phase gap', () => {
     const plan = createPlan();
 
@@ -621,131 +549,6 @@ describe('recordPlanToolCall', () => {
     expect(record?.matchedPhaseId).toBe('p1');
   });
 
-  it('records whether a source lookup actually returned a CodeRef', () => {
-    const plan = createPlan();
-    const withCodeRef = recordPlanToolCall(plan, {
-      toolName: 'lookup_app_source',
-      resultText: JSON.stringify({content: [{
-        type: 'text',
-        text: JSON.stringify({
-          success: true,
-          result: {
-            hits: [{
-              chunkId: 'chunk-1',
-              metadata: {
-                filePath: 'app/src/main/java/demo/StartupHooks.kt',
-                lineRange: {start: 10, end: 20},
-              },
-            }],
-          },
-        }),
-      }]}),
-    });
-    const withoutCodeRef = recordPlanToolCall(plan, {
-      toolName: 'lookup_app_source',
-      resultText: JSON.stringify({success: true, result: {hits: []}}),
-    });
-    const detectedBeforePrivacyProjection = recordPlanToolCall(plan, {
-      toolName: 'lookup_app_source',
-      resultText: JSON.stringify({success: true, chunkRefs: [{chunkId: 'chunk-1'}]}),
-      returnedCodeReferences: true,
-    });
-    const withRawPublicCodeRef = recordPlanToolCall(plan, {
-      toolName: 'lookup_aosp_source',
-      resultText: JSON.stringify({
-        success: true,
-        results: [{chunk: {
-          chunkId: 'aosp-chunk-1',
-          filePath: 'frameworks/base/core/java/android/app/ActivityThread.java',
-        }}],
-      }),
-    });
-
-    expect(withCodeRef).toMatchObject({
-      success: true,
-      returnedCodeReferences: true,
-    });
-    expect(withRawPublicCodeRef).toMatchObject({returnedCodeReferences: true});
-    expect(detectedBeforePrivacyProjection).toMatchObject({returnedCodeReferences: true});
-    expect(withoutCodeRef).toMatchObject({success: true});
-    expect(withoutCodeRef).not.toHaveProperty('returnedCodeReferences');
-  });
-
-  it('keeps locatable source metadata ephemeral while persisting only the audit boolean', () => {
-    const plan = createPlan();
-    const reference = {
-      chunkId: 'chunk-private',
-      filePath: 'app/src/main/java/demo/StartupHooks.kt',
-      lineRange: {start: 10, end: 20},
-    };
-
-    const record = recordPlanToolCall(plan, {
-      toolName: 'lookup_app_source',
-      resultText: JSON.stringify({success: true, chunkRefs: [{chunkId: reference.chunkId}]}),
-      returnedCodeReferenceHints: [reference],
-    });
-
-    expect(record).toMatchObject({success: true, returnedCodeReferences: true});
-    expect(JSON.stringify(record)).not.toContain(reference.filePath);
-    expect(JSON.stringify(plan)).not.toContain(reference.filePath);
-    expect(getSourceLookupCodeReferences(plan)).toEqual([reference]);
-  });
-
-  it('records on-demand source references as ephemeral CodeRef evidence', () => {
-    const plan = createPlan();
-    const reference = {
-      referenceId: 'source-a1b2c3',
-      filePath: 'app/src/main/java/demo/StartupHooks.kt',
-      lineRange: {start: 42, end: 48},
-    };
-
-    const record = recordPlanToolCall(plan, {
-      toolName: 'read_codebase_file',
-      resultText: '{"success":true}',
-      returnedCodeReferenceHints: [reference],
-    });
-
-    expect(record).toMatchObject({success: true, returnedCodeReferences: true});
-    expect(JSON.stringify(plan)).not.toContain(reference.filePath);
-    expect(getSourceLookupCodeReferences(plan)).toEqual([reference]);
-  });
-
-  it('moves ephemeral source metadata onto a plan when a pre-plan lookup is replayed', () => {
-    const tracker: {current: AnalysisPlanV3 | null; prePlanToolCallLog?: AnalysisPlanV3['toolCallLog']} = {
-      current: null,
-    };
-    const reference = {
-      chunkId: 'chunk-pre-plan',
-      filePath: 'app/src/main/java/demo/StartupHooks.kt',
-      lineRange: {start: 30, end: 40},
-    };
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'lookup_app_source',
-      resultText: '{"success":true}',
-      returnedCodeReferenceHints: [reference],
-    });
-
-    const plan: AnalysisPlanV3 = {
-      phases: [{
-        id: 'p-source',
-        name: '源码定位',
-        goal: '定位启动源码',
-        expectedTools: ['lookup_app_source'],
-        expectedCalls: [{tool: 'lookup_app_source'}],
-        status: 'completed',
-        summary: '源码定位完成。',
-      }],
-      successCriteria: '解释启动瓶颈',
-      submittedAt: 1,
-      toolCallLog: [],
-    };
-    tracker.current = plan;
-
-    expect(replayPrePlanToolCalls(tracker)).toBe(1);
-    expect(getSourceLookupCodeReferences(plan)).toEqual([reference]);
-    expect(JSON.stringify(plan)).not.toContain(reference.filePath);
-  });
-
   it('replays pre-plan comparison context calls into the accepted raw trace pair plan', () => {
     const tracker: { current: AnalysisPlanV3 | null; prePlanToolCallLog?: AnalysisPlanV3['toolCallLog'] } = {
       current: null,
@@ -1017,7 +820,7 @@ describe('recordPlanToolCall', () => {
         missingGenericToolEvidence: true,
       }),
     ]);
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: false,
       pendingPhases: [plan.phases[0]],
     });
@@ -1050,10 +853,10 @@ describe('recordPlanToolCall', () => {
       recordPlanToolCall(plan, {toolName, resultFacts: {success: true, planPhaseId: 'p1'}});
     }
     expect(findCompletedPhaseEvidenceGaps(plan)).toEqual([]);
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10}).complete).toBe(true);
+    expect(getAnalysisPlanCompletionStatus(plan).complete).toBe(true);
   });
 
-  it.each(['pending', 'attempted'])('keeps plan completion independent of a pending source ledger: %s', status => {
+  it('keeps plan completion independent of the source-use ledger', () => {
     const plan: AnalysisPlanV3 = {
       phases: [{
         id: 'source',
@@ -1074,9 +877,8 @@ describe('recordPlanToolCall', () => {
         matchedPhaseId: 'source',
       }],
     };
-    plan.sourceUseDecisionStatus = status as AnalysisPlanV3['sourceUseDecisionStatus'];
 
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: true,
       pendingPhases: [],
     });
@@ -1106,7 +908,6 @@ describe('recordPlanToolCall', () => {
       ],
       successCriteria: 'Never return an empty pending loop',
       submittedAt: 1,
-      sourceUseDecisionStatus: 'pending',
       toolCallLog: [{
         toolName: 'execute_sql',
         timestamp: 10,
@@ -1115,7 +916,7 @@ describe('recordPlanToolCall', () => {
       }],
     };
 
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: true,
       pendingPhases: [],
     });
@@ -1156,7 +957,6 @@ describe('recordPlanToolCall', () => {
       ],
       successCriteria: 'Preserve every actionable source phase in plan order',
       submittedAt: 1,
-      sourceUseDecisionStatus: 'attempted',
       toolCallLog: [
         {
           toolName: 'search_codebase',
@@ -1179,43 +979,11 @@ describe('recordPlanToolCall', () => {
       ],
     };
 
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: true,
       pendingPhases: [],
     });
   });
-
-  it.each(['located', 'corroborated', 'not_needed', 'search_incomplete', 'unverified'])(
-    'allows final completion after source use resolves as %s',
-    status => {
-      const plan: AnalysisPlanV3 = {
-        phases: [{
-          id: 'source',
-          name: 'Source investigation',
-          goal: 'Look up the trace-supported source anchor',
-          expectedTools: ['search_codebase'],
-          expectedCalls: [{tool: 'search_codebase'}],
-          status: 'completed',
-          completedAt: 100,
-          summary: 'The source-use decision is resolved with a bounded run outcome.',
-        }],
-        successCriteria: 'Resolve source use before final completion',
-        submittedAt: 1,
-        toolCallLog: [{
-          toolName: 'search_codebase',
-          timestamp: 10,
-          success: true,
-          matchedPhaseId: 'source',
-        }],
-      };
-      plan.sourceUseDecisionStatus = status as AnalysisPlanV3['sourceUseDecisionStatus'];
-
-      expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
-        complete: true,
-        pendingPhases: [],
-      });
-    },
-  );
 
   it('does not let a conclusion name reuse receipts bound to another phase', () => {
     const createConclusionPlan = (toolCallLog: AnalysisPlanV3['toolCallLog']): AnalysisPlanV3 => ({
@@ -1314,40 +1082,13 @@ describe('result facts survive transport truncation', () => {
   });
 });
 
-describe('countDispatchedToolCalls', () => {
-  /**
-   * Every runtime already writes here, so this is the one place that can say
-   * whether a run did any work of its own — the signal that separates a
-   * transport failure from a short answer that happens to name one.
-   */
-  it('returns zero for a run that dispatched nothing', () => {
-    expect(countDispatchedToolCalls(null)).toBe(0);
-    expect(countDispatchedToolCalls(undefined)).toBe(0);
-    expect(countDispatchedToolCalls({current: null})).toBe(0);
-  });
-
-  it('counts pre-plan calls before a plan exists', () => {
-    const tracker: {current: AnalysisPlanV3 | null} = {current: null};
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 1'},
-    });
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
-  });
-
-  /**
-   * The counterexample that retired the previous log-based reader: a pre-plan
-   * call that matches no phase is dropped by replay, which then clears the
-   * pre-plan log — so both logs end empty for a run that demonstrably ran a
-   * query. Counting dispatch instead of retention is what makes this hold.
-   */
-  it('survives a replay that discards an unmatched pre-plan call', () => {
+describe('replayPrePlanToolCalls', () => {
+  it('survives a replay that keeps an unmatched pre-plan call as unbound history', () => {
     const tracker: AnalysisPlanTracker = {current: null};
     recordPlanOrPrePlanToolCall(tracker, {
       toolName: 'mcp__smartperfetto__execute_sql',
       input: {sql: 'SELECT 1'},
     });
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
 
     // A plan whose single phase expects nothing, so the pre-plan call matches
     // no phase; replay retains it as unbound audit history.
@@ -1370,38 +1111,5 @@ describe('countDispatchedToolCalls', () => {
     expect(tracker.current.toolCallLog).toHaveLength(1);
     expect(tracker.current.toolCallLog[0].matchedPhaseId).toBeUndefined();
     expect(tracker.prePlanToolCallLog).toHaveLength(0);
-    // Replay does not dispatch the already-recorded call a second time.
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
-  });
-
-  it('resets to zero when a new run starts', () => {
-    const tracker: AnalysisPlanTracker = {current: null};
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 1'},
-    });
-    resetPrePlanToolCallsForNewRun(tracker);
-    expect(countDispatchedToolCalls(tracker)).toBe(0);
-  });
-
-  it('adds plan and pre-plan calls together', () => {
-    const tracker: {current: AnalysisPlanV3 | null} = {current: null};
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 1'},
-    });
-    tracker.current = {
-      planId: 'p1',
-      goal: 'g',
-      phases: [],
-      createdAt: Date.now(),
-      revision: 1,
-      toolCallLog: [],
-    } as unknown as AnalysisPlanV3;
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 2'},
-    });
-    expect(countDispatchedToolCalls(tracker)).toBe(2);
   });
 });

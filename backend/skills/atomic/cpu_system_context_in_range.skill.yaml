@@ -64,9 +64,9 @@ display:
     - {name: capacity, label: "capacity", type: number}
     - {name: core_type, label: "core_type", type: string}
     - {name: topology_source, label: "topology_source", type: string}
-    - {name: avg_freq_khz, label: "avg_freq_khz", type: number}
-    - {name: min_freq_khz, label: "min_freq_khz", type: number}
-    - {name: observed_max_freq_khz, label: "observed_max_freq_khz", type: number}
+    - {name: avg_freq_khz, label: "avg_freq_khz", type: number, unit: kHz}
+    - {name: min_freq_khz, label: "min_freq_khz", type: number, unit: kHz}
+    - {name: observed_max_freq_khz, label: "observed_max_freq_khz", type: number, unit: kHz}
     - {name: frequency_covered_ns, label: "frequency_covered_ns", type: duration, unit: ns}
     - {name: frequency_evidence, label: "frequency_evidence", type: string}
     - {name: frequency_source, label: "frequency_source", type: string}
@@ -74,7 +74,7 @@ display:
     - {name: busy_ns, label: "busy_ns", type: duration, unit: ns}
     - {name: idle_ns, label: "idle_ns", type: duration, unit: ns}
     - {name: idle_identity_unknown_ns, label: "idle_identity_unknown_ns", type: duration, unit: ns}
-    - {name: busy_pct, label: "busy_pct", type: percentage}
+    - {name: busy_pct, label: "busy_pct", type: percentage, unit: "%"}
     - {name: unfinished_sched_ns, label: "unfinished_sched_ns", type: duration, unit: ns}
     - {name: sched_evidence, label: "sched_evidence", type: string}
     - {name: evidence_scope, label: "evidence_scope", type: string}

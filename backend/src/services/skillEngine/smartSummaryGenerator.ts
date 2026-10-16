@@ -9,8 +9,9 @@
  * 当 AI 服务不可用时作为兜底方案
  */
 
-import { DisplayResult, DiagnosticResult, DisplayLevel } from './types';
+import { DisplayResult, DiagnosticResult } from './types';
 import { DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS } from '../../config/thresholds';
+import { outsideTargetScopeFields } from '../../types/identityContract';
 
 // =============================================================================
 // 类型定义
@@ -262,12 +263,14 @@ export class SmartSummaryGenerator {
 
       // 取第一行数据
       const row = data.rows[0];
+      // Key metrics describe the analysed app, not fields declared trace-wide or peer.
+      const outsideTarget = outsideTargetScopeFields(result.scopeProvenance);
 
       data.columns.forEach((col, idx) => {
         const value = row[idx];
         const config = METRIC_CONFIGS[col];
 
-        if (config && value != null && value !== '') {
+        if (config && value != null && value !== '' && !outsideTarget(col)) {
           const status = this.evaluateMetricStatus(col, value, config);
           const formattedValue = this.formatMetricValue(value, config);
 

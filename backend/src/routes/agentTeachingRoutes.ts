@@ -5,6 +5,7 @@
 import express from 'express';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { sendResourceNotFound } from '../services/resourceOwnership';
 import { RenderingPipelineTeachingService } from '../services/renderingPipelineTeachingService';
 import {localizeTeachingPipelineResponse} from '../services/teachingLocalization';
@@ -83,22 +84,18 @@ export function registerTeachingRoutes(router: express.Router): void {
       res.json(
         localizeTeachingPipelineResponse(response, resolvedOutputLanguage),
       );
-    } catch (error: any) {
-      console.error('[AgentRoutes] Teaching pipeline error:', error);
-      console.error('[AgentRoutes] Stack trace:', error.stack);
-      res.status(500).json({
-        success: false,
-        error:
-          error.message ||
-          (parseOutputLanguage(
-            req.body?.outputLanguage ||
-            req.header('accept-language') ||
-            process.env.SMARTPERFETTO_OUTPUT_LANGUAGE,
-          ) === 'en'
-            ? 'Failed to detect pipeline'
-            : '渲染管线检测失败'),
-        stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined,
-      });
+    } catch (error) {
+      sendRouteFailure(res, {
+        code: 'teaching_pipeline_failed',
+        error: parseOutputLanguage(
+          req.body?.outputLanguage ||
+          req.header('accept-language') ||
+          process.env.SMARTPERFETTO_OUTPUT_LANGUAGE,
+        ) === 'en'
+          ? 'Failed to detect pipeline'
+          : '渲染管线检测失败',
+        logLabel: '[AgentRoutes] Teaching pipeline error',
+      }, error);
     }
   });
 }

@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
 import { mergeIsolatedProviderEnv } from './envIsolation';
+import { providerNotFound } from './providerRequestError';
 import type { ProviderService } from './providerService';
 import type { AgentRuntimeKind, ProviderConfig, ProviderScope, ProviderTuning } from './types';
 
@@ -25,7 +26,6 @@ export interface ProviderRuntimeSnapshot {
   resolvedTimeouts: {
     fullPerTurnMs?: number;
     quickPerTurnMs?: number;
-    verifierTimeoutMs?: number;
     classifierTimeoutMs?: number;
   };
   baseUrl?: string;
@@ -119,10 +119,8 @@ const CLAUDE_RUNTIME_ENV_KEYS = [
   'CLAUDE_MAX_BUDGET_USD',
   'CLAUDE_FULL_PER_TURN_MS',
   'CLAUDE_QUICK_PER_TURN_MS',
-  'CLAUDE_VERIFIER_TIMEOUT_MS',
   'CLAUDE_CLASSIFIER_TIMEOUT_MS',
   'CLAUDE_ENABLE_SUB_AGENTS',
-  'CLAUDE_ENABLE_VERIFICATION',
   // Bounds how far a progressing scene run may be extended; a session pins it like the per-turn budget.
   'CLAUDE_MAX_RUN_TIMEOUT_MS',
   'AGENT_MAX_RUN_TIMEOUT_MS',
@@ -186,7 +184,6 @@ type ResolvedTimeoutKey = keyof ProviderRuntimeSnapshot['resolvedTimeouts'];
 const TIMEOUT_KEYS: ResolvedTimeoutKey[] = [
   'fullPerTurnMs',
   'quickPerTurnMs',
-  'verifierTimeoutMs',
   'classifierTimeoutMs',
 ];
 
@@ -206,12 +203,11 @@ function normalizeForJson(value: unknown): JsonValue | undefined {
       .filter((item): item is JsonValue => item !== undefined);
   }
   if (typeof value === 'object') {
-    const out: { [key: string]: JsonValue } = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const normalized = normalizeForJson((value as Record<string, unknown>)[key]);
-      if (normalized !== undefined) out[key] = normalized;
-    }
-    return out;
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().flatMap((key) => {
+      const normalized = normalizeForJson(record[key]);
+      return normalized === undefined ? [] : [[key, normalized]];
+    }));
   }
   return undefined;
 }
@@ -326,9 +322,7 @@ function pickResolvedTimeouts(
   const resolved: ProviderRuntimeSnapshot['resolvedTimeouts'] = {};
   const keys = runtimeKind === 'qoder-agent-sdk'
     ? TIMEOUT_KEYS.filter((key) => key === 'fullPerTurnMs' || key === 'quickPerTurnMs')
-    : runtimeKind === 'openai-agents-sdk'
-      ? TIMEOUT_KEYS.filter((key) => key !== 'verifierTimeoutMs')
-      : TIMEOUT_KEYS;
+    : TIMEOUT_KEYS;
   for (const key of keys) {
     const value = tuning?.[key];
     if (typeof value === 'number') resolved[key] = value;
@@ -365,9 +359,6 @@ function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntime
       'classifierTimeoutMs',
       `${timeoutPrefix}_CLASSIFIER_TIMEOUT_MS`,
     ]);
-  }
-  if (runtimeKind === 'claude-agent-sdk') {
-    timeoutMap.push(['verifierTimeoutMs', 'CLAUDE_VERIFIER_TIMEOUT_MS']);
   }
   for (const [key, envKey] of timeoutMap) {
     const value = env[envKey];
@@ -474,7 +465,7 @@ export function resolveProviderRuntimeSnapshot(
   const snapshot = typeof providerId === 'string'
     ? (() => {
         const provider = providerService.getRawProvider(providerId, providerScope);
-        if (!provider) throw new Error(`Provider not found: ${providerId}`);
+        if (!provider) throw providerNotFound(providerId);
         return providerRuntimeSnapshot(providerService, provider, providerScope);
       })()
     : envRuntimeSnapshot(runtimeOverride);

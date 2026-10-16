@@ -3,7 +3,6 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {migrateAllLegacyPatternStatuses} from '../../agentv3/analysisPatternMemory';
-import {openCaseCandidateOutbox} from '../caseEvolution/caseCandidateOutbox';
 import {resolveKnowledgeScope} from '../scopedKnowledgeStore';
 import {FeedbackEventStore} from './feedbackEventStore';
 import {FeedbackProjectionService} from './feedbackProjectionService';
@@ -51,7 +50,6 @@ export async function runFeedbackMigration(
   options: FeedbackMigrationCliOptions,
 ): Promise<{
   patternStatusesMigrated: number;
-  legacyCandidateFeedbackImported: number;
   projectionTargetsApplied: number;
   rebuilt: boolean;
 }> {
@@ -67,16 +65,6 @@ export async function runFeedbackMigration(
     },
   });
   try {
-    const outbox = openCaseCandidateOutbox();
-    let legacyCandidateFeedbackImported = 0;
-    try {
-      legacyCandidateFeedbackImported =
-        await store.importAcceptedLegacyCandidateFeedback(
-          outbox.listAcceptedLegacyFeedback(scope),
-        );
-    } finally {
-      outbox.close();
-    }
     if (options.rebuild) store.rebuild();
     else store.catchUp();
     const dirtyBefore = store.listDirtyTargets().length;
@@ -86,7 +74,6 @@ export async function runFeedbackMigration(
     }).projectDirtyTargets();
     return {
       patternStatusesMigrated: patternMigration.migrated,
-      legacyCandidateFeedbackImported,
       projectionTargetsApplied: dirtyBefore,
       rebuilt: options.rebuild,
     };

@@ -8,12 +8,37 @@ import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 
 import type {SanitizedRagResult} from '../rag/lookupResponseFilter';
 import {LLMEchoOutputStream, type CodeRef} from './llmEchoOutputFilter';
+import {
+  credentialContextForPath,
+  credentialValues,
+  endsInDanglingCredentialPrefix,
+  isCredentialFieldValue,
+  redactCredentialsInText,
+  REDACTED_SECRET,
+  TEXT_CREDENTIAL_CONTEXT,
+} from './secretPatterns';
 
 type GuardRegistration =
   | {kind: 'snippet'; snippet: string; ref: CodeRef}
   | {kind: 'private'; snippet: string; replacement: string}
   | {kind: 'query'; snippet: string; replacement: string}
+  /** `values`: whole document names (title, headings, path) matched exactly, however short. */
+  | {kind: 'knowledge'; snippet: string; replacement: string; values?: readonly string[]}
   | {kind: 'canary'; canary: string};
+
+/**
+ * What the owner sees of each kind; strict output replaces every kind. The
+ * owner was authorized to read source, the query and knowledge text, so only
+ * the credentials inside them are withheld. A new kind does not compile until
+ * its owner view is chosen.
+ */
+const OWNER_VIEW = {
+  snippet: 'credentials_withheld',
+  query: 'credentials_withheld',
+  knowledge: 'credentials_withheld',
+  private: 'withheld',
+  canary: 'withheld',
+} as const satisfies Record<GuardRegistration['kind'], 'credentials_withheld' | 'withheld'>;
 
 const MAX_GUARD_REGISTRATIONS = 200;
 const MAX_GUARD_PATTERN_BYTES = 2 * 1024 * 1024;
@@ -83,18 +108,34 @@ export function composeCodeAwareTextProjectionReceipts(
   });
 }
 
+/** A channel write or flush, and whether that channel's output so far differs from its input. */
+interface GuardedOutput {
+  text: string;
+  altered: boolean;
+}
+
 class SessionCodeAwareOutputGuard {
   private readonly registrations: GuardRegistration[] = [];
+  private readonly registered = new Set<string>();
   private readonly streams = new Map<string, LLMEchoOutputStream>();
   private registrationBytes = 0;
   private overflowed = false;
+  private version = 0;
 
-  register(registration: GuardRegistration): void {
-    if (this.overflowed) return;
+  /** Changes whenever the registered set does; text released earlier was not projected against it. */
+  get registrationVersion(): number { return this.version; }
+
+  /** A repeat (every history read registers its questions again) spends no capacity and changes nothing. */
+  register(registration: GuardRegistration): 'applied' | 'repeat' | 'unavailable' {
+    if (this.overflowed) return 'unavailable';
+    const key = textFingerprint(JSON.stringify(registration));
+    if (this.registered.has(key)) return 'repeat';
+    this.version++;
     const pattern = registration.kind === 'snippet'
       ? registration.snippet
-      : (registration.kind === 'private' || registration.kind === 'query')
-        ? `${registration.snippet}\0${registration.replacement}`
+      : 'replacement' in registration
+        ? [registration.snippet, ...('values' in registration ? registration.values ?? [] : []),
+          registration.replacement].join('\0')
         : registration.canary;
     const patternBytes = Buffer.byteLength(pattern, 'utf8');
     if (
@@ -104,13 +145,16 @@ class SessionCodeAwareOutputGuard {
       this.overflowed = true;
       this.registrationBytes = 0;
       this.registrations.length = 0;
+      this.registered.clear();
       for (const stream of this.streams.values()) stream.destroy();
       this.streams.clear();
-      return;
+      return 'unavailable';
     }
+    this.registered.add(key);
     this.registrations.push(registration);
     this.registrationBytes += patternBytes;
     for (const stream of this.streams.values()) this.apply(stream, registration);
+    return 'applied';
   }
 
   projectComplete(text: string): string {
@@ -144,23 +188,24 @@ class SessionCodeAwareOutputGuard {
     }
   }
 
-  write(channel: string, text: string): string {
-    if (this.overflowed) return '';
+  write(channel: string, text: string): GuardedOutput {
+    if (this.overflowed) return {text: '', altered: true};
     let stream = this.streams.get(channel);
     if (!stream) {
       stream = this.createStream();
       this.streams.set(channel, stream);
     }
-    return stream.write(text);
+    return {text: stream.write(text), altered: stream.altered};
   }
 
-  flush(channel: string): string {
-    if (this.overflowed) return PRIVATE_OUTPUT_SUPPRESSED;
+  flush(channel: string): GuardedOutput {
+    if (this.overflowed) return {text: PRIVATE_OUTPUT_SUPPRESSED, altered: true};
     const stream = this.streams.get(channel);
-    if (!stream) return '';
+    if (!stream) return {text: '', altered: false};
     this.streams.delete(channel);
     try {
-      return stream.flush();
+      const text = stream.flush();
+      return {text, altered: stream.altered};
     } finally {
       stream.destroy();
     }
@@ -170,6 +215,7 @@ class SessionCodeAwareOutputGuard {
     for (const stream of this.streams.values()) stream.destroy();
     this.streams.clear();
     this.registrations.length = 0;
+    this.registered.clear();
     this.registrationBytes = 0;
     // Projections may still hold this guard after registry eviction. Keep the
     // detached object irreversibly fail-closed instead of turning it into an
@@ -192,8 +238,11 @@ class SessionCodeAwareOutputGuard {
   private apply(stream: LLMEchoOutputStream, registration: GuardRegistration): void {
     if (registration.kind === 'snippet') {
       stream.registerSnippet(registration.snippet, registration.ref);
-    } else if ((registration.kind === 'private' || registration.kind === 'query')) {
-      stream.registerPrivateSnippet(registration.snippet, registration.replacement);
+    } else if ('replacement' in registration) {
+      if (registration.snippet.trim()) stream.registerPrivateSnippet(registration.snippet, registration.replacement);
+      if ('values' in registration && registration.values?.length) {
+        stream.registerPrivateValues(registration.values, registration.replacement);
+      }
     } else {
       stream.registerCanary(registration.canary);
     }
@@ -218,32 +267,23 @@ export function withOwnerCodeAwareProjection<T>(project: () => T): T {
 
 export function isOwnerCodeAwareProjection(): boolean { return projectionAudience === 'owner'; }
 
-/** Credentials have explicit syntax; hashes and company URLs are ordinary source context. */
-function credentialValues(text: string): string[] {
-  const patterns = [
-    /(?:["']?\b(?:api[_-]?key|secret|password|token|access[_-]?token|auth[_-]?token)["']?)\s*[:=]\s*['"]([^'"\r\n]{8,})['"]/gi,
-    /(?:["']?\b(?:api[_-]?key|secret|password|token|access[_-]?token|auth[_-]?token)["']?)\s*[:=]\s*(?!['"])([^\s'";,]{8,})/gi,
-    /\bBearer\s+([A-Za-z0-9._~+/-]{8,})/gi,
-    /\b((?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}))\b/g,
-  ];
-  return patterns.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[1]));
-}
-
-function redactOwnerCredentials(text: string): string {
-  for (const credential of credentialValues(text)) text = text.split(credential).join('[REDACTED_SECRET]');
-  return text;
-}
-
 class SessionOutputGuards {
   readonly strict = new SessionCodeAwareOutputGuard();
   readonly owner = new SessionCodeAwareOutputGuard();
-  register(registration: GuardRegistration): void {
-    this.strict.register(registration);
-    if (registration.kind === 'snippet' || registration.kind === 'query') {
-      for (const credential of credentialValues(registration.snippet)) {
-        this.owner.register({kind: 'private', snippet: credential, replacement: '[REDACTED_SECRET]'});
+  /** False for a repeat, which strict holds only because both audiences already applied it. */
+  register(registration: GuardRegistration): boolean {
+    if (this.strict.register(registration) === 'repeat') return false;
+    if (OWNER_VIEW[registration.kind] === 'credentials_withheld' && 'snippet' in registration) {
+      // Source is read in its file's syntax; query and knowledge text as prose.
+      const context = registration.kind === 'snippet'
+        ? credentialContextForPath(registration.ref.filePath)
+        : TEXT_CREDENTIAL_CONTEXT;
+      const texts = [registration.snippet, ...('values' in registration ? registration.values ?? [] : [])];
+      for (const credential of texts.flatMap(text => credentialValues(text, context))) {
+        this.owner.register({kind: 'private', snippet: credential, replacement: REDACTED_SECRET});
       }
     } else { this.owner.register(registration); }
+    return true;
   }
   get patternBytes(): number { return this.strict.patternBytes + this.owner.patternBytes; }
   destroy(): void { this.strict.destroy(); this.owner.destroy(); }
@@ -330,10 +370,7 @@ function guardFor(sessionId: string): SessionOutputGuards | undefined {
 }
 
 function registerForSession(sessionId: string, registration: GuardRegistration): void {
-  const guard = guardFor(sessionId);
-  if (!guard) return;
-  guard.register(registration);
-  enforceRegistryLimits(sessionId);
+  if (guardFor(sessionId)?.register(registration)) enforceRegistryLimits(sessionId);
 }
 
 export function registerCodeAwareLookupForEcho(sessionId: string | undefined, result: SanitizedRagResult): void {
@@ -342,7 +379,7 @@ export function registerCodeAwareLookupForEcho(sessionId: string | undefined, re
     if (!hit.snippet) continue;
     if (hit.metadata?.knowledgeSourceId) {
       registerForSession(sessionId, {
-        kind: 'private',
+        kind: 'knowledge',
         snippet: hit.snippet,
         replacement: `[Knowledge: ${hit.metadata.knowledgeSourceId}/${hit.chunkId}]`,
       });
@@ -361,7 +398,8 @@ export function registerCodeAwareLookupForEcho(sessionId: string | undefined, re
 }
 
 export interface OnDemandEchoReference {
-  referenceId: string;
+  /** The issued reference id the model cites; the CodeRef label shows it. */
+  id: string;
   codebaseId: string;
   filePath: string;
   lineRange?: {start: number; end: number};
@@ -371,7 +409,7 @@ export interface OnDemandEchoReference {
 
 /**
  * Registers provider-sent source returned by bounded on-demand tools. These
- * references do not have RAG chunk ids, so use their stable reference ids for
+ * references do not have RAG chunk ids, so use their issued reference ids for
  * a relative CodeRef replacement instead of retaining source text in output.
  */
 export function registerOnDemandSourceLookupForEcho(
@@ -385,11 +423,61 @@ export function registerOnDemandSourceLookupForEcho(
       kind: 'snippet',
       snippet: reference.text,
       ref: {
-        chunkId: reference.referenceId,
+        chunkId: reference.id,
         codebaseId: reference.codebaseId,
         filePath: reference.filePath,
         ...(reference.lineRange ? {lineRange: reference.lineRange} : {}),
       },
+    });
+  }
+}
+
+/** One delivered document-collection item: the text and the document's own names for it. */
+export interface KnowledgeEchoItem {
+  knowledgeBaseId: string;
+  /** The issued `kref-` reference the model cites; the replacement names it. */
+  referenceId: string;
+  title: string;
+  headingPath: readonly string[];
+  relativePath: string;
+  text: string;
+}
+
+/**
+ * The shortest document name registered as a whole value, in code points. One
+ * character names nothing of the document yet matches nearly any output; two
+ * is a whole CJK word (a title such as 渲染), so nothing shorter is protected.
+ */
+const MIN_KNOWLEDGE_NAME_CODE_POINTS = 2;
+
+/** A document's own names as the model may repeat them: title, each heading, the heading path, the path and its file name. */
+function knowledgeNames(item: KnowledgeEchoItem): string[] {
+  const headings = item.headingPath.map(heading => heading.trim()).filter(Boolean);
+  const fileName = item.relativePath.split('/').pop() ?? '';
+  return [...new Set([item.title, ...headings, headings.join(' › '), headings.join(' > '), item.relativePath, fileName]
+    .map(name => name.trim())
+    .filter(name => [...name].length >= MIN_KNOWLEDGE_NAME_CODE_POINTS))];
+}
+
+/**
+ * Registers what a document-collection tool delivered, one registration per
+ * item so a run stays inside the session's registration cap. The text gets
+ * the derived windows every snippet gets; the document's names (title,
+ * headings, relative path) are matched as whole values, since the derived
+ * windows index nothing shorter than eight characters. A `kb:path#Lx`
+ * citation is one text unit with the path inside it, so it is replaced whole.
+ * Strict output replaces all of it; the owner view withholds only credentials.
+ */
+export function registerKnowledgeTextForEcho(sessionId: string | undefined, items: readonly KnowledgeEchoItem[]): void {
+  if (!sessionId) return;
+  for (const item of items) {
+    const values = knowledgeNames(item);
+    if (!item.text.trim() && values.length === 0) continue;
+    registerForSession(sessionId, {
+      kind: 'knowledge',
+      snippet: item.text,
+      replacement: `[Knowledge: ${item.knowledgeBaseId}/${item.referenceId}]`,
+      values,
     });
   }
 }
@@ -416,24 +504,29 @@ export function registerPrivateAnalysisQueryForEcho(
   });
 }
 
+/** Owner projection withholds the credentials it finds in any text; other audiences leave text alone here. */
+function ownerCredentialPass(text: string): string {
+  return isOwnerCodeAwareProjection() ? redactCredentialsInText(text) : text;
+}
+
 export function sanitizeCodeAwareText(sessionId: string | undefined, text: string): string {
   if (!text) return text;
-  if (!sessionId) return isOwnerCodeAwareProjection() ? redactOwnerCredentials(text) : text;
+  if (!sessionId) return ownerCredentialPass(text);
   const guard = touchGuard(sessionId)?.[projectionAudience];
   if (!guard && sessionWasRevoked(sessionId)) return PRIVATE_OUTPUT_SUPPRESSED;
   const projected = guard ? guard.projectComplete(text) : text;
-  return isOwnerCodeAwareProjection() ? redactOwnerCredentials(projected) : projected;
+  return ownerCredentialPass(projected);
 }
 
 export function sanitizeCodeAwareTextWithReceipt(
   sessionId: string | undefined,
   text: string,
 ): CodeAwareTextProjectionReceipt {
-  if (!sessionId || !text) return textProjectionReceipt(text, isOwnerCodeAwareProjection() ? redactOwnerCredentials(text) : text);
+  if (!sessionId || !text) return textProjectionReceipt(text, ownerCredentialPass(text));
   const guard = touchGuard(sessionId)?.[projectionAudience];
   if (!guard && sessionWasRevoked(sessionId)) return textProjectionReceipt(text, PRIVATE_OUTPUT_SUPPRESSED, true);
   const receipt = guard ? guard.projectCompleteWithReceipt(text) : textProjectionReceipt(text, text);
-  return isOwnerCodeAwareProjection() ? composeCodeAwareTextProjectionReceipts(receipt, textProjectionReceipt(receipt.text, redactOwnerCredentials(receipt.text))) : receipt;
+  return isOwnerCodeAwareProjection() ? composeCodeAwareTextProjectionReceipts(receipt, textProjectionReceipt(receipt.text, redactCredentialsInText(receipt.text))) : receipt;
 }
 
 /** Same per-string limit and empty-string behavior as structured projection. */
@@ -533,12 +626,11 @@ function sanitizeStructuredTextValue(
         if (descriptor?.enumerable) state.changed = true;
         continue;
       }
-      const credential = isOwnerCodeAwareProjection() && isCredentialField(key) &&
-        typeof descriptor.value === 'string' && descriptor.value.length >= 8;
-      if (credential && descriptor.value !== '[REDACTED_SECRET]') state.changed = true;
+      const credential = isOwnerCodeAwareProjection() && isCredentialField(key, descriptor.value);
+      if (credential && descriptor.value !== REDACTED_SECRET) state.changed = true;
       const projected = sanitizeStructuredTextValue(
         sessionId,
-        credential ? '[REDACTED_SECRET]' : descriptor.value,
+        credential ? REDACTED_SECRET : descriptor.value,
         state,
         depth + 1,
       );
@@ -617,6 +709,14 @@ export interface CodeAwareStreamingTextProjection {
   flush(): string;
   projectComplete(text: string): string;
   projectCompleteWithReceipt(text: string): CodeAwareTextProjectionReceipt;
+  /**
+   * Streamed output so far may differ from what projecting the whole text
+   * shows: content was redacted or dropped, the guard became unavailable, or
+   * registrations changed after the current stretch (since the last flush)
+   * received text, which may still be held unprojected against them.
+   * Conservative, and sticky for the projection's life.
+   */
+  readonly altered: boolean;
 }
 
 /** Stateful per-channel projection that keeps cross-token matches private. */
@@ -630,53 +730,80 @@ export function createCodeAwareStreamingTextProjection(
   const guard = sessionId ? (touchGuard(sessionId) ?? guardFor(sessionId))?.[audience] : undefined;
   const unavailable = () => guard?.unavailable || Boolean(sessionId && sessionWasRevoked(sessionId));
   const credentials = new OwnerCredentialStream();
+  let altered = false;
+  let stretchVersion: number | undefined;
+  const settle = (guarded: GuardedOutput, output: string): string => {
+    if (guarded.altered || credentials.altered) altered = true;
+    if (stretchVersion !== undefined && guard?.registrationVersion !== stretchVersion) altered = true;
+    return output;
+  };
   const project = (text: string): CodeAwareTextProjectionReceipt => {
     if (unavailable()) return textProjectionReceipt(text, PRIVATE_OUTPUT_SUPPRESSED, true);
     const receipt = guard ? guard.projectCompleteWithReceipt(text) : textProjectionReceipt(text, text);
     return audience === 'owner' ? composeCodeAwareTextProjectionReceipts(receipt,
-      textProjectionReceipt(receipt.text, redactOwnerCredentials(receipt.text))) : receipt;
+      textProjectionReceipt(receipt.text, redactCredentialsInText(receipt.text))) : receipt;
   };
   return {
     write: text => {
-      if (unavailable()) { credentials.clear(); return ''; }
-      const projected = guard ? guard.write(channel, text) : text;
-      return audience === 'owner' ? credentials.write(projected) : projected;
+      if (unavailable()) { credentials.clear(); altered = true; return ''; }
+      if (text && stretchVersion === undefined) stretchVersion = guard?.registrationVersion;
+      const guarded = guard ? guard.write(channel, text) : {text, altered: false};
+      return settle(guarded, audience === 'owner' ? credentials.write(guarded.text) : guarded.text);
     },
     flush: () => {
-      if (unavailable()) { credentials.clear(); return PRIVATE_OUTPUT_SUPPRESSED; }
-      const projected = guard?.flush(channel) ?? '';
-      return audience === 'owner' ? credentials.write(projected) + credentials.flush() : projected;
+      if (unavailable()) { credentials.clear(); altered = true; return PRIVATE_OUTPUT_SUPPRESSED; }
+      const guarded = guard?.flush(channel) ?? {text: '', altered: false};
+      const output = settle(guarded,
+        audience === 'owner' ? credentials.write(guarded.text) + credentials.flush() : guarded.text);
+      stretchVersion = undefined;
+      return output;
     },
     projectComplete: text => project(text).text,
     projectCompleteWithReceipt: project,
+    get altered() { return altered; },
   };
 }
 
-/** Credentials may cross provider token boundaries. Bound buffering to one line. */
+/** Held text is only ever appended to or dropped whole, so a UTF-16 count cannot split a character. */
+const MAX_OWNER_CREDENTIAL_HOLD_CHARS = 64 * 1024;
+
+/**
+ * Credentials may cross provider token boundaries, and a key may sit lines
+ * above its value. Hold text until its lines are complete and it does not end
+ * in a credential key, separator or Bearer prefix, then redact it as a whole.
+ */
 class OwnerCredentialStream {
   private pending = '';
   private discardingLine = false;
+  /** Output so far differs from its input: a credential was redacted or oversized text dropped. */
+  altered = false;
   write(text: string): string {
     let output = '';
     for (const fragment of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       const complete = fragment.endsWith('\n');
       if (!this.discardingLine) {
         this.pending += fragment;
-        if (this.pending.length > 64 * 1024) {
+        if (this.pending.length > MAX_OWNER_CREDENTIAL_HOLD_CHARS) {
           output += '[OVERSIZED_OUTPUT_LINE]';
           this.pending = '';
           this.discardingLine = true;
-        } else if (complete) {
-          output += redactOwnerCredentials(this.pending);
-          this.pending = '';
+          this.altered = true;
+        } else if (complete && !endsInDanglingCredentialPrefix(this.pending)) {
+          output += this.release();
         }
       }
       if (complete && this.discardingLine) { this.discardingLine = false; output += '\n'; }
     }
     return output;
   }
-  flush(): string { const output = redactOwnerCredentials(this.pending); this.clear(); return output; }
+  flush(): string { const output = this.release(); this.clear(); return output; }
   clear(): void { this.pending = ''; this.discardingLine = false; }
+  private release(): string {
+    const output = redactCredentialsInText(this.pending);
+    if (output !== this.pending) this.altered = true;
+    this.pending = '';
+    return output;
+  }
 }
 
 export function clearCodeAwareOutputGuards(sessionId: string): void {
@@ -698,6 +825,7 @@ export function revokeCodeAwareOutputGuards(sessionId: string): void {
   markSessionRevoked(sessionId);
 }
 
+/** @internal Test seam. */
 export function clearAllCodeAwareOutputGuards(): void {
   for (const guard of sessionGuards.values()) guard.destroy();
   sessionGuards.clear();
@@ -717,6 +845,17 @@ export function sanitizeOwnerCodeAwareStructuredTextWithReceipt(
 }
 
 
-export function isCredentialField(key: string): boolean {
-  return /^(?:apikey|secret|password|accesstoken|authtoken|authorization)$/.test(key.replace(/[_-]/g, '').toLowerCase());
+const CREDENTIAL_FIELD_NAMES = /^(?:apikey|secret|password|token|accesstoken|authtoken|authorization)$/;
+
+/**
+ * Whether a structured field's value is withheld as a credential: a string of
+ * at least eight characters in a field these names list, or one the text
+ * detector withholds for its field name (`isCredentialFieldValue`). Shorter
+ * values stay, so an enum a projection keeps is never broken. A draft's
+ * answer text also sits in `token`; the owner streaming projection handles
+ * that field before any structured walk.
+ */
+export function isCredentialField(key: string, value: unknown): boolean {
+  return typeof value === 'string' && value.length >= 8 &&
+    (CREDENTIAL_FIELD_NAMES.test(key.replace(/[_-]/g, '').toLowerCase()) || isCredentialFieldValue(key, value));
 }

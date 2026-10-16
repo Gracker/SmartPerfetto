@@ -4,9 +4,10 @@
 
 import {loadPromptTemplate, renderTemplate, stripPromptComments} from '../agentv3/strategyLoader';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
-import type {CriticalPathAiSummary, CriticalPathAnalysis} from '../types/criticalPathContract';
+import type {CriticalPathAiSummary, CriticalPathAnalysis, CriticalPathRole} from '../types/criticalPathContract';
 import {redactObjectForLLM} from '../utils/llmPrivacy';
 import type {AiCapabilityPolicyV1} from './aiCapabilityPolicy';
+import {segmentPathRole} from './criticalPathAnalyzer';
 import {renderCriticalPathAnalysis} from './criticalPathLocalization';
 import {buildDeterministicCriticalPathSummary} from './criticalPathSummary';
 import {runOneShotSummary} from './oneShotModelCall';
@@ -77,16 +78,12 @@ function redactCriticalPathFields(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map((item) => redactCriticalPathFields(item));
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => {
       const lk = k.toLowerCase();
       // Hypothesis text is built by the product from numeric-only
       // interpolation, and the prompt asks the model to reuse the SQL
       // verbatim; clamping it would cut the SQL mid-predicate.
-      if (lk === 'statement' || lk === 'verificationsql' || lk === 'notes') {
-        out[k] = v;
-        continue;
-      }
+      if (lk === 'statement' || lk === 'verificationsql' || lk === 'notes') return [k, v];
       // Hash-style obfuscation for sensitive identifiers (keep grouping but
       // not the literal value).
       if (
@@ -112,13 +109,11 @@ function redactCriticalPathFields(value: unknown): unknown {
         lk === 'blockedmethod'
       ) {
         if (typeof v === 'string' && v.length > 0) {
-          out[k] = `<${lk}_${Buffer.from(v).toString('base64').slice(0, 8)}>`;
-          continue;
+          return [k, `<${lk}_${Buffer.from(v).toString('base64').slice(0, 8)}>`];
         }
       }
-      out[k] = clampString(redactCriticalPathFields(v));
-    }
-    return out;
+      return [k, clampString(redactCriticalPathFields(v))];
+    }));
   }
   if (typeof value === 'string') {
     return clampString(value);
@@ -132,6 +127,8 @@ interface TrimmedSegment {
   threadName: string | null | undefined;
   processName: string | null | undefined;
   state: string | null | undefined;
+  pathRole: CriticalPathRole;
+  wakeSourceClass: CriticalPathAnalysis['wakeupChain'][number]['wakeSourceClass'];
   blockedFunction: string | null | undefined;
   cpu: number | null | undefined;
   ioWait: boolean | null | undefined;
@@ -148,6 +145,8 @@ function compactAnalysisForLLM(analysis: CriticalPathAnalysis): unknown {
     threadName: segment.threadName,
     processName: segment.processName,
     state: segment.state,
+    pathRole: segmentPathRole(segment),
+    wakeSourceClass: segment.wakeSourceClass,
     blockedFunction: segment.blockedFunction,
     cpu: segment.cpu,
     ioWait: segment.ioWait,
@@ -203,6 +202,12 @@ function compactAnalysisForLLM(analysis: CriticalPathAnalysis): unknown {
     blockingMs: analysis.blockingMs,
     selfMs: analysis.selfMs,
     externalBlockingPercentage: analysis.externalBlockingPercentage,
+    attributableMs: analysis.attributableMs,
+    attributablePercentage: analysis.attributablePercentage,
+    eventWaitMs: analysis.eventWaitMs,
+    eventWaitPercentage: analysis.eventWaitPercentage,
+    rootWait: analysis.rootWait,
+    longestEventWait: analysis.longestEventWait,
     wakeupChain: analysis.wakeupChain.slice(0, HARD_CAPS.segments).map((segment) => trimSegment(segment)),
     moduleBreakdown: analysis.moduleBreakdown.slice(0, 8),
     ruleAnomalies: analysis.anomalies.slice(0, 8),

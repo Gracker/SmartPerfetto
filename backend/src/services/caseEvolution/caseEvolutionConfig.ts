@@ -2,100 +2,60 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { CaseEvolutionConfig } from '../../types/caseEvolution';
 import {LifecycleConfigReader} from '../evolutionLifecycle/lifecycleConfig';
+
+/**
+ * Curated cases reach an analysis two ways, both off by default: retrieval
+ * attaches matching cases to the final result, and background injection adds
+ * them to the system prompt, which also needs retrieval.
+ */
+export interface CaseEvolutionConfig {
+  retrieveEnabled: boolean;
+  promptInjectEnabled: boolean;
+}
+
+/**
+ * Settings of the retired learned-case pipeline. None is parsed, so no value
+ * can stop the backend from starting; startup warns about each one still set.
+ */
+const RETIRED_CASE_EVOLUTION_SETTINGS = [
+  'CASE_EVOLUTION_ENABLED',
+  'CASE_EVOLUTION_CAPTURE_ENABLED',
+  'CASE_EVOLUTION_REVIEW_ENABLED',
+  'CASE_EVOLUTION_NOTES_WRITE_ENABLED',
+  'CASE_EVOLUTION_INGEST_ENABLED',
+  'CASE_EVOLUTION_INCLUDE_DRAFTS',
+  'CASE_EVOLUTION_WORKER_CONCURRENCY',
+  'CASE_EVOLUTION_QUEUE_MAX',
+  'CASE_EVOLUTION_CANDIDATE_COOLDOWN_MS',
+  'CASE_EVOLUTION_DAILY_BUDGET',
+  'CASE_EVOLUTION_LEASE_MS',
+  'CASE_EVOLUTION_MAX_ATTEMPTS',
+  'CASE_EVOLUTION_POLL_INTERVAL_MS',
+] as const;
 
 export function loadCaseEvolutionConfig(env: NodeJS.ProcessEnv = process.env): CaseEvolutionConfig {
   const reader = new LifecycleConfigReader(env);
   return {
-    captureEnabled: reader.boolean('CASE_EVOLUTION_CAPTURE_ENABLED'),
-    reviewEnabled: reader.boolean('CASE_EVOLUTION_REVIEW_ENABLED'),
-    notesWriteEnabled: reader.boolean('CASE_EVOLUTION_NOTES_WRITE_ENABLED'),
-    ingestEnabled: reader.boolean('CASE_EVOLUTION_INGEST_ENABLED'),
     retrieveEnabled: reader.boolean('CASE_EVOLUTION_RETRIEVE_ENABLED'),
     promptInjectEnabled: reader.boolean('CASE_EVOLUTION_PROMPT_INJECT_ENABLED'),
-    includeDrafts: reader.boolean('CASE_EVOLUTION_INCLUDE_DRAFTS'),
-    workerConcurrency: reader.positiveInteger(
-      'CASE_EVOLUTION_WORKER_CONCURRENCY',
-      1,
-      {max: 2},
-    ),
-    queueMax: reader.positiveInteger('CASE_EVOLUTION_QUEUE_MAX', 100),
-    cooldownMs: reader.positiveInteger(
-      'CASE_EVOLUTION_CANDIDATE_COOLDOWN_MS',
-      5 * 60 * 1000,
-    ),
-    dailyBudget: reader.positiveInteger('CASE_EVOLUTION_DAILY_BUDGET', 50),
-    leaseMs: reader.positiveInteger(
-      'CASE_EVOLUTION_LEASE_MS',
-      5 * 60 * 1000,
-    ),
-    maxAttempts: reader.positiveInteger('CASE_EVOLUTION_MAX_ATTEMPTS', 3),
-    pollIntervalMs: reader.positiveInteger(
-      'CASE_EVOLUTION_POLL_INTERVAL_MS',
-      60 * 1000,
-    ),
   };
 }
 
-export interface CaseEvolutionConfigValidation {
-  ok: boolean;
-  effectiveConfig: CaseEvolutionConfig;
-  warnings: string[];
-  errors: string[];
+export function isCaseBackgroundInjectionEnabled(config: CaseEvolutionConfig): boolean {
+  return config.retrieveEnabled && config.promptInjectEnabled;
 }
 
-export function validateCaseEvolutionConfig(
-  config: CaseEvolutionConfig,
-): CaseEvolutionConfigValidation {
-  const effectiveConfig = {...config};
-  const warnings: string[] = [];
-  const errors: string[] = [];
-
-  if (effectiveConfig.reviewEnabled && !effectiveConfig.captureEnabled) {
-    warnings.push('REVIEW_ENABLED requires CAPTURE_ENABLED; disabling review worker');
-    effectiveConfig.reviewEnabled = false;
+/** What startup reports once about the case settings in `env`. */
+export function caseEvolutionStartupWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
+  const warnings: string[] = RETIRED_CASE_EVOLUTION_SETTINGS
+    .filter(key => (env[key] ?? '').trim() !== '')
+    .map(key => `${key} is ignored: learned cases are retired`);
+  const config = loadCaseEvolutionConfig(env);
+  if (config.promptInjectEnabled && !isCaseBackgroundInjectionEnabled(config)) {
+    warnings.push(
+      'CASE_EVOLUTION_PROMPT_INJECT_ENABLED requires CASE_EVOLUTION_RETRIEVE_ENABLED; case background injection stays off',
+    );
   }
-  if (effectiveConfig.notesWriteEnabled && !effectiveConfig.reviewEnabled) {
-    warnings.push('NOTES_WRITE_ENABLED requires REVIEW_ENABLED; disabling sidecar writes');
-    effectiveConfig.notesWriteEnabled = false;
-  }
-  if (effectiveConfig.ingestEnabled && !effectiveConfig.reviewEnabled) {
-    warnings.push('INGEST_ENABLED requires REVIEW_ENABLED; disabling learned-case ingest');
-    effectiveConfig.ingestEnabled = false;
-  }
-  if (effectiveConfig.promptInjectEnabled && !effectiveConfig.retrieveEnabled) {
-    errors.push('PROMPT_INJECT_ENABLED requires RETRIEVE_ENABLED; disabling prompt injection');
-    effectiveConfig.promptInjectEnabled = false;
-  }
-  if (
-    effectiveConfig.includeDrafts &&
-    (!effectiveConfig.retrieveEnabled || !effectiveConfig.promptInjectEnabled)
-  ) {
-    errors.push('INCLUDE_DRAFTS requires RETRIEVE_ENABLED and PROMPT_INJECT_ENABLED; disabling draft inclusion');
-    effectiveConfig.includeDrafts = false;
-  }
-
-  return {
-    ok: errors.length === 0,
-    effectiveConfig,
-    warnings,
-    errors,
-  };
-}
-
-export function isCaseEvolutionCaptureEnabled(config: CaseEvolutionConfig): boolean {
-  return config.captureEnabled;
-}
-
-export function isCaseEvolutionReviewEnabled(config: CaseEvolutionConfig): boolean {
-  return config.reviewEnabled;
-}
-
-export function isCaseEvolutionNotesWriteEnabled(config: CaseEvolutionConfig): boolean {
-  return config.notesWriteEnabled;
-}
-
-export function isCaseEvolutionRetrieveEnabled(config: CaseEvolutionConfig): boolean {
-  return config.retrieveEnabled;
+  return warnings;
 }

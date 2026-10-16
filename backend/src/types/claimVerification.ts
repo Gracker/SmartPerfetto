@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {AnalysisCandidateIdentity} from './analysisDelivery';
+
 /** Version 1 remains readable in persisted results; new verification emits version 2. */
 export type ClaimVerificationSchemaVersion = 'claim_verifier@1' | 'claim_verifier@2';
 
@@ -22,6 +24,11 @@ export type ClaimReferenceVerificationStatus =
   | 'ineligible'
   | 'not_checked';
 
+/** The issue code a failing reference carries: `claim_reference_<status>`. */
+export function claimReferenceIssueCode(status: ClaimReferenceVerificationStatus): string {
+  return `claim_reference_${status}`;
+}
+
 export interface ClaimReferenceVerificationResult {
   evidenceRefId?: string;
   sourceRef?: string;
@@ -36,6 +43,7 @@ export interface ClaimReferenceVerificationResult {
 export type DeterministicClaimProofKind =
   | 'numeric_cell'
   | 'captured_cell'
+  /** Historical results only: no current rule produces a source-location proof. */
   | 'source_location'
   | 'interval_overlap'
   | 'comparison_delta'
@@ -71,9 +79,31 @@ export interface ClaimPropositionCoverage {
   reason: string;
 }
 
+/**
+ * What the one semantic review located for a claim: body offsets with a hash
+ * of the located text, never the text. Lets repeated reviews of a body be
+ * compared (`verdict:stability`) without storing answer content again.
+ */
+export interface ClaimSemanticReviewTrace {
+  consistency: 'consistent' | 'inconsistent' | 'unknown';
+  contentLocations: Array<{start: number; end: number; textHash: string}>;
+}
+
+/** Backend-calculated formatting only; neither semantic coverage nor evidence of causality. */
+export interface NumericPresentationAssessment {
+  schemaVersion: 'numeric_presentation_assessment@1';
+  status: 'matched' | 'mismatch' | 'not_checked';
+  reason: string;
+  binding: {candidate: AnalysisCandidateIdentity; claimFingerprint: string};
+  source?: {anchorId: string; captureId: string; rowIndex: number; column: string};
+  locations: Array<{start: number; end: number}>;
+}
+
 export interface ClaimVerificationClaimResult {
   claimId: string;
   status: ClaimVerificationClaimStatus;
+  semanticReview?: ClaimSemanticReviewTrace;
+  numericPresentation?: NumericPresentationAssessment;
   /** Compatibility alias. A matched cell alone never verifies a proposition in v2. */
   referenceResults?: ClaimReferenceVerificationResult[];
   referenceCells?: ClaimReferenceVerificationResult[];

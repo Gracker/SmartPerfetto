@@ -5,8 +5,8 @@
 # =============================================================================
 # Hardware Thermal Module Expert
 # =============================================================================
-# Provides thermal analysis capabilities for cross-domain experts.
-# Answers questions about temperature, thermal throttling, and cooling behavior.
+# Provides thermal analysis capabilities.
+# Covers temperature, thermal throttling, and cooling behavior.
 #
 # Key Analysis Areas:
 # - Temperature sensor data across thermal zones
@@ -34,74 +34,6 @@ module:
     - thermal_throttling
     - cooling_device
     - thermal_zone
-  relatedModules:
-    - hardware_cpu
-    - hardware_gpu
-    - kernel_scheduler
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: thermal_overview
-      questionTemplate: "What is the thermal state during the trace?"
-      requiredParams: []
-      description: "Get overall thermal status"
-
-    - id: thermal_throttling_analysis
-      questionTemplate: "Is there thermal throttling affecting performance?"
-      requiredParams: []
-      optionalParams: [start_ts, end_ts]
-      description: "Detect and analyze thermal throttling"
-
-    - id: temperature_timeline
-      questionTemplate: "How did temperature change over time?"
-      requiredParams: []
-      description: "Track temperature changes throughout trace"
-
-    - id: thermal_correlation
-      questionTemplate: "Is temperature affecting CPU/GPU performance?"
-      requiredParams: []
-      description: "Correlate thermal state with performance metrics"
-
-  findingsSchema:
-    - id: thermal_throttling_detected
-      severity: critical
-      titleTemplate: "Thermal throttling detected: {throttle_level}"
-      descriptionTemplate: "CPU/GPU throttled due to temperature ({temp}°C exceeds {threshold}°C)"
-      evidenceFields: [throttle_level, temp, threshold, affected_component]
-
-    - id: high_temperature
-      severity: warning
-      titleTemplate: "High temperature: {zone_name} at {temp}°C"
-      descriptionTemplate: "Thermal zone {zone_name} reached {temp}°C, approaching threshold"
-      evidenceFields: [zone_name, temp, threshold]
-
-    - id: temperature_spike
-      severity: warning
-      titleTemplate: "Temperature spike: +{delta}°C in {duration_sec}s"
-      descriptionTemplate: "Rapid temperature increase detected"
-      evidenceFields: [delta, duration_sec, peak_temp, zone_name]
-
-    - id: sustained_high_temp
-      severity: critical
-      titleTemplate: "Sustained high temperature: {avg_temp}°C for {duration_sec}s"
-      descriptionTemplate: "Temperature remained high for extended period"
-      evidenceFields: [avg_temp, duration_sec, zone_name]
-
-  suggestionsSchema:
-    - id: check_cpu_frequency
-      condition: "throttling_detected == true"
-      targetModule: cpu_module
-      questionTemplate: "How did thermal throttling affect CPU frequency?"
-      paramsMapping: {}
-      priority: 1
-
-    - id: check_gpu_during_thermal
-      condition: "gpu_temp_high == true"
-      targetModule: gpu_module
-      questionTemplate: "How did thermal state affect GPU performance?"
-      paramsMapping: {}
-      priority: 1
 
 prerequisites:
   required_tables:
@@ -303,6 +235,7 @@ steps:
       level: detail
       layer: list
       title: "频率骤降事件（原因待查）"
+      title_i18n: {en: "Frequency Drop Events (cause not determined)"}
     save_as: throttling_events
 
   # Step 5: Cooling device activity
@@ -403,7 +336,8 @@ steps:
     rules:
       - condition: "temp_overview.data.filter(t => t.status === 'critical').length > 0"
         diagnosis: "检测到严重高温: ${temp_overview.data.filter(t => t.status === 'critical')[0]?.sensor_name} 最高 ${temp_overview.data.filter(t => t.status === 'critical')[0]?.max_temp}°C"
-        confidence: critical
+        severity: critical
+        confidence: high
         suggestions:
           - "检查设备散热条件"
           - "减少 CPU/GPU 密集型操作"
@@ -416,7 +350,7 @@ steps:
         diagnosis: "检测到 ${throttling_events.data.length} 次频率骤降；尚不能据此确定热节流或性能影响"
         confidence: high
         suggestions:
-          - "结合直接 thermal throttling/cooling 事件和同窗口工作负载判断降频原因"
+          - "降频原因需结合直接 thermal throttling/cooling 事件和同窗口工作负载判断"
           - "考虑分散计算任务"
           - "优化算法减少 CPU 使用"
         evidence_fields:
@@ -427,7 +361,7 @@ steps:
         diagnosis: "高温样本首尾跨度 ${high_temp_periods.data[0]?.duration_sec} 秒；不代表连续高温或散热不足"
         confidence: high
         suggestions:
-          - "持续高温会加速热节流"
+          - "持续高温时是否已触发频率上限，以 cpufreq 限频证据为准"
           - "检查设备是否被遮挡"
           - "考虑降低持续性能需求"
         evidence_fields:

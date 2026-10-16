@@ -25,6 +25,7 @@ import {
   type TraceProcessorHolderType,
 } from './traceProcessorLeaseStore';
 import { traceProcessorProcessorKey } from './traceProcessorConnectionModel';
+import { getTracesDir } from './traceUploadPaths';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import {
   raceWithTraceProcessorCancellation,
@@ -35,6 +36,7 @@ import {
 import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
 import {splitSqlStatements} from './sqlStdlibDependencyAnalyzer';
 import type {ResolveCapabilityTraceProcessorIdentityInput} from './capabilityManifestRuntimeIdentity';
+import {parseStoredJson} from '../utils/storedData';
 
 export interface TraceInfo {
   id: string;
@@ -45,7 +47,10 @@ export interface TraceInfo {
   lastAccessTime?: Date; // Track last query/access time for smart cleanup
   status: 'uploading' | 'processing' | 'ready' | 'error';
   error?: string;
-  /** Detected trace OS — determines knowledge injection and vendor detection */
+  /**
+   * OS detected from the file head by `traceFormatDetector`; `unknown` without
+   * positive evidence. The prompt carries it as `trace_context` metadata.
+   */
   traceOs?: 'android' | 'harmonyos' | 'unknown';
   /** Detected trace format */
   traceFormat?: 'perfetto_protobuf' | 'systrace_text' | 'atrace_text' | 'unknown';
@@ -103,6 +108,16 @@ export type TraceProcessorServiceQueryOptions = TraceProcessorQueryOptions & {
   leaseMode?: TraceProcessorLeaseMode | string;
   leaseScope?: EnterpriseRepositoryScope;
 };
+
+/**
+ * The only SQL trace loading sends to the shared processor. It must stay within
+ * the pure-read grammar of `analyzeRawSqlDirectProjection`: anything outside it
+ * (a compound SELECT, an INCLUDE, a Perfetto function) taints native provenance
+ * before any analysis runs, and every later local-file run then reloads the
+ * trace into a private processor instead of sharing this one.
+ */
+export const TRACE_LOAD_METADATA_SQL =
+  'SELECT MIN(ts) AS startTime, MAX(ts) AS endTime, COUNT(*) AS numEvents FROM slice';
 
 export interface TraceProcessorAnalysisRunPolicy {
   sourceKind: 'local_file' | 'external_rpc' | 'unknown';
@@ -180,7 +195,6 @@ export class TraceProcessorService extends EventEmitter {
   private processors: Map<string, TraceProcessor> = new Map();
   /** Service-level mapping owner; shared external processors may expose another alias's traceId. */
   private processorTraceIds: Map<string, string> = new Map();
-  private uploads: Map<string, any> = new Map();
   private uploadDir: string;
   /** Guards against concurrent auto-recovery for the same trace. */
   private recoveryInProgress: Map<string, Promise<TraceProcessor>> = new Map();
@@ -202,7 +216,7 @@ export class TraceProcessorService extends EventEmitter {
     new AsyncLocalStorage<TraceProcessorLeaseQueryContext | TraceProcessorLeaseQueryContextMap>();
 
   constructor(
-    uploadDir = resolveDefaultTraceUploadDir(),
+    uploadDir = getTracesDir(),
     private readonly leaseRestartPolicy: TraceProcessorLeaseRestartPolicy = {},
   ) {
     super();
@@ -339,28 +353,37 @@ export class TraceProcessorService extends EventEmitter {
     return lease;
   }
 
-  private requireActiveQueryLease(traceId: string, options: TraceProcessorServiceQueryOptions): void {
+  private requireActiveQueryLease(
+    traceId: string,
+    options: TraceProcessorServiceQueryOptions,
+  ): TraceProcessorLeaseQueryContext | undefined {
     throwIfTraceProcessorQueryCancelled(options.signal);
-    this.requireActiveLease(traceId, this.resolveLeaseQueryContext(traceId, options));
+    const context = this.resolveLeaseQueryContext(traceId, options);
+    this.requireActiveLease(traceId, context);
+    return context;
   }
 
   /**
-   * Initialize a trace upload
+   * For a caller that answers from its own cache instead of issuing a query:
+   * runs the same lease check `query()` runs (throwing the query layer's
+   * cancellation error when the caller's lease is no longer active) and
+   * returns the identity under which the caller may share cached answers.
+   *
+   * - `'unleased'` with no lease context, or a key for an unscoped offline
+   *   isolation lease (never checked against the lease store);
+   * - a holder-exact key for a scoped lease checked for this exact holder;
+   * - `null` for a scoped lease without a holder: its check accepts any valid
+   *   holder, so it cannot vouch for one owner and must bypass the cache.
    */
-  public async initializeUpload(filename: string, size: number): Promise<string> {
-    const traceId = uuidv4();
-    const traceInfo: TraceInfo = {
-      id: traceId,
-      filename,
-      size,
-      uploadTime: new Date(),
-      status: 'uploading',
-    };
-
-    this.storeTraceInfo(traceInfo, 'local_file');
-    this.emit('trace-initialized', traceInfo);
-
-    return traceId;
+  public leaseCacheIdentity(traceId: string, options: TraceProcessorServiceQueryOptions = {}): string | null {
+    const context = this.requireActiveQueryLease(traceId, options);
+    if (!context) return 'unleased';
+    const lease = [context.leaseId, String(context.mode)];
+    if (!context.leaseScope) return JSON.stringify(['unscoped', ...lease]);
+    if (!context.holder) return null;
+    const {tenantId, workspaceId, userId} = context.leaseScope;
+    return JSON.stringify(['scoped', tenantId, workspaceId, userId ?? null, ...lease,
+      context.holder.holderType, context.holder.holderRef]);
   }
 
   /**
@@ -457,52 +480,12 @@ export class TraceProcessorService extends EventEmitter {
   }
 
   /**
-   * Handle chunk upload for large files
-   */
-  public async uploadChunk(traceId: string, chunk: Buffer, offset: number): Promise<void> {
-    const trace = this.traces.get(traceId);
-    if (!trace) {
-      throw new Error(`Trace ${traceId} not found`);
-    }
-
-    const filePath = this.getTraceFilePath(traceId);
-
-    // Create write stream if not exists
-    if (!this.uploads.has(traceId)) {
-      const writeStream = fs.createWriteStream(filePath, { flags: 'w' });
-      this.uploads.set(traceId, writeStream);
-    }
-
-    const writeStream = this.uploads.get(traceId);
-
-    // Write chunk at specific offset
-    return new Promise((resolve, reject) => {
-      // For simplicity, we'll append chunks
-      // In production, you might want to use random access for better performance
-      writeStream.write(chunk, (error: any) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  /**
    * Complete the upload and start processing
    */
   public async completeUpload(traceId: string): Promise<void> {
     const trace = this.traces.get(traceId);
     if (!trace) {
       throw new Error(`Trace ${traceId} not found`);
-    }
-
-    // Close write stream
-    const writeStream = this.uploads.get(traceId);
-    if (writeStream) {
-      writeStream.end();
-      this.uploads.delete(traceId);
     }
 
     // Update status
@@ -525,6 +508,9 @@ export class TraceProcessorService extends EventEmitter {
       // Detect trace format and OS before creating processor
       const filePath = this.getTraceFilePath(traceId);
       if (filePath && fs.existsSync(filePath)) {
+        // Inline, not the shared helper: the upload path must not add a
+        // microtask between detection and processor creation (the deletion and
+        // reload races in traceProcessorLeaseProcessorRouting depend on it).
         try {
           const { detectTraceFormat } = await import('./traceFormatDetector');
           const formatInfo = await detectTraceFormat(filePath);
@@ -532,7 +518,7 @@ export class TraceProcessorService extends EventEmitter {
           trace.traceFormat = formatInfo.format;
           console.log(`[TraceProcessorService] Detected trace: os=${formatInfo.os}, format=${formatInfo.format} (${formatInfo.reason})`);
         } catch (detectError: any) {
-          console.warn(`[TraceProcessorService] Format detection failed:`, detectError.message);
+          console.warn(`[TraceProcessorService] Format detection failed:`, detectError?.message);
           trace.traceOs = 'unknown';
           trace.traceFormat = 'unknown';
         }
@@ -646,21 +632,7 @@ export class TraceProcessorService extends EventEmitter {
    */
   private async extractMetadata(processor: TraceProcessor): Promise<TraceInfo['metadata']> {
     try {
-      // Query basic trace information
-      const result = await processor.query(`
-        SELECT
-          MIN(ts) as startTime,
-          MAX(ts) as endTime,
-          COUNT(*) as numEvents
-        FROM slice
-        UNION ALL
-        SELECT
-          MIN(ts) as startTime,
-          MAX(ts) as endTime,
-          COUNT(*) as numEvents
-        FROM counter
-        LIMIT 1
-      `);
+      const result = await processor.query(TRACE_LOAD_METADATA_SQL);
 
       if (result.rows.length > 0) {
         const row = result.rows[0];
@@ -1104,6 +1076,24 @@ export class TraceProcessorService extends EventEmitter {
    * Load trace from disk if it exists but is not in memory
    * This is useful after server restart when traces are on disk but not loaded
    */
+  /**
+   * Sets OS and format from the file itself. Detection failure resets both to
+   * `unknown`; no earlier or persisted value survives it.
+   */
+  private async applyDetectedTraceFormat(trace: TraceInfo, filePath: string): Promise<void> {
+    try {
+      const { detectTraceFormat } = await import('./traceFormatDetector');
+      const formatInfo = await detectTraceFormat(filePath);
+      trace.traceOs = formatInfo.os;
+      trace.traceFormat = formatInfo.format;
+      console.log(`[TraceProcessorService] Detected trace: os=${formatInfo.os}, format=${formatInfo.format} (${formatInfo.reason})`);
+    } catch (detectError: any) {
+      console.warn(`[TraceProcessorService] Format detection failed:`, detectError?.message);
+      trace.traceOs = 'unknown';
+      trace.traceFormat = 'unknown';
+    }
+  }
+
   public async loadTraceFromDisk(traceId: string): Promise<TraceInfo | undefined> {
     if (this.traceDeletionInProgress.has(traceId)) return undefined;
     // Already in memory
@@ -1126,7 +1116,7 @@ export class TraceProcessorService extends EventEmitter {
       // Try to load metadata from JSON file
       if (fs.existsSync(metadataPath)) {
         const metadataRaw = fs.readFileSync(metadataPath, 'utf8');
-        const metadata = JSON.parse(metadataRaw);
+        const metadata = parseStoredJson<Record<string, any>>(metadataRaw, 'trace metadata');
         traceInfo = {
           id: traceId,
           filename: metadata.filename || `${traceId}.trace`,
@@ -1134,8 +1124,6 @@ export class TraceProcessorService extends EventEmitter {
           filePath: tracePath,
           uploadTime: new Date(metadata.uploadedAt || Date.now()),
           status: 'ready',
-          traceOs: metadata.traceOs,
-          traceFormat: metadata.traceFormat,
           metadata: metadata.metadata,
         };
       } else {
@@ -1151,16 +1139,9 @@ export class TraceProcessorService extends EventEmitter {
         };
       }
 
-      // Detect trace format if not already known
-      if (!traceInfo.traceOs) {
-        try {
-          const { detectTraceFormat } = await import('./traceFormatDetector');
-          const formatInfo = await detectTraceFormat(tracePath);
-          traceInfo.traceOs = formatInfo.os;
-          traceInfo.traceFormat = formatInfo.format;
-          console.log(`[TraceProcessorService] Detected trace from disk: os=${formatInfo.os}, format=${formatInfo.format}`);
-        } catch { /* default to unknown */ }
-      }
+      // The file is the only authority for OS and format: a persisted value
+      // may come from an older, looser detector.
+      await this.applyDetectedTraceFormat(traceInfo, tracePath);
 
       // Register in memory
       this.storeTraceInfo(traceInfo, 'local_file');
@@ -1688,11 +1669,6 @@ export class TraceProcessorService extends EventEmitter {
   }
 }
 
-function resolveDefaultTraceUploadDir(): string {
-  const configured = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR?.trim();
-  return configured || './uploads/traces';
-}
-
 // Singleton instance for sharing across route modules
 let _singletonInstance: TraceProcessorService | null = null;
 
@@ -1703,6 +1679,7 @@ export function getTraceProcessorService(): TraceProcessorService {
   return _singletonInstance;
 }
 
+/** @internal Test seam. */
 export function setTraceProcessorServiceForTests(service: TraceProcessorService | null): void {
   _singletonInstance = service;
 }

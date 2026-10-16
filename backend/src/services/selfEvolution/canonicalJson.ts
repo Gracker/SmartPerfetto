@@ -51,11 +51,14 @@ function canonicalize(
     }
     const result: {[key: string]: CanonicalJsonValue} = {};
     for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      result[key] = canonicalize(
-        (value as Record<string, unknown>)[key],
-        `${path}.${key}`,
-        ancestors,
-      );
+      // Defined, not assigned: assigning an own `__proto__` key (JSON.parse
+      // keeps one) would set the result's prototype and drop that key's data.
+      Object.defineProperty(result, key, {
+        value: canonicalize((value as Record<string, unknown>)[key], `${path}.${key}`, ancestors),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return result;
   } finally {
@@ -75,6 +78,16 @@ export function canonicalContentHash(value: unknown): string {
   return createHash('sha256')
     .update(canonicalJsonString(value), 'utf8')
     .digest('hex');
+}
+
+/**
+ * The content hash of `value` as a JSON store keeps it: a round trip first
+ * turns what canonicalization rejects (undefined, a Date, a non-finite
+ * number) into what the store reads back, so the hash a writer computes is
+ * the one a reader recomputes.
+ */
+export function storedJsonContentHash(value: object): string {
+  return canonicalContentHash(JSON.parse(JSON.stringify(value)));
 }
 
 export function immutableCanonicalSnapshot<T>(value: T): T {

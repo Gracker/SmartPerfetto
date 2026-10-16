@@ -7,4 +7,4 @@ Repair `relationProposals` with this exact format. The collection is an array. E
 
 Optional proposal `value` is a string, finite number, or boolean and cannot be null. Optional `metricColumn` and `unit` are nonempty strings. Optional `deltaDirection` is exactly `current_minus_reference`. If `proofBindings` is present, it contains exactly both `subject` and `object`; each contains exactly nonempty string `endpointColumn` and `proofColumn`.
 
-Keep proposal meaning and issued references unchanged. This format creates candidates only; it grants no evidence, verification, relation, or causal authority.
+Keep every proposal, its valid ID, meaning and issued references unchanged; never delete or swap proposals to pass validation. This format creates candidates only; it grants no evidence, verification, relation, or causal authority.

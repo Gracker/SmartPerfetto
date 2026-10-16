@@ -12,17 +12,22 @@ import {
 } from '../../services/security/codeAwareOutputRegistry';
 import {projectOwnerCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {
-  projectOwnerAnalysisError,
+  projectOwnerProvisionalConclusion,
   projectOwnerStructuredValue,
   projectOwnerAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
-import {analysisContextUsesPrivateKnowledge, AnalysisContextAuthorizationChangedError,
-  buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+import {
+  AnalysisContextAuthorizationChangedError,
+  buildAnalysisContextAuthorizationFingerprint,
+  assertCurrentAnalysisContextAuthorization,
+} from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {createRuntimeEvidenceContext, type RuntimeEvidenceBinding, type RuntimeEvidenceContext} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalizeAnalysisResult, type FinalizedAnalysisResult} from '../../services/finalizeAnalysisResult';
-import {AnalysisNarrativeStreamProjection} from '../../services/analysisNarrativeStreamProjection';
+import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
+import type {OutputLanguage} from '../../agentv3/outputLanguage';
+import {createAnswerDraftRelay} from '../../services/answerDraftRelay';
 import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
 import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import {
@@ -31,14 +36,22 @@ import {
   type ConversationEvidenceRef,
   type ConversationRuntimeOutcome,
 } from '../contracts/conversationContract';
-import {resolvePrimaryConversationSourceUse} from './conversationSourcePolicy';
-import type {
-  ConversationRuntimeAdapter,
-  ConversationRuntimeInput,
+import {
+  conversationRuntimeSessionId,
+  type ConversationRuntimeAdapter,
+  type ConversationRuntimeInput,
 } from '../application/conversationSessionService';
+import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
+import {withDurableLearningPermission} from '../../services/security/durableLearning';
 
 export interface OrchestratorConversationRuntimeOptions {
   analysisOptions?: Omit<AnalysisOptions, 'analysisMode' | 'runId'>;
+  /**
+   * The pinned runtime. Only one that implements the answer-draft reset
+   * contract (EngineCapabilities.draftAnswerStreaming) forwards answer text
+   * before the finalized answer.
+   */
+  runtimeKind?: string;
 }
 
 function projectEvidence(result: Awaited<ReturnType<IOrchestrator['analyze']>>): ConversationEvidenceRef[] {
@@ -74,12 +87,6 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     private readonly options: OrchestratorConversationRuntimeOptions = {},
   ) {}
 
-  resolvePrimarySourceUse(query: string) {
-    return resolvePrimaryConversationSourceUse({
-      query, codeAwareMode: this.options.analysisOptions?.codeAwareMode,
-      codebaseIds: this.options.analysisOptions?.codebaseIds,
-    });
-  }
 
   private createExecution(input: ConversationRuntimeInput): ConversationExecution {
     if (this.disposed) throw new DOMException('Conversation adapter disposed', 'AbortError');
@@ -92,7 +99,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       buildAnalysisContextAuthorizationFingerprint(selection, scope);
     const controller = new AbortController();
     const runId = input.runId;
-    const runtimeSessionId = `${input.sessionId}:${input.runId}`;
+    const runtimeSessionId = conversationRuntimeSessionId(input.sessionId, input.runId);
     let abortPromise: Promise<void> | undefined;
     const abortRuntime = () => abortPromise ??= Promise.resolve()
       .then(() => this.orchestrator.abortSession?.(runtimeSessionId)).then(() => undefined).catch(() => undefined);
@@ -134,7 +141,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
 
   private async finalizeRuntimeResult(result: AnalysisResult, input: ConversationRuntimeInput,
     state: ConversationExecution, dataEnvelopes: DataEnvelope[],
-    onRuntimeSettled?: () => void,
+    onRuntimeSettled?: () => void, outputLanguage: OutputLanguage = 'zh-CN', privateKnowledge = false,
   ): Promise<FinalizedAnalysisResult> {
     const context = takeFinalizationContext(result);
     let transferred = false;
@@ -147,8 +154,19 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         owner: {runId: state.runId, signal: state.controller.signal,
           ...(state.analysisContextFingerprint !== undefined ? {analysisContextFingerprint: state.analysisContextFingerprint} : {}),
           isCurrent: () => this.isCurrent(input, state), assertAuthorized: state.assertAuthorized},
-        caseRetrieval: {status: 'not_checked', recommendations: []},
         conversation: {fallbackQuestion: input.query, evidence: projectEvidence(result)},
+        onProgress: event => {
+          if (this.isCurrent(input, state)) input.onUpdate?.(finalReviewProgressUpdate(event, outputLanguage));
+        },
+        // The session service owns the stop state; this only forwards its signal.
+        ...(input.reviewStopSignal ? {reviewStopSignal: input.reviewStopSignal} : {}),
+        // Same owner projection as the terminal message, applied while this
+        // run's output guards are still registered.
+        onProvisionalAnswer: answer => {
+          if (!this.isCurrent(input, state) || !input.onProvisionalAnswer) return false;
+          return input.onProvisionalAnswer({message: projectOwnerProvisionalConclusion(privateKnowledge,
+            state.runtimeSessionId, answer.conclusion, outputLanguage)}) !== false;
+        },
       });
       this.assertActive(input, state);
       if (!finalized.conversationOutcome) throw new Error('conversation_finalization_outcome_missing');
@@ -162,10 +180,9 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     const state = this.createExecution(input);
     const {runtimeSessionId} = state;
     const analysisOptions = this.options.analysisOptions ?? {};
-    const primarySourceUse = this.resolvePrimarySourceUse(input.query);
-    // Registered knowledge is independently enabled by the authorized selection.
-    const includeSourceDerived = primarySourceUse !== 'dormant' || Boolean(analysisOptions.knowledgeSourceIds?.length);
-    const privateKnowledge = analysisContextUsesPrivateKnowledge(analysisOptions);
+    // A run with private context reads its own derived history; the fingerprint partitions it.
+    const privateKnowledge = analysisHasPrivateContext(analysisOptions);
+    const includeSourceDerived = privateKnowledge;
     const outputLanguage = analysisOptions.outputLanguage ?? 'zh-CN';
     // Filter whole turns, including source-bearing user queries, on every read.
     const historyReader = createAnalysisHistoryReader({
@@ -178,7 +195,15 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       },
     });
     const traceId = input.traceContext.kind === 'attached' ? input.traceContext.traceId : `conversation-no-trace:${input.sessionId}`;
-    const narrative = new AnalysisNarrativeStreamProjection();
+    const answerDraft = createAnswerDraftRelay({runtimeKind: this.options.runtimeKind, runId: input.runId,
+      projectionSessionId: runtimeSessionId, privateKnowledge, outputLanguage,
+      // A timer flush can come after cancellation or a revoked authorization;
+      // the relay closes on this throw and drops what it buffered.
+      deliver: update => {
+        this.assertActive(input, state);
+        input.onAnswerDraft?.(update);
+      },
+    });
     let evidenceBinding: RuntimeEvidenceBinding | undefined;
     let evidenceContext: RuntimeEvidenceContext | undefined;
     const dataEnvelopes: DataEnvelope[] = [];
@@ -193,18 +218,24 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           Boolean(value && typeof value === 'object' && validateDataEnvelope(value).length === 0)));
       }
       this.assertActive(input, state);
+      // Answer text before finalization is only a live-only, revocable draft.
+      if (update.type === 'answer_token' || update.type === 'answer_segment_reset') {
+        answerDraft?.accept(update);
+        return;
+      }
+      // The answer reaches clients only as provisional_answer and run_completed;
+      // the runtime's own conclusion would be a second, unfinalized source.
+      if (update.type === 'conclusion') return;
       const safeUpdate = projectOwnerCodeAwareStreamingUpdate(runtimeSessionId, update, privateKnowledge, outputLanguage);
-      const projected = safeUpdate ? narrative.project(safeUpdate) : null;
-      if (projected) input.onUpdate?.(projected);
+      if (safeUpdate) input.onUpdate?.(safeUpdate);
     };
     this.orchestrator.on('update', onUpdate);
     try {
       this.assertActive(input, state);
-      if (privateKnowledge) {
-        const queries = [...historyReader.getTurns().map(turn => turn.query), input.query];
-        for (const query of new Set(queries)) registerPrivateAnalysisQueryForEcho(runtimeSessionId, query);
-      }
+      // History questions are registered by the runtime's history reader on every read.
+      if (privateKnowledge) registerPrivateAnalysisQueryForEcho(runtimeSessionId, input.query);
       const options: AnalysisOptions = {...analysisOptions, selectionContext: input.selectionContext, analysisMode: 'fast',
+        ...(input.sourceDepth ? {sourceDepth: input.sourceDepth} : {}),
         assistantSurface: 'conversation', conversationTraceAttached: input.traceContext.kind === 'attached', runId: input.runId};
       const scope = {logicalSessionId: input.sessionId, traceId, options};
       evidenceContext = this.evidenceContexts.get(input.sessionId);
@@ -227,16 +258,20 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           context: 'retained_artifacts', ...projectedArtifacts,
         })})}`;
       }
-      const runtimeOptions = withAnalysisHistoryReader(evidenceBinding.options, historyReader, {includeSourceDerived});
+      // Cross-session learning follows the run's own marker from the session
+      // service; a missing marker is unknown and grants nothing.
+      const runtimeOptions = withDurableLearningPermission(
+        withAnalysisHistoryReader(evidenceBinding.options, historyReader, {includeSourceDerived}),
+        input.privateContext,
+      );
       const analysis = this.updateExecution.run(state, () => this.orchestrator.analyze(prompt,
         runtimeSessionId, traceId, runtimeOptions))
         .then(result => this.finalizeRuntimeResult(result, input, state, dataEnvelopes,
           () => {
             this.orchestrator.off('update', onUpdate);
             this.assertActive(input, state);
-            const tail = narrative.finish();
-            if (tail) input.onUpdate?.(tail);
-          }))
+            answerDraft?.settle();
+          }, outputLanguage, privateKnowledge))
         .finally(() => {
           evidenceBinding?.release();
           // Physical sessions are unique: late cleanup cannot touch a newer turn.
@@ -264,12 +299,12 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         (state.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError'))) {
         return {kind: 'cancelled', message: ''};
       }
-      if (privateKnowledge) throw new Error(projectOwnerAnalysisError(runtimeSessionId, error, outputLanguage));
+      // The conversation service projects the failure (`projectAnalysisFailure`) under this run's guard.
       throw error;
     } finally {
       this.orchestrator.off('update', onUpdate);
       evidenceBinding?.release();
-      narrative.reset();
+      answerDraft?.dispose();
       revokeCodeAwareOutputGuards(runtimeSessionId);
       state.release();
       if (this.runtimeSessions.get(input.runId) === state) this.runtimeSessions.delete(input.runId);

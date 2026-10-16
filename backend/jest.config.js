@@ -2,8 +2,8 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src', '<rootDir>/tests'],
+  // __tests__ also contains imported helpers; select actual suite filenames.
   testMatch: [
-    '**/__tests__/**/*.ts',
     '**/?(*.)+(spec|test|eval).ts'
   ],
   // Exclude CLI command files that happen to contain "test" in their name
@@ -11,6 +11,9 @@ module.exports = {
     '/node_modules/',
     '/src/cli/commands/',
   ],
+  // tsconfig.json sets isolatedModules, so ts-jest transpiles each file
+  // without a per-file type check; `npm run typecheck` checks src and tests
+  // as one program instead.
   transform: {
     '^.+\.ts$': 'ts-jest',
   },

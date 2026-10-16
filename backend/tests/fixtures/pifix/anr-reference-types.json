@@ -1,0 +1,58 @@
+[
+  {
+    "claimId": "anr1:record_ts",
+    "reference": {
+      "evidenceRefId": "data:sql_table:current:0f5e63c1696c:ebc2f7b73d2d:d005eeb6",
+      "rowIndex": 0,
+      "rowSelector": {
+        "error_id": "c1d2e3f0-1111-4000-8000-000000000011"
+      },
+      "column": "ts",
+      "value": "1010550000000",
+      "sourceToolCallId": "execute_sql:1:d005eeb6"
+    },
+    "actualRow": {
+      "process_name": "com.tracedemo.anrsub",
+      "pid": 6300,
+      "upid": 6,
+      "error_id": "c1d2e3f0-1111-4000-8000-000000000011",
+      "ts": 1010550000000,
+      "anr_type": "executing service",
+      "subject": "executing service com.tracedemo.anrsub/.SyncService",
+      "intent": null,
+      "component": null,
+      "timer_delay": 50000000,
+      "anr_dur_ms": 20000,
+      "default_anr_dur_ms": null
+    }
+  },
+  {
+    "claimId": "binder:client_dur_9s",
+    "reference": {
+      "evidenceRefId": "data:sql_table:current:0f5e63c1696c:48b159e6e77f:9eabba5f",
+      "rowIndex": 0,
+      "rowSelector": {
+        "binder_txn_id": "296"
+      },
+      "column": "client_dur",
+      "value": "9000000000",
+      "sourceToolCallId": "execute_sql:12:9eabba5f"
+    },
+    "actualRow": {
+      "binder_txn_id": 296,
+      "aidl_name": null,
+      "interface": null,
+      "method_name": null,
+      "client_ts": 1001050000000,
+      "client_dur": 9000000000,
+      "client_process": "com.tracedemo.anrsub",
+      "client_upid": 6,
+      "is_main_thread": 1,
+      "is_sync": 1,
+      "server_process": "system_server",
+      "server_upid": 2,
+      "server_ts": 1001050040000,
+      "server_dur": 8999900000
+    }
+  }
+]

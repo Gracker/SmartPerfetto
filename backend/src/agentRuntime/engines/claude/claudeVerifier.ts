@@ -9,19 +9,18 @@
  * support belong to the shared final semantic assessment and finalizer.
  */
 
-import type {ProviderScope} from '../../../services/providerManager';
-import type {Finding, StreamingUpdate} from '../../../agent/types';
+import type {Finding} from '../../../agent/types';
 import type {VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis} from '../../../agentv3/types';
 import {formatExpectedCall} from '../../../agentv3/types';
 import {getPhaseToolEvidenceStatus} from '../../../agentv3/planToolCallRecorder';
 import {getAnalysisPlanCompletionStatus} from '../../../agentv3/planCompletionStatus';
 import {hasValidPlanSkipDisposition} from '../../../agentv3/planPhaseSemantics';
-import type {SceneType} from '../../../agentv3/sceneClassifier';
 import {DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
 import {assessFinalReportContract} from '../../../services/finalReportContractGate';
 import {sameAnalysisCandidate, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {isProductionAgentRuntimeKind} from '../../runtimeKinds';
+import {candidateHasAnswerBody, projectRuntimeCorrectionContext} from '../../runtimeConclusionProtocol';
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -58,7 +57,7 @@ export function verifyPlanAdherence(plan: AnalysisPlanV3 | null): VerificationIs
   if (!validSubmittedPlanShape(plan)) {
     return [{type: 'plan_deviation', severity: 'error', message: 'Submitted plan structure is invalid.'}];
   }
-  const completion = getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 0});
+  const completion = getAnalysisPlanCompletionStatus(plan);
   if (!Array.isArray(plan.phases) || plan.phases.length === 0 ||
     (completion.hasPlan && !completion.complete && completion.pendingPhases.length === 0)) {
     return [{type: 'plan_deviation', severity: 'error', message: 'Submitted plan structure is invalid.'}];
@@ -121,22 +120,12 @@ export function isConclusionIncomplete(
 
 /** All controller inputs remain structured, regardless of message language. */
 export function generateCorrectionPrompt(
-  issues: VerificationIssue[],
+  issues: readonly VerificationIssue[],
   originalConclusion: string,
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
-  _sceneType?: SceneType,
 ): string {
-  const errors = issues.filter(issue => issue.severity === 'error');
-  const missingSections = new Map(errors
-    .filter(issue => issue.recoveryKind === 'complete_report_content')
-    .flatMap(issue => issue.missingSections ?? [])
-    .map(section => [section.id, section]));
   return renderRequiredLocalizedStrategyTemplate('prompt-analysis-correction', outputLanguage, {
-    correction_context: JSON.stringify({
-      recoveryKinds: [...new Set(errors.flatMap(issue => issue.recoveryKind ? [issue.recoveryKind] : []))],
-      missingSections: [...missingSections.values()],
-      issues: issues.map(({type, severity, message, recoveryKind}) => ({type, severity, message, recoveryKind})),
-    }, null, 2),
+    correction_context: JSON.stringify(projectRuntimeCorrectionContext(issues), null, 2),
     original_conclusion: originalConclusion,
   });
 }
@@ -168,7 +157,8 @@ function assessDeliveryIssues(
       '当前候选缺少匹配的完成记录或内容来源，完成状态尚未确认。',
       'The current candidate lacks a matching terminal record or output origin; completion is unconfirmed.'),
   });
-  if (!conclusion.trim()) issues.push({
+  // A declaration alone is not a body: a reply that carries only one gets the same continuation.
+  if (!candidateHasAnswerBody(conclusion)) issues.push({
     type: 'missing_reasoning', severity: 'error',
     message: localize(outputLanguage, '当前候选没有可交付的正文。', 'The current candidate has no deliverable body.'),
     ...(canContinue ? {recoveryKind: 'continue_output' as const} : {}),
@@ -207,36 +197,20 @@ function assessDeliveryIssues(
 
 /**
  * Evaluate runtime state only. This result does not certify claim truth, source
- * use or semantic coverage; the shared finalizer owns those judgments.
+ * use or semantic coverage; the shared finalizer owns those judgments. It emits
+ * nothing and writes no terminal state: runtimes read it through
+ * `agentRuntime/runtimeDraftDiagnostics.ts` to decide a same-run repair only.
  * The historical heuristicIssues field carries these runtime diagnostics.
  */
 export async function verifyConclusion(
   _findings: Finding[],
   conclusion: string,
   options: {
-    emitUpdate?: (update: StreamingUpdate) => void;
-    /** @deprecated Ignored. Semantic review runs only through the shared finalizer. */
-    enableLLM?: boolean;
     plan?: AnalysisPlanV3 | null;
     hypotheses?: Hypothesis[];
-    /** @deprecated Ignored. Scene words cannot select runtime checks. */
-    sceneType?: SceneType;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    lightModel?: string;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    verifierTimeoutMs?: number;
     outputLanguage?: OutputLanguage;
     deliveryContext?: AnalysisDeliveryContext;
     conclusionContract?: unknown;
-    /** @deprecated Ignored. Runtime checks do not classify the user query. */
-    query?: string;
-    emitIssueProgress?: boolean;
-    /** @deprecated Ignored. Runtime checks never learn from wording. */
-    allowPersistentLearning?: boolean;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    providerId?: string | null;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    providerScope?: ProviderScope;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
@@ -246,15 +220,6 @@ export async function verifyConclusion(
     ...(options.hypotheses === undefined ? [] : verifyHypotheses(options.hypotheses)),
     ...assessDeliveryIssues(conclusion, options.deliveryContext, options.conclusionContract, outputLanguage),
   ];
-  if (options.emitUpdate && options.emitIssueProgress !== false && heuristicIssues.length > 0) {
-    options.emitUpdate({
-      type: 'progress',
-      content: {phase: 'concluding', message: localize(outputLanguage,
-        '运行状态检查记录了需要处理的事项。',
-        'Runtime checks recorded items that need attention.')},
-      timestamp: Date.now(),
-    });
-  }
   return {
     passed: !heuristicIssues.some(issue => issue.severity === 'error'),
     heuristicIssues,

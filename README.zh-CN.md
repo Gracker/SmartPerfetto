@@ -15,6 +15,12 @@
 SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用自然语言提问，
 即可获得包含 SQL 结果、Skill 输出、根因推理和优化建议的证据化结论。
 
+**带上你自己的手机／团队知识库。** 把设备专有 tag 定义、Trace 片段说明和版本差异整理成
+文档，在 AI Assistant 的上下文控件 →“管理…”→“文档知识库”添加并建立索引，再按轮选择。
+模型可检索资料解释具体含义，答案附文件与行号，回答下方显示检索交付数和答案引用情况。
+这有助于减少对私有名称的猜测，当前 Trace 的事实仍由 SQL／Skill 证明。命中的正文会发送给
+你授权的 AI 服务。见[私有知识库使用指南](docs/getting-started/private-knowledge.md)。
+
 项目已开源并持续开发。Web UI、CLI、后端 Runtime 和 Skill 系统目前均可使用，
 但公开 API 与内部契约仍可能演进。
 
@@ -31,9 +37,11 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
 | 分析 | [SmartPerfetto](https://github.com/Gracker/SmartPerfetto) | 通过 AI 辅助 Web UI、CLI、报告、会话、对比和证据工作流分析 Trace。 | [GitHub](https://github.com/Gracker/SmartPerfetto) |
 | Agent 分析 | [Perfetto Skills](https://github.com/Gracker/Perfetto-Skills) | 为 Agent 提供可移植的 Android、Linux、Chromium Perfetto 分析 Skill，并通过固定版本流程同步选定资产。 | [GitHub](https://github.com/Gracker/Perfetto-Skills) |
 | 学习 | [Android Performance Blog](https://github.com/Gracker/Gracker.github.io) | 通过文章、系统原理和案例复盘讲解 Perfetto 与 Systrace 分析。 | [AndroidPerformance.com](https://www.androidperformance.com/) · [GitHub](https://github.com/Gracker/Gracker.github.io) |
-| 系统知识 | [Android Internals 知识](docs/getting-started/android-internals-knowledge.md) | 默认使用签名随包公开 Knowledge Pack，也可显式接入获准的私有 `android-internals-wiki` checkout。 | [使用指南](docs/getting-started/android-internals-knowledge.md) |
+| 系统知识 | [Android Internal Wiki](https://github.com/Gracker/android-internals-wiki) | 处于 alpha 阶段的 Android 系统知识库，覆盖 App、Framework、Native 与 Kernel 机制。 | [GitHub](https://github.com/Gracker/android-internals-wiki) |
 | 复现 | [Trace for Blog (SystraceForBlog)](https://github.com/Gracker/SystraceForBlog) | 提供文章使用的 Perfetto、Systrace 及相关案例文件，支持动手复现。 | [GitHub](https://github.com/Gracker/SystraceForBlog) |
 <!-- android-performance-ecosystem:end -->
+
+把公开的 Android Internals Wiki（或你自己的团队文档）注册为文档知识库，分析时按需检索并附出处引用。见 [Android Internals 知识使用指南](docs/getting-started/android-internals-knowledge.md)。
 
 ## 项目能力
 
@@ -45,12 +53,23 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
   对比和报告。达到分析轮次上限后，会基于已有证据交付结论并列出不足；同一会话
   的追问可继承已授权的历史，重新打开或后端重启后也可恢复。
 - 使用确定性的 YAML Skill 与 Markdown 策略，将事实证据、模型解释和报告来源分开。
+- 按问题关联关键任务、CPU 频率、系统负载、线程状态、核运行分布和调度证据。
+  整场景调查在 Trace 和进程条件满足时先运行策略声明的入口 Skill，缺少的证据明确说明。
 - 按每次请求显式选择已注册的本机源码，无需索引也能有界按需检索，并在
   Web、报告、CLI、snapshot 和 API 的安全来源中区分 trace 发生证据与
   `CodeRef` 机制证据。通过“选择文件夹 → 添加并用于分析”即可开始，排除路径和
   可选索引设置见[源码分析指南](docs/getting-started/code-aware-analysis.md)。相关片段会发送给
   当前配置的 AI 服务，源码检索会增加分析耗时。结果和源码引用可随本地历史、报告保存；
   AI 服务的内容留存取决于该服务的配置与政策。
+- 可按轮选用自己的设备／团队文档知识库，解释专有 tag 和 Trace 片段，按需检索并带出处引用；
+  知识库只作背景，不替代当前 trace 的证据。见
+  [私有知识库](docs/getting-started/private-knowledge.md)与
+  [Android Internals 知识](docs/getting-started/android-internals-knowledge.md)。
+- 先交付、后核验：Claude 与 OpenAI runtime 边生成边显示回答草稿；回答完成后可立即阅读，
+  满足审核条件和预算时再做一次无工具复核。停止核验会保留回答；完整停止和强制停止有各自语义。
+- 在选中的 `thread_state` 上打开 Critical path 等待链抽屉，或在火焰图页查看 CPU 调用栈热点，
+  均带规则兜底的 AI 总结。见 [Critical path 与火焰图](docs/getting-started/critical-path-and-flamegraph.md)。
+- 用 `smp capture` 从连接的 Android 设备按预置或自定义配置抓 trace，可选抓完直接分析。
 - UI 选区只传身份与时间边界；名称等描述性事实由后端重新查询，`/anr` 与 `/jank`
   也进入同一套证据和验证管线。
 - 支持浏览器 UI、`smp` CLI 和 HTTP/SSE 接入；完整范围见
@@ -85,6 +104,19 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
   smp doctor
   ```
 
+如果 npm 提示依赖安装脚本被 blocked 或 skipped，先审查对应脚本，再仅为所需依赖
+授权并重装：
+
+```bash
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+```
+
+`better-sqlite3` 提供 CLI 核心命令使用的原生 SQLite 绑定；选择 OpenCode 运行时时
+需要运行 `opencode-ai` 的安装脚本。发布包里的脚本审批不会替使用者授权。项目内
+安装的审批方式，以及 doctor 和真实 query 检查，见
+[CLI 安装说明](docs/reference/cli.md#npm-阻止安装脚本时)和
+[npm 官方安装策略](https://docs.npmjs.com/cli/install/)。
+
 完整前置条件与运行方式见 [快速开始](docs/getting-started/quick-start.md)。
 
 ### 2. 配置一个 AI Provider
@@ -96,6 +128,8 @@ Web UI 启动后，打开 **AI Assistant 设置 → Providers**，添加一个 P
 配置 BYOK 模型路由；Qoder PAT 或 `qodercli` 认证仍是独立且必需的。已保存 Provider
 会通过受控缓存刷新供应商支持的模型建议；目录不支持或不可用时继续使用内置预置。
 
+Pi 用户可在 model JSON 中配置推理设置；provider 默认、显式关闭和强度映射见 [Pi 配置说明](docs/getting-started/configuration.md#llm-配置)。
+
 ### 3. 完成第一次分析
 
 1. 打开启动器打印的 `Open:` 地址；Docker 或源码默认地址为
@@ -105,9 +139,13 @@ Web UI 启动后，打开 **AI Assistant 设置 → Providers**，添加一个 P
 4. 输入 `分析滑动卡顿`、`为什么启动慢？` 或 `分析这个 Trace 中的 ANR` 等问题。
 
 每一轮先展示本轮分析过程和步骤，最后展示本轮结论；下一轮问题接在该结论之后。
-服务器核验详情默认折叠，点击可查看完整记录；核验警告仍直接显示。
+服务器核验详情默认折叠，点击可查看完整记录；核验警告仍直接显示。已完成的分析正常交付，核验疑点或未覆盖项会单独标注，供用户结合证据判断。
+Web、CLI 和导出报告保留每条断言的证据与核验状态；某条声明格式错误时，其他有效声明仍可核验。
+证据不足与断言被证据反驳分别显示。
+显式绑定到原始证据的正文数字，会在语义复核前独立检查单位换算与显示舍入；模型判断正确也不能放过错误数字。原始引用和命题保留完整精度，显示正确不证明统计范围或因果；旧格式输出仍保留舍入警告与未完全核验状态。
 最终结论保留问题范围内所有重要发现、支持证据与限制，即使中间表格折叠也能独立阅读；不会只为缩短篇幅而删减发现或引用声明。
 结论中的多项指标、阶段耗时和 Trace 差异优先用紧凑表格呈现，配合机制解释与证据引用；单个数值或不适合表格的问题仍可直接用文字回答。
+HTML 报告保留已采集的表格列、嵌套值和来源。指标表显示已声明单位及明确的警告标签，普通观测值不附带健康判定。保存 HTML 使用浏览器本地下载，打印时展开已采集详情；历史报告的限制见 [HTML 分析报告](docs/getting-started/features.md#5-html-分析报告)。
 
 CLI 用法：
 
@@ -134,6 +172,12 @@ CLI 未完成时会显示终止原因和具体诊断；已有报告正文也可�
 
 ## 贡献与支持
 
+GitHub Actions 每次 PR/主分支提交运行干净 Linux 环境的构建和合同检查；Rust、
+macOS/Windows 和 Docker 按相关改动触发。提交或合入 PR 前，在本地运行完整的
+`npm run verify:pr`；需要云端完整回归时，手动运行
+`backend-agent-regression-gate.yml` 并设置 `full=true`。详见
+[验证分工](.claude/rules/testing.md#hosted-ci-and-local-verification)。
+
 提交 Pull Request 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。Bug 和功能建议请使用
 [GitHub Issues](https://github.com/Gracker/SmartPerfetto/issues)；安全问题请通过
 [私有安全公告](https://github.com/Gracker/SmartPerfetto/security/advisories/new)
@@ -145,9 +189,3 @@ CLI 未完成时会显示终止原因和具体诊断；已有报告正文也可�
 SmartPerfetto 核心代码使用 [AGPL-3.0-or-later](LICENSE)；`perfetto/` submodule 继续使用
 [Apache-2.0](https://github.com/google/perfetto/blob/main/LICENSE)。如需不受 AGPL 约束的
 商业授权，请通过微信 `553000664` 联系维护者。
-
-## 跨场景系统调查
-
-性能调查会按问题关联关键任务、CPU 频率、系统负载、线程状态、核运行分布和调度证据。根因策略详情完整读取；缺少的证据明确说明。调查覆盖独立于报告章节和运行时完成状态核验，使用方式见 [基本使用](docs/getting-started/usage.md)。
-
-结论正文完整保留。Web、CLI 和导出报告显示每条声明的证据与服务器核验详情，包括未通过或未核验的项。找到来源并不代表声明或根因已经得到验证。

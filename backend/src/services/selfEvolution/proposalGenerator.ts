@@ -255,11 +255,3 @@ function parseGeneratedBody(
     },
   };
 }
-
-export const proposalGeneratorTesting = {
-  TEMPLATE_NAME,
-  DEFAULT_MODEL,
-  DEFAULT_TIMEOUT_MS,
-  MAX_TURNS,
-  parseGeneratedBody,
-};

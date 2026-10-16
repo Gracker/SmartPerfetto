@@ -5,20 +5,30 @@
 import fs from 'fs';
 
 /**
- * Smart trace format and OS detector.
+ * Trace format and OS detector.
  *
- * Detection is content-based (magic bytes + content scanning), not extension-based.
- * This is important because users may upload HarmonyOS text traces with arbitrary
- * extensions (.trace, .txt, etc.).
+ * Detection is content-based (magic bytes plus a bounded head scan), never
+ * extension-based: users upload text traces with arbitrary extensions.
  *
- * Two-layer strategy:
- *   Layer 1 — Magic bytes (zero-cost, first 128 bytes)
- *   Layer 2 — Content feature scan (sample first 64KB)
+ * Format and OS are separate questions. The format comes from the magic bytes;
+ * the OS needs positive evidence and otherwise stays `unknown`, because a wrong
+ * OS label is worse than none: it reaches the model's `trace_context` and can
+ * steer it to the wrong rendering pipeline.
  *
- * Supported formats:
- *   - perfetto_protobuf: standard Perfetto protobuf traces (Android)
- *   - systrace_text: standard Android systrace/atrace text
- *   - atrace_text: HarmonyOS hitrace text output (standard ftrace text with HarmonyOS markers)
+ *   - `android` needs an Android build fingerprint, an Android kernel release
+ *     token (binary traces), or an anchored ftrace task/comm field naming an
+ *     Android-only system process (text traces).
+ *   - `harmonyos` needs the documented hitrace first line on a text trace.
+ *     Perfetto protobuf never yields `harmonyos`: no HarmonyOS producer of it
+ *     is known.
+ *
+ * Substring tags such as `ace::` are deliberately not evidence: `ace::` matches
+ * every `Surface::`/`Iface::`/`Interface::` in ordinary Android AIDL slice names.
+ *
+ * Formats:
+ *   - perfetto_protobuf: Perfetto protobuf trace
+ *   - systrace_text: ftrace/atrace text
+ *   - atrace_text: HarmonyOS hitrace text output
  */
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -42,312 +52,214 @@ export interface TraceFormatInfo {
 
 // ── Constants ─────────────────────────────────────────────────────────
 
-/** Strong HarmonyOS atrace tags. Each can independently refine OS detection. */
-const HARMONYOS_ATRACE_TAGS = [
-  'ace::',
-  'ArkTS',
-  'ark_ts',
-  'RSRender',
-  'RenderService',
-  'FFRT',
-  'ffrt::',
-  'Hiperf',
-  'hiperf',
-  'Hisysevent',
-  'hitrace',
-  'HiViewNode',
-  'AppExecFwk',
-  'AbilityManagerService',
-  'ohos.',
-] as const;
-
-// Do not classify on the generic `H:` tracing_mark_write prefix alone. Android
-// traces can legitimately contain markers such as `H:CPU_LOAD_RESET`; HarmonyOS
-// classification needs a hitrace header, a Harmony-only process, or a strong tag.
+/** Bytes read from the file head for detection. */
+export const TRACE_HEAD_SCAN_BYTES = 65536;
 
 /**
- * HarmonyOS-specific process/command names that appear in ftrace text output.
- * These are kernel thread and system service names unique to HarmonyOS.
+ * HarmonyOS hitrace first line, as documented by OpenHarmony and as written by
+ * `scripts/collect-harmonyos-ftrace.sh` (`hitrace --text -t N` with `2>&1`):
+ * `2026/05/10 12:00:00 start capture, please wait 10s ...`. The duration
+ * suffix is optional and bounded; nothing else may follow. Captures written
+ * with `hitrace -o` carry no such line and stay `unknown`.
  */
-const HARMONYOS_PROCESS_PATTERNS = [
-  /sysmgr-reclaim/i,
-  /OS_IPC_\d/i,
-  /tppmgr-idle/i,
-  /udk-irq/i,
-  /para_anon_recla/i,
-  /sysmgr\.elf/i,
-] as const;
-
-/** HarmonyOS hitrace header: "YYYY/MM/DD HH:MM:SS start capture, please wait" */
-const HITRACE_HEADER_RE = /^\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}\s+start capture/i;
-
-/** Maximum bytes to read from the file head for detection. */
-const SCAN_SIZE = 65536; // 64KB
-
-// ── Layer 1: Magic bytes ──────────────────────────────────────────────
+const HITRACE_HEADER_RE =
+  /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2} start capture, please wait(?: \d{1,5}s(?: ?\.{3})?)?[ \t]*$/;
 
 /**
- * Examine the first bytes of a file to identify the trace format.
- *
- * Signatures observed from real files:
- *   Perfetto protobuf: 0a xx ... (TracePacket field tag)
- *   Systrace/atrace text: starts with date string or "# tracer:"
+ * Android build fingerprint (`Build.FINGERPRINT`):
+ * `<brand>/<product>/<device>:<release>/<build id>/<incremental>:<type>/<tags>`
+ * with type user|userdebug|eng and tags ending in `keys`. The release may be a
+ * codename (`CinnamonBun`). Every component is drawn from a printable class
+ * without `/` or `:`, so a match never crosses a non-printable protobuf byte.
+ * The protobuf tag and length bytes around the string may themselves be
+ * printable (android-scroll-customer stores `Q<fingerprint>r`), so the brand
+ * may absorb a leading byte and the match ends at `keys` without a trailing
+ * boundary; nothing reads the components. The look-behind only starts matching
+ * at the beginning of a component run. It is what keeps the scan linear: without
+ * it a 64 KB adversarial head takes seconds (quadratic backtracking).
  */
-function detectByMagicBytes(head: Buffer): { format: TraceFormat; reason: string } | null {
-  if (head.length < 8) return null;
+const FINGERPRINT_PART = '[A-Za-z0-9._+-]+';
+const ANDROID_FINGERPRINT_RE = new RegExp(
+  `(?<![A-Za-z0-9._+-])${FINGERPRINT_PART}/${FINGERPRINT_PART}/${FINGERPRINT_PART}`
+  + `:${FINGERPRINT_PART}/${FINGERPRINT_PART}/${FINGERPRINT_PART}`
+  + `:(?:user|userdebug|eng)/[A-Za-z0-9._,-]*keys`,
+);
 
-  // Perfetto protobuf: starts with 0x0A (TracePacket field 1, wire type 2 = length-delimited)
-  if (head[0] === 0x0a) {
-    return { format: 'perfetto_protobuf', reason: 'magic: 0x0A TracePacket header' };
-  }
+/**
+ * Android (GKI) kernel release, e.g. `6.1.162-android14-11-g...`, as stored in
+ * the Perfetto SystemInfo utsname. The byte before it may be a printable
+ * length byte (`.6.6.89-android15-8-...`), so only a preceding digit is excluded.
+ */
+const ANDROID_KERNEL_RELEASE_RE = /(?<!\d)\d+\.\d+(?:\.\d+)?-android\d+-/;
 
-  // Systrace/atrace text: starts with a date string like "2026/05/10" or "# tracer:"
-  const headStr = head.toString('utf8', 0, Math.min(head.length, 256));
-  if (headStr.startsWith('# tracer:') || headStr.startsWith('TRACE:')) {
-    return { format: 'systrace_text', reason: 'magic: text header "# tracer:" or "TRACE:"' };
-  }
-  // hitrace text output starts with date string
-  if (/^\d{4}\/\d{2}\/\d{2}/.test(headStr) && headStr.includes('# tracer:')) {
-    return { format: 'systrace_text', reason: 'magic: date header + "# tracer:"' };
-  }
+/**
+ * Android-only system processes, matched only in an ftrace task field
+ * (`  surfaceflinger-642  (  642) [003] ...`) or a sched_switch
+ * `prev_comm=`/`next_comm=` value, never as a bare substring. Names are the
+ * kernel comm, truncated to 15 characters (`hwservicemanage`,
+ * `android.hardwar`). `atrace` is the Android capture tool, which appears as a
+ * sched comm near the head of every real-device systrace; `adbd` is not listed
+ * because embedded Linux, Ubuntu Touch and Waydroid hosts ship it too.
+ */
+const ANDROID_SYSTEM_TASKS = [
+  'surfaceflinger', 'system_server', 'servicemanager', 'hwservicemanage', 'vndservicemanag',
+  'zygote', 'zygote64', 'android.hardwar', 'atrace',
+];
+const ANDROID_SYSTEM_TASK =
+  `(?:${ANDROID_SYSTEM_TASKS.map(name => name.replace(/\./g, '\\.')).join('|')})`;
+/**
+ * A whole ftrace event line: `<comm>-<pid> [(<tgid>)] [<cpu>] [<flags>]
+ * <sec>.<usec>: <event>:`. Evidence must sit in a real event line, so a line
+ * that merely starts with `surfaceflinger-642` or a marker payload that quotes
+ * `prev_comm=` proves nothing. Every part is bounded or a single non-space run.
+ */
+function ftraceEventLine(comm: string, event: string): string {
+  return `^[ \\t]*${comm}-\\d+[ \\t]+(?:\\([ \\t]*[\\d-]+\\)[ \\t]+)?\\[\\d{3,}\\][ \\t]+`
+    + `(?:[^ \\t\\n]+[ \\t]+)?\\d+\\.\\d+:[ \\t]+${event}:`;
+}
+/** An Android system task emitting any ftrace event. */
+const ANDROID_TASK_FIELD_RE = new RegExp(ftraceEventLine(ANDROID_SYSTEM_TASK, '\\w+'), 'm');
+/** An Android system task switched in or out, in a sched_switch event line (comm is at most 15 characters). */
+const ANDROID_COMM_FIELD_RE = new RegExp(
+  `${ftraceEventLine('[^\\n]{1,16}', 'sched_switch')}[^\\n]*?[ \\t](?:prev|next)_comm=${ANDROID_SYSTEM_TASK}[ \\t]`,
+  'm',
+);
 
+// ── Evidence ──────────────────────────────────────────────────────────
+
+interface OsEvidence {
+  os: TraceOs;
+  reason: string;
+}
+
+/** Android identity carried by binary (protobuf) trace metadata. */
+function findBinaryAndroidEvidence(text: string): OsEvidence | null {
+  if (ANDROID_FINGERPRINT_RE.test(text)) return {os: 'android', reason: 'android build fingerprint'};
+  if (ANDROID_KERNEL_RELEASE_RE.test(text)) {
+    return {os: 'android', reason: 'android kernel release'};
+  }
   return null;
 }
 
-// ── Layer 2: Content feature scan ─────────────────────────────────────
+function firstLine(text: string): string {
+  const newline = text.indexOf('\n');
+  const line = newline < 0 ? text : text.slice(0, newline);
+  return line.replace(/^\uFEFF/, '').replace(/\r$/, '');
+}
 
-/**
- * Scan file content for OS-specific markers.
- * Used when magic bytes are inconclusive or to refine OS detection.
- */
-function detectByContentScan(head: Buffer): { os: TraceOs; reason: string } | null {
-  const headStr = head.toString('utf8', 0, Math.min(head.length, SCAN_SIZE));
-
-  // Check for HarmonyOS hitrace header ("YYYY/MM/DD HH:MM:SS start capture, please wait")
-  const firstLine = headStr.split('\n')[0] ?? '';
-  if (HITRACE_HEADER_RE.test(firstLine)) {
-    return { os: 'harmonyos', reason: `content_scan: hitrace header "${firstLine.trim()}"` };
+/** OS evidence for a text trace. */
+function findTextOsEvidence(text: string): OsEvidence | null {
+  if (HITRACE_HEADER_RE.test(firstLine(text))) {
+    return {os: 'harmonyos', reason: 'hitrace first-line header'};
   }
-
-  // Check for HarmonyOS-specific process names in ftrace lines
-  for (const pat of HARMONYOS_PROCESS_PATTERNS) {
-    if (pat.test(headStr)) {
-      return { os: 'harmonyos', reason: `content_scan: HarmonyOS process name "${pat.source}"` };
-    }
+  if (ANDROID_TASK_FIELD_RE.test(text)) {
+    return {os: 'android', reason: 'android system process in ftrace task field'};
   }
-
-  // Check for HarmonyOS atrace markers
-  for (const marker of HARMONYOS_ATRACE_TAGS) {
-    if (headStr.includes(marker)) {
-      return { os: 'harmonyos', reason: `content_scan: found HarmonyOS marker "${marker}"` };
-    }
+  if (ANDROID_COMM_FIELD_RE.test(text)) {
+    return {os: 'android', reason: 'android system process in sched comm field'};
   }
-
+  if (ANDROID_FINGERPRINT_RE.test(text)) {
+    return {os: 'android', reason: 'android build fingerprint'};
+  }
   return null;
 }
 
-/**
- * Detect OS from text-format systrace/atrace content.
- * Scans for HarmonyOS-specific markers in the trace body.
- */
-function detectOsFromTextContent(head: Buffer): TraceOs {
-  const headStr = head.toString('utf8', 0, Math.min(head.length, SCAN_SIZE));
-
-  // Check hitrace header
-  const firstLine = headStr.split('\n')[0] ?? '';
-  if (HITRACE_HEADER_RE.test(firstLine)) {
-    return 'harmonyos';
-  }
-
-  // Check HarmonyOS process names
-  for (const pat of HARMONYOS_PROCESS_PATTERNS) {
-    if (pat.test(headStr)) return 'harmonyos';
-  }
-
-  // Check HarmonyOS atrace tags
-  for (const tag of HARMONYOS_ATRACE_TAGS) {
-    if (headStr.includes(tag)) return 'harmonyos';
-  }
-
-  return 'android'; // default for text traces
-}
-
-// ── Public API ────────────────────────────────────────────────────────
+// ── Classification ────────────────────────────────────────────────────
 
 /**
- * Detect the format and OS of a trace file by inspecting its content.
- *
- * @param filePath Absolute path to the trace file.
- * @returns TraceFormatInfo with format, os, confidence, and detection method.
- */
-export async function detectTraceFormat(filePath: string): Promise<TraceFormatInfo> {
-  // Read up to SCAN_SIZE bytes from file head
-  const fd = fs.openSync(filePath, 'r');
-  const head = Buffer.alloc(SCAN_SIZE);
-  let bytesRead: number;
-  try {
-    bytesRead = fs.readSync(fd, head, 0, SCAN_SIZE, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-
-  const actualHead = head.subarray(0, bytesRead);
-
-  // ── Layer 1: Magic bytes ──
-  const magicResult = detectByMagicBytes(actualHead);
-
-  if (magicResult) {
-    const format = magicResult.format;
-
-    if (format === 'perfetto_protobuf') {
-      // Perfetto protobuf → typically Android, but scan for HarmonyOS markers just in case
-      const osResult = detectByContentScan(actualHead);
-      if (osResult && osResult.os === 'harmonyos') {
-        return {
-          format: 'perfetto_protobuf',
-          os: 'harmonyos',
-          confidence: 0.9,
-          detectionMethod: 'content_scan',
-          reason: `${magicResult.reason}; ${osResult.reason}`,
-        };
-      }
-      return {
-        format: 'perfetto_protobuf',
-        os: 'android',
-        confidence: 0.95,
-        detectionMethod: 'magic',
-        reason: magicResult.reason,
-      };
-    }
-
-    if (format === 'systrace_text') {
-      // Text format — detect OS by content
-      const os = detectOsFromTextContent(actualHead);
-      const isHarmony = os === 'harmonyos';
-      return {
-        format: isHarmony ? 'atrace_text' : 'systrace_text',
-        os,
-        confidence: isHarmony ? 0.9 : 0.85,
-        detectionMethod: 'content_scan',
-        reason: `${magicResult.reason}; OS=${os}`,
-      };
-    }
-  }
-
-  // ── Layer 2: Content scan (magic bytes inconclusive) ──
-  const contentOs = detectByContentScan(actualHead);
-
-  // Check if file is text or binary
-  const isText = isLikelyText(actualHead);
-
-  if (isText) {
-    // Text file — check for ftrace markers
-    const headStr = actualHead.toString('utf8', 0, Math.min(actualHead.length, 512));
-    const hasFtraceHeader = headStr.includes('# tracer:') || headStr.includes('TRACE:');
-
-    if (contentOs && contentOs.os === 'harmonyos') {
-      return {
-        format: 'atrace_text',
-        os: 'harmonyos',
-        confidence: 0.85,
-        detectionMethod: 'content_scan',
-        reason: contentOs.reason,
-      };
-    }
-
-    if (hasFtraceHeader) {
-      return {
-        format: 'systrace_text',
-        os: 'android',
-        confidence: 0.8,
-        detectionMethod: 'content_scan',
-        reason: 'content_scan: text file with ftrace header, no HarmonyOS markers',
-      };
-    }
-
-    // Text file without ftrace header — could be partial trace
-    return {
-      format: 'unknown',
-      os: contentOs?.os ?? 'unknown',
-      confidence: 0.5,
-      detectionMethod: 'content_scan',
-      reason: contentOs?.reason ?? 'content_scan: text file, unrecognized format',
-    };
-  }
-
-  // ── Layer 3: Fallback ──
-  // Binary file not identified as Perfetto protobuf — let trace_processor_shell try
-  return {
-    format: 'unknown',
-    os: contentOs?.os ?? 'unknown',
-    confidence: 0.1,
-    detectionMethod: 'probe_query',
-    reason: 'fallback: unrecognized binary format, will probe with trace_processor_shell',
-  };
-}
-
-/**
- * Quick heuristic to check if a buffer is likely text (UTF-8) or binary.
- * Checks for common binary byte patterns in the first 512 bytes.
+ * Quick heuristic: text files have almost no NUL bytes in their first 512 bytes.
  */
 function isLikelyText(buf: Buffer): boolean {
   const checkLen = Math.min(buf.length, 512);
   let nullCount = 0;
   for (let i = 0; i < checkLen; i++) {
-    const b = buf[i];
-    // Count null bytes — binary files have many, text files have very few
-    if (b === 0) nullCount++;
-    // Early exit: if >5% null bytes, likely binary
+    if (buf[i] === 0) nullCount++;
     if (nullCount > checkLen * 0.05) return false;
   }
   return true;
 }
 
+function explain(base: string, evidence: OsEvidence | null): string {
+  return evidence ? `${base}; os=${evidence.os} (${evidence.reason})` : `${base}; os=unknown (no OS evidence)`;
+}
+
 /**
- * Synchronous version for use in non-async contexts (e.g., factory constructors).
- * Reads only up to SCAN_SIZE bytes.
+ * Classify a trace from the bytes of its head. Pure: the caller decides how
+ * many bytes to pass (`detectTraceFormat` passes the first 64 KB).
  */
-export function detectTraceFormatSync(filePath: string): TraceFormatInfo {
+export function classifyTraceHead(head: Buffer): TraceFormatInfo {
+  if (head.length >= 8 && head[0] === 0x0a) {
+    // Perfetto protobuf: TracePacket field 1, wire type 2.
+    const evidence = findBinaryAndroidEvidence(head.toString('latin1'));
+    const base = 'magic: 0x0A TracePacket header';
+    return {
+      format: 'perfetto_protobuf',
+      os: evidence?.os ?? 'unknown',
+      confidence: 0.95,
+      detectionMethod: evidence ? 'content_scan' : 'magic',
+      reason: explain(base, evidence),
+    };
+  }
+
+  if (!isLikelyText(head)) {
+    const evidence = findBinaryAndroidEvidence(head.toString('latin1'));
+    return {
+      format: 'unknown',
+      os: evidence?.os ?? 'unknown',
+      confidence: 0.1,
+      detectionMethod: 'probe_query',
+      reason: explain('fallback: unrecognized binary format, will probe with trace_processor_shell', evidence),
+    };
+  }
+
+  const text = head.toString('utf8');
+  const evidence = findTextOsEvidence(text);
+  if (evidence?.os === 'harmonyos') {
+    return {
+      format: 'atrace_text',
+      os: 'harmonyos',
+      confidence: 0.9,
+      detectionMethod: 'content_scan',
+      reason: explain('text: hitrace output', evidence),
+    };
+  }
+
+  const start = text.slice(0, 512);
+  if (start.includes('# tracer:') || start.includes('TRACE:')) {
+    return {
+      format: 'systrace_text',
+      os: evidence?.os ?? 'unknown',
+      confidence: 0.85,
+      detectionMethod: 'content_scan',
+      reason: explain('text: ftrace header "# tracer:" or "TRACE:"', evidence),
+    };
+  }
+
+  return {
+    format: 'unknown',
+    os: evidence?.os ?? 'unknown',
+    confidence: 0.5,
+    detectionMethod: 'content_scan',
+    reason: explain('text: unrecognized format', evidence),
+  };
+}
+
+/**
+ * Detect the format and OS of a trace file from its first 64 KB.
+ *
+ * @param filePath Absolute path to the trace file.
+ */
+export async function detectTraceFormat(filePath: string): Promise<TraceFormatInfo> {
+  // Synchronous on purpose: the upload path creates the processor right after
+  // detection, and its deletion/reload ordering (see
+  // traceProcessorLeaseProcessorRouting.test.ts) assumes no I/O turn between.
+  const head = Buffer.alloc(TRACE_HEAD_SCAN_BYTES);
   const fd = fs.openSync(filePath, 'r');
-  const head = Buffer.alloc(SCAN_SIZE);
   let bytesRead: number;
   try {
-    bytesRead = fs.readSync(fd, head, 0, SCAN_SIZE, 0);
+    bytesRead = fs.readSync(fd, head, 0, TRACE_HEAD_SCAN_BYTES, 0);
   } finally {
     fs.closeSync(fd);
   }
-
-  const actualHead = head.subarray(0, bytesRead);
-
-  const magicResult = detectByMagicBytes(actualHead);
-  if (magicResult) {
-    const format = magicResult.format;
-    if (format === 'perfetto_protobuf') {
-      const osResult = detectByContentScan(actualHead);
-      if (osResult?.os === 'harmonyos') {
-        return { format: 'perfetto_protobuf', os: 'harmonyos', confidence: 0.9, detectionMethod: 'content_scan', reason: `${magicResult.reason}; ${osResult.reason}` };
-      }
-      return { format: 'perfetto_protobuf', os: 'android', confidence: 0.95, detectionMethod: 'magic', reason: magicResult.reason };
-    }
-    if (format === 'systrace_text') {
-      const os = detectOsFromTextContent(actualHead);
-      const isHarmony = os === 'harmonyos';
-      return { format: isHarmony ? 'atrace_text' : 'systrace_text', os, confidence: isHarmony ? 0.9 : 0.85, detectionMethod: 'content_scan', reason: `${magicResult.reason}; OS=${os}` };
-    }
-  }
-
-  const contentOs = detectByContentScan(actualHead);
-  const isTextFile = isLikelyText(actualHead);
-  if (isTextFile) {
-    if (contentOs?.os === 'harmonyos') {
-      return { format: 'atrace_text', os: 'harmonyos', confidence: 0.85, detectionMethod: 'content_scan', reason: contentOs.reason };
-    }
-    const headStr = actualHead.toString('utf8', 0, Math.min(actualHead.length, 512));
-    if (headStr.includes('# tracer:') || headStr.includes('TRACE:')) {
-      return { format: 'systrace_text', os: 'android', confidence: 0.8, detectionMethod: 'content_scan', reason: 'content_scan: text file with ftrace header' };
-    }
-    return { format: 'unknown', os: contentOs?.os ?? 'unknown', confidence: 0.5, detectionMethod: 'content_scan', reason: 'content_scan: text file, unrecognized' };
-  }
-
-  return { format: 'unknown', os: contentOs?.os ?? 'unknown', confidence: 0.1, detectionMethod: 'probe_query', reason: 'fallback: unrecognized binary format' };
+  return classifyTraceHead(head.subarray(0, bytesRead));
 }

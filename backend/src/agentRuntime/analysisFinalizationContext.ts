@@ -4,13 +4,16 @@
 
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import type {SourceExecutionScopeV1, SourceUseDecisionV1} from '../services/codebase/sourceUseDecision';
+import type {KnowledgeUseRecord} from '../services/knowledge/knowledgeUse';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import type {AnalysisDeliveryContext} from '../types/analysisDelivery';
 import type {DataEnvelope} from '../types/dataContract';
 import type {EvidenceReadRequest, EvidenceReadResolution, EvidenceReadView} from '../services/evidence/evidenceReadView';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import {validateAnalysisRunSelection, type AnalysisRunSelection} from './analysisRunSpec';
-import type {IntentTransportInput, IntentTransportResult} from './intentTransport';
+import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTransportResult} from './intentTransport';
+import {runtimeProviderOrigin} from './runtimePerformance';
+import {currentRuntimePerformanceRecorder} from '../services/selfEvolution/runManifestLifecycle';
 import {readConclusionProtocolProjection, releaseConclusionProtocolProjection,
   claimConclusionProtocolProjection,
   type IssuedConclusionProtocolProjection, type NativeConclusionDeclaration} from '../services/security/conclusionProtocolProjection';
@@ -39,12 +42,30 @@ export interface RuntimeFinalizationContextInput {
   providerQuery?: FinalizationProviderQuery;
   sourceUse?: SourceUseDecisionV1;
   sourceScope?: SourceExecutionScopeV1;
+  /** What the run delivered from its selected knowledge bases; never evidence. */
+  knowledgeUse?: KnowledgeUseRecord;
   protocolProjection?: IssuedConclusionProtocolProjection;
   /** Captured facts only. Availability is not completeness of capture. */
   capabilityEvidence?: readonly DataEnvelope[];
   evidenceReadView?: EvidenceReadView;
   /** Same pinned provider/auth, with a new no-tools request and its own cleanup. */
   dispatchText?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
+  /** Which provider and model `dispatchText` reaches, for its duration estimate and receipt. */
+  deliveryCall?: FinalizationDeliveryCall;
+}
+
+/** Closed identity of the review transport; an origin only, never a path or credential. */
+export interface FinalizationDeliveryCall {
+  providerOrigin?: string;
+  model?: string;
+}
+
+function closedDeliveryCall(value: FinalizationDeliveryCall | undefined): FinalizationDeliveryCall | undefined {
+  if (!value) return undefined;
+  const providerOrigin = runtimeProviderOrigin(value.providerOrigin);
+  const model = typeof value.model === 'string' && value.model.trim() ? value.model.trim().slice(0, 128) : undefined;
+  return providerOrigin || model ? Object.freeze({...(providerOrigin ? {providerOrigin} : {}), ...(model ? {model} : {})})
+    : undefined;
 }
 
 interface ContextState {
@@ -62,9 +83,11 @@ export interface RuntimeFinalizationContext {
   readonly deliveryContext: AnalysisDeliveryContext;
   readonly sourceUse?: SourceUseDecisionV1;
   readonly sourceScope?: Readonly<SourceExecutionScopeV1>;
+  readonly knowledgeUse?: Readonly<KnowledgeUseRecord>;
   readonly capabilityEvidence?: readonly DataEnvelope[];
   readonly investigationEvidence?: InvestigationEvidenceSnapshot;
   readonly hasSemanticTransport: boolean;
+  readonly deliveryCall?: FinalizationDeliveryCall;
   /** Input-role selection view; never evidence or a serializable result field. */
   getSelection(signal: AbortSignal): AnalysisRunSelection | undefined;
   /** Input-role view, never a general exemption from output privacy projection. */
@@ -91,8 +114,65 @@ export function reportReviewUsesRemainingBudget(input: {
     input.result.conclusionContract?.bindingEligibility !== 'ineligible';
 }
 
+/** The run's source and knowledge accessor, as every runtime holds it from its MCP server. */
+interface RunSourceAccessor {
+  getSourceUseDecision(): SourceUseDecisionV1 | undefined;
+  getSourceExecutionScope?(): SourceExecutionScopeV1 | undefined;
+  getKnowledgeUse?(): KnowledgeUseRecord | undefined;
+}
+
+/** The context fields a runtime reads from its run's source accessor, in one place. */
+export function sourceUseFinalizationFields(
+  accessor: RunSourceAccessor | undefined,
+): Pick<RuntimeFinalizationContextInput, 'sourceUse' | 'sourceScope' | 'knowledgeUse'> {
+  return {
+    sourceUse: accessor?.getSourceUseDecision(),
+    sourceScope: accessor?.getSourceExecutionScope?.(),
+    knowledgeUse: accessor?.getKnowledgeUse?.(),
+  };
+}
+
+/**
+ * What a run delivered, kept on a result it returns without a finalization
+ * context (a failure or interruption before an accepted answer): what reached
+ * the model did, whether or not there is an answer to finalize.
+ */
+export interface RunDeliveryRecord {
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly knowledgeUse: Readonly<KnowledgeUseRecord>;
+}
+
 const contexts = new WeakMap<AnalysisResult, ContextState>();
 const issuedContexts = new WeakSet<RuntimeFinalizationContext>();
+const deliveryRecords = new WeakMap<AnalysisResult, RunDeliveryRecord>();
+
+/**
+ * Keep the run's delivery record on a result that carries no finalization
+ * context. A no-op when one is attached (it carries the same record) or when
+ * the run recorded nothing (no knowledge base was selected). Finalization
+ * takes it from the result object it is handed, bound to the owner's run, and
+ * starts none of its answer semantics from it. Like the context, it never
+ * enters JSON or snapshots.
+ */
+export function attachRunDeliveryRecord(result: AnalysisResult, input: {
+  runId: string | undefined;
+  sessionId: string;
+  knowledgeUse: KnowledgeUseRecord | undefined;
+}): void {
+  if (contexts.has(result) || !input.knowledgeUse || !input.runId) return;
+  if (deliveryRecords.has(result)) throw new Error('run_delivery_record_already_attached');
+  if (result.sessionId !== input.sessionId) throw new Error('run_delivery_record_identity_mismatch');
+  deliveryRecords.set(result, freezeSnapshot({runId: input.runId, sessionId: input.sessionId,
+    knowledgeUse: input.knowledgeUse}));
+}
+
+/** Called by finalization only, on the result object an owner hands it. */
+export function takeRunDeliveryRecord(result: AnalysisResult): RunDeliveryRecord | undefined {
+  const record = deliveryRecords.get(result);
+  deliveryRecords.delete(result);
+  return record;
+}
 
 export function isIssuedFinalizationContext(context: RuntimeFinalizationContext): boolean {
   return issuedContexts.has(context);
@@ -190,7 +270,9 @@ export function attachFinalizationContext(result: AnalysisResult, input: Runtime
     providerQuery: input.providerQuery ? freezeSnapshot(input.providerQuery) : undefined,
     sourceUse: input.sourceUse ? freezeSnapshot(input.sourceUse) : undefined,
     sourceScope: input.sourceScope ? freezeSnapshot(input.sourceScope) : undefined,
+    knowledgeUse: input.knowledgeUse ? freezeSnapshot(input.knowledgeUse) : undefined,
     capabilityEvidence: input.capabilityEvidence ? freezeSnapshot(input.capabilityEvidence) : undefined,
+    deliveryCall: closedDeliveryCall(input.deliveryCall),
   }});
 }
 
@@ -218,9 +300,11 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
     get deliveryContext() { return current().deliveryContext; },
     get sourceUse() { return current().sourceUse; },
     get sourceScope() { return current().sourceScope; },
+    get knowledgeUse() { return current().knowledgeUse; },
     get capabilityEvidence() { return current().capabilityEvidence; },
     get investigationEvidence() { return current().investigationEvidence; },
     get hasSemanticTransport() { return Boolean(current().dispatchText); },
+    get deliveryCall() { return current().deliveryCall; },
     getSelection(signal: AbortSignal) { return active(signal).selection; },
     getProviderQuery(signal: AbortSignal) { return active(signal).providerQuery; },
     getNativeDeclaration(result: AnalysisResult, signal: AbortSignal) {
@@ -251,8 +335,11 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
       if (Date.now() >= deadlineMs) return {status: 'unavailable', reason: 'timeout'};
       const dispatch = value.dispatchText;
       try {
+        // The finalizer runs inside the run's manifest scope; its one review is a model call of that run.
+        const recorder = currentRuntimePerformanceRecorder();
         return await boundedOperation({signal: input.signal, lifetimeSignal: state.controller.signal,
-          deadlineMs, execute: signal => dispatch({...input, signal, deadlineMs})});
+          deadlineMs, execute: signal => dispatchWithModelCallRecord(recorder, {purpose: 'review', ...value.deliveryCall},
+            {...input, signal, deadlineMs}, dispatch)});
       } catch (error) {
         if (!(error instanceof FinalizationDeadlineError)) throw error;
         return {status: 'unavailable', reason: 'timeout'};

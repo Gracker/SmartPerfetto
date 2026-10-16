@@ -51,8 +51,6 @@ import {
 } from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
 
-const DEFAULT_BASELINE_PATH = backendLogPath('baselines.json');
-
 const MAX_CI_SOURCE_LEN = 64;
 // Allow `/`, `:`, and `@` so qualified provider names common in CI
 // systems (`org/repo`, `github.com/org/repo-ci`, `@org/pipeline`) are
@@ -84,7 +82,7 @@ let cachedRunStore: CiGateRunStore | null = null;
 
 function getDefaultBaselineStore(): BaselineStore {
   if (!cachedBaselineStore) {
-    cachedBaselineStore = new BaselineStore(DEFAULT_BASELINE_PATH);
+    cachedBaselineStore = new BaselineStore(backendLogPath('baselines.json'));
   }
   return cachedBaselineStore;
 }

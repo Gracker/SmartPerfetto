@@ -21,11 +21,6 @@ export interface AnalysisPlanCompletionStatus {
 
 export function getAnalysisPlanCompletionStatus(
   plan: AnalysisPlanV3 | null | undefined,
-  options: {
-    minSummaryChars: number;
-    /** Compatibility input only; budget mode does not change a submitted plan's obligations. */
-    quickMode?: boolean;
-  },
 ): AnalysisPlanCompletionStatus {
   if (plan === null || plan === undefined) {
     return { complete: true, hasPlan: false, pendingPhases: [] };

@@ -61,12 +61,12 @@ describe('scoped knowledge bulk writes', () => {
     const entries = Array.from({length: entryCount}, (_, index) => ({
       kind: 'rag_chunk',
       externalId: `chunk-${index}`,
-      rowScope: 'rag:android_internals_wiki',
+      rowScope: 'rag:app_source',
       record: {
         chunkId: `chunk-${index}`,
-        kind: 'android_internals_wiki',
-        registryOrigin: 'external_knowledge_registry',
-        knowledgeSourceId: `source-${Math.floor(index / 100)}`,
+        kind: 'app_source',
+        registryOrigin: 'codebase_registry',
+        codebaseId: `codebase-${Math.floor(index / 100)}`,
         sourceGeneration: 'generation-1',
         knowledgeScopeFingerprint: createHash('sha256')
           .update(`${scope.tenantId}\0${scope.workspaceId}\0${scope.userId}`)
@@ -80,9 +80,9 @@ describe('scoped knowledge bulk writes', () => {
     expect(Math.ceil(entryCount / SCOPED_KNOWLEDGE_WRITE_BATCH_SIZE)).toBe(20);
 
     const selected = searchScopedRagKnowledgeRecords<any>('rag_chunk', scope, {
-      rowScopes: ['rag:android_internals_wiki'],
-      selection: 'knowledge',
-      knowledgeSourceGenerations: [{id: 'source-42', generation: 'generation-1'}],
+      rowScopes: ['rag:app_source'],
+      selection: 'codebase',
+      codebaseGenerations: [{id: 'codebase-42', generation: 'generation-1'}],
       scopeFingerprint: entries[0].record.knowledgeScopeFingerprint,
       queryTokens: ['shared', 'retrieval'],
       candidateLimit: 500,
@@ -92,7 +92,7 @@ describe('scoped knowledge bulk writes', () => {
     expect(selected.indexHasRows).toBe(true);
     expect(selected.eligibleHasRows).toBe(true);
     expect(selected.records).toHaveLength(100);
-    expect(selected.records.every(row => row.record.knowledgeSourceId === 'source-42')).toBe(true);
+    expect(selected.records.every(row => row.record.codebaseId === 'codebase-42')).toBe(true);
 
     const removed = removeScopedKnowledgeRecords(
       'rag_chunk',
@@ -266,7 +266,7 @@ describe('scoped knowledge bulk writes', () => {
     })).toBe(1);
     expect(removeScopedRagRecords(scopeA, {
       codebaseId: 'codebase-a',
-      excludeSourceGeneration: 'generation-active',
+      sourceGeneration: 'generation-stale',
       scopeFingerprint: fingerprint(scopeA),
     })).toBe(1);
     expect(countScopedRagRecords(scopeA, {

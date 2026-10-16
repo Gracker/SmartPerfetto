@@ -4,22 +4,27 @@
 
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import type {InvestigationEvidenceRecord} from '../evidence/investigationEvidenceLedger';
+import type {InvestigationLedgerAcquisitionRow} from '../../types/analysisInvestigationAssessment';
+import {INVESTIGATION_CONDITION_OPERATORS} from '../../types/analysisInvestigation';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {SOURCE_NEEDS} from '../../types/sourceNeed';
 import {
   analysisDeliveryFingerprint,
   type AnalysisCandidateIdentity,
   type AnalysisAssuranceStatus,
   type AnalysisReportBinding,
 } from '../../types/analysisDelivery';
+import {projectKnowledgeUseForAudience, sanitizeKnowledgeUse} from '../knowledge/knowledgeUse';
 import {
   sanitizeSourceClaimBindings,
+  isLocateOnlyLookupKind,
   sanitizeSourceReference,
   sanitizeSourceUseDecision,
 } from '../codebase/sourceUseDecision';
 
 export type AnalysisDeliveryFields = Pick<AnalysisResult,
   'turnIntent' | 'completion' | 'outputOrigin' | 'runtimeAppendix' |
-  'reportAssessment' | 'investigationAssessment' | 'deliveryAssurance'>;
+  'reportAssessment' | 'investigationAssessment' | 'deliveryAssurance' | 'knowledgeUse'>;
 
 /** Preserve surviving field order because existing bindings hash the serialized contract. */
 export function preserveProjectedFieldOrder<T>(original: unknown, projection: T, depth = 0): T {
@@ -52,6 +57,11 @@ function opaqueId(value: unknown): string {
     /^[A-Za-z0-9_.:-]+$/.test(value) ? value : '';
 }
 
+/** A text field projected for its audience, kept only when it is still an opaque identifier. */
+function projectedId(value: unknown, projectText: (text: string) => string): string {
+  return opaqueId(typeof value === 'string' ? projectText(value) : value);
+}
+
 function fingerprint(value: unknown): string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : '';
 }
@@ -70,7 +80,7 @@ function copyInvestigationEvidenceRecords(values: readonly unknown[], projectTex
         !member(raw.traceSide, ['current', 'reference']) ||
         !(raw.value === null || typeof raw.value === 'string' || typeof raw.value === 'boolean' ||
           (typeof raw.value === 'number' && Number.isFinite(raw.value)))) return [];
-    const id = (value: unknown) => opaqueId(typeof value === 'string' ? projectText(value) : value);
+    const id = (value: unknown) => projectedId(value, projectText);
     const optionalId = (key: 'evidenceRefId' | 'artifactId' | 'sourceToolCallId' | 'originRunId') =>
       raw[key] === undefined ? {} : {[key]: id(raw[key])};
     const nullableIdentity = (key: 'cpu' | 'ucpu' | 'machineId') => raw[key] === null
@@ -99,6 +109,32 @@ function copyInvestigationEvidenceRecords(values: readonly unknown[], projectTex
   }));
 }
 
+/** Exactly the row statuses the type allows; a status added there fails to compile here. */
+const LEDGER_ACQUISITION_STATUSES = Object.keys({observed: true, partial: true, evidence_absent: true,
+  not_applicable: true, not_declared: true, unknown: true,
+} satisfies Record<InvestigationLedgerAcquisitionRow['status'], true>) as InvestigationLedgerAcquisitionRow['status'][];
+
+/** An explicit public projection of the ledger-only acquisition rows. */
+function copyLedgerAcquisitionRows(values: readonly unknown[], projectText: (text: string) => string): InvestigationLedgerAcquisitionRow[] {
+  const id = (value: unknown) => projectedId(value, projectText);
+  const metrics = (value: unknown) => Array.isArray(value) ? value.map(id).filter(Boolean) : [];
+  const nullableFinite = (value: unknown): value is number | null =>
+    value === null || (typeof value === 'number' && Number.isFinite(value));
+  return preserveProjectedFieldOrder(values, values.flatMap(raw => {
+    if (!record(raw) || !member(raw.applicability, ['applicable', 'not_applicable', 'unknown']) ||
+        !member(raw.status, LEDGER_ACQUISITION_STATUSES)) return [];
+    const condition = raw.condition;
+    return [{requirementId: id(raw.requirementId), domain: id(raw.domain), applicability: raw.applicability,
+      declaredMetrics: metrics(raw.declaredMetrics),
+      ...(record(condition) && member(condition.operator, INVESTIGATION_CONDITION_OPERATORS) &&
+        typeof condition.value === 'number' && Number.isFinite(condition.value) && nullableFinite(condition.observed) &&
+        (condition.met === null || typeof condition.met === 'boolean')
+        ? {condition: {metricId: id(condition.metricId), operator: condition.operator, value: condition.value,
+          observed: condition.observed, met: condition.met}} : {}),
+      status: raw.status, observedMetrics: metrics(raw.observedMetrics)}];
+  }));
+}
+
 function candidate(value: AnalysisCandidateIdentity): AnalysisCandidateIdentity {
   return {
     candidateRef: opaqueId(value.candidateRef),
@@ -122,6 +158,13 @@ function copyAssuranceStatus(value: unknown): AnalysisAssuranceStatus {
     ? value : 'not_checked';
 }
 
+/**
+ * `copyAnalysisDeliveryFields` copies every top-level investigation assessment
+ * field. The projection treats any field it drops as tampering and withdraws
+ * the whole assessment, so a field added to the type needs a copier here;
+ * privateAnalysisProjection.test.ts fails to compile until its round-trip
+ * fixture carries the new field.
+ */
 /** Explicit serialization only. These stored fields never issue current-run authority. */
 export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): AnalysisDeliveryFields {
   const output: AnalysisDeliveryFields = {};
@@ -138,6 +181,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       taskKind: intent.taskKind, sceneId: opaqueId(intent.sceneId), scope: intent.scope,
       recommendedComplexity: intent.recommendedComplexity, deliverable: intent.deliverable,
       evidenceAccess: intent.evidenceAccess, registryFingerprint: opaqueId(intent.registryFingerprint),
+      ...(member(intent.sourceNeed, SOURCE_NEEDS) ? {sourceNeed: intent.sourceNeed} : {}),
       ...(typeof intent.reason === 'string' ? {reason: intent.reason} : {}),
       ...(typeof intent.actualModel === 'string' ? {actualModel: intent.actualModel} : {}),
       ...(typeof intent.finishReason === 'string' ? {finishReason: intent.finishReason} : {}),
@@ -219,6 +263,8 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       schemaVersion: 1, status: investigation.status,
       ...(Array.isArray(investigation.evidenceRecords)
         ? {evidenceRecords: copyInvestigationEvidenceRecords(investigation.evidenceRecords, text => text)} : {}),
+      ...(Array.isArray(investigation.ledgerAcquisition)
+        ? {ledgerAcquisition: copyLedgerAcquisitionRows(investigation.ledgerAcquisition, text => text)} : {}),
       binding: {...candidate(binding),
         conclusionContractFingerprint: fingerprint(binding.conclusionContractFingerprint),
         evidenceFingerprint: fingerprint(binding.evidenceFingerprint),
@@ -249,7 +295,24 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       }),
     };
   }
+  // A display and audit record, copied only in its closed shape; it binds nothing.
+  const knowledgeUse = sanitizeKnowledgeUse(input.knowledgeUse);
+  if (knowledgeUse) output.knowledgeUse = knowledgeUse;
   return preserveProjectedFieldOrder(input, output);
+}
+
+/**
+ * Kept diagnostics are provider text: project them in place, so an unchanged
+ * value keeps its field order and the binding computed over it.
+ */
+function projectTextFields<T extends object>(value: T, keys: readonly (keyof T)[],
+  projectText: (text: string) => string): T {
+  const projected = {...value};
+  for (const key of keys) {
+    const entry = projected[key];
+    if (typeof entry === 'string') projected[key] = projectText(entry) as T[keyof T];
+  }
+  return projected;
 }
 
 export function analysisProjectionChanged(before: unknown, after: unknown): boolean {
@@ -271,14 +334,16 @@ export function projectPrivateAnalysisDelivery(
   const bodyChanged = input.conclusion !== projection.conclusion;
   const contractChanged = analysisProjectionChanged(input.conclusionContract, projection.conclusionContract);
   const claimsChanged = bodyChanged || contractChanged || Boolean(projection.claimsChanged);
-  if (output.turnIntent && options.privateMetadata !== false) {
+  if (output.turnIntent) {
     const {reason: _reason, actualModel: _model, finishReason: _finish, ...intent} = output.turnIntent;
-    output.turnIntent = intent;
+    output.turnIntent = options.privateMetadata !== false ? intent
+      : projectTextFields(output.turnIntent, ['reason', 'actualModel', 'finishReason'], projectText);
   }
   const intentChanged = analysisProjectionChanged(input.turnIntent, output.turnIntent);
   if (output.completion) {
     const {sdkFinishReason: _finishReason, ...safeCompletion} = output.completion;
-    const completion = options.privateMetadata === false ? output.completion : safeCompletion;
+    const completion = options.privateMetadata === false
+      ? projectTextFields(output.completion, ['sdkFinishReason'], projectText) : safeCompletion;
     const bound = !bodyChanged && boundCandidate(completion, projection.conclusion);
     output.completion = {...completion,
       ...(!bound ? {conclusionFingerprint: '',
@@ -291,10 +356,18 @@ export function projectPrivateAnalysisDelivery(
         ...(!boundCandidate(appendix.sourceCandidate, projection.conclusion) || bodyChanged
           ? {conclusionFingerprint: ''} : {})}};
   }
+  if (output.knowledgeUse) {
+    // Already in its closed shape (the copy above). The owner keeps the
+    // citations of their answer; other audiences keep the sources only.
+    output.knowledgeUse = projectKnowledgeUseForAudience(output.knowledgeUse,
+      {owner: options.privateMetadata === false, projectText});
+  }
   if (output.investigationAssessment) {
     output.investigationAssessment = {...output.investigationAssessment,
       ...(output.investigationAssessment.evidenceRecords ? {evidenceRecords:
         copyInvestigationEvidenceRecords(output.investigationAssessment.evidenceRecords, projectText)} : {}),
+      ...(output.investigationAssessment.ledgerAcquisition ? {ledgerAcquisition:
+        copyLedgerAcquisitionRows(output.investigationAssessment.ledgerAcquisition, projectText)} : {}),
       requirements: output.investigationAssessment.requirements.map(requirement => ({...requirement,
         requirementId: opaqueId(projectText(requirement.requirementId)),
         domain: opaqueId(projectText(requirement.domain)),
@@ -334,6 +407,9 @@ export function projectPrivateAnalysisDelivery(
       status: investigation.status === 'checked' ? 'coverage_incomplete' : investigation.status,
       ...(investigation.evidenceRecords ? {evidenceRecords: investigation.evidenceRecords.map(row => ({...row,
         status: 'unknown' as const, origin: 'unknown' as const}))} : {}),
+      ...(investigation.ledgerAcquisition ? {ledgerAcquisition: investigation.ledgerAcquisition.map(row => ({...row,
+        applicability: row.applicability === 'not_applicable' ? 'unknown' as const : row.applicability,
+        status: 'unknown' as const, observedMetrics: []}))} : {}),
       binding: {...investigation.binding, conclusionFingerprint: '', conclusionContractFingerprint: '',
         evidenceFingerprint: '', intentFingerprint: '', ledgerFingerprint: '',
         ...(investigation.evidenceRecords !== undefined || investigation.binding.evidenceRecordsFingerprint !== undefined
@@ -370,16 +446,19 @@ export function projectStoredConclusionSourceMetadata<T>(contract: T, actualDeci
   const decision = sanitizeSourceUseDecision(actualDecision ?? record.sourceUseDecision);
   const {sourceUseDecision: _decision, sourceReferences: _refs, sourceClaimBindings: _bindings, ...rest} = record;
   if (!decision) return rest as T;
+  const references = decision.references.filter(reference => decision.codeAwareMode !== 'metadata_only' ||
+    isLocateOnlyLookupKind(reference.lookupKind));
+  const allowed = new Set(references.map(reference => reference.id));
+  // A declared id the run issued stays as it is; only an older declaration
+  // whose id the ledger does not know maps to its recomputed identity.
   const aliases = new Map<string, string>();
   for (const reference of Array.isArray(record.sourceReferences) ? record.sourceReferences : []) {
     const safe = sanitizeSourceReference(reference);
-    if (safe && reference && typeof reference === 'object' && typeof reference.id === 'string') {
+    if (safe && reference && typeof reference === 'object' && typeof reference.id === 'string' &&
+      !allowed.has(reference.id)) {
       aliases.set(reference.id, safe.id);
     }
   }
-  const references = decision.references.filter(reference => decision.codeAwareMode !== 'metadata_only' ||
-    reference.lookupKind === 'metadata' || reference.lookupKind === 'graph');
-  const allowed = new Set(references.map(reference => reference.id));
   const bindings = sanitizeSourceClaimBindings(record.sourceClaimBindings, {referenceIdAliases: aliases})
     .filter(binding => binding.sourceReferenceIds.every(id => allowed.has(id)));
   // Keep absent optional declarations absent so storage alone cannot change a signed contract.

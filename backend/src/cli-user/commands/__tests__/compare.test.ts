@@ -5,6 +5,7 @@
 import { runCompareCommand } from '../compare';
 
 jest.mock('../../bootstrap', () => ({
+  ...jest.requireActual('../../bootstrap'),
   bootstrap: jest.fn(() => ({ paths: { root: '/tmp/smp', sessions: '/tmp/smp/sessions' } })),
 }));
 

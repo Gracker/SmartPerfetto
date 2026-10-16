@@ -1,190 +1,95 @@
 # YAML Skill Rules
 
-## Role of Skills
+`backend/skills/` owns deterministic trace evidence; strategies own methodology.
+Read [Skill System](../../docs/reference/skill-system.md) for the DSL, typed
+parameters/display, identity/exact scope, expression validation and corpus rules.
+Discover Skill types/inventory from source, never hardcoded counts.
 
-Skills are deterministic trace-analysis programs. They are the agent's evidence
-collection layer, not a place for open-ended prompt prose.
+## Evidence and Execution Contracts
 
-Location:
-
-```text
-backend/skills/
-  atomic/       # single-purpose SQL/evidence steps
-  composite/    # multi-step scene analyses
-  comparison/   # comparison-specific Skill contracts
-  deep/         # deeper diagnostics
-  modules/      # app/framework/kernel/hardware expert modules
-  pipelines/    # rendering-pipeline detection and teaching
-  _template/    # skill authoring templates
-```
-
-The repository currently contains 200+ Skill YAML files. Avoid hardcoding counts
-in code or docs unless a test enforces them. When a precise inventory is
-needed, compute it from the tree:
-
-```bash
-rg --files backend/skills | rg '\.skill\.yaml$' | wc -l
-```
-
-## Skill Types and Layers
-
-Common skill types:
-
-- `atomic`
-- `composite`
-- `iterator`
-- `parallel`
-- `conditional`
-
-Layered results:
-
-- L1 overview: aggregated metrics, `display.layer: overview` with `display.level: summary` or `key`.
-- L2 list/detail: tables and expandable rows, usually `display.layer: list` with `display.level: detail`.
-- L3 diagnosis: per-frame or per-event diagnosis, often iterator output.
-- L4 deep: detailed frame/slice/callstack evidence.
-
-Keep DataEnvelope output self-describing so frontend rendering stays generic.
-
-Final conclusions, reports, snapshots, and comparison all depend on Skill
-evidence metadata. When adding or changing a scene-critical Skill, keep these
-fields meaningful enough for claim verification and report provenance:
-
-- `display.layer` and `display.level`
-- table column names and typed column metadata
-- `synthesize` / summary-facing outputs
-- process, thread, timestamp, duration, and source identifiers used by identity
-  resolution
-- `doc_path` references for runtime-read rendering pipeline docs
-
-## Parameter and Display Contracts
-
-Skill parameters use:
-
-```yaml
-${param|default}
-```
-
-DataEnvelope columns should use typed column metadata where possible:
-
-`display.layer` controls where the result appears: `overview`, `list`,
-`session`, `deep`, or `diagnosis`. `display.level` controls visibility/detail:
-`none`, `debug`, `detail`, `summary`, `key`, or `hidden`.
-
-- `timestamp`
-- `duration`
-- `number`
-- `string`
-- `percentage`
-- `bytes`
-
-Click actions should be explicit, for example:
-
-- `navigate_timeline`
-- `navigate_range`
-- `copy`
-
-## Runtime Boundaries
-
-- SQL should stay inside Skills or MCP SQL helpers, not UI code.
-- Skill docs and `doc_path` references must point at committed repository docs.
-- If a rendering-pipeline doc becomes runtime evidence, validate the matching
-  Skill after editing that doc.
-- Vendor or platform-specific behavior should be explicit in Skill inputs,
-  conditions, or overrides, not hidden in generic SQL.
-- Do not treat the frontend chat table as the only consumer. The same
-  DataEnvelope output can feed HTML reports, CLI artifacts, evidence contracts,
-  analysis-result snapshots, and comparison.
+- SQL belongs in Skills/shared SQL helpers, not UI. Preserve self-describing
+  DataEnvelope columns, producer units, layers/levels, summary fields and
+  process/thread/time/source identity. Reports, CLI, snapshots and comparison
+  consume the same contract. `doc_path` targets committed runtime-read docs.
+- Parameters use `${param|default}`. Vendor/platform differences are explicit
+  inputs/conditions/overrides. Conditions/branch `when`/diagnostic conditions
+  use JavaScript `&&`/`||`, not SQL boolean words; iterator filter's rewrite is
+  its own contract. Diagnostic confidence is literal, not an expression.
+- Missing earlier-step result reads need an explicit default or top-level
+  nonempty-result guard. Named/exact SQL and conditional paths retain the same
+  admitted validation; a public runtime's differing fallback cannot excuse a
+  product step silently skipping.
+- Heat wording requires temperature/cooling/cpufreq-limit evidence; frequency
+  caps require cooling/cpufreq-limit evidence, not temperature alone. Observe
+  frequency step-down as such. Apply to bilingual labels, SQL-visible literals,
+  descriptions/diagnoses/suggestions and exact-run text; names are not claims.
+- Built-ins and Self-Evolution use the same closed in-process validator.
+  `PREDATING_RULE_CODES` handles explicitly justified older overlay debt; never
+  bypass a check wholesale to let a base Skill or proposal pass. Invalid
+  `exact_sql`/investigation evidence fails execution; unsupported process scope
+  remains unsupported, never exact proof.
+- All SQL readers use `executableSqlUnits` (`processScopeSql.ts`); all step
+  readers use `stepNodesOf` (`skillSteps.ts`) with explicit options. Preserve
+  nested/conditional traversal, named versus exact execution and step-object
+  identity; do not add a private partial walk. Regenerate identity policies and
+  named-SQL inventory from those shared readers; validation rejects stale output.
+- Exact-process support binds issued UPID, never an inferred process name. Every
+  admitted exact unit must execute through a passing corpus binding. Differential
+  probes retain parameter-removal, unscoped and restarted-instance distinctions,
+  each starting with its own results; scopes with shared UID/coarse attribution
+  stay explicitly partial. Keep read-only probes isolated from state-changing
+  setup. Missing/skipped/unavailable units or inconclusive bindings cannot count
+  as SQL coverage. Nested exact units unsupported by the runner fail explicitly.
+  See the Skill System exact-scope section for assertions and known limits.
 
 ## Public Agent Skill Projection
 
-- `backend/skills/` is the product runtime source of truth.
-- `backend/skills/public-export.yaml` must explicitly classify every runtime
-  candidate and every selected strategy/pipeline source for the public
-  `Gracker/Perfetto-Skills` projection. Do not infer missing entries in normal
-  export or hand-edit generated public references.
-- Keep product-only provider, session, artifact, DataEnvelope, streaming, and
-  frontend semantics in SmartPerfetto. The public projection contains portable
-  workflows, SQL, methodology, pipeline knowledge, and local scripts.
-- After a source or policy change, regenerate in the public checkout, commit the
-  updated source commit/hash provenance, and run `npm run verify:public-skills`.
-- The verification script uses sibling `../Perfetto-Skills` by default; set
-  `PERFETTO_SKILLS_DIR` for another checkout.
+- Product YAML is authoritative; `public-export.yaml` explicitly classifies every
+  runtime candidate and selected strategy/pipeline for `Gracker/Perfetto-Skills`.
+  Missing policy fails, never inferred. Regenerate public references from sources.
+- Public projection contains portable SQL/workflows/methodology/pipeline knowledge;
+  provider/session/artifact/DataEnvelope/streaming/UI behavior stays product-owned.
+  Portable expressions must pass the public parser; compute derived/rounded
+  metrics in SQL and cite producer columns instead of unsupported expressions.
+- Regenerate source commit/hash provenance in the public checkout and run
+  `npm run verify:public-skills` after source/policy changes. It uses sibling
+  `../Perfetto-Skills` or explicit `PERFETTO_SKILLS_DIR`; installed products must
+  never depend on that checkout. Public overlays are reviewed and re-expressed
+  natively, not copied mechanically into product runtime.
 
-### Bidirectional impact review
+## Bidirectional Impact Review
 
-SmartPerfetto and Perfetto-Skills develop independently, but changes to their
-shared portable-analysis contract need an explicit paired review before commit
-or push. Run:
-
-```bash
-npm run check:perfetto-skills-impact -- \
-  --base "$(git merge-base HEAD origin/main)"
-```
-
-The command includes merge-base-to-HEAD, staged, unstaged, and untracked paths.
-The classifier triggers on Skills, Strategies, Skill engine/packs,
-evidence/claim/identity contracts, Perfetto SQL/schema services,
-rendering-pipeline knowledge, processor pins, export policy, and exporter
-verification. It only identifies candidates; the author must record one of:
-
-- `required`: pass `--paired-path PATH` and an immutable `--paired-ref COMMIT`
-  that exists and exactly equals the paired checkout HEAD, update
-  Perfetto-Skills in its architecture, run its independent complete gate, and
-  record the validated paired evidence;
-- `not_required`: provide a concrete reason the behavior remains product-only;
-- `deferred`: provide both a reason and a durable issue, PR, or commit handoff.
-
-Example:
+Before committing/pushing shared Skills, Strategies, engine/evidence/identity,
+SQL/schema/pins/pipeline/export changes:
 
 ```bash
-npm run check:perfetto-skills-impact -- \
-  --base "$(git merge-base HEAD origin/main)" \
-  --decision required \
-  --reason "portable query and evidence contract changed" \
-  --paired-path /absolute/path/to/Perfetto-Skills
+npm run check:perfetto-skills-impact -- --base "$(git merge-base HEAD origin/main)"
 ```
 
-Record the emitted change fingerprint and paired evidence in the commit or PR
-notes. If a required paired update cannot be validated, use `deferred` with a
-stable shared issue/task URL instead of claiming completion.
+The classifier includes committed/staged/unstaged/untracked deltas and identifies
+candidates, not applicability. Record decision, reason, emitted fingerprint and
+paired evidence in commit/PR notes:
 
-A public-project overlay must be reviewed, not copied mechanically into
-SmartPerfetto. Re-express an applicable fix as native YAML/Strategy/runtime
-behavior with SmartPerfetto tests, then regenerate the public projection. A
-paired update never makes either installed product depend on a sibling checkout.
+- `required`: update the paired product in its architecture and pass its full
+  independent gate; bind `--paired-path` and immutable `--paired-ref` exactly to
+  that checkout's HEAD.
+- `not_required`: concrete product-only reason.
+- `deferred`: concrete reason plus durable issue/PR/commit handoff when the paired
+  update cannot be validated; do not claim paired completion.
 
-Perfetto-Skills owns its normal real-trace suite and upstream locks. Its
-`docs/maintenance/upstream-sync.md` is the public-side procedure for importing
-SmartPerfetto, gap-checking Google's official Skill, syncing PerfettoSQL stdlib,
-and validating local SQL overlays. SmartPerfetto remains responsible for its
-own real test traces and scene regressions; never replace them with public
-fixture downloads.
+Perfetto-Skills owns its independent upstream locks and real-trace acceptance;
+its `docs/maintenance/upstream-sync.md` defines public-side imports/SQL overlays.
+SmartPerfetto still owns its corpus/scenes; public fixture downloads do not replace
+product regressions.
 
-## Validation
+## Validation and Co-Versioning
 
-After changing Skill YAML:
+Skill edits run backend `validate:skills` and `test:scene-trace-regression`;
+SQL-bearing edits additionally run `trace:sql-regression`. Scene-critical behavior
+needs applicable authenticated E2E from [testing](testing.md), not just YAML syntax.
 
-```bash
-cd backend
-npm run validate:skills
-npm run test:scene-trace-regression
-```
-
-For scene-critical Skills, also run the relevant Agent SSE e2e check from
-`.claude/rules/testing.md` and inspect both `backend/test-output/` and
-`backend/logs/sessions/`.
-
-## Strategy/Parser Co-Versioning
-
-Strategy frontmatter (`backend/strategies/*.strategy.md`,
-`investigation-profiles.yaml`) is read from the live directory by whichever
-artifact runs — `dist/` and `tsx` resolve the same path. A strategy schema
-change plus a stale parser build therefore kills every session at startup with
-a bare `strategy_invalid_*` code.
-
-- Strategy file changes and `strategyLoader.ts` parser changes must land in the
-  same commit, with `dist/` rebuilt before any dist-based run.
-- Before a batch of `smp analyze` runs, probe the exact artifact the batch will
-  use: `node dist/cli-user/bin.js probe` (or `npx tsx src/cli-user/bin.ts
-  probe`). A green source-tree `validate --strategies` does not clear a dist
-  run.
+Strategies are runtime-read by dist and source alike. Schema changes and
+`strategyLoader.ts` land together; rebuild dist before dist-based acceptance.
+Probe the exact artifact a batch uses (`node dist/cli-user/bin.js probe` or
+source `npx tsx src/cli-user/bin.ts probe` from backend). Source validation cannot
+establish a stale dist parser is usable. See [prompts](prompts.md).

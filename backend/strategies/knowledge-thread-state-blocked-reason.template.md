@@ -39,6 +39,45 @@ Evidence strength:
 | `S` + irq-context wake + network-role thread | A receive-side wake is plausible | Candidate only; a timer expiry looks identical |
 | `S` + irq-context wake + rx packet within the correlation window | Receive activity at the same moment | `trace_direct:packet_activity`; still not proof this wake carried that packet |
 
+### Java monitor contention names an `S` wait directly
+
+A Java `synchronized` block that cannot take its monitor parks the thread in
+`S`, so `blocked_function` is NULL, yet ART records the contention itself. An
+`S` row that overlaps a row of `android_monitor_contention` whose
+`blocked_utid` is that thread is that contention: the row names the owner
+thread (`blocking_thread_name`, `blocking_utid`) and both methods
+(`short_blocking_method`, `short_blocked_method`). Include the module first:
+
+```sql
+INCLUDE PERFETTO MODULE android.monitor_contention;
+SELECT ts, dur, blocking_thread_name, short_blocking_method, short_blocked_method
+FROM android_monitor_contention
+WHERE blocked_utid = <utid> AND ts < <wait_end> AND ts + dur > <wait_start>;
+```
+
+A stdlib view that is absent before its `INCLUDE` is not missing data. Without
+the module, the raw ART slices on the blocked thread's track carry the same
+facts: `monitor contention with owner <thread> (<tid>) at <owner method> ...
+blocking from <blocked method>`, and the shorter
+`Lock contention on a monitor lock (owner tid: <tid>)`; match both with
+`name GLOB 'monitor contention*' OR name GLOB 'Lock contention on a monitor lock*'`. `analyze_wait_chain` surfaces the same evidence as a
+`java_monitor` anomaly and the `inspect_locks` recommendation, from both the
+blocked side and the lock owner's side of the chain.
+
+### Wait-chain leaves: idle or a peer's blocker
+
+Perfetto's critical path ends at every `S`/`I`/`D` segment of another thread:
+that thread was woken from IRQ context, by the idle task or out of an
+`io_wait`, so no further waker exists. `analyze_wait_chain` therefore counts
+other threads' running, runnable and `D` time as attributable, and reports
+their `S`/`I` leaves separately as event waits. An event wait is not idleness
+by itself: a lock owner sleeping on a socket or a timer is the real blocker.
+Call the selected wait idle only when it sat between the thread's slices and
+little of the window is attributable (`idle_wait`). When the thread was inside
+a slice and the chain ends in a peer's event wait (`peer_event_wait`), report
+what that peer waited for — network receive, timer or device — using its wake
+source and its own slices.
+
 Rows grouped by `blocked_function` are flat aggregates. Multiple rows such as
 `filemap_read`, `io_schedule`, and `ext4_*` are sibling buckets, not a nested
 stack. If a full off-CPU stack is needed, capture `linux.perf` callstack samples

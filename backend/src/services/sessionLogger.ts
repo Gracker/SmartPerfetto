@@ -19,6 +19,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { backendLogPath } from '../runtimePaths';
+import { parseStoredJson } from '../utils/storedData';
+
+function parseLogLines(content: string): LogEntry[] {
+  // Lines the trim drops still count, so a record keeps its file line.
+  const firstLine = content.slice(0, content.length - content.trimStart().length).split('\n').length;
+  return content
+    .trim()
+    .split('\n')
+    .flatMap((line, index) => line ? [parseStoredJson<LogEntry>(line, 'session log', {startLine: firstLine + index})] : []);
+}
 
 // =============================================================================
 // Types
@@ -121,15 +131,8 @@ function sanitizeLogValue(value: any, depth: number, seen: WeakSet<object>): any
     return value.slice(0, MAX_ARRAY_ITEMS).map((item) => sanitizeLogValue(item, depth + 1, seen));
   }
 
-  const sanitized: Record<string, any> = {};
-  for (const [key, nested] of Object.entries(value)) {
-    if (SENSITIVE_KEY_PATTERN.test(key)) {
-      sanitized[key] = REDACTED;
-      continue;
-    }
-    sanitized[key] = sanitizeLogValue(nested, depth + 1, seen);
-  }
-  return sanitized;
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) =>
+    [key, SENSITIVE_KEY_PATTERN.test(key) ? REDACTED : sanitizeLogValue(nested, depth + 1, seen)]));
 }
 
 export function sanitizeLogData(data: any): any {
@@ -298,12 +301,7 @@ export class SessionLogger {
       if (!fs.existsSync(this.logFile)) {
         return [];
       }
-      const content = fs.readFileSync(this.logFile, 'utf-8');
-      return content
-        .trim()
-        .split('\n')
-        .filter((line) => line)
-        .map((line) => JSON.parse(line));
+      return parseLogLines(fs.readFileSync(this.logFile, 'utf-8'));
     } catch (err) {
       console.error('[SessionLogger] Failed to read logs:', err);
       return [];
@@ -412,9 +410,7 @@ class SessionLoggerManager {
           const filePath = path.join(this.logDir, file);
 
           try {
-            const content = fs.readFileSync(filePath, 'utf-8');
-            const lines = content.trim().split('\n').filter((l) => l);
-            const logs: LogEntry[] = lines.map((l) => JSON.parse(l));
+            const logs = parseLogLines(fs.readFileSync(filePath, 'utf-8'));
 
             if (logs.length > 0) {
               const components = new Set<string>();
@@ -480,13 +476,7 @@ class SessionLoggerManager {
       for (const file of files) {
         try {
           const filePath = path.join(this.logDir, file);
-          const content = fs.readFileSync(filePath, 'utf-8');
-          const logs = content
-            .trim()
-            .split('\n')
-            .filter((l) => l)
-            .map((l) => JSON.parse(l));
-          allLogs.push(...logs);
+          allLogs.push(...parseLogLines(fs.readFileSync(filePath, 'utf-8')));
         } catch { /* skip individual file parse errors */ }
       }
 
@@ -588,65 +578,3 @@ export function getSessionLoggerManager(): SessionLoggerManager {
 export function createSessionLogger(sessionId: string): SessionLogger {
   return getSessionLoggerManager().getLogger(sessionId);
 }
-
-// =============================================================================
-// Express Middleware
-// =============================================================================
-
-import { Request, Response, NextFunction } from 'express';
-
-/**
- * Express middleware for request logging
- */
-export function requestLoggingMiddleware(sessionIdExtractor: (req: Request) => string | undefined) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const sessionId = sessionIdExtractor(req);
-    if (!sessionId) {
-      return next();
-    }
-
-    const logger = getSessionLoggerManager().getLogger(sessionId);
-    const startTime = Date.now();
-
-    // Attach logger to request for use in route handlers
-    (req as any).sessionLogger = logger;
-
-    // Log request
-    logger.info('HTTP', `${req.method} ${req.path}`, {
-      query: req.query,
-      params: req.params,
-      headers: {
-        'content-type': req.headers['content-type'],
-        'user-agent': req.headers['user-agent'],
-      },
-    });
-
-    // Log response using appropriate public method based on status code
-    res.on('finish', () => {
-      const duration = Date.now() - startTime;
-      const logData = {
-        statusCode: res.statusCode,
-        duration,
-      };
-      const message = `${req.method} ${req.path} ${res.statusCode}`;
-
-      if (res.statusCode >= 500) {
-        logger.error('HTTP', message, undefined, logData);
-      } else if (res.statusCode >= 400) {
-        logger.warn('HTTP', message, logData);
-      } else {
-        logger.info('HTTP', message, logData);
-      }
-    });
-
-    next();
-  };
-}
-
-export default {
-  SessionLogger,
-  SessionLoggerManager,
-  getSessionLoggerManager,
-  createSessionLogger,
-  requestLoggingMiddleware,
-};

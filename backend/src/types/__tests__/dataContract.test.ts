@@ -9,7 +9,8 @@ import ts from 'typescript';
 import {
   ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS,
   analysisCompletedContractFragment,
-  analysisCompletedPublicTypeFragment,
+  ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS,
+  analysisPublicTypeFragments,
   conclusionContractFragment,
   criticalPathContractFragment,
 } from '../../../scripts/frontendContractFragments';
@@ -23,7 +24,7 @@ import {
   validateDataEnvelope,
   type AnalysisCompletedEvent,
 } from '../dataContract';
-import {copyScopeProvenance, identityForScopeEvidence, mergeScopeProvenance, scopeMetadata,
+import {copyScopeProvenance, identityForScopeEvidence, mergeScopeProvenance, outsideTargetScopeFields, scopeMetadata,
   scopeProvenanceForFields, type EvidenceScopeProvenanceV1, type IdentityResolutionV1} from '../identityContract';
 
 describe('DataEnvelope process scope provenance', () => {
@@ -112,6 +113,18 @@ describe('DataEnvelope process scope provenance', () => {
     expect(copyScopeProvenance({version: 'process_scope_evidence@1', entries: [{...scopedEntry, reason: undefined}]}))
       .toEqual({version: 'process_scope_evidence@1', entries: [scopedEntry]});
   });
+
+  it('marks a field outside the target only from a positive non-target declaration', () => {
+    const outsideTarget = outsideTargetScopeFields(provenance);
+    expect(outsideTarget('frames')).toBe(false);
+    expect(outsideTarget('refresh_rate')).toBe(true);
+    const peer = {...provenance.entries[1], role: 'peer_context' as const, fields: undefined};
+    expect(outsideTargetScopeFields({version: provenance.version, entries: [peer]})('any_field')).toBe(true);
+    // Legacy and unlisted fields keep their old reading; invalid provenance asserts nothing.
+    expect(outsideTargetScopeFields(undefined)('frames')).toBe(false);
+    expect(outsideTarget('unknown')).toBe(false);
+    expect(outsideTargetScopeFields({version: 'process_scope_evidence@1', entries: 'bad'})('frames')).toBe(false);
+  });
 });
 
 describe('dataContract column inference', () => {
@@ -143,14 +156,17 @@ describe('dataContract column inference', () => {
 
   it('generates only reachable public type declarations and resolves their constant type queries', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../dataContract.ts'), 'utf8');
-    const fragment = analysisCompletedPublicTypeFragment(source, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS.map(sourcePath =>
-      fs.readFileSync(path.resolve(__dirname, '../../', sourcePath), 'utf8')));
+    const read = (sourcePath: string) => fs.readFileSync(path.resolve(__dirname, '../../', sourcePath), 'utf8');
+    const fragment = analysisPublicTypeFragments(source, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS.map(read),
+      ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS.map(read)).analysisCompleted;
     const parsed = ts.createSourceFile('public-types.ts', fragment, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     expect(parsed.statements.every(statement => ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement))).toBe(true);
     const names = parsed.statements.map(statement => (statement as ts.InterfaceDeclaration).name.text);
     expect(names).toEqual(expect.arrayContaining(['AnalysisTurnIntent', 'AnalysisCompletion', 'AgentRuntimeKind',
       'AnalysisCandidateIdentity', 'AnalysisReportBinding', 'AnalysisReportRequirementAssessment',
-      'AnalysisDeliveryAssurance', 'SourceUseDecisionV1', 'SourceClaimVerificationResult', 'SourceClaimBindingV1']));
+      'AnalysisDeliveryAssurance', 'SourceUseDecisionV1', 'SourceClaimVerificationResult', 'SourceClaimBindingV1',
+      'StoredSourceClaimVerificationResult', 'LegacySourceClaimVerificationResultV1', 'SourceCitationV1',
+      'SourceDepthDecisionV1', 'SourceNeed', 'KnowledgeUseV1']));
     expect(names).not.toEqual(expect.arrayContaining(['CurrentAnalysisDeliveryContext']));
     expect(fragment).not.toContain('typeof ');
     expect(fragment).not.toContain('WeakMap');
@@ -158,7 +174,8 @@ describe('dataContract column inference', () => {
     const event = analysisCompletedContractFragment(source);
     expect(event).not.toContain('import(');
     expect(event).toContain('completion?: AnalysisCompletion;');
-    expect(event).toContain('sourceClaimVerificationResult?: SourceClaimVerificationResult;');
+    // A replayed historical event may carry a result stored before claims were judged per claim.
+    expect(event).toContain('sourceClaimVerificationResult?: StoredSourceClaimVerificationResult;');
   });
 
   it('spells out const-backed unions and drops private helpers in the contract fragments', () => {

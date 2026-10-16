@@ -3,6 +3,10 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveTurnIntentComplexity, type AnalysisTurnIntent} from './analysisTurnIntent';
+import type {SourceNeed} from '../types/sourceNeed';
+import type {SourceNeedMissingReason} from '../services/codebase/sourceDepthPolicy';
+import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
+import {runAttachesTrace} from './runtimeTraceAttachment';
 
 export interface RuntimeTurnPolicy {
   readonly budgetMode: 'quick' | 'full';
@@ -28,9 +32,16 @@ export interface RuntimeTurnPolicy {
    * and a full budget never turns `trace_facts` into `full`.
    */
   readonly preflight: 'full' | 'trace_facts' | 'none';
-  /** Memory-type prefetch only: knowledge base, patterns, cases, SQL fix pairs. */
-  readonly allowAutomaticPrefetch: boolean;
+  /**
+   * Memory-type prefetch only: knowledge base, patterns, cases, SQL fix pairs.
+   * Product scene entry evidence follows the intent itself, never this flag.
+   */
+  readonly allowMemoryPrefetch: boolean;
   readonly requiresReport: boolean;
+  /** What the resolved intent says the answer needs from selected source; absent when it did not say. */
+  readonly sourceNeed?: SourceNeed;
+  /** Why there is no source need. */
+  readonly sourceNeedMissing?: SourceNeedMissingReason;
 }
 
 /**
@@ -61,7 +72,24 @@ export function resolveRuntimeTurnPolicy(
     onDemandContext,
     allowNewEvidence,
     preflight,
-    allowAutomaticPrefetch: preflight === 'full',
+    allowMemoryPrefetch: preflight === 'full',
     requiresReport: intent.deliverable === 'report',
+    ...(intent.status === 'resolved' && intent.sourceNeed ? {sourceNeed: intent.sourceNeed}
+      : {sourceNeedMissing: intent.status !== 'resolved' ? 'intent_unavailable' as const
+        : intent.source === 'product' ? 'product_run' as const : 'source_need_missing' as const}),
   });
+}
+
+/**
+ * The policy a runtime executes: the intent's policy, with nothing gathered
+ * before the first turn when the run has no mounted trace (a trace-less
+ * conversation). Every runtime resolves its policy here.
+ */
+export function resolveRunTurnPolicy(
+  intent: AnalysisTurnIntent,
+  options: Pick<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'conversationTraceAttached'>,
+): RuntimeTurnPolicy {
+  const policy = resolveRuntimeTurnPolicy(intent, options.analysisMode ?? 'auto');
+  return runAttachesTrace(options) ? policy
+    : Object.freeze({...policy, allowMemoryPrefetch: false, preflight: 'none' as const});
 }

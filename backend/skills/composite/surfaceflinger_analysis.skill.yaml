@@ -278,7 +278,7 @@ steps:
         MAX(dur) as max_composition_dur,
         CAST(ROUND(PERCENTILE(dur, 95)) AS INTEGER) as p95_composition_dur,
         ROUND(AVG(dur) / 1e6, 2) as avg_composition_ms,
-        SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) as slow_composition_count,
+        SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns|NULL} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) as slow_composition_count,
         CASE
           WHEN AVG(dur) / 1e6 > ${composition_rating_poor_ms|12} THEN '较差'
           WHEN AVG(dur) / 1e6 > ${composition_rating_fair_ms|8} THEN '一般'
@@ -395,10 +395,10 @@ steps:
         printf('%d', s.ts) as start_ts,
         s.dur,
         s.name as event_name,
-        CAST(ROUND(s.dur * 1.0 / ${vsync_env.data[0].vsync_period_ns} - 1) AS INTEGER) as vsync_missed,
+        CAST(ROUND(s.dur * 1.0 / ${vsync_env.data[0].vsync_period_ns|NULL} - 1) AS INTEGER) as vsync_missed,
         CASE
-          WHEN s.dur > ${vsync_env.data[0].vsync_period_ns} * 3.0 THEN 'critical'
-          WHEN s.dur > ${vsync_env.data[0].vsync_period_ns} * 2.0 THEN 'warning'
+          WHEN s.dur > ${vsync_env.data[0].vsync_period_ns|NULL} * 3.0 THEN 'critical'
+          WHEN s.dur > ${vsync_env.data[0].vsync_period_ns|NULL} * 2.0 THEN 'warning'
           ELSE 'notice'
         END as severity
       FROM slice s
@@ -410,7 +410,7 @@ steps:
              OR s.name GLOB '*onMessageRefresh*'
              OR s.name GLOB '*composite*'
              OR s.name GLOB '*Composite*')
-        AND s.dur > ${vsync_env.data[0].vsync_period_ns} * ${slow_composition_multiplier|1.5}
+        AND s.dur > ${vsync_env.data[0].vsync_period_ns|NULL} * ${slow_composition_multiplier|1.5}
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts < ${end_ts})
       ORDER BY s.dur DESC
@@ -665,8 +665,8 @@ steps:
           COUNT(*) as total_count,
           AVG(dur) / 1e6 as avg_dur_ms,
           MAX(dur) / 1e6 as max_dur_ms,
-          SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) as slow_count,
-          ROUND(100.0 * SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as slow_pct
+          SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns|NULL} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) as slow_count,
+          ROUND(100.0 * SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns|NULL} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as slow_pct
         FROM sf_compositions
       ),
       -- Fence 统计

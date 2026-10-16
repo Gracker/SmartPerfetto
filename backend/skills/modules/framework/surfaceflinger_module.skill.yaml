@@ -4,8 +4,8 @@
 
 # Framework SurfaceFlinger Module Expert
 #
-# Provides frame rendering analysis capabilities for cross-domain experts.
-# Answers questions about frame timing, jank causes, and GPU composition.
+# Provides frame rendering analysis capabilities.
+# Covers frame timing, jank causes, and GPU composition.
 
 name: surfaceflinger_module
 version: "1.0"
@@ -25,73 +25,6 @@ module:
     - vsync
     - composition
     - layer
-  relatedModules:
-    - hardware_gpu
-    - framework_wms
-    - app_third_party
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: frame_jank_analysis
-      questionTemplate: "Why did frame {frame_id} jank for package {package}?"
-      requiredParams: [frame_id, package]
-      description: "Analyze the root cause of a specific janky frame"
-
-    - id: scroll_performance
-      questionTemplate: "What is the scroll performance for package {package}?"
-      requiredParams: [package]
-      optionalParams: [start_ts, end_ts]
-      description: "Analyze scrolling smoothness and frame drops"
-
-    - id: composition_time
-      questionTemplate: "How long did GPU composition take for {layer}?"
-      requiredParams: [layer]
-      description: "Analyze GPU composition timing"
-
-  findingsSchema:
-    - id: high_jank_rate
-      severity: critical
-      titleTemplate: "High jank rate: {jank_rate}% ({jank_count}/{total_frames} frames)"
-      descriptionTemplate: "Frame drop rate of {jank_rate}% exceeds acceptable threshold"
-      evidenceFields: [jank_rate, jank_count, total_frames, avg_fps]
-
-    - id: main_thread_delay
-      severity: warning
-      titleTemplate: "Main thread caused {main_thread_jank} frame drops"
-      descriptionTemplate: "Main thread work exceeded frame budget {main_thread_jank} times"
-      evidenceFields: [main_thread_jank, avg_main_ms]
-
-    - id: render_thread_delay
-      severity: warning
-      titleTemplate: "Render thread caused {render_thread_jank} frame drops"
-      descriptionTemplate: "GPU rendering exceeded budget {render_thread_jank} times"
-      evidenceFields: [render_thread_jank, avg_render_ms]
-
-  suggestionsSchema:
-    - id: check_main_thread
-      condition: "main_thread_jank > render_thread_jank"
-      targetModule: scheduler_module
-      questionTemplate: "Why was main thread slow during frames?"
-      paramsMapping:
-        tid: main_tid
-      priority: 1
-
-    - id: check_gpu
-      condition: "render_thread_jank > main_thread_jank"
-      targetModule: hardware_gpu_module
-      questionTemplate: "Why was GPU rendering slow?"
-      paramsMapping:
-        package: package
-      priority: 1
-
-    - id: check_binder_in_frame
-      condition: "binder_during_frame > 0"
-      targetModule: binder_module
-      questionTemplate: "What Binder calls happened during frame rendering?"
-      paramsMapping:
-        package: package
-      priority: 2
 
 prerequisites:
   modules:

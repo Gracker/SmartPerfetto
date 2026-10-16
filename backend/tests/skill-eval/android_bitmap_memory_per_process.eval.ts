@@ -6,7 +6,7 @@
  * trace_processor_shell may not expose android.memory.heap_graph.bitmap yet.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 const TRACE_FILE = 'launch_light.pftrace';

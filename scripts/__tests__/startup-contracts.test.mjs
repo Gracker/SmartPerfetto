@@ -249,7 +249,7 @@ test('launch surfaces expose package identity without bypassing persistence prob
   const backendIndex = read('backend/src/index.ts');
   assert.ok(
     backendIndex.indexOf('initializeSelfEvolutionLifecycle()') <
-      backendIndex.indexOf('startCaseEvolutionWorker()'),
+      backendIndex.indexOf('startPatternMemoryAutoConfirmSweep()'),
     'self-evolution persistence/config lifecycle must initialize before optional workers',
   );
 });

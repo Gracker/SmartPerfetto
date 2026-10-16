@@ -4,13 +4,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import type { OutputFormat } from '../repl/renderer';
 import { createRenderer } from '../repl/renderer';
 import { withConsoleLogToStderr } from '../io/stdio';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { startSession } from '../services/turnRunner';
+import { CLI_INTERRUPTED_EXIT_CODE, isTurnInterrupted, processInterruptSource } from '../services/turnInterrupt';
 import {
   addAtraceCategories,
   getCapturePreset,
@@ -88,7 +89,7 @@ export interface CaptureSuggestCommandArgs {
 export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs): Promise<number> {
   const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false });
   const format = args.format ?? 'text';
-  const outPath = path.resolve(args.out);
+  const outPath = resolveInvocationPath(args.out);
   const lifecycle: { service?: CliAnalyzeService } = {};
 
   try {
@@ -122,9 +123,9 @@ export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs):
       out: outPath,
       serial: args.serial,
       sideload: args.sideload,
-      traceboxPath: args.tracebox,
+      traceboxPath: args.tracebox && resolveInvocationPath(args.tracebox),
       noGuardrails: args.noGuardrails,
-      adbPath: args.adb,
+      adbPath: args.adb && resolveInvocationPath(args.adb),
       killStale: args.killStale,
       backendRoot: process.cwd(),
       runner: args.runner,
@@ -142,7 +143,7 @@ export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs):
     await withConsoleLogToStderr(renderer.format !== 'text', async () => {
       const service = new CliAnalyzeService();
       lifecycle.service = service;
-      const turn = await startSession({ paths, service, renderer }, {
+      const turn = await startSession({ paths, service, renderer, interruptSource: processInterruptSource() }, {
         tracePath: capture.out,
         query,
         analysisMode: args.analysisMode,
@@ -159,7 +160,7 @@ export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs):
     return exitCode;
   } catch (err) {
     printError(format, (err as Error).message);
-    return 1;
+    return isTurnInterrupted(err) ? CLI_INTERRUPTED_EXIT_CODE : 1;
   } finally {
     await lifecycle.service?.shutdown();
   }
@@ -174,8 +175,9 @@ export async function runCapturePresetsCommand(args: CapturePresetsCommandArgs):
     return 0;
   }
   console.log('SmartPerfetto capture presets');
+  const idWidth = Math.max(10, ...presets.map((preset) => preset.id.length));
   for (const preset of presets) {
-    console.log(`${preset.id.padEnd(10)} ${preset.label} (${preset.defaultDurationSeconds}s)`);
+    console.log(`${preset.id.padEnd(idWidth)} ${preset.label} (${preset.defaultDurationSeconds}s)`);
     console.log(`  ${preset.description}`);
   }
   return 0;
@@ -196,7 +198,7 @@ export async function runCaptureConfigCommand(args: CaptureConfigCommandArgs): P
       extraAtraceCategories: args.categories,
     });
     if (args.out) {
-      const outPath = path.resolve(args.out);
+      const outPath = resolveInvocationPath(args.out);
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, configText, 'utf-8');
       if (format === 'json' || format === 'ndjson') {
@@ -249,7 +251,7 @@ function resolveAndroidConfigInput(args: CaptureAndroidCommandArgs): {
   durationSeconds?: number;
 } {
   if (args.config) {
-    const config = readTraceConfigFile(args.config, { durationSeconds: args.durationSeconds });
+    const config = readTraceConfigFile(resolveInvocationPath(args.config), { durationSeconds: args.durationSeconds });
     const configText = addAtraceCategories(config.textproto, args.categories ?? []);
     return {
       configText,

@@ -13,7 +13,12 @@ import {
   createAnalysisResultSnapshotRepository,
   type SnapshotAccessScope,
 } from '../analysisResultSnapshotStore';
+import {getAnalysisRunPrivateContext} from '../analysisRunStore';
 import {openEnterpriseDb} from '../enterpriseDb';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from '../security/analysisPrivateContext';
 import {FeedbackEventStore} from '../selfEvolution/feedbackEventStore';
 import {getRunManifestStore} from '../selfEvolution/runManifestStore';
 
@@ -62,6 +67,10 @@ export interface ExternalIssueSourceRunResolverDeps {
     scope: RunManifestScope,
     request: ExternalIssueSourceRunRequest,
   ) => boolean;
+  getRunPrivateContext?: (
+    scope: RunManifestScope,
+    runId: string,
+  ) => AnalysisPrivateContextMarker;
 }
 
 export function resolveExternalIssueSourceRun(
@@ -88,7 +97,15 @@ export function resolveExternalIssueSourceRun(
   if (!completedData) {
     return unavailable('Persisted analysis_completed event is invalid');
   }
-  if (completedData.privateProjectionVersion !== undefined) {
+  // The run's own marker decides; a run written before markers existed is
+  // unknown and refused, since nothing proves it read no private material.
+  // The completed event's projection flag is kept as a second, older witness.
+  if (
+    completedData.privateProjectionVersion !== undefined ||
+    privateContextRestrictsAudience(
+      (deps.getRunPrivateContext ?? getAnalysisRunPrivateContext)(manifestScope, request.runId),
+    )
+  ) {
     return {
       ok: false,
       code: 'private_analysis',

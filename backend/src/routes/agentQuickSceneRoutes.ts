@@ -4,6 +4,7 @@
 
 import express from 'express';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { sendResourceNotFound } from '../services/resourceOwnership';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import { getTraceProcessorService, type TraceProcessorService } from '../services/traceProcessorService';
@@ -55,12 +56,12 @@ export function registerAgentQuickSceneRoutes(
         success: true,
         scenes,
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] Quick scene detection error:', error);
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Quick scene detection failed',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'quick_scene_detection_failed',
+        error: 'Quick scene detection failed',
+        logLabel: '[AgentRoutes] Quick scene detection error',
+      }, error);
     }
   });
 }

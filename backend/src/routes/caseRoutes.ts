@@ -23,11 +23,13 @@
  * @module caseRoutes
  */
 
-import {Router, type Router as ExpressRouter} from 'express';
+import {Router, type NextFunction, type Request, type Response, type Router as ExpressRouter} from 'express';
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
+import {hasRbacPermission, sendForbidden} from '../services/rbac';
 import {CaseLibrary} from '../services/caseLibrary';
 import {CaseGraph} from '../services/caseGraph';
+import {caseCurationGrantForRequest} from '../services/security/caseCuration';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import type {
   CaseEdge,
@@ -36,31 +38,51 @@ import type {
   CurationStatus,
 } from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
-
-const DEFAULT_LIBRARY_PATH = backendLogPath('case_library.json');
-const DEFAULT_GRAPH_PATH = backendLogPath('case_graph.json');
+import {sendRouteError} from '../middleware/routeFailure';
+import {KnowledgeCurationError} from '../services/knowledgeCurationError';
 
 let cachedLibrary: CaseLibrary | null = null;
 let cachedGraph: CaseGraph | null = null;
 function getDefaultLibrary(): CaseLibrary {
-  if (!cachedLibrary) cachedLibrary = new CaseLibrary(DEFAULT_LIBRARY_PATH);
+  if (!cachedLibrary) cachedLibrary = new CaseLibrary(backendLogPath('case_library.json'));
   return cachedLibrary;
 }
 function getDefaultGraph(): CaseGraph {
-  if (!cachedGraph) cachedGraph = new CaseGraph(DEFAULT_GRAPH_PATH);
+  if (!cachedGraph) cachedGraph = new CaseGraph(backendLogPath('case_graph.json'), getDefaultLibrary());
   return cachedGraph;
 }
 
-/** Test/factory hook. Pass explicit stores; default singletons
- * point at `backend/logs/case_library.json` + `case_graph.json`. */
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Cases and their edges reach other users' analyses (background, recall,
+ * report recommendations): reading them needs a login, and every other method
+ * is curation. Guarding by method keeps a write route added later closed.
+ */
+function requireCurationForWrites(req: Request, res: Response, next: NextFunction): void {
+  if (READ_METHODS.has(req.method) || hasRbacPermission(requireRequestContext(req), 'self_evolution:curate')) {
+    next();
+    return;
+  }
+  sendForbidden(res, 'Case curation requires self_evolution:curate permission');
+}
+
+/**
+ * Test/factory hook. Pass explicit stores; default singletons point at
+ * `backend/logs/case_library.json` + `case_graph.json`. Every case these
+ * routes return says whether analyses read it and who last vouched for it
+ * (`security/caseCuration.ts`).
+ */
 export function createCaseRoutes(
   library?: CaseLibrary,
   graph?: CaseGraph,
 ): ExpressRouter {
   const lib = library ?? getDefaultLibrary();
-  const g = graph ?? getDefaultGraph();
+  // A graph made here reads its retired cases from the library these routes serve.
+  const g = graph ?? (library ? new CaseGraph(backendLogPath('case_graph.json'), library) : getDefaultGraph());
   const router = Router();
   router.use(authenticate);
+  router.use(requireCurationForWrites);
 
   // -------------------------------------------------------------------
   // Edge endpoints — registered BEFORE the `/:caseId` routes so the
@@ -93,10 +115,11 @@ export function createCaseRoutes(
       g.addEdge(edge, scope);
       return res.status(201).json({success: true, edge});
     } catch (err) {
-      return res.status(400).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteError(res, err, {
+        code: 'case_edge_save_failed',
+        error: 'Failed to save case edge',
+        logLabel: '[CaseRoutes] Edge save error',
+      }, [KnowledgeCurationError]);
     }
   });
 
@@ -136,7 +159,7 @@ export function createCaseRoutes(
       tag?: string;
       level?: string;
     };
-    const cases = lib.listCases({
+    const cases = lib.listCasesForCuration({
       status: status as CurationStatus | undefined,
       anyOfTags: tag ? [tag] : undefined,
       educationalLevel: level as CaseEducationalLevel | undefined,
@@ -145,28 +168,31 @@ export function createCaseRoutes(
   });
 
   router.post('/', (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const c = req.body as CaseNode | undefined;
-    if (!c || !c.caseId || !c.title || !c.status) {
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
+    const body = req.body as CaseNode | undefined;
+    if (!body || !body.caseId || !body.title || !body.status) {
       return res.status(400).json({
         success: false,
         error: 'Body must be a CaseNode with caseId, title, status',
       });
     }
     try {
-      lib.saveCase(c, scope);
-      return res.status(201).json({success: true, case: c});
+      // The curator is whoever is signed in, never a name the body supplies.
+      const saved = lib.saveCase(body, caseCurationGrantForRequest(context), scope);
+      return res.status(201).json({success: true, case: saved});
     } catch (err) {
-      return res.status(400).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteError(res, err, {
+        code: 'case_save_failed',
+        error: 'Failed to save case',
+        logLabel: '[CaseRoutes] Save error',
+      }, [KnowledgeCurationError]);
     }
   });
 
   router.get('/:caseId', (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const c = lib.getCase(req.params.caseId, scope);
+    const c = lib.getCaseForCuration(req.params.caseId, scope);
     if (!c) {
       return res.status(404).json({
         success: false,
@@ -178,6 +204,7 @@ export function createCaseRoutes(
 
   router.delete('/:caseId', (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    if (lib.retiredCaseIds(scope).has(req.params.caseId)) g.removeEdgesTouching(req.params.caseId, scope);
     const removed = lib.removeCase(req.params.caseId, scope);
     if (!removed) {
       return res.status(404).json({
@@ -188,31 +215,39 @@ export function createCaseRoutes(
     res.json({success: true});
   });
 
-  /** POST /api/cases/:caseId/publish — body `{reviewer}`. */
+  /**
+   * POST /api/cases/:caseId/publish — the signed-in curator is the reviewer
+   * and attests the case's current content.
+   */
   router.post('/:caseId/publish', (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const reviewer = (req.body?.reviewer ?? '') as string;
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
     try {
-      const published = lib.publishCase(req.params.caseId, {reviewer}, scope);
+      const published = lib.publishCase(req.params.caseId, {}, caseCurationGrantForRequest(context), scope);
       return res.json({success: true, case: published});
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found/.test(msg) ? 404 : 400;
-      return res.status(status).json({success: false, error: msg});
+      return sendRouteError(res, err, {
+        code: 'case_publish_failed',
+        error: 'Failed to publish case',
+        logLabel: '[CaseRoutes] Publish error',
+      }, [KnowledgeCurationError]);
     }
   });
 
-  /** POST /api/cases/:caseId/archive — body `{reason}`. */
+  /** POST /api/cases/:caseId/archive — body `{reason}`; never makes analyses read a case they did not. */
   router.post('/:caseId/archive', (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
     const reason = (req.body?.reason ?? '') as string;
     try {
-      const archived = lib.archiveCase(req.params.caseId, {reason}, scope);
+      const archived = lib.archiveCase(req.params.caseId, {reason}, caseCurationGrantForRequest(context), scope);
       return res.json({success: true, case: archived});
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found/.test(msg) ? 404 : 400;
-      return res.status(status).json({success: false, error: msg});
+      return sendRouteError(res, err, {
+        code: 'case_archive_failed',
+        error: 'Failed to archive case',
+        logLabel: '[CaseRoutes] Archive error',
+      }, [KnowledgeCurationError]);
     }
   });
 

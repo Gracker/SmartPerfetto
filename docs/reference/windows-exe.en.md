@@ -17,7 +17,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 The Windows distribution is not a single-file binary. `SmartPerfetto.exe` is a
 launcher placed next to the Windows Node.js 24 runtime, Windows native
 `node_modules`, the pre-built Perfetto UI, backend runtime files, and the pinned
-`trace_processor_shell.exe`, plus the signed Android Internals Knowledge Pack.
+`trace_processor_shell.exe`.
 Users extract the zip and double-click
 `SmartPerfetto.exe`; they do not need Docker or a local Node.js install.
 
@@ -62,10 +62,9 @@ The script:
    `scripts/trace-processor-pin.env`; the version is not duplicated in docs.
 8. Cross-compiles the Go launcher as `SmartPerfetto.exe`.
 9. Writes `PACKAGE-MANIFEST.json` with the version, zip top-level directory,
-   git commit, dirty status, Node runtime, trace processor pin, and Knowledge
-   Pack.
+   git commit, dirty status, Node runtime, and trace processor pin.
 10. Writes the zip archive and verifies the filename, top-level directory,
-    package version, Knowledge Pack hashes, and manifest.
+    package version, and manifest.
 
 ## Release Flow
 
@@ -154,8 +153,6 @@ Then check:
 - The launcher's printed `http://127.0.0.1:<port>` URL opens the Perfetto UI.
 - The launcher's printed backend `http://127.0.0.1:<port>/health` URL returns `status: "OK"`.
 - Uploading a small trace starts `trace_processor_shell.exe` in the backend log.
-- Bundled CLI `smp knowledge-pack status --format json` resolves the
-  bundled/active Pack.
 
 The launcher prefers backend `3000` and frontend `10000`, but automatically
 selects another available port when a default is occupied. Use the URLs printed

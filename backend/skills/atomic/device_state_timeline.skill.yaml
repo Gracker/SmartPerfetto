@@ -93,8 +93,10 @@ steps:
         ROUND(freq_mhz - COALESCE(prev_freq_mhz, freq_mhz), 0) as delta_mhz,
         CASE
           WHEN prev_freq_mhz IS NULL THEN 'initial'
-          WHEN freq_mhz > prev_freq_mhz THEN 'boost'
-          WHEN freq_mhz < prev_freq_mhz THEN 'throttle'
+          -- A frequency change alone is not throttling: a governor lowers the
+          -- clock for load as often as a limit does.
+          WHEN freq_mhz > prev_freq_mhz THEN 'increase'
+          WHEN freq_mhz < prev_freq_mhz THEN 'decrease'
           ELSE 'stable'
         END as transition_type
       FROM freq_changes
@@ -269,35 +271,38 @@ steps:
         - name: transition_type
           label: "变化类型"
           type: string
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
     sql: |
-      WITH gpu_freq AS (
+      -- MHz from fragments/gpu_frequency_intervals.sql, which normalizes each
+      -- sample and compares normalized neighbours, so a unit change is not a
+      -- transition. Powering the GPU off or on is named as such; a lower
+      -- frequency alone is not throttling.
+      WITH samples AS (
         SELECT
-          c.ts,
-          ct.name as counter_name,
-          ROUND(c.value / 1000.0, 0) as freq_mhz,
-          LAG(ROUND(c.value / 1000.0, 0)) OVER (PARTITION BY ct.name ORDER BY c.ts) as prev_freq_mhz
-        FROM counter c
-        JOIN counter_track ct ON c.track_id = ct.id
-        WHERE (ct.name GLOB '*gpu_frequency*' OR ct.name GLOB '*gpu*freq*'
-               OR ct.name GLOB '*GPU*Freq*' OR ct.name GLOB '*gpu*clock*')
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts <= ${end_ts})
+          *,
+          LAG(counter_id) OVER (PARTITION BY track_id ORDER BY ts, counter_id) IS NULL AS is_first
+        FROM gpu_frequency_intervals
       )
       SELECT
         printf('%d', ts) as ts,
-        counter_name,
-        freq_mhz,
-        prev_freq_mhz,
+        'GPU ' || gpu_id as counter_name,
+        ROUND(freq_mhz, 0) as freq_mhz,
+        ROUND(prev_freq_mhz, 0) as prev_freq_mhz,
         ROUND(freq_mhz - COALESCE(prev_freq_mhz, freq_mhz), 0) as delta_mhz,
         CASE
-          WHEN prev_freq_mhz IS NULL THEN 'initial'
-          WHEN freq_mhz > prev_freq_mhz THEN 'boost'
-          WHEN freq_mhz < prev_freq_mhz THEN 'throttle'
-          ELSE 'stable'
+          WHEN is_first THEN 'initial'
+          WHEN freq_mhz IS NULL THEN 'out_of_domain'
+          WHEN prev_freq_mhz IS NULL THEN 'after_out_of_domain'
+          WHEN is_off THEN 'power_off'
+          WHEN prev_freq_mhz = 0 THEN 'power_on'
+          WHEN freq_mhz > prev_freq_mhz THEN 'increase'
+          ELSE 'decrease'
         END as transition_type
-      FROM gpu_freq
-      WHERE prev_freq_mhz IS NULL
-         OR freq_mhz != prev_freq_mhz
+      FROM samples
+      WHERE (is_first OR freq_mhz IS NOT prev_freq_mhz)
+        AND (${start_ts} IS NULL OR ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR ts <= ${end_ts})
       ORDER BY ts ASC
       LIMIT 300
     save_as: gpu_freq_transitions

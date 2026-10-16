@@ -66,92 +66,44 @@ describe('feedbackMigrationCli', () => {
       workspaceId: 'workspace-a',
     })).resolves.toEqual({
       patternStatusesMigrated: 0,
-      legacyCandidateFeedbackImported: 0,
       projectionTargetsApplied: 0,
       rebuilt: true,
     });
   });
 
-  it('imports only accepted legacy candidate feedback into the truth log', async () => {
-    const {openCaseCandidateOutbox} =
-      require('../../caseEvolution/caseCandidateOutbox') as
-        typeof import('../../caseEvolution/caseCandidateOutbox');
+  it('leaves the retired case candidate outbox unread', async () => {
+    const outboxPath = path.join(tmpDir, 'data', 'self_improve', 'case_evolution.db');
+    fs.mkdirSync(path.dirname(outboxPath), {recursive: true});
+    const raw = new Database(outboxPath);
+    raw.exec('CREATE TABLE candidate_feedback (candidate_id TEXT, rating TEXT, within_time_window TEXT)');
+    raw.prepare('INSERT INTO candidate_feedback VALUES (?, ?, ?)')
+      .run('candidate-legacy', 'positive', 'short');
+    raw.close();
+    const outboxBytes = fs.readFileSync(outboxPath);
     const {runFeedbackMigration} =
       require('../feedbackMigrationCli') as
         typeof import('../feedbackMigrationCli');
-    const {FeedbackEventStore} =
+    const {publicFeedbackLogPath} =
       require('../feedbackEventStore') as
         typeof import('../feedbackEventStore');
-    const outbox = openCaseCandidateOutbox();
-    outbox.enqueue({
-      candidateId: 'candidate-legacy',
-      schemaVersion: 'case_candidate@2',
-      provenance: {
-        sourceSessionId: 'session-origin',
-        sourceAnalysisRunId: 'run-origin',
-        sourceTurnIndex: 1,
-        traceContentHash: 'trace',
-        capturedAt: 1,
-        engine: 'claude',
-        sceneType: 'scrolling',
-        architectureType: 'unknown',
-        originScope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
-      },
-    } as any, {dedupeKey: 'legacy-candidate'});
-    outbox.close();
-
-    const raw = new Database(path.join(
-      tmpDir,
-      'data',
-      'self_improve',
-      'case_evolution.db',
-    ));
-    const insert = raw.prepare(`
-      INSERT INTO candidate_feedback (
-        candidate_id, source_session_id, source_analysis_run_id, rating,
-        received_at, received_within_seconds, within_time_window, metadata_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-    `);
-    insert.run(
-      'candidate-legacy',
-      'session-accepted',
-      'run-accepted',
-      'positive',
-      20_000,
-      20,
-      'short',
-    );
-    insert.run(
-      'candidate-legacy',
-      'session-audit-only',
-      'run-audit-only',
-      'negative',
-      90_000_000,
-      90_000,
-      'audit_only',
-    );
-    raw.close();
 
     await expect(runFeedbackMigration({
       rebuild: false,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
-    })).resolves.toMatchObject({
-      legacyCandidateFeedbackImported: 1,
-      projectionTargetsApplied: 1,
+    })).resolves.toEqual({
+      patternStatusesMigrated: 0,
+      projectionTargetsApplied: 0,
+      rebuilt: false,
     });
 
-    const store = new FeedbackEventStore({
-      scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
-    });
-    expect(store.getEffectiveForTarget(
-      'case_candidate',
-      'candidate-legacy',
-    )).toMatchObject([{
-      legacy: true,
-      sessionId: 'session-accepted',
-      rating: 'positive',
-    }]);
-    store.close();
+    // Nothing opened the outbox (no WAL sidecar, same bytes) and nothing
+    // from it reached the feedback log.
+    expect(fs.readFileSync(outboxPath)).toEqual(outboxBytes);
+    expect(fs.existsSync(`${outboxPath}-wal`)).toBe(false);
+    expect(fs.existsSync(publicFeedbackLogPath({
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+    }))).toBe(false);
   });
 });

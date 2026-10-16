@@ -26,7 +26,7 @@ import {
   throwIfTraceProcessorQueryCancelled,
 } from './traceProcessorCancellation';
 import type { QueryResult } from './workingTraceProcessor';
-import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
+import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
 import {beginRawSqlNativeQuery, invalidateRawSqlNativeProvenance, sealRawSqlNativeQuery,
   type RawSqlBootstrapCapability, type RawSqlNativeProvenance, type RawSqlNativeQuery} from './evidence/rawSqlNativeProvenance';
 
@@ -199,7 +199,6 @@ export function classifyTraceProcessorSqlError(message: string): TraceProcessorS
 
 export class TraceProcessorSqlWorker {
   private readonly processorId: string;
-  private readonly traceId: string;
   private readonly processorKey: string;
   private readonly port: number;
   private readonly hostname: string;
@@ -222,7 +221,6 @@ export class TraceProcessorSqlWorker {
 
   constructor(options: TraceProcessorSqlWorkerOptions) {
     this.processorId = options.processorId;
-    this.traceId = options.traceId;
     this.processorKey = options.processorKey ?? options.traceId;
     this.port = options.port;
     this.hostname = options.hostname || '127.0.0.1';
@@ -364,8 +362,7 @@ export class TraceProcessorSqlWorker {
         maxResponseBytes: options.maxResponseBytes,
         sqlOrigin,
         queuedAtMs: nodePerformance.now(),
-        runtimePerformanceRecorder:
-          currentRunManifestAttributionSink()?.runtimePerformanceRecorder,
+        runtimePerformanceRecorder: currentRuntimePerformanceRecorder(),
         resolve,
         reject,
       };

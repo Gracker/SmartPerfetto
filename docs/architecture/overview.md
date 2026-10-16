@@ -62,7 +62,7 @@ backend 与 frontend。
 | Express backend | `backend/src/index.ts` | 路由注册、健康检查、中间件、进程清理 |
 | OIDC 与请求身份 | `backend/src/routes/enterpriseAuthRoutes.ts`、`enterpriseSsoService.ts`、`middleware/auth.ts` | 登录回调、Session/CSRF、个人工作区所有权、请求级 tenant/workspace/RBAC 绑定 |
 | Runtime contract 与 registry | `backend/src/agentRuntime/runtimeKinds.ts`、`runtimeDescriptors.ts`、`runtimeSelection.ts` | 定义当前 production runtime 集合、capabilities、canonical loader 和每个 session 的 runtime 选择 |
-| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | 五个当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界 |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | 五个当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界；Pi 在实例内区分分类与主分析的推理请求策略 |
 | 共享 Agent 能力 | `backend/src/agentv3/` | MCP server/registry、策略注入、planning、verifier 和记忆；其中个别 runtime 文件仅保留 compatibility re-export |
 | OpenAI compatibility facades | `backend/src/agentOpenAI/` | 向旧 import path 提供 re-export；canonical OpenAI 实现在 `agentRuntime/engines/openai/` |
 | assistant application | `backend/src/assistant/` | session 管理、stream projection、结果 contract |
@@ -72,7 +72,7 @@ backend 与 frontend。
 | Self-Evolution | `backend/src/services/selfEvolution/`、`backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest、反馈投影、eval/replay、提案门控、overlay、对账、RBAC 控制面 |
 | Agent 外部反馈 | `backend/src/services/externalIssueReporting/`、`agentExternalIssueRoutes.ts`、AI Assistant plugin | 源 run 信号、固定 provider triage、严格校验、去标识 GitHub 草稿；不自动提交 |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | 本地路径注册、无索引按需搜索/读取、可选源码索引、符号解析、隐私投影与 patch 三态校验 |
-| External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | 外部 Wiki 全库审计、版本/指纹、分代索引、许可/同意/scope 和私有内容投影 |
+| Document knowledge bases | `backend/src/services/knowledge/`, `externalKnowledgeSourceRegistry.ts` | 文档目录注册/预览、FTS5/BM25 分代索引、`search_knowledge`/`read_knowledge_section`、`kb:` 引用与 `knowledge_use@1`、许可/同意/scope、退役 kind 与私有内容投影 |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | trace 加载、RPC 管理、SQL 查询 |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML 报告生成 |
 | Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalSemanticAssessment.ts`, `evidence/`, `verifier/`, `analysisResultSnapshotPipeline.ts` | 原命题、原始采集、有限证明与最多一次语义审核，统一 finalization 后投影/持久化 |
@@ -131,14 +131,15 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 ## 轮次上限与连续追问
 
 五个运行时共享采集预算与收尾状态。总预算大于一轮时，预留最后一轮无工具请求，
-在采集触顶后根据已经返回的事实生成有限结论、不足和下一步；取消、超时、授权失效及
-提供方错误不会触发额外总结。结果仍保留 `incomplete/turn_limit`，不能把交付文本当作
+在采集触顶后根据已经返回的事实生成有限结论、不足和下一步；取消、授权失效及
+提供方错误不会触发额外总结。OpenAI 采集超时且已有返回数据时，可在预留交付预算内收尾，
+仍保留 `partial/timeout`。触顶结果保留 `incomplete/turn_limit`，不能把交付文本当作
 取证完整。OpenCode 的上限依赖观察后中止，实际超额必须记录且不得再追加总结。
 
 每个用户问题使用新的物理模型上下文。同一逻辑会话经 owner、Trace、provider 和源码
 授权检查后，默认继承有界的近轮结论、缺口与证据定位；更早记录由 `read_session_history`
 分页读取。历史定位不产生本轮核验凭据。逻辑会话描述与完整轮次在同一数据库事务中
-持久化，网页重新打开和后端重启使用同一恢复路径，CLI 复用相同 typed history 合同。
+持久化，每个 run 只写一次终态（重复的终态写入会被拒绝），网页重新打开和后端重启使用同一恢复路径，CLI 复用相同 typed history 合同。
 详见[Agent Runtime 架构](agent-runtime.md)。
 
 ## 主分析数据流
@@ -146,6 +147,8 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 卡顿机制取证以目标进程主线程的连续执行为入口。`main_thread_frame_work` 与 `scrolling_analysis` 的顶层工作表复用 SQL fragments，按实际 doFrame、任务和 thread_state 拆分区间并保留来源标识；FrameTimeline 仅补充出帧结果。嵌套热点、跨轨道歧义、未标注执行和缺失调度数据分别标记，不能重复计时或用缺失值代替空闲。顶层工作表同时进入 display、synthesize 和 artifact，避免嵌套 Skill 只投影首个结果而丢失任务。
 
 策略 frontmatter 的 `investigation_requirements` 独立于报告格式。共享 typed-intent 提示构造器从本轮固定的策略快照中读取这些取证义务，供 investigation 的 answer/report 使用；具体问题仅应用相关义务，fact/acknowledgement 不增加调查流程，`existing_only` 不因此获得取证权限。旧快照可以省略此可选字段，新字段参与快照指纹。
+
+策略 frontmatter 的 `entry_skill` 声明场景入口 Skill：已解析的 `scene_wide`、`read_new` investigation，挂载单条 Trace 且无 reference/comparison 时，在模型首轮之前由产品运行它（身份门 `verified` 才运行）。结果以不可整体丢弃、有界的 `scene_evidence` 提示段交给模型；它与 `invoke_skill` 共用 `skillRunCore`，但不是模型工具调用，不进入 `toolResults` 或计划调用记录，采集进入调查账本，性能阶段与回执由 `RuntimePerformance` 记录。`default` 标记的策略 detail 正文作为最先让位的提示段随首轮下发，标题仍列在 detail 清单里。详见 [Agent Runtime 架构](agent-runtime.md)。
 
 所有运行时只使用这套固定上下文的提示构造器；缺失 intent 或策略快照会明确失败，不回退到旧 quick/full 模板。最终结论是主要交付记录，预算与中间表格预览不限制发现、声明或正文数量。输入提示词纪律预算为 16,000 个估算 token，身份和证据义务不可裁剪；实际输出或核验容量不足仍须显式保留不完整状态。
 
@@ -167,6 +170,7 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> selected runtime analyze()
       -> native typed intent -> scope / evidence access / budget / deliverable
       -> eligible automatic prefetch or on-demand context
+      -> product-owned scene entry evidence (strategy entry_skill)
          -> shared TraceCompleteness probe when requested
          -> shadow capability_manifest@1 probe-time snapshot
 
@@ -175,16 +179,16 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> execute_sql -> trace_processor_shell
       -> invoke_skill -> SkillExecutor -> SQL / DataEnvelope
       -> lookup_knowledge / lookup_sql_schema / fetch_artifact
-      -> lookup_blog_knowledge(source=android_internals_pack)
-         -> 会话固定签名 Pack 版本 -> FTS5/BM25 -> 脱敏、预算控制的背景引用
-      -> lookup_blog_knowledge(source=android_internals_wiki)
-         -> request source allowlist + live registry consent/scope check
-         -> active RAG generation -> bounded attributed background context
-      （两种 Android Internals 来源都不是当前 trace 证据）
+      -> search_knowledge / read_knowledge_section（仅当本轮选了文档知识库）
+         -> 逐轮选择 + live registry consent/scope check -> 固定索引代次
+         -> FTS5/BM25 -> kref- 引用、kb: 出处、独立 token 池
+      （知识库是背景，不是当前 trace 证据；Android Internals Wiki 也以文档知识库接入）
       -> selected codebase + live authorization + on-demand source access
-         -> record_source_use_decision（显式结构化状态，不是强制前置步骤）
-         -> search_codebase / read_codebase_file（live root，不要求索引）
-      -> resolve_symbol / lookup_app_source / lookup_aosp_source / lookup_kernel_source
+         -> 每库能力（search / read_body / index / graph）+ 本轮深度与额度 -> source_authorization
+         -> search_codebase / read_codebase_file / find_codebase_files（live root，不要求索引）
+         -> query_code_graph / inspect_code_symbol（仅当所选库有 GitNexus 索引）
+      -> resolve_symbol / lookup_app_source / lookup_kernel_source（仅当所选库有 active index）
+      -> lookup_aosp_source
          -> LookupResponseFilter -> CodeRef metadata
       -> propose_patch -> PatchProposer -> verified / sketch / unverified
 
@@ -198,7 +202,14 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 
 5. 后端流式输出
    SDK/server events -> runtime bridge -> privacy/narrative projection -> SSE
-      -> frontend renders progress, tables, thought, answer tokens
+      -> frontend renders progress, tables, thought
+   draftAnswerStreaming runtime（Claude/OpenAI）-> answer_token 草稿 + answer_segment_reset
+      -> owner 投影 + narrative 投影 + 合并 -> 仅实时发送（不重放、不持久化），由 conclusion 替换
+   finalizeAnalysisResult 发出语义复核时 -> provisional conclusion（正文定稿，核验待定）
+   无需复核时 -> 最终化后、报告/快照生成前发送普通 conclusion（无待核验提示）
+   provisional conclusion 之后停止 -> 只停复核（立即应答），run 照常提交 `~` 回合；
+      第二次停止 -> 在复核停止看门狗时限内等待提交再中止；到时未提交 ->
+      把已读正文存为未核验的不完整回合（私有知识或授权撤销时不存）
 
 6. 结束与报告
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata
@@ -296,7 +307,15 @@ SmartPerfetto 的最终回答不是单一 Markdown 字符串，而是一组共�
 typed intent 的预算、范围、交付物和证据访问彼此独立，声明有效不等于真实或已授权。
 `existing_only` 严禁新采集，`read_new` 仍受原请求权限限制；计划和源码访问按需进行。
 finalizer 保留原命题，在原 deadline、pinned provider 和 owner/授权约束内最多执行一次
-无工具语义审核。有限证明目录以源码为准，不能把一般因果关系或未知字段解释成已证明。
+无工具语义审核，且只在 `✓` 仍可达或有义务需要时才发出：报告、选区、源码访问或源码声明、
+未被证据台账排除的调查要求、“完美审核”假设下仍可达 `✓` 的断言，或零断言的纯确认回合；
+其余回答记为未核验原因 `not_required`，终态 `~`（接受的残余：只有审核能发现的矛盾不会被发现，
+有限证明的 `unsupported` 仍给出 `!`）。有限证明目录以源码为准，不能把一般因果关系或未知字段解释成已证明。
+
+审核、声明修复和续写在派发前检查剩余时间与预计时长；不足时保留原回答，跳过的审核记为
+`budget_insufficient`，报告和缺正文续写仍受原 deadline 约束。声明按条目校验：根错误使
+整份声明无效，条目错误保留 `partially_valid`，其他有效断言仍可核验。详见
+[Agent Runtime 架构](agent-runtime.md#final-result-与质量产物)。
 
 Conversation 可以在同一逻辑 session 的精确 trace/授权/owner scope 内保留原始采集，
 而每轮物理 run/session 保持唯一。模型只得到有界 artifact 定位目录；旧取消、回调和

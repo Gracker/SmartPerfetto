@@ -57,32 +57,32 @@ display:
       label: "评估"
       type: string
 
+process_scope:
+  role: target
+  binding: effective_target_processes
+sql_fragments:
+  - fragments/effective_target_processes.sql
+  - fragments/system_sched_spans.sql
 sql: |
   WITH jit_threads AS (
     SELECT t.utid, t.name as thread_name
     FROM thread t
-    JOIN process p ON t.upid = p.upid
-    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
+    JOIN effective_target_processes p ON t.upid = p.upid
+    WHERE (${__process_scope.upid} IS NOT NULL
+        OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       AND (t.name GLOB 'Jit thread pool*'
            OR t.name GLOB 'Profile Saver*')
   ),
-  main_thread AS (
-    SELECT t.utid
-    FROM thread t
-    JOIN process p ON t.upid = p.upid
-    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND t.tid = p.pid
-    LIMIT 1
-  ),
   -- JIT 线程的 CPU 时间和核类型
+  -- 核类型来自 fragments/system_sched_spans.sql 的 system_cpu_topology（只按 capacity 分级）。
+  system_windows AS (
+    SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
+  ),
   jit_cpu AS (
-    SELECT
-      COALESCE(ct.core_type, 'unknown') as core_type,
-      SUM(MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})) / 1e6 as running_ms
-    FROM sched_slice ss
+    SELECT ss.core_type, SUM(ss.dur_ns) / 1e6 as running_ms
+    FROM system_sched_spans ss
     JOIN jit_threads jt ON ss.utid = jt.utid
-    LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
-    WHERE ss.ts < ${end_ts} AND ss.ts + ss.dur > ${start_ts}
-    GROUP BY core_type
+    GROUP BY ss.core_type
   ),
   -- JIT slice 分析
   jit_slices AS (

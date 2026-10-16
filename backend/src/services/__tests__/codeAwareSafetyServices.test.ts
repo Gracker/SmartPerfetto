@@ -15,7 +15,6 @@ import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {SOURCE_USE_DECISION_SCHEMA_VERSION} from '../codebase/sourceUseDecision';
 import {filterRagLookup} from '../rag/lookupResponseFilter';
-import {SessionToolResultRegistry, projectedSidecarMissing} from '../rag/sessionToolResultRegistry';
 import {
   projectRagResultForSseAndLog,
   projectToolResultForExternalSurface,
@@ -40,14 +39,20 @@ import {
   sanitizeOwnerCodeAwareText,
   withOwnerCodeAwareProjection,
   registerCodeAwareLookupForEcho,
+  registerKnowledgeTextForEcho,
 } from '../security/codeAwareOutputRegistry';
 import {projectCodeAwareStreamingUpdate, projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
+import {projectOwnerDataEnvelopes} from '../security/privateAnalysisProjection';
 import {issuePrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 import {LLMEchoOutputStream, type CodeRef} from '../security/llmEchoOutputFilter';
-import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
+import {
+  ExternalKnowledgeSourceRegistry,
+  type RegisterExternalKnowledgeSourceInput,
+} from '../externalKnowledgeSourceRegistry';
 import {parseConclusionContractSidecar, renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {projectConclusionProtocol, projectConclusionContractForDisplay} from '../security/conclusionProtocolProjection';
+import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
 
 let tmpDir: string;
 const CODEBASE_SCOPE = {
@@ -109,7 +114,7 @@ describe('conclusion protocol privacy roles', () => {
   });
 
   it('is idempotent for quoted CodeRefs on sidecar, typed JSON and stored declarations', () => {
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'lookup', codebaseId: 'app',
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'lookup', codebaseId: 'app',
       filePath: 'src/Probe"Data.kt', lineRange: {start: 1, end: 1},
       text: 'const marker = "synthetic_source_marker_long_name";'}]);
     for (const input of [raw(), JSON.stringify({...declaration(), relationProposals: []}),
@@ -122,8 +127,8 @@ describe('conclusion protocol privacy roles', () => {
     expect(projectConclusionContractForDisplay(sessionId, projected)).toEqual(projected);
   });
 
-  it.each(['captured.cell', 'source.location', 'numeric.cell'])('preserves the registered proof predicate %s through source matching', predicate => {
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'lookup', codebaseId: 'app', filePath: 'src/Probe.kt',
+  it.each(['captured.cell', 'interval.overlap', 'numeric.cell'])('preserves the registered proof predicate %s through source matching', predicate => {
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'lookup', codebaseId: 'app', filePath: 'src/Probe.kt',
       text: predicate}]);
     const contract = declaration();
     const withSemantics = {...contract, claims: [{...contract.claims[0], semantics: {
@@ -225,9 +230,26 @@ function makeRegistry(sendToProvider: boolean): {
 }
 
 describe('CodeLookupLedger', () => {
+  it('refuses an unparsable record by its number, quoting none of the lookups', () => {
+    const ledgerPath = path.join(tmpDir, 'ledger.jsonl');
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify({turn: 1, ts: 1, toolName: 'lookup_app_source', codebaseId: 'cb_1', chunkIds: ['chunk-a'],
+        consentApplied: true, tokensSpent: 1, outcome: 'success', legacyPath: false}),
+      '{"chunkIds":[LEDGER-CANARY-0e5 x]}',
+      '',
+    ].join('\n'));
+    const warnings = warningsDuring(() => {
+      expect(() => CodeLookupLedger.restore('session-a', 1, ledgerPath))
+        .toThrow(/^code_lookup_ledger_corrupt_record: line 2$/);
+    });
+    expect(warnings).toEqual([['[CodeLookupLedger] Ledger unreadable', expect.objectContaining({
+      sessionId: 'session-a', path: ledgerPath, line: 2})]]);
+    expect(JSON.stringify(warnings)).not.toContain('LEDGER-CA');
+  });
+
   it('persists append-only lookup entries and restores caps', async () => {
     const ledgerPath = path.join(tmpDir, 'ledger.jsonl');
-    const ledger = new CodeLookupLedger('session-a', 100, 1, ledgerPath);
+    const ledger = new CodeLookupLedger('session-a', 1, ledgerPath);
 
     ledger.record({
       turn: 1,
@@ -253,10 +275,9 @@ describe('CodeLookupLedger', () => {
     });
     await ledger.flush();
 
-    const restored = CodeLookupLedger.restore('session-a', 100, 1, ledgerPath);
+    const restored = CodeLookupLedger.restore('session-a', 1, ledgerPath);
     expect(restored.hasPriorLookupOf('chunk-a')).toBe(true);
     expect(restored.hasSuccessfulCodeLookup()).toBe(true);
-    expect(restored.remainingTokens()).toBe(88);
     expect(restored.remainingPatches()).toBe(0);
     expect(restored.toSnapshotSummary()).toEqual({
       lookupCount: 1,
@@ -269,7 +290,7 @@ describe('CodeLookupLedger', () => {
 
   it('keeps audit history but never restores capability across authorization fingerprints', async () => {
     const ledgerPath = path.join(tmpDir, 'partitioned-ledger.jsonl');
-    const oldLedger = new CodeLookupLedger('session-partitioned', 100, 1, ledgerPath, 'context-old');
+    const oldLedger = new CodeLookupLedger('session-partitioned', 1, ledgerPath, 'context-old');
     oldLedger.record({
       turn: 1,
       ts: 1714600000000,
@@ -285,14 +306,12 @@ describe('CodeLookupLedger', () => {
 
     const restored = CodeLookupLedger.restore(
       'session-partitioned',
-      100,
       1,
       ledgerPath,
       'context-new',
     );
     expect(restored.hasPriorLookupOf('chunk-old')).toBe(false);
     expect(restored.hasSuccessfulCodeLookup()).toBe(false);
-    expect(restored.remainingTokens()).toBe(100);
     expect(restored.toSnapshotSummary()).toEqual({
       lookupCount: 1,
       patchCount: 0,
@@ -303,7 +322,7 @@ describe('CodeLookupLedger', () => {
 
   it('keeps attempted codebases separate from actually returned references', async () => {
     const ledgerPath = path.join(tmpDir, 'used-ledger.jsonl');
-    const ledger = new CodeLookupLedger('session-used', 100, 1, ledgerPath);
+    const ledger = new CodeLookupLedger('session-used', 1, ledgerPath);
     ledger.record({
       turn: 1,
       ts: 1714600000000,
@@ -341,7 +360,7 @@ describe('CodeLookupLedger', () => {
     });
     await ledger.flush();
 
-    expect(CodeLookupLedger.restore('session-used', 100, 1, ledgerPath).toSnapshotSummary()).toEqual({
+    expect(CodeLookupLedger.restore('session-used', 1, ledgerPath).toSnapshotSummary()).toEqual({
       lookupCount: 3,
       patchCount: 0,
       referencedCodebaseIds: ['cb_attempted', 'cb_graph', 'cb_indexed'],
@@ -363,7 +382,7 @@ describe('CodeLookupLedger', () => {
       legacyPath: false,
     })}\n`);
 
-    expect(CodeLookupLedger.restore('session-old', 100, 1, ledgerPath).toSnapshotSummary()).toEqual({
+    expect(CodeLookupLedger.restore('session-old', 1, ledgerPath).toSnapshotSummary()).toEqual({
       lookupCount: 1,
       patchCount: 0,
       referencedCodebaseIds: ['cb_old'],
@@ -411,7 +430,6 @@ describe('CodeLookupLedger', () => {
 
     const restored = CodeLookupLedger.restore(
       'session-migrated-partition',
-      100,
       1,
       ledgerPath,
       'context-new',
@@ -430,7 +448,6 @@ describe('CodeLookupLedger', () => {
     const ledgerPath = path.join(tmpDir, 'source-decision-ledger.jsonl');
     const ledger = new CodeLookupLedger(
       'session-source-decision',
-      100,
       1,
       ledgerPath,
       'context-current',
@@ -485,7 +502,6 @@ describe('CodeLookupLedger', () => {
     const persisted = fs.readFileSync(ledgerPath, 'utf8');
     const restored = CodeLookupLedger.restore(
       'session-source-decision',
-      100,
       1,
       ledgerPath,
       'context-current',
@@ -519,24 +535,25 @@ describe('CodeLookupLedger', () => {
 describe('filterRagLookup', () => {
   it('admits only authorized redacted source bodies before granting patch context or spending tokens', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
-    const ledger = new CodeLookupLedger('admission', 100, 2, path.join(tmpDir, 'admission.jsonl'));
+    const ledger = new CodeLookupLedger('admission', 2, path.join(tmpDir, 'admission.jsonl'));
+    const pool = {left: () => 100, spend: jest.fn()};
     const seen: string[] = [];
     const source = makeChunk({codebaseId, sourceGeneration, snippet: 'class PRIVATE_ADMISSION_BODY { val api_key = "1234567890" }'});
     const filtered = await filterRagLookup(makeRawResult(source), {toolName: 'lookup_app_source', turn: 0,
-      codebaseRegistry: registry, knowledgeScope: CODEBASE_SCOPE, ledger, sessionId: 'admission',
-      admitSourceHit: hit => {seen.push(hit.snippet ?? ''); return false;}});
+      codebaseRegistry: registry, knowledgeScope: CODEBASE_SCOPE, ledger, budget: {sourceTokens: pool, knowledgeTokens: pool},
+      sessionId: 'admission', admitSourceHit: hit => {seen.push(hit.snippet ?? ''); return false;}});
     await ledger.flush();
     expect(seen).toHaveLength(1);
     expect(seen[0]).not.toContain('1234567890');
     expect(filtered.hits).toEqual([]);
     expect(ledger.hasPriorLookupOf(source.chunkId)).toBe(false);
-    expect(ledger.remainingTokens()).toBe(100);
+    expect(pool.spend).not.toHaveBeenCalled();
     expect(sanitizeCodeAwareText('admission', 'PRIVATE_ADMISSION_BODY')).toBe('PRIVATE_ADMISSION_BODY');
   });
 
   it('redacts secrets and records successful user codebase lookups when consent allows provider send', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
-    const ledger = new CodeLookupLedger('session-b', 1000, 1, path.join(tmpDir, 'ledger-b.jsonl'));
+    const ledger = new CodeLookupLedger('session-b', 1, path.join(tmpDir, 'ledger-b.jsonl'));
     const result = await filterRagLookup(
       makeRawResult(makeChunk({codebaseId, sourceGeneration})),
       {
@@ -558,7 +575,7 @@ describe('filterRagLookup', () => {
 
   it('registers returned snippets with the output echo guard', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
-    const ledger = new CodeLookupLedger('session-echo', 1000, 1, path.join(tmpDir, 'ledger-echo.jsonl'));
+    const ledger = new CodeLookupLedger('session-echo', 1, path.join(tmpDir, 'ledger-echo.jsonl'));
     await filterRagLookup(
       makeRawResult(makeChunk({
         codebaseId,
@@ -584,7 +601,7 @@ describe('filterRagLookup', () => {
 
   it('returns metadata-only hits when provider-send consent is absent', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(false);
-    const ledger = new CodeLookupLedger('session-c', 1000, 1, path.join(tmpDir, 'ledger-c.jsonl'));
+    const ledger = new CodeLookupLedger('session-c', 1, path.join(tmpDir, 'ledger-c.jsonl'));
     const result = await filterRagLookup(
       makeRawResult(makeChunk({codebaseId, sourceGeneration})),
       {
@@ -679,7 +696,7 @@ describe('filterRagLookup', () => {
   });
 
   it('drops indexed chunks that fall outside the current selection and consent grant', async () => {
-    const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
+    const {codebaseId, sourceGeneration} = makeRegistry(true);
     const registryPath = path.join(tmpDir, 'registry.json');
     const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
     envelope.codebases[0].pathFilters = ['src'];
@@ -704,8 +721,28 @@ describe('filterRagLookup', () => {
     expect(result.hits).toEqual([]);
   });
 
+  it('charges legacy knowledge to the run knowledge pool and refuses past it', async () => {
+    const legacyChunk = makeChunk({chunkId: 'legacy-blog', kind: 'androidperformance.com',
+      uri: 'https://androidperformance.com/article', snippet: 'legacy article text', tokenCount: 5,
+      registryOrigin: 'legacy_plan55', codebaseId: undefined});
+    let left = 5;
+    const knowledge = {left: () => left, spend: (tokens: number) => {left -= tokens;}};
+    const source = {left: () => 1_000, spend: jest.fn()};
+
+    const first = await filterRagLookup(makeRawResult(legacyChunk),
+      {toolName: 'lookup_aosp_source', turn: 1, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
+    const second = await filterRagLookup(makeRawResult(legacyChunk),
+      {toolName: 'lookup_aosp_source', turn: 2, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
+
+    expect(first.hits[0]?.snippet).toBe('legacy article text');
+    expect(left).toBe(0);
+    expect(second.hits[0]).toEqual(expect.objectContaining({unsupportedReason: 'budget_exceeded'}));
+    expect(second.hits[0]).not.toHaveProperty('snippet');
+    expect(source.spend).not.toHaveBeenCalled();
+  });
+
   it('keeps legacy knowledge snippets on the legacy path', async () => {
-    const ledger = new CodeLookupLedger('session-d', 1000, 1, path.join(tmpDir, 'ledger-d.jsonl'));
+    const ledger = new CodeLookupLedger('session-d', 1, path.join(tmpDir, 'ledger-d.jsonl'));
     const legacyChunk = makeChunk({
       chunkId: 'legacy-blog',
       kind: 'androidperformance.com',
@@ -716,7 +753,7 @@ describe('filterRagLookup', () => {
     });
     const result = await filterRagLookup(
       makeRawResult(legacyChunk),
-      {toolName: 'lookup_blog_knowledge', turn: 1, ledger},
+      {toolName: 'lookup_aosp_source', turn: 1, ledger},
     );
     await ledger.flush();
 
@@ -729,11 +766,13 @@ describe('filterRagLookup', () => {
     }));
   });
 
-  it('rechecks private knowledge consent and returns attributed redacted snippets', async () => {
+  it('refuses a stored retired Wiki chunk even with rights, consent and its active generation', async () => {
     const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'external-sources.json'));
     const root = path.join(tmpDir, 'wiki');
     fs.mkdirSync(root);
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    // A record the retired Wiki connector registered; registration no longer
+    // types this kind, so the cast stands in for that stored state.
     const source = registry.register({
       kind: 'android_internals_wiki',
       displayName: 'Android Internals Wiki',
@@ -746,7 +785,7 @@ describe('filterRagLookup', () => {
       sendToProvider: true,
       consentedBy: 'user-a',
       scope,
-    });
+    } as unknown as RegisterExternalKnowledgeSourceInput);
     await registry.withIngestLease(source.sourceId, scope, lease =>
       lease.activateGeneration({
         generation: 'generation-a',
@@ -775,30 +814,26 @@ describe('filterRagLookup', () => {
       contentFingerprint: source.contentFingerprint,
       codebaseId: undefined,
     });
+    const ledger = new CodeLookupLedger('session-retired-wiki', 1, path.join(tmpDir, 'ledger-retired-wiki.jsonl'));
+    let left = 1_000;
+    const knowledge = {left: () => left, spend: (tokens: number) => {left -= tokens;}};
 
     const result = await filterRagLookup(makeRawResult(chunk), {
-      toolName: 'lookup_blog_knowledge',
+      toolName: 'lookup_aosp_source',
       turn: 1,
-      externalKnowledgeRegistry: registry,
-      knowledgeSourceIds: [source.sourceId],
+      ledger,
+      budget: {sourceTokens: {left: () => 1_000, spend: () => undefined}, knowledgeTokens: knowledge},
       knowledgeScope: scope,
-    } as any);
+    });
+    await ledger.flush();
 
     expect(result.legacyPath).toBe(false);
-    expect(result.hits[0]?.snippet).toContain('[REDACTED_SECRET]');
-    expect(result.hits[0]?.metadata).toEqual(expect.objectContaining({
-      kind: 'android_internals_wiki',
-      knowledgeSourceId: source.sourceId,
-      sourceGeneration: 'generation-a',
-      sourceStatus: 'finalized',
-      sourceConfidence: 'high',
-      verifiedAt: 1714600000000,
-    }));
-    expect(result.hits[0]?.metadata).not.toEqual(expect.objectContaining({
-      title: expect.anything(),
-      license: expect.anything(),
-      attribution: expect.anything(),
-    }));
+    expect(result.hits).toEqual([expect.objectContaining({chunkId: 'wiki-1', unsupportedReason: 'knowledge_kind_retired'})]);
+    expect(result.hits[0]).not.toHaveProperty('snippet');
+    expect(JSON.stringify(result)).not.toContain('Handler callback');
+    expect(left).toBe(1_000);
+    expect(ledger.getEntries()).toEqual([expect.objectContaining({
+      outcome: 'rejected', chunkIds: [], tokensSpent: 0, consentApplied: true})]);
   });
 });
 
@@ -808,7 +843,7 @@ describe('registerOnDemandSourceLookupForEcho', () => {
 
     registerOnDemandSourceLookupForEcho('session-on-demand-output', [
       {
-        referenceId: 'source-on-demand-1',
+        id: 'source-on-demand-1',
         codebaseId: 'cb-on-demand',
         filePath: 'src/SourceGuard.kt',
         lineRange: {start: 4, end: 4},
@@ -816,7 +851,7 @@ describe('registerOnDemandSourceLookupForEcho', () => {
         text: sourceBody,
       },
       {
-        referenceId: 'source-without-text',
+        id: 'source-without-text',
         codebaseId: 'cb-on-demand',
         filePath: 'src/SourceGuard.kt',
       },
@@ -979,7 +1014,7 @@ describe('code-aware output registry bounds', () => {
   });
 });
 
-describe('tool result projection and session registry', () => {
+describe('tool result projection', () => {
   it('projects sanitized RAG snippets to hashes for SSE/log payloads', () => {
     const projected = projectRagResultForSseAndLog('lookup_app_source', {
       query: 'MainActivity',
@@ -1165,6 +1200,54 @@ describe('tool result projection and session registry', () => {
     },
   );
 
+  it('projects document knowledge results as counts and ids only, failing closed', () => {
+    const knowledgeBaseId = `eks_${'a'.repeat(24)}`;
+    const hit = {id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId,
+      title: 'PRIVATE_KNOWLEDGE_TITLE', headingPath: ['PRIVATE_KNOWLEDGE_TITLE', 'PRIVATE_HEADING'],
+      relativePath: 'private/notes.md', lineRange: {start: 3, end: 9}, excerpt: 'PRIVATE_KNOWLEDGE_TEXT'};
+    const search = projectToolResultForExternalSurface('search_knowledge',
+      {success: true, hits: [hit, {...hit, id: 'kref-other'}], truncated: true});
+    expect(search).toMatchObject({toolName: 'search_knowledge', outcome: 'success', chunkRefs: [],
+      knowledge: {knowledgeBaseIds: [knowledgeBaseId], referenceCount: 2, truncated: true}});
+    const read = projectToolResultForExternalSurface('read_knowledge_section',
+      {success: true, reference: hit, part: 2, partCount: 3, text: 'PRIVATE_KNOWLEDGE_TEXT'});
+    expect(read).toMatchObject({knowledge: {knowledgeBaseIds: [knowledgeBaseId], referenceCount: 1, part: 2, partCount: 3}});
+    const refused = projectToolResultForExternalSurface('read_knowledge_section',
+      {success: false, action_required: 'use_reference_id_from_search_knowledge', error: 'PRIVATE_KNOWLEDGE_TEXT'});
+    expect(refused).toMatchObject({outcome: 'rejected', action_required: 'use_reference_id_from_search_knowledge'});
+    const budgetStop = projectToolResultForExternalSurface('search_knowledge',
+      {success: false, action_required: 'continue_with_existing_knowledge', unsupportedReason: 'knowledge_search_budget_exceeded'});
+    expect(budgetStop).toMatchObject({outcome: 'rejected', action_required: 'continue_with_existing_knowledge'});
+    expect(budgetStop).not.toHaveProperty('knowledge');
+    const openAction = projectToolResultForExternalSurface('search_knowledge',
+      {success: false, action_required: 'read private/notes.md', hits: []});
+    expect(openAction).not.toHaveProperty('action_required');
+    const unknownShape = projectToolResultForExternalSurface('search_knowledge', {success: true, hits: 'PRIVATE_KNOWLEDGE_TEXT'});
+    expect(unknownShape).toMatchObject({outcome: 'rejected', chunkRefs: []});
+    // Unknown shapes are rejections that keep the authoritative receipt, never a success.
+    const receipt = {_meta: {'smartperfetto/tool-result': {schemaVersion: 'tool_result_v1', success: true}}};
+    const probes = [
+      projectToolResultForExternalSurface('read_knowledge_section',
+        {...receipt, content: [{type: 'text', text: JSON.stringify({part: 1, partCount: 1, text: 'PRIVATE_KNOWLEDGE_TEXT'})}]}),
+      projectToolResultForExternalSurface('read_knowledge_section', {success: true, part: 1, partCount: 1, text: 'x'}),
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [{}]}),
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [null, hit]}),
+      projectToolResultForExternalSurface('search_knowledge', {hits: [hit]}),
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [{...hit, knowledgeBaseId: 'private/notes.md'}]}),
+      // The legacy RAG shape never answers for a knowledge tool.
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [{chunkId: 'c', score: 1,
+        metadata: {kind: 'android_internals_wiki', title: 'PRIVATE_KNOWLEDGE_TITLE'}}]}),
+    ];
+    for (const probe of probes) {
+      expect(probe).toMatchObject({outcome: 'rejected', chunkRefs: []});
+      expect(probe).not.toHaveProperty('knowledge');
+    }
+    expect((probes[0] as {_meta: unknown})._meta).toEqual(receipt._meta);
+    for (const projected of [search, read, refused, openAction, unknownShape, ...probes]) {
+      expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_|private\/notes|kref-/);
+    }
+  });
+
   it.each(['query_code_graph', 'inspect_code_symbol'])(
     'projects %s graph references without persisting file paths',
     toolName => {
@@ -1215,22 +1298,6 @@ describe('tool result projection and session registry', () => {
       outcome: 'budget_exceeded',
       sourceRefs: [],
     }));
-  });
-
-  it('keeps runtime tool results namespaced by session/run/runtime/invocation', () => {
-    const registry = new SessionToolResultRegistry();
-    const target = {sessionId: 's1', runId: 'r1', runtime: 'openai' as const, invocationId: 'tool-1'};
-    const alias = {sessionId: 's1', runId: 'r1', runtime: 'claude' as const, invocationId: 'tool-1'};
-    const sidecar = projectedSidecarMissing('lookup_app_source');
-    registry.put(target, {llmPayload: {content: 'provider payload'}, sidecar});
-    registry.alias(alias, target);
-
-    expect(registry.getSidecar(alias)).toEqual(sidecar);
-    expect(registry.getLlmPayload(target)).toEqual({content: 'provider payload'});
-
-    registry.clearRun('s1', 'r1');
-    expect(registry.getSidecar(target)).toBeUndefined();
-    expect(registry.getSidecar(alias)).toBeUndefined();
   });
 });
 
@@ -1530,33 +1597,6 @@ describe('code-aware streaming application boundary', () => {
     expect(conclusion?.content).not.toHaveProperty('rawAnswer');
     expect(conclusion?.content).not.toHaveProperty('findings');
     expect(conclusion?.content.confidence).toBe(0.8);
-  });
-
-  it('allows only sanitized source supplement text and numeric metrics', () => {
-    registerCodeAwareCanary('session-stream', 'SOURCE_SUPPLEMENT_PRIVATE_CANARY');
-    const projected = projectCodeAwareStreamingUpdate(
-      'session-stream',
-      {
-        type: 'analysis_source_enrichment_completed',
-        content: {
-          message: 'before SOURCE_SUPPLEMENT_PRIVATE_CANARY after',
-          metrics: {searchCalls: 3, readCalls: 7, durationMs: 9000},
-          rawToolPayload: 'PRIVATE_TOOL_PAYLOAD_CANARY',
-        },
-        timestamp,
-      },
-      true,
-      'en',
-    );
-
-    expect(projected?.type).toBe('analysis_source_enrichment_completed');
-    expect(projected?.content.message).not.toContain('SOURCE_SUPPLEMENT_PRIVATE_CANARY');
-    expect(projected?.content.metrics).toEqual({
-      searchCalls: 3,
-      readCalls: 7,
-      durationMs: 9000,
-    });
-    expect(projected?.content).not.toHaveProperty('rawToolPayload');
   });
 
   it('fails closed when one long-lived session exceeds the guard pattern budget', () => {
@@ -1875,25 +1915,28 @@ object Application {
 describe('owner source output isolation', () => {
   const sessionId = 'owner-output-regression';
   afterEach(() => clearCodeAwareOutputGuards(sessionId));
-  it('retains source and query but keeps credentials, knowledge and canaries private', () => {
+  it('retains source, query and knowledge for the owner but keeps credentials and canaries private', () => {
     const source = 'fun executeStartup() { synchronizeWindowLayout(); }';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
     registerPrivateAnalysisQueryForEcho(sessionId, 'Why is startup slow in executeStartup?');
     registerCodeAwareCanary(sessionId, 'CANARY_NEVER_DISPLAY');
-    registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk', snippet: 'INTERNAL_KNOWLEDGE_PRIVATE_TEXT',
+    const knowledge = 'INTERNAL_KNOWLEDGE_PRIVATE_TEXT token=knowledge-secret-token-123';
+    registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk', snippet: knowledge,
       metadata: {knowledgeSourceId: 'wiki'}}]} as any);
-    const text = `${source} Why is startup slow in executeStartup? api_key="private-key-value-123" CANARY_NEVER_DISPLAY INTERNAL_KNOWLEDGE_PRIVATE_TEXT`;
+    const text = `${source} Why is startup slow in executeStartup? api_key="private-key-value-123" CANARY_NEVER_DISPLAY ${knowledge}`;
     const owner = sanitizeOwnerCodeAwareText(sessionId, text);
     expect(owner).toContain(source);
     expect(owner).toContain('Why is startup slow');
+    expect(owner).toContain('INTERNAL_KNOWLEDGE_PRIVATE_TEXT');
     expect(owner).not.toContain('private-key-value-123');
+    expect(owner).not.toContain('knowledge-secret-token-123');
     expect(owner).not.toContain('CANARY_NEVER_DISPLAY');
-    expect(owner).not.toContain('INTERNAL_KNOWLEDGE_PRIVATE_TEXT');
     expect(sanitizeCodeAwareText(sessionId, source)).not.toContain(source);
+    expect(sanitizeCodeAwareText(sessionId, knowledge)).not.toContain('INTERNAL_KNOWLEDGE_PRIVATE_TEXT');
   });
   it('preserves source after strict registration overflow and redacts split generated credentials', () => {
     for (let index = 0; index < 201; index++) registerOnDemandSourceLookupForEcho(sessionId,
-      [{referenceId: `read-${index}`, codebaseId: 'app', filePath: 'Main.kt', text: `fun boundedSource${index}() { renderFrame(); }`}]);
+      [{id: `read-${index}`, codebaseId: 'app', filePath: 'Main.kt', text: `fun boundedSource${index}() { renderFrame(); }`}]);
     const projection = createCodeAwareStreamingTextProjection(sessionId, 'owner-stream', 'owner');
     const output = projection.write('fun boundedSource200() { renderFrame(); }\napi_') +
       projection.write('key="generated-secret-value-123"\n') + projection.flush();
@@ -1928,13 +1971,206 @@ describe('owner source output isolation', () => {
     revokeCodeAwareOutputGuards(sessionId);
     expect(projection.flush()).toBe('[PRIVATE_OUTPUT_SUPPRESSED]');
     clearCodeAwareOutputGuards(sessionId);
-    const update = {type: 'thought' as const, content: {thought: 'Checking renderFrame against the trace.', arguments: {raw: 'tool payload'}}, timestamp: 1};
+    // The owner sees a thought as a run without private context shows it; strict output omits it.
+    const update = {type: 'thought' as const, content: {thought: 'Checking renderFrame against the trace.', arguments: {query: 'renderFrame'}}, timestamp: 1};
     expect(projectOwnerCodeAwareStreamingUpdate(sessionId, update, true, 'en')?.content)
-      .toEqual({thought: 'Checking renderFrame against the trace.'});
+      .toEqual({thought: 'Checking renderFrame against the trace.', arguments: {query: 'renderFrame'}});
     expect(projectCodeAwareStreamingUpdate(sessionId, update, true, 'en')).toBeNull();
+    // A dispatch keeps its arguments and narration; a result keeps its narration, never its payload.
+    const dispatch = {type: 'agent_task_dispatched' as const, timestamp: 1, content: {taskId: 't1',
+      toolName: 'search_codebase', args: {query: 'renderFrame'}, message: 'Search source: renderFrame'}};
+    expect(projectOwnerCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en')).toEqual(dispatch);
+    const response = {type: 'agent_response' as const, timestamp: 1, content: {taskId: 't1', toolName: 'execute_sql',
+      result: '{"rows":[[1]]}', resultNarration: 'SQL matched no rows', isError: false}};
+    expect(projectOwnerCodeAwareStreamingUpdate(sessionId, response, true, 'en')?.content)
+      .toEqual({taskId: 't1', toolName: 'execute_sql', resultNarration: 'SQL matched no rows', isError: false});
+    expect(JSON.stringify(projectCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en'))).not.toContain('renderFrame');
+  });
+
+  it('withholds an unregistered credential in a structured token field but not a draft token', () => {
+    const dispatch = {type: 'agent_task_dispatched' as const, timestamp: 1, content: {taskId: 't3', toolName: 'call_api',
+      args: {token: 'unregistered-secret-12345', api_key: 'unregistered-secret-12345', frame: 'frame 42'}}};
+    expect((projectOwnerCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en')?.content as {args: unknown}).args)
+      .toEqual({token: '[REDACTED_SECRET]', api_key: '[REDACTED_SECRET]', frame: 'frame 42'});
+    const envelope = createDataEnvelope({columns: ['name'], rows: [['frame']]}, {type: 'sql_result', source: 'fixture', title: 't'});
+    const [projected] = projectOwnerDataEnvelopes(sessionId,
+      [{...envelope, data: {...envelope.data, token: 'unregistered-secret-12345'}} as never]);
+    expect((projected.data as {token?: unknown}).token).toBe('[REDACTED_SECRET]');
+    const draft = projectOwnerCodeAwareStreamingUpdate(sessionId, {type: 'answer_token',
+      content: {token: 'The token budget is fine', runId: 'r', attempt: 0}, timestamp: 1}, true, 'en');
+    expect(draft?.content.token).toBe('The token budget is fine');
+  });
+
+  it('withholds credential-named structured fields by the detector and keeps counts, enums and short values', () => {
+    const fields = {
+      clientSecret: 'synthetic-client-secret-value', db_password: 'synthetic-db-password',
+      private_key: 'synthetic-private-key-body', pushToken: 'f8a9b7c6d5e4f3a2', authorization: 'synthetic-authorization-1',
+      maxTokens: 'unlimited-by-default', tokenCount: 'several-thousand', frameToken: 'frameLabel',
+      matchStrength: 'background', password: 'short', secret: '1234567', maxOutputTokens: 4096,
+    };
+    const expected = {
+      ...fields, clientSecret: '[REDACTED_SECRET]', db_password: '[REDACTED_SECRET]',
+      private_key: '[REDACTED_SECRET]', pushToken: '[REDACTED_SECRET]', authorization: '[REDACTED_SECRET]',
+    };
+    const dispatch = {type: 'agent_task_dispatched' as const, timestamp: 1, content: {taskId: 't4', toolName: 'call_api',
+      args: fields}};
+    expect((projectOwnerCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en')?.content as {args: unknown}).args)
+      .toEqual(expected);
+    const envelope = createDataEnvelope({columns: ['name'], rows: [['frame']]}, {type: 'sql_result', source: 'fixture', title: 't'});
+    const [projected] = projectOwnerDataEnvelopes(sessionId, [{...envelope, data: {...envelope.data, ...fields}} as never]);
+    expect(projected.data).toMatchObject(expected);
+    expect(projected.data).toMatchObject({columns: ['name'], rows: [['frame']]});
+  });
+
+  it('withholds a draft token the owner guard had to change', () => {
+    registerCodeAwareCanary(sessionId, 'CANARY_IN_DRAFT_TOKEN');
+    expect(projectOwnerCodeAwareStreamingUpdate(sessionId, {type: 'answer_token',
+      content: {token: 'before CANARY_IN_DRAFT_TOKEN', runId: 'r', attempt: 0}, timestamp: 1}, true, 'en')).toBeNull();
+  });
+
+  it('narrates a source result for the owner from its private outcome receipt', () => {
+    const result = {sourceRefs: [{referenceId: 'r1', codebaseId: 'app', snippetLength: 12}], outcome: 'success'};
+    const receipt = issuePrivateToolResultNarrationReceipt({toolName: 'read_codebase_file', result});
+    const update = {type: 'agent_response' as const, timestamp: 1, content: {taskId: 't2', toolName: 'read_codebase_file',
+      result: JSON.stringify(result), resultNarration: '', privateToolResultReceipt: receipt, isError: false}};
+    const content = projectOwnerCodeAwareStreamingUpdate(sessionId, update, true, 'en')?.content as Record<string, unknown>;
+    expect(content.resultNarration).toBe('Authorized content was read and is available to check against trace evidence');
+    expect(content).not.toHaveProperty('result');
+    expect(content).not.toHaveProperty('privateToolResultReceipt');
   });
 });
 
+
+describe('owner streaming projection for answer drafts', () => {
+  const sessionId = 'owner-draft-projection';
+  afterEach(() => clearCodeAwareOutputGuards(sessionId));
+  let channel = 0;
+  /** Stream `parts`; `shown` is what was released while the projection was still unaltered. */
+  function stream(parts: string[]) {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, `draft-${channel++}`, 'owner');
+    let shown = '';
+    let output = '';
+    const note = (released: string) => {
+      output += released;
+      if (!projection.altered) shown += released;
+    };
+    for (const part of parts) note(projection.write(part));
+    note(projection.flush());
+    return {shown, output, altered: projection.altered};
+  }
+  /** Every split of `text` into two tokens, plus one token per character. */
+  const splits = (text: string) => [...Array.from({length: text.length - 1},
+    (_, index) => [text.slice(0, index + 1), text.slice(index + 1)]), [...text]];
+
+  it.each([
+    ['LF', 'Intro\napi_key=\n"synthetic-secret-123456"\nAfter\n', 'synthetic-secret-123456'],
+    ['CRLF', 'Intro\r\napi_key =\r\n  "synthetic-secret-123456"\r\nAfter\r\n', 'synthetic-secret-123456'],
+    ['quoted key and separator on their own lines', 'Intro\n"password"\n:\n hunter2hunter2\nAfter\n', 'hunter2hunter2'],
+    ['Bearer prefix', 'Intro\nAuthorization: Bearer\nabcdefghijklmnop123\nAfter\n', 'abcdefghijklmnop123'],
+  ])('never releases a credential whose key and value sit on different lines (%s)', (_label, text, secret) => {
+    for (const parts of splits(text)) {
+      const {shown, output, altered} = stream(parts);
+      expect(shown).not.toContain(secret);
+      expect(altered).toBe(true);
+      // Fixed registrations and no capacity failure: the stream equals the whole-text projection.
+      expect(output).toBe(sanitizeOwnerCodeAwareText(sessionId, text));
+    }
+  });
+
+  it('releases ordinary text unaltered at every split, holding a line that ends in a key only until the next', () => {
+    const text = 'Frame 42 took 16.7 ms on RenderThread.\nCheck the token\nThe budget is fine.\n';
+    for (const parts of splits(text)) expect(stream(parts)).toEqual({shown: text, output: text, altered: false});
+  });
+
+  it('marks the stream when later context identifies text it already released', () => {
+    const text = 'The value abcdefgh12345 was used\ntoken = "abcdefgh12345"\n';
+    const {shown, altered} = stream(['The value abcdefgh12345 was used\n', 'token = "abcdefgh12345"\n']);
+    // Released before its context arrived: the residual a draft withdrawal bounds.
+    expect(shown).toBe('The value abcdefgh12345 was used\n');
+    expect(altered).toBe(true);
+    expect(sanitizeOwnerCodeAwareText(sessionId, text)).not.toContain('abcdefgh12345');
+  });
+
+  it('marks the stream before a redacted value can reappear bare', () => {
+    expect(stream(['token = "abcdefgh12345"\n', 'again abcdefgh12345\n'])).toMatchObject({shown: '', altered: true});
+  });
+
+  it('fails safe on an oversized line and reports the drop', () => {
+    expect(stream(['x'.repeat(64 * 1024 + 1) + '\n'])).toEqual({shown: '', output: '[OVERSIZED_OUTPUT_LINE]\n', altered: true});
+  });
+
+  it('marks a stream that replaced a canary', () => {
+    registerCodeAwareCanary(sessionId, 'CANARY_DRAFT_MARK');
+    const {shown, output, altered} = stream(['before CANARY_DRAFT_MARK after\n']);
+    expect(output).not.toContain('CANARY_DRAFT_MARK');
+    expect({shown, altered}).toEqual({shown: '', altered: true});
+  });
+
+  const registerCredential = () => registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk',
+    snippet: 'token="synthetic-secret-123456"', metadata: {knowledgeSourceId: 'wiki'}}]} as any);
+
+  it('marks a stretch whose registrations changed after it released text', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-registration', 'owner');
+    expect(projection.write('synthetic-secret-123456\n')).toBe('synthetic-secret-123456\n');
+    expect(projection.altered).toBe(false);
+    registerCredential();
+    projection.flush();
+    expect(projection.altered).toBe(true);
+    expect(sanitizeOwnerCodeAwareText(sessionId, 'synthetic-secret-123456\n')).toBe('[REDACTED_SECRET]\n');
+  });
+
+  it('marks a stretch whose registrations changed while its text was still held', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-held-registration', 'owner');
+    expect(projection.write('synthetic-secret-123456')).toBe('');
+    registerCredential();
+    projection.write('\n');
+    projection.flush();
+    expect(projection.altered).toBe(true);
+  });
+
+  it('does not mark a later stretch for registrations made before it released text', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-new-stretch', 'owner');
+    projection.write('first response\n');
+    projection.flush();
+    registerCredential();
+    // A registered pattern makes the guard hold a lookbehind window until flush.
+    expect(projection.write('second response\n') + projection.flush()).toBe('second response\n');
+    expect(projection.altered).toBe(false);
+  });
+
+  it('marks a stream whose guard became unavailable, even when it released nothing', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-revoked', 'owner');
+    revokeCodeAwareOutputGuards(sessionId);
+    expect(projection.write('text after revocation\n')).toBe('');
+    expect(projection.altered).toBe(true);
+  });
+});
+
+describe('guard registration capacity', () => {
+  const sessions = ['repeat-registration', 'owner-credential-overflow'];
+  afterEach(() => sessions.forEach(clearCodeAwareOutputGuards));
+
+  it('spends no capacity and no registration change on a repeated registration', () => {
+    // Every history read registers the same questions again.
+    const question = 'the same pasted question about Foo::bar';
+    for (let index = 0; index < 300; index++) registerPrivateAnalysisQueryForEcho(sessions[0], question);
+    expect(sanitizeCodeAwareText(sessions[0], 'ordinary model text')).toBe('ordinary model text');
+    expect(sanitizeCodeAwareText(sessions[0], question)).toContain('[PRIVATE_QUERY_REFERENCE]');
+    const projection = createCodeAwareStreamingTextProjection(sessions[0], 'repeat-draft', 'strict');
+    projection.write('released text\n');
+    registerPrivateAnalysisQueryForEcho(sessions[0], question);
+    projection.flush();
+    expect(projection.altered).toBe(false);
+  });
+
+  // Strict overflow leaving the owner guard intact is covered by 'preserves source after strict registration overflow'.
+  it('fails the owner guard closed once distinct credentials exceed its own capacity', () => {
+    for (let index = 0; index <= 200; index++) {
+      registerPrivateAnalysisQueryForEcho(sessions[1], `question ${index} api_key="distinct-secret-${index}-value"`);
+    }
+    expect(sanitizeOwnerCodeAwareText(sessions[1], 'ordinary model text')).toBe('[PRIVATE_OUTPUT_SUPPRESSED]');
+  });
+});
 
 describe('semantic input structure budget', () => {
   it('preserves byte-bounded JSON beyond the ordinary output node cap without widening output limits', () => {
@@ -1955,5 +2191,46 @@ describe('semantic input structure budget', () => {
     const input = {api_key: 'secret-value-for-test'};
     const projected = withOwnerCodeAwareProjection(() => projectCodeAwareSemanticInputStructure(undefined, input));
     expect(projected).toEqual({value: {api_key: '[REDACTED_SECRET]'}, changed: true, limited: false});
+  });
+});
+
+describe('document knowledge echo protection', () => {
+  const session = 'knowledge-names-session';
+  const item = {
+    knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+    referenceId: 'kref-11111111-2222-3333-4444-555555555555',
+    title: '渲染框架',
+    headingPath: ['渲染框架', '合成器'],
+    relativePath: 'rf/x.md',
+    text: 'XRenderCompositorWorker composes every frame for the team render framework.',
+  };
+  const answer = '根据《渲染框架 › 合成器》（kb:rf/x.md#L3-L9），合成器 在每帧后运行；见 x.md。';
+
+  afterEach(() => clearCodeAwareOutputGuards(session));
+
+  it('replaces short titles, headings, paths and kb: citations in strict output and keeps them for the owner', () => {
+    registerKnowledgeTextForEcho(session, [item]);
+    const strict = sanitizeCodeAwareText(session, answer);
+    for (const leaked of ['渲染框架', '合成器', 'rf/x.md', 'kb:rf/x.md#L3-L9', 'x.md']) {
+      expect(strict).not.toContain(leaked);
+    }
+    expect(strict).toContain('[Knowledge: ');
+    expect(withOwnerCodeAwareProjection(() => sanitizeCodeAwareText(session, answer))).toBe(answer);
+  });
+
+  it('replaces them in a strict stream split at every boundary, and leaves the owner stream readable', () => {
+    registerKnowledgeTextForEcho(session, [item]);
+    for (let split = 1; split < answer.length; split += 1) {
+      const strict = createCodeAwareStreamingTextProjection(session, `strict-${split}`, 'strict');
+      const streamed = strict.write(answer.slice(0, split)) + strict.write(answer.slice(split)) + strict.flush();
+      for (const leaked of ['渲染框架', '合成器', 'rf/x.md']) expect(streamed).not.toContain(leaked);
+      const owner = createCodeAwareStreamingTextProjection(session, `owner-${split}`, 'owner');
+      expect(owner.write(answer.slice(0, split)) + owner.write(answer.slice(split)) + owner.flush()).toBe(answer);
+    }
+  });
+
+  it('never registers a one-character name, so it cannot blank unrelated output', () => {
+    registerKnowledgeTextForEcho(session, [{...item, title: 'A', headingPath: ['B'], relativePath: 'c'}]);
+    expect(sanitizeCodeAwareText(session, 'A B c stay readable')).toBe('A B c stay readable');
   });
 });

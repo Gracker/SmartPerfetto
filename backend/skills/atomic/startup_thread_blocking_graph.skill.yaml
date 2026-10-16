@@ -115,7 +115,13 @@ display:
       format: duration_ms
       unit: ms
 
+process_scope:
+  role: target
+  binding: effective_target_processes
+  context_fields:
+    peer_context: [waker_utid, waker_upid, observed_waker_utid, waker_thread, waker_process, waker_current_slice, waker_slice_id, waker_slice_status]
 sql_fragments:
+  - fragments/effective_target_processes.sql
   - fragments/system_thread_state_spans.sql
 
 sql: |
@@ -126,8 +132,8 @@ sql: |
         WHEN t.name GLOB '*HeapTaskDaemon*' OR t.name GLOB '*FinalizerDaemon*' THEN 'gc'
         WHEN t.name GLOB 'Jit thread pool*' THEN 'jit'
         WHEN t.name GLOB 'Binder:*' THEN 'binder' ELSE 'other' END AS role
-    FROM thread t JOIN process p ON t.upid=p.upid
-    WHERE ('${package}'='' OR p.name='${package}' OR p.name GLOB '${package}:*')
+    FROM thread t JOIN effective_target_processes p ON t.upid=p.upid
+    WHERE (${__process_scope.upid} IS NOT NULL OR '${package}'='' OR p.name='${package}' OR p.name GLOB '${package}:*')
   ),
   system_windows AS (
     SELECT 0 AS window_id,${start_ts} AS window_start_ts,${end_ts} AS window_end_ts

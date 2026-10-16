@@ -41,32 +41,6 @@ keywords:
   - godot
   - cocos
 
-phase_hints:
-  - id: game_loop_jank
-    keywords: ['game', 'Unity', 'Unreal', 'Cocos', 'Godot', '主循环', 'Tick', 'PlayerLoop', 'GameThread', '帧率', '卡顿']
-    constraints: '游戏/引擎场景必须先用 game_fps_analysis 看整体帧率，再用 game_main_loop_jank 检查引擎主循环/Tick 超预算切片。不要把缺 FrameTimeline 误判成没有掉帧。'
-    critical_tools: ['game_fps_analysis', 'game_main_loop_jank']
-    critical: true
-  - id: game_gpu_power
-    keywords: ['gpu', 'work period', 'mali', 'thermal', '功耗', '发热', '降频']
-    constraints: 'GPU/功耗/发热问题按数据完整度补充 android_gpu_work_period_track、mali_gpu_power_state、thermal_throttling、wattson_thread_power_attribution；缺 capability 时标注证据等级。'
-    critical_tools: ['android_gpu_work_period_track', 'mali_gpu_power_state', 'thermal_throttling', 'wattson_thread_power_attribution']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: fps_and_gpu
-      match_keywords: ['game', 'fps', '游戏', 'gpu', 'frame', '帧率']
-      suggestion: '游戏场景建议包含帧率分析和 GPU 状态检查阶段'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: game_fps_analysis
-    - id: engine_loop_jank
-      match_keywords: ['Unity', 'Unreal', 'Cocos', 'Godot', 'GameThread', 'PlayerLoop', 'Tick', '主循环']
-      suggestion: '游戏引擎场景建议包含 game_main_loop_jank 阶段，检查引擎自管帧循环'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: game_main_loop_jank
 ---
 
 #### game Core Strategy
@@ -106,9 +80,11 @@ plan_template:
 
 写 execute_sql 时优先使用（完整列表见方法论模板）：`android_gpu_frequency`、`cpu_utilization_per_second`、`cpu_frequency_counters`、`android_dvfs_counters`、`android_screen_state`
 
+`android_gpu_frequency.gpu_freq` 是 gpufreq 计数器原值，单位随写入源是 kHz、Hz 或 MHz，0 表示 GPU 关闭；要 GPU 频率数值时读 `gpu_freq_in_range` / `gpu_analysis` 的 MHz 列，不要自己换算。
+
 **Phase 1 — 游戏帧率分析（1 次调用）：**
 ```
-invoke_skill("game_fps_analysis", { process_name: "<游戏进程名>" })
+invoke_skill("game_fps_analysis", { package: "<游戏包名>" })
 ```
 返回：帧率统计、帧间隔分布、卡顿帧列表。
 
@@ -159,6 +135,6 @@ invoke_skill("mali_gpu_power_state")
 1. **帧率概览**：平均/P50/P90/P99 帧间隔、稳定性评级
 2. **卡顿帧分析**：卡顿帧时间分布、帧间隔直方图
 3. **GPU 状态**：频率、利用率、Fence 等待
-4. **热节流影响**：CPU/GPU 频率是否被限制
+4. **限频影响**：CPU/GPU 频率是否被限制（限频以 `cpu_throttling_in_range` 的限频证据为准；温控触发还需温度/散热设备证据）
 5. **优化建议**：按 GPU-bound / CPU-bound / Thermal 分类
 <!-- /strategy-detail -->

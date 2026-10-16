@@ -8,9 +8,14 @@
 # 转译 upstream perfetto-workflow-android-heap-dump runbook 的首批可执行 SQL：
 # 先确认 heap graph 是否存在，再输出 heap samples 与 class retained-size
 # 排名。深度引用链仍由后续 per-object drill-down/execute_sql 完成。
+# 进程范围与 dump 完整性来自 fragments/heap_target_process.sql 和
+# fragments/heap_graph_dump_scope.sql：self_size = -1 的占位对象不计入大小，
+# 不完整 dump 显式标为 incomplete_dump；.hprof 等无进程名的 dump 在进程名
+# 无匹配时回退到 upid + graph_sample_ts 并标注身份不可用。
+# 每个 dump 的大小只扫描一次，存入 __sp_heap_graph_dump_sizes 供后续步骤读取。
 
 name: android_heap_graph_summary
-version: "1.0"
+version: "1.1"
 type: atomic
 category: memory
 tier: B
@@ -38,7 +43,11 @@ inputs:
   - name: process_name
     type: string
     required: false
-    description: "目标进程名；留空分析全部 heap graph sample"
+    description: "目标进程名（精确或 name:* 子进程）；留空分析全部 heap graph sample；无匹配时回退到没有进程名的 dump（如 .hprof）"
+  - name: upid
+    type: integer
+    required: false
+    description: "可选的稳定进程身份；进程名不可用时（.hprof）用它限定 dump"
   - name: graph_sample_ts
     type: timestamp
     required: false
@@ -50,6 +59,29 @@ inputs:
     description: "top class retainer 返回行数"
 
 steps:
+  - id: heap_graph_dump_sizes
+    type: atomic
+    name: "Heap Graph dump 大小"
+    display:
+      level: hidden
+    sql: |
+      -- One scan of the object table for every step below; placeholder
+      -- objects (self_size = -1) are not real objects and are excluded.
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_graph_dump_sizes AS
+      SELECT
+        upid,
+        graph_sample_ts,
+        COUNT(*) AS object_count,
+        SUM(self_size) AS total_heap_size,
+        SUM(IIF(reachable, self_size, 0)) AS reachable_heap_size,
+        SUM(IIF(reachable, 1, 0)) AS reachable_obj_count
+      FROM heap_graph_object
+      WHERE self_size >= 0
+      GROUP BY upid, graph_sample_ts;
+
+      SELECT COUNT(*) AS dump_count FROM __sp_heap_graph_dump_sizes
+    save_as: heap_graph_dump_sizes
+
   - id: heap_graph_availability
     type: atomic
     name: "Heap Graph 数据可用性"
@@ -70,21 +102,38 @@ steps:
         - name: total_heap_mb
           label: "Total Heap(MB)"
           type: number
+        - name: incomplete_dump_count
+          label: "不完整 dump 数"
+          type: number
+        - name: process_identity
+          label: "进程身份"
+          type: string
+        - name: has_truncated_column
+          label: "Runtime 有截断标记"
+          type: number
         - name: status
           label: "状态"
           type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       SELECT
         COUNT(*) AS sample_count,
-        COUNT(DISTINCT stats.upid) AS process_count,
-        ROUND(COALESCE(SUM(stats.reachable_heap_size), 0) / 1048576.0, 2) AS reachable_heap_mb,
-        ROUND(COALESCE(SUM(stats.total_heap_size), 0) / 1048576.0, 2) AS total_heap_mb,
-        CASE WHEN COUNT(*) > 0 THEN 'heap_graph_available' ELSE 'no_heap_graph_data' END AS status
-      FROM android_heap_graph_stats AS stats
-      LEFT JOIN process AS p
-        ON p.upid = stats.upid
-      WHERE ('${process_name}' = '' OR p.name GLOB '*${process_name}*')
-        AND (${graph_sample_ts} IS NULL OR stats.graph_sample_ts = ${graph_sample_ts})
+        COUNT(DISTINCT d.upid) AS process_count,
+        ROUND(COALESCE(SUM(z.reachable_heap_size), 0) / 1048576.0, 2) AS reachable_heap_mb,
+        ROUND(COALESCE(SUM(z.total_heap_size), 0) / 1048576.0, 2) AS total_heap_mb,
+        COALESCE(SUM(d.dump_completeness = 'incomplete_dump'), 0) AS incomplete_dump_count,
+        COALESCE(GROUP_CONCAT(DISTINCT d.process_identity), 'none') AS process_identity,
+        -- heap_graph.truncated exists only in trace processors after v58.2.
+        EXISTS (SELECT 1 FROM pragma_table_info('heap_graph') WHERE name = 'truncated') AS has_truncated_column,
+        CASE
+          WHEN COUNT(*) > 0 THEN 'heap_graph_available'
+          WHEN EXISTS (SELECT 1 FROM heap_graph) THEN 'no_heap_graph_for_requested_process'
+          ELSE 'no_heap_graph_data'
+        END AS status
+      FROM heap_graph_dump_scope AS d
+      LEFT JOIN __sp_heap_graph_dump_sizes AS z USING (upid, graph_sample_ts)
     save_as: heap_graph_availability
 
   - id: heap_graph_samples
@@ -99,6 +148,9 @@ steps:
         - name: process_name
           label: "进程"
           type: string
+        - name: upid
+          label: "UPID"
+          type: number
         - name: graph_sample_ts
           label: "Sample 时间"
           type: timestamp
@@ -124,24 +176,94 @@ steps:
         - name: unreachable_heap_mb
           label: "Unreachable Heap(MB)"
           type: number
+        - name: placeholder_object_count
+          label: "占位对象(self_size=-1)"
+          type: number
+        - name: dump_completeness
+          label: "Dump 完整性"
+          type: string
+        - name: dump_issues
+          label: "Dump 错误/丢包统计"
+          type: string
+        - name: process_identity
+          label: "进程身份"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       SELECT
-        COALESCE(p.name, printf('upid:%d', stats.upid)) AS process_name,
-        printf('%d', stats.graph_sample_ts) AS graph_sample_ts,
-        ROUND(stats.reachable_heap_size / 1048576.0, 2) AS reachable_heap_mb,
-        ROUND(stats.total_heap_size / 1048576.0, 2) AS total_heap_mb,
-        stats.reachable_obj_count,
-        stats.total_obj_count,
+        d.process_name,
+        d.upid,
+        printf('%d', d.graph_sample_ts) AS graph_sample_ts,
+        ROUND(z.reachable_heap_size / 1048576.0, 2) AS reachable_heap_mb,
+        ROUND(z.total_heap_size / 1048576.0, 2) AS total_heap_mb,
+        z.reachable_obj_count,
+        z.object_count AS total_obj_count,
         ROUND(stats.anon_rss_and_swap_size / 1048576.0, 2) AS anon_rss_and_swap_mb,
         stats.oom_score_adj,
-        ROUND(MAX(stats.total_heap_size - stats.reachable_heap_size, 0) / 1048576.0, 2) AS unreachable_heap_mb
-      FROM android_heap_graph_stats AS stats
-      LEFT JOIN process AS p
-        ON p.upid = stats.upid
-      WHERE ('${process_name}' = '' OR p.name GLOB '*${process_name}*')
-        AND (${graph_sample_ts} IS NULL OR stats.graph_sample_ts = ${graph_sample_ts})
-      ORDER BY stats.graph_sample_ts, stats.reachable_heap_size DESC
+        ROUND(MAX(z.total_heap_size - z.reachable_heap_size, 0) / 1048576.0, 2) AS unreachable_heap_mb,
+        d.placeholder_object_count,
+        d.dump_completeness,
+        d.dump_issues,
+        d.process_identity
+      FROM heap_graph_dump_scope AS d
+      LEFT JOIN __sp_heap_graph_dump_sizes AS z USING (upid, graph_sample_ts)
+      LEFT JOIN android_heap_graph_stats AS stats
+        ON stats.upid = d.upid
+        AND stats.graph_sample_ts = d.graph_sample_ts
+      ORDER BY d.graph_sample_ts, z.reachable_heap_size DESC
     save_as: heap_graph_samples
+
+  # heap_graph.truncated only exists in trace processors after v58.2; older
+  # runtimes (TRACE_PROCESSOR_PATH / external RPC) skip this step and rely on
+  # dump_completeness in heap_graph_samples.
+  - id: heap_graph_truncation
+    type: atomic
+    name: "Heap Dump 截断标记"
+    optional: true
+    condition: "heap_graph_availability.data[0]?.has_truncated_column === 1"
+    display:
+      level: detail
+      layer: list
+      title: "Heap Dump 截断标记（trace processor 导入时记录）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: graph_sample_ts
+          label: "Sample 时间"
+          type: timestamp
+          unit: ns
+        - name: dump_reason
+          label: "Dump 原因"
+          type: string
+        - name: truncated
+          label: "截断"
+          type: number
+        - name: dump_completeness
+          label: "Dump 完整性"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
+    sql: |
+      SELECT
+        d.process_name,
+        d.upid,
+        printf('%d', d.graph_sample_ts) AS graph_sample_ts,
+        h.dump_reason,
+        h.truncated,
+        IIF(h.truncated, 'incomplete_dump', 'not_truncated') AS dump_completeness
+      FROM heap_graph_dump_scope AS d
+      JOIN heap_graph AS h
+        ON h.upid = d.upid
+        AND h.ts = d.graph_sample_ts
+      ORDER BY h.truncated DESC, d.graph_sample_ts
+    save_as: heap_graph_truncation
 
   - id: top_retained_classes
     type: atomic
@@ -184,16 +306,12 @@ steps:
         - name: leak_hint
           label: "风险提示"
           type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
-      WITH sample_totals AS (
-        SELECT
-          upid,
-          graph_sample_ts,
-          reachable_heap_size
-        FROM android_heap_graph_stats
-      )
       SELECT
-        COALESCE(p.name, printf('upid:%d', classes.upid)) AS process_name,
+        d.process_name,
         printf('%d', classes.graph_sample_ts) AS graph_sample_ts,
         classes.name AS class_name,
         classes.root_type,
@@ -201,22 +319,21 @@ steps:
         ROUND(classes.self_size / 1048576.0, 2) AS self_size_mb,
         classes.cumulative_count,
         ROUND(classes.cumulative_size / 1048576.0, 2) AS cumulative_size_mb,
-        ROUND(100.0 * classes.cumulative_size / NULLIF(sample_totals.reachable_heap_size, 0), 2) AS retained_pct_of_sample,
+        ROUND(100.0 * classes.cumulative_size / NULLIF(z.reachable_heap_size, 0), 2) AS retained_pct_of_sample,
         CASE
           WHEN classes.root_type IN ('ROOT_JAVA_FRAME', 'ROOT_JNI_GLOBAL') AND classes.cumulative_size > 1048576 THEN 'root_retainer'
           WHEN classes.name GLOB '*Activity*' AND classes.self_count > 1 THEN 'activity_instances'
           WHEN classes.name GLOB '*Fragment*' AND classes.self_count > 5 THEN 'fragment_instances'
-          WHEN classes.cumulative_size > sample_totals.reachable_heap_size * 0.2 THEN 'dominant_retainer'
+          WHEN classes.cumulative_size > z.reachable_heap_size * 0.2 THEN 'dominant_retainer'
           ELSE 'inspect_if_relevant'
         END AS leak_hint
       FROM android_heap_graph_class_summary_tree AS classes
-      JOIN sample_totals
-        ON sample_totals.upid = classes.upid
-        AND sample_totals.graph_sample_ts = classes.graph_sample_ts
-      LEFT JOIN process AS p
-        ON p.upid = classes.upid
-      WHERE ('${process_name}' = '' OR p.name GLOB '*${process_name}*')
-        AND (${graph_sample_ts} IS NULL OR classes.graph_sample_ts = ${graph_sample_ts})
+      JOIN heap_graph_dump_scope AS d
+        ON d.upid = classes.upid
+        AND d.graph_sample_ts = classes.graph_sample_ts
+      LEFT JOIN __sp_heap_graph_dump_sizes AS z
+        ON z.upid = classes.upid
+        AND z.graph_sample_ts = classes.graph_sample_ts
       ORDER BY classes.cumulative_size DESC
       LIMIT COALESCE(${max_rows|30}, 30)
     save_as: top_retained_classes
@@ -227,6 +344,8 @@ output:
     - name: heap_graph_availability
       description: "Heap graph sample/data availability"
     - name: heap_graph_samples
-      description: "Heap graph sample-level heap/RSS/OOM orientation"
+      description: "Heap graph sample-level heap/RSS/OOM orientation; placeholder objects (self_size = -1) are excluded from sizes and counts and mark the dump incomplete, so its sizes are lower bounds"
+    - name: heap_graph_truncation
+      description: "Per-dump heap_graph.truncated flag recorded at import (trace processors after v58.2 only)"
     - name: top_retained_classes
       description: "Class retained-size ranking from android_heap_graph_class_summary_tree"

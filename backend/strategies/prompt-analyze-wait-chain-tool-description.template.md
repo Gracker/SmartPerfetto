@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
+<!-- Runtime cap: a description over RUNTIME_TOOL_DESCRIPTION_MAX_CHARS (1000) is compacted to its first paragraph, so all paragraphs together must stay under it. Detail belongs in knowledge-thread-state-blocked-reason.template.md. -->
 
-What one thread did over one window: running / runnable / sleeping / uninterruptible split, longest waits with `blocked_function`, who woke each one, and what that waker was itself waiting on.
+What one thread waited on in one window: its state split and the wake chain through other threads.
 
-Use when a window is slow and it is still unknown whether the thread computed, queued for CPU, blocked on I/O, or slept on someone else. Route by the dominant `wake_source_class` (`network_receive_candidate`, `timer_or_device_wake`, `worker_handoff`, `binder_reply`, `system_service`, `unknown`) or `blocked_function` to the matching Skill.
+Take the window from the scene, not the longest sleep: startup = android_startups, jank = the janky frame, ANR = input dispatch to ANR, interaction = input to present. Select by `thread_state_id` (its row is the window) or by `utid` or `process_name` + `thread_name`/`main_thread` with `start_ts`, `end_ts`.
 
-Select by `thread_state_id`, by `utid`, or by `process_name` plus `thread_name` or `main_thread`. Without `thread_state_id`, `start_ts` and `end_ts` are required. An ambiguous selector returns candidates, not an answer.
+Rank by `attributableMs` (peers running, runnable or in D); `blockingMs` also counts `eventWaitMs`, peer sleeps ending the chain. `idle_wait`: the wait sat between slices, idle not slow. `peer_event_wait`: the chain ends in a peer waiting on network, timer or device; report that wait. `java_monitor`: lock contention, see `lookup_knowledge("thread-state-blocked-reason")`.
 
-`wake_source_class` is a candidate label, not a root cause: timer and network wakes share one IRQ-context signal and are separated only by thread role. `available: false` carries `unavailableReason`: `task_state_running` (the selected row was running), `no_waiting_time` (the window has no waiting time), or `no_critical_path_stack` (no chain came back; the trace may lack `sched_waking`).
+Refusals carry `action_required` (`selector_conflict`, `no_thread_state_in_window` + candidates). `unavailableReason`: `task_state_running`, `no_waiting_time`, `no_critical_path_stack`, `wait_open_at_trace_end`.

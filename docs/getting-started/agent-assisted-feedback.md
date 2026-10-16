@@ -99,7 +99,7 @@ M10 是普通用户的外部反馈辅助面，不是 M0–M9 Self-Evolution 控�
 npm --prefix backend run test:external-issue-reporting
 npm --prefix backend run typecheck
 npm --prefix backend run validate:strategies
-npm --prefix backend run verify:e2e:deepseek-external-issue
+GLM_API_KEY=... npm --prefix backend run verify:e2e:glm-external-issue
 
 cd perfetto/ui
 node build.mjs --typecheck

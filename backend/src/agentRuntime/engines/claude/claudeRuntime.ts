@@ -2,33 +2,41 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
+  candidateHasAnswerBody,
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
-  INVALID_NATIVE_DECLARATION,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
-import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
-import {runClaudeIntentTransport} from './claudeIntentTransport';
-import {reportReviewUsesRemainingBudget, attachFinalizationContext, type RuntimeFinalizationContextInput} from '../../analysisFinalizationContext';
+import {claudeEffortForPurpose, runClaudeIntentTransport} from './claudeIntentTransport';
+import {admitDeliveryCall, deliveryCallFailsOpen} from '../../../services/runtimeCallStats';
+import {
+  attachFinalizationContext,
+  attachRunDeliveryRecord,
+  reportReviewUsesRemainingBudget,
+  sourceUseFinalizationFields,
+  type RuntimeFinalizationContextInput,
+} from '../../analysisFinalizationContext';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisCompletion, type AnalysisOutputOrigin, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import * as fs from 'fs';
 import * as path from 'path';
-import {
-  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
-  query as sdkQuery,
-} from '@anthropic-ai/claude-agent-sdk';
+import {SYSTEM_PROMPT_DYNAMIC_BOUNDARY, type HookCallback, type Options as ClaudeSdkOptions} from '@anthropic-ai/claude-agent-sdk';
+import {AnalysisContextAuthorizationChangedError} from '../../../services/resolvedAnalysisContext';
+import {claudeSdkQuery as sdkQuery} from './claudeSdkQuery';
+import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
 import {
   commitEvaluationExposureSince,
   currentEvaluationInjectionContract,
@@ -40,10 +48,10 @@ import type { TraceProcessorService } from '../../../services/traceProcessorServ
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
-import { getSkillAnalysisAdapter } from '../../../services/skillEngine/skillAnalysisAdapter';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
 import type { StreamingUpdate, Finding } from '../../../agent/types';
+import {createAnswerDraftStream, type AnswerDraftStream} from '../../answerDraftStream';
 import type { Hypothesis as ProtocolHypothesis } from '../../../agent/types/agentProtocol';
 import type { AnalysisResult, AnalysisOptions, IOrchestrator } from '../../../agent/core/orchestratorTypes';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
@@ -65,7 +73,7 @@ import {
   MAX_TURNS_TERMINATION_REASON,
   estimateAnalysisConfidence,
 } from '../../../agentv3/analysisTermination';
-import { extractFindingsFromText, extractFindingsFromSkillResult, mergeFindings } from '../../../agentv3/claudeFindingExtractor';
+import { extractFindingsFromText, extractFindingsFromSkillResult } from '../../../agentv3/claudeFindingExtractor';
 import {
   createQuickConfig,
   createSdkEnv,
@@ -80,16 +88,15 @@ import {
   resolveRuntimeConfig,
   type ClaudeAgentConfig,
 } from './claudeConfig';
-import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
+import type { FocusAppDetectionResult } from '../../../agentv3/focusAppDetector';
+import { formatFocusAppTargetProgress, resolveFocusAppTarget } from '../../focusAppTarget';
+import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {
   analysisContextMemoryPartitionKey,
-  analysisContextUsesPrivateKnowledge,
-  assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
 } from '../../../services/resolvedAnalysisContext';
 import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, FailedApproach, Hypothesis, UncertaintyFlag } from '../../../agentv3/types';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
@@ -105,33 +112,25 @@ import { buildRecoveryNote } from '../../../agentv3/recoveryNoteBuilder';
 import { evaluateThreshold as evaluateContextThreshold } from '../../../agentv3/contextTokenMeter';
 import {
   createClaudeSnapshotEngineState,
-  getClaudeSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
   type SessionFieldsForSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
 import { AgentMetricsCollector, persistSessionMetrics } from '../../../agentv3/agentMetrics';
-import {
-  extractTraceFeatures,
-  saveNegativePattern,
-  buildPatternContextSection,
-  buildNegativePatternSection,
-} from '../../../agentv3/analysisPatternMemory';
+import {extractTraceFeatures, saveNegativePattern} from '../../../agentv3/analysisPatternMemory';
 import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareStructuredTextWithReceipt,
 } from '../../../services/security/codeAwareOutputRegistry';
+import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
-import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
-import {verifyConclusion, generateCorrectionPrompt} from './claudeVerifier';
+import {generateCorrectionPrompt} from './claudeVerifier';
+import {assessRuntimeDraft, chooseRuntimeDraftRecovery} from '../../runtimeDraftDiagnostics';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import { backendLogPath } from '../../../runtimePaths';
-import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
-import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import {
@@ -143,7 +142,12 @@ import {
   type ProgressAwareRunDeadline,
   type RuntimeTimeoutKind,
 } from '../../runtimeLimits';
-import {buildRuntimeTracePairComparisonContext, buildRuntimeTracePairIdentityContext} from '../../runtimePromptContext';
+import {
+  buildRuntimeTracePairComparisonContext,
+  buildRuntimeTracePairIdentityContext,
+  buildRuntimeMemoryContext,
+  detectRunFocusApps,
+} from '../../runtimePromptContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import { CLAUDE_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
 
@@ -170,30 +174,16 @@ function chooseClaudeConclusionText(input: {finalResult?: string; accumulatedAns
 }
 
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
-import { localize, type OutputLanguage } from '../../../agentv3/outputLanguage';
+import { localize } from '../../../agentv3/outputLanguage';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { isPolicyRefusalResult } from '../../../agentv3/toolNarration';
 import {
-  deleteClaudeSessionMapRuntimeSnapshots,
-  loadClaudeSessionMapFromRuntimeSnapshots,
-  saveClaudeSessionMapToRuntimeSnapshots,
-  type ClaudeSessionMapRuntimeEntry,
-} from '../../../services/runtimeSnapshotStore';
-import {
-  enterpriseDbWritesEnabled,
-  legacyFilesystemReadAuthorityEnabled,
-  legacyFilesystemWritesEnabled,
-} from '../../../services/enterpriseMigration';
-import {
-  SDK_SESSION_FRESHNESS_MS,
   buildQuickRunReceipt,
   buildEntityContext,
   buildQuickConversationContext,
-  buildRuntimeSessionMapKey,
   captureSkillDisplayEntities,
   createRuntimeSkillNotesBudget,
   getLruCacheEntry,
-  isFreshRuntimeEntry,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
   quickStopReasonFromTermination,
@@ -208,107 +198,12 @@ import {
 import type { RuntimeSelection } from '../../runtimeSelection';
 import {
   createRuntimePerformanceRun,
+  runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
-
-const SESSION_MAP_FILE = backendLogPath('claude_session_map.json');
-/** Max age for session map entries before pruning (24 hours). */
-const SESSION_MAP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-interface SessionMapEntry {
-  sdkSessionId: string;
-  updatedAt: number;
-  mode?: 'full';
-}
-
-function enterpriseSessionMapDbWritesEnabled(): boolean {
-  return enterpriseDbWritesEnabled();
-}
-
-function legacySessionMapWritesEnabled(): boolean {
-  return legacyFilesystemWritesEnabled();
-}
-
-function loadPersistedSessionMap(): Map<string, SessionMapEntry> {
-  try {
-    if (fs.existsSync(SESSION_MAP_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SESSION_MAP_FILE, 'utf-8'));
-      const map = new Map<string, SessionMapEntry>();
-      for (const [key, value] of Object.entries(data)) {
-        // Migration: old format stored plain string, new format stores {sdkSessionId, updatedAt}
-        if (typeof value === 'string') {
-          map.set(key, { sdkSessionId: value, updatedAt: Date.now() });
-        } else if (value && typeof value === 'object') {
-          const entry = value as Partial<SessionMapEntry>;
-          if (typeof entry.sdkSessionId !== 'string') continue;
-          const updatedAt = typeof entry.updatedAt === 'number' && Number.isFinite(entry.updatedAt)
-            ? entry.updatedAt
-            : Date.now();
-          const mode = entry.mode === 'full' ? entry.mode : undefined;
-          map.set(key, { sdkSessionId: entry.sdkSessionId, updatedAt, ...(mode ? { mode } : {}) });
-        }
-      }
-      return map;
-    }
-  } catch {
-    // Ignore — start with empty map
-  }
-  return new Map();
-}
-
-function loadSessionMapForCurrentMode(): Map<string, SessionMapEntry> {
-  if (legacyFilesystemReadAuthorityEnabled()) {
-    return loadPersistedSessionMap();
-  }
-
-  try {
-    return loadClaudeSessionMapFromRuntimeSnapshots(SESSION_MAP_MAX_AGE_MS);
-  } catch (err) {
-    console.warn('[ClaudeRuntime] Failed to load runtime_snapshots session map:', diagnosticLogIdentity((err as Error).message));
-  }
-  return new Map();
-}
-
-/**
- * Debounce timer for session map persistence — avoids blocking event loop on every SDK message.
- * P2-1: Use a Map keyed by the Map reference to support multiple ClaudeRuntime instances.
- */
-const saveTimers = new WeakMap<Map<string, SessionMapEntry>, ReturnType<typeof setTimeout>>();
-const SAVE_DEBOUNCE_MS = 2000;
-const TEXT_ONLY_CORRECTION_TIMEOUT_MS = 120_000;
-
-function savePersistedSessionMap(map: Map<string, SessionMapEntry>): void {
-  const existing = saveTimers.get(map);
-  if (existing) clearTimeout(existing);
-  saveTimers.set(map, setTimeout(() => {
-    saveTimers.delete(map);
-    savePersistedSessionMapSync(map);
-  }, SAVE_DEBOUNCE_MS));
-}
-
-/** Immediate save — used by debounce timer and for critical operations (session removal). */
-function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
-  try {
-    const dir = path.dirname(SESSION_MAP_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    // Prune stale entries before saving
-    const now = Date.now();
-    for (const [key, entry] of map) {
-      if (now - entry.updatedAt > SESSION_MAP_MAX_AGE_MS) {
-        map.delete(key);
-      }
-    }
-
-    const tmpFile = SESSION_MAP_FILE + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(Object.fromEntries(map)));
-    fs.renameSync(tmpFile, SESSION_MAP_FILE);
-  } catch (err) {
-    console.warn('[ClaudeRuntime] Failed to persist session map:', diagnosticLogIdentity((err as Error).message));
-  }
-}
+import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 
 // Notes persistence now handled by unified SessionStateSnapshot — no separate disk I/O.
 // The old logs/session_notes/ directory is no longer written to.
@@ -347,16 +242,6 @@ function formatSdkError(error: unknown): string {
     }
   }
   return String(error);
-}
-
-function isMissingSdkConversationError(message: string): boolean {
-  return /No conversation found with session ID/i.test(message);
-}
-
-function isFreshFullSdkSessionEntry(entry: SessionMapEntry | undefined, now = Date.now()): entry is SessionMapEntry & { mode: 'full' } {
-  return !!entry
-    && entry.mode === 'full'
-    && isFreshRuntimeEntry(entry, SDK_SESSION_FRESHNESS_MS, now);
 }
 
 type ClaudeSdkSystemPrompt = string | string[];
@@ -409,8 +294,9 @@ function buildClaudeSdkToolOptions(
   };
 }
 
+/** @internal Test seam. */
 export const __testing = {
-  getSdkResultErrorMessage, isMissingSdkConversationError, isFreshFullSdkSessionEntry,
+  getSdkResultErrorMessage,
   buildClaudeSdkSystemPrompt, buildQuickConversationContext, chooseClaudeConclusionText,
   claudeTerminalState, isRetryableError, projectClaudeToolResultForPlan, buildClaudeSdkToolOptions,
 };
@@ -467,6 +353,38 @@ function sdkAttemptHasObservedWork(message: unknown): boolean {
   // Partial model events, assistant messages, tool progress/results and unknown
   // events cannot establish that replaying this attempt consumes no work.
   return true;
+}
+
+type ClaudeSdkHooks = NonNullable<ClaudeSdkOptions['hooks']>;
+
+/**
+ * The CLI awaits these before it sends the prompt and before every request
+ * that follows a tool batch (sub-agent batches included), which are the SDK's
+ * native continuations, so a failed check stops the query there. Only a revoke
+ * answers with the revoke's code; the fence has already ended the run then. A
+ * check that could not run (a store that failed to read) refuses this request
+ * as an ordinary failure, and the run is not marked revoked.
+ */
+function claudeAuthorizationHooks(authorization: Pick<RunAuthorizationCheck, 'assertCurrent'>): ClaudeSdkHooks {
+  const check: HookCallback = async () => {
+    try {
+      authorization.assertCurrent();
+      return {};
+    } catch (error) {
+      return {continue: false, stopReason: error instanceof AnalysisContextAuthorizationChangedError
+        ? 'analysis_context_changed_restart_required' : 'analysis_context_check_failed'};
+    }
+  };
+  return {UserPromptSubmit: [{hooks: [check]}], PostToolBatch: [{hooks: [check]}]};
+}
+
+/** Caller hooks first, then `added`, per event; neither replaces the other. */
+function mergeClaudeHooks(own: ClaudeSdkHooks | undefined, added: ClaudeSdkHooks): ClaudeSdkHooks {
+  const merged: ClaudeSdkHooks = {...own};
+  for (const [event, matchers] of Object.entries(added) as Array<[keyof ClaudeSdkHooks, ClaudeSdkHooks[keyof ClaudeSdkHooks]]>) {
+    merged[event] = [...own?.[event] ?? [], ...matchers ?? []];
+  }
+  return merged;
 }
 
 function sdkQueryWithRetry(
@@ -625,11 +543,8 @@ function sdkQueryWithRetry(
 export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   private traceProcessorService: TraceProcessorService;
   private config: ClaudeAgentConfig;
-  private sessionMap: Map<string, SessionMapEntry>;
   /** Cache architecture detection results per traceId (deterministic per trace). */
   private architectureCache: Map<string, ArchitectureInfo> = new Map();
-  /** Cache vendor detection results per traceId (deterministic per trace). */
-  private vendorCache: Map<string, string> = new Map();
   /** Per-session artifact stores — persist across turns within a session. */
   private artifactStores: Map<string, ArtifactStore> = new Map();
   /** Per-session analysis notes — persist across turns within a session. */
@@ -661,15 +576,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.config = loadClaudeConfig(config);
     this.runtimeSelection = runtimeSelection;
     this.runtimeCapabilities = getProductionEngineCapabilities(runtimeSelection.kind);
-    this.sessionMap = loadSessionMapForCurrentMode();
-  }
-
-  /** Restore a previously persisted SDK session mapping (e.g., after server restart). */
-  restoreSessionMapping(smartPerfettoSessionId: string, sdkSessionId: string, referenceTraceId?: string): void {
-    this.sessionMap.set(
-      this.buildSessionMapKey(smartPerfettoSessionId, referenceTraceId),
-      { sdkSessionId, updatedAt: Date.now(), mode: 'full' },
-    );
   }
 
   /** Restore a cached architecture detection result (e.g., from session persistence). */
@@ -679,70 +585,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
   /** Get cached architecture for a traceId (used for persistence). */
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
-    return this.architectureCache.get(traceId);
-  }
-
-  /** Get SDK session ID for persistence. */
-  getSdkSessionId(smartPerfettoSessionId: string, referenceTraceId?: string): string | undefined {
-    const entry = this.sessionMap.get(this.buildSessionMapKey(smartPerfettoSessionId, referenceTraceId));
-    return isFreshFullSdkSessionEntry(entry) ? entry.sdkSessionId : undefined;
-  }
-
-  private buildSessionMapKey(sessionId: string, referenceTraceId?: string): string {
-    return buildRuntimeSessionMapKey(sessionId, referenceTraceId);
-  }
-
-  private persistSessionMapEntry(
-    sessionId: string,
-    traceId: string,
-    sessionMapKey: string,
-    entry: ClaudeSessionMapRuntimeEntry,
-    options: AnalysisOptions,
-  ): void {
-    if (legacySessionMapWritesEnabled()) {
-      savePersistedSessionMap(this.sessionMap);
-    }
-
-    if (!enterpriseSessionMapDbWritesEnabled()) return;
-
-    if (!options.tenantId || !options.workspaceId) {
-      console.warn('[ClaudeRuntime] Enterprise session map persistence skipped: missing tenant/workspace scope');
-      return;
-    }
-
-    try {
-      saveClaudeSessionMapToRuntimeSnapshots({
-        tenantId: options.tenantId,
-        workspaceId: options.workspaceId,
-        userId: options.userId,
-        sessionId,
-        runId: options.runId,
-        traceId,
-      }, sessionMapKey, entry);
-    } catch (err) {
-      console.warn('[ClaudeRuntime] Failed to persist session map to runtime_snapshots:', diagnosticLogIdentity((err as Error).message));
-    }
-  }
-
-  private rememberFullSdkSessionMapping(
-    sessionId: string,
-    traceId: string,
-    sessionMapKey: string,
-    sdkSessionId: string,
-    options: AnalysisOptions,
-  ): void {
-    const entry = { sdkSessionId, updatedAt: Date.now(), mode: 'full' as const };
-    this.sessionMap.set(sessionMapKey, entry);
-    this.persistSessionMapEntry(sessionId, traceId, sessionMapKey, entry, options);
-  }
-
-  private removeSessionMapEntries(sessionId: string): void {
-    const referencePrefix = `${sessionId}:ref:`;
-    for (const key of [...this.sessionMap.keys()]) {
-      if (key === sessionId || key.startsWith(referencePrefix)) {
-        this.sessionMap.delete(key);
-      }
-    }
+    return getLruCacheEntry(this.architectureCache, traceId);
   }
 
   async analyze(
@@ -766,11 +609,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const runActivity = {active: true};
     const allFindings: Finding[][] = [];
     let conclusionText = '';
-    let sdkSessionId: string | undefined;
     let rounds = 0;
     const runId = options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID();
     let turnIntent: AnalysisTurnIntent | undefined;
     let attemptNumber = 0;
+    let answerDraft: AnswerDraftStream | undefined;
     let acceptedAttemptId = `${runId}:main:0`;
     let acceptedOrigin: AnalysisOutputOrigin = 'runtime_fallback';
     let acceptedRawBody: string | undefined;
@@ -818,11 +661,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       if (!finalizationSetup || attemptNumber === 0 ||
           (!hasAcceptedSdkFinal() && !acceptedRawBody?.trim())) return;
       const store = this.artifactStores.get(sessionId);
-      const identity = finalizationSetup.input.traceIdentity;
-      const allowedTraces = [
-        ...(identity.currentTraceId ? [{traceId: identity.currentTraceId, traceSide: 'current' as const}] : []),
-        ...(identity.referenceTraceId ? [{traceId: identity.referenceTraceId, traceSide: 'reference' as const}] : []),
-      ];
+      const allowedTraces = runAllowedTraces(finalizationSetup.input.traceIdentity);
       const semanticCall = allowSemantic && result.completion?.status === 'completed' &&
         result.outputOrigin === 'sdk_final' && result.conclusion.trim().length > 0;
       const intent = finalizationSetup.input.turnIntent;
@@ -830,8 +669,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         ...finalizationSetup.input, deliveryContext, protocolProjection,
         ...(runDeadline ? {deadlineMs: runDeadline.finalizationDeadlineAt(Date.now(), closeoutDeadlineAt, {
           useRemainingBudget: reportReviewUsesRemainingBudget({semanticCall, turnIntent: intent, result})})} : {}),
-        sourceUse: sourceUse?.getSourceUseDecision(),
-        sourceScope: sourceUse?.getSourceExecutionScope?.(),
+        ...sourceUseFinalizationFields(sourceUse),
         evidenceReadView: store?.createEvidenceReadView({allowedTraces, ownerKey: finalizationSetup.ownerKey,
           currentRunId: finalizationSetup.input.runId}),
         dispatchText: semanticCall ? finalizationSetup.input.dispatchText : undefined,
@@ -874,13 +712,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
       const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
       const previousTurns = sessionContext.getAllTurns?.() || [];
-      const authorizationScope = resolveKnowledgeScope(options);
-      const authorizationFingerprint = options.analysisContextFingerprint ??
-        buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
-      const assertAuthorized = () => {
-        executionLease.throwIfAborted();
-        assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
-      };
+      // Checked before every SDK dispatch, by the CLI's own hooks before the
+      // prompt and before each request that follows a tool batch, and around
+      // every tool call. Aborting the lease ends the run, whose cleanup closes the query.
+      const {fence: authorization, assertActive: assertAuthorized} = createRuntimeRunAuthorization({options, executionLease});
+      const authorizationHooks = claudeAuthorizationHooks(authorization);
+      // Every SDK options object this run dispatches with: classifier, main, correction, closeout and review.
+      const withAuthorizationHooks = (sdkOptions: ClaudeSdkOptions | undefined): ClaudeSdkOptions =>
+        ({...sdkOptions, hooks: mergeClaudeHooks(sdkOptions?.hooks, authorizationHooks)});
+      const authorizedSdk = async () => ({query: (input: Parameters<typeof sdkQuery>[0]) =>
+        sdkQuery({...input, options: withAuthorizationHooks(input.options)})});
       const analysisHistoryReader = createRuntimeAnalysisHistoryReader({
         options, sessionId, traceId,
         getTurns: () => sessionContext.getAnalysisHistory(),
@@ -901,24 +742,22 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }),
         signal: executionLease.signal,
         deadlineMs: Date.now() + resolvedConfig.classifierTimeoutMs,
+        // Classification needs no deliberation (claudeEffortForPurpose).
         dispatch: input => runClaudeIntentTransport({
           ...input, config: resolvedConfig, sdkEnv,
           sdkBinaryOptions: getSdkBinaryOption(sdkEnv),
-          loadSdk: async () => ({query: sdkQuery}),
+          loadSdk: authorizedSdk, purpose: 'classification',
         }),
       });
       turnIntent = await intentResolver.resolve();
       executionLease.throwIfAborted();
-      const resolvedPolicy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode ?? 'auto');
-      const turnPolicy = options.assistantSurface === 'conversation' && options.conversationTraceAttached !== true
-        ? {...resolvedPolicy, allowAutomaticPrefetch: false, preflight: 'none' as const} : resolvedPolicy;
+      const turnPolicy = resolveRunTurnPolicy(turnIntent, options);
       const quickBudgetConfig = createQuickConfig(resolvedConfig, sdkEnv);
       // A failed light-model classifier must not send the main answer back to
       // that same unavailable model. Provider identity remains pinned.
       const runtimeConfig = turnPolicy.budgetMode === 'quick' ? {
         ...quickBudgetConfig,
         model: turnIntent.status === 'unavailable' ? resolvedConfig.model : quickBudgetConfig.model,
-        enableVerification: resolvedConfig.enableVerification,
         enableSubAgents: resolvedConfig.enableSubAgents,
       } : resolvedConfig;
       resolvedQuickBudget = turnPolicy.budgetMode === 'quick' ? resolveQuickTurnBudget({
@@ -940,7 +779,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           model: runtimeConfig.model, lightModel: runtimeConfig.lightModel,
           maxTurns: runtimeConfig.maxTurns, maxBudgetUsd: runtimeConfig.maxBudgetUsd,
           fullPathPerTurnMs: runtimeConfig.fullPathPerTurnMs, quickPathPerTurnMs: runtimeConfig.quickPathPerTurnMs,
-          classifierTimeoutMs: runtimeConfig.classifierTimeoutMs, verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
+          classifierTimeoutMs: runtimeConfig.classifierTimeoutMs,
         },
       });
       metricsCollector.recordAnalysisMode(options.analysisMode ?? 'auto',
@@ -967,38 +806,39 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           selection: analysisRunSpec.selection,
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
-          traceIdentity: {
-            currentTraceId: options.assistantSurface === 'conversation' && options.conversationTraceAttached !== true
-              ? undefined : traceId,
-            referenceTraceId: options.referenceTraceId,
-          },
+          traceIdentity: runTraceIdentity(traceId, options),
+          deliveryCall: {providerOrigin: finalizationEnv.ANTHROPIC_BASE_URL, model: finalizationModel},
           dispatchText: async input => {
             const directory = await fs.promises.mkdtemp(path.join(tmpdir(), 'smartperfetto-claude-review-'));
             try {
               return await runClaudeIntentTransport({...input,
                 config: {lightModel: finalizationModel, cwd: directory}, sdkEnv: finalizationEnv,
-                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: async () => ({query: sdkQuery})});
+                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk, purpose: 'review'});
             } finally {
               await fs.promises.rm(directory, {recursive: true, force: true});
             }
           },
         },
       };
-      const emptyFocusResult = {apps: [], primaryApp: undefined, method: 'none' as const,
-        timeRange: focusAppTimeRangeFromSelection(options.selectionContext)};
-      let focusResult: Awaited<ReturnType<typeof detectFocusApps>> = emptyFocusResult;
-      if (turnPolicy.preflight !== 'none') {
-        const phase = runtimePerformance.startPhase('focus');
-        try {
-          focusResult = await detectFocusApps(this.traceProcessorService, traceId, {timeRange: emptyFocusResult.timeRange});
-          phase.end(executionLease.signal.aborted ? 'cancelled' : 'ok');
-        } catch (error) {
-          phase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        }
-      }
+      const focusResult = await detectRunFocusApps({
+        traceProcessorService: this.traceProcessorService, traceId, preflight: turnPolicy.preflight,
+        selectionContext: options.selectionContext,
+        measure: async detect => {
+          const phase = runtimePerformance.startPhase('focus');
+          try {
+            const result = await detect();
+            phase.end(executionLease.signal.aborted ? 'cancelled' : 'ok');
+            return result;
+          } catch (error) {
+            phase.end(runtimeOutcomeFromError(error, executionLease.signal));
+            return undefined;
+          }
+        },
+      });
       executionLease.throwIfAborted();
 
       const ctx = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
+        runId,
         focusResult,
         sessionContext,
         previousTurns,
@@ -1012,16 +852,27 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if (event.phase === 'completed') deadline.recordProgress();
           return closeoutTape.observe(event);
         },
-        analysisHistoryReader, acquisition,
+        analysisHistoryReader, acquisition, runAuthorization: authorization,
         sceneDeadlineMs: deadline.hardDeadlineAt, scenePacing: deadline,
       });
       sourceUse = ctx.sourceUse;
       executionLease.throwIfAborted();
+      const privateAnalysisContext = analysisHasPrivateContext(options);
 
+      // Display-only draft: the bridge revokes it at each main-agent
+      // message_start and at a tool_use after answer text; a retry, closeout or
+      // correction below revokes it before replacing the candidate.
+      const runAnswerDraft = createAnswerDraftStream(runId, update => {
+        if (!runActivity.active || executionLease.signal.aborted) return;
+        if (update.type === 'answer_token') runtimePerformance.recordFirstOutput();
+        this.emitUpdate(update);
+      });
+      answerDraft = runAnswerDraft;
       const {
         handleMessage: bridge,
         getAccumulatedAnswer,
         flushPendingAnswer,
+        discardPendingAnswer,
         dispose: disposeBridge,
       } = createSseBridge((update: StreamingUpdate) => {
         if (!runActivity.active || executionLease.signal.aborted) return;
@@ -1048,9 +899,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             // Not a skill result — ignore
           }
         }
-      }, outputLanguage, {
+      }, runAnswerDraft, outputLanguage, {
         tracePairContext: ctx.analysisContextForRebuild.comparison?.tracePairContext,
-      }, ((options.codeAwareMode && options.codeAwareMode !== 'off') || options.knowledgeSourceIds?.length)
+      }, privateAnalysisContext
         ? createCodeAwareStreamingTextProjection(sessionId, 'claude-full-answer', 'owner')
         : undefined);
       // The bridge accumulates native text before applying the public stream projection.
@@ -1078,7 +929,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
 
       // Each logical turn receives only product-owned, bounded history.
-      const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
       let finalResult: string | undefined;
       let mainCostUsd: number | undefined;
       let terminationReason: AnalysisResult['terminationReason'];
@@ -1114,7 +964,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
         const { stream, close: closeSdk } = sdkQueryWithRetry({
             prompt: effectivePrompt,
-            options: {
+            options: withAuthorizationHooks({
               model: runtimeConfig.model,
               maxTurns: turnBudget.acquisitionTurns,
               systemPrompt: ctx.sdkSystemPrompt,
@@ -1126,7 +976,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               cwd: runtimeConfig.cwd,
               effort: ctx.effectiveEffort,
               env: sdkEnv,
-              persistSession: !privateAnalysisContext,
               stderr: (data: string) => {
                 console.warn(
                   `[ClaudeRuntime] SDK stderr [${sessionId}]: ${diagnosticLogIdentity(data.trimEnd())}`,
@@ -1134,7 +983,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               },
               ...(runtimeConfig.maxBudgetUsd ? { maxBudgetUsd: runtimeConfig.maxBudgetUsd } : {}),
               ...(ctx.agents ? { agents: ctx.agents } : {}),
-            },
+            }),
         }, {
             emitUpdate: (update) => this.emitUpdate(update),
             outputLanguage: outputLanguage,
@@ -1144,7 +993,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           runtimeReceiptState: sdkRuntimeReceiptState,
           onAttempt: () => {
             assertAuthorized();
-            flushPendingAnswer();
+            // The previous attempt's unfinished text is not this attempt's answer.
+            discardPendingAnswer();
             attemptStreamOffset = getAccumulatedAnswer().length;
             acceptedRawBody = undefined;
             acceptedAttemptId = `${runId}:main:${++attemptNumber}`;
@@ -1152,7 +1002,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             acceptedOrigin = 'assistant_stream';
             acquisition.open = true;
             mainAttemptWorkObserved = false;
-            sdkSessionId = undefined;
           },
         });
       const unregisterSdkAbortHandle = this.registerAbortHandle(sessionId, { abort: closeSdk });
@@ -1219,6 +1068,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const turnMetricsList: TurnMetrics[] = [];
       let currentTurnMetrics: TurnMetrics | null = null;
       let turnCounter = 0;
+      let currentAssistantMessageId: string | undefined;
       let firstTokenReceived = false;
 
       function recordAuthoritativeEvaluationUsage(
@@ -1283,11 +1133,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if ((msg as any).type === 'system' && (msg as any).subtype === 'compact_boundary') {
             sdkCompactDetected = true;
             console.warn(`[ClaudeRuntime] SDK auto-compact detected for session ${sessionId} — prior turns summarized`);
-          }
-
-          if (!privateAnalysisContext && msg.session_id && !sdkSessionId) {
-            sdkSessionId = msg.session_id;
-            this.rememberFullSdkSessionMapping(sessionId, traceId, ctx.sessionMapKey, sdkSessionId, options);
           }
 
           const sdkResultError = getSdkResultErrorMessage(msg);
@@ -1389,12 +1234,27 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             }
           }
 
-          // assistant message = new turn starts; finalize previous turn + watchdog tracking
+          // A new assistant message id starts a turn; finalize the previous turn + watchdog tracking.
+          // The SDK emits one `assistant` message per content block (thinking, text, tool_use) of a
+          // single model response, all with that response's id, so counting messages counted each
+          // response two or three times and left the reserved delivery turn negative.
           if (msg.type === 'assistant' && Array.isArray((msg as any).message?.content)) {
-            finalizeTurnMetrics();
-            turnCounter++;
-            observedTurns++;
-            firstTokenReceived = false;
+            const messageId = typeof (msg as any).message?.id === 'string' ? (msg as any).message.id as string : undefined;
+            const continuesTurn = messageId !== undefined && messageId === currentAssistantMessageId && currentTurnMetrics !== null;
+            currentAssistantMessageId = messageId;
+            if (!continuesTurn) {
+              finalizeTurnMetrics();
+              turnCounter++;
+              observedTurns++;
+              firstTokenReceived = false;
+              currentTurnMetrics = {
+                turnIndex: turnCounter,
+                startMs: Date.now(),
+                toolCalls: [],
+                toolResultPayloadBytes: 0,
+                hasExtendedThinking: false,
+              };
+            }
             const toolNames: string[] = [];
             for (const block of (msg as any).message.content) {
               if (block.type === 'tool_use') {
@@ -1419,13 +1279,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 }
               }
             }
-            currentTurnMetrics = {
-              turnIndex: turnCounter,
-              startMs: Date.now(),
-              toolCalls: toolNames,
-              toolResultPayloadBytes: 0,
-              hasExtendedThinking: false,
-            };
+            currentTurnMetrics!.toolCalls.push(...toolNames);
           }
 
           if (msg.type === 'user' && ((msg as any).tool_use_result !== undefined || extractSdkToolResultBlocks(msg).length > 0)) {
@@ -1503,10 +1357,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               // Track tool call for plan adherence with phase matching (P0-1 + P1-1)
               // P1-G5: Best-fit phase-tool matching — search all eligible phases, not just first
               if (matchedTool) {
-                const codeReferences = extractSourceLookupCodeReferences(
-                  matchedTool.name,
-                  observed.result,
-                );
                 recordPlanOrPrePlanToolCall(ctx.analysisPlan, {
                   toolName: matchedTool.name,
                   toolCallId: matchedTool.id,
@@ -1516,8 +1366,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                     timestamp: Date.now(),
                   }),
                   input: matchedTool.input,
-                  returnedCodeReferences: codeReferences.length > 0,
-                  returnedCodeReferenceHints: codeReferences,
                   // Read before truncation: planPhaseId and success sit after
                   // the body, so the projected/truncated text loses both.
                   resultFacts: {...readToolResultFacts(observed.result), ...(observed.isError === true ? {success: false} : {})},
@@ -1769,6 +1617,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         if (prompt) {
           // This is the reserved delivery attempt, including failed dispatches.
           rounds = observedRunTurns() + 1;
+          answerDraft?.reset();
           let directory: string | undefined;
           try {
             directory = await fs.promises.mkdtemp(path.join(tmpdir(), 'smartperfetto-claude-closeout-'));
@@ -1781,9 +1630,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               sdkEnv: finalizationEnv, sdkBinaryOptions: finalizationBinaryOptions,
               loadSdk: async () => ({query: input => {
                 assertAuthorized();
-                return sdkQuery({...input, options: {
+                return sdkQuery({...input, options: withAuthorizationHooks({
                   ...input.options, ...(remainingBudgetUsd === undefined ? {} : {maxBudgetUsd: remainingBudgetUsd}),
-                }});
+                })});
               }}),
             });
             assertAuthorized();
@@ -1842,21 +1691,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
       }
 
-      let verificationDegradedMessage: string | undefined;
-      // Both budgets verify submitted plans and actual evidence. Semantic final
-      // coverage is owned by the shared async finalizer, not this runtime loop.
+      // Draft diagnostics only choose a same-run repair; the quality verdict
+      // belongs to the shared finalizer (runtimeDraftDiagnostics.ts).
       try {
-        const verification = await verifyConclusion(mergedFindings, conclusionText, {
-          emitUpdate: update => this.emitUpdate(update), enableLLM: false,
-          plan: ctx.analysisPlan.current, hypotheses: ctx.hypotheses, sceneType,
-          lightModel: runtimeConfig.lightModel, verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
-          providerId: options.providerId, providerScope, outputLanguage, query,
-          allowPersistentLearning: !privateAnalysisContext,
-          deliveryContext: projectedCandidate.deliveryContext,
+        const draft = await assessRuntimeDraft({
+          conclusion: conclusionText, plan: ctx.analysisPlan.current, hypotheses: ctx.hypotheses,
+          outputLanguage, deliveryContext: projectedCandidate.deliveryContext,
         });
         executionLease.throwIfAborted();
-        const issues = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])]
-          .filter(issue => issue.severity === 'error' && issue.recoveryKind !== undefined);
         const remainingTurns = runtimeConfig.maxTurns - observedRunTurns();
         const nativeCandidate = acceptedRawBody ?? conclusionText;
         const declarationNeed = requestNativeDeclarationCompletion({
@@ -1867,36 +1709,53 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           repairInvalid: true,
         });
         const declarationRequest = declarationNeed &&
-          nativeDeclarationBodyCanFitOutput(nativeCandidate, 128 * 1024) &&
+          nativeDeclarationBodyCanFitOutput(declarationNeed.originalBody, 128 * 1024) &&
           (remainingBudgetUsd === undefined || remainingBudgetUsd > 0) ? declarationNeed : undefined;
         // Which gate closed is otherwise unrecoverable after the run: the candidate
         // carrying the declaration is private and never persisted.
         if (!declarationRequest) {
           console.log(`[ClaudeRuntime] declaration repair skipped: need=${declarationNeed?.reason ?? 'none'} ` +
             `completion=${projectedCandidate.deliveryContext.completion?.status ?? 'unknown'} turns=${remainingTurns} ` +
-            `fits=${nativeDeclarationBodyCanFitOutput(nativeCandidate, 128 * 1024)} ` +
+            `fits=${nativeDeclarationBodyCanFitOutput(declarationNeed?.originalBody ?? nativeCandidate, 128 * 1024)} ` +
             `budget=${remainingBudgetUsd === undefined ? 'unbounded' : remainingBudgetUsd > 0 ? 'available' : 'exhausted'}`);
         }
-        // A repair that cannot run leaves the issue-based correction available, as before repairs existed.
-        const correctionNeeded = declarationRequest !== undefined ||
-          (declarationNeed === undefined || declarationNeed.reason === INVALID_NATIVE_DECLARATION) && issues.length > 0;
-        if (correctionNeeded &&
+        const recovery = chooseRuntimeDraftRecovery({
+          declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues,
+        });
+        const correctionPrompt = recovery && (recovery.kind === 'declaration'
+          ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
+          : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage));
+        const correctionPurpose = recovery?.kind === 'declaration' ? 'declaration_repair' : 'continuation';
+        const correctionInputBytes = Buffer.byteLength(correctionPrompt || '') + Buffer.byteLength(ctx.systemPrompt);
+        if (recovery && correctionPrompt &&
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
-            remainingTurns > 0 && Date.now() < requestDeadline) {
+            remainingTurns > 0 && Date.now() < requestDeadline &&
+            admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+              providerOrigin: sdkEnv.ANTHROPIC_BASE_URL, model: runtimeConfig.model, purpose: correctionPurpose,
+              inputBytes: correctionInputBytes, remainingMs: requestDeadline - Date.now(),
+              failOpen: deliveryCallFailsOpen(turnIntent,
+                {bodyMissing: correctionPurpose === 'continuation' && !candidateHasAnswerBody(nativeCandidate)})})) {
           assertAuthorized();
+          answerDraft?.reset();
           const correctionAttemptId = `${runId}:correction:1`;
+          const correctionCall = runtimePerformance.startModelCall({
+            purpose: correctionPurpose,
+            ...(recovery.kind === 'declaration' ? {trigger: recovery.request.reason} : {}),
+            model: runtimeConfig.model, providerOrigin: sdkEnv.ANTHROPIC_BASE_URL,
+            inputBytesBucket: runtimeModelCallInputBytesBucket(correctionInputBytes),
+          });
+          let correctionTerminal = 'none' as 'none' | 'completed' | 'failed';
           const {stream, close} = sdkQueryWithRetry({
-            prompt: declarationRequest
-              ? buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage})
-              : generateCorrectionPrompt(issues, conclusionText, outputLanguage, sceneType),
-            options: {
+            prompt: correctionPrompt,
+            options: withAuthorizationHooks({
               model: runtimeConfig.model, maxTurns: 1, systemPrompt: ctx.sdkSystemPrompt,
               includePartialMessages: true, settingSources: [], tools: [], allowedTools: [],
               mcpServers: {}, strictMcpConfig: true, persistSession: false,
               ...resolveClaudeSdkPermissionOptions(), cwd: runtimeConfig.cwd,
               ...(declarationRequest && remainingBudgetUsd !== undefined ? {maxBudgetUsd: remainingBudgetUsd} : {}),
-              effort: ctx.effectiveEffort, env: sdkEnv,
-            },
+              effort: recovery.kind === 'declaration' ? claudeEffortForPurpose('declaration_repair') : ctx.effectiveEffort,
+              env: sdkEnv,
+            }),
           }, {maxRetries: 0, signal: executionLease.signal, runtimePerformance});
           const unregister = this.registerAbortHandle(sessionId, {abort: close});
           const turnsBeforeCorrection = observedRunTurns();
@@ -1905,9 +1764,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           let correctionActive = true;
           let correctionTimedOut = false;
           let timeout: ReturnType<typeof setTimeout> | undefined;
+          // A declaration for dozens of claims takes a slow provider minutes; the
+          // run's delivery deadline bounds this call, as it bounds every runtime's.
           const timeoutPromise = new Promise<void>(resolve => {
             timeout = setTimeout(() => {correctionTimedOut = true; close(); resolve();},
-              Math.max(1, Math.min(TEXT_ONLY_CORRECTION_TIMEOUT_MS, requestDeadline - Date.now())));
+              Math.max(1, requestDeadline - Date.now()));
           });
           let onCorrectionAbort: (() => void) | undefined;
           const abortPromise = new Promise<never>((_, reject) => {
@@ -1922,6 +1783,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               correctionWorkObserved ||= sdkAttemptHasObservedWork(message);
               if (message.type !== 'result') continue;
               const terminal = claudeTerminalState(message);
+              correctionCall.end({outcome: terminal.status === 'completed' ? 'ok' : 'error'});
+              correctionTerminal = terminal.status === 'completed' ? 'completed' : 'failed';
               const reportedTurns = (message as any).num_turns;
               if (typeof reportedTurns === 'number' && Number.isFinite(reportedTurns) && reportedTurns >= 0) {
                 correctionReportedTurns = reportedTurns;
@@ -1930,11 +1793,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   (message as any).result.trim()) {
                 const candidateText = (message as any).result as string;
                 assertAuthorized();
-                if (declarationRequest && !acceptNativeDeclarationCompletion({
+                // A declaration completion delivers the original body with its new declaration.
+                const acceptedText = declarationRequest ? acceptNativeDeclarationCompletion({
                   request: declarationRequest, completion: terminal, candidate: candidateText,
                   outputByteLimit: 128 * 1024,
-                })) return;
-                conclusionText = candidateText.trim();
+                }) : candidateText;
+                if (!acceptedText) return;
+                conclusionText = acceptedText.trim();
                 acceptedAttemptId = correctionAttemptId;
                 acceptedTerminal = terminal;
                 acceptedOrigin = 'sdk_final';
@@ -1949,15 +1814,20 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             await Promise.race([collectCorrection(), timeoutPromise, abortPromise]);
           } finally {
             correctionActive = false;
+            // The receipt's closed outcomes have no timeout; the log line names it.
+            correctionCall.end({outcome: correctionTimedOut || executionLease.signal.aborted ? 'cancelled' : 'error'});
+            console.log(`[ClaudeRuntime] correction ended: kind=${recovery.kind} outcome=${correctionTimedOut ? 'timeout'
+              : acceptedAttemptId === correctionAttemptId ? 'accepted'
+                : correctionTerminal === 'completed' ? 'rejected' : correctionTerminal === 'failed' ? 'failed' : 'no_result'}`);
             rounds = turnsBeforeCorrection + Math.max(correctionReportedTurns, correctionWorkObserved ? 1 : 0);
             if (onCorrectionAbort) executionLease.signal.removeEventListener('abort', onCorrectionAbort);
             if (timeout) clearTimeout(timeout);
             close(); unregister();
           }
         }
-      } catch (error) {
+      } catch {
         executionLease.throwIfAborted();
-        verificationDegradedMessage = error instanceof Error ? error.message : 'Verification unavailable';
+        // A failed optional repair keeps the accepted candidate and its terminal state.
       }
       const finalAnalysisResult = projectedCandidate.result;
       const deliveryContext = projectedCandidate.deliveryContext;
@@ -1965,7 +1835,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         deliveryContext.completion?.status !== 'completed';
       if (acceptedTerminal.reason === 'provider_error') terminationReason = 'execution_error';
       if (acceptedTerminal.reason === 'budget_limit') terminationReason = 'max_budget_usd';
-      if (verificationDegradedMessage) terminationMessage = verificationDegradedMessage;
       const baseConfidence = estimateAnalysisConfidence({findings: finalAnalysisResult.findings});
       finalAnalysisResult.confidence = isRuntimePartialResult
         ? capPartialConfidence(baseConfidence, finalAnalysisResult.findings.length > 0) : baseConfidence;
@@ -1976,24 +1845,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       finalAnalysisResult.terminationMessage ??= terminationMessage === undefined ? undefined
         : sanitizeOwnerCodeAwareStructuredTextWithReceipt(sessionId, terminationMessage).text;
       attachQuickReceipt(finalAnalysisResult);
-      // This is the final accepted projection. A shared finalization context can
-      // be attached here once, using deliveryContext rather than the native one.
-      const gateIssue = applyFinalResultQualityGate({
-        result: finalAnalysisResult, query, sceneType, deferFocusedEvidenceFinalization: true,
-        context: deliveryContext,
-      });
-      if (gateIssue) {
-        this.emitUpdate({
-          type: 'degraded',
-          content: {
-            module: 'claudeRuntime',
-            fallback: gateIssue.code,
-            message: gateIssue.message,
-            partial: true,
-          },
-          timestamp: Date.now(),
-        });
-      }
 
       executionLease.throwIfAborted();
       ctx.sessionContext.addTurn(
@@ -2052,13 +1903,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         });
       }
 
-      // P1: Save negative patterns to long-term memory (fire-and-forget)
+      // P1: Save negative patterns to long-term memory (fire-and-forget), only
+      // under this run's durable-learning grant.
+      const durableLearning = resolveDurableLearningPermission(options);
       if (
-        !analysisContextUsesPrivateKnowledge(options) &&
+        durableLearning &&
         failedApproaches.length > 0 &&
         fullFeatures.length > 0
       ) {
         saveNegativePattern(fullFeatures, failedApproaches, sceneType, ctx.architecture?.type, {
+          learning: durableLearning,
           knowledgeScope: knowledgeScopeFromAnalysisOptions(options),
         })
           .catch(err => console.warn('[ClaudeRuntime] Negative pattern save failed:', diagnosticLogIdentity((err as Error).message)));
@@ -2071,6 +1925,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         error,
         executionLease.signal,
       );
+      throwIfRunAuthorizationRevoked(executionLease.signal);
       const rawErrorMessage = (error as Error).message || 'Unknown error';
       const errMsg = explainClaudeRuntimeError(
         rawErrorMessage,
@@ -2097,10 +1952,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // their receipt to the conclusion candidate.
       failedResult.terminationMessage = safeErrorMessage;
       attachQuickReceipt(failedResult);
-      applyFinalResultQualityGate({result: failedResult, query,
-        sceneType: turnIntent?.sceneId, context: failedProjection.deliveryContext,
-        deferFocusedEvidenceFinalization: true});
       attachAcceptedFinalization(failedResult, failedProjection.deliveryContext, false, failedProjection.protocolProjection);
+      // A failure before an accepted answer has no context; what was delivered still counts.
+      attachRunDeliveryRecord(failedResult, {runId, sessionId, knowledgeUse: sourceUse?.getKnowledgeUse?.()});
       return failedResult;
     } finally {
       const finalizationPhase = runtimePerformance.startPhase('finalization');
@@ -2116,7 +1970,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         // Persist session metrics (fire-and-forget, non-blocking)
         try {
           metricsCollector.recordTurn();
-          persistSessionMetrics(metricsCollector.summarize(), analysisContextUsesPrivateKnowledge(options));
+          persistSessionMetrics(metricsCollector.summarize(), analysisHasPrivateContext(options));
         } catch (metricsErr) {
           console.warn('[ClaudeRuntime] Failed to persist metrics:', (metricsErr as Error).message);
         }
@@ -2128,13 +1982,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   }
 
   removeSession(sessionId: string): void {
-    // Cancel any pending debounced save to prevent stale write after sync save
-    const pendingTimer = saveTimers.get(this.sessionMap);
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      saveTimers.delete(this.sessionMap);
-    }
-    this.removeSessionMapEntries(sessionId);
     this.artifactStores.delete(sessionId);
     this.sessionNotes.delete(sessionId);
     this.sessionSqlErrors.delete(sessionId);
@@ -2143,17 +1990,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
     this.activeAnalyses.delete(sessionId);
-    if (enterpriseSessionMapDbWritesEnabled()) {
-      try {
-        deleteClaudeSessionMapRuntimeSnapshots(sessionId);
-      } catch (err) {
-        console.warn('[ClaudeRuntime] Failed to delete runtime_snapshots session map:', diagnosticLogIdentity((err as Error).message));
-      }
-    }
-    if (legacySessionMapWritesEnabled()) {
-      // Use immediate save — session is being removed, must persist before cleanup completes
-      savePersistedSessionMapSync(this.sessionMap);
-    }
   }
 
   /** Clean up all session-scoped state for a given session. */
@@ -2224,8 +2060,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /**
    * Take a snapshot of all session state for atomic persistence.
    *
-   * Reads from ClaudeRuntime's 7 internal Maps (notes, plans, hypotheses,
-   * flags, artifacts, architectureCache, sessionMap) and merges with
+   * Reads from ClaudeRuntime's 6 internal Maps (notes, plans, hypotheses,
+   * flags, artifacts, architectureCache) and merges with
    * session-level arrays provided by the route layer.
    *
    * @param sessionId - The SmartPerfetto session ID
@@ -2237,20 +2073,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
-    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const privateKnowledge = analysisHasPrivateContext(sessionFields);
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const notes = this.sessionNotes.get(sessionId) || [];
     const planState = this.sessionPlans.get(sessionId);
     const claudeHypotheses = this.sessionHypotheses.get(sessionId) || [];
     const flags = this.sessionUncertaintyFlags.get(sessionId) || [];
     const artifactStore = this.artifactStores.get(sessionId);
-    const architecture = this.architectureCache.get(traceId);
-    const sessionMapEntry = this.sessionMap.get(
-      this.buildSessionMapKey(sessionId, sessionFields.referenceTraceId),
-    );
-    const sdkSessionId = !privateKnowledge && isFreshFullSdkSessionEntry(sessionMapEntry)
-      ? sessionMapEntry.sdkSessionId
-      : undefined;
+    const architecture = getLruCacheEntry(this.architectureCache, traceId);
 
     return {
       version: 1,
@@ -2273,10 +2103,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       engineState: createClaudeSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        sdkSessionId,
-        sdkSessionMode: sdkSessionId ? 'full' : undefined,
       }),
-      ...(sdkSessionId ? { sdkSessionId, sdkSessionMode: 'full' as const } : {}),
       agentRuntimeKind: 'claude-agent-sdk',
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
       agentRuntimeProviderSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
@@ -2289,7 +2116,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /**
    * Restore all ClaudeRuntime Maps from a persisted snapshot.
    *
-   * Called during session resume to repopulate the 7 internal Maps
+   * Called during session resume to repopulate the 6 internal Maps
    * that are normally built up during analysis.
    *
    * @param sessionId - The SmartPerfetto session ID
@@ -2323,15 +2150,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     if (snapshot.architecture) {
       setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
     }
-
-    const claudeEngineState = getClaudeSnapshotEngineState(snapshot);
-    if (claudeEngineState?.sdkSessionId && claudeEngineState.sdkSessionMode === 'full') {
-      this.sessionMap.set(this.buildSessionMapKey(sessionId, snapshot.referenceTraceId), {
-        sdkSessionId: claudeEngineState.sdkSessionId,
-        updatedAt: snapshot.snapshotTimestamp || Date.now(),
-        mode: 'full',
-      });
-    }
   }
 
   /** P0-1: Convert agentv3 Hypothesis to agentProtocol Hypothesis format for AnalysisResult. */
@@ -2343,7 +2161,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.executionGuard.clear();
     this.abortAllSessions();
     this.architectureCache.clear();
-    this.vendorCache.clear();
     // Also clear all session-scoped stores to prevent unbounded growth
     this.artifactStores.clear();
     this.sessionNotes.clear();
@@ -2379,11 +2196,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions,
     precomputed: {
+      runId?: string;
       turnIntent: AnalysisTurnIntent;
       turnPolicy: RuntimeTurnPolicy;
       strategyRegistry: ReadonlyStrategyRegistrySnapshot;
       runActivity?: {active: boolean};
-      focusResult?: Awaited<ReturnType<typeof detectFocusApps>>;
+      /** The run's focus detection (`detectRunFocusApps`); absent means nothing was detected. */
+      focusResult?: FocusAppDetectionResult;
       sessionContext?: ReturnType<typeof sessionContextManager.getOrCreate>;
       previousTurns?: any[];
       sceneType?: SceneType;
@@ -2394,6 +2213,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       toolObserver?: RuntimeToolObserver;
       analysisHistoryReader?: ReturnType<typeof createRuntimeAnalysisHistoryReader>;
       acquisition?: {open: boolean};
+      runAuthorization?: RunAuthorizationCheck;
       sceneDeadlineMs?: number;
       scenePacing?: ScenePacingInputs;
     },
@@ -2457,7 +2277,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const skillRegistryReady = runPreflightPhase('skill_registry', async () => {
       await ensureSkillRegistryInitialized();
     });
-    const knowledgeBaseContextPromise = turnPolicy.allowAutomaticPrefetch ? runPreflightPhase('knowledge', async () => {
+    const knowledgeBaseContextPromise = turnPolicy.allowMemoryPrefetch ? runPreflightPhase('knowledge', async () => {
       try {
         const kb = await getExtendedKnowledgeBase();
         return kb.getContextForAI(query, 8);
@@ -2475,31 +2295,19 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       console.log(`[ClaudeRuntime] Selection context received: kind=${sc.kind}, ${detail}`);
     }
 
-    // Phase 0.5: Detect focus apps from trace data (reuse precomputed if available)
-    let effectivePackageName = options.packageName;
-    const focusResult = precomputed.focusResult ?? (turnPolicy.preflight !== 'none'
-      ? await detectFocusApps(this.traceProcessorService, traceId, {
-          timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        })
-      : {apps: [], primaryApp: undefined, method: 'none' as const});
-
-    if (focusResult.primaryApp) {
-      if (!effectivePackageName) {
-        effectivePackageName = focusResult.primaryApp;
-        console.log(`[ClaudeRuntime] Auto-detected focus app: ${effectivePackageName} (via ${focusResult.method})`);
-      } else {
-        console.log(`[ClaudeRuntime] User-provided packageName: ${effectivePackageName}, also detected: ${focusResult.apps.map(a => a.packageName).join(', ')}`);
-      }
+    // Phase 0.5: the focus detection the caller ran before this preparation.
+    // One effective-package decision (user > confident inference > none),
+    // shared with every other runtime and package consumer.
+    const {focusResult} = precomputed;
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
+    console.log(`[ClaudeRuntime] Focus target: ${effectivePackageName ?? '(none)'} source=${focusTarget.source} ` +
+      `confidence=${focusTarget.confidence ?? '-'} method=${focusTarget.method} candidates=${focusTarget.candidates.length}`);
+    const focusProgress = formatFocusAppTargetProgress(focusTarget, runtimeConfig.outputLanguage);
+    if (focusProgress) {
       this.emitUpdate({
         type: 'progress',
-        content: {
-          phase: 'starting',
-          message: localize(
-            runtimeConfig.outputLanguage,
-            `检测到焦点应用: ${focusResult.primaryApp} (${focusResult.method})`,
-            `Detected focus app: ${focusResult.primaryApp} (${focusResult.method})`,
-          ),
-        },
+        content: {phase: 'starting', message: focusProgress},
         timestamp: Date.now(),
       });
     }
@@ -2509,7 +2317,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     // Phase 2.8: Comparison context (dual-trace mode)
     const referenceTraceId = options.referenceTraceId;
-    const comparisonContextPromise = referenceTraceId && turnPolicy.allowAutomaticPrefetch
+    const comparisonContextPromise = referenceTraceId && turnPolicy.allowMemoryPrefetch
       ? runPreflightPhase('comparison', async () => {
       console.log(`[ClaudeRuntime] Comparison mode: current=${traceId}, reference=${referenceTraceId}`);
       this.emitUpdate({
@@ -2579,27 +2387,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       return architecture;
     }) : Promise.resolve(getLruCacheEntry(this.architectureCache, traceId));
 
-    // Phase 2.5: Vendor detection (LRU cached per traceId, reuses SkillAnalysisAdapter.detectVendor)
-    const detectedVendorPromise = turnPolicy.preflight !== 'none' ? schedulePreflight(async () => {
-      await architecturePromise;
-      executionLease?.throwIfAborted();
-      let detectedVendor = getLruCacheEntry(this.vendorCache, traceId) ?? null;
-      if (!detectedVendor) {
-        try {
-          const adapter = getSkillAnalysisAdapter(this.traceProcessorService);
-          await adapter.ensureInitialized();
-          const vendorResult = await adapter.detectVendor(traceId);
-          detectedVendor = vendorResult.vendor;
-          if (detectedVendor && detectedVendor !== 'aosp') {
-            setLruCacheEntry(this.vendorCache, traceId, detectedVendor);
-          }
-        } catch (err) {
-          console.warn('[ClaudeRuntime] Vendor detection failed:', diagnosticLogIdentity((err as Error).message));
-        }
-      }
-      return detectedVendor;
-    }) : Promise.resolve(getLruCacheEntry(this.vendorCache, traceId) ?? null);
-
     // Phase 2.9: Trace data completeness probe (identity-safe shared cache)
     const traceCompletenessPromise = turnPolicy.preflight !== 'none' ? runPreflightPhase('completeness', async () => {
       const architecture = await architecturePromise;
@@ -2616,14 +2403,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }) : Promise.resolve(undefined);
 
     let architecture: Awaited<typeof architecturePromise>;
-    let detectedVendor: Awaited<typeof detectedVendorPromise>;
     let traceCompleteness: Awaited<typeof traceCompletenessPromise>;
     let comparisonContext: Awaited<ReturnType<typeof buildRuntimeTracePairComparisonContext>> | undefined;
     let knowledgeBaseContext: Awaited<typeof knowledgeBaseContextPromise>;
     try {
-      [architecture, detectedVendor, traceCompleteness, comparisonContext, knowledgeBaseContext] = await Promise.all([
+      [architecture, traceCompleteness, comparisonContext, knowledgeBaseContext] = await Promise.all([
         architecturePromise,
-        detectedVendorPromise,
         traceCompletenessPromise,
         comparisonContextPromise ?? Promise.resolve(undefined),
         knowledgeBaseContextPromise,
@@ -2642,9 +2427,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 3: Session context + conversation history (reuse precomputed if available)
     const sessionContext = precomputed?.sessionContext ?? sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = precomputed?.previousTurns ?? (sessionContext.getAllTurns?.() || []);
-    // Composite key for comparison mode session identity isolation
-    const sessionMapKey = precomputed?.analysisRunSpec?.identity.sessionMapKey
-      ?? this.buildSessionMapKey(sessionId, referenceTraceId);
     // Phase 4: Entity store + entity context for drill-down
     const entityStore = sessionContext.getEntityStore();
 
@@ -2655,30 +2437,17 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     });
 
     // Phase 5.5: Pattern memory — match similar historical traces (P2-2)
-    const traceFeatures = extractTraceFeatures({
-      architectureType: architecture?.type,
-      sceneType,
-      packageName: effectivePackageName,
+    const {patternContext, negativePatternContext, caseBackgroundContext} = buildRuntimeMemoryContext({
+      allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
+      packageName: effectivePackageName, knowledgeScope, outputLanguage: runtimeConfig.outputLanguage,
     });
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
-    const patternContext = privateAnalysisContext || !turnPolicy.allowAutomaticPrefetch
-      ? undefined
-      : buildPatternContextSection(traceFeatures, knowledgeScope);
-    const negativePatternContext = privateAnalysisContext || !turnPolicy.allowAutomaticPrefetch
-      ? undefined
-      : buildNegativePatternSection(traceFeatures, knowledgeScope);
-    const caseBackgroundContext = turnPolicy.allowAutomaticPrefetch ? buildRuntimeCaseBackgroundContext({
-      sceneType,
-      architectureType: architecture?.type,
-      knowledgeScope,
-      outputLanguage: runtimeConfig.outputLanguage,
-      privateAnalysisContext,
-    }) : undefined;
 
     // Phase 6: Session-scoped artifact store + analysis notes
     const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
       () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
     this.artifactStores.set(sessionId, artifactStore);
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
     // Notes restored from SessionStateSnapshot on resume — no separate disk I/O.
     let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
@@ -2726,7 +2495,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
     let sqlErrors = this.sessionSqlErrors.get(sessionId);
     if (!sqlErrors) {
-      sqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : [];
+      sqlErrors = turnPolicy.allowMemoryPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
       this.sessionSqlErrors.set(sessionId, sqlErrors);
     }
 
@@ -2744,17 +2513,26 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const notesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
     const canInvokeTool = () => precomputed.acquisition?.open !== false &&
       precomputed.runActivity?.active !== false && !executionLease?.signal.aborted;
+    // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
+    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: precomputed.runId, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+      policy: turnPolicy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
+      traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
+      selectionContext: options.selectionContext, outputLanguage: runtimeConfig.outputLanguage, canInvokeTool,
+      executionLease, runAuthorization: precomputed.runAuthorization, deadlineMs: precomputed.sceneDeadlineMs,
+      runtimePerformance});
+    executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
-    const { server: mcpServer, allowedTools, toolDefinitions, sourceUse } = createClaudeMcpServer({
+    const { server: mcpServer, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
+      runId: precomputed.runId,
       toolObserver: precomputed.toolObserver,
       analysisHistoryReader: precomputed.analysisHistoryReader,
       canInvokeTool,
-      conversationTraceAttached: options.assistantSurface === 'conversation'
-        ? options.conversationTraceAttached === true
-        : undefined,
+      runAuthorization: precomputed.runAuthorization,
+      conversationTraceAttached: conversationTraceAttachedOption(options),
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,
@@ -2762,6 +2540,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       traceProcessorService: this.traceProcessorService,
       skillExecutor,
       packageName: effectivePackageName,
+      focusTarget,
       emitUpdate: (update) => {
         if (precomputed.runActivity?.active !== false && !executionLease?.signal.aborted) this.emitUpdate(update);
       },
@@ -2774,7 +2553,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       analysisNotes: notes,
       artifactStore,
       cachedArchitecture: architecture,
-      cachedVendor: detectedVendor,
       recentSqlErrors: sqlErrors,
       analysisPlan,
       watchdogWarning,
@@ -2789,12 +2567,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       strategyRegistry,
       outputLanguage: runtimeConfig.outputLanguage,
       knowledgeScope,
+      durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
-      sourceUsePolicy: options.sourceUsePolicy,
+      sourceDepthDecision: runtimeSourceDepth(turnPolicy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
-      androidInternalsPackPin: options.androidInternalsPackPin,
     });
 
     // Phase 9: (removed — skillCatalog was populated but never used in prompt;
@@ -2813,6 +2591,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         toolDefinitions,
         codeAwareMode: options.codeAwareMode,
         codebaseIds: options.codebaseIds,
+        sourceAuthorization,
         outputLanguage: runtimeConfig.outputLanguage,
         subAgentModel: runtimeConfig.subAgentModel,
       });
@@ -2834,8 +2613,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       preflight: turnPolicy.preflight,
       architecture,
       packageName: effectivePackageName,
-      focusApps: focusResult.apps.length > 0 ? focusResult.apps : undefined,
-      focusMethod: focusResult.method,
+      focusTarget: citedFocusTarget,
+      ...(sceneEvidence ? {sceneEvidence} : {}),
       knowledgeBaseContext,
       sceneType,
       availableAgents: agents ? Object.keys(agents) : undefined,
@@ -2851,6 +2630,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage: runtimeConfig.outputLanguage,
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
+      sourceAuthorization,
     };
     const systemPromptParts = buildSystemPromptParts(analysisContextForRebuild);
     const systemPrompt = systemPromptParts.fullPrompt;
@@ -2875,7 +2655,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       sceneType,
       allowedTools, // P2-G1: auto-derived from MCP server registration
       analysisContextForRebuild, // Used by correction retry to rebuild prompt with reduced budget
-      sessionMapKey, // Composite key for comparison mode session identity isolation
       analysisRunSpec: precomputed?.analysisRunSpec,
       sourceUse,
     };

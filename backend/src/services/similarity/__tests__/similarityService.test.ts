@@ -8,7 +8,7 @@ import * as path from 'path';
 
 import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 
-import { DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID } from '../../../middleware/auth';
+import { DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID } from '../../../utils/localDevIdentity';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   type AnalysisResultSnapshot,
@@ -19,6 +19,10 @@ import { CaseLibrary } from '../../caseLibrary';
 import { openEnterpriseDb } from '../../enterpriseDb';
 import { RagStore } from '../../ragStore';
 import { createTraceSimilarityService } from '../similarityService';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
+import {caseCurationGrantForMarkdownIngest} from '../../security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 
@@ -84,6 +88,7 @@ function snapshot(id: string, overrides: Partial<AnalysisResultSnapshot> = {}): 
     runId: `${id}-trace-run`,
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'scrolling',
     title: id,
     userQuery: 'analyze scrolling',
@@ -151,8 +156,8 @@ function addPublishedCase(library: CaseLibrary, ragStore: RagStore): void {
       },
     },
   };
-  library.saveCase(record);
-  library.publishCase(record.caseId, { reviewer: 'test' });
+  library.saveCase(record, curator);
+  library.publishCase(record.caseId, {reviewer: 'test'}, curator);
   const chunk: RagChunk = {
     chunkId: 'case:case-shader:summary',
     kind: 'case_library',

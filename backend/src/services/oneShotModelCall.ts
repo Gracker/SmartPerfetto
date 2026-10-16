@@ -17,7 +17,8 @@
 //     failed call.
 // Raw SDK error text goes to the log only; callers get a reason code.
 
-import {query as sdkQuery, type Options} from '@anthropic-ai/claude-agent-sdk';
+import type {Options} from '@anthropic-ai/claude-agent-sdk';
+import {claudeSdkQuery as sdkQuery} from '../agentRuntime/engines/claude/claudeSdkQuery';
 import {selectRuntimeForProvider, type ResolvedAgentRuntimeKind} from '../agentRuntime/runtimeSelection';
 import {claudeMessageHasToolUse} from '../agentRuntime/engines/claude/claudeSdkMessageGuards';
 import {

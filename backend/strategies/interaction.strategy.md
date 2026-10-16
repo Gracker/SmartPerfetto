@@ -14,8 +14,15 @@ investigation_contract:
       description: "Bind input event, receiving window, dispatch, app callback, state update and visible result. Select input/Main/render/SF tasks on that response path and distinguish ACK, focus and actual presentation."
     - id: interaction_dependencies
       domain: dependency_chain
-      description: "Use Binder, lock, queue, input dispatch and display dependencies only where they explain response latency; preserve missing endpoint or causal-link limitations."
-classification_description: "Discrete input or tap response, from input dispatch through application handling to presentation."
+      description: "Use Binder, lock, queue, input dispatch and display dependencies only where they explain response latency; preserve missing endpoint or causal-link limitations. Speculative frame matches are unproven candidates and NULL end-to-end latency is unmeasured, not zero."
+    - id: interaction_navigation_segments
+      domain: critical_path
+      required: false
+      description: "Attribute a page or Activity switch by segment (initiating callback, system incl. source pause, target lifecycle, first frame), anchored in the same navigation's slices; an unobserved cross-process segment stays unknown."
+      condition:
+        kind: semantic
+        description: "Applies when the question concerns opening a new page or Activity, or the answer attributes latency to a page switch."
+classification_description: "Discrete input or tap response, from input dispatch through application handling to presentation, including how long a tap or action takes to open a new page or Activity within the app."
 priority: 4
 effort: medium
 required_capabilities:
@@ -53,7 +60,7 @@ final_report_contract:
   required_sections:
     - id: input_stage_breakdown
       label: 输入阶段拆分
-      description: '把 dispatch、handling、ACK，以及 display/present 证据或缺口拆开，避免把 completed input event 总耗时写成上屏延迟。'
+      description: '把 dispatch、handling、ACK，以及 display/present 证据或缺口拆开，避免把 completed input event 总耗时写成上屏延迟；推测关联的 frame_id 不算上屏链接，NULL 延迟写未测量。'
       pattern_groups:
         - ['输入阶段拆分', '阶段拆分', 'latency breakdown', 'dispatch', 'handling', 'ACK']
         - ['dispatch', '分发', 'handling', '处理', 'ACK', 'FINISHED']
@@ -73,41 +80,6 @@ final_report_contract:
         - ['android\.input', 'completed', 'dumpsys', 'logcat', 'WindowManager', 'InputDispatcher', 'FrameTimeline', 'present', 'stale', 'focus']
         - ['不能', '不可', '不等于', '候选', '需要', 'missing', 'not']
 
-phase_hints:
-  - id: input_ack_queue_boundary
-    keywords: ['InputDispatcher', 'InputChannel', 'FINISHED', 'ACK', 'wait queue', 'wq', 'iq', 'oq', 'input latency', '输入延迟']
-    constraints: '先区分 completed android.input 事件的 dispatch/handling/ACK 总耗时与未完成 FINISHED 的队列背压。wq 增长只能说明目标连接尚未 ACK；必须结合 App 主线程、InputDispatcher、dumpsys/logcat 或窗口证据，不能直接命名 Binder、App 代码或 InputDispatcher 根因。'
-    critical_tools: ['click_response_analysis', 'click_response_detail', 'input_events_in_range']
-    critical: true
-  - id: focus_window_stale_boundary
-    keywords: ['stale', 'focused window', 'target window', 'InputChannel', 'WindowInfosListener', 'no focused window', '焦点', '窗口', '陈旧事件']
-    constraints: 'stale drop、no-focused-window、InputChannel 创建/断连和 target-window 选择是不同对象。trace 只含 completed input events 时要写成证据缺口；需要 WindowManager/InputDispatcher logcat、dumpsys input 或窗口拓扑证据才能定因。'
-    critical_tools: ['input_events_in_range']
-    critical: false
-  - id: display_present_boundary
-    keywords: ['present', 'FrameTimeline', 'end_to_end_latency', 'frame_id', 'first frame', '首帧', '上屏', '端到端']
-    constraints: 'total_latency_dur 是 dispatch-to-ACK，不是 input-to-present。只有 end_to_end_latency_dur、frame_id/FrameTimeline、RenderThread/SF present 证据可用时，才能写上屏或可见反馈延迟；否则只报告 dispatch/ACK 或首帧候选。'
-    critical_tools: ['click_response_analysis', 'input_to_frame_latency', 'scroll_response_latency']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: input_latency_stage_breakdown
-      match_keywords: ['dispatch', 'handling', 'ACK', 'FINISHED', 'click_response_analysis', 'input_events_in_range', '输入延迟', '阶段拆分']
-      suggestion: '交互输入场景必须拆分 dispatch、handling、ACK，并说明 total_latency_dur 是否只覆盖 dispatch-to-ACK'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: click_response_analysis
-        - tool: invoke_skill
-          skill_id: input_events_in_range
-    - id: focus_stale_channel_boundary
-      match_keywords: ['stale', 'focused window', 'target window', 'InputChannel', 'WindowInfosListener', 'wait queue', 'wq', 'dumpsys', 'logcat', '焦点', '窗口']
-      suggestion: '交互输入场景需要覆盖或明确缺失 stale、focus/window、InputChannel、iq/oq/wq 和 FINISHED ACK 证据边界'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: click_response_detail
-        - tool: invoke_skill
-          skill_id: input_events_in_range
 ---
 
 #### interaction Core Strategy
@@ -138,6 +110,7 @@ plan_template:
 
 **Detail ref**
 - `interaction:full`: 点击/触摸响应分析（用户提到 点击、触摸、tap、click、input latency） 的完整 phase recipe、SQL、fetch_artifact 表、决策树和边界说明。
+- `interaction:navigation`: 页面跳转 / Activity 切换的四段拆分、`navigation_analysis` 使用边界和跨进程归属规则。
 
 
 <!-- strategy-detail id="full" title="interaction full strategy detail" keywords="interaction,点击,触摸,输入延迟,响应延迟,点击慢,响应慢,点击卡顿,click,tap,touch,input latency,response time,点击/触摸响应分析（用户提到 点击、触摸、tap、click、input latency）,detail,full" default="true" -->
@@ -195,7 +168,13 @@ invoke_skill("click_response_detail", {
 | dispatch_ms | 系统分发延迟（InputDispatcher 到目标 App receive 之前） | 系统侧或目标唤醒问题：system_server/InputDispatcher 调度、InputChannel/socket、目标窗口选择或进程唤醒；需要 system_server/窗口/logcat/dumpsys 交叉验证 |
 | handling_ms | 应用处理延迟（应用收到事件到处理完成） | 应用侧问题：主线程阻塞、计算量大 → 用四象限分析定位 |
 | ack_ms | FINISHED/ACK 延迟（处理回调完成到 finish/ack 写回及调度） | 可能是回调尾部、调度或 writeback 延迟；不是帧上屏证据 |
-| display/present | 输入到可见反馈（需要 `end_to_end_latency_dur`、`frame_id`/FrameTimeline、RenderThread/SF present） | 只有帧/上屏链路可用时才归因渲染或 SurfaceFlinger；缺失时写成数据缺口 |
+| display/present | 输入到可见反馈（需要 `end_to_end_latency_dur`、非推测的 `frame_id`/FrameTimeline、RenderThread/SF present） | 只有帧/上屏链路可用时才归因渲染或 SurfaceFlinger；缺失时写成数据缺口 |
+
+**帧关联与缺失值的读法：**
+- 输入 Skill 的 `frame_association` 列标注每个事件的帧关联：`exact`、`speculative`、`none` 或 `unknown`（有帧但缺标志，不按精确处理）；Input→Frame 汇总、`input_to_frame` 帧表和证据关系只取 `exact`。
+- `is_speculative_frame=1` 的 `frame_id` 是同一 UI 线程上事件之后的下一个 `Choreographer#doFrame`，未经证实消费了该事件：该线程就是出图线程且间隔很短时可作候选帧，但不能单独证明帧链接、同帧堆积或上屏；由它推出的 `end_to_end_latency_dur` 只是候选值。DOWN/UP 常见推测关联，这不影响同一事件 dispatch/handling/ACK 的精确性。
+- `end_to_end_latency_dur` 为 NULL 表示未测量，不是 0ms 或“响应良好”；目标进程没有 app 层 FrameTimeline（Flutter SurfaceView、GL/游戏等）时，输入到上屏延迟在本 trace 中不可测量。
+- `event_action` 为 NULL 的行常是同一批物理触摸投递给 system_server/systemui 监听通道的副本，不是额外手势（可按共享的 `input_event_id` 核对），不计入目标应用的手势数或慢事件。自动选出的目标进程按应用投递（有 action 的行）排序，仍要确认 `target_process` 是用户关心的应用。
 
 ### 输入队列、焦点和窗口边界（只在有证据时定因）
 
@@ -236,14 +215,16 @@ invoke_skill("click_response_detail", {
 | **长按 (Long Press)** | ACTION_DOWN 到 ACTION_UP 之间持续时间 > 500ms，且无 MOVE 事件（或 MOVE < 3 次） | 长按响应由 ViewConfiguration.getLongPressTimeout() 控制（默认 500ms）。如果用户反馈长按响应慢，检查：① 主线程在 DOWN 后 500ms 内是否有阻塞导致 Looper 延迟处理 LongPress Runnable；② onLongClick 回调本身的执行耗时 |
 | **双击 (Double Tap)** | 两次 ACTION_DOWN 之间间隔 < 300ms（ViewConfiguration.getDoubleTapTimeout()） | 双击检测由 GestureDetector 处理。如果用户反馈双击不灵敏，检查：① 两次 tap 间隔是否接近 300ms 阈值；② 首次 tap 的 ACTION_UP 处理是否过慢导致第二次 DOWN 被错过 |
 
+手写 SQL 直接读 `android_input_events` 时，`event_action` 可能带 `ACTION_` 前缀（新版 trace processor 输出 `ACTION_MOVE`，旧版输出 `MOVE`）。Skill 已统一为不带前缀的大写动作；raw SQL 先用 `CASE WHEN event_action GLOB 'ACTION_*' THEN SUBSTR(event_action, 8) ELSE event_action END` 归一化，再与 `DOWN`/`MOVE`/`UP` 比较。
+
 **长按事件检测 SQL（仅在用户提及时使用）：**
 ```
-execute_sql("WITH motion AS (SELECT read_time AS ts, event_action, process_name, SUM(CASE WHEN event_action='DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY read_time) AS gid FROM android_input_events WHERE event_type='MOTION'), gestures AS (SELECT gid, MIN(ts) AS down_ts, MAX(CASE WHEN event_action='UP' THEN ts END) AS up_ts, COUNT(CASE WHEN event_action='MOVE' THEN 1 END) AS move_cnt FROM motion WHERE gid>0 GROUP BY gid) SELECT printf('%d', down_ts) AS ts, ROUND((up_ts - down_ts)/1e6, 1) AS hold_ms FROM gestures WHERE up_ts IS NOT NULL AND (up_ts - down_ts) > 500000000 AND move_cnt <= 2 ORDER BY down_ts LIMIT 20")
+execute_sql("WITH input AS (SELECT read_time AS ts, CASE WHEN event_action GLOB 'ACTION_*' THEN SUBSTR(event_action, 8) ELSE event_action END AS event_action FROM android_input_events WHERE event_type='MOTION'), motion AS (SELECT ts, event_action, SUM(CASE WHEN event_action='DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS gid FROM input), gestures AS (SELECT gid, MIN(ts) AS down_ts, MAX(CASE WHEN event_action='UP' THEN ts END) AS up_ts, COUNT(CASE WHEN event_action='MOVE' THEN 1 END) AS move_cnt FROM motion WHERE gid>0 GROUP BY gid) SELECT printf('%d', down_ts) AS ts, ROUND((up_ts - down_ts)/1e6, 1) AS hold_ms FROM gestures WHERE up_ts IS NOT NULL AND (up_ts - down_ts) > 500000000 AND move_cnt <= 2 ORDER BY down_ts LIMIT 20")
 ```
 
 **双击事件检测 SQL（仅在用户提及时使用）：**
 ```
-execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER BY read_time) AS prev_ts FROM android_input_events WHERE event_type='MOTION' AND event_action='DOWN') SELECT printf('%d', ts) AS ts, ROUND((ts - prev_ts)/1e6, 1) AS gap_ms FROM downs WHERE prev_ts IS NOT NULL AND (ts - prev_ts) < 300000000 ORDER BY ts LIMIT 20")
+execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER BY read_time) AS prev_ts FROM android_input_events WHERE event_type='MOTION' AND event_action IN ('DOWN', 'ACTION_DOWN')) SELECT printf('%d', ts) AS ts, ROUND((ts - prev_ts)/1e6, 1) AS gap_ms FROM downs WHERE prev_ts IS NOT NULL AND (ts - prev_ts) < 300000000 ORDER BY ts LIMIT 20")
 ```
 
 ### 输出结构必须遵循：
@@ -255,7 +236,7 @@ execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER B
    - dispatch-heavy 事件 N 个（系统侧）
    - handling-heavy 事件 N 个（应用侧）
    - ack-heavy 事件 N 个（FINISHED/ACK 回写或调度）
-   - input-to-present / FrameTimeline 是否可用；不可用时不要写上屏延迟
+   - input-to-present / FrameTimeline 是否可用；不可用或只有推测帧关联时不要写上屏延迟
 
 3. **逐事件根因**（每个慢事件）：
    ```
@@ -269,4 +250,33 @@ execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER B
 4. **优化建议**：按影响面排序，区分系统侧 vs 应用侧建议
 
 5. **证据边界**：列出 `android.input` completed-event、InputDispatcher/dumpsys/logcat、WindowManager/focus、FrameTimeline/present 哪些可用，哪些缺失；对 `wq`、stale、focus/window、InputChannel 只在证据闭环时定因。
+<!-- /strategy-detail -->
+
+<!-- strategy-detail id="navigation" title="页面跳转 / Activity 切换分段" keywords="navigation,页面跳转,页面切换,跳转慢,Activity 切换,startActivity,activityPause,activityStart,activityResume,transition,navigation_analysis" -->
+#### 页面跳转 / Activity 切换分段
+
+用户问"点击后打开新页面慢""页面跳转/切换慢"时，跳转耗时不是一个整体数字。目标 Activity 在已运行进程内打开时 `android_startups` 可能没有对应事件，此时不得伪造 startup_id/TTID，窗口用同一次跳转实际观测到的输入事件或生命周期 slice 锚定；有事件时也按下列分段解释。
+
+**证据入口：**
+
+```
+invoke_skill("navigation_analysis", { package: "<包名>", start_ts: "<start>", end_ts: "<end>" })
+```
+
+它给出生命周期阶段、跳转期间主线程阻塞操作、inflate、Fragment 事务、转场相关 slice、Binder 调用和窗口内的 doFrame。使用边界：
+- "跳转耗时/评级"（含 `NAVIGATION_NORMAL`）只是 onCreate/onStart 生命周期 slice 的时长，不是输入到新页面首帧，不能排除发起侧、系统调度侧或首帧侧的延迟；
+- 目标进程按生命周期事件数自动选择，需确认是用户关心的应用；pause 阶段只识别 `performPause`；
+- `first_frames` 是窗口内最早的若干个 `Choreographer#doFrame`，不一定是目标页首帧。
+
+**分段（每段写时间范围、执行线程和运行/等待构成，边界用同一次跳转实际观测到的 slice 或输入事件锚定）：**
+1. **发起侧**：源页面主线程处理触发输入（`deliverInputEvent`、点击回调）到发出 startActivity 请求。回调里的同步计算、IO、Binder 算在这里；App 到 system_server 的 startActivity Binder 事务可作为本段终点。
+2. **系统调度侧**：system_server 处理启动请求、源 Activity pause、事务投递到目标主线程的排队。单窗口下，源 Activity 的 pause（`activityPause`）完成后系统才会 launch 目标；`resumeWhilePausing`、多窗口 multi-resume 不串行，pause 超时（AOSP 约 500ms）后系统会强制继续。源页面的 `onPause` 回调是 App 代码，慢 pause 归发起方页面。
+3. **目标生命周期侧**：目标主线程执行 `activityStart` → `performCreate:*` → `activityResume`，以及其中的 inflate、数据初始化。这些名称是框架容器，结论要落到其子 slice 中 App 可归属的具体工作；子 slice 缺失时写明埋点缺口并给出该区间的运行/等待分解。
+4. **首帧与转场侧**：目标窗口首个 `Choreographer#doFrame` / RenderThread `DrawFrame` 到上屏，以及同期的窗口转场动画。
+
+**归属边界：**
+- 跨进程段（system_server）缺少 Binder 事务或时间对齐证据时写"系统段未观测"，不把段间空隙整体归给 App 或系统。
+- 源 Activity 的 `onStop` / `onSaveInstanceState` 通常在目标页 idle 之后才执行，一般不在跳转关键路径上，不计入跳转耗时。
+- 转场动画按系统配置时长播放，动画时长本身不是 App 执行耗时；只有动画期间 App 主线程或 RenderThread 的实际工作延误了帧，才归入 App。
+- 首帧段区分主线程 UI 工作、RenderThread/GPU 与合成；上屏归因需要 FrameTimeline/present 证据，缺失时写成数据缺口。
 <!-- /strategy-detail -->

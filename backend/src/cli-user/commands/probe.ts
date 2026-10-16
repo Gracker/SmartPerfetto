@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import * as path from 'path';
+import { assertCliEnvironment, type CliEnvironmentArgs } from '../bootstrap';
 import { invalidateStrategyCache, loadStrategies } from '../../agentv3/strategyLoader';
 
 /**
@@ -14,10 +15,18 @@ import { invalidateStrategyCache, loadStrategies } from '../../agentv3/strategyL
  * a source-tree validator cannot catch a stale `dist/` parser meeting new
  * strategy frontmatter, which kills every session at startup.
  */
-export async function runProbeCommand(): Promise<number> {
+export async function runProbeCommand(args: CliEnvironmentArgs = {}): Promise<number> {
   const entry = process.argv[1] ? path.resolve(process.argv[1]) : 'unknown';
   console.log('SmartPerfetto Runtime Probe');
   console.log(`entry     ${entry} (${__dirname})`);
+  try {
+    // The probe vouches for the env a batch run will use; it must not pass
+    // when that env failed to load.
+    assertCliEnvironment(args);
+  } catch (error) {
+    console.error(`env FAIL ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
   try {
     // A one-shot process has no warm cache worth keeping; read current files.
     invalidateStrategyCache();

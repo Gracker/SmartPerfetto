@@ -223,6 +223,16 @@ describe('toolNarration', () => {
       .toBe('分析等待链：确认目标线程在该区间在等什么、被谁唤醒');
   });
 
+  it('never names a filled-in placeholder as the wait-chain target', () => {
+    // Real arguments of a strict-schema call: every field is filled.
+    expect(formatToolCallNarration('analyze_wait_chain', {
+      thread_state_id: '9712', utid: '0', tid: '0', thread_name: '', process_name: '',
+      main_thread: false, start_ts: '0', end_ts: '0',
+    })).toContain('thread_state 9712');
+    expect(formatToolCallNarration('analyze_wait_chain', {utid: '0', thread_name: 'null'}))
+      .toBe('分析等待链：确认目标线程在该区间在等什么、被谁唤醒');
+  });
+
   it('identifies generic tool messages that should be replaced', () => {
     expect(looksLikeGenericToolMessage('调用工具: invoke_skill')).toBe(true);
     expect(looksLikeGenericToolMessage('Call tool: submit_plan')).toBe(true);

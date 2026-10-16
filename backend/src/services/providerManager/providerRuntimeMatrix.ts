@@ -12,6 +12,7 @@ import type {
   ProviderType,
 } from './types';
 import { DUAL_SURFACE_PROVIDER_TYPES } from './providerTypes';
+import { invalidProviderRequest } from './providerRequestError';
 
 export { DUAL_SURFACE_PROVIDER_TYPES };
 
@@ -30,10 +31,10 @@ export function supportsAgentRuntimeType(type: ProviderType, runtime: AgentRunti
 export function assertAgentRuntimeSupported(type: ProviderType, runtime?: unknown): asserts runtime is AgentRuntimeKind | undefined {
   if (runtime === undefined || runtime === null) return;
   if (!isAgentRuntimeKind(runtime)) {
-    throw new Error(`Invalid agent runtime: ${String(runtime)}`);
+    throw invalidProviderRequest(`Invalid agent runtime: ${String(runtime)}`);
   }
   if (!getProviderTypesForRuntime(runtime).includes(type)) {
-    throw new Error(`Provider type "${type}" does not support ${runtime}`);
+    throw invalidProviderRequest(`Provider type "${type}" does not support ${runtime}`);
   }
 }
 

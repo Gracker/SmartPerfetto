@@ -13,14 +13,21 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { skillRegistry, ensureSkillRegistryInitialized, getSkillsDir } from '../services/skillEngine/skillLoader';
-import { SkillDefinition, VendorType } from '../services/skillEngine/types';
-import { ErrorResponse } from '../types';
+import { SkillDefinition } from '../services/skillEngine/types';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { toSingleString } from '../utils/httpValue';
 
 const SKILLS_DIR = getSkillsDir();
 const COMPOSITE_DIR = path.join(SKILLS_DIR, 'composite');
 const VENDORS_DIR = path.join(SKILLS_DIR, 'vendors');
 const CUSTOM_DIR = path.join(SKILLS_DIR, 'custom');
+/** A vendor directory name; anything else (`..`, a separator after decoding) names no vendor. */
+const VENDOR_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+/** A Skill file as the API names it: relative to the Skills root, `/`-separated, never a server path. */
+function skillsRootRelativePath(filePath: string): string {
+  return path.relative(SKILLS_DIR, filePath).split(path.sep).join('/');
+}
 
 class SkillAdminController {
   /**
@@ -34,7 +41,7 @@ class SkillAdminController {
    * List all skills with admin metadata
    * GET /api/admin/skills
    */
-  listSkills = async (req: Request, res: Response) => {
+  listSkills = async (_req: Request, res: Response) => {
     try {
       await this.ensureInitialized();
 
@@ -57,12 +64,11 @@ class SkillAdminController {
         count: result.length,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error listing skills:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_list_failed',
         error: 'Failed to list skills',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error listing skills',
+      }, error);
     }
   };
 
@@ -91,37 +97,30 @@ class SkillAdminController {
       }
 
       // Try to find the YAML file
+      const customPath = path.join(CUSTOM_DIR, `${skillId}.skill.yaml`);
       const possiblePaths = [
         path.join(COMPOSITE_DIR, `${skillId}.skill.yaml`),
         path.join(SKILLS_DIR, 'atomic', `${skillId}.skill.yaml`),
-        path.join(CUSTOM_DIR, `${skillId}.skill.yaml`),
+        customPath,
       ];
 
-      let rawYaml = '';
-      let filePath = '';
-      for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
-          rawYaml = fs.readFileSync(p, 'utf-8');
-          filePath = p;
-          break;
-        }
-      }
+      const foundPath = possiblePaths.find(p => fs.existsSync(p));
+      const isCustom = foundPath === customPath;
 
       res.json({
         id: skill.name,
         definition: skill,
-        rawYaml,
-        filePath,
-        isCustom: filePath.includes('/custom/'),
-        isEditable: filePath.includes('/custom/'),
+        rawYaml: foundPath ? fs.readFileSync(foundPath, 'utf-8') : '',
+        filePath: foundPath ? skillsRootRelativePath(foundPath) : '',
+        isCustom,
+        isEditable: isCustom,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error getting skill:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_read_failed',
         error: 'Failed to get skill',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error getting skill',
+      }, error);
     }
   };
 
@@ -185,15 +184,14 @@ class SkillAdminController {
         success: true,
         message: 'Skill created successfully',
         skillId: skillDef.name,
-        filePath,
+        filePath: skillsRootRelativePath(filePath),
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error creating skill:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_create_failed',
         error: 'Failed to create skill',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error creating skill',
+      }, error);
     }
   };
 
@@ -259,12 +257,11 @@ class SkillAdminController {
         skillId,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error updating skill:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_update_failed',
         error: 'Failed to update skill',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error updating skill',
+      }, error);
     }
   };
 
@@ -320,12 +317,11 @@ class SkillAdminController {
         skillId,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error deleting skill:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_delete_failed',
         error: 'Failed to delete skill',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error deleting skill',
+      }, error);
     }
   };
 
@@ -398,12 +394,11 @@ class SkillAdminController {
         parsedDefinition: errors.length === 0 ? skillDef : undefined,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error validating skill:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_validate_failed',
         error: 'Failed to validate skill',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error validating skill',
+      }, error);
     }
   };
 
@@ -411,7 +406,7 @@ class SkillAdminController {
    * List all vendors
    * GET /api/admin/vendors
    */
-  listVendors = async (req: Request, res: Response) => {
+  listVendors = async (_req: Request, res: Response) => {
     try {
       if (!fs.existsSync(VENDORS_DIR)) {
         return res.json({ vendors: [] });
@@ -439,12 +434,11 @@ class SkillAdminController {
         count: vendors.length,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error listing vendors:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_list_vendors_failed',
         error: 'Failed to list vendors',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error listing vendors',
+      }, error);
     }
   };
 
@@ -463,7 +457,7 @@ class SkillAdminController {
       }
       const vendorPath = path.join(VENDORS_DIR, vendor);
 
-      if (!fs.existsSync(vendorPath)) {
+      if (!VENDOR_ID.test(vendor) || !fs.existsSync(vendorPath)) {
         return res.status(404).json({
           error: 'Vendor not found',
           details: `No vendor found: ${vendor}`,
@@ -495,12 +489,11 @@ class SkillAdminController {
         count: overrides.length,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error getting vendor overrides:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_get_vendor_overrides_failed',
         error: 'Failed to get vendor overrides',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error getting vendor overrides',
+      }, error);
     }
   };
 
@@ -508,7 +501,7 @@ class SkillAdminController {
    * Reload all skills
    * POST /api/admin/skills/reload
    */
-  reloadSkills = async (req: Request, res: Response) => {
+  reloadSkills = async (_req: Request, res: Response) => {
     try {
       await skillRegistry.reload();
 
@@ -520,12 +513,11 @@ class SkillAdminController {
         count: skills.length,
       });
     } catch (error) {
-      console.error('[SkillAdminController] Error reloading skills:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'skill_admin_reload_failed',
         error: 'Failed to reload skills',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SkillAdminController] Error reloading skills',
+      }, error);
     }
   };
 }

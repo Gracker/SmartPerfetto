@@ -16,6 +16,7 @@ export {
   listExperimentalRuntimeKinds,
   type ExperimentalAgentRuntimeKind,
 } from './runtimeKinds';
+import {parseFlagValue} from '../utils/envFlag';
 
 export const EXPERIMENTAL_AGENT_RUNTIME_ENABLED_ENV = 'SMARTPERFETTO_ENABLE_EXPERIMENTAL_AGENT_RUNTIME';
 export const EXPERIMENTAL_AGENT_RUNTIME_ENV = 'SMARTPERFETTO_EXPERIMENTAL_AGENT_RUNTIME';
@@ -25,16 +26,11 @@ export interface ExperimentalRuntimeSelection {
   source: 'env';
 }
 
-function truthyEnv(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
-}
-
 export function resolveExperimentalAgentRuntimeSelection(
   env: Record<string, string | undefined> = process.env,
 ): ExperimentalRuntimeSelection | undefined {
   const requestedRuntime = env[EXPERIMENTAL_AGENT_RUNTIME_ENV]?.trim();
-  const enabled = truthyEnv(env[EXPERIMENTAL_AGENT_RUNTIME_ENABLED_ENV]);
+  const enabled = parseFlagValue(env[EXPERIMENTAL_AGENT_RUNTIME_ENABLED_ENV]) === true;
 
   if (!requestedRuntime) return undefined;
   if (!enabled) {

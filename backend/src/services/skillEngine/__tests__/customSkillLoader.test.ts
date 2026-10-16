@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 
 import { SkillRegistry } from '../skillLoader';
+import { listSkillFiles } from '../skillLayout';
 
 describe('custom skill loading', () => {
   let tmpDir: string;
@@ -347,6 +348,57 @@ describe('custom skill loading', () => {
     });
   });
 
+  it('rejects an external pack Skill with a top-level key no loader reads', async () => {
+    const compositeDir = path.join(tmpDir, 'composite');
+    await fs.mkdir(compositeDir, {recursive: true});
+    const write = (name: string, extra: string[]) => fs.writeFile(
+      path.join(compositeDir, `${name}.skill.yaml`),
+      [
+        `name: ${name}`, 'version: "1"', 'type: composite', ...extra,
+        'steps:', '  - id: rows', '    type: atomic', '    sql: SELECT 1 AS value', '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const load = () => new SkillRegistry().loadSkillRoots([{
+      rootPath: tmpDir, origin: 'external_pack', packId: 'keys-pack', packVersion: '1',
+    }]);
+
+    // The legacy spellings the loader folds into meta and output still load.
+    await write('legacy_keys', ['description: Legacy description', 'tags: [legacy]', 'display:', '  level: summary']);
+    await expect(load()).resolves.toBeUndefined();
+
+    await write('dead_key', ['meta:', '  display_name: Dead', '  description: Dead key', 'thresholds:', '  rate: {levels: {}}']);
+    await expect(load()).rejects.toThrow('skill_validation_failed:dead_key');
+
+    // A built-in root only logs it: validate:skills is the gate there.
+    await expect(new SkillRegistry().loadSkillRoots([{rootPath: tmpDir, origin: 'built_in'}])).resolves.toBeUndefined();
+  });
+
+  it('records a vendor override with a top-level key no loader reads as a parse failure', async () => {
+    await writeBaseSkill(tmpDir);
+    const vendorDir = path.join(tmpDir, 'vendors', 'pixel');
+    await fs.mkdir(vendorDir, {recursive: true});
+    await fs.writeFile(
+      path.join(vendorDir, 'startup.override.yaml'),
+      [
+        'extends: composite/startup_analysis', 'version: "1"', 'meta:', '  vendor: pixel',
+        'additional_steps:', '  - id: vendor_rows', '    type: atomic', '    sql: SELECT 1 AS value',
+        'thresholds_override:', '  cold_start_time: {levels: {}}', '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const registry = new SkillRegistry();
+    await registry.loadSkills(tmpDir);
+
+    expect(registry.getVendorOverrideCount()).toBe(0);
+    expect(registry.getVendorOverrideLoadIssues()).toEqual([expect.objectContaining({
+      kind: 'parse_failure',
+      sourcePath: 'vendors/pixel/startup.override.yaml',
+      reasonCode: 'vendor_override_parse_failure',
+    })]);
+  });
+
   it('rejects an invalid batch analysis contract from an external pack', async () => {
     const compositeDir = path.join(tmpDir, 'composite');
     await fs.mkdir(compositeDir, { recursive: true });
@@ -382,5 +434,89 @@ describe('custom skill loading', () => {
       packId: 'invalid-pack',
       packVersion: '1',
     }])).rejects.toThrow('skill_validation_failed:invalid_batch');
+  });
+
+  it('rejects a pack skill it cannot parse by file and position, never quoting the pack', async () => {
+    await fs.mkdir(path.join(tmpDir, 'composite'), {recursive: true});
+    await fs.writeFile(path.join(tmpDir, 'composite', 'broken.skill.yaml'),
+      ['name: broken', 'meta: [PACK-CANARY-8c2 private', 'steps: []', ''].join('\n'), 'utf-8');
+
+    const registry = new SkillRegistry();
+    await expect(registry.loadSkillRoots([{
+      rootPath: tmpDir,
+      origin: 'external_pack',
+      packId: 'broken-pack',
+      packVersion: '1',
+    }])).rejects.toThrow(/^broken\.skill\.yaml: skill file is not valid YAML \(line 3, column 1\)$/);
+  });
+
+  it('loads an external pack whose conditions read only declared or local names', async () => {
+    const atomicDir = path.join(tmpDir, 'atomic');
+    await fs.mkdir(atomicDir, {recursive: true});
+    const write = (name: string, condition: string, inputs: string[] = []) => fs.writeFile(
+      path.join(atomicDir, `${name}.skill.yaml`),
+      [
+        `name: ${name}`,
+        'version: "1"',
+        'type: composite',
+        'meta:',
+        `  display_name: ${name}`,
+        '  description: Condition reference contract',
+        ...(inputs.length ? ['inputs:', ...inputs.flatMap(input => [`  - name: ${input}`, '    type: number'])] : []),
+        'steps:',
+        '  - id: rows',
+        '    type: atomic',
+        `    condition: ${JSON.stringify(condition)}`,
+        '    sql: SELECT 1 AS value',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const load = () => new SkillRegistry().loadSkillRoots([{
+      rootPath: tmpDir, origin: 'external_pack', packId: 'condition-pack', packVersion: '1',
+    }]);
+
+    await write('local_names', "(window => window > 0)(1) && ({console: 1}).console === 1 && parseFloat('2') > 1");
+    // A whole `${…}` without a default is JavaScript, where globals and literals are bound.
+    await write('whole_placeholder', '${Math.PI > 3}');
+    await write('declared_window', 'window > 0', ['window']);
+    await expect(load()).resolves.toBeUndefined();
+
+    await write('free_name', "(() => { if (true) /'/; return undeclared_value > 0; })()");
+    await expect(load()).rejects.toThrow('skill_validation_failed:free_name');
+    await fs.rm(path.join(atomicDir, 'free_name.skill.yaml'));
+
+    // Embedded in text, `${Math.PI}` is a path resolved through Skill scopes,
+    // which bind no global: the condition evaluates as ' > 3'.
+    await write('embedded_global', '${Math.PI} > 3');
+    await expect(load()).rejects.toThrow('skill_validation_failed:embedded_global');
+  });
+  // The loader, the CLI and the Trace tooling read one layout (skillLayout.ts).
+  it('reads the files listSkillFiles names, in its order, with custom Skills only from the built-in root', async () => {
+    const skillYaml = (name: string, type = 'atomic') => [
+      `name: ${name}`, 'version: "1"', `type: ${type}`, 'meta:', `  display_name: ${name}`, `  description: ${name}`,
+      ...(type === 'pipeline_definition' ? [] : ['sql: SELECT 1 AS value']), '',
+    ].join('\n');
+    const write = async (relative: string, content: string) => {
+      await fs.mkdir(path.dirname(path.join(tmpDir, relative)), {recursive: true});
+      await fs.writeFile(path.join(tmpDir, relative), content, 'utf-8');
+    };
+    await write('system/sys.skill.yaml', skillYaml('sys'));
+    await write('atomic/first.skill.yml', skillYaml('first'));
+    await write('custom/mine.skill.yaml', skillYaml('mine'));
+    await write('modules/app/deep/expert.skill.yaml', skillYaml('expert'));
+    await write('pipelines/_template.skill.yaml', skillYaml('template', 'pipeline_definition'));
+    await write('pipelines/flow.skill.yaml', skillYaml('flow', 'pipeline_definition'));
+    await write('atomic/notes.yaml', 'not a skill');
+
+    const files = listSkillFiles(tmpDir, {includeCustom: true}).map(file => [path.relative(tmpDir, file.path), file.kind]);
+    expect(files).toEqual([
+      ['atomic/first.skill.yml', 'skill'], ['system/sys.skill.yaml', 'skill'], ['custom/mine.skill.yaml', 'skill'],
+      [path.join('modules', 'app', 'deep', 'expert.skill.yaml'), 'module'], ['pipelines/flow.skill.yaml', 'pipeline'],
+    ]);
+    const builtIn = new SkillRegistry();
+    await builtIn.loadSkillRoots([{rootPath: tmpDir, origin: 'built_in'}]);
+    expect(builtIn.getAllSkills().map(skill => skill.name).sort()).toEqual(['expert', 'first', 'flow', 'mine', 'sys']);
+    expect(listSkillFiles(tmpDir).some(file => file.path.includes(`${path.sep}custom${path.sep}`))).toBe(false);
   });
 });

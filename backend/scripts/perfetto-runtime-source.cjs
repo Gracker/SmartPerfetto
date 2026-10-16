@@ -16,10 +16,7 @@ const ASSET_COMMANDS = {
 const ASSET_OUTPUTS = {
   docs: ['backend/data/perfettoSqlDocs.json'],
   symbols: ['backend/data/perfettoStdlibSymbols.json'],
-  index: [
-    'backend/data/perfettoSqlIndex.light.json',
-    'backend/data/perfettoSqlIndex.json',
-  ],
+  index: ['backend/data/perfettoSqlIndex.light.json'],
 };
 
 const RUNTIME_SOURCE_OVERRIDES = [

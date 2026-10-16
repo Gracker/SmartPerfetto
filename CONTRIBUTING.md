@@ -1,251 +1,107 @@
 # Contributing to SmartPerfetto
 
-Thanks for your interest in contributing! This guide covers development setup, testing, and the PR process.
+## Setup
 
-## Prerequisites
-
-- **Node.js** 24 LTS (`node -v`)
-  - The repo includes `.nvmrc` / `.node-version` plus Volta pins; `./start.sh`, `./scripts/start-dev.sh`, and `./scripts/restart-backend.sh` auto-activate Node 24 when Volta, nvm, or fnm is available.
-  - npm uses `engine-strict=true`; Node 20 and Node 25 are rejected for local installs.
-- **Python 3** (required by Perfetto's build tools)
-- **C++ toolchain** (for `better-sqlite3` native module)
-  - macOS: `xcode-select --install`
-  - Linux: `sudo apt-get install build-essential python3`
-- **Git** with submodule support
-- **macOS or Linux** for native UI development. Windows users should use the
-  portable package for normal use or WSL2 for source development; Docker is
-  also supported. See the Windows guide.
-
-## Development Setup
+Use Node.js 24 (`>=24 <25`), npm, Git, Python3 and a native C++ toolchain for
+`better-sqlite3`. The repository pins Node through `.nvmrc`, `.node-version`
+and Volta; supported launchers activate it when a manager is available.
+Use macOS/Linux or Windows WSL2 for source development. Native Windows users
+can use portable/Docker distributions.
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
-
-# Required only for Perfetto UI / AI Assistant plugin development
-git submodule update --init --recursive
-
-# Optional but recommended if you use nvm/fnm.
-nvm install
-nvm use
-
-# 2. Configure environment
+npm ci
+npm --prefix backend ci
 cp backend/.env.example backend/.env
-# Optional env-provider path: edit backend/.env with one supported provider.
-# For first-time setup, starting the app and using Provider Manager is clearer.
+./start.sh
+```
 
-# 3. Start everything (builds trace_processor_shell on first run, ~3-5 min)
+Configure a supported provider through Provider Manager or ignored `backend/.env`.
+For UI/plugin work only, initialize the fork and start dev mode:
+
+```bash
+git submodule update --init --recursive
 ./scripts/start-dev.sh
-
-# 4. Open http://localhost:10000
 ```
 
-### Hot Reload
+Backend TypeScript and UI source reload in dev mode. Restart after environment/
+dependency changes with `./scripts/restart-backend.sh`. Before shipping plugin
+changes follow [frontend rules](.claude/rules/frontend.md) to produce and refresh
+the committed prebuild. Normal source/Docker/portable users consume that bundle.
 
-Both backend and frontend auto-rebuild on file save:
+## Development Verification
 
-- **Backend** (`tsx watch`): TypeScript changes take effect immediately
-- **Frontend** (`build.mjs --watch`): UI changes take effect on browser refresh
-- **Skills/Strategies** (`.yaml` / `.md`): Take effect on browser refresh
-
-You only need to restart if you change `.env` or run `npm install`:
-```bash
-./scripts/restart-backend.sh
-```
-
-## Project Structure
-
-```
-backend/
-├── src/agentRuntime/     # Claude/OpenAI/Pi/OpenCode/Qoder runtime adapters
-├── src/agentv3/          # Shared MCP, Strategy, planning, evidence, verifier
-├── src/services/         # Core services (trace processor, skill engine)
-├── skills/               # YAML analysis skills (atomic/composite/pipeline/deep)
-├── strategies/           # Scene strategies + prompt templates (.md)
-└── __tests__/            # Unit tests
-
-perfetto/                 # Forked Perfetto UI (submodule)
-└── ui/src/plugins/com.smartperfetto.AIAssistant/  # AI panel plugin
-```
-
-## Testing (Mandatory)
-
-Every code change must pass the PR gate before submitting a PR:
+Run the changed area's owning test tier while iterating. For combined fast root
+and backend checks:
 
 ```bash
-# From the repository root. Requires root and backend dependencies installed:
-#   npm ci
-#   cd backend && npm ci
+npm run verify:dev
+```
+
+This runs existing root/backend `verify:ci` checks (governance/docs/assets/quality,
+validation/types/build/CLI and core lifecycle/auth/privacy/output contracts).
+It does not run the full runtime, accuracy, SQL or performance suite and is not
+full acceptance. Reuse passing evidence only while its files/dependencies/config/
+environment remain unchanged; preserve unique assertions when sharing fixtures.
+
+Before opening or landing a PR:
+
+```bash
 npm run verify:pr
 ```
 
-`verify:pr` runs root quality checks, backend skill/strategy validation, typecheck,
-build, CLI package checks, core tests, and the 6 canonical trace regression. It
-also downloads the pinned `trace_processor_shell` automatically when needed.
+The complete local gate retains all registered backend tiers, Rust and Trace/SQL
+regression. Use [testing rules](.claude/rules/testing.md) for additional affected
+browser/real-provider/native gates. Test tier edits must preserve suite reachability
+and preparation; `npm run check:test-registration` verifies registration.
 
-Useful targeted commands while iterating:
+Hosted Actions uses root/backend `verify:ci` plus path-scoped Rust/native/Docker
+checks. Manual `backend-agent-regression-gate.yml` with `full=true` reproduces
+full hosted backend/Trace acceptance. Local passing evidence does not prove other
+OS/environment behavior. Public release workflows separately check exact artifacts.
+See [verification ownership](.claude/rules/testing.md#hosted-ci-and-local-verification).
 
-```bash
-cd backend
+## Skills, Strategies and Feedback
 
-# Required when changes touch mcp / memory / report / agent runtime; also
-# included in `npm run verify:pr`. Contract-only and CRUD-only changes can run
-# narrower tiers (`npx tsc --noEmit` + relevant unit tests). See
-# .claude/rules/testing.md for the full tier table.
-npm run test:scene-trace-regression
+Skills live in `backend/skills/` and collect deterministic trace evidence;
+strategies/templates live in `backend/strategies/` and own model instructions.
+Do not hardcode prompts in TypeScript or analysis SQL in UI. Read the
+[Skill System](docs/reference/skill-system.md), [Skill rules](.claude/rules/skills.md)
+and [prompt rules](.claude/rules/prompts.md) before changing these contracts.
 
-# Validate skill YAML syntax and contracts
-npm run validate:skills
+Run backend `validate:skills` or `validate:strategies` and scene trace regression
+for affected assets; SQL changes also require SQL regression and paired
+Perfetto-Skills impact review. Corpus fixtures are maintained by `Trace/catalog.json`,
+not optional downloads. Keep producer units, identity and provenance across outputs.
 
-# Validate strategy markdown frontmatter
-npm run validate:strategies
+Agent-assisted feedback reviews persisted source-run facts before opening an
+unsubmitted GitHub draft. Use the
+[feedback guide](docs/getting-started/agent-assisted-feedback.en.md); distinguish
+facts, model assessment and user confirmation. Share only authorized sanitized
+reproducers, never keys/private source/absolute paths/sensitive identities. Report
+security findings through a [private advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new).
 
-# Extended diagnostic suite. This includes legacy evals that require extra trace
-# fixtures, so it is not the default PR gate.
-npm test
-```
+## Pull Requests and Releases
 
-### What the Regression Tests Cover
+Work from main on a descriptive branch, preserve unrelated changes, commit owned
+files and open a PR with the problem/result and actual verification/gaps. Check:
 
-6 canonical traces (2 startup + 4 scrolling) are tested against all skills to catch regressions:
+- Complete `verify:pr` and applicable changed-surface checks.
+- No secrets, leaked private material or hand-edited generated output.
+- Updated current user/architecture/API docs where behavior changes.
+- Shared Skills/SQL/evidence changes include paired impact evidence.
+- Perfetto submodule changes are pushed to `fork`, never Google `origin`, and
+  anchored on `fork/main` before the root gitlink; see [Git rules](.claude/rules/git.md).
 
-| Scene | Trace |
-|-------|-------|
-| Heavy launch | `lacunh_heavy.pftrace` |
-| Light launch | `launch_light.pftrace` |
-| Standard scroll | `scroll_Standard-AOSP-App-Without-PreAnimation.pftrace` |
-| Customer scroll | `scroll-demo-customer-scroll.pftrace` |
-| Flutter TextureView | `Scroll-Flutter-327-TextureView.pftrace` |
-| Flutter SurfaceView | `Scroll-Flutter-SurfaceView-Wechat-Wenyiwen.pftrace` |
+Use conventional descriptive commits such as `fix(agentv3): preserve run ownership`.
+Versions follow SemVer; root package version is synchronized with backend and both
+lockfiles using `npm run version:set -- <version>`, then checked with
+`npm run version:sync -- --check`. Public release uses the
+[release rules](.claude/rules/release.md) and [runbook](docs/reference/release.md).
+A passing source test is distinct from registry/native/archive acceptance.
 
-## Starting From Agent-Assisted Feedback
-
-After a completed Web UI analysis, SmartPerfetto can detect evidence gaps,
-Skill/runtime failures, unresolved identities, and other actionable signals.
-Select **Ask Agent what to report** to get a source-run-pinned review of whether
-the finding belongs in this repository and what kind of contribution would
-help. The flow separates observed facts, Agent assessment, user confirmation,
-missing evidence, and redactions; it only opens an unsubmitted GitHub draft.
-
-For a useful issue or contribution:
-
-- keep source-run facts distinct from model inference and your own
-  confirmation;
-- attach the smallest public, sanitized reproducer or trace fixture you are
-  allowed to share;
-- use the suggested ownership and contribution kind as guidance, then inspect
-  the relevant Skill, strategy, runtime, documentation, or UI source;
-- never paste provider keys, absolute local paths, private codebase content,
-  or sensitive trace identities into a public Issue;
-- report security-sensitive findings through the
-  [private advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new).
-
-The manual [Analysis feedback Issue Form](https://github.com/Gracker/SmartPerfetto/issues/new?template=analysis_feedback.yml)
-is available when the in-product Agent flow is not. Maintainers changing this
-subsystem should run:
-
-```bash
-cd backend
-npm run test:external-issue-reporting
-```
-
-See [Agent-Assisted GitHub Feedback](docs/getting-started/agent-assisted-feedback.en.md)
-for the provider pin, fallback, privacy, and browser acceptance contract.
-
-## Contributing Skills
-
-Skills are YAML-based analysis pipelines. See [Skill System Guide](docs/reference/skill-system.md) for the full DSL reference.
-
-```yaml
-# backend/skills/atomic/example_skill.skill.yaml
-id: example_skill
-display_name: "Example Skill"
-description: "What this skill detects"
-steps:
-  - id: query_data
-    type: sql
-    query: |
-      SELECT ts, dur, name FROM slice WHERE name LIKE '%example%'
-display:
-  level: overview
-```
-
-After adding or modifying skills:
-```bash
-cd backend
-npm run validate:skills
-npm run test:scene-trace-regression
-```
-
-## Contributing Strategies
-
-Strategies are scene-specific analysis playbooks in Markdown with YAML frontmatter. They live in `backend/strategies/`.
-
-- `*.strategy.md` — Scene strategies (scrolling, startup, ANR, ...)
-- `*.template.md` — Reusable prompt templates (role, methodology, knowledge)
-
-After modifying strategies:
-```bash
-cd backend
-npm run validate:strategies
-npm run test:scene-trace-regression
-```
-
-## Pull Request Process
-
-1. **Fork** the repository
-2. **Create a branch** from `main`: `git checkout -b feat/my-feature`
-3. **Make changes** and ensure all tests pass
-4. **Commit** with a descriptive message:
-   ```
-   feat(skills): add memory pressure detection skill
-   fix(agentv3): prevent duplicate hypothesis submission
-   ```
-5. **Push** and open a PR against `main`
-
-### PR Checklist
-
-- [ ] `npm run verify:pr` passes from the repository root
-- [ ] Extra targeted tests for the changed area are listed in the PR test plan
-- [ ] No hardcoded prompt content in TypeScript — use `.strategy.md` / `.template.md`
-- [ ] No new secrets or API keys in committed files
-- [ ] Public issue text, trace fixtures, and screenshots passed sensitive-data review
-
-### Commit Convention
-
-```
-type(scope): description
-
-Types: feat, fix, refactor, docs, test, chore
-Scopes: skills, agentv3, frontend, strategies, ci
-```
-
-## Key Rules
-
-1. **Never hardcode prompts in TypeScript** — all prompt content lives in `*.strategy.md` and `*.template.md` files
-2. **Never push perfetto submodule to `origin`** — always push to `fork` remote
-3. **Check Perfetto stdlib first** — before writing new SQL, check if `android.*` or `linux.*` stdlib modules already provide the data
-4. **Skills use `${param|default}` syntax** for parameters, templates use `{{variable}}` syntax
-
-## Getting Help
-
-- Open an [Issue](https://github.com/Gracker/SmartPerfetto/issues) for bugs or feature requests
-- Start from the [Documentation Center](docs/README.md)
-- Check [Technical Architecture](docs/architecture/technical-architecture.md) for deep dives
-- Check [MCP Tools Reference](docs/reference/mcp-tools.md) for tool documentation
-
-## Versioning
-
-SmartPerfetto follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-The **single source of truth for the project version** is the `version` field in
-[`backend/package.json`](backend/package.json). The root `package.json` exists as
-a workspace entry point; keep its `version` in sync but treat it as a mirror, not
-the primary. Release tags follow `vX.Y.Z` format.
-
-When cutting a release, update `backend/package.json`, then [CHANGELOG.md](CHANGELOG.md),
-then the root `package.json` to match, in that order.
-
-## License
-
-By contributing, you agree that your contributions will be licensed under the [GNU Affero General Public License v3.0](LICENSE).
+See [Documentation Center](docs/README.md),
+[Architecture](docs/architecture/overview.md) and
+[MCP Reference](docs/reference/mcp-tools.md) for current ownership and contracts.
+Contributions are licensed under [AGPLv3](LICENSE).

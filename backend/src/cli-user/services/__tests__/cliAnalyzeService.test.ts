@@ -86,6 +86,11 @@ describe('CliAnalyzeService streaming data collection', () => {
       timestamp: Date.now(),
     })).toBe(false);
     expect(shouldExposeLiveStreamingUpdate({
+      type: 'answer_segment_reset',
+      content: { runId: 'run', attempt: 1 },
+      timestamp: Date.now(),
+    })).toBe(false);
+    expect(shouldExposeLiveStreamingUpdate({
       type: 'data',
       content: [],
       timestamp: Date.now(),

@@ -2,6 +2,8 @@
 
 [English](dual-trace-workspace.en.md) | [中文](dual-trace-workspace.md)
 
+<!-- i18n-headings: paired -->
+
 本文定义 Web UI Raw Trace Compare 的双窗操作模型。它补充
 [架构总览](overview.md)中的对比模式说明，重点覆盖用户操作、AI Panel
 上下文、前后端协同和边界条件。Analysis Result Compare 仍走

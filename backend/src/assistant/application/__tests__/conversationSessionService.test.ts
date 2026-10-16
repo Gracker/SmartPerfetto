@@ -2,18 +2,40 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it, jest} from '@jest/globals';
+import {afterEach, describe, expect, it, jest} from '@jest/globals';
 import * as authorization from '../../../services/resolvedAnalysisContext';
 import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
 import {toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
 import type {ConversationSessionDescriptor} from '../../../services/conversationSessionStore';
 
 import {
-  ConversationSessionService,
+  ConversationSessionService as ProductConversationSessionService,
+  conversationRuntimeSessionId,
   type ConversationRuntimeAdapter,
   type ConversationRuntimeInput,
   type ConversationRuntimeOutcome,
+  type StartConversationTurnInput,
 } from '../conversationSessionService';
+import {runAnalysisSelection} from '../../../services/effectiveAnalysisSelection';
+import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
+import {clearAllCodeAwareOutputGuards, revokeCodeAwareOutputGuards} from '../../../services/security/codeAwareOutputRegistry';
+
+/**
+ * The product service with the caller's duty done for it: every turn states
+ * its authorization fingerprint, computed as the route computes it. A
+ * continuing turn keeps its session's unless a test changes it explicitly.
+ */
+class ConversationSessionService extends ProductConversationSessionService {
+  override startTurn(input: Omit<StartConversationTurnInput, 'analysisContextFingerprint'> &
+    {analysisContextFingerprint?: string}) {
+    const existing = input.sessionId ? this.getSession(input.sessionId) : undefined;
+    const analysisContextFingerprint = input.analysisContextFingerprint ??
+      input.runtimeOptions?.analysisContextFingerprint ?? existing?.analysisContextFingerprint ??
+      authorization.buildAnalysisContextAuthorizationFingerprint(runAnalysisSelection(input.runtimeOptions ?? {}),
+        resolveKnowledgeScope(input.owner ?? {}));
+    return super.startTurn({...input, analysisContextFingerprint});
+  }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -33,6 +55,19 @@ function createService(adapter: ConversationRuntimeAdapter) {
 }
 
 describe('ConversationSessionService', () => {
+  it('hands the runtime the private-context marker it records for the run', async () => {
+    const inputs: ConversationRuntimeInput[] = [];
+    const service = createService({
+      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+        inputs.push(input);
+        return {kind: 'answered', message: 'ok'};
+      }),
+      cancel: jest.fn(async () => undefined),
+    });
+    await service.startTurn({query: 'Discuss the requirement'}).completion;
+    expect(inputs[0].privateContext).toEqual({codebase: false, knowledge: false});
+  });
+
   it('requires a new session when a trace is attached after a no-Trace turn', async () => {
     const inputs: ConversationRuntimeInput[] = [];
     const adapter: ConversationRuntimeAdapter = {
@@ -135,6 +170,27 @@ describe('ConversationSessionService', () => {
     expect(inputs[2].selectionContext).toBeUndefined();
   });
 
+  it('applies a requested source depth to its turn and keeps it for later turns', async () => {
+    const inputs: ConversationRuntimeInput[] = [];
+    const service = createService({
+      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+        inputs.push(input);
+        return {kind: 'answered', message: 'answer'};
+      }),
+      cancel: jest.fn(async () => undefined),
+    });
+
+    const first = service.startTurn({query: 'Locate it', runtimeOptions: {sourceDepth: 'locate'}});
+    await first.completion;
+    const second = service.startTurn({sessionId: first.sessionId, query: 'Explain the mechanism',
+      runtimeOptions: {sourceDepth: 'mechanism'}});
+    await second.completion;
+    const third = service.startTurn({sessionId: first.sessionId, query: 'Continue'});
+    await third.completion;
+
+    expect(inputs.map(input => input.sourceDepth)).toEqual(['locate', 'mechanism', 'mechanism']);
+  });
+
   it('physically ends a clarification run and resumes the same session next turn', async () => {
     const inputs: ConversationRuntimeInput[] = [];
     const outcomes: ConversationRuntimeOutcome[] = [
@@ -219,6 +275,203 @@ describe('ConversationSessionService', () => {
     });
   });
 
+  describe('deliver first, verify after', () => {
+    /** A run that delivers its answer, then finalizes only when its review is stopped. */
+    const reviewingAdapter = (events: string[], options: {ignoreStop?: boolean} = {}) => {
+      const reviewed = deferred<ConversationRuntimeOutcome>();
+      let runCount = 0;
+      const adapter: ConversationRuntimeAdapter = {
+        run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+          runCount++;
+          events.push(`run:${input.query}`);
+          if (runCount > 1) return {kind: 'answered', message: 'second answer'};
+          input.onProvisionalAnswer?.({message: 'first answer'});
+          input.reviewStopSignal?.addEventListener('abort', () => {
+            events.push('review_stopped');
+            // The review ends and finalization completes the same answer with its verdict.
+            if (!options.ignoreStop) queueMicrotask(() => reviewed.resolve({kind: 'answered', message: 'first answer'}));
+          }, {once: true});
+          return reviewed.promise;
+        }),
+        cancel: jest.fn(async (_sessionId: string, runId: string) => {events.push(`cancel:${runId}`);}),
+      };
+      return {adapter, reviewed};
+    };
+    const serviceWith = (adapter: ConversationRuntimeAdapter, extra: Partial<ConstructorParameters<
+      typeof ConversationSessionService>[0]> = {}) => {
+      let sequence = 0;
+      return new ConversationSessionService({createRuntime: () => adapter,
+        createId: prefix => `${prefix}-${++sequence}`, reviewStopWatchdogMs: 30, ...extra});
+    };
+    const flush = () => new Promise(resolve => setTimeout(resolve, 0));
+
+    it('answers the first stop at once, stops only the review and settles the answered turn', async () => {
+      const events: string[] = [];
+      const {adapter} = reviewingAdapter(events);
+      const service = serviceWith(adapter);
+      const published: string[] = [];
+      const first = service.startTurn({query: 'trace 时长'});
+      service.subscribe(first.sessionId, event => published.push(event.type));
+      await Promise.resolve();
+      const session = service.getSession(first.sessionId)!;
+            expect(session.activeRun?.events.map(event => event.type)).toEqual(['run_started', 'provisional_answer']);
+      expect(session.activeRun?.events[1]).toMatchObject({message: 'first answer', verification: 'pending'});
+
+      const stopping = service.cancelRun(first.sessionId, first.runId);
+      // Non-blocking: the answer to the stop does not wait for the commit.
+      await expect(stopping).resolves.toEqual({status: 'review_stop_requested'});
+      expect(published).not.toContain('run_completed');
+      await first.completion;
+      expect(events).toEqual(['run:trace 时长', 'review_stopped']);
+      expect(adapter.cancel).not.toHaveBeenCalled();
+      expect(published).toContain('run_completed');
+      expect(session.runs[0]).toMatchObject({status: 'completed'});
+      expect(session.history.map(message => [message.role, message.content])).toEqual([
+        ['user', 'trace 时长'], ['assistant', 'first answer']]);
+    });
+
+    it('a new turn waits for the provisional run to commit before starting', async () => {
+      const events: string[] = [];
+      const {adapter} = reviewingAdapter(events);
+      const service = serviceWith(adapter);
+      const first = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      const replacement = await service.steer({sessionId: first.sessionId, query: '应用包名'});
+      await replacement.completion;
+      expect(events).toEqual(['run:trace 时长', 'review_stopped', 'run:应用包名']);
+      expect(adapter.cancel).not.toHaveBeenCalled();
+      expect(service.getSession(first.sessionId)!.history.map(message => message.content))
+        .toEqual(['trace 时长', 'first answer', '应用包名', 'second answer']);
+    });
+
+    it('a second stop forces: it waits for the commit, and the finalized outcome wins', async () => {
+      const events: string[] = [];
+      const {adapter, reviewed} = reviewingAdapter(events, {ignoreStop: true});
+      const service = serviceWith(adapter, {reviewStopWatchdogMs: 5_000});
+      const turn = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      await expect(service.cancelRun(turn.sessionId, turn.runId)).resolves.toEqual({status: 'review_stop_requested'});
+      const forced = service.cancelRun(turn.sessionId, turn.runId);
+      // The review finished just before the save: the finalized turn is committed, not a cancel.
+      reviewed.resolve({kind: 'answered', message: 'first answer'});
+      await expect(forced).resolves.toEqual({status: 'settled', outcome: expect.objectContaining({kind: 'answered'})});
+      expect(adapter.cancel).not.toHaveBeenCalled();
+      expect(service.getSession(turn.sessionId)!.runs[0].status).toBe('completed');
+    });
+
+    it('persists the read body as an unverified partial turn with the run pins when the commit never settles', async () => {
+      const events: string[] = [];
+      const {adapter, reviewed} = reviewingAdapter(events, {ignoreStop: true});
+      const settled: Array<{status: string; turn: unknown}> = [];
+      const service = serviceWith(adapter, {onRunSettled: (session, run) => settled.push({status: run.status,
+        turn: session.historyTurns.find(turn => turn.id === run.runId)})});
+      const published: Array<{type: string; outcome?: unknown}> = [];
+      const turn = service.startTurn({query: 'trace 时长'});
+      service.subscribe(turn.sessionId, event => published.push(event as never));
+      await Promise.resolve();
+      await expect(service.cancelRun(turn.sessionId, turn.runId)).resolves.toEqual({status: 'review_stop_requested'});
+      await new Promise(resolve => setTimeout(resolve, 60));
+      const session = service.getSession(turn.sessionId)!;
+      expect(session.activeRun).toBeUndefined();
+      const runFingerprint = session.runs[0].analysisContextFingerprint;
+      expect(runFingerprint).toEqual(expect.any(String));
+      expect(settled).toEqual([{status: 'completed', turn: expect.objectContaining({answer: 'first answer',
+        partial: true, completionStatus: 'incomplete', terminationReason: 'review_not_finished',
+        analysisContextFingerprint: runFingerprint})}]);
+      expect(session.historyTurns[0]).not.toHaveProperty('sourceDerived');
+      expect(published.find(event => event.type === 'run_completed')?.outcome).toMatchObject({kind: 'answered',
+        message: 'first answer', finalResult: {partial: true, terminationReason: 'review_not_finished',
+          claimVerificationResult: {status: 'not_checked', notCheckedReason: 'review_not_finished'}}});
+      expect(adapter.cancel).toHaveBeenCalledTimes(1);
+      // The runtime's late result is ignored; the partial turn stays the only terminal write.
+      reviewed.resolve({kind: 'answered', message: 'first answer'});
+      await flush();
+      expect(settled).toHaveLength(1);
+      expect(session.history.map(message => message.content)).toEqual(['trace 时长', 'first answer']);
+    });
+
+    it('bounds a force stop by the watchdog started at the first stop', async () => {
+      const {adapter} = reviewingAdapter([], {ignoreStop: true});
+      const service = serviceWith(adapter);
+      const turn = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      await service.cancelRun(turn.sessionId, turn.runId);
+      const started = Date.now();
+      await expect(service.cancelRun(turn.sessionId, turn.runId)).resolves.toEqual({status: 'settled',
+        outcome: expect.objectContaining({kind: 'answered', finalResult: expect.objectContaining({
+          terminationReason: 'review_not_finished'})})});
+      expect(Date.now() - started).toBeLessThan(1_000);
+    });
+
+    it('a new turn after a hanging review waits one watchdog bound, not a review plus a cancel', async () => {
+      const {adapter} = reviewingAdapter([], {ignoreStop: true});
+      const service = serviceWith(adapter, {cancelSettleTimeoutMs: 60_000});
+      const turn = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      const started = Date.now();
+      await expect(service.supersedeRun(turn.sessionId, turn.runId)).resolves.toMatchObject({kind: 'answered'});
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(service.getSession(turn.sessionId)!.activeRun).toBeUndefined();
+    });
+
+    it('keeps a private-knowledge body live-only: the fallback is a cancel', async () => {
+      const {adapter} = reviewingAdapter([], {ignoreStop: true});
+      const service = serviceWith(adapter);
+      const turn = service.startTurn({query: 'trace 时长',
+        runtimeOptions: {knowledgeSourceIds: ['knowledge-a']}});
+      await Promise.resolve();
+      await service.cancelRun(turn.sessionId, turn.runId);
+      await new Promise(resolve => setTimeout(resolve, 60));
+      const session = service.getSession(turn.sessionId)!;
+      expect(session.runs[0].status).toBe('cancelled');
+      expect(session.history.map(message => message.role)).toEqual(['user']);
+      expect(session.historyTurns[0]).toMatchObject({answer: '', partial: true});
+    });
+
+    it('does not persist the body after authorization was revoked', async () => {
+      const {adapter} = reviewingAdapter([], {ignoreStop: true});
+      const service = serviceWith(adapter);
+      const turn = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      await service.cancelRun(turn.sessionId, turn.runId);
+      const revoked = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
+        throw new authorization.AnalysisContextAuthorizationChangedError();
+      });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 60));
+      } finally {revoked.mockRestore();}
+      const session = service.getSession(turn.sessionId)!;
+      expect(session.runs[0].status).toBe('cancelled');
+      expect(session.history.map(message => message.role)).toEqual(['user']);
+    });
+
+    it('writes nothing for a run whose session was replaced before the watchdog', async () => {
+      const {adapter} = reviewingAdapter([], {ignoreStop: true});
+      const settled: string[] = [];
+      const service = serviceWith(adapter, {onRunSettled: (_session, run) => settled.push(run.status)});
+      const turn = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      await service.cancelRun(turn.sessionId, turn.runId);
+      service.cleanupIdleSessions({terminalMaxIdleMs: 0, nonTerminalMaxIdleMs: 0, now: Number.MAX_SAFE_INTEGER});
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(settled).toEqual(['cancelled']);
+    });
+
+    it('fully cancels before the provisional answer', async () => {
+      const first = deferred<ConversationRuntimeOutcome>();
+      const adapter: ConversationRuntimeAdapter = {
+        run: jest.fn(async () => first.promise),
+        cancel: jest.fn(async () => {first.resolve({kind: 'cancelled', message: ''});}),
+      };
+      const service = createService(adapter);
+      const turn = service.startTurn({query: 'trace 时长'});
+      await expect(service.cancelRun(turn.sessionId, turn.runId)).resolves.toEqual({status: 'settled',
+        outcome: {kind: 'cancelled', message: ''}});
+      expect(adapter.cancel).toHaveBeenCalledTimes(1);
+      expect(service.getSession(turn.sessionId)!.history.map(message => message.role)).toEqual(['user']);
+    });
+  });
+
   it('stores a structured full-analysis handoff without auto-upgrading', async () => {
     const adapter: ConversationRuntimeAdapter = {
       run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({
@@ -283,110 +536,90 @@ describe('ConversationSessionService', () => {
     expect(events.map(event => event.seqId)).toEqual([1, 2, 3]);
   });
 
-  it('completes the primary run before starting independent source enrichment', async () => {
-    const enrichment = deferred<{
-      message: string;
-      evidence: Array<{id: string; label: string}>;
-      metrics: {searchCalls: number; readCalls: number; durationMs: number};
-    }>();
+  it('delivers answer drafts live only and never after the provisional answer', async () => {
+    const gate = deferred<void>();
     const adapter: ConversationRuntimeAdapter = {
-      resolvePrimarySourceUse: jest.fn((_query: string): 'dormant' => 'dormant'),
-      shouldStartSourceEnrichment: jest.fn(() => true),
-      run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({
-        kind: 'answered',
-        message: 'Primary trace answer',
-        evidence: [{id: 'trace-1', label: 'Foo::bar', source: 'sql'}],
-      })),
-      runSourceEnrichment: jest.fn(async () => enrichment.promise),
+      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+        await gate.promise;
+        input.onAnswerDraft?.({type: 'answer_token', content: {token: 'Draft', runId: input.runId, attempt: 0}});
+        input.onAnswerDraft?.({type: 'answer_segment_reset', content: {runId: input.runId, attempt: 1}});
+        input.onProvisionalAnswer?.({message: 'Answer'});
+        input.onAnswerDraft?.({type: 'answer_token', content: {token: 'LATE_DRAFT', runId: input.runId, attempt: 1}});
+        return {kind: 'answered', message: 'Answer'};
+      }),
       cancel: jest.fn(async () => undefined),
-      cancelSourceEnrichment: jest.fn(async () => undefined),
     };
     const service = createService(adapter);
-    const receipt = service.startTurn({
-      query: 'Why is startup slow?',
-      traceContext: {kind: 'attached', traceId: 'trace-1'},
-      runtimeOptions: {
-        codeAwareMode: 'provider_send',
-        codebaseIds: ['private-app'],
-      },
-    });
-    const eventTypes: string[] = [];
-    service.subscribe(receipt.sessionId, event => eventTypes.push(event.type));
+    const receipt = service.startTurn({query: 'question'});
+    const live: unknown[] = [];
+    service.subscribe(receipt.sessionId, event => live.push(event));
+    gate.resolve();
+    await receipt.completion;
 
-    await expect(receipt.completion).resolves.toMatchObject({
-      message: 'Primary trace answer',
-    });
-    expect(service.getSession(receipt.sessionId)).toMatchObject({
-      status: 'completed',
-      activeRun: undefined,
-    });
-    expect(eventTypes.indexOf('run_completed')).toBeGreaterThanOrEqual(0);
-    expect(eventTypes.indexOf('source_enrichment_started'))
-      .toBeGreaterThan(eventTypes.indexOf('run_completed'));
-    expect(eventTypes).not.toContain('source_enrichment_completed');
-
-    enrichment.resolve({
-      message: 'Source supplement',
-      evidence: [{id: 'source-1', label: 'Foo.kt:L10-L12'}],
-      metrics: {searchCalls: 1, readCalls: 2, durationMs: 40},
-    });
-    const run = service.getSession(receipt.sessionId)?.runs[0];
-    await run?.sourceEnrichment?.completion;
-    expect(run?.sourceEnrichment).toMatchObject({
-      status: 'completed',
-      message: 'Source supplement',
-    });
-    expect(eventTypes[eventTypes.length - 1]).toBe('source_enrichment_completed');
+    const liveDrafts = live.filter(event => (event as {type: string}).type === 'runtime_update')
+      .map(event => (event as {update: unknown}).update);
+    expect(liveDrafts).toEqual([
+      {type: 'answer_token', content: {token: 'Draft', runId: receipt.runId, attempt: 0}},
+      {type: 'answer_segment_reset', content: {runId: receipt.runId, attempt: 1}},
+    ]);
+    // A reconnect replays only retained events: no draft is among them.
+    const retained = service.getSession(receipt.sessionId)?.runs[0].events ?? [];
+    expect(retained.map(event => event.type)).toEqual(['run_started', 'provisional_answer', 'run_completed']);
+    expect(JSON.stringify(retained)).not.toContain('Draft');
   });
 
-  it('marks explicit source history and excludes automatic enrichment from history', async () => {
-    const enrichment = deferred<{
-      message: string;
-      evidence: Array<{id: string; label: string}>;
-      metrics: {searchCalls: number; readCalls: number; durationMs: number};
-    }>();
-    let turn = 0;
-    const inputs: ConversationRuntimeInput[] = [];
+  it('settles a run with run_completed that carries only the outcome', async () => {
     const adapter: ConversationRuntimeAdapter = {
-      resolvePrimarySourceUse: jest.fn((query: string): 'explicit' | 'dormant' => (
-        query.includes('源码') ? 'explicit' : 'dormant'
-      )),
-      shouldStartSourceEnrichment: jest.fn((
-        _input: ConversationRuntimeInput,
-        outcome: ConversationRuntimeOutcome,
-      ) => outcome.message === 'trace answer'),
-      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
-        inputs.push(input);
-        turn += 1;
-        return {kind: 'answered', message: turn === 1 ? 'source answer' : turn === 2 ? 'trace answer' : 'next answer'};
-      }),
-      runSourceEnrichment: jest.fn(async () => enrichment.promise),
+      run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({kind: 'answered', message: 'Primary trace answer'})),
       cancel: jest.fn(async () => undefined),
-      cancelSourceEnrichment: jest.fn(async () => undefined),
     };
     const service = createService(adapter);
-    const first = service.startTurn({query: '看看源码里的 Foo::bar'});
-    await first.completion;
-    const second = service.startTurn({sessionId: first.sessionId, query: '分析启动'});
-    await second.completion;
-    enrichment.resolve({
-      message: 'automatic supplement',
-      evidence: [],
-      metrics: {searchCalls: 1, readCalls: 0, durationMs: 5},
-    });
-    await service.getSession(first.sessionId)?.runs[1].sourceEnrichment?.completion;
-    const third = service.startTurn({sessionId: first.sessionId, query: '继续'});
-    await third.completion;
+    const receipt = service.startTurn({query: 'Why is startup slow?', traceContext: {kind: 'attached', traceId: 'trace-1'},
+      runtimeOptions: {codeAwareMode: 'provider_send', codebaseIds: ['private-app']}});
+    await receipt.completion;
+    const completed = service.getSession(receipt.sessionId)!.runs[0].events.find(event => event.type === 'run_completed');
+    // Clients read run_completed as the end of the run; no pending follow-up is announced.
+    expect(completed).toEqual({type: 'run_completed', sessionId: receipt.sessionId, runId: receipt.runId,
+      outcome: {kind: 'answered', message: 'Primary trace answer'}, seqId: expect.any(Number)});
+    // A completed run cannot be cancelled again.
+    await expect(service.cancelRun(receipt.sessionId, receipt.runId)).rejects.toMatchObject({
+      code: 'CONVERSATION_RUN_NOT_ACTIVE'});
+  });
 
-    expect(inputs[1].history).toEqual(expect.arrayContaining([
-      expect.objectContaining({content: 'source answer', sourceDerived: true}),
-    ]));
-    expect(service.getSession(first.sessionId)!.historyTurns[0].analysisContextFingerprint).toBe(
-      service.getSession(first.sessionId)!.analysisContextFingerprint);
-    expect(service.getSession(first.sessionId)!.historyTurns[0].analysisContextFingerprint).toBeTruthy();
-    expect(inputs[2].history).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({content: 'automatic supplement'}),
-    ]));
+  it('marks history from runs with private context', async () => {
+    const authorizationCheck = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization')
+      .mockImplementation(() => undefined);
+    try {
+      let turn = 0;
+      const inputs: ConversationRuntimeInput[] = [];
+      const adapter: ConversationRuntimeAdapter = {
+        run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+          inputs.push(input);
+          turn += 1;
+          return {kind: 'answered', message: turn === 1 ? 'source answer' : turn === 2 ? 'trace answer' : 'next answer'};
+        }),
+        cancel: jest.fn(async () => undefined),
+      };
+      const service = createService(adapter);
+      // A session authorized to read source makes every run in it private.
+      const first = service.startTurn({query: '看看源码里的 Foo::bar',
+        runtimeOptions: {codeAwareMode: 'provider_send', codebaseIds: ['app']}});
+      await first.completion;
+      const second = service.startTurn({sessionId: first.sessionId, query: '分析启动'});
+      await second.completion;
+      const third = service.startTurn({sessionId: first.sessionId, query: '继续'});
+      await third.completion;
+
+      expect(inputs[1].history).toEqual(expect.arrayContaining([
+        expect.objectContaining({content: 'source answer', sourceDerived: true}),
+      ]));
+      expect(service.getSession(first.sessionId)!.historyTurns[0].analysisContextFingerprint).toBe(
+        service.getSession(first.sessionId)!.analysisContextFingerprint);
+      expect(service.getSession(first.sessionId)!.historyTurns[0].analysisContextFingerprint).toBeTruthy();
+      expect(inputs[2].history).toEqual(expect.arrayContaining([
+        expect.objectContaining({content: 'trace answer', sourceDerived: true}),
+      ]));
+    } finally {authorizationCheck.mockRestore();}
   });
 
   it('does not start model work when run reservation fails', () => {
@@ -595,13 +828,11 @@ describe('ConversationSessionService', () => {
     expect(adapter.run).toHaveBeenCalledTimes(1);
   });
 
-  it('does not publish old completion or start enrichment after a settlement hook starts the next run', async () => {
+  it('does not publish an old completion after a settlement hook starts the next run', async () => {
     const next = deferred<ConversationRuntimeOutcome>();
     let calls = 0;
     const adapter: ConversationRuntimeAdapter = {
       run: jest.fn<ConversationRuntimeAdapter['run']>(() => ++calls === 1 ? Promise.resolve({kind: 'answered', message: 'first answer'}) : next.promise),
-      shouldStartSourceEnrichment: jest.fn(() => true),
-      runSourceEnrichment: jest.fn(async () => ({message: 'unexpected', evidence: [], metrics: {searchCalls: 0, readCalls: 0, durationMs: 0}})),
       cancel: jest.fn(async () => undefined),
     };
     let service!: ConversationSessionService;
@@ -613,7 +844,6 @@ describe('ConversationSessionService', () => {
     const session = service.getSession(first.sessionId)!;
     expect(session.activeRun?.runId).toBe(replacement?.runId);
     expect(session.runs[0].events.some(event => event.type === 'run_completed')).toBe(false);
-    expect(adapter.runSourceEnrichment).not.toHaveBeenCalled();
     next.resolve({kind: 'answered', message: 'next answer'});
     await replacement!.completion;
   });
@@ -667,6 +897,60 @@ describe('ConversationSessionService', () => {
     const second = service.startTurn({sessionId: first.sessionId, query: 'followup'}); await second.completion;
     expect(incoming!.getHistoryTurns!()).toEqual([expect.objectContaining({id: first.runId, query: 'first',
       partial: true, completionStatus: 'incomplete', uncertainties: ['Wakeup missing'], nextSteps: ['Inspect wakeup']})]);
+  });
+
+  describe('failure projection', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+      clearAllCodeAwareOutputGuards();
+    });
+
+    function failingService(fail: (input: ConversationRuntimeInput) => Error) {
+      return createService({run: async input => {throw fail(input);}, cancel: async () => undefined});
+    }
+
+    async function failedTurn(service: ConversationSessionService, input: Parameters<ConversationSessionService['startTurn']>[0]) {
+      const published: Array<{type: string; error?: unknown}> = [];
+      const receipt = service.startTurn(input);
+      const unsubscribe = service.subscribe(receipt.sessionId, event => published.push(event as {type: string; error?: unknown}));
+      await receipt.completion.catch(() => undefined);
+      unsubscribe();
+      const session = service.getSession(receipt.sessionId)!;
+      return {failed: published.find(event => event.type === 'run_failed'), session,
+        run: session.runs.find(candidate => candidate.runId === receipt.runId)!};
+    }
+
+    it('stores and publishes fixed text naming the starting request for an untyped failure, never its message', async () => {
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const cause = new Error('SQLITE_IOERR: disk I/O error at /srv/conversation/private.db');
+      const {failed, session, run} = await failedTurn(failingService(() => cause),
+        {query: 'why is it slow', requestId: 'req-conversation-1'});
+
+      const expected = '分析未能完成，服务端已记录错误（请求 ID：req-conversation-1）。';
+      expect(failed).toMatchObject({type: 'run_failed', error: expected});
+      expect(run.error).toBe(expected);
+      expect(session.error).toBe(expected);
+      expect(JSON.stringify(session)).not.toContain('/srv/conversation');
+      expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({requestId: 'req-conversation-1'}), cause);
+    });
+
+    it('keeps a reason token a service threw for the owner', async () => {
+      const {failed} = await failedTurn(failingService(() => new Error('analysis_history_parent_not_authorized')),
+        {query: 'continue'});
+      expect(failed).toMatchObject({error: 'analysis_history_parent_not_authorized'});
+    });
+
+    it('projects a private run under its runtime session guard, which the adapter has revoked by then', async () => {
+      jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => undefined);
+      const {failed, run} = await failedTurn(failingService(input => {
+        // The adapter revokes its run's guards in `finally`, before the service sees the failure.
+        revokeCodeAwareOutputGuards(conversationRuntimeSessionId(input.sessionId, input.runId));
+        return new authorization.AnalysisContextAuthorizationChangedError();
+      }), {query: 'read the source', runtimeOptions: {codeAwareMode: 'metadata_only', codebaseIds: ['cb-private']}});
+
+      expect(run.privateContext).toMatchObject({codebase: true});
+      expect(failed).toMatchObject({error: '[PRIVATE_OUTPUT_SUPPRESSED]'});
+    });
   });
 
   it('inherits the same failed query and incomplete state before and after restart', async () => {
@@ -750,12 +1034,25 @@ describe('ConversationSessionService', () => {
       terminationMessage: 'conversation_run_interrupted_before_final_commit'});
   });
 
+  it('refuses to recover a descriptor stamped with a pre-acf2 fingerprint; the user starts a new conversation', () => {
+    const {descriptor, input, turn} = recoveryFixture();
+    expect(input.analysisContextFingerprint).toMatch(/^acf2:/);
+    // The descriptor stored before the format change holds a bare digest; it is never re-stamped.
+    const legacy = {...descriptor, analysisContextFingerprint: input.analysisContextFingerprint.slice('acf2:'.length)};
+    const factory = jest.fn((): ConversationRuntimeAdapter => ({run: async () => ({kind: 'answered', message: ''}), cancel: async () => undefined}));
+    const service = new ConversationSessionService({createRuntime: factory});
+    expect(() => service.restoreSession(legacy, [turn], input))
+      .toThrow(expect.objectContaining({code: 'CONVERSATION_RECOVERY_UNAVAILABLE', status: 409}));
+    expect(factory).not.toHaveBeenCalled();
+    expect(legacy.analysisContextFingerprint).not.toMatch(/^acf2:/);
+  });
+
   it('denies changed owner, provider hash and revoked sources before recreating an adapter', () => {
     const {descriptor, input, turn} = recoveryFixture();
     const factory = jest.fn((): ConversationRuntimeAdapter => ({run: async () => ({kind: 'answered', message: ''}), cancel: async () => undefined}));
     const service = new ConversationSessionService({createRuntime: factory});
-    expect(() => service.restoreSession(descriptor, [turn], {...input, owner: {...input.owner, userId: 'another-user'}})).toThrow('context_mismatch');
-    expect(() => service.restoreSession(descriptor, [turn], {...input, providerSnapshotHash: 'changed'})).toThrow('context_mismatch');
+    expect(() => service.restoreSession(descriptor, [turn], {...input, owner: {...input.owner, userId: 'another-user'}})).toThrow(expect.objectContaining({code: 'CONVERSATION_RECOVERY_UNAVAILABLE', status: 409}));
+    expect(() => service.restoreSession(descriptor, [turn], {...input, providerSnapshotHash: 'changed'})).toThrow(expect.objectContaining({code: 'CONVERSATION_RECOVERY_UNAVAILABLE', status: 409}));
     const check = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
       throw new authorization.AnalysisContextAuthorizationChangedError();
     });

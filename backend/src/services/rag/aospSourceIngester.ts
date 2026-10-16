@@ -4,7 +4,7 @@
 
 import type {RagStore} from '../ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
-import {redactSecrets} from '../security/secretPatterns';
+import {redactSourceFile} from '../security/secretPatterns';
 import {
   codebaseScopeFromRef,
   codebaseHasActiveIndex,
@@ -35,6 +35,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
+import {codebaseNotFound, invalidCodebaseMetadata, isCodebaseStateError} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 2200;
 
@@ -67,15 +68,15 @@ export class AospSourceIngester {
 
   async ingest(codebaseId: string, opts: AospSourceIngestOptions = {}): Promise<AospSourceIngestResult> {
     const ref = this.registry.get(codebaseId, opts.scope);
-    if (!ref) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!ref) throw codebaseNotFound(codebaseId);
     if (ref.kind !== 'aosp' && ref.kind !== 'oem_sdk') {
-      throw new Error(`Codebase '${codebaseId}' is kind=${ref.kind}; licensed source ingestion requires aosp or oem_sdk`);
+      throw invalidCodebaseMetadata(`Codebase '${codebaseId}' is kind=${ref.kind}; licensed source ingestion requires aosp or oem_sdk`);
     }
     if (!ref.licenseTag) {
-      throw new Error(`AOSP codebase '${codebaseId}' requires licenseTag`);
+      throw invalidCodebaseMetadata(`AOSP codebase '${codebaseId}' requires licenseTag`);
     }
     if (ref.kind === 'oem_sdk' && !ref.vendor) {
-      throw new Error(`OEM SDK codebase '${codebaseId}' requires vendor`);
+      throw invalidCodebaseMetadata(`OEM SDK codebase '${codebaseId}' requires vendor`);
     }
     const effectiveScope = codebaseScopeFromRef(ref);
     return this.registry.withIngestLease(codebaseId, effectiveScope, lease =>
@@ -111,7 +112,7 @@ export class AospSourceIngester {
         blockedFileCount: 0,
         redactionHitCount: 0,
       });
-      if (reason === 'codebase_root_realpath_drift') throw error;
+      if (isCodebaseStateError(error, 'codebase_root_realpath_drift')) throw error;
       return {
         codebaseId,
         filesProcessed: 0,
@@ -189,7 +190,10 @@ export class AospSourceIngester {
           sourceReadLimits.maxFileBytes,
         );
         assertSourceFileUnchanged(provenance, file.relativePath, content);
-        const chunks = chunkSourceBySymbols(content, maxChars);
+        // The whole file is the context: a chunk can start inside a literal or comment.
+        const redaction = redactSourceFile(content, file.relativePath);
+        result.redactionHitCount += redaction.redactedCount;
+        const chunks = chunkSourceBySymbols(redaction.text, maxChars);
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
@@ -199,8 +203,6 @@ export class AospSourceIngester {
         }
         for (const chunk of chunks) {
           lease.assertHeld();
-          const redaction = redactSecrets(chunk.text);
-          result.redactionHitCount += redaction.redactedCount;
           const chunkId = stableChunkId([
             codebaseId,
             nextIndexGeneration,
@@ -213,8 +215,8 @@ export class AospSourceIngester {
             kind: ref.kind,
             uri: `codebase://${codebaseId}/${file.relativePath}`,
             title: file.relativePath.split('/').pop(),
-            snippet: redaction.text,
-            tokenCount: estimateTokenCount(redaction.text),
+            snippet: chunk.text,
+            tokenCount: estimateTokenCount(chunk.text),
             license: ref.licenseTag,
             indexedAt: Date.now(),
             filePath: file.relativePath,

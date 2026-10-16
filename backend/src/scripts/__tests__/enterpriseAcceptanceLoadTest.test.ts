@@ -89,16 +89,14 @@ function runtimeSample(overrides: Partial<RuntimeSample> = {}): RuntimeSample {
     queueLength: 1,
     workerRssBytes: 256,
     leaseRssBytes: null,
-    llmCostUsd: 0.1,
-    llmCalls: 1,
     ...overrides,
   };
 }
 
 function passingRuntimeSamples(): RuntimeSample[] {
   return [
-    runtimeSample({ timestamp: '2026-05-09T00:00:00.000Z', llmCalls: 0 }),
-    runtimeSample({ timestamp: '2026-05-09T00:00:01.000Z', llmCalls: 1 }),
+    runtimeSample({ timestamp: '2026-05-09T00:00:00.000Z' }),
+    runtimeSample({ timestamp: '2026-05-09T00:00:01.000Z' }),
   ];
 }
 
@@ -116,8 +114,10 @@ function analysisRun(index: number, overrides: Partial<AnalysisRunRecord> = {}):
   };
 }
 
+/** The first run has completed, enough for the daily projection over the one-minute window. */
 function analysisRuns(count: number, overrides: Partial<AnalysisRunRecord> = {}): AnalysisRunRecord[] {
-  return Array.from({ length: count }, (_unused, index) => analysisRun(index, overrides));
+  return Array.from({ length: count }, (_unused, index) =>
+    analysisRun(index, { ...(index === 0 ? { lastStatus: 'completed' as const } : {}), ...overrides }));
 }
 
 describe('enterprise acceptance load test helpers', () => {
@@ -203,8 +203,6 @@ describe('enterprise acceptance load test helpers', () => {
           queueLength: 0,
           workerRssBytes: 0,
           leaseRssBytes: 0,
-          llmCostUsd: 0,
-          llmCalls: 0,
         }),
       ],
       httpSamples: [
@@ -240,8 +238,6 @@ describe('enterprise acceptance load test helpers', () => {
           queueLength: null,
           workerRssBytes: null,
           leaseRssBytes: null,
-          llmCostUsd: null,
-          llmCalls: null,
         }),
       ],
       httpSamples: [
@@ -256,11 +252,10 @@ describe('enterprise acceptance load test helpers', () => {
       'trace-metadata-scale',
       'trace-id-access',
       'runtime-rss-and-queue-counters',
-      'runtime-llm-counters',
     ]);
   });
 
-  it('summarizes latency, error rate, run counts, queue, RSS, and LLM cost', () => {
+  it('summarizes latency, error rate, run counts, queue, RSS, and the daily run projection', () => {
     const statusSnapshots: AnalysisStatusSnapshot[] = [
       {
         timestamp: '2026-05-09T00:00:01.000Z',
@@ -295,16 +290,12 @@ describe('enterprise acceptance load test helpers', () => {
         queueLength: 4,
         workerRssBytes: 100,
         leaseRssBytes: 200,
-        llmCostUsd: 0.1,
-        llmCalls: 1,
       },
       {
         timestamp: '2026-05-09T00:00:02.000Z',
         queueLength: 9,
         workerRssBytes: 300,
         leaseRssBytes: 250,
-        llmCostUsd: 0.4,
-        llmCalls: 3,
       },
     ];
 
@@ -327,7 +318,8 @@ describe('enterprise acceptance load test helpers', () => {
 
     expect(summary.errorRate).toBe(0.2);
     expect(summary.scale.visibleTraceMetadataCount).toBe(1000);
-    expect(summary.scale.estimatedDailyLlmCalls).toBe(2880);
+    // One completed run in a one-minute window.
+    expect(summary.scale.estimatedDailyAnalysisRuns).toBe(1440);
     expect(summary.onlineUsers).toEqual({
       configured: 50,
       observed: 0,
@@ -349,13 +341,8 @@ describe('enterprise acceptance load test helpers', () => {
       maxWorkerRssBytes: 300,
       maxLeaseRssBytes: 250,
       preRunBaselineSampled: false,
-      initialLlmCostUsd: 0.1,
-      finalLlmCostUsd: 0.4,
-      initialLlmCalls: 1,
-      finalLlmCalls: 3,
-      llmCallDelta: 2,
     }));
-    expect(summary.runtime.llmCostDeltaUsd).toBeCloseTo(0.3);
+    expect(JSON.stringify(summary)).not.toMatch(/llm/i);
   });
 
   it('requires direct load metrics before acceptance can pass', () => {
@@ -382,9 +369,7 @@ describe('enterprise acceptance load test helpers', () => {
         'missing worker/lease RSS samples',
         'missing pre-run runtime baseline sample',
         'missing queue length samples',
-        'missing LLM cost sample',
-        'missing LLM call sample',
-        'estimated daily LLM calls < 200',
+        'estimated daily analysis runs < 200',
         'runtime dashboard was not sampled',
       ]),
     });
@@ -480,12 +465,9 @@ describe('enterprise acceptance load test helpers', () => {
     });
   });
 
-  it('requires all requested analysis runs to start and LLM call metrics to be present', () => {
+  it('requires all requested analysis runs to start', () => {
     const opts = options({ onlineUsers: 50 });
-    const runtimeSamples = [
-      runtimeSample({ timestamp: '2026-05-09T00:00:00.000Z', llmCalls: 0 }),
-      runtimeSample({ timestamp: '2026-05-09T00:00:01.000Z', llmCalls: 0 }),
-    ];
+    const runtimeSamples = passingRuntimeSamples();
     const summary = summarizeLoadTest({
       options: opts,
       httpSamples: passingHttpSamples(50),
@@ -536,8 +518,6 @@ describe('enterprise acceptance load test helpers', () => {
         'started analysis runs < requested target',
         'analysis start failures observed',
         'terminal analysis failures observed',
-        'LLM call count did not increase',
-        'estimated daily LLM calls < 200',
       ],
     });
   });
@@ -686,6 +666,7 @@ describe('enterprise acceptance load test helpers', () => {
     });
 
     expect(summary.analysis.terminal).toEqual({
+      completed: 1,
       failed: 1,
       error: 1,
       quota_exceeded: 1,
@@ -743,16 +724,13 @@ describe('enterprise acceptance load test helpers', () => {
     });
   });
 
-  it('requires LLM calls to increase during the load-test window', () => {
+  it('projects daily scale from runs that completed during the load-test window', () => {
     const opts = options({ onlineUsers: 50 });
-    const runtimeSamples = [
-      runtimeSample({ timestamp: '2026-05-09T00:00:00.000Z', llmCalls: 7 }),
-      runtimeSample({ timestamp: '2026-05-09T00:00:01.000Z', llmCalls: 7 }),
-    ];
+    const runtimeSamples = passingRuntimeSamples();
     const summary = summarizeLoadTest({
       options: opts,
       httpSamples: passingHttpSamples(50),
-      runs: analysisRuns(15),
+      runs: analysisRuns(15, { lastStatus: 'running' }),
       statusSnapshots: [
         {
           timestamp: '2026-05-09T00:00:01.000Z',
@@ -784,72 +762,10 @@ describe('enterprise acceptance load test helpers', () => {
       runtimeSamples,
     });
 
-    expect(summary.runtime).toEqual(expect.objectContaining({
-      initialLlmCalls: 7,
-      finalLlmCalls: 7,
-      llmCallDelta: 0,
-    }));
+    expect(summary.scale.estimatedDailyAnalysisRuns).toBe(0);
     expect(evaluateAcceptance(opts, summary, runtimeSamples)).toEqual({
       passed: false,
-      missing: [
-        'LLM call count did not increase',
-        'estimated daily LLM calls < 200',
-      ],
-    });
-  });
-
-  it('requires LLM cost delta to be measurable during the load-test window', () => {
-    const opts = options({ onlineUsers: 50 });
-    const runtimeSamples = [
-      runtimeSample({ timestamp: '2026-05-09T00:00:00.000Z', llmCostUsd: 1.2, llmCalls: 7 }),
-      runtimeSample({ timestamp: '2026-05-09T00:00:01.000Z', llmCostUsd: null, llmCalls: 8 }),
-    ];
-    const summary = summarizeLoadTest({
-      options: opts,
-      httpSamples: passingHttpSamples(50),
-      runs: analysisRuns(15),
-      statusSnapshots: [
-        {
-          timestamp: '2026-05-09T00:00:01.000Z',
-          counts: {
-            queued: 1,
-            pending: 1,
-            running: 5,
-            completed: 0,
-            failed: 0,
-            error: 0,
-            quota_exceeded: 0,
-            unknown: 0,
-          },
-        },
-        {
-          timestamp: '2026-05-09T00:00:02.000Z',
-          counts: {
-            queued: 0,
-            pending: 1,
-            running: 5,
-            completed: 1,
-            failed: 0,
-            error: 0,
-            quota_exceeded: 0,
-            unknown: 0,
-          },
-        },
-      ],
-      runtimeSamples,
-    });
-
-    expect(summary.runtime).toEqual(expect.objectContaining({
-      initialLlmCostUsd: 1.2,
-      finalLlmCostUsd: 1.2,
-      llmCostDeltaUsd: null,
-      initialLlmCalls: 7,
-      finalLlmCalls: 8,
-      llmCallDelta: 1,
-    }));
-    expect(evaluateAcceptance(opts, summary, runtimeSamples)).toEqual({
-      passed: false,
-      missing: ['missing LLM cost sample'],
+      missing: ['estimated daily analysis runs < 200'],
     });
   });
 
@@ -893,16 +809,12 @@ describe('enterprise acceptance load test helpers', () => {
           queueLength: 1,
           workerRssBytes: 128 * 1024 * 1024,
           leaseRssBytes: 64 * 1024 * 1024,
-          llmCostUsd: 0.75,
-          llmCalls: 3,
         }),
         runtimeSample({
           timestamp: '2026-05-09T00:00:01.000Z',
           queueLength: 3,
           workerRssBytes: 256 * 1024 * 1024,
           leaseRssBytes: 128 * 1024 * 1024,
-          llmCostUsd: 1.23,
-          llmCalls: 4,
         }),
       ],
     });
@@ -919,19 +831,15 @@ describe('enterprise acceptance load test helpers', () => {
     expect(markdown).toContain('| Queued/pending samples | 2 |');
     expect(markdown).toContain('| Pre-run runtime baseline | yes |');
     expect(markdown).toContain('| Max worker RSS | 256.0 MiB |');
-    expect(markdown).toContain('| Initial LLM cost | 0.75 |');
-    expect(markdown).toContain('| Final LLM cost | 1.23 |');
-    expect(markdown).toContain('| LLM cost delta | 0.48 |');
-    expect(markdown).toContain('| Initial LLM calls | 3 |');
-    expect(markdown).toContain('| Final LLM calls | 4 |');
-    expect(markdown).toContain('| LLM call delta | 1 |');
-    expect(markdown).toContain('| Estimated daily LLM calls | 1440 |');
+    expect(markdown).toContain('| Completed analysis runs | 1 |');
+    expect(markdown).toContain('| Estimated daily analysis runs | 1440 |');
+    expect(markdown).toContain('the runtime keeps no global model-call or cost counter');
     expect(markdown).toContain('## Online User Samples');
     expect(markdown).toContain('| online-user-050 | 1 | 0 | 1000 |');
     expect(markdown).toContain('## Status Snapshots');
     expect(markdown).toContain('| 2026-05-09T00:00:01.000Z | 1 | 1 | 5 | 0 | 0 | 0 | 0 | 0 |');
     expect(markdown).toContain('## Runtime Samples');
-    expect(markdown).toContain('| 2026-05-09T00:00:01.000Z | 3 | 256.0 MiB | 128.0 MiB | 1.23 | 4 |');
+    expect(markdown).toContain('| 2026-05-09T00:00:01.000Z | 3 | 256.0 MiB | 128.0 MiB |');
     expect(markdown).toContain('## Analysis Runs');
     expect(markdown).toContain('| load-user-015 | trace-a | session-15 | run-15 | 200 | running |  |');
   });

@@ -12,19 +12,12 @@
 import type { BackendAgentRuntimeKind } from '../agentRuntime/runtimeSelection';
 import type { SessionLineage } from '../agentv3/sessionStateSnapshot';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
-import type {
-  CaptureConfigRenderOptions,
-  CapturePresetId,
-  CaptureTarget,
-} from '../services/traceCaptureConfig';
+import type { CapturePresetId } from '../services/traceCaptureConfig';
+import type {RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
 export type CliAnalysisMode = 'fast' | 'full' | 'auto';
 
-export type {
-  CaptureConfigRenderOptions,
-  CapturePresetId,
-  CaptureTarget,
-};
+export type { CapturePresetId };
 
 export interface CaptureToolResolution {
   name: 'adb' | 'tracebox';
@@ -95,8 +88,6 @@ export interface CliSessionConfig {
   agentRuntimeKind?: BackendAgentRuntimeKind;
   /** Non-secret provider/runtime snapshot hash captured for diagnostics. */
   providerSnapshotHash?: string | null;
-  /** SDK session id for Claude Agent SDK context resume (agentv3 only). */
-  sdkSessionId?: string;
   /** Claude model actually used — preserved for consistency across resumes. */
   model?: string;
   /** Code-aware mode selected for this analysis turn, if any. */
@@ -105,6 +96,8 @@ export interface CliSessionConfig {
   codebaseIds?: string[];
   /** Registered private knowledge source ids exposed to this analysis turn. */
   knowledgeSourceIds?: string[];
+  /** Requested source depth (`--source-depth`), kept for later turns. */
+  sourceDepth?: RequestedSourceDepth;
   /** Analysis mode selected for the latest turn. */
   analysisMode?: CliAnalysisMode;
   /** Capture metadata when the session was created by `smp capture ... --analyze`. */

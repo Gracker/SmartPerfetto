@@ -40,36 +40,6 @@ keywords:
   - codec2
   - omx
 
-phase_hints:
-  - id: codec_activity
-    keywords: ['MediaCodec', 'Codec2', 'OMX', 'decoder', 'encoder', '解码', '编码', '视频卡顿']
-    constraints: '优先调用 media_codec_activity 检查 codec/buffer 事件。该 skill 基于 slice 信号；缺 codec trace 时必须标注数据不足。'
-    critical_tools: ['media_codec_activity']
-    critical: true
-  - id: media_rendering_power
-    keywords: ['frame', 'gpu', 'power', '掉帧', '功耗', 'work period']
-    constraints: '视频/媒体卡顿需要结合 frame/GL/GPU/power 证据：必要时调用 scrolling_analysis、gl_standalone_swap_jank、android_gpu_work_period_track、power_consumption_overview。'
-    critical_tools: ['media_codec_activity', 'gl_standalone_swap_jank', 'android_gpu_work_period_track', 'power_consumption_overview']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: codec_activity
-      match_keywords: ['media_codec_activity', 'MediaCodec', 'Codec2', 'OMX', '解码', '编码']
-      suggestion: '媒体场景必须检查 codec/buffer 活动或明确说明 trace 缺少媒体信号'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: media_codec_activity
-    - id: render_or_power_context
-      match_keywords: ['gl_standalone_swap_jank', 'android_gpu_work_period_track', 'power_consumption_overview', 'frame', 'gpu', '功耗']
-      suggestion: '媒体卡顿/耗电问题需要补充渲染、GPU 或功耗上下文'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: gl_standalone_swap_jank
-        - tool: invoke_skill
-          skill_id: android_gpu_work_period_track
-        - tool: invoke_skill
-          skill_id: power_consumption_overview
 ---
 
 #### media Core Strategy

@@ -24,14 +24,18 @@ import {bindCapturedAnchorFacts, captureEvidenceTable} from '../../services/evid
 import type {EvidenceAnchorV1} from '../../types/evidenceContract';
 import fs from 'fs';
 import path from 'path';
-import {loadSourceUseDecisionPrompt, loadSourceUseDecisionToolDescription} from '../../services/codebase/sourceUseDecision';
+import {loadSourceUsePrompt} from '../../services/codebase/sourceUseDecision';
+import {buildSceneEvidencePromptData, SCENE_EVIDENCE_MAX_BYTES, SCENE_EVIDENCE_MAX_CELLS} from '../../agentRuntime/sceneEntryEvidence';
+import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
+import {MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS} from '../../services/codebase/codeAwareFeature';
 
 describe('typed prompt with real strategy assets', () => {
   it.each(['startup', 'scrolling'] as const)('fits real typed %s comparison reports without trimming evidence obligations', sceneType => {
     const parts = buildSystemPromptParts(makeWorstCaseContext(sceneType));
     expect(MAX_PROMPT_TOKENS).toBe(16_000);
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
-    expect(parts.droppedLabels).toEqual([]);
+    // The default detail body is the most expendable segment; its title stays listed.
+    expect(parts.droppedLabels).toEqual(['scene_default_detail']);
     expect(parts.truncatedLabels).toEqual([]);
     for (const label of ['turn_protocol', 'comparison_identity', 'selection_context', 'investigation_requirements',
       'investigation_findings', 'report_requirements', 'conclusion_declaration', 'sql_discovery_guidance']) {
@@ -44,13 +48,142 @@ describe('typed prompt with real strategy assets', () => {
       truncatedLabels: parts.truncatedLabels}));
   });
 
-  it.each(['zh-CN', 'en'] as const)('allows authorized source quotations in the actual %s prompt and tool description', outputLanguage => {
-    const input = {codeAwareMode: 'provider_send' as const, codebaseIds: ['selected-source'], outputLanguage};
-    for (const text of [loadSourceUseDecisionPrompt(input), loadSourceUseDecisionToolDescription(input)]) {
-      expect(text).toContain('Owner may quote authorized source; no secrets/root.');
-      expect(text).not.toContain('no echo code');
+  it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
+    (['zh-CN', 'en'] as const).flatMap(outputLanguage =>
+      [1, MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS].map(sourceCount => ({sceneType, outputLanguage, sourceCount})))))
+  ('keeps $sourceCount selected bases in real $sceneType $outputLanguage comparison reports', ({sceneType, outputLanguage, sourceCount}) => {
+    const context = makeWorstCaseContext(sceneType);
+    context.outputLanguage = outputLanguage;
+    // The maximum legal selection, with the longest names/descriptions the prompt allows.
+    context.sourceAuthorization = {...(context.sourceAuthorization ?? {codebases: []}), knowledgeAuthorization: {
+      knowledgeBases: Array.from({length: sourceCount}, (_, index) => ({id: `eks_${index.toString(16).padStart(24, '0')}`, displayName: '团队渲染框架'.repeat(11).slice(0, 64),
+        description: '内部渲染框架、trace tag 与已知问题说明。'.repeat(12).slice(0, 120),
+        kind: 'document_collection' as const, activeIndex: true})),
+    }};
+    const parts = buildSystemPromptParts(context);
+    const plain = buildSystemPromptParts(makeWorstCaseContext(sceneType));
+    console.info('[TypedPromptTokenGate:knowledge]', JSON.stringify({sceneType, budget: MAX_PROMPT_TOKENS,
+      tokens: estimatePromptTokens(parts.fullPrompt), plainTokens: estimatePromptTokens(plain.fullPrompt),
+      knowledgeTokens: parts.segments.filter(segment => ['knowledge_authorization', 'knowledge_use'].includes(segment.label))
+        .map(segment => [segment.label, segment.estimatedTokens]),
+      droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels,
+      droppedTokens: plain.segments.filter(segment => parts.droppedLabels.includes(segment.label))
+        .map(segment => [segment.label, segment.tier, segment.estimatedTokens])}));
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    for (const label of ['turn_protocol', 'comparison_identity', 'selection_context', 'investigation_requirements',
+      'investigation_findings', 'report_requirements', 'conclusion_declaration', 'sql_discovery_guidance',
+      'trace_context', 'trace_completeness', 'focus_app_guidance']) {
+      expect(parts.segments.some(segment => segment.label === label)).toBe(true);
     }
-    expect(loadSourceUseDecisionPrompt(input)).toContain('exclude secrets, registered absolute roots and unauthorized content');
+    expect(parts.droppedLabels).not.toContain('knowledge_use');
+    expect(parts.droppedLabels).not.toContain('knowledge_authorization');
+    for (const label of ['knowledge_authorization', 'knowledge_use']) {
+      expect(parts.segments.find(segment => segment.label === label))
+        .toMatchObject({droppable: false, truncatable: false});
+    }
+    const selected = JSON.parse(parts.segments.find(segment => segment.label === 'knowledge_authorization')!.content);
+    expect(selected.data.knowledgeBases.map(({id, kind, activeIndex}: {id: string; kind: string; activeIndex: boolean}) => ({id, kind, activeIndex})))
+      .toEqual(context.sourceAuthorization.knowledgeAuthorization!.knowledgeBases.map(({id, kind, activeIndex}) => ({id, kind, activeIndex})));
+    for (const label of parts.truncatedLabels) {
+      if (label === 'knowledge_authorization') {
+        expect(selected.data.metadataOmitted).toBe(true);
+      } else {
+        expect(['conversation_context', 'runtime_evidence']).toContain(label);
+        expect(parts.segments.find(segment => segment.label === label)?.content).toContain('"truncated":true');
+      }
+    }
+  });
+
+  it.each(['startup', 'scrolling'] as const)('fits a %s scene-wide investigation report with bound-sized scene evidence', sceneType => {
+    const base = makeWorstCaseContext(sceneType);
+    const evidence = buildSceneEvidencePromptData({status: 'ran', skillId: `${sceneType}_analysis`,
+      identity: {packageName: 'com.example.smartperfetto.demo', processName: 'com.example.smartperfetto.demo', upid: 100},
+      artifacts: Array.from({length: 4}, (_, index) => ({artifactId: `art-${index + 1}`,
+        evidenceRefId: `data:skill:${sceneType}_analysis:overview_${index}:current:0123456789ab:0123456789ab:01234567`,
+        stepId: `overview_${index}`, rowCount: 1})),
+      artifactIdRange: {first: 'art-1', last: 'art-40'},
+      keyCells: Array.from({length: 40}, (_, index) => ({artifactId: 'art-1', rowIndex: 0,
+        column: `overview_metric_${index}`, value: 12345.678, unit: 'ms'})),
+      summaryCells: [], artifactCount: 40, captureCount: 40, durationMs: 4000})!;
+    const context: ClaudeAnalysisContext = {...base, comparison: undefined, sceneEvidence: evidence,
+      turnIntent: {...base.turnIntent!, taskKind: 'investigation'}};
+    const parts = buildSystemPromptParts(context);
+    console.info('[TypedPromptTokenGate:scene_evidence]', JSON.stringify({sceneType, budget: MAX_PROMPT_TOKENS,
+      tokens: estimatePromptTokens(parts.fullPrompt), droppedLabels: parts.droppedLabels}));
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    expect(parts.droppedLabels).toEqual(['scene_default_detail']);
+    expect(parts.truncatedLabels).toEqual([]);
+    const segment = parts.segments.find(candidate => candidate.label === 'scene_evidence')!;
+    expect(segment).toMatchObject({tier: 2, droppable: false});
+    const json = segment.content.slice(segment.content.indexOf('{"context":"scene_evidence"'));
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    expect(JSON.parse(json).data.cells.key.length).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_CELLS);
+    expect(segment.content).toContain('fetch_artifact');
+  });
+
+  it('renders the default detail body of a resolved investigation when the budget allows', () => {
+    const registry = buildStrategyRegistrySnapshotFromDefinitions({
+      definitions: getRegisteredScenes(), overlayGeneration: 'default-detail-test',
+    });
+    const intent = {schemaVersion: 1 as const, status: 'resolved' as const, source: 'semantic' as const,
+      taskKind: 'investigation' as const, sceneId: 'scrolling', scope: 'scene_wide' as const,
+      recommendedComplexity: 'full' as const, deliverable: 'answer' as const, evidenceAccess: 'read_new' as const,
+      registryFingerprint: registry.registryFingerprint};
+    const parts = buildSystemPromptParts({query: '分析滑动卡顿', strategyRegistry: registry, turnIntent: intent});
+    const detail = registry.getStrategy('scrolling')!.detailSections.find(section => section.default)!;
+    const segment = parts.segments.find(candidate => candidate.label === 'scene_default_detail');
+    expect(segment).toMatchObject({tier: 3, droppable: true});
+    expect(segment!.content).toContain(`"detailRef":"${detail.ref}"`);
+    expect(segment!.content).toContain(stripTemplateComments(detail.content).slice(0, 200));
+    expect(parts.droppedLabels).toEqual([]);
+    // Not for a fact question, and never without a resolved scene.
+    for (const changed of [{taskKind: 'fact' as const}, {status: 'unavailable' as const}]) {
+      expect(buildSystemPromptParts({query: 'q', strategyRegistry: registry, turnIntent: {...intent, ...changed}})
+        .segments.some(candidate => candidate.label === 'scene_default_detail')).toBe(false);
+    }
+  });
+
+  it('keeps both knowledge segments when the budget allows', () => {
+    const context = makeWorstCaseContext('startup');
+    context.sourceAuthorization = {...(context.sourceAuthorization ?? {codebases: []}), knowledgeAuthorization: {
+      knowledgeBases: [{id: `eks_${'a'.repeat(24)}`, displayName: 'Render notes', kind: 'document_collection', activeIndex: true}],
+    }};
+    const labels = buildSystemPromptParts({...context, comparison: undefined}).segments.map(segment => segment.label);
+    expect(labels).toEqual(expect.arrayContaining(['knowledge_authorization', 'knowledge_use']));
+  });
+
+  it.each(['startup', 'scrolling'] as const)('spends no %s prompt budget on the shadow capability manifest', sceneType => {
+    const plain = buildSystemPromptParts(makeWorstCaseContext(sceneType));
+    const context = makeWorstCaseContext(sceneType);
+    // A ready manifest the size the probe really attaches: every capability again, plus identities.
+    context.traceCompleteness = {...context.traceCompleteness!, capabilityManifestResolution: {
+      status: 'ready',
+      manifest: {
+        content: {schemaVersion: 'capability_manifest@1',
+          traceProcessor: {source: 'bundled', gitRevision: 'b'.repeat(40)},
+          trace: {fingerprintSha256: 'a'.repeat(64), fingerprintKind: 'trace_bytes_sha256', traceSide: 'current'},
+          capabilities: Array.from({length: 24}, (_, index) => ({id: `capability_${index}`, status: 'available',
+            evidence: {primaryTable: `table_${index}`, rowEstimate: index, contentHash: 'd'.repeat(64)}}))},
+        provenance: {traceId: 'trace-1', processorKey: 'processor-1', leaseId: 'lease-1',
+          rpcEndpoint: 'http://127.0.0.1:9731', diagnosedAt: 1, generatedAt: 2},
+        manifestId: `capability_manifest:${'c'.repeat(64)}`, contentHash: 'c'.repeat(64),
+      },
+    } as any};
+    const withManifest = buildSystemPromptParts(context);
+    expect(withManifest.fullPrompt).toBe(plain.fullPrompt);
+    expect(estimatePromptTokens(withManifest.fullPrompt)).toBe(estimatePromptTokens(plain.fullPrompt));
+    expect(withManifest.droppedLabels).toEqual(plain.droppedLabels);
+  });
+
+  it.each(['zh-CN', 'en'] as const)('allows authorized source quotations in the actual %s source guidance', outputLanguage => {
+    const text = loadSourceUsePrompt({codeAwareMode: 'provider_send', codebaseIds: ['selected-source'], outputLanguage});
+    expect(text).toContain(outputLanguage === 'en'
+      ? 'The owner may quote authorized source'
+      : 'owner 可引用已授权源码');
+    expect(text).toContain(outputLanguage === 'en'
+      ? 'exclude secrets, registered absolute roots and unauthorized content'
+      : '不得包含凭据、已注册的绝对根路径和未授权内容');
+    expect(text).not.toContain('no echo code');
   });
   it.each(['zh-CN', 'en'] as const)('keeps owner source and private knowledge boundaries in full %s prompts', outputLanguage => {
     const registry = buildStrategyRegistrySnapshotFromDefinitions({
@@ -69,9 +202,9 @@ describe('typed prompt with real strategy assets', () => {
     expect(boundary?.content).toContain('Corroborate them with trace');
     const promptsWithRetrievalBoundary = [parts.fullPrompt, buildQuickSystemPrompt(context)];
     for (const prompt of promptsWithRetrievalBoundary) {
-      expect(prompt).toContain('Owner output may quote authorized source');
+      expect(prompt).toContain('Expose authorized private source and knowledge only to its owner');
       for (const protectedContent of ['secrets', 'private canaries', 'absolute roots',
-        'unauthorized source', 'private Wiki text']) {
+        'unauthorized content']) {
         expect(prompt).toContain(protectedContent);
       }
       expect(prompt).not.toContain('Never quote or reproduce private source');
@@ -80,7 +213,7 @@ describe('typed prompt with real strategy assets', () => {
   });
 
   it('parses the source example with a binding to its own declared proposition', () => {
-    const template = stripTemplateComments(loadPromptTemplate('prompt-source-finding-binding')!);
+    const template = stripTemplateComments(loadPromptTemplate('prompt-source-recipe-mechanism')!);
     const example = JSON.parse(template.match(/^```json\n([\s\S]*?)\n```$/m)![1]);
     example.sourceClaimBindings[0].sourceReferenceIds = ['source-ref-current-run'];
     const parsed = parseConclusionContractSidecar(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\n${JSON.stringify({
@@ -90,7 +223,7 @@ describe('typed prompt with real strategy assets', () => {
     expect(parsed.status).toBe('valid');
     const claim = parsed.contract!.claims![0];
     expect(claim.semantics).toMatchObject({discourse: 'hypothetical', modality: 'possible'});
-    expect(parsed.contract!.sourceClaimBindings).toEqual([{claimId: claim.id, mechanismStatus: 'compatible',
+    expect(parsed.contract!.sourceClaimBindings).toEqual([{claimId: claim.id,
       sourceReferenceIds: ['source-ref-current-run'], traceEvidenceRefIds: []}]);
     expect(claim.references).toEqual([]);
     const proof = runDeterministicClaimVerifier({claimSupport: [{claimId: claim.id!, kind: claim.kind!,
@@ -99,7 +232,7 @@ describe('typed prompt with real strategy assets', () => {
     expect(proof.claimResults[0].deterministicProof.status).not.toBe('proved');
   });
 
-  it('binds the actual numeric declaration example to captured evidence and rejects a different value', () => {
+  it('binds both actual declaration examples only to issued captured facts and rejects changed or wrongly typed values', () => {
     const template = stripTemplateComments(loadPromptTemplate('prompt-conclusion-contract-schema')!);
     expect(template).toContain('References retain exact raw cell values and native row IDs');
     expect(template).toContain('an explicitly marked fixed-decimal approximation');
@@ -107,41 +240,52 @@ describe('typed prompt with real strategy assets', () => {
     expect(template).toContain('Allowed unit conversions only:');
     expect(template).toContain('other units must match verbatim');
     expect(template).not.toContain('`-` display is not null');
-    expect(template).toContain('never infer, narrow or extend its returned range');
+    // Source locations are judged from the run's references, not declared.
+    expect(template).not.toContain('source.location');
     expect(template).toContain('Every `evidenceChain` item requires string `conclusionId` and `text`');
     expect(template).toContain('require that same claim to own the Trace reference');
     expect(template).toContain('For successful empty results, cite only their emitted IDs; omit rowIndex/rowSelector/column/value (no row 0).');
     const examples = [...template.matchAll(/^```json\n([\s\S]*?)\n```$/gm)]
       .filter(match => !match[1].includes('{{'))
       .map(match => JSON.parse(match[1]));
-    const example = examples.find(value => value.kind === 'numeric');
-    expect(example).toBeDefined();
-    const parsed = parseConclusionContractSidecar(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\n${JSON.stringify({
-      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
-      conclusions: [], clusters: [], evidenceChain: [], claims: [example],
-      relationProposals: [], uncertainties: [], nextSteps: [],
-    })}\n\`\`\`\n-->`);
+    const example = examples.find(value => value.schemaVersion === 'conclusion_contract_v1');
+    const numeric = example.claims[0].semantics.numeric;
+    expect(numeric).toMatchObject({operator: 'eq', value: 7.123456, unit: 'ms', presentation: {
+      decimalPlaces: 1, rounding: 'half_away_from_zero', quotes: [{text: '7.1 ms'}]}});
+    // Verify the complete rendered example; the harness must not supply missing
+    // numeric/scope/reference fields the model would also have to guess.
+    const parsed = parseConclusionContractSidecar(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\n${JSON.stringify(example)}\n\`\`\`\n-->`);
     expect(parsed.status).toBe('valid');
     expect(parsed.bindingEligibility).toBe('eligible');
-    const claim = parsed.contract!.claims![0];
-    const ref = claim.references[0];
-    expect(claim.semantics!.scope.subjectRefs).toEqual([ref]);
-    const anchor: EvidenceAnchorV1 = {
-      version: 'evidence_contract@1', anchorId: 'anchor:template-example', evidenceRefId: ref.evidenceRefId!,
-      context: {traceId: 'trace-template-example', traceSide: 'current', producerKind: 'invoke_skill'},
-      cells: [{column: ref.column!, rowIndex: ref.rowIndex!, value: ref.value}],
-    };
-    bindCapturedAnchorFacts(anchor, captureEvidenceTable({columns: [ref.column!], rows: [{[ref.column!]: ref.value!}]}, {
-      [ref.column!]: {unit: 'ms', origin: {kind: 'skill_literal', skillId: 'example', stepId: 'metric',
-        definitionFingerprint: 'template-example-capture'}},
-    }), 0);
-    const support = {claimId: claim.id!, kind: claim.kind!, text: claim.text, semantics: claim.semantics,
-      anchors: [anchor], bindingEligibility: parsed.bindingEligibility, supportLevel: 'partial' as const};
-    expect(runDeterministicClaimVerifier({claimSupport: [support]}).claimResults[0].deterministicProof.status).toBe('proved');
-    expect(runDeterministicClaimVerifier({claimSupport: [{...support, anchors: []}]}).passed).toBe(false);
-    expect(runDeterministicClaimVerifier({claimSupport: [{...support, semantics: {...claim.semantics!,
-      numeric: {...claim.semantics!.numeric!, value: 99}},
-    }]}).claimResults[0].deterministicProof.status).toBe('rejected');
+    const claims = parsed.contract!.claims!;
+    expect(claims.map(claim => claim.semantics?.predicate)).toEqual(['numeric.cell', 'captured.cell']);
+    for (const claim of claims) {
+      const ref = claim.references[0];
+      expect(claim.semantics!.scope.subjectRefs).toEqual([ref]);
+      const anchor: EvidenceAnchorV1 = {
+        version: 'evidence_contract@1', anchorId: `anchor:template-${claim.id}`, evidenceRefId: ref.evidenceRefId!,
+        context: {traceId: 'trace-template-example', traceSide: 'current', producerKind: 'invoke_skill'},
+        cells: [{column: ref.column!, rowIndex: ref.rowIndex!, value: ref.value}],
+      };
+      const support = {claimId: claim.id!, kind: claim.kind!, text: claim.text, semantics: claim.semantics,
+        anchors: [anchor], bindingEligibility: parsed.bindingEligibility, supportLevel: 'partial' as const};
+      const verify = (input = support) => runDeterministicClaimVerifier({claimSupport: [input]}).claimResults[0].deterministicProof;
+      expect(verify().status).not.toBe('proved'); // Model-owned lookalike cells alone are not capture facts.
+      bindCapturedAnchorFacts(anchor, captureEvidenceTable({columns: [ref.column!], rows: [{[ref.column!]: ref.value}]}, {
+        ...(claim.kind === 'numeric' ? {[ref.column!]: {unit: 'ms', origin: {kind: 'skill_literal' as const,
+          skillId: 'example', stepId: 'metric', definitionFingerprint: 'template-example-capture'}}} : {}),
+      }), 0);
+      expect(verify().status).toBe('proved');
+      expect(verify({...support, anchors: []}).status).not.toBe('proved');
+      expect(verify({...support, semantics: {...claim.semantics!, scope: {population: 'cited_rows'}}}).status).not.toBe('proved');
+      if (claim.kind === 'numeric') {
+        expect(verify({...support, semantics: {...claim.semantics!,
+          numeric: {...claim.semantics!.numeric!, value: 'not-a-number'}}}).status).not.toBe('proved');
+        expect(verify({...support, semantics: {...claim.semantics!,
+          numeric: {...claim.semantics!.numeric!, value: 99}}}).status).toBe('rejected');
+      } else expect(verify({...support, semantics: {...claim.semantics!, scope: {...claim.semantics!.scope,
+        subjectRefs: [{...ref, value: 1}]}}}).status).not.toBe('proved');
+    }
   });
 
   it('keeps startup system conclusions scoped to each covered dimension', () => {
@@ -178,9 +322,9 @@ describe('typed prompt with real strategy assets', () => {
           intent: context.turnIntent, strategyRegistry: registry,
         }));
         expect(requirementSegment).toMatchObject({droppable: false, truncatable: false});
-        expect(parts.segments.find(segment => segment.label === 'source_use_decision')).toBeUndefined();
+        expect(parts.segments.find(segment => segment.label === 'source_use')).toBeUndefined();
         expect(JSON.parse(parts.segments.find(segment => segment.label === 'source_authorization')!.content).data)
-          .toEqual({mode: 'off', codebaseIds: [], evidenceAccess: 'existing_only'});
+          .toEqual({mode: 'off', evidenceAccess: 'existing_only', codebases: []});
         expect(JSON.parse(parts.segments.find(segment => segment.label === 'selection_context')!.content).data)
           .toEqual(context.selectionContext);
         const turnProtocol = parts.segments.find(segment => segment.label === 'turn_protocol')!.content;
@@ -236,15 +380,18 @@ describe('typed prompt with real strategy assets', () => {
       expect(parsed.contract?.evidenceChain).toEqual([{conclusionId: expect.any(String), text: expect.any(String)}]);
       expect(parsed.contract?.uncertainties).toEqual([expect.any(String)]);
       expect(parsed.contract?.nextSteps).toEqual([expect.any(String)]);
-      expect(parsed.contract?.claims).toEqual([{id: expect.any(String), text: expect.any(String), kind: 'inference', references: [],
-        semantics: {schemaVersion: 'claim_semantics@1', predicate: 'example.hypothesis', polarity: 'affirmed',
-          discourse: 'hypothetical', quantifier: 'one', modality: 'possible', scope: {population: 'selected_interval'}}}]);
-      const sampleClaim = parsed.contract!.claims![0];
-      const sampleProof = runDeterministicClaimVerifier({claimSupport: [{claimId: sampleClaim.id!,
-        kind: 'inference', text: sampleClaim.text, semantics: sampleClaim.semantics,
-        bindingEligibility: 'eligible', anchors: [], supportLevel: 'partial'}]});
+      expect(parsed.contract?.claims).toHaveLength(2);
+      expect(parsed.contract?.claims?.[0]).toMatchObject({id: expect.any(String), text: expect.any(String), kind: 'numeric',
+        semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+          discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}}});
+      const samples = parsed.contract!.claims!;
+      expect(samples[1]).toMatchObject({kind: 'categorical', semantics: {predicate: 'captured.cell'}});
+      for (const sample of samples) expect(sample.semantics?.scope.subjectRefs).toEqual(sample.references);
+      const sampleProof = runDeterministicClaimVerifier({claimSupport: samples.map(sampleClaim => ({claimId: sampleClaim.id!,
+        kind: sampleClaim.kind!, text: sampleClaim.text, semantics: sampleClaim.semantics,
+        bindingEligibility: 'eligible', anchors: [], supportLevel: 'partial'}))});
       expect(sampleProof.passed).toBe(false);
-      expect(sampleProof.claimResults[0].deterministicProof.status).not.toBe('proved');
+      for (const sample of sampleProof.claimResults) expect(sample.deterministicProof.status).not.toBe('proved');
       const jsonBlocks = [...declaration.content.matchAll(/^```json\n([\s\S]*?)\n```$/gm)]
         .map(match => JSON.parse(match[1]));
       expect(jsonBlocks.filter(Array.isArray)).toEqual([SUPPORTED_DETERMINISTIC_CLAIM_RULES]);
@@ -302,7 +449,9 @@ describe('typed prompt with real strategy assets', () => {
           evidenceAccess: 'existing_only', registryFingerprint: registry.registryFingerprint},
         codeAwareMode: 'provider_send', codebaseIds: ['selected-app']});
       expect(parts.segments.some(segment => ['scene_strategy_details', 'investigation_findings',
-        'investigation_requirements', 'source_finding_binding'].includes(segment.label))).toBe(false);
+        'investigation_requirements'].includes(segment.label))).toBe(false);
+      // A factual turn may still ask where something is implemented: it gets the locate recipe only.
+      expect(parts.segments.find(segment => segment.label === 'source_recipe')?.content).toContain('locate depth');
     }
   });
 
@@ -316,7 +465,7 @@ describe('typed prompt with real strategy assets', () => {
         evidenceAccess: 'read_new', registryFingerprint: registry.registryFingerprint, unavailableReason: 'timeout'},
       codeAwareMode: 'provider_send', codebaseIds: ['selected-app']});
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
-    for (const label of ['investigation_findings', 'source_finding_binding']) {
+    for (const label of ['investigation_findings', 'source_recipe']) {
       expect(parts.segments.find(segment => segment.label === label))
         .toMatchObject({droppable: false, truncatable: false});
     }
@@ -338,12 +487,14 @@ describe('typed prompt with real strategy assets', () => {
           sceneId: scene.scene, scope: 'scene_wide', recommendedComplexity: 'full', deliverable: 'report',
           evidenceAccess: 'read_new', registryFingerprint: registry.registryFingerprint},
         codeAwareMode: 'provider_send', codebaseIds: ['selected-app'],
+        sourceAuthorization: {codebases: [], depth: 'mechanism'},
         selectionContext: {kind: 'area', startNs: 10, endNs: 20, tracks: [{uri: 'main', upid: 42}]},
         comparison: {referenceTraceId: 'reference', commonCapabilities: [], capabilityProbeStatus: 'not_checked'}});
       expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
-      expect(parts.droppedLabels).toEqual([]);
+      // Only the default detail body may give way; its title stays in scene_strategy_details.
+      expect(parts.droppedLabels.filter(label => label !== 'scene_default_detail')).toEqual([]);
       for (const label of ['investigation_requirements', 'investigation_findings', 'scene_strategy_details',
-        'selection_context', 'comparison_identity', 'source_use_decision', 'source_finding_binding']) {
+        'selection_context', 'comparison_identity', 'source_use', 'source_recipe']) {
         expect(parts.segments.some(segment => segment.label === label)).toBe(true);
       }
       const findings = parts.segments.find(segment => segment.label === 'investigation_findings')!;
@@ -354,7 +505,7 @@ describe('typed prompt with real strategy assets', () => {
       expect(findings.content).toContain('never broader\nevent/mechanism absence');
       expect(findings.content).toContain('including support/limitation facts');
       expect(findings.content).toContain('omit propositions to save budget');
-      const sourceBinding = parts.segments.find(segment => segment.label === 'source_finding_binding')!;
+      const sourceBinding = parts.segments.find(segment => segment.label === 'source_recipe')!;
       expect(sourceBinding.content).toContain("does not prove an observed wait's origin");
       expect(sourceBinding.content).toContain('connection and remedy conditional');
       expect(sourceBinding.content).toContain('does not make\nthe full wait recoverable time');
@@ -518,6 +669,26 @@ function makePlan(index: number): AnalysisPlanV3 {
   };
 }
 
+function makeWorstCaseFocusTarget(primary: string) {
+  const signals = (scale: number) => ({batteryTopNs: 12_600_000_000 * scale, launchCount: 1,
+    frameCount: Math.round(739 * scale), foregroundNs: 12_707_187_235 * scale, runningNs: 2_253_386_439 * scale,
+    mainThreadRunningNs: 1_723_137_953 * scale, threadSliceCount: Math.round(54_842 * scale)});
+  return resolveFocusAppTarget({focusResult: {
+    method: 'battery_stats', confidence: 'high', primaryApp: primary,
+    apps: [primary, 'com.example.secondary.app', 'com.example.tertiary.app:remote',
+      'com.vendor.persistent.service', 'com.example.background.sync'].map((packageName, index) => ({
+      packageName: packageName.split(':')[0], processName: packageName, pid: 10_000 + index, upid: 100 + index,
+      totalDurationNs: 12_600_000_000, switchCount: 3, score: 194.58 / (index + 1),
+      signals: signals(1 / (index + 1)), penalties: index >= 2 ? ['system_uid' as const, 'subprocess' as const] : [],
+    })),
+    excludedNoActivity: Array.from({length: 5}, (_, index) => ({
+      packageName: `com.vendor.persistent.idle${index}`, processName: `com.vendor.persistent.idle${index}`,
+      upid: 500 + index, pid: 2_000 + index, reason: 'no_activity' as const, foregroundNs: 19_000_000_000,
+      maxOomScore: -800,
+    })),
+  }});
+}
+
 function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysisContext {
   const registry = buildStrategyRegistrySnapshotFromDefinitions({
     definitions: getRegisteredScenes(), overlayGeneration: 'typed-worst-case-test',
@@ -532,12 +703,14 @@ function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysi
       : '分析这个 Flutter 滑动卡顿的根因，并对比参考 trace，结合源码线索给出建议',
     sceneType,
     architecture: makeArchitecture(),
+    // Worst case for the focus block: an inferred package, five ranked
+    // candidates with every signal, five no-activity exclusions and the
+    // issued evidence locator of the current side.
     packageName: 'com.example.smartperfetto.demo',
-    focusApps: [
-      { packageName: 'com.example.smartperfetto.demo', totalDurationNs: 8_500_000_000, switchCount: 180 },
-      { packageName: 'com.android.systemui', totalDurationNs: 1_100_000_000, switchCount: 12 },
-    ],
-    focusMethod: 'frame_timeline',
+    focusTarget: {...makeWorstCaseFocusTarget('com.example.smartperfetto.demo'), evidence: {
+      evidenceRefId: 'data:focus_app:current:0123456789ab', sourceToolCallId: 'runtime-focus-app:0123456789ab',
+      rowIndex: 0, row: {package_name: 'com.example.smartperfetto.demo', detection_method: 'battery_stats',
+        detection_confidence: 'high'}}},
     traceCompleteness: makeTraceCompleteness(),
     selectionContext: {
       kind: 'area',
@@ -556,6 +729,7 @@ function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysi
     comparison: {
       referenceTraceId: 'trace-reference-token-baseline',
       referencePackageName: 'com.example.smartperfetto.demo',
+      referenceFocusTarget: makeWorstCaseFocusTarget('com.example.smartperfetto.demo'),
       referenceArchitecture: { type: 'STANDARD', confidence: 0.82, evidence: [] },
       commonCapabilities: ['frame_timeline', 'startup', 'cpu_scheduling', 'binder_ipc'],
       capabilityDiff: {
@@ -643,14 +817,6 @@ describe('developer comments never reach the model', () => {
 
     expect(stripped).toBe('## 输出格式\n\n- rule one\n\n- rule two');
     expect(stripped).not.toContain('SPDX');
-  });
-
-  it('leaves marker-bearing content to its own loader, which runs first', () => {
-    // The source-use loader extracts <!-- tool-description:* --> before the
-    // text becomes a segment, so stripping at assembly cannot break it.
-    const toolDescription = loadPromptTemplate('prompt-source-use-decision-zh');
-    expect(toolDescription).toContain('tool-description:start');
-    expect(stripTemplateComments(toolDescription ?? '')).not.toContain('tool-description:start');
   });
 
   it('removes authoring comments while preserving the machine-readable sidecar marker', () => {

@@ -27,6 +27,40 @@ describe('CLI renderer', () => {
     expect(output).toMatch(/部分结果|partial result/);
     expect(output).toContain('/api/agent/v1/scene-reconstruct/report/scene-v3-cli');
   });
+  test('text prints the provisional answer at once and the verdict later without repeating the body', () => {
+    const output = captureStdout(() => {
+      const renderer = createRenderer({verbose: false, useColor: false, format: 'text'});
+      renderer.printProvisionalConclusion?.('Answer body line.');
+      renderer.printConclusion('Answer body line.', {claimVerification: {status: 'partial', totalClaimCount: 1,
+        verifiedClaimCount: 0, notCheckedReason: 'cancelled_by_user'}});
+      renderer.printCompletion({sessionId: 's', sessionDir: '/tmp/s', reportPath: '/tmp/s/report.html',
+        deliveryVerdict: 'unverified'});
+    });
+    expect(output.split('Answer body line.')).toHaveLength(2);
+    expect(output.indexOf('Answer body line.')).toBeLessThan(output.indexOf('已按用户要求停止语义复核'));
+    expect(output).toMatch(/正在核验|verification in progress/);
+    expect(output).toContain('~ session');
+  });
+
+  test('text reprints a body that changed after the provisional answer', () => {
+    const output = captureStdout(() => {
+      const renderer = createRenderer({verbose: false, useColor: false, format: 'text'});
+      renderer.printProvisionalConclusion?.('Answer body.');
+      renderer.printConclusion('Answer body.\n\nQuality notice.', {});
+    });
+    expect(output).toContain('Quality notice.');
+  });
+
+  test.each(['json', 'ndjson'] as const)('%s output never carries the provisional answer', format => {
+    const output = captureStdout(() => {
+      const renderer = createRenderer({verbose: false, useColor: false, format});
+      renderer.printProvisionalConclusion?.('provisional body');
+      renderer.printConclusion('final body', {});
+      renderer.printCompletion({sessionId: 's', sessionDir: '/tmp/s', reportPath: '/tmp/s/report.html'});
+    });
+    expect(output).not.toContain('provisional body');
+  });
+
   test('renders one JSON object after completion', () => {
     const analysisEvidence = evidenceBundle();
     const output = captureStdout(() => {

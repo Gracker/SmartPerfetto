@@ -2,56 +2,240 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import {beforeEach, afterAll, beforeAll, afterEach, describe, expect, it, jest } from '@jest/globals';
 import express from 'express';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import {EventEmitter} from 'events';
-import * as agentRuntime from '../../agentRuntime';
-import {createDataEnvelope} from '../../types/dataContract';
-import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
-import { EnhancedSessionContext, sessionContextManager } from '../../agent/context/enhancedSessionContext';
-import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
-import {
-  deleteTraceMetadata,
-  ENTERPRISE_DATA_DIR_ENV,
-  writeTraceMetadata,
-} from '../../services/traceMetadataStore';
-import {
-  persistSerializedAgentEvent,
-  resetAgentEventStoreForTests,
-} from '../../services/agentEventStore';
-import {
-  getAnalysisRunLifecycle,
-  resetAnalysisRunStoreForTests,
-} from '../../services/analysisRunStore';
-import {
-  getTraceProcessorLeaseStore,
-  setTraceProcessorLeaseStoreForTests,
-} from '../../services/traceProcessorLeaseStore';
-import { SessionPersistenceService } from '../../services/sessionPersistenceService';
-import { clearRunManifestLifecyclesForTests } from '../../services/selfEvolution/runManifestLifecycle';
-import { resetRunManifestStoreForTests } from '../../services/selfEvolution/runManifestStore';
-import {
-  TraceProcessorService,
-  setTraceProcessorServiceForTests,
-  type TraceProcessor,
-} from '../../services/traceProcessorService';
-import { ClaudeRuntime } from '../../agentRuntime/engines/claude';
+
+import type {TraceProcessor} from '../../services/traceProcessorService';
+
 import type { AnalysisOptions, AnalysisResult } from '../../agent/core/orchestratorTypes';
 import type { TracePairContext } from '../../agentv3/types';
-import * as defaultCodebaseServices from '../../services/codebase/defaultCodebaseServices';
-import * as externalKnowledgeServices from '../../services/externalKnowledgeSourceRegistry';
-import {getProviderService, resetProviderService} from '../../services/providerManager';
-import agentRoutes, {resolveConclusionSceneIdHint} from '../agentRoutes';
+
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
+
+let agentRuntime: typeof import('../../agentRuntime');
+let createDataEnvelope: typeof import('../../types/dataContract')['createDataEnvelope'];
+let ENTERPRISE_FEATURE_FLAG_ENV: typeof import('../../config')['ENTERPRISE_FEATURE_FLAG_ENV'];
+let EnhancedSessionContext: typeof import('../../agent/context/enhancedSessionContext')['EnhancedSessionContext'];
+let sessionContextManager: typeof import('../../agent/context/enhancedSessionContext')['sessionContextManager'];
+let ENTERPRISE_DB_PATH_ENV: typeof import('../../services/enterpriseDb')['ENTERPRISE_DB_PATH_ENV'];
+let openEnterpriseDb: typeof import('../../services/enterpriseDb')['openEnterpriseDb'];
+let deleteTraceMetadata: typeof import('../../services/traceMetadataStore')['deleteTraceMetadata'];
+let ENTERPRISE_DATA_DIR_ENV: typeof import('../../services/traceMetadataStore')['ENTERPRISE_DATA_DIR_ENV'];
+let writeTraceMetadata: typeof import('../../services/traceMetadataStore')['writeTraceMetadata'];
+let persistSerializedAgentEvent: typeof import('../../services/agentEventStore')['persistSerializedAgentEvent'];
+let resetAgentEventStoreForTests: typeof import('../../services/agentEventStore')['resetAgentEventStoreForTests'];
+let getAnalysisRunLifecycle: typeof import('../../services/analysisRunStore')['getAnalysisRunLifecycle'];
+let resetAnalysisRunStoreForTests: typeof import('../../services/analysisRunStore')['resetAnalysisRunStoreForTests'];
+let getTraceProcessorLeaseStore: typeof import('../../services/traceProcessorLeaseStore')['getTraceProcessorLeaseStore'];
+let setTraceProcessorLeaseStoreForTests: typeof import('../../services/traceProcessorLeaseStore')['setTraceProcessorLeaseStoreForTests'];
+let SessionPersistenceService: typeof import('../../services/sessionPersistenceService')['SessionPersistenceService'];
+let clearRunManifestLifecyclesForTests: typeof import('../../services/selfEvolution/runManifestLifecycle')['clearRunManifestLifecyclesForTests'];
+let resetRunManifestStoreForTests: typeof import('../../services/selfEvolution/runManifestStore')['resetRunManifestStoreForTests'];
+let TraceProcessorService: typeof import('../../services/traceProcessorService')['TraceProcessorService'];
+type TraceProcessorService = import('../../services/traceProcessorService').TraceProcessorService;
+let setTraceProcessorServiceForTests: typeof import('../../services/traceProcessorService')['setTraceProcessorServiceForTests'];
+let ClaudeRuntime: typeof import('../../agentRuntime/engines/claude/claudeRuntime')['ClaudeRuntime'];
+type ClaudeRuntime = import('../../agentRuntime/engines/claude/claudeRuntime').ClaudeRuntime;
+let defaultCodebaseServices: typeof import('../../services/codebase/defaultCodebaseServices');
+let externalKnowledgeServices: typeof import('../../services/externalKnowledgeSourceRegistry');
+let getProviderService: typeof import('../../services/providerManager')['getProviderService'];
+let resetProviderService: typeof import('../../services/providerManager')['resetProviderService'];
+let agentRoutes: typeof import('../agentRoutes').default;
+let agentRoutesCancellationTestSeam: typeof import('../agentRoutes')['agentRoutesCancellationTestSeam'];
+let AnalysisHistoryStore: typeof import('../../services/analysisHistoryStore')['AnalysisHistoryStore'];
+let getSessionBackgroundKnowledgeReferences: typeof import('../../services/knowledge/sessionBackgroundKnowledgeRegistry')['getSessionBackgroundKnowledgeReferences'];
+let refreshPersistedAgentSnapshot: typeof import('../../services/persistAgentSession')['refreshPersistedAgentSnapshot'];
+let NO_PRIVATE_CONTEXT: typeof import('../../services/security/analysisPrivateContext')['NO_PRIVATE_CONTEXT'];
+let resetConversationSessionStoreForTests: typeof import('../../services/conversationSessionStore')['resetConversationSessionStoreForTests'];
+let resetAnalysisHistoryStoreForTests: typeof import('../../services/analysisHistoryStore')['resetAnalysisHistoryStoreForTests'];
+let AssistantApplicationService: typeof import('../../assistant/application/assistantApplicationService')['AssistantApplicationService'];
+
+const fixtureEnvKeys = ['SMARTPERFETTO_ENTERPRISE_DB_PATH', 'SMARTPERFETTO_BACKEND_DATA_DIR',
+  'SMARTPERFETTO_BACKEND_LOG_DIR', 'PROVIDER_DATA_DIR_OVERRIDE', 'SCENE_REPORT_DIR',
+  'SCENE_JOB_ARTIFACT_DIR', 'SMARTPERFETTO_DATA_DIR', 'UPLOAD_DIR'] as const;
+const fixtureOriginalEnv = new Map(fixtureEnvKeys.map(key => [key, process.env[key]]));
+let suiteRoot: string;
+let caseRoot: string;
+const caseRoots = new Set<string>();
+type ManagedSession = import('../../assistant/application/assistantApplicationService').ManagedAssistantSession;
+type AnalysisSession = Parameters<typeof agentRoutesCancellationTestSeam.setSession>[1];
+type ConversationSession = import('../../assistant/application/conversationSessionService').ConversationSession;
+type SessionService = InstanceType<typeof AssistantApplicationService<ManagedSession>>;
+type LeaseStore = ReturnType<typeof getTraceProcessorLeaseStore>;
+const ownedSessions = new Map<ManagedSession, SessionService>();
+const ownedLeaseStores = new Set<LeaseStore>();
+const closedLeaseStores = new WeakSet<LeaseStore>();
+
+function isConversationSession(session: ManagedSession): session is ConversationSession {
+  return 'runtime' in session && 'historyTurns' in session;
+}
+
+function isAnalysisSession(session: ManagedSession): session is AnalysisSession {
+  return 'orchestrator' in session;
+}
+
+async function waitForOwnedRun<T>(completion: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([completion, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Owned fixture run did not settle')), 5000);
+    })]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function settleOwnedSessions(): Promise<void> {
+  for (const [session, service] of ownedSessions) {
+    if (service.getSession(session.sessionId) !== session) continue;
+    if (isConversationSession(session)) {
+      const run = session.activeRun;
+      if (run) {
+        await waitForOwnedRun(session.runtime.cancel(session.sessionId, run.runId));
+        await waitForOwnedRun(run.completion);
+      }
+      await session.runtime.dispose?.();
+    } else if (isAnalysisSession(session)) {
+      agentRoutesCancellationTestSeam.abortHttpFinalizationRuns(session);
+      for (const runId of session.executingRunIds ?? []) {
+        await waitForOwnedRun(agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId));
+      }
+      const deadline = Date.now() + 5000;
+      while (session.executingRunIds?.size) {
+        if (Date.now() >= deadline) throw new Error('Owned analysis execution did not settle');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      await session.orchestrator.cleanupSession?.(session.sessionId);
+    }
+    for (const client of session.sseClients) client.end();
+    service.deleteSession(session.sessionId);
+    sessionContextManager.remove(session.sessionId);
+  }
+  ownedSessions.clear();
+}
+
+let cleanupFailed = false;
+
+function useFixturePaths(root: string): void {
+  process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = path.join(root, 'sessions.sqlite');
+  process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(root, 'data');
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(root, 'logs');
+  process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(root, 'providers');
+  process.env.SMARTPERFETTO_DATA_DIR = path.join(root, 'enterprise-data');
+  process.env.UPLOAD_DIR = path.join(root, 'uploads');
+}
+
+function closeFixtureStores(): void {
+  SessionPersistenceService.resetForTests();
+  resetConversationSessionStoreForTests();
+  resetAnalysisRunStoreForTests();
+  resetAgentEventStoreForTests();
+  resetAnalysisHistoryStoreForTests();
+  resetRunManifestStoreForTests();
+  resetProviderService();
+}
+
+beforeAll(async () => {
+  suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-private-http-'));
+  useFixturePaths(suiteRoot);
+  console.info('[HTTP fixture] agentRoutesRbac owns', suiteRoot);
+  // These paths are captured by config/route singletons at import time.
+  process.env.SCENE_REPORT_DIR = path.join(suiteRoot, 'scene-reports');
+  process.env.SCENE_JOB_ARTIFACT_DIR = path.join(suiteRoot, 'scene-jobs');
+  agentRuntime = await import('../../agentRuntime');
+  ({createDataEnvelope} = await import('../../types/dataContract'));
+  ({ENTERPRISE_FEATURE_FLAG_ENV} = await import('../../config'));
+  ({EnhancedSessionContext, sessionContextManager} = await import('../../agent/context/enhancedSessionContext'));
+  ({ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} = await import('../../services/enterpriseDb'));
+  ({deleteTraceMetadata, ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata} = await import('../../services/traceMetadataStore'));
+  ({persistSerializedAgentEvent, resetAgentEventStoreForTests} = await import('../../services/agentEventStore'));
+  ({getAnalysisRunLifecycle, resetAnalysisRunStoreForTests} = await import('../../services/analysisRunStore'));
+  ({getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} = await import('../../services/traceProcessorLeaseStore'));
+  ({SessionPersistenceService} = await import('../../services/sessionPersistenceService'));
+  ({clearRunManifestLifecyclesForTests} = await import('../../services/selfEvolution/runManifestLifecycle'));
+  ({resetRunManifestStoreForTests} = await import('../../services/selfEvolution/runManifestStore'));
+  ({TraceProcessorService, setTraceProcessorServiceForTests} = await import('../../services/traceProcessorService'));
+  ({ClaudeRuntime} = await import('../../agentRuntime/engines/claude/claudeRuntime'));
+  defaultCodebaseServices = await import('../../services/codebase/defaultCodebaseServices');
+  externalKnowledgeServices = await import('../../services/externalKnowledgeSourceRegistry');
+  ({getProviderService, resetProviderService} = await import('../../services/providerManager'));
+  agentRoutes = (await import('../agentRoutes')).default;
+  ({agentRoutesCancellationTestSeam} = await import('../agentRoutes'));
+  ({AnalysisHistoryStore} = await import('../../services/analysisHistoryStore'));
+  ({getSessionBackgroundKnowledgeReferences} = await import('../../services/knowledge/sessionBackgroundKnowledgeRegistry'));
+  ({refreshPersistedAgentSnapshot} = await import('../../services/persistAgentSession'));
+  ({NO_PRIVATE_CONTEXT} = await import('../../services/security/analysisPrivateContext'));
+  ({resetConversationSessionStoreForTests} = await import('../../services/conversationSessionStore'));
+  ({resetAnalysisHistoryStoreForTests} = await import('../../services/analysisHistoryStore'));
+  ({AssistantApplicationService} = await import('../../assistant/application/assistantApplicationService'));
+});
+
+beforeEach(async () => {
+  if (cleanupFailed) throw new Error(`Previous fixture cleanup failed; retained ${suiteRoot}`);
+  caseRoot = await fs.mkdtemp(path.join(suiteRoot, 'case-'));
+  caseRoots.add(caseRoot);
+  useFixturePaths(caseRoot);
+  closeFixtureStores();
+  const setSession = AssistantApplicationService.prototype.setSession;
+  jest.spyOn(AssistantApplicationService.prototype, 'setSession').mockImplementation(function (
+    this: SessionService, sessionId: string, session: ManagedSession,
+  ) {
+    ownedSessions.set(session, this);
+    setSession.call(this, sessionId, session);
+  });
+  const leaseModule = await import('../../services/traceProcessorLeaseStore');
+  const getLeaseStore = leaseModule.getTraceProcessorLeaseStore;
+  jest.spyOn(leaseModule, 'getTraceProcessorLeaseStore').mockImplementation(() => {
+    const store = getLeaseStore();
+    ownedLeaseStores.add(store);
+    return store;
+  });
+  getTraceProcessorLeaseStore = leaseModule.getTraceProcessorLeaseStore;
+  const closeLeaseStore = leaseModule.TraceProcessorLeaseStore.prototype.close;
+  jest.spyOn(leaseModule.TraceProcessorLeaseStore.prototype, 'close').mockImplementation(function (this: LeaseStore) {
+    closeLeaseStore.call(this);
+    closedLeaseStores.add(this);
+  });
+});
+
+async function removeCaseRoots(): Promise<void> {
+  if (cleanupFailed) return;
+  for (const root of caseRoots) {
+    await fs.rm(root, {recursive: true, force: true});
+  }
+  caseRoots.clear();
+}
+
+afterAll(async () => {
+  try {
+    closeFixtureStores();
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
+  } finally {
+    for (const [key, value] of fixtureOriginalEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    if (!cleanupFailed) {
+      const root = suiteRoot;
+      await fs.rm(root, {recursive: true, force: true});
+      console.info('[HTTP fixture] agentRoutesRbac cleanup complete', root);
+    }
+  }
+});
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
-const originalEnterprise = process.env[ENTERPRISE_FEATURE_FLAG_ENV];
-const originalEnterpriseDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
-const originalEnterpriseDataDir = process.env[ENTERPRISE_DATA_DIR_ENV];
+const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
+const originalEnterpriseDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
+const originalEnterpriseDataDir = process.env.SMARTPERFETTO_DATA_DIR;
 const originalUploadDir = process.env.UPLOAD_DIR;
 const originalAgentRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
 const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
@@ -67,11 +251,11 @@ type DeferredRuntime = {
   settled: boolean;
 };
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/agent/v1', agentRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 /** Keep registration, lease storage and ALS real; simulate native/provider execution. */
@@ -191,6 +375,7 @@ function minimalSessionSnapshot(
   sessionId: string,
   traceId: string,
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'quota_exceeded',
+  overrides: Record<string, unknown> = {},
 ): any {
   const now = Date.now();
   return {
@@ -198,6 +383,8 @@ function minimalSessionSnapshot(
     snapshotTimestamp: now,
     sessionId,
     traceId,
+    // A current snapshot records its authorization and each run's fixed marker.
+    analysisContextFingerprint: 'fingerprint-public',
     conversationSteps: [],
     queryHistory: [{ turn: 1, query: 'resume this persisted session', timestamp: now }],
     conclusionHistory: [],
@@ -219,6 +406,7 @@ function minimalSessionSnapshot(
       startedAt: now - 100,
       completedAt: now,
       status,
+      privateContext: NO_PRIVATE_CONTEXT,
     },
     lastRun: {
       runId: `run-${sessionId}-1`,
@@ -228,76 +416,57 @@ function minimalSessionSnapshot(
       startedAt: now - 100,
       completedAt: now,
       status,
+      privateContext: NO_PRIVATE_CONTEXT,
     },
+    ...overrides,
   };
 }
 
 afterEach(async () => {
-  jest.restoreAllMocks();
-  setTraceProcessorServiceForTests(null);
-  setTraceProcessorLeaseStoreForTests(null);
-  SessionPersistenceService.resetForTests();
-  resetAgentEventStoreForTests();
-  resetAnalysisRunStoreForTests();
-  clearRunManifestLifecyclesForTests();
-  resetRunManifestStoreForTests();
-  resetProviderService();
-  if (originalApiKey === undefined) {
-    delete process.env.SMARTPERFETTO_API_KEY;
-  } else {
-    process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+  try {
+    await settleOwnedSessions();
+    sessionContextManager.remove('session-resume-integration');
+    await loopbackServers.close();
+    for (const store of ownedLeaseStores) {
+      if (!closedLeaseStores.has(store)) store.close();
+    }
+    ownedLeaseStores.clear();
+    jest.restoreAllMocks();
+    setTraceProcessorServiceForTests(null);
+    setTraceProcessorLeaseStoreForTests(null);
+    SessionPersistenceService.resetForTests();
+    resetAgentEventStoreForTests();
+    resetAnalysisRunStoreForTests();
+    clearRunManifestLifecyclesForTests();
+    resetRunManifestStoreForTests();
+    resetProviderService();
+    closeFixtureStores();
+    await removeCaseRoots();
+    if (originalApiKey === undefined) {
+      delete process.env.SMARTPERFETTO_API_KEY;
+    } else {
+      process.env.SMARTPERFETTO_API_KEY = originalApiKey;
+    }
+    restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalSsoTrustedHeaders);
+    restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnterprise);
+    restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnterpriseDbPath);
+    restoreEnvValue(ENTERPRISE_DATA_DIR_ENV, originalEnterpriseDataDir);
+    restoreEnvValue('UPLOAD_DIR', originalUploadDir);
+    restoreEnvValue('SMARTPERFETTO_AGENT_RUNTIME', originalAgentRuntime);
+    restoreEnvValue('SMARTPERFETTO_AI_ENABLED', originalAiEnabled);
+    restoreEnvValue('SMARTPERFETTO_CODE_AWARE', originalCodeAware);
+    restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
+    restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
+    restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
+    restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalProviderDataDir);
+    useFixturePaths(suiteRoot);
+  } catch (error) {
+    cleanupFailed = true;
+    throw error;
   }
-  restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalSsoTrustedHeaders);
-  restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnterprise);
-  restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnterpriseDbPath);
-  restoreEnvValue(ENTERPRISE_DATA_DIR_ENV, originalEnterpriseDataDir);
-  restoreEnvValue('UPLOAD_DIR', originalUploadDir);
-  restoreEnvValue('SMARTPERFETTO_AGENT_RUNTIME', originalAgentRuntime);
-  restoreEnvValue('SMARTPERFETTO_AI_ENABLED', originalAiEnabled);
-  restoreEnvValue('SMARTPERFETTO_CODE_AWARE', originalCodeAware);
-  restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
-  restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
-  restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
-  restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalProviderDataDir);
-  sessionContextManager.remove('session-resume-integration');
 });
 
 describe('agent route RBAC', () => {
-  it('prefers the executed analysis skill over ambiguous trace wording', () => {
-    expect(resolveConclusionSceneIdHint({
-      sessionId: 'scene-evidence-test',
-      query: '检查这个启动 Trace 是否包含 ANR',
-      findings: [],
-      intent: {
-        primaryGoal: '检查这个启动 Trace 是否包含 ANR',
-        aspects: ['startup'],
-        expectedOutputType: 'diagnosis',
-        complexity: 'moderate',
-        followUpType: 'initial',
-      },
-      dataEnvelopes: [{meta: {skillId: 'anr_analysis'}} as any],
-    })).toBe('anr');
-  });
-
-  it('does not let prior-turn skill evidence override the current follow-up scene', () => {
-    expect(resolveConclusionSceneIdHint({
-      sessionId: 'scene-turn-scope-test',
-      query: '只解释上一轮结论，不要重新分析',
-      findings: [],
-      intent: {
-        primaryGoal: '只解释上一轮结论，不要重新分析',
-        aspects: [],
-        expectedOutputType: 'summary',
-        complexity: 'simple',
-        followUpType: 'clarify',
-      },
-      currentTurn: 2,
-      dataEnvelopes: [
-        {meta: {skillId: 'scrolling_analysis', turn: 1}} as any,
-      ],
-    })).toBe('generic');
-  });
-
   it('runs a no-Trace conversation through the lightweight contract and streams the answer', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
@@ -305,8 +474,6 @@ describe('agent route RBAC', () => {
     const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
       _query,
       sessionId,
-      traceId,
-      options = {},
     ) => ({
       sessionId,
       success: true,
@@ -317,7 +484,7 @@ describe('agent route RBAC', () => {
       rounds: 1,
       totalDurationMs: 5,
     }));
-    const app = makeApp();
+    const app = await makeApp();
 
     const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
       .send({query: '帮我分析性能需求'});
@@ -370,7 +537,7 @@ describe('agent route RBAC', () => {
         totalDurationMs: 5,
       };
     });
-    const app = makeApp();
+    const app = await makeApp();
     const selectedSlice = {
       kind: 'track_event',
       source: 'track_event_selection',
@@ -419,7 +586,7 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze');
 
-    const response = await viewerHeaders(request(makeApp()).post('/api/agent/v1/conversation'))
+    const response = await viewerHeaders(request(await makeApp()).post('/api/agent/v1/conversation'))
       .send({
         query: 'review this source',
         options: {
@@ -457,7 +624,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const owner = {userId: 'conversation-owner', workspaceId: 'workspace-a'};
       const other = {userId: 'conversation-other', workspaceId: 'workspace-a'};
 
@@ -491,7 +658,7 @@ describe('agent route RBAC', () => {
         scope: '当前交互',
       });
     } finally {
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -507,7 +674,7 @@ describe('agent route RBAC', () => {
     jest.spyOn(ClaudeRuntime.prototype, 'abortSession').mockImplementation(async () => {
       rejectRuntime?.(new Error('Analysis aborted'));
     });
-    const app = makeApp();
+    const app = await makeApp();
     const owner = {userId: 'cancel-owner', workspaceId: 'workspace-a'};
     const other = {userId: 'cancel-other', workspaceId: 'workspace-a'};
 
@@ -538,7 +705,7 @@ describe('agent route RBAC', () => {
         rejectRuntime = reject;
       })
     ));
-    const app = makeApp();
+    const app = await makeApp();
     const owner = {userId: 'permission-owner', workspaceId: 'workspace-a'};
     const started = await scopedAnalystHeaders(
       request(app).post('/api/agent/v1/conversation'),
@@ -579,7 +746,7 @@ describe('agent route RBAC', () => {
       rounds: 1,
       totalDurationMs: 5,
     }));
-    const app = makeApp();
+    const app = await makeApp();
     const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
       .send({query: '第一轮'});
     expect(started.status).toBe(202);
@@ -643,7 +810,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮'});
       expect(started.status).toBe(202);
@@ -659,7 +826,7 @@ describe('agent route RBAC', () => {
       expect(changed.body.code).toBe('CONVERSATION_PROVIDER_CHANGED');
     } finally {
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -702,7 +869,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮'});
       expect(started.status).toBe(202);
@@ -720,7 +887,7 @@ describe('agent route RBAC', () => {
       expect(changed.body.code).toBe('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED');
     } finally {
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -765,7 +932,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮', providerId: explicitProvider.id});
       expect(started.status).toBe(202);
@@ -790,7 +957,7 @@ describe('agent route RBAC', () => {
       );
     } finally {
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -876,7 +1043,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
       const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '第一轮', traceId});
       expect(started.status).toBe(202);
@@ -899,7 +1066,7 @@ describe('agent route RBAC', () => {
       releaseSecondLoad?.();
       await deleteTraceMetadata(traceId);
       resetProviderService();
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -948,7 +1115,7 @@ describe('agent route RBAC', () => {
         rounds: 1,
         totalDurationMs: 5,
       }));
-      const app = makeApp();
+      const app = await makeApp();
 
       const noTrace = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
         .send({query: '先讨论问题'});
@@ -987,7 +1154,7 @@ describe('agent route RBAC', () => {
       expect(retainedButDeleted.body.code).toBe('TRACE_NOT_UPLOADED');
       expect(getOrLoadTrace).toHaveBeenCalledTimes(1);
     } finally {
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -996,6 +1163,8 @@ describe('agent route RBAC', () => {
     const root = path.join(tmpDir, 'app');
     await fs.mkdir(root);
     const rootRealpath = await fs.realpath(root);
+    const previousRoots = process.env.SMARTPERFETTO_CODEBASE_ROOTS;
+    process.env.SMARTPERFETTO_CODEBASE_ROOTS = tmpDir;
     try {
       delete process.env.SMARTPERFETTO_API_KEY;
       delete process.env.SMARTPERFETTO_CODE_AWARE;
@@ -1014,7 +1183,7 @@ describe('agent route RBAC', () => {
       const traceService = {getOrLoadTrace: jest.fn()};
       setTraceProcessorServiceForTests(traceService as any);
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
         .send({
           traceId: 'trace-a',
@@ -1033,8 +1202,33 @@ describe('agent route RBAC', () => {
       }));
       expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
     } finally {
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      if (previousRoots === undefined) delete process.env.SMARTPERFETTO_CODEBASE_ROOTS;
+      else process.env.SMARTPERFETTO_CODEBASE_ROOTS = previousRoots;
+      caseRoots.add(tmpDir);
     }
+  });
+
+  it('reads codebase ids under an explicit off as no codebases: no 400, no registry read, no permission', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    delete process.env.SMARTPERFETTO_CODE_AWARE;
+    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    const get = jest.fn();
+    jest.spyOn(defaultCodebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue({get} as any);
+    const traceService = {getOrLoadTrace: jest.fn()};
+    setTraceProcessorServiceForTests(traceService as any);
+
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
+      .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read')
+      .send({
+        traceId: 'trace-a',
+        query: 'analyze without source',
+        options: {analysisMode: 'fast', codeAwareMode: 'off', codebaseIds: ['codebase-hidden']},
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual(expect.objectContaining({success: false, code: 'TRACE_NOT_UPLOADED'}));
+    expect(get).not.toHaveBeenCalled();
   });
 
   it('rejects a selected codebase when its registered root is unavailable', async () => {
@@ -1055,7 +1249,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as any);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
       .send({
         traceId: 'trace-a',
@@ -1083,8 +1277,11 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     jest.spyOn(externalKnowledgeServices, 'getDefaultExternalKnowledgeSourceRegistry')
       .mockReturnValue({
+        // The real access rule over the mocked record.
+        evaluateAccess: externalKnowledgeServices.ExternalKnowledgeSourceRegistry.prototype.evaluateAccess,
         get: jest.fn(() => ({
           sourceId: 'wiki-empty',
+          kind: 'document_collection',
           indexGeneration: 2,
           activeGeneration: 'knowledge_2_empty',
           contentFingerprint: 'b'.repeat(64),
@@ -1096,7 +1293,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as any);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
       .send({
         traceId: 'trace-a',
@@ -1119,7 +1316,7 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_AI_ENABLED = 'true';
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({traceId: 'trace-a', query: 'scene reconstruction', entry: 'scene_reconstruction',
         sceneRunBinding: {verified: true}, options: {entry: 'scene_reconstruction'}});
     expect(res.status).toBe(400);
@@ -1131,7 +1328,7 @@ describe('agent route RBAC', () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
 
-    const res = await viewerHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await viewerHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
     expect(res.status).toBe(403);
@@ -1168,7 +1365,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyze = await analystHeaders(
         request(app).post('/api/agent/v1/analyze'),
       ).send({traceId, query: 'analyze for feedback'});
@@ -1216,7 +1413,7 @@ describe('agent route RBAC', () => {
       });
     } finally {
       await rejectPendingDeferredRuntimes(deferreds, 'feedback test cleanup');
-      await fs.rm(tmpDir, {recursive: true, force: true});
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1248,7 +1445,7 @@ describe('agent route RBAC', () => {
       const traceService = { getOrLoadTrace: jest.fn() };
       setTraceProcessorServiceForTests(traceService as any);
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
       expect(res.status).toBe(423);
@@ -1259,7 +1456,7 @@ describe('agent route RBAC', () => {
       }));
       expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
     } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1270,7 +1467,7 @@ describe('agent route RBAC', () => {
     const traceService = { getOrLoadTrace: jest.fn() };
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({ traceId: 'trace-a', query: 'analyze this trace' });
 
     expect(res.status).toBe(403);
@@ -1290,7 +1487,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({
         traceId: 'trace-a',
         referenceTraceId: 'trace-b',
@@ -1310,12 +1507,34 @@ describe('agent route RBAC', () => {
     expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
   });
 
+  it('answers an analyze option error with its details and request id', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env.SMARTPERFETTO_AI_ENABLED = 'true';
+    const traceService = {getOrLoadTrace: jest.fn()};
+    setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
+
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
+      .set('X-Request-Id', 'req-analyze-options')
+      .send({traceId: 'trace-a', query: 'Analyze this trace', options: {maxRounds: 3, outputLanguage: 'en'}});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      success: false,
+      code: 'UNSUPPORTED_RUNTIME_CONTROL',
+      error: 'maxRounds is not supported as a request-level control across all AI runtimes',
+      details: {field: 'maxRounds'},
+      requestId: 'req-analyze-options',
+    });
+    expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       'source mode',
-      {codeAwareMode: 'off', codebaseIds: ['source-a']},
-      'CODEBASE_IDS_REQUIRE_CODE_AWARE_MODE',
-      '选择源码库时，源码感知模式必须是 metadata_only 或 provider_send',
+      {codeAwareMode: 'send_everything', codebaseIds: ['source-a']},
+      'UNSUPPORTED_CODE_AWARE_MODE',
+      '源码感知模式必须是 off、metadata_only 或 provider_send',
     ],
     [
       'RAG allowlist',
@@ -1336,7 +1555,7 @@ describe('agent route RBAC', () => {
     const traceService = {getOrLoadTrace: jest.fn()};
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
       .send({traceId: 'trace-a', query: '分析性能', options});
 
     expect(res.status).toBe(400);
@@ -1351,7 +1570,7 @@ describe('agent route RBAC', () => {
     const traceService = { getOrLoadTrace: jest.fn() };
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/sessions/session-a/runs'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/sessions/session-a/runs'))
       .send({ traceId: 'trace-a', query: 'continue analysis' });
 
     expect(res.status).toBe(403);
@@ -1370,7 +1589,7 @@ describe('agent route RBAC', () => {
     const traceService = { getOrLoadTrace: jest.fn() };
     setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/scene-reconstruct'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/scene-reconstruct'))
       .send({ traceId: 'trace-a' });
 
     expect(res.status).toBe(403);
@@ -1387,7 +1606,7 @@ describe('agent route RBAC', () => {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     process.env.SMARTPERFETTO_AI_ENABLED = 'false';
 
-    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+    const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
       .send({ sessionId: 'session-disabled' });
 
     expect(res.status).toBe(403);
@@ -1436,7 +1655,7 @@ describe('agent route RBAC', () => {
       leaseStore.markReady(scope, lease.id);
       leaseStore.beginDraining(scope, lease.id);
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({ traceId, query: 'analyze this trace' });
 
       expect(res.status).toBe(409);
@@ -1446,7 +1665,7 @@ describe('agent route RBAC', () => {
     } finally {
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1478,7 +1697,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const res = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({
           traceId,
           query: 'analyze this trace',
@@ -1504,7 +1723,7 @@ describe('agent route RBAC', () => {
       await rejectPendingDeferredRuntimes(deferreds, 'full-analysis cleanup');
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1536,7 +1755,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const analyzeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      const analyzeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/analyze'))
         .send({ traceId, query: 'analyze this trace' });
 
       expect(analyzeRes.status).toBe(200);
@@ -1559,6 +1778,7 @@ describe('agent route RBAC', () => {
         runId,
         traceId,
         query: 'analyze this trace',
+        privateContext: NO_PRIVATE_CONTEXT,
       }, {
         cursor: 99,
         eventType: 'analysis_completed',
@@ -1629,7 +1849,7 @@ describe('agent route RBAC', () => {
       });
 
       const streamRes = await analystHeaders(
-        request(makeApp())
+        request(await makeApp())
           .get(`/api/agent/v1/${sessionId}/stream?lastEventId=100`)
           .set('Last-Event-ID', '98')
           .set('Accept', 'text/event-stream'),
@@ -1649,7 +1869,7 @@ describe('agent route RBAC', () => {
       expect(streamRes.text).not.toContain('"deliveryAssurance"');
 
       const legacyQueryStreamRes = await analystHeaders(
-        request(makeApp())
+        request(await makeApp())
           .get(`/api/agent/v1/${sessionId}/stream?lastEventId=98`)
           .set('Accept', 'text/event-stream'),
       );
@@ -1676,7 +1896,7 @@ describe('agent route RBAC', () => {
       await rejectPendingDeferredRuntimes(deferreds, 'event replay cleanup');
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1708,7 +1928,7 @@ describe('agent route RBAC', () => {
       });
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => createDeferredRuntime(deferreds).promise));
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyzeRes = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({
           traceId,
@@ -1750,7 +1970,7 @@ describe('agent route RBAC', () => {
       await rejectPendingDeferredRuntimes(deferreds, 'trace context replay cleanup');
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -1918,7 +2138,7 @@ describe('agent route RBAC', () => {
         ],
       };
 
-      const app = makeApp();
+      const app = await makeApp();
       const firstRun = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({
           traceId,
@@ -1986,7 +2206,7 @@ describe('agent route RBAC', () => {
     } finally {
       delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2074,7 +2294,7 @@ describe('agent route RBAC', () => {
       });
       jest.spyOn(agentRuntime, 'createAgentOrchestrator').mockReturnValue(runtime as unknown as ReturnType<typeof agentRuntime.createAgentOrchestrator>);
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyzeRes = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
         .send({
           traceId,
@@ -2125,7 +2345,7 @@ describe('agent route RBAC', () => {
       leaseStore?.close();
       delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2170,7 +2390,7 @@ describe('agent route RBAC', () => {
         [...traces.values()], () => createDeferredRuntime(deferreds).promise,
       ));
 
-      const app = makeApp();
+      const app = await makeApp();
       const [analyzeA, analyzeB] = await Promise.all([
         scopedAnalystHeaders(
           request(app).post('/api/agent/v1/analyze'),
@@ -2315,7 +2535,7 @@ describe('agent route RBAC', () => {
       }
       leaseStore?.close();
       setTraceProcessorLeaseStoreForTests(null);
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2368,7 +2588,7 @@ describe('agent route RBAC', () => {
 
         setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => makeDeferred().promise));
 
-        const app = makeApp();
+        const app = await makeApp();
         const analyzeA = await analystHeaders(
           request(app).post('/api/agent/v1/analyze'),
         ).send({ traceId, query: 'run A' });
@@ -2489,7 +2709,7 @@ describe('agent route RBAC', () => {
         for (const sessionId of sessionIds) {
           sessionContextManager.remove(sessionId);
         }
-        await fs.rm(tmpDir, { recursive: true, force: true });
+        caseRoots.add(tmpDir);
       }
     });
   }
@@ -2540,7 +2760,7 @@ describe('agent route RBAC', () => {
 
       setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}], () => makeDeferred().promise));
 
-      const app = makeApp();
+      const app = await makeApp();
       const analyzeA = await analystHeaders(
         request(app).post('/api/agent/v1/analyze'),
       ).send({ traceId, query: 'run A' });
@@ -2600,7 +2820,7 @@ describe('agent route RBAC', () => {
       for (const sessionId of sessionIds) {
         sessionContextManager.remove(sessionId);
       }
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2663,9 +2883,12 @@ describe('agent route RBAC', () => {
           userId: 'analyst-user',
         },
       });
-      expect(persistence.saveSessionContext(sessionId, context)).toBe(true);
+      // A current snapshot records the authorization it ran under, which proves a public selection.
+      expect(persistence.saveSessionStateSnapshot(sessionId, minimalSessionSnapshot(sessionId, traceId, 'completed',
+        {activeRun: undefined, lastRun: undefined, queryHistory: []}), {sessionContext: context,
+        owner: {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'}})).toBe(true);
 
-      const resumeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+      const resumeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
       expect(resumeRes.status).toBe(200);
@@ -2681,7 +2904,7 @@ describe('agent route RBAC', () => {
       }));
 
       const respondRes = await analystHeaders(
-        request(makeApp())
+        request(await makeApp())
           .post(`/api/agent/v1/${sessionId}/respond`)
           .send({ action: 'abort', runId: `run-${sessionId}-1` }),
       );
@@ -2696,7 +2919,233 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove('session-resume-integration');
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
+    }
+  });
+
+  it.each([
+    ['the same default runtime', 'claude-agent-sdk'],
+    // A session without a provider profile stays on the runtime it was pinned to.
+    ['a changed default runtime', 'openai-agents-sdk'],
+  ])('continues a resumed session in place so the follow-up keeps its history, with %s', async (_label, runtimeAfterRestart) => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-resume-continuity-'));
+    const calls: Array<{sessionId: string; options: AnalysisOptions}> = [];
+    const waitForCalls = async (count: number) => {
+      for (let attempt = 0; attempt < 100 && calls.length < count; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+      expect(calls).toHaveLength(count);
+    };
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
+    const waitForCompleted = async (runId: string) => {
+      for (let attempt = 0; attempt < 200 && getAnalysisRunLifecycle(scope, runId)?.status !== 'completed'; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(getAnalysisRunLifecycle(scope, runId)?.status).toBe('completed');
+    };
+    try {
+      const traceId = 'trace-resume-continuity';
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      SessionPersistenceService.resetForTests();
+      await writeTraceMetadata({id: traceId, filename: `${traceId}.trace`, size: 11,
+        uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath, ...scope});
+      setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}]));
+      jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async function (query, sessionId, runTraceId, options = {}) {
+        calls.push({sessionId, options});
+        // As the runtime does: the turn lands in the session context that persistence saves.
+        sessionContextManager.getOrCreate(sessionId, runTraceId).addTurn(query, {primaryGoal: 'startup',
+          aspects: [], expectedOutputType: 'diagnosis', complexity: 'simple'});
+        return {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'first answer', confidence: 0.8,
+          rounds: 1, totalDurationMs: 1};
+      });
+
+      const app = await makeApp();
+      const first = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
+        .send({traceId, query: 'why is startup slow', options: {analysisMode: 'auto'}});
+      expect(first.status).toBe(200);
+      await waitForCalls(1);
+      await waitForCompleted(first.body.runId);
+      const sessionId = first.body.sessionId as string;
+
+      // A backend restart loses every in-memory session, possibly under another default runtime.
+      agentRoutesCancellationTestSeam.deleteSession(sessionId);
+      sessionContextManager.remove(sessionId);
+      process.env.SMARTPERFETTO_AGENT_RUNTIME = runtimeAfterRestart;
+
+      const resumed = await analystHeaders(request(app).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      expect(resumed.status).toBe(200);
+      expect(resumed.body).toMatchObject({success: true, sessionId, restored: true});
+      const followUp = await analystHeaders(request(app).post('/api/agent/v1/analyze'))
+        .send({traceId, sessionId, query: 'and the main thread?', options: {analysisMode: 'auto'}});
+      expect(followUp.status).toBe(200);
+      // The follow-up continues the resumed session instead of replacing it,
+      // so the first turn stays in the history this session reads.
+      expect(followUp.body.sessionId).toBe(sessionId);
+      await waitForCalls(2);
+      expect(calls[1].sessionId).toBe(sessionId);
+      expect(new AnalysisHistoryStore().list({...scope, sessionId, traceId}).map(turn => turn.query))
+        .toContain('why is startup slow');
+      await waitForCompleted(followUp.body.runId);
+    } finally {
+      delete process.env.SMARTPERFETTO_AGENT_RUNTIME;
+      caseRoots.add(tmpDir);
+    }
+  });
+
+  it('does not restore a session that cannot prove it read no private material', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-resume-not-restorable-'));
+    const traceId = 'trace-resume-not-restorable';
+    const sessionId = 'session-resume-not-restorable';
+    try {
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      SessionPersistenceService.resetForTests();
+      await writeTraceMetadata({id: traceId, filename: `${traceId}.trace`, size: 11,
+        uploadedAt: new Date().toISOString(), status: 'ready', path: path.join(tmpDir, `${traceId}.trace`),
+        tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'});
+      const getOrLoadTrace = jest.fn();
+      setTraceProcessorServiceForTests({getOrLoadTrace} as any);
+      const persistence = SessionPersistenceService.getInstance();
+      const owner = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
+      persistence.saveSession({id: sessionId, traceId, traceName: `${traceId}.trace`, question: '',
+        createdAt: Date.now() - 1000, updatedAt: Date.now(), messages: [], metadata: owner});
+      const context = new EnhancedSessionContext(sessionId, traceId);
+      context.addTurn('earlier question', {primaryGoal: 'startup', aspects: [], expectedOutputType: 'diagnosis',
+        complexity: 'simple'});
+      // An older version kept this private session's context; its snapshot still records the private selection.
+      expect(persistence.saveSessionStateSnapshot(sessionId, minimalSessionSnapshot(sessionId, traceId, 'completed',
+        {activeRun: undefined, lastRun: undefined, analysisContextFingerprint: 'fingerprint-private',
+          codeAwareMode: 'provider_send', codebaseIds: ['app']}), {owner, sessionContext: context})).toBe(true);
+
+      const resumed = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      expect(resumed.status).toBe(404);
+      // Nothing was rehydrated: no live session, no runtime, no trace load.
+      expect(agentRoutesCancellationTestSeam.getSession(sessionId)).toBeUndefined();
+      expect(getOrLoadTrace).not.toHaveBeenCalled();
+    } finally {
+      sessionContextManager.remove(sessionId);
+      caseRoots.add(tmpDir);
+    }
+  });
+
+  it('restores the analysis context on resume and records a provider change for the follow-up', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-resume-context-'));
+    const traceId = 'trace-resume-context';
+    const sessionId = 'session-resume-context';
+    try {
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      SessionPersistenceService.resetForTests();
+      await writeTraceMetadata({id: traceId, filename: `${traceId}.trace`, size: 11,
+        uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath,
+        tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'});
+      setTraceProcessorServiceForTests({getOrLoadTrace: jest.fn(async () => ({id: traceId,
+        filename: `${traceId}.trace`, size: 11, filePath: tracePath, uploadTime: new Date(), status: 'ready'}))} as any);
+      const persistence = SessionPersistenceService.getInstance();
+      const owner = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
+      const backgroundReference = {sourceKind: 'android_internals_pack' as const, packVersion: '1', packFingerprint: 'pack',
+        sourceRevision: 'rev', articleId: 'article', articleTitle: 'Choreographer', sectionId: 'section',
+        sectionHeading: 'Frames', chunkId: 'chunk', chunkHash: 'hash', license: 'CC-BY-4.0'};
+      persistence.saveSession({id: sessionId, traceId, traceName: `${traceId}.trace`, question: 'earlier question',
+        createdAt: Date.now() - 1000, updatedAt: Date.now(), messages: [], metadata: owner});
+      const context = new EnhancedSessionContext(sessionId, traceId);
+      context.addTurn('earlier question', {primaryGoal: 'startup', aspects: [], expectedOutputType: 'diagnosis',
+        complexity: 'simple'});
+      expect(persistence.saveSessionStateSnapshot(sessionId, minimalSessionSnapshot(sessionId, traceId, 'completed', {
+        outputLanguage: 'en', analysisContextFingerprint: 'fingerprint-at-creation', codeAwareMode: 'off',
+        engineState: {kind: 'claude-agent-sdk', provider: {providerId: null, providerSnapshotHash: 'hash-before-change'}},
+        backgroundKnowledgeReferences: [backgroundReference],
+      }), {owner, sessionContext: context})).toBe(true);
+
+      const resumed = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      expect(resumed.status).toBe(200);
+      expect(resumed.body).toMatchObject({success: true, restored: true, providerSnapshotChanged: true});
+      // The live session carries what the next analysis compares against, and
+      // the provider change that the next query must be told about.
+      expect(agentRoutesCancellationTestSeam.getSession(sessionId)).toMatchObject({
+        analysisContextFingerprint: 'fingerprint-at-creation',
+        outputLanguage: 'en',
+        codeAwareMode: 'off',
+        runtimeKind: 'claude-agent-sdk',
+        continuityBreaks: [expect.objectContaining({previousProviderHash: 'hash-before-change',
+          reason: 'provider_snapshot_hash_mismatch'})],
+      });
+      // Later snapshots read the knowledge references from the registry, so a resume refills it.
+      expect(getSessionBackgroundKnowledgeReferences(sessionId)).toEqual([backgroundReference]);
+      // The retired Knowledge Pack produces none any more; the next persist writes the recorded ones
+      // back unchanged, so the session keeps that provenance. The stored copy is cleared first so
+      // only that write can bring them back.
+      const {backgroundKnowledgeReferences: _restored, ...withoutReferences} =
+        persistence.loadSessionStateSnapshot(sessionId)!;
+      expect(persistence.saveSessionStateSnapshot(sessionId, withoutReferences, {owner, sessionContext: context}))
+        .toBe(true);
+      expect(persistence.loadSessionStateSnapshot(sessionId)?.backgroundKnowledgeReferences).toBeUndefined();
+      refreshPersistedAgentSnapshot({session: agentRoutesCancellationTestSeam.getSession(sessionId)!, sessionId,
+        traceId, query: 'follow-up', result: {conclusion: '', totalDurationMs: 0}, privateContext: NO_PRIVATE_CONTEXT});
+      expect(persistence.loadSessionStateSnapshot(sessionId)?.backgroundKnowledgeReferences)
+        .toEqual([backgroundReference]);
+    } finally {
+      agentRoutesCancellationTestSeam.deleteSession(sessionId);
+      sessionContextManager.remove(sessionId);
+      caseRoots.add(tmpDir);
+    }
+  });
+
+  it('leaves the knowledge reference registry alone when a resume fails', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-resume-failed-'));
+    const traceId = 'trace-resume-failed';
+    const sessionId = 'session-resume-failed';
+    try {
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      SessionPersistenceService.resetForTests();
+      const owner = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
+      await writeTraceMetadata({id: traceId, filename: `${traceId}.trace`, size: 11,
+        uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath, ...owner});
+      setTraceProcessorServiceForTests(await registeredTraceFixture([{traceId, tracePath}]));
+      const persistence = SessionPersistenceService.getInstance();
+      persistence.saveSession({id: sessionId, traceId, traceName: `${traceId}.trace`, question: 'earlier question',
+        createdAt: Date.now() - 1000, updatedAt: Date.now(), messages: [], metadata: owner});
+      const context = new EnhancedSessionContext(sessionId, traceId);
+      context.addTurn('earlier question', {primaryGoal: 'startup', aspects: [], expectedOutputType: 'diagnosis',
+        complexity: 'simple'});
+      // Its pinned Provider Manager profile has been deleted since.
+      expect(persistence.saveSessionStateSnapshot(sessionId, minimalSessionSnapshot(sessionId, traceId, 'completed', {
+        engineState: {kind: 'claude-agent-sdk', provider: {providerId: 'deleted-provider', providerSnapshotHash: 'hash'}},
+        backgroundKnowledgeReferences: [{sourceKind: 'android_internals_pack', packVersion: '1', packFingerprint: 'pack',
+          sourceRevision: 'rev', articleId: 'article', articleTitle: 'Choreographer', sectionId: 'section',
+          sectionHeading: 'Frames', chunkId: 'chunk', chunkHash: 'hash', license: 'CC-BY-4.0'}],
+      }), {owner, sessionContext: context})).toBe(true);
+
+      const resumed = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume')).send({sessionId, traceId});
+      expect(resumed.status).toBe(404);
+      expect(resumed.body.code).toBe('PROVIDER_NOT_FOUND');
+      expect(getSessionBackgroundKnowledgeReferences(sessionId)).toEqual([]);
+    } finally {
+      sessionContextManager.remove(sessionId);
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2772,7 +3221,7 @@ describe('agent route RBAC', () => {
         },
       )).toBe(true);
 
-      const resumeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+      const resumeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
       expect(resumeRes.status).toBe(200);
@@ -2786,7 +3235,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove(sessionId);
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -2889,7 +3338,7 @@ describe('agent route RBAC', () => {
         },
       )).toBe(true);
 
-      const app = makeApp();
+      const app = await makeApp();
       const resumeRes = await analystHeaders(request(app).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
@@ -2921,7 +3370,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove(sessionId);
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 
@@ -3006,7 +3455,7 @@ describe('agent route RBAC', () => {
         },
       )).toBe(true);
 
-      const resumeRes = await analystHeaders(request(makeApp()).post('/api/agent/v1/resume'))
+      const resumeRes = await analystHeaders(request(await makeApp()).post('/api/agent/v1/resume'))
         .send({ sessionId, traceId });
 
       expect(resumeRes.status).toBe(200);
@@ -3020,7 +3469,7 @@ describe('agent route RBAC', () => {
     } finally {
       sessionContextManager.remove(sessionId);
       SessionPersistenceService.resetForTests();
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      caseRoots.add(tmpDir);
     }
   });
 });

@@ -20,8 +20,8 @@ shown only when that channel was selected explicitly.
 
 ### Web UI
 
-The AI Assistant banner and **Settings → Application Update** show the current
-status and the action for the detected distribution. Use **Check now** to
+The AI Assistant banner and the "Application Update" section of **Settings → Connection** show the current
+status and the action for the detected distribution. Use **Check for updates** to
 refresh public release metadata explicitly.
 
 ### CLI

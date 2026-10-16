@@ -16,6 +16,15 @@ SmartPerfetto adds an AI analysis layer to Perfetto traces. Load a trace, ask a
 natural-language question, and get an evidence-backed answer with SQL results,
 Skill outputs, root-cause reasoning, and optimization suggestions.
 
+**Bring your own device or team knowledge.** Add documents describing private
+trace tags, trace passages and version differences from the AI Assistant context
+control → "Manage…" → "Document knowledge bases", index them, then select them
+per turn. The model can look up definitions and cite files and lines; below each
+answer you can see retrieved passages and answer citations separately. This helps
+reduce guesses about private names while SQL/Skills establish current-trace facts.
+Matching text is sent to the AI service you authorize. See the
+[Private Knowledge guide](docs/getting-started/private-knowledge.en.md).
+
 The project is open source and in active development. The Web UI, CLI, backend
 runtime, and Skill system are usable today, while public APIs and internal
 contracts may still evolve.
@@ -33,9 +42,11 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
 | Analyze | [SmartPerfetto](https://github.com/Gracker/SmartPerfetto) | Investigate traces with an AI-assisted Web UI, CLI, reports, sessions, comparisons, and evidence workflow. | [GitHub](https://github.com/Gracker/SmartPerfetto) |
 | Agent analysis | [Perfetto Skills](https://github.com/Gracker/Perfetto-Skills) | Give agents a portable Perfetto analysis Skill for Android, Linux, and Chromium, with selected assets synchronized through pinned workflows. | [GitHub](https://github.com/Gracker/Perfetto-Skills) |
 | Learn | [Android Performance Blog](https://github.com/Gracker/Gracker.github.io) | Teach Perfetto and Systrace analysis through articles, system explanations, and case studies. | [AndroidPerformance.com](https://www.androidperformance.com/) · [GitHub](https://github.com/Gracker/Gracker.github.io) |
-| System knowledge | [Android Internals Knowledge](docs/getting-started/android-internals-knowledge.en.md) | Use the signed bundled public Knowledge Pack, with an optional private `android-internals-wiki` checkout for approved local context. | [Guide](docs/getting-started/android-internals-knowledge.en.md) |
+| System knowledge | [Android Internal Wiki](https://github.com/Gracker/android-internals-wiki) | An alpha knowledge base for Android mechanisms from App to Framework, Native, and Kernel. | [GitHub](https://github.com/Gracker/android-internals-wiki) |
 | Reproduce | [Trace for Blog (SystraceForBlog)](https://github.com/Gracker/SystraceForBlog) | Provide the Perfetto, Systrace, and related case files used by articles for hands-on reproduction. | [GitHub](https://github.com/Gracker/SystraceForBlog) |
 <!-- android-performance-ecosystem:end -->
+
+Register the public Android Internals Wiki (or your own team documents) as a document knowledge base so analyses can search it on demand and cite its sources. See the [Android Internals Knowledge guide](docs/getting-started/android-internals-knowledge.en.md).
 
 ## What It Does
 
@@ -51,6 +62,10 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   reopening the page or restarting the backend.
 - Uses deterministic YAML Skills and Markdown strategies so factual evidence,
   model interpretation, and report provenance remain separate.
+- Relates critical tasks to CPU frequency, system load, thread states, CPU
+  placement and scheduling evidence when the question needs them. Scene-wide
+  investigations start with the strategy's entry Skill when its trace and
+  process prerequisites are satisfied; missing evidence remains explicit.
 - Optionally selects registered local source per run, uses bounded on-demand
   lookup without requiring an index, and separates trace occurrence from
   `CodeRef` mechanism evidence in safe Web, report, CLI, snapshot, and API
@@ -59,6 +74,20 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   for excluded paths and optional indexing. Relevant snippets are sent to the configured
   AI service; source lookup adds analysis time. Results and quoted source can be
   retained in local history and exports; AI-service retention depends on its policy.
+- Optionally selects your device or team document knowledge bases per turn to
+  explain private tags and trace passages, searched on demand and cited; a
+  knowledge base is background, never a substitute for current-trace evidence.
+  See [Private Knowledge](docs/getting-started/private-knowledge.en.md) and
+  [Android Internals Knowledge](docs/getting-started/android-internals-knowledge.en.md).
+- Delivers first, verifies after: the Claude and OpenAI runtimes stream the
+  answer as a draft while it is written. A finished answer remains readable
+  while an eligible, budgeted no-tool review checks it. Stopping that review
+  keeps the answer; full and forced stops have separate semantics.
+- Opens a critical-path wait-chain drawer on a selected `thread_state`, and a
+  flamegraph page for CPU call-stack hotspots, both with a rule-based fallback
+  AI summary. See [Critical Path And Flamegraph](docs/getting-started/critical-path-and-flamegraph.en.md).
+- Captures traces from a connected Android device with `smp capture`, from
+  presets or your own config, optionally analyzing right after capture.
 - Sends UI selections as identity and time bounds only; the backend re-queries
   descriptive facts and runs `/anr` or `/jank` through the same evidence and
   verification pipeline.
@@ -94,6 +123,20 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   smp doctor
   ```
 
+If npm reports that dependency install scripts were blocked or skipped, review
+those scripts and retry with approval limited to the required packages:
+
+```bash
+npm install -g @gracker/smartperfetto --allow-scripts=better-sqlite3,opencode-ai
+```
+
+`better-sqlite3` provides the native SQLite binding used by core CLI commands;
+`opencode-ai` needs its install script when selecting the OpenCode runtime.
+Package-publisher approvals do not approve scripts for your installation. See
+[npm's install policy](https://docs.npmjs.com/cli/install/) and the
+[CLI installation guide](docs/reference/cli.en.md#when-npm-blocks-install-scripts)
+for project-local approval and doctor/query checks.
+
 The complete prerequisites and distribution choices are in the
 [Quick Start](docs/getting-started/quick-start.en.md).
 
@@ -109,6 +152,8 @@ keeping Qoder PAT or `qodercli` authentication separate. Saved providers also
 refresh their model suggestions from supported provider catalogs with a bounded
 cache; unsupported or unavailable catalogs keep the curated preset list.
 
+Pi users can configure reasoning in model JSON; see the [Pi configuration](docs/getting-started/configuration.en.md#llm-configuration) for provider defaults, explicit off and supported effort mappings.
+
 ### 3. Run Your First Analysis
 
 1. Open the launcher's printed `Open:` URL, or
@@ -119,9 +164,14 @@ cache; unsupported or unavailable catalogs keep the curated preset list.
 4. Ask a question such as `Analyze scrolling jank`, `Why is startup slow?`, or
    `Analyze the ANR in this trace`.
 
-Server verification details are collapsed by default; expand them to read the full record. Verification warnings remain visible.
+Server verification details are collapsed by default; expand them to read the full record. Verification warnings remain visible. Completed analyses are delivered normally, with verification concerns and coverage gaps labelled separately for users to assess against the evidence.
+Web, CLI and exported reports retain each claim's evidence and verification
+status. A malformed claim leaves other valid claims eligible for checking;
+missing proof and a contradicted claim remain distinct outcomes.
+Explicitly bound numeric displays are checked against captured evidence before semantic review, including unit conversion and rounding; model agreement cannot override a wrong display. Raw citations and propositions retain full precision. Correct formatting proves neither scope nor causality; older output retains the conservative rounding-warning path.
 Final conclusions retain all material findings, supporting evidence and limitations within the requested scope, even when intermediate tables are hidden. Length alone does not justify dropping findings or claims.
 Final answers prefer compact tables for comparable metrics, phase timings and trace differences, alongside explanations and evidence references. Single values and questions better answered in prose remain free-form.
+HTML reports retain captured table columns, nested values and provenance. Metric tables show declared units and explicit warning labels; ordinary observations carry no health verdict. Save HTML uses a local browser download, and printing expands captured details. See [HTML analysis reports](docs/getting-started/features.en.md#5-html-analysis-reports) for historical report limits.
 
 Each round shows its analysis process and steps above its final conclusion,
 which stays before the next round's question.
@@ -154,6 +204,12 @@ a report body can still fail evidence or declaration checks. See the
 
 ## Contributing And Support
 
+GitHub Actions runs clean Linux build/contract checks on every PR/main push,
+with Rust, macOS/Windows and Docker checks scoped to affected paths. Run the
+complete `npm run verify:pr` locally before opening or landing a PR; full hosted
+regression is available by manually running `backend-agent-regression-gate.yml`
+with `full=true`. See [verification ownership](.claude/rules/testing.md#hosted-ci-and-local-verification).
+
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Use
 [GitHub Issues](https://github.com/Gracker/SmartPerfetto/issues) for bugs and
 feature requests, and the
@@ -167,9 +223,3 @@ support details are in [docs/sponsor.en.md](docs/sponsor.en.md).
 submodule remains under [Apache-2.0](https://github.com/google/perfetto/blob/main/LICENSE).
 For commercial licensing without AGPL obligations, contact the maintainer on
 WeChat: `553000664`.
-
-## System investigation across scenes
-
-Performance investigations relate critical tasks to CPU frequency, system load, thread states, CPU placement and scheduling evidence when relevant to the question. Root-cause strategy details are read in full. Answers report missing evidence explicitly; investigation coverage is assessed independently of report headings and native runtime completion. See [Basic Usage](docs/getting-started/usage.en.md).
-
-The conclusion body is retained in full. Web, CLI and exported reports expose each claim's evidence and server verification details, including failed or unchecked claims. Finding a source does not establish that a claim or root cause is verified.

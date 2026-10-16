@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import request from 'supertest';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
 import {parseConclusionContractDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
@@ -21,30 +22,53 @@ import {computePaths, ensureLayout, ensureSessionLayout, sessionPaths} from '../
 import type {Renderer} from '../../cli-user/repl/renderer';
 import {
   authenticate,
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
 } from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID} from '../../utils/localDevIdentity';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
 } from '../../middleware/workspaceRouteContext';
 import analysisResultRoutes from '../../routes/analysisResultRoutes';
-import {
+import agentRoutes, {
+  agentRoutesCancellationTestSeam,
   agentRoutesPrivacyProjectionTestSeam,
 } from '../../routes/agentRoutes';
 import reportRoutes, {persistReport, reportStore} from '../../routes/reportRoutes';
 import {backendLogPath} from '../../runtimePaths';
 import {buildAgentDrivenReportData} from '../agentReportData';
 import {persistCompletedAnalysisResultSnapshot} from '../analysisResultSnapshotPipeline';
-import {sanitizeSourceReference, sanitizeSourceUseDecision, type SourceUseDecisionV1} from '../codebase/sourceUseDecision';
+import {
+  sanitizeSourceReference,
+  sanitizeSourceUseDecision,
+  sourceReferenceCounts,
+  type SourceUseDecisionV1,
+} from '../codebase/sourceUseDecision';
 import {createDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {captureEvidenceTable} from '../evidence/evidenceCapture';
+import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {finalizeAnalysisResult} from '../finalizeAnalysisResult';
 import {copyAnalysisDeliveryFields} from '../security/analysisDeliveryProjection';
 import {HTMLReportGenerator} from '../htmlReportGenerator';
 
+const loopbackServers = createLoopbackServerFixture();
+
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
+const routeOwner = {tenantId: DEFAULT_TENANT_ID, workspaceId: 'workspace-source-surfaces', userId: DEFAULT_DEV_USER_ID};
+const routeEnvKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', ENTERPRISE_FEATURE_FLAG_ENV] as const;
+
+async function agentRouteGet(url: string) {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/agent/v1', agentRoutes);
+  return request(await loopbackServers.listen(app)).get(`/api/agent/v1${url}`)
+    .set('X-SmartPerfetto-SSO-User-Id', routeOwner.userId)
+    .set('X-SmartPerfetto-SSO-Email', 'source-surfaces@example.test')
+    .set('X-SmartPerfetto-SSO-Tenant-Id', routeOwner.tenantId)
+    .set('X-SmartPerfetto-SSO-Workspace-Id', routeOwner.workspaceId)
+    .set('X-SmartPerfetto-SSO-Roles', 'analyst')
+    .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,agent:run,report:read');
+}
 
 function rendererStub(): Renderer {
   return {
@@ -72,7 +96,6 @@ function normalizedDecision(value: any) {
 function normalizedBindings(value: any) {
   return (value || []).map((binding: any) => ({
     claimId: binding.claimId,
-    mechanismStatus: binding.mechanismStatus,
     sourceReferenceIds: binding.sourceReferenceIds,
     traceEvidenceRefIds: binding.traceEvidenceRefIds,
   }));
@@ -101,7 +124,7 @@ async function finalizeCurrentSurfaceFixture(draft: AnalysisResult, envelope: Da
   const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: getRegisteredScenes(), overlayGeneration: runId});
   const candidate = {runId, attemptId: 'attempt-1', candidateRef: 'source-surfaces:1',
     conclusionFingerprint: analysisDeliveryFingerprint(draft.conclusion)};
-  attachFinalizationContext(draft, {runId, sessionId: draft.sessionId, deadlineMs: Date.now() + 10_000,
+  attachFinalizationContext(draft, {runId, sessionId: draft.sessionId, deadlineMs: Date.now() + 600_000,
     strategyRegistry: registry, traceIdentity: {currentTraceId: traceId}, sourceUse,
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', taskKind: 'fact', sceneId: 'general',
       scope: 'bounded_question', recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'existing_only',
@@ -128,7 +151,18 @@ describe('source provenance output surface matrix', () => {
   const cliSurfaceEnv = path.join(cliSurfaceRoot, 'empty.env');
   fs.writeFileSync(cliSurfaceEnv, '', 'utf8');
 
-  afterAll(() => fs.rmSync(cliSurfaceRoot, {recursive: true, force: true}));
+  const originalRouteEnv = new Map(routeEnvKeys.map(key => [key, process.env[key]]));
+  beforeAll(() => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+  });
+  afterAll(() => {
+    fs.rmSync(cliSurfaceRoot, {recursive: true, force: true});
+    for (const [key, value] of originalRouteEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
 
   it.each(['src/main/Foo.kt', 'src/功能目录/My Feature/Foo.kt'])(
     'keeps current-run source %s across SSE, report, CLI, snapshot, and API readback', async filePath => {
@@ -144,6 +178,14 @@ describe('source provenance output surface matrix', () => {
       symbol: 'Foo.run',
       lookupKind: 'body',
     })!;
+    // A location only: it lies outside the read body, so it is located but not read.
+    const searchHit = sanitizeSourceReference({
+      referenceId: 'lookup-surface-hit',
+      codebaseId: 'safe-app',
+      filePath: 'src/main/Other.kt',
+      lineRange: {start: 3, end: 4},
+      lookupKind: 'search_hit',
+    })!;
     const sourceUseDecision = {
       schemaVersion: 'source_use_decision@1' as const,
       codeAwareMode: 'provider_send' as const,
@@ -158,9 +200,10 @@ describe('source provenance output surface matrix', () => {
         rootPath: '/Users/chris/private-source',
         snippet: 'SECRET_SNIPPET_CANARY',
         query: 'SECRET_QUERY_CANARY',
-      } as any],
+      } as any, searchHit],
     };
-    const body = 'The trace reports 120 ms blocked.';
+    // The answer cites the bound location; the quoted form keeps a spaced path whole.
+    const body = `The trace reports 120 ms blocked in \`${filePath}:L10-L12\`.`;
     const traceReference = {evidenceRefId: 'trace-evidence-1', rowIndex: 0, column: 'blocked_ms', value: 120};
     const declaration = parseConclusionContractDeclaration({
       schemaVersion: 'conclusion_contract_v1',
@@ -181,11 +224,10 @@ describe('source provenance output surface matrix', () => {
       sourceReferences: sourceUseDecision.references,
       sourceClaimBindings: [{
         claimId: 'claim-1',
-        mechanismStatus: 'compatible',
         sourceReferenceIds: [reference.id],
         traceEvidenceRefIds: ['trace-evidence-1'],
         reason: 'SECRET_BINDING_REASON_CANARY',
-      }],
+      } as any],
       uncertainties: [],
       nextSteps: [],
     });
@@ -221,9 +263,10 @@ describe('source provenance output surface matrix', () => {
         conclusionFingerprint: analysisDeliveryFingerprint(body)});
       expect(result.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', status: 'passed', passed: true,
         claimResults: [{claimId: 'claim-1', status: 'verified', deterministicProof: {status: 'proved'}}]});
-      expect(result.sourceClaimVerificationResult?.bindings).toEqual([expect.objectContaining({
-        claimId: 'claim-1', mechanismStatus: 'compatible', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1'],
-      })]);
+      expect(result.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2', status: 'passed',
+        claims: [{claimId: 'claim-1', status: 'trace_linked', sourceReferenceIds: [reference.id],
+          traceEvidenceRefIds: ['trace-evidence-1']}],
+        citations: [{filePath, status: 'verified_body', sourceReferenceId: reference.id}]});
       expect(result.conclusion).toBe(body);
       expect(JSON.stringify(result)).not.toContain('SECRET_');
       expect(JSON.stringify(result)).not.toContain('/Users/chris/private-source');
@@ -253,6 +296,7 @@ describe('source provenance output surface matrix', () => {
           }),
           createdAt: 1,
         } as any,
+        true,
       );
       const sseResult = JSON.parse(sseEvent.eventData).data;
       const sseContract = sseResult.conclusionContract;
@@ -292,6 +336,7 @@ describe('source provenance output surface matrix', () => {
           },
         } as any,
         result,
+        privateContext: {codebase: true, knowledge: false},
       });
       expect(reportData.result.claimVerificationResult).toEqual(result.claimVerificationResult);
       const html = new HTMLReportGenerator().generateAgentDrivenHTML(reportData);
@@ -303,6 +348,7 @@ describe('source provenance output surface matrix', () => {
         sessionId: result.sessionId,
         runId: 'run-source-surfaces',
         traceId: 'trace-source-surfaces',
+        privateContext: {codebase: true, knowledge: false},
       });
 
       const paths = computePaths(cliHome);
@@ -377,7 +423,7 @@ describe('source provenance output surface matrix', () => {
         expect(rendered).toContain(reference.id);
         expect(rendered).toContain(filePath);
         expect(rendered).toContain('claim-1');
-        expect(rendered).toContain('compatible');
+        expect(rendered).toContain('trace_linked');
         expect(rendered).not.toContain('/Users/chris/private-source');
         expect(rendered).not.toContain('SECRET_');
       }
@@ -401,7 +447,7 @@ describe('source provenance output surface matrix', () => {
         claimVerificationResult: result.claimVerificationResult,
         identityResolutions: result.identityResolutions,
         dataEnvelopes: [envelope],
-        privateKnowledge: true,
+        privateContext: {codebase: true, knowledge: false},
         outputLanguage: 'en',
         confidence: result.confidence,
       });
@@ -410,10 +456,10 @@ describe('source provenance output surface matrix', () => {
       expect(snapshot!.claimVerificationResult).toEqual(wireResult.claimVerificationResult);
       expect(snapshot!.summary.completion).toEqual(wireResult.completion);
 
-      const reportResponse = await request(express().use('/api/reports', reportRoutes))
+      const reportResponse = await request(await loopbackServers.listen(express().use('/api/reports', reportRoutes)))
         .get(`/api/reports/${reportId}`)
         .expect(200);
-      const snapshotResponse = await request(analysisResultApp())
+      const snapshotResponse = await request(await loopbackServers.listen(analysisResultApp()))
         .get(`/api/workspaces/workspace-source-surfaces/analysis-results/${snapshot!.id}`)
         .set('x-tenant-id', DEFAULT_TENANT_ID)
         .expect(200);
@@ -421,9 +467,72 @@ describe('source provenance output surface matrix', () => {
       expect(snapshotResponse.body.snapshot.claimVerificationResult).toEqual(wireResult.claimVerificationResult);
       expect(snapshotResponse.body.snapshot.summary.completion).toEqual(wireResult.completion);
 
+      // Every client read of the decision carries the same derived counts; no stored copy holds them.
+      const expectedCounts = sourceReferenceCounts(sanitizeSourceUseDecision(sourceUseDecision)!.references);
+      expect(expectedCounts).toEqual({located: 2, read: 1});
+      const routeSession = {sessionId: result.sessionId, traceId: 'trace-source-surfaces', query: 'analyze Foo.run',
+        status: 'completed', createdAt: 1, lastActivityAt: 1, ...routeOwner, outputLanguage: 'en',
+        codeAwareMode: 'provider_send', codebaseIds: ['safe-app'], result, hypotheses: [], dataEnvelopes: [envelope],
+        scenes: [], sseClients: [], sseEventBuffer: [], sseEventSeq: 0, completedAnalysisFinalArtifacts: {},
+        runSequence: 1, logger: {info: () => {}, warn: () => {}, error: () => {}, getLogFilePath: () => '/logs/s.jsonl'},
+      } as any;
+      agentRoutesCancellationTestSeam.setSession(result.sessionId, routeSession);
+      const liveEvent = agentRoutesPrivacyProjectionTestSeam.ensureCompletedAnalysisSseEvents(routeSession)
+        .find(event => event.eventType === 'analysis_completed');
+      const liveData = JSON.parse(liveEvent!.eventData).data;
+      const statusResponse = await agentRouteGet(`/${result.sessionId}/status`);
+      expect(statusResponse.status).toBe(200);
+      const reportRouteResponse = await agentRouteGet(`/${result.sessionId}/report`);
+      expect(reportRouteResponse.status).toBe(200);
+      const turnDetail = agentRoutesPrivacyProjectionTestSeam.buildTurnDetail({id: 'turn-1', turnIndex: 1,
+        timestamp: 1, query: 'analyze Foo.run', completed: true, findings: [], intent: {primaryGoal: 'analyze Foo.run'},
+        result: {...wireResult, message: wireResult.conclusion}} as any, result.sessionId, 'en');
+      const cliJsonExport = path.join(tempRoot, 'cli-export.json');
+      const exportLog = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        expect(await runReportExportCommand({sessionId: result.sessionId, format: 'json', turn: 1, out: cliJsonExport,
+          envFile: cliSurfaceEnv, sessionDir: cliHome})).toBe(0);
+      } finally {
+        exportLog.mockRestore();
+      }
+      const cliJson = JSON.parse(fs.readFileSync(cliJsonExport, 'utf8'));
+      const clientDecisions = {
+        'sse-live': liveData.sourceUseDecision,
+        'sse-live-contract': liveData.conclusionContract.sourceUseDecision,
+        'sse-replay': sseResult.sourceUseDecision,
+        'sse-replay-contract': sseContract.sourceUseDecision,
+        status: statusResponse.body.result.sourceUseDecision,
+        'status-contract': statusResponse.body.result.conclusionContract.sourceUseDecision,
+        'turn-detail': turnDetail.result?.sourceUseDecision,
+        'turn-detail-contract': (turnDetail.result as any)?.conclusionContract.sourceUseDecision,
+        report: reportRouteResponse.body.report.sourceUseDecision,
+        'report-contract': reportRouteResponse.body.report.conclusionContract.sourceUseDecision,
+        'snapshot-api-contract': apiContract.sourceUseDecision,
+        'cli-json': cliJson.sourceUseDecision,
+      };
+      for (const [name, decision] of Object.entries(clientDecisions)) {
+        expect({name, counts: decision?.referenceCounts}).toEqual({name, counts: expectedCounts});
+      }
+      const renderedCounts = JSON.stringify({referenceCounts: expectedCounts}, null, 2).split('\n').slice(1, -1)
+        .map(line => `    ${line}`).join('\n');
+      for (const rendered of [cliShow, cliMarkdown]) expect(rendered).toContain(renderedCounts);
+      const storedDecisions = {
+        result: result.sourceUseDecision,
+        'result-contract': contract.sourceUseDecision,
+        'cli-file': cliDecision,
+        'cli-evidence': cliEvidence.evidence.sourceUseDecision,
+        snapshot: snapshotContract.sourceUseDecision,
+      };
+      for (const [name, decision] of Object.entries(storedDecisions)) {
+        expect({name, stored: decision !== undefined, counts: (decision as any)?.referenceCounts})
+          .toEqual({name, stored: true, counts: undefined});
+      }
+      expect(JSON.stringify(sanitizeSourceUseDecision(statusResponse.body.result.sourceUseDecision)))
+        .toBe(JSON.stringify(sanitizeSourceUseDecision(result.sourceUseDecision)));
+
       const expectedDecision = normalizedDecision(wireResult.sourceUseDecision);
       const expectedBindings = normalizedBindings(wireResult.conclusionContract?.sourceClaimBindings);
-      expect(expectedBindings).toEqual([{claimId: 'claim-1', mechanismStatus: 'compatible',
+      expect(expectedBindings).toEqual([{claimId: 'claim-1',
         sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1']}]);
       const surfaces = [
         {name: 'sse', decision: sseContract.sourceUseDecision, bindings: sseContract.sourceClaimBindings},
@@ -470,6 +579,8 @@ describe('source provenance output surface matrix', () => {
       expect(durableArtifacts).not.toContain('/Users/chris/private-source');
       expect(durableArtifacts).not.toContain('SECRET_');
     } finally {
+      agentRoutesCancellationTestSeam.deleteSession('session-source-surfaces');
+      await loopbackServers.close();
       if (originalDbPath === undefined) {
         delete process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
       } else {

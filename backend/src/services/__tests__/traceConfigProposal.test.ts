@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from '@jest/globals';
 import { buildTraceConfigProposal } from '../traceConfigProposal';
+import {LOADING_ROUTING_CASES} from '../../../tests/helpers/traceConfigProposalRoutingCases';
 
 describe('buildTraceConfigProposal', () => {
   it('routes Camera first-frame requests ahead of generic startup', () => {
@@ -88,6 +89,93 @@ describe('buildTraceConfigProposal', () => {
       'android.power',
     ]));
     expect(proposal.config.textproto).toContain('name: "android.power"');
+  });
+
+  it.each([
+    'analyze the java heap leak',
+    'capture an hprof heap dump',
+    'find the memory leak in the settings screen',
+    '分析 Java 堆内存泄漏',
+  ])('proposes memory-profile for heap requests with a concrete app: %s', (request) => {
+    const proposal = buildTraceConfigProposal({
+      request,
+      app: 'com.example.app',
+      outputLanguage: 'en',
+    });
+
+    expect(proposal.preset).toBe('memory-profile');
+    expect(proposal.intent).toBe('memory');
+    expect(proposal.confidence).toBe('high');
+    expect(proposal.command.capture).toEqual(expect.arrayContaining(['--preset', 'memory-profile', '--app', 'com.example.app']));
+    expect(proposal.config.textproto).toContain('name: "android.java_hprof"');
+    expect(proposal.config.dataSources).toEqual([
+      'android.packages_list',
+      'linux.process_stats',
+      'android.heapprofd',
+      'android.java_hprof',
+      'linux.ftrace',
+    ]);
+    expect(proposal.config.bufferSizeKb).toBe(262144);
+    expect(proposal.warnings.join('\n')).toContain('profileable or debuggable');
+    expect(proposal.warnings.join('\n')).toContain('pauses the app');
+  });
+
+  it('keeps heap requests without an app on the system-wide memory preset and says why', () => {
+    const proposal = buildTraceConfigProposal({
+      request: 'analyze the java heap leak',
+      outputLanguage: 'en',
+    });
+
+    expect(proposal.preset).toBe('memory');
+    expect(proposal.confidence).toBe('medium');
+    expect(proposal.config.textproto).not.toContain('android.java_hprof');
+    expect(proposal.rationale.join('\n')).toContain('falls back to the system-wide memory preset');
+    expect(proposal.rationale.join('\n')).toContain('--app <package>');
+
+    const zh = buildTraceConfigProposal({ request: '分析内存泄漏', app: '*', outputLanguage: 'zh-CN' });
+    expect(zh.preset).toBe('memory');
+    expect(zh.rationale.join('\n')).toContain('回退到系统级 memory 预设');
+  });
+
+  it('falls back for a glob app and raises a too-short heap-profile capture instead of throwing', () => {
+    const glob = buildTraceConfigProposal({ request: 'java heap dump', app: 'com.example.*', outputLanguage: 'en' });
+    expect(glob.preset).toBe('memory');
+
+    const short = buildTraceConfigProposal({
+      request: 'java heap dump', app: 'com.example.app', durationSeconds: 5, outputLanguage: 'en',
+    });
+    expect(short.preset).toBe('memory-profile');
+    expect(short.config.textproto).toContain('duration_ms: 20000');
+    expect(short.warnings.join('\n')).toContain('raised from 5 s to 20 s');
+  });
+
+  it('does not treat non-heap leaks as heap-profile requests', () => {
+    expect(buildTraceConfigProposal({ request: 'wakelock leak draining battery', app: 'com.example.app' }).preset)
+      .toBe('power');
+    expect(buildTraceConfigProposal({ request: 'inspect memory pressure and oom behavior', app: 'com.example.app' }).preset)
+      .toBe('memory');
+  });
+
+  it.each(LOADING_ROUTING_CASES)('routes "$request" to $preset ($why)', ({request, preset}) => {
+    expect(buildTraceConfigProposal({request}).preset).toBe(preset);
+  });
+
+  it('maps content-loading requests to the loading preset with network, IO and binder evidence', () => {
+    const proposal = buildTraceConfigProposal({request: '分析页面加载为什么慢', app: 'com.example.app'});
+    expect(proposal.preset).toBe('loading');
+    expect(proposal.intent).toBe('network');
+    const textproto = proposal.config.textproto;
+    for (const expected of [
+      'name: "android.network_packets"',
+      'name: "android.input.inputevent"',
+      'name: "android.surfaceflinger.frametimeline"',
+      'ftrace_events: "sched/sched_waking"',
+      'ftrace_events: "binder/binder_transaction"',
+      'ftrace_events: "block/block_rq_issue"',
+      'atrace_categories: "network"',
+      'atrace_categories: "webview"',
+      'atrace_apps: "com.example.app"',
+    ]) expect(textproto).toContain(expected);
   });
 
   it('falls back to overview with low confidence when no intent matches', () => {

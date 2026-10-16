@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "b72b379e1c25c01e75bb82600d6618f484f8effdc2ce8d7474cf470f1d14baa5",
+    "sha256": "936c5dfeb71b5592cca6f07253622b524a0117a5254c0aaeca10cd1abc42308d",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "power-thermal-v1",
     "output": "Trace/.generated/constructed/power-thermal/trace.pftrace",
-    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
   },
   "coverage": {
     "skills": [
@@ -142,6 +142,7 @@
           "doze_state",
           "wakelock_summary",
           "wakeup_frequency",
+          "app_background_power",
           "screen_off_cpu",
           "suspend_wakeup",
           "job_scheduler",
@@ -213,7 +214,8 @@
           "max_freq_mhz",
           "downshift_count",
           "upshift_count",
-          "downshift_ratio_pct"
+          "downshift_ratio_pct",
+          "off_pct"
         ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },

@@ -6,7 +6,7 @@ import {mkdtemp, rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {TraceProcessorService} from '../../services/traceProcessorService';
-import {resolveTraceCase} from '../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../tests/helpers/traceCorpus';
 import {probeTraceCompleteness} from '../traceCompletenessProber';
 
 describe('TraceCompleteness CapabilityManifest production integration', () => {

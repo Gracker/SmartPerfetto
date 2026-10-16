@@ -52,7 +52,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标应用包名（支持 GLOB），留空分析所有 DMA Buffer"
+    description: "目标应用包名（精确匹配，含 name:* 子进程），留空分析所有 DMA Buffer"
   - name: min_size_mb
     type: number
     required: false
@@ -147,7 +147,7 @@ steps:
         ROUND(MAX(buf_size) / 1024.0 / 1024.0, 2) AS max_single_alloc_mb
       FROM android_dmabuf_allocs
       WHERE (CASE WHEN '${package}' != ''
-                  THEN process_name GLOB '*${package}*'
+                  THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                   ELSE 1 END)
         AND (${start_ts} IS NULL OR ts > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -186,7 +186,7 @@ steps:
           ROW_NUMBER() OVER (PARTITION BY upid ORDER BY ts DESC) AS rn
         FROM android_memory_cumulative_dmabuf
         WHERE (CASE WHEN '${package}' != ''
-                    THEN process_name GLOB '*${package}*'
+                    THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                     ELSE 1 END)
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -197,7 +197,7 @@ steps:
           MAX(value) AS peak_value
         FROM android_memory_cumulative_dmabuf
         WHERE (CASE WHEN '${package}' != ''
-                    THEN process_name GLOB '*${package}*'
+                    THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                     ELSE 1 END)
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -250,7 +250,7 @@ steps:
       FROM android_dmabuf_allocs
       WHERE buf_size / 1024.0 / 1024.0 >= COALESCE(${min_size_mb|1}, 1)
         AND (CASE WHEN '${package}' != ''
-                  THEN process_name GLOB '*${package}*'
+                  THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                   ELSE 1 END)
         AND (${start_ts} IS NULL OR ts > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -297,7 +297,7 @@ steps:
         ROUND(SUM(CASE WHEN buf_size < 0 THEN -buf_size ELSE 0 END) / 1024.0 / 1024.0, 2) AS free_mb
       FROM android_dmabuf_allocs
       WHERE (CASE WHEN '${package}' != ''
-                  THEN process_name GLOB '*${package}*'
+                  THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                   ELSE 1 END)
         AND (${start_ts} IS NULL OR ts > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -338,7 +338,7 @@ steps:
       FROM android_dmabuf_allocs
       WHERE buf_size > 0
         AND (CASE WHEN '${package}' != ''
-                  THEN process_name GLOB '*${package}*'
+                  THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                   ELSE 1 END)
         AND (${start_ts} IS NULL OR ts > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -442,7 +442,7 @@ steps:
         ROUND(MAX(lifetime) / 1e9, 2) AS max_lifetime_sec
       FROM lifecycles
       WHERE (CASE WHEN '${package}' != ''
-                  THEN process_name GLOB '*${package}*'
+                  THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                   ELSE 1 END)
       GROUP BY process_name
       ORDER BY not_freed_count DESC
@@ -489,7 +489,7 @@ steps:
           ROUND(SUM(buf_size) / 1024.0 / 1024.0, 2) AS net_alloc_mb
         FROM android_dmabuf_allocs
         WHERE (CASE WHEN '${package}' != ''
-                    THEN process_name GLOB '*${package}*'
+                    THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                     ELSE 1 END)
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -500,7 +500,7 @@ steps:
           FROM android_dmabuf_allocs
           WHERE buf_size > 0
             AND (CASE WHEN '${package}' != ''
-                      THEN process_name GLOB '*${package}*'
+                      THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                       ELSE 1 END)
             AND (${start_ts} IS NULL OR ts > ${start_ts})
             AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -536,7 +536,7 @@ steps:
         FROM android_dmabuf_allocs
         WHERE buf_size > 0
           AND (CASE WHEN '${package}' != ''
-                    THEN process_name GLOB '*${package}*'
+                    THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                     ELSE 1 END)
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -591,7 +591,7 @@ steps:
         WHERE buf_size > 0
           AND buf_size / 1024.0 / 1024.0 > 50
           AND (CASE WHEN '${package}' != ''
-                    THEN process_name GLOB '*${package}*'
+                    THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                     ELSE 1 END)
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})

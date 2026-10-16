@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {afterAll, beforeAll, describe, expect, it} from '@jest/globals';
+import {afterAll, beforeAll, expect, it} from '@jest/globals';
 import {
   createSkillEvaluator,
   describeWithTrace,

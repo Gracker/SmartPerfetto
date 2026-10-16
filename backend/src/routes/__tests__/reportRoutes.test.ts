@@ -2,14 +2,62 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {afterEach} from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 
 import * as reportRoutes from '../reportRoutes';
+import {REPORT_DOCUMENT_CSP, withReportDocumentFilename} from '../../services/reportDocumentAssets';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+afterEach(async () => {
+  await loopbackServers.close();
+});
+
+const loopbackServers = createLoopbackServerFixture();
 
 const {upgradeLegacyReportHtml} = reportRoutes;
 
 describe('upgradeLegacyReportHtml', () => {
+  test('keeps an opaque origin and network isolation while allowing explicit downloads', () => {
+    expect(REPORT_DOCUMENT_CSP).toContain('sandbox allow-scripts allow-downloads;');
+    expect(REPORT_DOCUMENT_CSP).not.toContain('allow-same-origin');
+    expect(REPORT_DOCUMENT_CSP).toContain("connect-src 'none'");
+    expect(REPORT_DOCUMENT_CSP).toContain("form-action 'none'");
+  });
+
+  test('upgrades old save controls once without mistaking inert marker text for assets', () => {
+    const legacy = `<html><head><style>body {}</style></head><body><div class="container">
+      <p>smartperfetto-report-layout-fix-v4 smartperfetto-report-document-v1</p>
+      <script>async function saveSmartPerfettoReport() {
+        await fetch('/export');
+      }
+      function toggleTableRows() {}</script></div></body></html>`;
+    const upgraded = upgradeLegacyReportHtml(legacy);
+    expect(upgraded).not.toContain("fetch('/export')");
+    expect(upgraded).toContain('URL.createObjectURL');
+    expect(upgraded).toContain('document.documentElement.outerHTML');
+    expect(upgraded).toContain('<noscript>');
+    expect(upgradeLegacyReportHtml(upgraded)).toBe(upgraded);
+  });
+
+  test('escapes and replaces the suggested filename without adding markup', () => {
+    const filename = '示例 <Trace> "name".html';
+    const html = withReportDocumentFilename('<html><body data-report-filename="old.html"><p>body</p></body></html>', filename);
+    expect(html).toContain('data-report-filename="示例 &lt;Trace&gt; &quot;name&quot;.html"');
+    expect(html).not.toContain('old.html');
+    expect(withReportDocumentFilename(html, filename)).toBe(html);
+  });
+
+  test('does not rewrite captured text that resembles an old report handler', () => {
+    const captured = `async function saveSmartPerfettoReport() {
+      await fetch('/captured-text');
+    }
+    function toggleTableRows() {}`;
+    const html = `<html><head><style></style></head><body><div class="container"><pre>${captured}</pre></div></body></html>`;
+    expect(upgradeLegacyReportHtml(html)).toContain(`<pre>${captured}</pre>`);
+  });
+
   test('injects causal-map upgrader into legacy mermaid reports', () => {
     const legacy = `
       <html>
@@ -65,8 +113,8 @@ A[foo] --> B[bar]</pre>
 
     const upgraded = upgradeLegacyReportHtml(legacy);
     expect(upgraded).toContain('smartperfetto-report-layout-fix-v1');
-    expect(upgraded).toContain('smartperfetto-report-layout-fix-v3');
-    expect(upgraded.match(/smartperfetto-report-layout-fix-v3/g)).toHaveLength(1);
+    expect(upgraded).toContain('smartperfetto-report-layout-fix-v4');
+    expect(upgraded.match(/smartperfetto-report-layout-fix-v4/g)).toHaveLength(1);
     expect(upgraded).toContain('.metrics-grid');
     expect(upgraded).toContain('grid-template-columns: repeat(auto-fit, minmax(180px, 1fr))');
     expect(upgraded).toContain('.summary-box > strong');
@@ -75,7 +123,7 @@ A[foo] --> B[bar]</pre>
     expect(upgraded).toContain('font-size: 11px');
     const upgradedAgain = upgradeLegacyReportHtml(upgraded);
     expect(upgradedAgain).toBe(upgraded);
-    expect(upgradedAgain.match(/smartperfetto-report-layout-fix-v3/g)).toHaveLength(1);
+    expect(upgradedAgain.match(/smartperfetto-report-layout-fix-v4/g)).toHaveLength(1);
   });
 
   test('removes the Mermaid library gate from persisted causal-map reports', () => {
@@ -120,11 +168,12 @@ A[foo] --> B[bar]</pre></div>
   });
 
   test('serves the shipped Mermaid runtime through the same-origin report route', async () => {
-    expect((reportRoutes as any).REPORT_DOCUMENT_CSP).toContain("script-src 'self' 'unsafe-inline'");
+    expect(REPORT_DOCUMENT_CSP).toContain("script-src 'self' 'unsafe-inline'");
     const app = express();
     app.use('/api/reports', reportRoutes.default);
+    const server = await loopbackServers.listen(app);
 
-    const response = await request(app).get('/api/reports/assets/mermaid.min.js');
+    const response = await request(server).get('/api/reports/assets/mermaid.min.js');
 
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toContain('application/javascript');
@@ -135,8 +184,9 @@ A[foo] --> B[bar]</pre></div>
   test('preserves static-file byte range semantics for the Mermaid runtime route', async () => {
     const app = express();
     app.use('/api/reports', reportRoutes.default);
+    const server = await loopbackServers.listen(app);
 
-    const response = await request(app)
+    const response = await request(server)
       .get('/api/reports/assets/mermaid.min.js')
       .set('Range', 'bytes=0-15');
 

@@ -24,22 +24,38 @@ import {
   formatDisplayContractIssue,
   validateSkillDisplayContract,
 } from '../../services/skillEngine/displayContractValidator';
+import { validateSkillDefinitionInProcess } from '../../services/selfEvolution/inProcessValidator';
+import { registryCauseWordingReaders, type CauseWordingReaders } from '../../services/skillEngine/causeWordingEvidence';
 import {
-  extractReferencedSkillIdsFromStrategyText,
-  validateSkillDefinitionInProcess,
-} from '../../services/selfEvolution/inProcessValidator';
+  UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys, unknownVendorOverrideKeys,
+} from '../../services/skillEngine/skillTopLevelKeys';
+import {
+  checkStrategySkillCalls,
+  extractStrategySkillCalls,
+  formatUndeclaredStrategySkillParams,
+  type StrategySkillInputs,
+} from '../../agentv3/strategySkillCalls';
+import {readSkillFragments} from '../../services/skillEngine/skillFragments';
 import {
   analyzeSqlGuardrails,
   DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
   summarizeSqlGuardrailIssues,
 } from '../../services/sqlGuardrailAnalyzer';
 import { skillUsesProcessNameFilter } from '../../services/processIdentity/identityGate';
+import { EXACT_UPID_TOKEN, executableSqlUnits, sqlRunBy, type ExecutableSqlUnit } from '../../services/skillEngine/processScopeSql';
+import { stepNodesOf } from '../../services/skillEngine/skillSteps';
+import { listSkillFiles, SKILL_FILE_PATTERN, SKILL_LAYOUT } from '../../services/skillEngine/skillLayout';
+import { recordedStepNames, RUNTIME_SKILL_PARAMS } from '../../services/skillEngine/skillValidator';
+import { boundSqlPlaceholders } from '../../services/skillEngine/sqlTemplate';
 import {
   analyzeSqlStdlibDependencySequence,
   moduleCoveredByStdlibDeclaration,
 } from '../../services/sqlStdlibDependencyAnalyzer';
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
-import {parseInvestigationContract, parseInvestigationProfiles, type InvestigationProfiles} from '../../agentv3/strategyLoader';
+import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
+import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
+import {parseEntrySkill, parseInvestigationContract, parseInvestigationProfiles, REMOVED_STRATEGY_FRONTMATTER_KEYS, type InvestigationProfiles} from '../../agentv3/strategyLoader';
+import {entrySkillExecutabilityErrors} from '../../agentv3/entrySkillPolicy';
 
 // ANSI color codes (fallback for chalk ESM issues)
 const colors = {
@@ -71,13 +87,33 @@ interface VendorOverrideDefinition {
     signatures?: Array<{ pattern?: string; confidence?: string }>;
   };
   additional_steps?: any[];
-  thresholds_override?: Record<string, any>;
-  override_params?: Record<string, any>;
-  additional_diagnostics?: any[];
-  additional_output_sections?: any[];
 }
 
 const SKILLS_DIR = path.join(__dirname, '../../../skills');
+
+let skillFragmentCache: ReadonlyMap<string, string> | undefined;
+
+/** Fragment bodies keyed as Skills reference them, so SQL checks see injected text. */
+function loadSkillFragmentCache(): ReadonlyMap<string, string> {
+  return skillFragmentCache ??= readSkillFragments(SKILLS_DIR);
+}
+let skillDefinitionsById: ReadonlyMap<string, SkillDefinition> | undefined;
+let diskCauseWordingReaders: CauseWordingReaders | undefined;
+
+/** Every Skill on disk by name, so a cross-Skill contract can resolve its target. */
+function loadSkillDefinitionsById(): ReadonlyMap<string, SkillDefinition> {
+  if (!skillDefinitionsById) {
+    const byId = new Map<string, SkillDefinition>();
+    for (const {path: file} of listSkillFiles(SKILLS_DIR, {includeCustom: true})) {
+      try {
+        const skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition | undefined;
+        if (skill?.name) byId.set(skill.name, skill);
+      } catch { /* the file's own validation reports parse errors */ }
+    }
+    skillDefinitionsById = byId;
+  }
+  return skillDefinitionsById;
+}
 const CASES_DIR = path.join(__dirname, '../../../knowledge/cases');
 const STRATEGIES_DIR = path.join(__dirname, '../../../strategies');
 const STRATEGY_FRONTMATTER_RE = /^(?:\s*<!--[\s\S]*?-->\s*)*---\n([\s\S]*?)\n---\n?/;
@@ -85,9 +121,20 @@ const VERIFIER_MISDIAGNOSIS_SEVERITIES = new Set(['warning', 'info']);
 
 export interface StrategyFrontmatterValidationContext {
   knownScenes?: Set<string>;
+  /** Skill definitions by id; when present, an `entry_skill` must be executable against it. */
+  skillDefinitions?: ReadonlyMap<string, SkillDefinition>;
   seenVerifierMisdiagnosisIds?: Map<string, string>;
   investigationProfiles?: InvestigationProfiles;
   requireInvestigationContract?: boolean;
+}
+
+/** A step's type, with the legacy defaults: SQL without a type is atomic, a Skill id without one a reference. */
+function stepTypeOf(step: any): string {
+  const t = step?.type;
+  if (typeof t === 'string' && t.trim()) return t;
+  if (typeof step?.sql === 'string') return 'atomic';
+  if (typeof step?.skill === 'string') return 'skill';
+  return 'unknown';
 }
 
 /**
@@ -116,12 +163,12 @@ function validateTierAndStdlib(skill: SkillDefinition): { errors: string[]; warn
     return { errors, warnings };
   }
 
-  const declaredTier = (skill as any).tier as 'S' | 'A' | 'B' | undefined;
-  const prereqModules: string[] = Array.isArray((skill as any).prerequisites?.modules)
-    ? (skill as any).prerequisites.modules.filter((m: unknown) => typeof m === 'string')
+  const declaredTier = skill.tier;
+  const prereqModules: string[] = Array.isArray(skill.prerequisites?.modules)
+    ? skill.prerequisites.modules.filter((m: unknown) => typeof m === 'string')
     : [];
   const stepCount = Array.isArray(skill.steps) ? skill.steps.length : 0;
-  const skillType = String((skill as any).type ?? 'atomic');
+  const skillType = String(skill.type ?? 'atomic');
 
   // ---- Rule 1: tier-must-match-declared ----
   // The `tier:` field declares INTENT (target tier per audit doc §6), not current state.
@@ -164,17 +211,20 @@ function validateTierAndStdlib(skill: SkillDefinition): { errors: string[]; warn
   // ---- Rule 2: stdlib-detected-vs-declared ----
   // Reuses the same dependency analyzer as raw execute_sql auto-INCLUDE, so
   // validation covers stdlib tables, functions, and macro invocations.
-  const allSql: string[] = [];
-  if (typeof (skill as any).sql === 'string') allSql.push((skill as any).sql);
-  if (Array.isArray(skill.steps)) {
-    for (const step of skill.steps) {
-      if (typeof (step as any).sql === 'string') allSql.push((step as any).sql);
-    }
-  }
+  // Each run is its own sequence: the SQL every unit runs, named or exact (executableSqlUnits);
+  // what a unit that may not run defines reaches no unit after it.
+  const units = executableSqlUnits(skill);
+  const named = units.filter(unit => unit.variant === 'named');
+  const variants = units.some(unit => unit.variant === 'exact') ? ['named', 'exact'] as const : ['named'] as const;
+  const runs = variants.map(variant => named.flatMap(unit => {
+    const sql = sqlRunBy(unit.source, variant)?.sql;
+    return typeof sql === 'string' ? [{sql, reaches: !unit.guarded}] : [];
+  }));
 
-  if (allSql.length > 0) {
+  if (named.length > 0) {
     const reported = new Set<string>();
-    for (const analysis of analyzeSqlStdlibDependencySequence(allSql)) {
+    for (const analysis of runs.flatMap(run => analyzeSqlStdlibDependencySequence(
+      run.map(unit => unit.sql), {reaches: run.map(unit => unit.reaches)}))) {
       if (analysis.source === 'empty') continue;
 
       for (const dependency of analysis.dependencies) {
@@ -374,126 +424,62 @@ function validateSkillDefinition(skill: SkillDefinition, filePath: string): Vali
     }
   }
 
-  // Validate steps
-  if (skill.steps) {
-    const stepIds = new Set<string>();
-    const savedVariables = new Set<string>();
-    const executedStepIds = new Set<string>();
-
-    // Treat input params as defined variables for ${...} reference checks
-    if (Array.isArray(skill.inputs)) {
-      for (const input of skill.inputs) {
-        if (input && typeof (input as any).name === 'string') {
-          savedVariables.add(String((input as any).name));
-        }
+  // Validate steps, at any depth (stepNodesOf). A step reads what an input, a
+  // runtime parameter or an earlier top-level step recorded (recordedStepNames).
+  const steps = stepNodesOf(skill);
+  const stepIds = new Set<string>();
+  for (const {node: step, at} of steps) {
+    // Required step fields
+    if (!step.id) {
+      errors.push(`${at}: Missing required field: id`);
+    } else {
+      if (stepIds.has(step.id)) {
+        errors.push(`${at}: Duplicate step id: ${step.id}`);
       }
+      stepIds.add(step.id);
     }
-    // Common implicit params injected by tooling
-    savedVariables.add('start_ts');
-    savedVariables.add('end_ts');
-    savedVariables.add('package');
-    savedVariables.add('vendor');
-
-    for (let i = 0; i < skill.steps.length; i++) {
-      const step = skill.steps[i];
-      const stepPath = `steps[${i}]`;
-
-      // Required step fields
-      if (!step.id) {
-        errors.push(`${stepPath}: Missing required field: id`);
-      } else {
-        if (stepIds.has(step.id)) {
-          errors.push(`${stepPath}: Duplicate step id: ${step.id}`);
-        }
-        stepIds.add(step.id);
-        executedStepIds.add(step.id);
-      }
-
-      // Validate based on step type
-      const stepType = (() => {
-        const t = (step as any).type;
-        if (typeof t === 'string' && t.trim()) return t;
-        if (typeof (step as any).sql === 'string') return 'atomic'; // legacy default
-        if (typeof (step as any).skill === 'string') return 'skill';
-        return 'unknown';
-      })();
-
-      // SQL validation for atomic steps
-      if (stepType === 'atomic') {
-        const sql = (step as any).sql;
-        if (!sql || typeof sql !== 'string') {
-          errors.push(`${stepPath}: Missing required field: sql for atomic step`);
-        } else {
-          // Validate SQL syntax (basic checks)
-          const sqlIssues = validateSql(sql);
-          errors.push(...sqlIssues.errors.map(e => `${stepPath}: ${e}`));
-          warnings.push(...sqlIssues.warnings.map(w => `${stepPath}: ${w}`));
-
-          // Validate variable references
-          const varRefs = extractVariableReferences(sql);
-          for (const ref of varRefs) {
-            const actualRef = String(ref || '').split('|')[0].trim();
-            if (actualRef.startsWith('prev.') || actualRef.startsWith('item.')) {
-              // These are valid context references
-              continue;
-            }
-            const root = actualRef.split('.')[0];
-            if (!savedVariables.has(root)) {
-              warnings.push(`${stepPath}: Variable reference '${ref}' may not be defined at this step`);
-            }
-          }
-        }
-      }
-
-      // Track saved variables
-      if ('save_as' in step && step.save_as) {
-        savedVariables.add(step.save_as);
-      }
-
-      // Validate iterator source references
-      if (stepType === 'iterator' && 'source' in step) {
-        // At runtime, iterator `source` can reference either a previous step's `save_as`
-        // or a previous step id (context.results[stepId]).
-        if ((step as any).source && !savedVariables.has((step as any).source) && !executedStepIds.has((step as any).source)) {
-          errors.push(`${stepPath}: iterator source references undefined variable: ${step.source}`);
-        }
-      }
+    // An atomic step's SQL is checked with every other SQL unit below.
+    if (stepTypeOf(step) === 'atomic' && typeof step.sql !== 'string') {
+      errors.push(`${at}: Missing required field: sql for atomic step`);
     }
   }
 
-  // Validate root-level SQL for atomic skills (legacy form)
-  if (skill.type === 'atomic' && typeof (skill as any).sql === 'string') {
-    const sql = String((skill as any).sql);
-    const sqlIssues = validateSql(sql);
-    errors.push(...sqlIssues.errors.map(e => `sql: ${e}`));
-    warnings.push(...sqlIssues.warnings.map(w => `sql: ${w}`));
-
-    const defined = new Set<string>(['start_ts', 'end_ts', 'package', 'vendor']);
-    if (Array.isArray(skill.inputs)) {
-      for (const input of skill.inputs) {
-        if (input && typeof (input as any).name === 'string') {
-          defined.add(String((input as any).name));
+  // Every SQL the executor runs, named and exact (executableSqlUnits); the
+  // trusted UPID binding belongs to the process-scope checks.
+  const definedVariables = new Set<string>(RUNTIME_SKILL_PARAMS);
+  for (const input of Array.isArray(skill.inputs) ? skill.inputs : []) {
+    if (input && typeof (input as any).name === 'string') definedVariables.add(String((input as any).name));
+  }
+  const unitsOf = new Map<unknown, ExecutableSqlUnit[]>();
+  for (const unit of executableSqlUnits(skill)) unitsOf.set(unit.node, [...(unitsOf.get(unit.node) ?? []), unit]);
+  const checkSql = (node: unknown) => {
+    for (const unit of unitsOf.get(node) ?? []) {
+      if (typeof unit.source.sql !== 'string') continue;
+      const label = unit.sqlAt.replace(/\.sql$/, '');
+      const sqlIssues = validateSql(unit.source.sql);
+      errors.push(...sqlIssues.errors.map(e => `${label}: ${e}`));
+      warnings.push(...sqlIssues.warnings.map(w => `${label}: ${w}`));
+      for (const ref of extractVariableReferences(unit.source.sql)) {
+        const actualRef = String(ref || '').split('|')[0].trim();
+        // prev.* and item.* are context references.
+        if (actualRef.startsWith('prev.') || actualRef.startsWith('item.') || `\${${ref}}` === EXACT_UPID_TOKEN) continue;
+        if (!definedVariables.has(actualRef.split('.')[0])) {
+          warnings.push(`${label}: Variable reference '${ref}' may not be defined at this step`);
         }
       }
     }
-    const varRefs = extractVariableReferences(sql);
-    for (const ref of varRefs) {
-      const actualRef = String(ref || '').split('|')[0].trim();
-      if (actualRef.startsWith('prev.') || actualRef.startsWith('item.')) continue;
-      const root = actualRef.split('.')[0];
-      if (!defined.has(root)) {
-        warnings.push(`sql: Variable reference '${ref}' may not be defined (inputs/save_as)`);
+  };
+  checkSql(skill);
+  for (const top of stepNodesOf(skill, {topLevelOnly: true})) {
+    for (const {node: step, at} of steps.filter(node => node.topLevelIndex === top.topLevelIndex)) {
+      checkSql(step);
+      // At runtime, iterator `source` can reference either a previous step's
+      // `save_as` or a previous step id (context.results[stepId]).
+      if (stepTypeOf(step) === 'iterator' && step.source && !definedVariables.has(step.source)) {
+        errors.push(`${at}: iterator source references undefined variable: ${step.source}`);
       }
     }
-  }
-
-  // Validate thresholds
-  if (skill.thresholds) {
-    for (const [name, threshold] of Object.entries(skill.thresholds)) {
-      if (!threshold.levels) {
-        warnings.push(`thresholds.${name}: Missing levels definition`);
-      }
-    }
+    for (const name of recordedStepNames(top.node)) definedVariables.add(name);
   }
 
   // Validate diagnostic rules (in diagnostic steps, not skill-level)
@@ -532,13 +518,15 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
   }
 
   // Lint rule 5 — skill-vendor-override-runtime-conformant
-  // Per docs/reference/skill-system.md: claudeMcpServer.ts:708 silently skips
-  // overrides whose `additional_steps.length === 0`, so empty overrides are
-  // dead diff. detectVendor() also requires at least one signature pattern to
-  // ever match. These are now errors (was warnings).
+  // Per docs/reference/skill-system.md: the invoke_skill hint skips overrides
+  // whose `additional_steps.length === 0`, so empty overrides are dead diff.
+  // The runtime does not match `vendor_detection.signatures`: the trace vendor
+  // resolver reads device metadata, and an override is selected by its
+  // directory name / `meta.vendor`. The signatures remain required metadata
+  // that documents the vendor's trace markers; the rule stays an error.
   const signatures = override.vendor_detection?.signatures;
   if (signatures === undefined) {
-    errors.push('vendor_detection.signatures: required (lint rule 5 — overrides without signatures never match at runtime)');
+    errors.push('vendor_detection.signatures: required (lint rule 5 — documents the vendor\'s trace markers; the runtime selects overrides by directory / meta.vendor, not by these patterns)');
   } else if (!Array.isArray(signatures)) {
     errors.push('vendor_detection.signatures must be an array');
   } else if (signatures.length === 0) {
@@ -558,15 +546,11 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
     });
   }
 
-  const hasAdditionalSteps = Array.isArray(override.additional_steps) && override.additional_steps.length > 0;
-  const hasThresholdOverrides = !!override.thresholds_override && Object.keys(override.thresholds_override).length > 0;
-  const hasOverrideParams = !!override.override_params && Object.keys(override.override_params).length > 0;
-
-  if (!hasAdditionalSteps && !hasThresholdOverrides && !hasOverrideParams) {
-    errors.push(
-      'Vendor override has no runtime effect — declare at least one of: ' +
-      'additional_steps (>=1, with id/name/sql), thresholds_override, or override_params (lint rule 5)'
-    );
+  for (const key of unknownVendorOverrideKeys(override)) {
+    errors.push(`${key}: ${UNKNOWN_TOP_LEVEL_KEY_MESSAGE}`);
+  }
+  if (!Array.isArray(override.additional_steps) || override.additional_steps.length === 0) {
+    errors.push('Vendor override has no runtime effect — declare additional_steps (>=1, with id/name/sql) (lint rule 5)');
   }
 
   if (override.additional_steps !== undefined) {
@@ -574,7 +558,7 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
       errors.push('additional_steps must be an array');
     } else {
       const stepIds = new Set<string>();
-      const defined = new Set(['start_ts', 'end_ts', 'package', 'vendor']);
+      const defined = new Set<string>(RUNTIME_SKILL_PARAMS);
 
       override.additional_steps.forEach((step, index) => {
         const stepPath = `additional_steps[${index}]`;
@@ -631,14 +615,6 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
     steps: override.additional_steps || [],
   } as any, { filePath });
   errors.push(...displayIssues.map(formatDisplayContractIssue));
-
-  if (override.thresholds_override) {
-    for (const [name, threshold] of Object.entries(override.thresholds_override)) {
-      if (!threshold?.levels) {
-        warnings.push(`thresholds_override.${name}: Missing levels definition`);
-      }
-    }
-  }
 
   return {
     file: filePath,
@@ -720,7 +696,7 @@ function validateSql(sql: string): { errors: string[]; warnings: string[] } {
 /**
  * Contract validation: input declarations, condition references, iterator sources
  */
-export function validateContracts(skill: SkillDefinition, filePath?: string): { errors: string[]; warnings: string[] } {
+export function validateContracts(skill: SkillDefinition): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -743,8 +719,12 @@ export function validateContracts(skill: SkillDefinition, filePath?: string): { 
 
   // 2. Shared in-process checks. Runtime reconciliation and the source CLI
   // intentionally use the same pure validator; no npm/child-process boundary.
+  const definitions = loadSkillDefinitionsById();
   for (const validationIssue of validateSkillDefinitionInProcess(skill, {
-    includeStructuralChecks: false,
+    fragmentCache: loadSkillFragmentCache(),
+    definitions,
+    // The registry is the same for every file: its readers are keyed once, not per file.
+    causeWordingReaders: diskCauseWordingReaders ??= registryCauseWordingReaders([...definitions.values()]),
   })) {
     const formatted = `${validationIssue.path}: ${validationIssue.message}`;
     if (validationIssue.severity === 'error') {
@@ -757,25 +737,31 @@ export function validateContracts(skill: SkillDefinition, filePath?: string): { 
   return { errors, warnings };
 }
 
-/**
- * Extract variable references from SQL
- */
+/** The placeholders SQL binds (boundSqlPlaceholders: comments excluded), as written inside `${...}`. */
 function extractVariableReferences(sql: string): string[] {
-  const regex = /\$\{([^}]+)\}/g;
-  const refs: string[] = [];
-  let match;
-
-  while ((match = regex.exec(sql)) !== null) {
-    refs.push(match[1]);
-  }
-
-  return refs;
+  return boundSqlPlaceholders(sql).map(placeholder => placeholder.match.slice(2, -1));
 }
 
 /**
- * Validate a single skill file
+ * A pipeline definition is read by the pipeline loaders, not executed as a
+ * Skill, so only its top-level keys are checked here.
  */
-function validateFile(filePath: string): ValidationResult {
+function validatePipelineDefinitionKeys(definition: object, filePath: string): ValidationResult {
+  const errors = unknownSkillTopLevelKeys(definition).map(key => `${key}: ${UNKNOWN_TOP_LEVEL_KEY_MESSAGE}`);
+  return {file: filePath, valid: errors.length === 0, errors, warnings: []};
+}
+
+/** Which loader reads a Skill YAML file; Skill contracts apply only to `skill`. */
+function skillYamlKind(filePath: string, parsed: unknown): 'vendor_override' | 'pipeline' | 'skill' {
+  if (/\.override\.ya?ml$/.test(filePath)) return 'vendor_override';
+  return (parsed as {type?: unknown} | undefined)?.type === 'pipeline_definition' ? 'pipeline' : 'skill';
+}
+
+/**
+ * Validate a single skill file.
+ * @internal Exported for tests; the command is the production caller.
+ */
+export function validateFile(filePath: string): ValidationResult {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     const parsed = yaml.load(content) as SkillDefinition | VendorOverrideDefinition;
@@ -789,11 +775,14 @@ function validateFile(filePath: string): ValidationResult {
       };
     }
 
-    if (/\.override\.ya?ml$/.test(filePath)) {
-      return validateVendorOverrideDefinition(parsed as VendorOverrideDefinition, filePath);
+    switch (skillYamlKind(filePath, parsed)) {
+      case 'vendor_override':
+        return validateVendorOverrideDefinition(parsed as VendorOverrideDefinition, filePath);
+      case 'pipeline':
+        return validatePipelineDefinitionKeys(parsed, filePath);
+      case 'skill':
+        return validateSkillDefinition(parsed as SkillDefinition, filePath);
     }
-
-    return validateSkillDefinition(parsed as SkillDefinition, filePath);
   } catch (error: any) {
     return {
       file: filePath,
@@ -1064,8 +1053,28 @@ export function validateStrategyFrontmatter(
   } catch (error) {
     investigationErrors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const frontmatter = parsed.frontmatter;
+  const entrySkillErrors: string[] = [];
+  try {
+    const entrySkill = parseEntrySkill(frontmatter.entry_skill);
+    if (entrySkill && frontmatter.strategy_kind === 'contract_only') {
+      entrySkillErrors.push(`${file}: entry_skill is not allowed on a contract_only strategy`);
+    } else if (entrySkill && context.skillDefinitions) {
+      entrySkillErrors.push(...entrySkillExecutabilityErrors(entrySkill, context.skillDefinitions.get(entrySkill.id))
+        .map(error => `${file}: ${error}`));
+    }
+  } catch (error) {
+    entrySkillErrors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Loading only warns about these so a stray one cannot stop sessions; a
+  // strategy file must not bring them back.
+  const removedFieldErrors = REMOVED_STRATEGY_FRONTMATTER_KEYS
+    .filter(key => frontmatter[key] !== undefined)
+    .map(key => `${file}: ${key} was removed and has no effect; use investigation_contract for evidence obligations`);
   return [
+    ...removedFieldErrors,
     ...investigationErrors,
+    ...entrySkillErrors,
     ...validateFinalReportContractFrontmatter(parsed.frontmatter, file),
     ...validateVerifierMisdiagnosisFrontmatter(parsed.frontmatter, file, context),
   ];
@@ -1073,7 +1082,8 @@ export function validateStrategyFrontmatter(
 
 /**
  * Validate strategy files: check that all invoke_skill("xxx") references
- * point to skills that exist in the skill registry.
+ * point to skills that exist in the skill registry, and that each example's
+ * argument keys are inputs the named Skill declares.
  *
  * Returns the number of strategy validation errors (0 = all good).
  */
@@ -1083,24 +1093,13 @@ function validateStrategySkillReferences(): number {
     return 0;
   }
 
-  // Build skill name set from YAML files on disk (no runtime loader needed)
-  const skillNames = new Set<string>();
-  const skillDirs = ['atomic', 'composite', 'deep', 'system', 'comparison', 'modules', 'pipelines'];
-  for (const dir of skillDirs) {
-    const dirPath = path.join(SKILLS_DIR, dir);
-    if (!fs.existsSync(dirPath)) continue;
-    const skillFiles = findSkillFiles(dirPath, /\.skill\.ya?ml$/);
-    for (const file of skillFiles) {
-      try {
-        const content = fs.readFileSync(file, 'utf-8');
-        const skill = yaml.load(content) as any;
-        if (skill?.name) skillNames.add(skill.name);
-      } catch { /* skip unparseable files */ }
-    }
-  }
+  // Build the skill input registry from YAML files on disk (no runtime loader needed)
+  const skills = new Map<string, StrategySkillInputs>(
+    [...loadSkillDefinitionsById()].map(([name, skill]) => [name, {inputs: skill.inputs}]),
+  );
 
   console.log(colors.bold('\nStrategy → Skill Reference Validation\n'));
-  console.log(`Skill registry: ${skillNames.size} skills loaded from YAML.\n`);
+  console.log(`Skill registry: ${skills.size} skills loaded from YAML.\n`);
 
   // Parse strategy files for invoke_skill("xxx") references and cross-file frontmatter contracts.
   const strategyFiles = fs.readdirSync(STRATEGIES_DIR)
@@ -1112,6 +1111,7 @@ function validateStrategySkillReferences(): number {
   }
 
   let totalMissing = 0;
+  let totalUndeclaredParams = 0;
   let totalFrontmatterErrors = 0;
   const strategyContents = new Map<string, string>();
   const knownScenes = new Set<string>();
@@ -1131,6 +1131,7 @@ function validateStrategySkillReferences(): number {
   }
   const frontmatterValidationContext: StrategyFrontmatterValidationContext = {
     knownScenes,
+    skillDefinitions: loadSkillDefinitionsById(),
     seenVerifierMisdiagnosisIds: new Map(),
     investigationProfiles: parseInvestigationProfiles(yaml.load(fs.readFileSync(
       path.join(STRATEGIES_DIR, 'investigation-profiles.yaml'), 'utf8',
@@ -1142,20 +1143,25 @@ function validateStrategySkillReferences(): number {
     const content = strategyContents.get(file) || '';
     const frontmatterErrors = validateStrategyFrontmatter(content, file, frontmatterValidationContext);
 
-    // Extract all unique skill names through the shared in-process validator.
-    const referencedSkills =
-      extractReferencedSkillIdsFromStrategyText(content);
-
-    const missing = [...referencedSkills].filter(name => !skillNames.has(name));
-    if (missing.length > 0 || frontmatterErrors.length > 0) {
+    // Same Strategy → Skill call contract the Self-Evolution validator enforces.
+    const calls = extractStrategySkillCalls(content);
+    const referencedSkills = new Set(calls.map(call => call.skillId));
+    const findings = checkStrategySkillCalls(calls, skills);
+    const missing = [...new Set(findings
+      .filter(finding => finding.kind === 'skill_missing')
+      .map(finding => finding.call.skillId))];
+    const undeclaredParams = findings.flatMap(finding =>
+      finding.kind === 'param_undeclared' ? [formatUndeclaredStrategySkillParams(finding)] : []);
+    if (missing.length > 0 || undeclaredParams.length > 0 || frontmatterErrors.length > 0) {
       console.log(`${colors.red('FAIL')} ${file}`);
       for (const name of missing) {
         console.log(`  ${colors.red('ERROR:')} invoke_skill("${name}") — skill not found in registry`);
       }
-      for (const error of frontmatterErrors) {
+      for (const error of [...undeclaredParams, ...frontmatterErrors]) {
         console.log(`  ${colors.red('ERROR:')} ${error}`);
       }
       totalMissing += missing.length;
+      totalUndeclaredParams += undeclaredParams.length;
       totalFrontmatterErrors += frontmatterErrors.length;
       continue;
     }
@@ -1168,13 +1174,35 @@ function validateStrategySkillReferences(): number {
     console.log(`${colors.green('PASS')} ${file} (${referencedSkills.size} skill refs OK)`);
   }
 
+  // Runtime policy YAMLs are otherwise checked only when a run loads them.
+  const policyErrors = STRATEGY_POLICY_PARSERS.flatMap(([name, parse]) => {
+    try {
+      parse(yaml.load(fs.readFileSync(path.join(STRATEGIES_DIR, `${name}.yaml`), 'utf8')));
+      console.log(`${colors.green('PASS')} ${name}.yaml`);
+      return [];
+    } catch (error) {
+      console.log(`${colors.red('FAIL')} ${name}.yaml`);
+      console.log(`  ${colors.red('ERROR:')} ${error instanceof Error ? error.message : String(error)}`);
+      return [name];
+    }
+  });
+
   console.log(colors.bold('\nStrategy Validation Summary:'));
   console.log(`  Strategy files: ${strategyFiles.length}`);
-  console.log(`  Missing skills: ${totalMissing > 0 ? colors.red(String(totalMissing)) : colors.green('0')}`);
-  console.log(`  Contract/frontmatter errors: ${totalFrontmatterErrors > 0 ? colors.red(String(totalFrontmatterErrors)) : colors.green('0')}`);
+  const count = (n: number) => n > 0 ? colors.red(String(n)) : colors.green('0');
+  console.log(`  Missing skills: ${count(totalMissing)}`);
+  console.log(`  Undeclared skill params: ${count(totalUndeclaredParams)}`);
+  console.log(`  Contract/frontmatter errors: ${count(totalFrontmatterErrors)}`);
+  console.log(`  Policy file errors: ${count(policyErrors.length)}`);
 
-  return totalMissing + totalFrontmatterErrors;
+  return totalMissing + totalUndeclaredParams + totalFrontmatterErrors + policyErrors.length;
 }
+
+/** Policy YAMLs under backend/strategies with the parser each run uses. */
+const STRATEGY_POLICY_PARSERS: ReadonlyArray<readonly [string, (value: unknown) => unknown]> = [
+  ['source-depth-policy', parseSourceDepthPolicy],
+  ['source-anchor-normalization', parseSourceAnchorNormalization],
+];
 
 /**
  * Validate command
@@ -1223,37 +1251,24 @@ export const validateCommand = new Command('validate')
 
     let files: string[] = [];
 
+    // The files the loader reads (listSkillFiles), and with --all the vendor overrides.
+    const skillFiles = listSkillFiles(SKILLS_DIR, {includeCustom: true});
     if (skillId) {
       // Validate specific skill
-      const possiblePaths = [
-        path.join(SKILLS_DIR, 'composite', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'atomic', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'deep', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'comparison', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'custom', `${skillId}.skill.yaml`),
-      ];
-
-      const foundPath = possiblePaths.find(p => fs.existsSync(p))
-        ?? findSkillFiles(path.join(SKILLS_DIR, 'modules'), /\.skill\.ya?ml$/)
-          .find(p => path.basename(p).replace(/\.skill\.ya?ml$/, '') === skillId);
+      const foundPath = skillFiles.find(file => path.basename(file.path).replace(SKILL_FILE_PATTERN, '') === skillId)?.path;
       if (foundPath) {
         files.push(foundPath);
       } else {
         console.log(colors.red(`Skill not found: ${skillId}`));
         process.exit(1);
       }
+    } else if (options.all) {
+      files = skillFiles.map(file => file.path);
+      files.push(...findSkillFiles(path.join(SKILLS_DIR, SKILL_LAYOUT.vendorsDir), /\.override\.ya?ml$/));
     } else {
-      // Validate all skills
-      files = findSkillFiles(path.join(SKILLS_DIR, 'composite'), /\.skill\.ya?ml$/);
-      files.push(...findSkillFiles(path.join(SKILLS_DIR, 'atomic'), /\.skill\.ya?ml$/));
-      files.push(...findSkillFiles(path.join(SKILLS_DIR, 'deep'), /\.skill\.ya?ml$/));
-      files.push(...findSkillFiles(path.join(SKILLS_DIR, 'comparison'), /\.skill\.ya?ml$/));
-
-      if (options.all) {
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'modules'), /\.skill\.ya?ml$/));
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'vendors'), /\.override\.ya?ml$/));
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'custom'), /\.skill\.ya?ml$/));
-      }
+      // Without --all: the plain Skill directories.
+      files = skillFiles.filter(file => file.kind === 'skill' && !file.path.includes(`${path.sep}${SKILL_LAYOUT.customDir}${path.sep}`))
+        .map(file => file.path);
     }
 
     if (files.length === 0) {
@@ -1272,18 +1287,19 @@ export const validateCommand = new Command('validate')
 
       // Run contract validation when --contracts is specified
       if (options.contracts) {
+        let skill: SkillDefinition | undefined;
         try {
-          const content = fs.readFileSync(file, 'utf-8');
-          const skill = yaml.load(content) as SkillDefinition;
-          if (skill) {
-            const contracts = validateContracts(skill, file);
-            result.errors.push(...contracts.errors);
-            result.warnings.push(...contracts.warnings);
-            if (contracts.errors.length > 0) {
-              result.valid = false;
-            }
-          }
+          skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition;
         } catch { /* parse error already captured */ }
+        // A validator that throws must fail the run, not pass as a parse error.
+        if (skill && skillYamlKind(file, skill) === 'skill') {
+          const contracts = validateContracts(skill);
+          result.errors.push(...contracts.errors);
+          result.warnings.push(...contracts.warnings);
+          if (contracts.errors.length > 0) {
+            result.valid = false;
+          }
+        }
       }
 
       const relativePath = path.relative(SKILLS_DIR, file);

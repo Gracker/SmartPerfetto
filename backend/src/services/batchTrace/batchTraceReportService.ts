@@ -10,6 +10,8 @@ import {
   type OutputLanguage,
 } from '../../agentv3/outputLanguage';
 import type { BatchTraceRunV1 } from './batchTraceTypes';
+import {REPORT_LAYOUT_FIX_CSS} from '../reportLayoutAssets';
+import {REPORT_DOCUMENT_SCRIPT, REPORT_DOCUMENT_NO_SCRIPT} from '../reportDocumentAssets';
 
 export function batchTraceStatusLabel(status: string, language: OutputLanguage): string {
   const labels: Record<string, [string, string]> = {
@@ -37,7 +39,7 @@ function escapeHtml(value: unknown): string {
 
 function formatNumber(value: number | undefined): string {
   if (value === undefined) return '';
-  return Number.isInteger(value) ? String(value) : value.toFixed(3).replace(/\.?0+$/, '');
+  return escapeHtml(String(value));
 }
 
 function perTraceRows(run: BatchTraceRunV1, language: OutputLanguage): string {
@@ -47,8 +49,9 @@ function perTraceRows(run: BatchTraceRunV1, language: OutputLanguage): string {
       <td>${result.ordinal}</td>
       <td>${escapeHtml(result.input.label ?? result.input.traceId ?? result.input.tracePath)}</td>
       <td data-status="${escapeHtml(result.status)}">${escapeHtml(batchTraceStatusLabel(result.status, language))}</td>
-      <td>${result.metrics.length}</td>
-      <td>${formatNumber(result.executionTimeMs)} ms</td>
+      <td>${result.metrics.length}<details><summary>${localize(language, '指标与证据引用', 'Metrics and evidence references')}</summary>
+        <pre class="report-value-json">${escapeHtml(JSON.stringify({metrics: result.metrics, evidenceEnvelopeIds: result.evidenceEnvelopeIds}, null, 2))}</pre></details></td>
+      <td class="numeric">${formatNumber(result.executionTimeMs)} ms</td>
       <td>${escapeHtml(result.error ?? diagnostics)}</td>
     </tr>`;
   }).join('\n');
@@ -57,6 +60,7 @@ function perTraceRows(run: BatchTraceRunV1, language: OutputLanguage): string {
 function aggregateRows(run: BatchTraceRunV1): string {
   return (run.aggregate?.metrics ?? []).map(metric => `<tr>
     <td>${escapeHtml(metric.label)}</td>
+    <td>${escapeHtml(metric.unit ?? '')}</td>
     <td>${metric.count}</td>
     <td>${metric.missingCount}</td>
     <td>${formatNumber(metric.min)}</td>
@@ -109,12 +113,12 @@ function domainAnalysisSection(run: BatchTraceRunV1, language: OutputLanguage): 
   <p><strong>${localize(language, '拒绝行', 'Rejected rows')}${colon}</strong> ${domain.evidence.rejectedRowCount}</p>
   <p><strong>${localize(language, '截断行', 'Truncated rows')}${colon}</strong> ${domain.evidence.truncatedRowCount}</p>
   <p><strong>${localize(language, '种子', 'Seed')}${colon}</strong> <code>${escapeHtml(result.seedHash)}</code></p>
-  <table>
+  <div class="table-container"><table>
     <thead>
       <tr><th>${localize(language, '聚类', 'Cluster')}</th><th>${localize(language, '代表路径', 'Representative path')}</th><th>${localize(language, '轨迹支持率', 'Trace support')}</th><th>${localize(language, '样本', 'Samples')}</th><th>${localize(language, '行数', 'Rows')}</th><th>${localize(language, '平均保留字节', 'Mean retained bytes')}</th><th>${localize(language, 'P95 保留字节', 'P95 retained bytes')}</th><th>${localize(language, '合并路径', 'Collapsed paths')}</th><th>${localize(language, '证据引用', 'Evidence refs')}</th></tr>
     </thead>
     <tbody>${clusterRows}</tbody>
-  </table>
+  </table></div>
   <h3>${localize(language, '聚类限制', 'Cluster Limitations')}</h3>
   <ul>${listItems(result.limitations, language)}</ul>
   <h3>${localize(language, '聚类失败项', 'Cluster Failures')}</h3>
@@ -130,6 +134,7 @@ export function renderBatchTraceHtmlReport(
 <html lang="${language}">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${localize(language, 'SmartPerfetto 批量轨迹分析', 'SmartPerfetto Batch Trace Run')} ${escapeHtml(run.id)}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #1f2328; }
@@ -137,31 +142,34 @@ export function renderBatchTraceHtmlReport(
     th, td { border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }
     th { background: #f6f8fa; }
     code { background: #f6f8fa; padding: 2px 4px; border-radius: 4px; }
+    ${REPORT_LAYOUT_FIX_CSS}
   </style>
 </head>
-<body>
+<body class="batch-report">
   <h1>${localize(language, 'SmartPerfetto 批量轨迹分析', 'SmartPerfetto Batch Trace Run')}</h1>
   <p><strong>${localize(language, '运行', 'Run')}${colon}</strong> <code>${escapeHtml(run.id)}</code></p>
   <p><strong>${localize(language, '技能', 'Skill')}${colon}</strong> <code>${escapeHtml(run.input.skillId)}</code></p>
   <p><strong>${localize(language, '状态', 'Status')}${colon}</strong> <span data-status="${escapeHtml(run.status)}">${escapeHtml(batchTraceStatusLabel(run.status, language))}</span></p>
   <p><strong>${localize(language, '轨迹数量', 'Trace count')}${colon}</strong> ${run.input.traceInputs.length}</p>
   <h2>${localize(language, '逐轨迹结果', 'Per Trace Results')}</h2>
-  <table>
+  <div class="table-container"><table>
     <thead>
       <tr><th>${localize(language, '序号', 'Ordinal')}</th><th>${localize(language, '轨迹', 'Trace')}</th><th>${localize(language, '状态', 'Status')}</th><th>${localize(language, '指标', 'Metrics')}</th><th>${localize(language, '执行耗时', 'Execution')}</th><th>${localize(language, '诊断 / 错误', 'Diagnostics / Error')}</th></tr>
     </thead>
     <tbody>${perTraceRows(run, language)}</tbody>
-  </table>
+  </table></div>
   <h2>${localize(language, '聚合指标', 'Aggregate Metrics')}</h2>
-  <table>
+  <div class="table-container"><table>
     <thead>
-      <tr><th>${localize(language, '指标', 'Metric')}</th><th>${localize(language, '数量', 'Count')}</th><th>${localize(language, '缺失', 'Missing')}</th><th>${localize(language, '最小值', 'Min')}</th><th>P50</th><th>P90</th><th>P95</th><th>${localize(language, '最大值', 'Max')}</th><th>${localize(language, '平均值', 'Mean')}</th><th>${localize(language, '离群项', 'Outliers')}</th></tr>
+      <tr><th>${localize(language, '指标', 'Metric')}</th><th>${localize(language, '单位', 'Unit')}</th><th>${localize(language, '数量', 'Count')}</th><th>${localize(language, '缺失', 'Missing')}</th><th>${localize(language, '最小值', 'Min')}</th><th>P50</th><th>P90</th><th>P95</th><th>${localize(language, '最大值', 'Max')}</th><th>${localize(language, '平均值', 'Mean')}</th><th>${localize(language, '离群项', 'Outliers')}</th></tr>
     </thead>
     <tbody>${aggregateRows(run)}</tbody>
-  </table>
+  </table></div>
   ${domainAnalysisSection(run, language)}
   <h2>${localize(language, '限制', 'Limitations')}</h2>
   <ul>${limitationItems(run, language)}</ul>
+<script>${REPORT_DOCUMENT_SCRIPT}</script>
+${REPORT_DOCUMENT_NO_SCRIPT}
 </body>
 </html>`;
 }

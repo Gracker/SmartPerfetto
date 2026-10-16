@@ -46,7 +46,6 @@ import {
 } from './evaluationReplayService';
 import {
   evaluationFullTreatmentContractHash,
-  evaluationPhaseHintInjectionContentHash,
   evaluationRoleVariantRefs,
   type EvaluationRoleVariantV1,
 } from './evaluationTreatment';
@@ -58,6 +57,7 @@ import {
 import {EvolutionOverlayArtifactStore} from './evolutionOverlayArtifactStore';
 import {EvolutionOverlayRegistry} from './evolutionOverlayRegistry';
 import {PublicFeedbackCurationSource} from './feedbackEventStore';
+import {IN_PROCESS_VALIDATOR_VERSION} from './inProcessValidator';
 import {OverlayReconciler} from './overlayReconciler';
 import {
   ProposalApplicationService,
@@ -247,7 +247,8 @@ implements SelfEvolutionAdminDependencies {
       const staticValidation = {
         validationPolicyFingerprint: canonicalContentHash({
           schemaVersion: 1,
-          validator: 'self-evolution-admin-gate-v1',
+          validator: 'self-evolution-admin-gate-v2',
+          inProcessValidatorVersion: IN_PROCESS_VALIDATOR_VERSION,
           skillRegistryFingerprint:
             snapshot.skillRegistry.registryFingerprint,
           strategyRegistryFingerprint:
@@ -261,8 +262,9 @@ implements SelfEvolutionAdminDependencies {
         },
         strategySnapshot: {
           existingContributions: [],
-          knownSkillIds: new Set(
-            snapshot.skillRegistry.getAllSkills().map(skill => skill.name),
+          skills: new Map(
+            snapshot.skillRegistry.getAllSkills()
+              .map(skill => [skill.name, skill]),
           ),
         },
       };
@@ -276,7 +278,7 @@ implements SelfEvolutionAdminDependencies {
         traceProcessorService: getTraceProcessorService(),
         providerService: getProviderService(),
         runManifestStore: getRunManifestStore(),
-        resolveRolePlan: async ({replay, commonRegistry}) => {
+        resolveRolePlan: async ({replay}) => {
           const treatment = treatmentByProposal.get(replay.candidateId ?? '');
           if (!treatment) {
             throw new Error('evaluation_treatment_unavailable');
@@ -284,7 +286,6 @@ implements SelfEvolutionAdminDependencies {
           return rolePlan({
             role: replay.role,
             treatment: treatment.roleVariant,
-            commonRegistry,
             selected: sourceManifest.injections,
           });
         },
@@ -294,12 +295,9 @@ implements SelfEvolutionAdminDependencies {
           if (!treatment) {
             throw new Error('evaluation_treatment_unavailable');
           }
-          const commonRegistry =
-            await buildEffectiveRuntimeRegistrySnapshot({scope});
           const plan = rolePlan({
             role: 'baseline',
             treatment: treatment.roleVariant,
-            commonRegistry,
             selected: sourceManifest.injections,
           });
           return {
@@ -338,7 +336,7 @@ implements SelfEvolutionAdminDependencies {
         resolveBaseSnapshot: value => resolveProposalBaseSnapshot(value),
         staticValidation,
         runPairedReplay: async (
-          value,
+          _value,
           _candidate,
           treatment,
           treatmentBinding,
@@ -359,10 +357,6 @@ implements SelfEvolutionAdminDependencies {
             cases,
             store: replayService!.store,
             publisher: replayService!.publisher,
-            resolveBaselinePhaseHint: (scene, hintId) =>
-              snapshot.strategyRegistry.getStrategy(scene)?.phaseHints.find(
-                hint => hint.id === hintId,
-              ),
           };
         },
       });
@@ -586,15 +580,11 @@ function selectPairedReplayCases(
 function rolePlan(input: {
   role: 'baseline' | 'candidate';
   treatment: EvaluationRoleVariantV1;
-  commonRegistry: EffectiveRuntimeRegistrySnapshot;
   selected?: RunInjectionAttribution;
 }) {
   const refs = evaluationRoleVariantRefs({
     variant: input.treatment,
     role: input.role,
-    resolveBaselinePhaseHint: (scene, hintId) =>
-      input.commonRegistry.strategyRegistry
-        .getStrategy(scene)?.phaseHints.find(hint => hint.id === hintId),
   });
   const expectedKeys = new Set(refs.materializedRefs.map(injectionRefKey));
   return {
@@ -675,16 +665,6 @@ function findInjection(
   snapshot: EffectiveRuntimeRegistrySnapshot,
   targetId: string,
 ): {contentHash: string; content: string} | undefined {
-  for (const strategy of snapshot.strategyRegistry.getAllStrategies()) {
-    const hint = strategy.phaseHints.find(candidate =>
-      candidate.id === targetId);
-    if (hint) {
-      return {
-        contentHash: evaluationPhaseHintInjectionContentHash(hint),
-        content: canonicalJsonString(hint),
-      };
-    }
-  }
   for (const skillId of snapshot.skillNotes.getSkillIds()) {
     const note = snapshot.skillNotes.getSkillNotes(skillId).find(candidate =>
       candidate.id === targetId);
@@ -879,6 +859,7 @@ function traceProcessorVersion(): string {
     || 'unknown';
 }
 
+/** @internal Test seam. */
 export const __testing = {
   selectPairedReplayCases,
   selectCompatibleEvidenceManifest,

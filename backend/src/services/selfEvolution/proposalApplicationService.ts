@@ -12,6 +12,7 @@ import type {
   RunManifestScope,
 } from '../../types/selfEvolution';
 import {canonicalContentHash} from './canonicalJson';
+import {selfEvolutionErrorCode} from './selfEvolutionErrorCode';
 import {
   createEvolutionRollbackReceiptV1,
   createEvolutionOverlayPayloadFromTreatmentEntry,
@@ -352,7 +353,7 @@ export class ProposalApplicationService {
       failureClass: sideEffectStarted
         ? 'recovery_required_after_side_effect'
         : 'retryable_before_side_effect',
-      errorCode: error instanceof Error ? error.message : String(error),
+      errorCode: selfEvolutionErrorCode(error, 'proposal_action_failed'),
       now: this.now(),
     });
   }

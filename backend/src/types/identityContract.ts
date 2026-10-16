@@ -140,6 +140,18 @@ export function scopeProvenanceForFields(value: unknown, fields: string[]): Evid
   return {...copied, entries};
 }
 
+/**
+ * Whether a result positively declares a field outside the target process
+ * (trace-wide, peer or identity metadata). Resolve once per result. Results
+ * without scope provenance, invalid provenance and fields no entry lists keep
+ * their legacy reading.
+ */
+export function outsideTargetScopeFields(provenance: unknown): (field: string) => boolean {
+  const copied = provenance === undefined ? undefined : copyScopeProvenance(provenance);
+  const entries = copied && !copied.invalid ? copied.entries.filter(entry => entry.role !== 'target') : [];
+  return field => nonemptyScopeString(field) && entries.some(entry => !entry.fields || entry.fields.includes(field));
+}
+
 export function identityForScopeEvidence(provenance: unknown,
   identity: IdentityResolutionV1 | undefined): IdentityResolutionV1 | undefined {
   if (!identity || provenance === undefined) return identity;

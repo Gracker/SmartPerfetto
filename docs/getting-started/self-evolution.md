@@ -45,7 +45,7 @@ feedback 事实、启动策展、创建提案/overlay 或提交 GitHub。
 | M5 | 对 baseline/candidate 做同输入、同预算、同并发的 paired replay，使用 L0/L1/L3 scorer 与 Pareto 判定 | provider 故障或证据不足会显示 inconclusive，不会被包装成“更好” |
 | M6 | 用规则归因公开有效反馈，只生成一个最小 `hypothesis_only` proposal | 管理员先看到可解释的问题归属和最小改法，线上统计本身不能直接改系统 |
 | M7 | 通过 Schema、Containment、注入、尺寸、语义、并发、静态校验和配对回放八道门 | 越界、恶意、过大、过期或回放退化的候选无法取得 apply 资格 |
-| M8 | 把通过且人工接受的 proposal 发布为内容寻址 overlay；支持三种本地交付通道、升级对账和显式 revert | 新 run 才使用新 generation；升级漂移会被隔离，管理员可以回滚且不会自动 commit/push |
+| M8 | 把通过且人工接受的 proposal 发布为内容寻址 overlay；支持运行时 overlay 应用与本地贡献包导出、升级对账和显式 revert | 新 run 才使用新 generation；升级漂移会被隔离，管理员可以回滚且不会自动 commit/push |
 | M9 | 提供 Evolution 管理面、SSE 进度、diff、权限、metrics、运维与双语文档；外部 L2 judge 保持未配置 | 管理员能看清每一步状态、拒绝变更、导出本地产物并按证据验收 |
 | M10 | 从同一完成 run 检测反馈机会，固定原 provider/runtime 做无工具 Agent triage，严格校验后只生成用户确认的 GitHub 草稿 | 普通用户会被告知是否值得反馈、问题归属、还缺什么、能贡献什么；系统不自动提交 GitHub |
 
@@ -76,7 +76,7 @@ feedback 事实、启动策展、创建提案/overlay 或提交 GitHub。
 | Analyst | 具备 `self_evolution:read` 时可查看当前状态、提案、overlay 和对账，不能据此 apply |
 | Workspace/Org Admin | 在部署者启用功能后，可显式策展、gate、接受/拒绝、导出、apply 和 revert |
 | 部署者 | 必须决定是否启用两个开关，并为 apply 提供可写、包外、可跨升级保留的数据目录 |
-| Skill/Strategy 维护者 | 可以审查结构化最小 delta 和配对证据；仓库 patch 与贡献包仍是本地产物，不会自动进入 Git |
+| Skill/Strategy 维护者 | 可以审查结构化最小 delta 和配对证据；贡献包仍是本地产物，不会自动进入 Git |
 
 这不是“系统会自己越来越好”的承诺。对普通用户最直接的变化是反馈归因和可撤销性
 更可靠；对管理员最直接的变化是多了一个可观察、可拒绝、可回滚的控制面。

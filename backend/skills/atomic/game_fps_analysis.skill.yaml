@@ -23,7 +23,6 @@ version: "1.0"
 type: atomic
 category: rendering
 tier: A
-priority: high
 
 meta:
   display_name: "游戏帧率分析"
@@ -47,16 +46,6 @@ prerequisites:
     - expected_frame_timeline_slice
   modules:
     - android.frames.timeline
-
-thresholds:
-  jank_rate:
-    unit: "%"
-    description: "掉帧率"
-    levels:
-      excellent: { max: 1 }
-      good: { min: 1, max: 5 }
-      warning: { min: 5, max: 10 }
-      critical: { min: 10 }
 
 inputs:
   - name: package

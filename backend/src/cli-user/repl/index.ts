@@ -12,9 +12,11 @@
  *     output don't interleave. We don't need `rl.pause()`'s full contract
  *     (kernel-level buffering) — a boolean guard that drops newline
  *     events is enough.
- *   - Ctrl+C is a two-press exit: first press warns, second (within 1.5s)
- *     calls process.exit. While a turn is running, the second press is
- *     the only escape — we can't cleanly abort the Claude SDK from here.
+ *   - Idle Ctrl+C is a two-press exit: first press warns, second (within
+ *     1.5s) calls process.exit. While a turn runs, Ctrl+C goes to that turn
+ *     (turnInterrupt.ts): after a printed answer the first press ends only
+ *     its review and the turn is saved; otherwise it aborts the turn (not
+ *     saved) and returns to the prompt; a further press exits with 130.
  *   - Trailing `\` on a line is a continuation marker, so users can paste
  *     multi-line questions without a special /multi mode.
  */
@@ -22,6 +24,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { resolveInvocationPath } from '../bootstrap';
 import type { CliPaths, SessionPaths } from '../io/paths';
 import { sessionPaths } from '../io/paths';
 import type { Renderer } from './renderer';
@@ -33,6 +36,7 @@ import { parseSlashCommand, SLASH_HELP } from './slashCommands';
 import type { CliSessionConfig } from '../types';
 import { DEFAULT_ANALYSIS_QUERY } from '../constants';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
+import { ForwardingInterruptSource, isTurnInterrupted } from '../services/turnInterrupt';
 
 /** Ctrl+C double-press window. Matches common CLI tools (bash, python, Claude Code). */
 const CTRL_C_DOUBLE_PRESS_MS = 1500;
@@ -41,13 +45,16 @@ export interface ReplContext {
   paths: CliPaths;
   service: CliAnalyzeService;
   renderer: Renderer;
+  /** Receives Ctrl+C while a turn runs; created by runRepl. */
+  interruptSource?: ForwardingInterruptSource;
 }
 
 /**
  * Start the REPL. Resolves when the user exits (via /exit or double Ctrl+C).
  * Caller is responsible for calling `service.shutdown()` afterwards.
  */
-export async function runRepl(ctx: ReplContext, initialResumeId?: string): Promise<void> {
+export async function runRepl(replCtx: ReplContext, initialResumeId?: string): Promise<void> {
+  const ctx: ReplContext = {...replCtx, interruptSource: replCtx.interruptSource ?? new ForwardingInterruptSource()};
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -84,6 +91,8 @@ export async function runRepl(ctx: ReplContext, initialResumeId?: string): Promi
   // Ctrl+C handling. We don't use rl's default 'SIGINT' handler because
   // it exits on first press; we want the two-press convention.
   rl.on('SIGINT', () => {
+    // A running turn owns Ctrl+C: review-only stop, full abort, then exit 130.
+    if (turnInProgress && ctx.interruptSource?.interrupt()) return;
     const now = Date.now();
     if (now - lastCtrlC < CTRL_C_DOUBLE_PRESS_MS) {
       console.log('\nexiting.');
@@ -186,7 +195,8 @@ export async function runRepl(ctx: ReplContext, initialResumeId?: string): Promi
         }
       } catch (err) {
         turnInProgress = false;
-        ctx.renderer.printError((err as Error).message);
+        if (isTurnInterrupted(err)) console.log(`\n(${(err as Error).message})`);
+        else ctx.renderer.printError((err as Error).message);
       }
 
       rl.setPrompt(promptString(currentSession));
@@ -284,7 +294,7 @@ async function handleResume(ctx: ReplContext, sessionId: string): Promise<Loaded
 }
 
 function refreshSession(ctx: ReplContext, sessionId: string): LoadedSession {
-  // Re-read config from disk — turnCount/lastTurnAt/sdkSessionId just changed.
+  // Re-read config from disk — turnCount/lastTurnAt just changed.
   const reloaded = tryLoadSession(ctx.paths, sessionId);
   if (!reloaded) {
     throw new Error(`internal: session ${sessionId} missing after turn commit`);
@@ -297,5 +307,5 @@ function expandPath(p: string): string {
   if (p.startsWith('~/')) {
     return path.join(process.env.HOME || '', p.slice(2));
   }
-  return path.resolve(p);
+  return resolveInvocationPath(p);
 }

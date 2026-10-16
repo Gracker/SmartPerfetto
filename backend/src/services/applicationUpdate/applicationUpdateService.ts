@@ -565,7 +565,3 @@ export function getApplicationUpdateService(): ApplicationUpdateService {
   singleton ??= new ApplicationUpdateService();
   return singleton;
 }
-
-export function resetApplicationUpdateServiceForTests(): void {
-  singleton = undefined;
-}

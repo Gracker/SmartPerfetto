@@ -174,33 +174,60 @@ npm CLI does not use the Web UI `Connection` settings. Its Provider store defaul
 to `~/.smartperfetto/runtime/data/providers.json`, while a source Web backend
 defaults to `backend/data/providers.json`. A Web Provider profile affects the CLI
 only when both processes explicitly use the same `SMARTPERFETTO_BACKEND_DATA_DIR`.
+If a hand edit leaves `providers.json` not a valid provider array (a JSON syntax
+error, a missing or repeated `id`, and so on), the backend still starts but never
+overwrites the file with an empty list: the Providers page and `smp provider list`
+report that the file cannot be read, and every create, update, activate,
+deactivate, and delete returns `provider_store_unreadable`. Analyses that follow
+the active provider, or are pinned to a profile, are refused with the same code
+(HTTP 409) instead of falling back to `.env`, because the file may name a
+different gateway or account: the active provider is unknown, not absent.
+`/health` and `smp doctor` report AI as unconfigured. A request or session that
+explicitly chooses the system default (`providerId: null`) still runs on `.env`.
+Repair or move the file and refresh; no restart is needed.
 For first-time CLI setup, run:
 
 ```bash
 smp config init
 ```
 
-It creates `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads package/source `backend/.env` first, then `~/.smartperfetto/env`, with the user file taking priority. If you pass `--env-file /path/to/env`, the CLI reads only that file. CLI configuration follows the same rule: choose one runtime block, not every block. Use `smp provider list` and `smp provider test <providerId>` only to inspect a profile already present in the current CLI store; the CLI does not currently add, edit, or activate Provider profiles.
+It creates `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads package/source `backend/.env` first, then `~/.smartperfetto/env`, with the user file taking priority. If you pass `--env-file /path/to/env`, the CLI reads only that file. The CLI data directory (sessions, trace copies, `env`) defaults to `~/.smartperfetto`; move it with `--session-dir <path>` or the `SMARTPERFETTO_HOME` environment variable, the flag taking priority. CLI configuration follows the same rule: choose one runtime block, not every block. Use `smp provider list` and `smp provider test <providerId>` only to inspect a profile already present in the current CLI store; the CLI does not currently add, edit, or activate Provider profiles.
 
 ## Codebase Selection And Provider Authorization
 
-Registrations on the `Codebases` tab never attach to analysis automatically.
-The user must explicitly select the codebase and `metadata_only` /
-`provider_send` mode for the current request. A reachable registered live root
-supports bounded search without an index; reindexing is optional acceleration.
+Registrations under **Settings → Codebases** never attach to analysis
+automatically. Each turn explicitly selects codebases and the `Locate only`
+(`metadata_only`) / `Send text` (`provider_send`) mode in the composer's
+"Analysis context for this turn" popover; the CLI uses `--codebase-id` and
+`--code-aware`. A reachable registered live root supports bounded search without
+an index; building an index is optional acceleration.
 
-`metadata_only` can locate only relative files, line ranges, and `referenceId`
-values. `provider_send` requires registration-level `sendToProvider` consent,
-and the target path must be admitted by both the current selection and consent
-grant. Expanding path filters, relaxing exclude globs, or adding source
-languages never expands provider authorization automatically. Use **Authorize
-current scope** / **Authorize new languages** to update the grant explicitly.
+`metadata_only` can locate only relative files, line ranges, and reference
+`id`s. `provider_send` requires the codebase to hold a source-text grant, and
+the target file must be inside the granted scope. Registration itself cannot
+grant: `POST /api/rag/codebases/register` with `sendToProvider: true` answers
+400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`. Source text is granted only after
+reviewing the server-reported disclosure (include paths, exclude globs,
+languages): on the Web, **Allow source text** → **Allow** ("Add and use for
+analysis" goes straight to this step after registering); in the CLI,
+`smp codebase authorize-content <id>` prints the disclosure and its token, and `--confirm <token>`
+grants it. Widening the path scope or adding languages later never widens the
+grant automatically; review and confirm again.
 
-When successful selection, consent, authorization, activation, reindex, or
-deletion changes currently available content, the Web UI retires the old Agent
-session and resets conversation state so old and new authorization cannot mix.
-See [Code-Aware Analysis](code-aware-analysis.en.md) for management, receipts,
-and evidence semantics.
+Operations that change a selected codebase's authorization (granting or
+revoking source text, saving its scope, deleting it) change the analysis
+context's authorization fingerprint: the next analysis uses a new backend
+session, and conversation mode asks you to start a new conversation, so old and
+new authorization cannot mix. Rebuilding an index, accepting an index
+candidate, changes to unselected codebases, and identical resubmissions reset
+nothing. Revoking authorization while a run is in progress ends that run.
+
+Deployers can set `SMARTPERFETTO_CODE_AWARE=off` to disable source analysis
+entirely: source tools are no longer registered, requests with `codebaseIds`
+answer 409 `FEATURE_DISABLED`, and the Web context popover shows that source
+analysis is disabled on the backend. See
+[Code-Aware Analysis](code-aware-analysis.en.md) for management, receipts, and
+evidence semantics.
 
 ## LLM Configuration
 
@@ -210,7 +237,7 @@ SmartPerfetto has these runtime paths:
 - `openai-agents-sdk`: the OpenAI runtime. Use it for OpenAI Responses API, Ollama, and OpenAI-compatible gateways that support streaming function/tool calling.
 - `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and report/claim-verification pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
 - `opencode`: optional public runtime. It runs a hardened isolated OpenCode server, feeds it explicit OpenAI-compatible or OpenCode model configuration, and exposes only request-scoped SmartPerfetto MCP tools. It does not read the user's OpenCode CLI login, project config, extensions, or built-in file/shell/web/edit tools.
-- `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and keeps private-knowledge runs out of provider session resume and durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
+- `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and starts a fresh provider session every turn without durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
 
 These runtimes are mutually selected backend orchestration paths. OpenAI runtime setup does not require installing or logging in to Claude Code; Claude API setup does not require an OpenAI key. Pi Agent Core, OpenCode, and Qoder setup are separate from both. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
 
@@ -300,7 +327,7 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_LIGHT_MODEL=gpt-5.4-mini
 ```
 
-Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path; switching to it disables Responses-side session continuation such as the `previousResponseId` used by the SmartPerfetto OpenAI runtime.
+Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path. Neither protocol resumes an earlier provider response: every question starts from fresh model context plus SmartPerfetto's bounded typed history.
 
 Ollama or OpenAI-compatible gateways:
 
@@ -329,14 +356,18 @@ SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model
 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` should use the
 `@earendil-works/pi-ai` Model object shape. SmartPerfetto creates private Pi
 `Models`, provider, and credential-store state for each runtime instance and
-passes `models.streamSimple.bind(models)` explicitly to `Agent`; it does not set
+passes an instance-private stream function with a per-purpose policy to `Agent`; it does not set
 a process-global default stream function. `apiKey`, `apiKeyEnv`, `credential`, `transport`,
 `thinkingLevel`, `thinkingBudgets`, and `maxRetryDelayMs` may live in the same
 JSON as SmartPerfetto runtime options; `apiKey` and `credential` are stripped
 before the model is passed into Pi Agent Core state so they do not enter
 snapshots or reports. Authentication precedence is JSON `credential` or
 `apiKey`, JSON `apiKeyEnv`, the current Provider Manager runtime's isolated
-environment, then the Pi provider's conventional environment variables. OAuth
+environment, then the Pi provider's conventional environment variables.
+
+Omitting `thinkingLevel` keeps official GLM main calls on provider defaults; explicit `off` requests disabled thinking. Unsupported levels are rejected rather than silently remapped. For GLM models confirmed to support `reasoning_effort`, set model `compat:{"supportsReasoningEffort":true}` and use provider-supported `thinkingLevelMap` mappings. Classification uses its own low or off request without changing main settings; an unsupported combination is unavailable. See [runtime architecture](../architecture/agent-runtime.en.md) for the complete boundary.
+
+OAuth
 uses `credential:{"type":"oauth","refresh":"...","access":"...","expires":...}`
 and is accepted only for a Pi built-in provider that declares OAuth support.
 SmartPerfetto does not start an interactive login during an analysis request;
@@ -406,7 +437,7 @@ your personal OpenCode login or project extensions. Removing the custom provider
 or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /
 `openai-agents-sdk` is the rollback path.
 
-## Runtime and Provider Diagnostics
+### Runtime and Provider Diagnostics
 
 SmartPerfetto does not read Codex CLI, Gemini CLI, or personal OpenCode login state; those tools manage their own config files. The `opencode` runtime is configured explicitly through Provider Manager or env. Qoder is an explicit runtime integration: after installing its optional SDK, `qoder-agent-sdk` can use the local `qodercli` login or an explicit PAT.
 
@@ -492,10 +523,9 @@ fail closed and are reported through authenticated `/api/runtime-health` as `aiP
 
 Still available while disabled: trace upload/read, SQL queries, capture config
 proposals, Android capture without `--analyze`, report reads, Provider profile
-list/edit/activate/runtime switching, and deterministic Skills that do not call
-an LLM. Blocked: agent analyze/resume, cold scene reconstruction start,
-Provider connection tests, `smp provider test`, `smp capture android --analyze`,
-and LLM Skill steps. Blocked responses include `code: "AI_DISABLED"` and
+list/edit/activate/runtime switching, and Skills (no Skill step calls a model).
+Blocked: agent analyze/resume, cold scene reconstruction start, Provider
+connection tests, `smp provider test`, and `smp capture android --analyze`. Blocked responses include `code: "AI_DISABLED"` and
 `retryable: false`. Degraded rather than blocked: the Critical path wait-chain
 analysis still returns, and its AI summary (feature `critical_path_ai_summary`)
 falls back to the deterministic rule summary, reported through
@@ -507,7 +537,7 @@ persisted session) under the caller's Provider Manager profile:
 
 | Feature | Entry point | When AI is unavailable |
 | --- | --- | --- |
-| `critical_path_ai_summary` | `POST /api/critical-path/:traceId/analyze` | Rule summary, `aiSummary.fallbackReason` + `warnings` |
+| `critical_path_ai_summary` | `POST /api/workspaces/:workspaceId/critical-path/:traceId/analyze` | Rule summary, `aiSummary.fallbackReason` + `warnings` |
 | `flamegraph_ai_summary` | `POST /api/flamegraph/:traceId/analyze` | Rule summary, `aiSummary.fallbackReason` + `warnings` |
 | `comparison_ai_conclusion` | AI conclusion of analysis-result comparison | Deterministic conclusion, reason in `uncertainty` |
 
@@ -519,7 +549,10 @@ conclusion also supports the OpenAI runtime; every other runtime degrades), and
 configured credentials. `SMARTPERFETTO_COMPARISON_AI_DISABLED=true` turns off
 only the comparison conclusion and applies alongside the global switch.
 Timeouts: `CRITICAL_PATH_AI_TIMEOUT_MS` and `FLAMEGRAPH_AI_TIMEOUT_MS`
-(default 60000).
+(default 60000). Flamegraph hotspot analysis prefers the Rust analyzer
+(`FLAMEGRAPH_ANALYZER_BIN` selects an executable; `FLAMEGRAPH_ANALYZER_TIMEOUT_MS`
+defaults to 60000) and falls back to the TypeScript implementation when it is
+unavailable; see [Critical Path And Flamegraph](critical-path-and-flamegraph.en.md).
 
 ## Budgets and Timeouts
 
@@ -535,7 +568,6 @@ CLAUDE_FULL_PER_TURN_MS=60000
 CLAUDE_FULL_REQUEST_TIMEOUT_MS=1200000
 CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000
 CLAUDE_QUICK_PER_TURN_MS=40000
-CLAUDE_VERIFIER_TIMEOUT_MS=60000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 OPENAI_FULL_PER_TURN_MS=60000
@@ -565,9 +597,16 @@ extensions and never shortens the original budget. When investigation still time
 out after data has returned, that reserved call gives a limited conclusion from the
 returned data, marked `partial` / `timeout`; with no returned data, or if the delivery
 call also times out, the run ends without a deliverable conclusion.
-`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound provider history
-retained across continuations or sessions. It does not truncate Artifacts,
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound the current-run
+transcript a recovery or continuation call may resend; a larger transcript is never resent in full. It does not truncate Artifacts,
 DataEnvelopes, reports, or evidence provenance.
+
+`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15000, never below 10000, above
+the 5 s SQLite busy timeout) bounds how long a run may take to save its answer
+after the user stops its verification (Web, conversation, or CLI Ctrl-C). It
+starts only at such a stop. When it elapses, the answer the user read is kept as
+an unverified, incomplete turn (except for private knowledge or revoked
+authorization) and the run is stopped; the CLI stops the turn without saving.
 
 | Mode | Behavior | Use case |
 |---|---|---|
@@ -622,13 +661,17 @@ NODE_ENV=development
 # SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
 # Only when an operator confirms RFC 2544 fake-IP DNS from a local TUN:
 # SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS=storage.googleapis.com
+# JSON / form request body limit (default 50mb; trace uploads use MAX_FILE_SIZE):
+# BODY_LIMIT=50mb
+# Scene reconstruction report disk retention (default 7 days):
+# SCENE_REPORT_TTL_MS=604800000
 ```
 
 Default local ports:
 
 - Backend: `3000`
 - Perfetto UI: `10000`
-- trace_processor HTTP RPC pool: `9100-9900`
+- trace_processor HTTP RPC pool: `9100-9900` (`TP_PORT_MIN` / `TP_PORT_MAX`)
 
 Use `SMARTPERFETTO_BACKEND_PORT` for the backend port. `PORT` remains a
 compatibility fallback for Node/Docker/PaaS environments. Use
@@ -637,6 +680,20 @@ derive the local `FRONTEND_URL` from that port, so it does not need to be
 configured twice. Set `FRONTEND_URL` only when the browser-visible frontend
 origin differs, such as HTTPS or a reverse proxy. When the browser cannot infer
 the backend address, set `SMARTPERFETTO_BACKEND_PUBLIC_URL`.
+
+By default the backend admits browser origins on `localhost` / `127.0.0.1` at the
+frontend port (plus the 8080, 5173 and 5174 development ports) and
+`FRONTEND_URL`; `CORS_ORIGINS` (comma-separated) replaces that list. A Trace
+Processor WebSocket authenticated by a session cookie, trusted SSO headers, or
+the keyless local identity accepts only those origins too: a page anywhere else,
+including a same-site sibling subdomain or another local port, gets 403. A
+session-cookie connection must also send an Origin. A connection authenticated
+by a credential the page itself holds (an enterprise API key, a Bearer session
+token, or the Trace Processor capability protocol) is not Origin-checked, but a
+request that carries the session cookie and no `Authorization: Bearer` header
+(for example, the cookie plus a capability) follows the cookie rule. A reverse proxy
+must not strip the browser's `Origin` header, or trusted-SSO-header mode loses
+this check.
 
 URL Trace downloads reject private, reserved, and RFC 2544 `198.18.0.0/15`
 addresses by default. If a local TUN maps a trusted public hostname to fake IP,
@@ -695,6 +752,21 @@ least 32 bytes and must not reuse the OIDC client secret. Sessions are fixed at
 eight hours with `SameSite=Lax`; HTTPS automatically enables Secure cookies,
 and scopes are fixed at `openid email profile`.
 
+In every auth mode, server-side signing (browser sessions, Trace Processor
+WebSocket capabilities, external-issue review attestations, and under OIDC the
+Provider secret-store encryption key) derives from one root per purpose: the
+first of `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET` (WebSocket capabilities
+only), `SMARTPERFETTO_SERVER_SECRET`, `SMARTPERFETTO_SSO_COOKIE_SECRET` and
+`SMARTPERFETTO_API_KEY` whose trimmed value is long enough in UTF-8 bytes (32
+for capabilities and the secret store, 16 otherwise); shorter values are
+skipped. OIDC is stricter at startup: if the first non-empty
+`SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` is shorter
+than 32 bytes, the backend refuses to start instead of skipping it. Enterprise
+mode refuses to sign when none qualifies; other modes fall back to a random
+per-process root, so sessions, WebSocket capabilities and review attestations
+stop verifying after a restart. Set a `SMARTPERFETTO_SERVER_SECRET` of at least
+32 bytes so every purpose shares the same root.
+
 For local split-port testing through `./start.sh` or `./scripts/start-dev.sh`,
 set only `SMARTPERFETTO_FRONTEND_PORT`; the launcher derives `FRONTEND_URL`.
 The explicit `FRONTEND_URL` above is for domain or reverse-proxy deployments,
@@ -705,16 +777,19 @@ OIDC subject. Different users may have the same workspace display name, but
 their user IDs, workspace IDs, memberships, and data scopes remain separate.
 The OIDC frontend does not let users change the workspace, backend URL, or API
 key. Tenant identity is derived only from the normalized issuer and cannot be
-overridden by a user claim. Built-in OIDC cannot be combined with
-`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` or the legacy
-`SMARTPERFETTO_API_KEY`.
+overridden by a user claim. Built-in OIDC cannot be combined with an enabled
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS` (any of `true`, `1`, `yes`, `on`,
+`enabled`) or the legacy `SMARTPERFETTO_API_KEY`; under OIDC neither HTTP
+requests nor the Trace Processor WebSocket accept trusted SSO headers or
+enterprise API keys.
 OIDC automatically uses the scoped database as the only read and write
 authority. No enterprise migration phase is required, and OIDC rejects the
 `legacy` and `dual-write` modes that do not preserve user-level isolation.
 
 Production mode requires HTTPS for the issuer, callback, and frontend URL and
 uses Secure cookies by default. Only controlled test deployments may explicitly
-set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`; this permits plaintext HTTP
+set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` (any of `true`, `1`, `yes`,
+`on`, `enabled`, like the other switches); this permits plaintext HTTP
 and disables Secure cookies by default, so it must not be used on an untrusted
 network. `FRONTEND_URL` must be the browser-visible frontend origin, and
 must not be a container-internal address. The frontend URL and OIDC callback
@@ -735,8 +810,25 @@ backend-unaware static directory.
 MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
-PERFETTO_PATH=/path/to/perfetto
 ```
+
+A trace processor waits for HTTP readiness for the larger of
+`TP_STARTUP_TIMEOUT_MS` (default 30000) and the trace size ×
+`TP_STARTUP_TIMEOUT_PER_GIB_MS` (default 120000 per GiB), capped at
+`TP_STARTUP_TIMEOUT_MAX_MS` (default 900000). Raise them when very large traces
+time out while starting on slow disks.
+
+`UPLOAD_DIR` is the upload root; a relative path resolves against the backend
+process's working directory. Uploaded trace files and their metadata live in
+`${UPLOAD_DIR}/traces`, and the upload routes, the metadata, and reloading a
+trace by id after a backend restart all use that one directory. Set
+`SMARTPERFETTO_TRACE_UPLOAD_DIR` only to move the trace directory elsewhere; it
+overrides all three together (the npm CLI uses it to keep trace copies under
+its own home).
+
+The backend never serves the upload directory as static files. Trace files are
+downloaded only through the authenticated, ownership-checked trace download API
+(`GET /api/traces/:id/file`, or its workspace-scoped form).
 
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.
 `./start.sh` and `./scripts/start-dev.sh` prefer SHA256-pinned prebuilts. An
@@ -762,25 +854,30 @@ TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts ./star
 TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.sh
 ```
 
-Mirror downloads are still checked against the SHA256 pinned in `scripts/trace-processor-pin.env`.
+A mirror must keep the `<PERFETTO_ARTIFACT_VERSION>/<platform>/trace_processor_shell` layout. `PERFETTO_ARTIFACT_VERSION` in `scripts/trace-processor-pin.env` is either a release tag (e.g. `v58.2`) or the full commit SHA of a Google CI build of upstream main. The repository commits binaries only for Linux x64, macOS arm64 and Windows x64; other platforms (e.g. linux-arm64, mac-amd64), the npm CLI and Docker builds download from that directory, and Google does not promise to retain commit directories, so keep your own mirror for long-lived offline deployments. Mirror downloads are still checked against the SHA256 pinned in that file.
 
-## Optional Android Internals Knowledge
+## Optional Document Knowledge Bases
 
-External Wiki paths are denied by default. `SMARTPERFETTO_KNOWLEDGE_ROOTS`
-only establishes the path allowlist; an operator must still acknowledge usage
-rights, grant provider-send consent, build the index through the API, and select
-the source in each analysis `knowledgeSourceIds` list. See
-[Android Internals External Knowledge](android-internals-knowledge.en.md).
+Knowledge folders are denied by default. The local Web UI can authorize one
+folder through the folder picker; server deployments set
+`SMARTPERFETTO_KNOWLEDGE_ROOTS` as the path allowlist (separate several folders
+with the platform path delimiter). The owner must still acknowledge usage
+rights, grant provider-send consent, build the index, and select the source in
+each analysis `knowledgeSourceIds` list. The Android Internals Wiki joins the
+same way; see
+[Using The Android Internals Wiki As A Knowledge Base](android-internals-knowledge.en.md).
 
 ## Rate Limiting
 
-```bash
-SMARTPERFETTO_USAGE_MAX_REQUESTS=200
-SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS=100
-SMARTPERFETTO_USAGE_WINDOW_MS=86400000
-```
+SmartPerfetto has no built-in request rate limiting and does not read the
+`SMARTPERFETTO_USAGE_MAX_REQUESTS`, `SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS` or
+`SMARTPERFETTO_USAGE_WINDOW_MS` settings that earlier docs listed; setting them
+has no effect.
 
-Rate-limit state is lost after restart. For strict production quotas, add persistent rate limiting at the reverse proxy or API gateway layer.
+For a public or shared deployment, enable [OIDC Browser Login](#oidc-browser-login)
+(or at least set `SMARTPERFETTO_API_KEY`) and rate-limit at the reverse proxy or
+API gateway. Enterprise workspace quotas on trace size, concurrent runs and
+monthly runs bound analysis resources; they are not per-request rate limits.
 
 ## Runtime and Provider Boundary
 

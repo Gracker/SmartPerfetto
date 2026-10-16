@@ -74,7 +74,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE a.surface_frame_token IS NOT NULL
-          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '' OR a.layer_name GLOB '*${package}*')
+          AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*' OR (a.layer_name GLOB '${package}[/#]*' OR a.layer_name GLOB '*[ [(/]${package}[/#]*'))
           AND a.ts >= (SELECT start_ts FROM time_bounds)
           AND a.ts <= (SELECT end_ts FROM time_bounds)
       ),

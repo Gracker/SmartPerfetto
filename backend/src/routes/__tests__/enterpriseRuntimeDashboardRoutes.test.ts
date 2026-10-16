@@ -15,6 +15,9 @@ import {
   TraceProcessorLeaseStore,
 } from '../../services/traceProcessorLeaseStore';
 import { createEnterpriseRuntimeDashboardRoutes } from '../enterpriseRuntimeDashboardRoutes';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -54,7 +57,7 @@ function ssoHeaders(
     .set('X-SmartPerfetto-SSO-Scopes', input.scopes ?? 'runtime:manage,audit:read');
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/admin/runtime', createEnterpriseRuntimeDashboardRoutes({
@@ -121,15 +124,8 @@ function makeApp(): express.Express {
         minEstimateBytes: 128 * 1024 * 1024,
       },
     }),
-    modelRouterUsageProvider: () => ({
-      totalCost: 0.42,
-      stats: {
-        'claude-sonnet': { calls: 2, tokens: 1200, cost: 0.3, failures: 0 },
-        'gpt-4.1-mini': { calls: 1, tokens: 300, cost: 0.12, failures: 1 },
-      },
-    }),
   }));
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function seedWorkspaceGraph(): void {
@@ -236,6 +232,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   leaseStore?.close();
   leaseStore = null;
   setTraceProcessorLeaseStoreForTests(null);
@@ -248,7 +245,7 @@ afterEach(async () => {
 
 describe('enterprise runtime dashboard routes', () => {
   it('returns scoped leases, RSS, queue length, events, and LLM cost for runtime admins', async () => {
-    const res = await ssoHeaders(request(makeApp()).get('/api/admin/runtime'));
+    const res = await ssoHeaders(request(await makeApp()).get('/api/admin/runtime'));
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(expect.objectContaining({
@@ -303,21 +300,13 @@ describe('enterprise runtime dashboard routes', () => {
       'tenant.audit',
       'runtime.read',
     ]);
-    expect(res.body.llmCost).toEqual({
-      totalCost: 0.42,
-      totalCalls: 3,
-      totalTokens: 1500,
-      totalFailures: 1,
-      byModel: {
-        'claude-sonnet': { calls: 2, tokens: 1200, cost: 0.3, failures: 0 },
-        'gpt-4.1-mini': { calls: 1, tokens: 300, cost: 0.12, failures: 1 },
-      },
-    });
+    // No runtime-wide LLM usage counter exists; the dashboard reports none rather than zeros.
+    expect(res.body).not.toHaveProperty('llmCost');
   });
 
   it('requires runtime manage permission', async () => {
     const res = await ssoHeaders(
-      request(makeApp()).get('/api/admin/runtime'),
+      request(await makeApp()).get('/api/admin/runtime'),
       {
         userId: 'runtime-analyst',
         role: 'analyst',

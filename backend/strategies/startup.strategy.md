@@ -11,10 +11,17 @@ investigation_contract:
   requirements:
     - id: startup_critical_path
       domain: critical_path
-      description: "Bind the exact launch, UPID and startup interval; distinguish TTID, TTFD and framework completion. Explain material launch phases and critical tasks individually with time ranges, exclusive self time, execution/wait states, dependencies and relevant system effects. Keep pre-launch work, launch-window work and the tail to first display separate; explain residual intervals or their specific evidence gaps. Clip contributions to the declared window and preserve parent/child overlap: a parent's self time excludes its children. A phase table or dominant hotspot alone is insufficient."
+      description: "Bind the exact launch, UPID and startup interval; distinguish TTID, TTFD and framework completion. Explain material launch phases and critical tasks individually with time ranges, exclusive self time, execution/wait states, dependencies and relevant system effects. Keep pre-launch work, launch-window work and the tail to first display separate; explain residual intervals or their specific evidence gaps. Clip contributions to the declared window and preserve parent/child overlap: a parent's self time excludes its children. A phase table or dominant hotspot alone is insufficient. A container slice (bindApplication, activityStart, performCreate) names a phase, not a cause: attribute its inner work or state the instrumentation gap."
     - id: startup_dependencies
       domain: dependency_chain
       description: "Use launch phase, Binder, lock, GC, IO and render dependencies when supported. Explain each relevant phase's App work, system contribution and observed anomaly with adjacent evidence; identify the actual critical task beyond the main thread when needed. Distinguish trace facts from source mechanisms and unresolved alternatives. Preserve full root-cause details and unavailable fields; startup duration and hotspot names alone do not explain the launch."
+# Run by the product for a scene-wide investigation before the model's first turn.
+entry_skill:
+  id: startup_analysis
+  params:
+    package: focus_app
+    start_ts: trace_start
+    end_ts: trace_end
 classification_description: "Application launch behavior and performance, including launch type and time to initial or full display."
 priority: 2
 effort: medium
@@ -106,92 +113,6 @@ final_report_contract:
         - ['API\s*3[56]', 'Android\s*1[56]', 'version', '版本', 'clock', 'timestamp', 'record state', 'in-progress', 'incomplete', 'device', 'sample', 'activation', 'A/A']
         - ['trace window', 'current trace', 'TTID', 'TTFD', 'align', '对齐', 'missing', '缺失', 'confidence', '置信', '不能', '不可', 'not prove']
 
-phase_hints:
-  - id: detail_breakdown
-    keywords: ['detail', '详情', '分解', 'breakdown', '阶段', 'startup_detail', '耗时']
-    constraints: '必须把 Phase 1 选中行的 startup_id/start_ts/end_ts/dur_ms/package/startup_type 原样传给 startup_detail；该行有 positive upid 时也必须原样传入，以便后续 target Skill 继承已验证的 exact scope。upid 为 NULL/缺失/歧义时不得从 package 或进程名推断。get_startups 为 0 行时改用 Phase 1 空结果回退，禁止伪造 startup_id/TTID。TTID/TTFD 只能作为可选 ttid_ms/ttfd_ms，不能充当时间边界。使用 self_ms（排除子切片）而非 wall-time。'
-    critical_tools: ['startup_detail']
-    critical: false
-  - id: critical_artifacts
-    keywords: ['artifact', 'critical', '关键', '任务', 'task', '热点', 'hot', '阻塞', 'block']
-    constraints: '此阶段不可跳过。必须获取关键 artifact（热点函数、阻塞调用、锁竞争）作为深钻输入。'
-    critical_tools: ['execute_sql', 'fetch_artifact']
-    critical: true
-  - id: slow_reasons_validation
-    keywords: ['slow', 'reason', '原因', '交叉', 'cross', '验证', 'dex2oat', 'baseline', 'debuggable']
-    constraints: '冷启动必须调用 startup_slow_reasons 检查 DEX2OAT/baseline profile/debuggable 等官方因素。Q4(Sleeping) >25% 必须用 blocking_chain_analysis 追踪阻塞源。'
-    critical_tools: ['startup_slow_reasons', 'blocking_chain_analysis']
-    critical: true
-  - id: webview_startup
-    keywords: ['webview', 'chromium', 'v8', 'crrenderermain', 'parsehtml', 'drawgl', '页面渲染', 'WebView启动']
-    constraints: '仅在架构检测或 trace 证据提示 WebView 时执行。SQL 必须说明正在验证 WebView/Chromium/V8/CrRendererMain 是否参与启动；若未命中 slice，应把 WebView 启动影响标为证据不足或可排除，而不是继续归到综合结论。'
-    critical_tools: ['execute_sql']
-    critical: false
-  - id: startup_power_overlay
-    keywords: ['power', 'battery', 'wattson', '功耗', '耗电', '电池', '启动期能耗', '掉电']
-    constraints: '用户关心启动功耗/耗电时，先检查 Trace 数据完整度中的 power_rails、battery_counters、cpu_freq_idle、gpu_work_period。数据可用才调用 wattson_app_startup_power；缺失时输出采集建议，禁止把空表解释为低功耗。'
-    critical_tools: ['wattson_app_startup_power', 'battery_charge_timeline', 'android_dvfs_counter_stats']
-    critical: false
-  - id: startup_diagnostic_api_boundary
-    keywords: ['ApplicationStartInfo', 'getHistoricalProcessStartReasons', 'STARTUP_STATE', 'START_TIMESTAMP', 'START_REASON', 'START_COMPONENT', 'App Performance Score', 'Android Vitals', 'Play Vitals', 'APM', 'A/B', 'experiment']
-    constraints: '当计划或用户问题涉及启动诊断 API/外部指标时，必须把 Perfetto startup_analysis/TTID/TTFD、ApplicationStartInfo 记录、App Performance Score/Vitals/APM/A-B 外部数据分层；说明 API/Android 版本、时钟/时间戳对齐、record 是否 incomplete/in-progress、样本/设备/实验窗口，不能把外部分数或聚合直接当成本 trace 根因。'
-    critical_tools: ['startup_analysis', 'lookup_knowledge']
-    critical: false
-  - id: conclusion
-    keywords: ['结论', 'conclusion', '输出', 'output', '报告', 'report', '总结']
-    constraints: '输出必须包含：启动类型判定(cold/warm/hot) + TTID/TTFD 数值 + 阶段耗时分解 + 根因编号引用(A1-A18/B1-B12) + 双受众格式([App層]+[系統/平台層])。'
-    critical_tools: []
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: startup_timing
-      match_keywords: ['startup', 'ttid', 'ttfd', 'launch', '启动', 'startup_analysis']
-      suggestion: '启动场景建议包含启动耗时测量阶段 (startup_analysis)'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: startup_analysis
-        - tool: compare_skill
-          skill_id: startup_analysis
-    - id: phase_breakdown
-      match_keywords: ['phase', 'breakdown', 'block', '阶段', '分解', '阻塞', 'startup_detail']
-      suggestion: '启动场景建议包含启动阶段分解和阻塞因素分析'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: startup_detail
-        - tool: compare_skill
-          skill_id: startup_detail
-    - id: startup_critical_artifacts
-      match_keywords: ['artifact', 'fetch_artifact', 'critical_tasks', 'hot_slice_states', 'thread_blocking_graph', '关键数据', '关键任务', '阻塞关系']
-      suggestion: '启动详情阶段必须计划获取 startup_detail 的关键 artifact（主线程状态、四象限、热点、关键任务/阻塞关系；缺失时阶段可 skipped+reason）'
-      required_expected_calls:
-        - tool: fetch_artifact
-    - id: launch_type_verdict
-      match_keywords: ['type', 'cold', 'warm', 'hot', 'bindApplication', '类型', '冷启动', '温启动', '热启动', '判定']
-      suggestion: '启动场景建议验证启动类型 (cold/warm/hot)：bindApplication 存在→冷启动，仅 performCreate→温启动'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: startup_analysis
-        - tool: compare_skill
-          skill_id: startup_analysis
-    - id: cold_start_slow_reasons
-      trigger_keywords: ['cold', '冷启动', 'bindApplication', 'startup_slow_reasons', 'SR09', 'SR10', 'SR20']
-      match_keywords: ['startup_slow_reasons', 'slow reason', '官方启动慢原因', 'SR09', 'SR10', 'SR20', 'dex2oat', 'baseline']
-      suggestion: '冷启动或 bindApplication 证据出现时，计划必须包含 startup_slow_reasons 交叉验证；若数据不可用，执行阶段标记 skipped 并说明原因'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: startup_slow_reasons
-        - tool: compare_skill
-          skill_id: startup_slow_reasons
-    - id: q4_blocking_chain
-      trigger_keywords: ['Q4', 'Sleeping', 'sleeping', '阻塞', 'blocking_chain', 'blocked_functions', 'futex', 'binder']
-      match_keywords: ['blocking_chain_analysis', '阻塞链', '唤醒者', 'waker', 'blocked_functions']
-      suggestion: '当计划涉及 Q4/Sleeping/阻塞解释时，必须声明 blocking_chain_analysis；若 trace 缺少阻塞信号，执行阶段标记 skipped 并说明'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: blocking_chain_analysis
-        - tool: compare_skill
-          skill_id: blocking_chain_analysis
 ---
 
 #### Startup Core Strategy
@@ -232,6 +153,7 @@ plan_template:
 
 **Always-inject startup skeleton**
 1. 调用 `startup_analysis` 获取 startup_id、TTID/TTFD、重分类后的 cold/warm/hot、主线程热点和数据质量。
+   平台原始 `original_type` 与 Skill 修正 `startup_type` 必须各有独立事实声明，分别引用原始单元格；不得合并为一条重分类声明。数值重分类标记不是计数，不能替代原始类型声明。
 2. 调用 `startup_detail` 做阶段分解、四象限、self_ms、线程状态、关键任务和阻塞关系。
 3. 对 startup_detail 的关键 artifact 使用 `fetch_artifact` 读取行数据；摘要或 detail 文本不能替代 artifact 证据。
 4. 冷启动/bindApplication 命中时补 `startup_slow_reasons`；Q4/Sleeping/blocked_functions 命中时补 `blocking_chain_analysis`。
@@ -291,6 +213,8 @@ invoke_skill("startup_analysis", { enable_startup_details: false })
 2. 用 `execute_sql` 锚定启动触发点，锚点必须是实际观测到的 slice，不得从包名或猜测的时间点出发：主线程首次进入持续忙碌的转换，如 `receiveMessage(... type=MOTION/KEY)` 输入事件、`activityStart`/`performCreate:*`/`inflate` 首个 slice 簇、首个 `Choreographer#doFrame` 簇。锚点 slice 不存在时不得硬选，改报告窗口无法锚定。
 3. 分析窗口写成**推断窗口 [锚点证据, 边界证据]**：边界取首个 doFrame 簇结束、主线程输入/渲染活动沉寂点或用户问题所指区间。窗口起点之前的主线程空闲 sleep 属于启动前等待，不计入启动阻塞（忙/闲分期见根因诊断决策树第 1.5 步）。
 4. 后续 Phase 全部使用该推断窗口并保持"推断窗口"口径；TTID/TTFD 写"框架启动指标不可用（无框架启动事件）"。
+
+用户问的是 App 内打开新页面（点击后跳转、Activity 切换）时，该推断窗口按 `interaction:navigation` detail 的分段方法和 `navigation_analysis` 使用边界解释。
 
 ⚠️ **数据质量门禁特别注意：**
 - **R008_TTID_GT_DUR**（TTID > 启动时长）：不要只说"TTID 不可信"或"建议在 Perfetto UI 中查看"。先从同一 `startup_id` 的 `android_startups.ts` 与 `android_startup_time_to_display.time_to_initial_display` 取得原始整数纳秒，令框架完成点为 `startup.ts + startup.dur`、TTID 绝对终点为 `startup.ts + time_to_initial_display`；仅当 TTID 终点更晚时，分析半开尾窗 `[框架完成点, TTID 终点)`。不要用任意 `DrawFrame` 的开始或结束替代 TTID，也不要用显示用的浮点毫秒反算边界。
@@ -483,7 +407,7 @@ invoke_skill("startup_slow_reasons")
 |------|----------|---------|
 | App 层基础 | SR01-SR08 | JIT/DEX2OAT/GC/锁/IO/Binder/广播/类验证 |
 | App 层扩展 | SR09-SR15 | ContentProvider 过多/SP 阻塞/显式 sleep/SDK 初始化/Native 库/.so/WebView/Inflate |
-| 系统层 | SR16-SR20 | 热节流/后台干扰/system_server 锁/并发启动/数据库 fsync |
+| 系统层 | SR16-SR20 | 频率未达峰值/后台干扰/system_server 锁/并发启动/数据库 fsync |
 
 **解读指引**：
 - **SR09(ContentProvider过多)**: 结合 A1 根因，检查每个 CP 的包名是否为三方 SDK。仅冷启动有意义（需有 bindApplication slice）
@@ -492,7 +416,7 @@ invoke_skill("startup_slow_reasons")
 - **SR12(非框架初始化工作)**：非框架占比不能识别三方 SDK；需源码/符号证明身份，模拟负载保持模拟负载，不能套用 SDK 根因。
 - **SR13-SR14(Native库/WebView)**: 冷启动特有，受 page cache(B3) 影响大
 - **SR15(inflate 命名活动)**：按区间分解 Running 与等待；是否真实 XML inflate、反射模拟或其他行为，需要实际实现/事件证据。
-- **SR16(热节流)**: 系统因素(B4)，对比设备冷却后重测
+- **SR16(频率未达峰值)**: 只是频率观测，B2/B4 候选；频率比值不证明限频或热节流，是否限频以启动窗口的 `cpu_throttling_in_range` 限频证据为准，温控机制还需温度/散热设备证据
 - **SR17(后台干扰)**: Runnable 表示等待 CPU；核对 R+ 切出、同 CPU 直接交接和关键路径时间后再评估后台竞争(B9)，比例本身不能证明抢占。
 - **SR18(system_server锁)**: 间接影响 Binder 延迟(B6→B7)
 - **SR19(并发启动)**: Boot storm 场景(B12)，放大所有系统层问题
@@ -633,7 +557,9 @@ execute_sql("SELECT name AS slice_name, dur / 1e6 AS dur_ms, thread_name FROM th
    - ✅ 正确：`activityStart (832ms wall) → performCreate (827ms) → inflate (710ms)`
    - ❌ 错误：将 activityStart (62%)、performCreate (61%)、inflate (53%) 作为独立根因并列
 3. **优化收益须有依赖关系、可消除工作或对照实验支持**。不能直接把 self_ms 或互不重叠 self 总量称为“可回收时间”“收益上限”；未知时只报告观测成本和待验证方向，也不能把父子 wall time 相加。
-4. **检查切片嵌套及埋点覆盖**：self_ms ≈ total_ms 只能说明记录到的子切片占时很少，不代表内部没有其他工作；逐事件状态和实现证据决定如何归因。
+4. **检查切片嵌套及埋点覆盖**：self_ms ≈ total_ms 只能说明记录到的子切片占时很少，不代表内部没有其他工作；逐事件状态和实现证据决定如何归因。`bindApplication`、`activityStart`、`performCreate:*`、`activityResume`（及 trace 中存在的 `clientTransactionExecuted` 等事务包裹）是框架容器：其名称只说明所处阶段，不能作为最终根因或"直接原因"。沿子 slice 下钻到 App 可归属的具体工作（某个 ContentProvider、SDK 初始化、inflate、数据加载）；子 slice 缺失时，归因写成"该容器内 App 初始化（埋点未细分）"，给出该区间的运行/等待分解并说明埋点缺口，不根据名称虚构内部工作。
+
+5. **证据矩阵（`startup_evidence_matrix`）读合计，不读 Top 组**：File IO、Binder、主线程同步 Binder、调度延迟项取各生产者的 `all_*` 列（LIMIT 截断前的全部分组合计；File IO 只计最外层 IO slice）。Binder Total 是启动窗口内所有线程 Binder 时长之和，并发时可超过 100%，不是墙钟占比；只有热点 slice 项读最热的单个 slice。`not_observed` 表示生产者没有满足过滤条件的行，不是测量值 0。
 
 ### 启动阶段划分（必须覆盖）
 
@@ -750,6 +676,7 @@ TTID 和 TTFD 是两个不同的指标，必须区分：
 - `android_startups` 表的 `dur`（= `end_ts - start_ts`）是框架层启动时长，通常表示框架认定的 startup completion，可近似首帧显示边界
 - 注意：`dur` 与 TTID 在部分 trace 上并不严格等价（文档前面的 `R008_TTID_GT_DUR` 数据质量检查即为此设计）。当数据质量检查触发 R008 时，需单独核验 `dur` 与 TTID 的偏差原因
 - 即使 `ttid_ms` 字段为 NULL，`dur_ms` 仍然定义了有效的分析窗口，分析的全部内容（Phase 1 到 Phase 3）都基于 `start_ts` 到 `end_ts` 范围
+- **Launch trampoline（SDK 33+）**：`trampoline_ms > 0` 表示同一启动区间先启动了另一个 Activity/包（trampoline），再跳转到目标包；`dur_ms` 包含这段跳转，`dur_without_trampoline_ms` 才是目标包自身 `launching:` 区间的时长。trampoline 段属于发起跳转的入口，不得计入目标 App 的阶段分解、根因或优化收益；报告须同时列出两个时长，并注明 `rating` 仍按含 trampoline 的 `dur_ms` 评定。
 
 **诊断逻辑**：
 - `ttid_ms` 存在 → 报告中显示 TTID 值
@@ -877,7 +804,7 @@ TTID 和 TTFD 是两个不同的指标，必须区分：
 - 把启动锚点之前或闲期的主线程长 sleep 计入启动阻塞总量；或在缺少唤醒证据（waker + 唤醒时刻 slice）时把闲期 sleep 写成"等待输入/空闲"
 - 在忙/闲分期未建立的情况下，仅凭 Q4 聚合占比下"主线程睡眠严重/不严重"的结论
 - 不区分 GC 在主线程还是后台线程
-- 把延迟归因（opinionated_breakdown）的 category 字段（IO/Layout/Other 等）当作真实的阻塞原因。这些 category 是 Perfetto 基于 slice 名称的**启发式分类**，不代表实际线程状态。例如 bind_application 被标记为 IO 类别，但实际阻塞原因可能是锁等待。**必须用线程状态数据（特别是 hot_slice_states）来验证真实根因**
+- 把延迟归因（opinionated_breakdown）的 category 字段当作真实的阻塞原因。reason 是 stdlib 对主线程最内层 slice 名或线程状态的归并（只有 io_wait=1 才记为 io），category 是 reason 的精确分组：AppPhase（bind_application、activity_start 等）只说明时间落在哪个应用阶段，Running/Runnable/Sleep/Uninterruptible 是没有已知 slice 时的线程状态，都不是根因；category_percent 才是整个类别的占比，percent 只是单个 reason。**必须用线程状态数据（特别是 hot_slice_states）来验证真实根因**
 - 用 slice wall time 与全区间线程状态总量做直接数值对比来推断因果（如"inflate 479ms ≈ S状态 468ms 所以它是 S 状态的根因"）。wall time 包含所有线程状态，正确做法是使用 hot_slice_states 的 per-slice 状态分解
 - **将嵌套 slice 的 wall time 作为独立根因并列报告**，导致百分比总和超过 100%。必须用 self_ms 归因
 - **只分析 activityStart 阶段而遗漏 bindApplication 阶段**（反之亦然）。两个阶段都必须覆盖

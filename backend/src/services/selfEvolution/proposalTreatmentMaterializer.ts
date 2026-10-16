@@ -7,6 +7,7 @@ import type {
   CurationProposalV1,
   ProposalCandidateMaterializationV1,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {parseSkillOverlayDeltaV1} from './effectiveSkillComposer';
 import {
   createEvaluationTreatmentArtifact,
@@ -19,7 +20,14 @@ import {
   parseProposalCandidateMaterializationV1,
   proposalDraftContentHash,
 } from './proposalGateContract';
-import {parseM6DraftProposal} from './proposalContract';
+import {
+  assertProposalTargetIsLive,
+  INERT_INJECTION_TARGET,
+  parseM6DraftProposal,
+} from './proposalContract';
+
+// A delta's content is read back from a stored proposal.
+const DELTA_CONTENT = 'proposal delta content';
 
 export interface ProposalTreatmentBaseV1 {
   skillRegistryFingerprint: string;
@@ -37,6 +45,7 @@ export function materializeProposalTreatment(input: {
   base: ProposalTreatmentBaseV1;
 }): ProposalTreatmentMaterializationV1 | undefined {
   const proposal = parseM6DraftProposal(input.proposal);
+  assertProposalTargetIsLive(proposal);
   const candidate = parseProposalCandidateMaterializationV1(input.candidate);
   if (
     candidate.proposalId !== proposal.proposalId
@@ -68,27 +77,8 @@ function materializeEntry(
 ): EvaluationTreatmentEntryV1 {
   const delta = proposal.deltas[0];
   switch (proposal.kind) {
-    case 'phase_hint': {
-      const match =
-        /^injections\.phaseHints\[scene=("(?:\\.|[^"\\])*")\]\[id=("(?:\\.|[^"\\])*")\]$/
-          .exec(delta.anchor);
-      if (!match) throw new Error('proposal_treatment_phase_hint_anchor_invalid');
-      const scene = parseJsonString(match[1]);
-      const hintId = parseJsonString(match[2]);
-      const after = delta.after === undefined
-        ? undefined
-        : JSON.parse(delta.after);
-      return {
-        kind: 'phase_hint_delta',
-        op: delta.op,
-        scene,
-        hintId,
-        ...(delta.op === 'add'
-          ? {}
-          : {beforeContentHash: delta.baseContentHash}),
-        ...(after === undefined ? {} : {after}),
-      };
-    }
+    case 'phase_hint':
+      throw new Error(INERT_INJECTION_TARGET);
     case 'skill_note':
       return {
         kind: 'skill_note',
@@ -111,7 +101,7 @@ function materializeEntry(
       };
     case 'strategy_section': {
       const contribution = parseStrategyContribution(
-        JSON.parse(delta.after ?? ''),
+        parseStoredJson(delta.after ?? '', DELTA_CONTENT),
       );
       if (
         contribution.contributionId !== delta.operationId
@@ -128,7 +118,9 @@ function materializeEntry(
       return {kind: 'strategy_contribution', contribution};
     }
     case 'skill_overlay_delta': {
-      const parsed = parseSkillOverlayDeltaV1(JSON.parse(delta.after ?? ''));
+      const parsed = parseSkillOverlayDeltaV1(
+        parseStoredJson(delta.after ?? '', DELTA_CONTENT),
+      );
       if (!parsed.ok) {
         throw new Error('proposal_treatment_skill_overlay_invalid');
       }
@@ -148,14 +140,12 @@ function materializeEntry(
       return {kind: 'skill_overlay_delta', overlay};
     }
     case 'retire_injection': {
-      const match = /^injections\.(phaseHints|skillNotes)\[id=(.+)\]$/.exec(
-        delta.anchor,
-      );
+      const match = /^injections\.skillNotes\[id=(.+)\]$/.exec(delta.anchor);
       if (!match) throw new Error('proposal_treatment_retire_anchor_invalid');
       return {
         kind: 'retire_injection',
-        category: match[1] as 'phaseHints' | 'skillNotes',
-        id: parseJsonString(match[2]),
+        category: 'skillNotes',
+        id: parseJsonString(match[1]),
         contentHash: delta.baseContentHash,
         injectionContentHash: delta.baseContentHash,
       };
@@ -167,7 +157,7 @@ function materializeEntry(
 }
 
 function parseJsonString(value: string): string {
-  const parsed = JSON.parse(value);
+  const parsed = parseStoredJson(value, 'proposal delta anchor');
   if (typeof parsed !== 'string' || JSON.stringify(parsed) !== value) {
     throw new Error('proposal_treatment_anchor_not_canonical');
   }

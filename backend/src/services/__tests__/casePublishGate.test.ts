@@ -10,6 +10,7 @@ import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
 
 import {ingestCaseKnowledge} from '../caseIngester';
 import {CaseLibrary} from '../caseLibrary';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
 
 let tmpDir: string;
 let casesDir: string;
@@ -48,7 +49,7 @@ ${withCurator ? 'curator: perf-team\n' : ''}taxonomy:
   responsibility: app
   severity: critical
 context:
-  app_architecture: android_view_standard
+  app_architecture: standard
   device_vendor: pixel
   os_version: Android 15
   refresh_rate_hz: 120
@@ -100,6 +101,7 @@ Published Markdown case body.
 function ingest() {
   return ingestCaseKnowledge({
     casesDir,
+    grant: caseCurationGrantForMarkdownIngest(),
     caseLibraryPath,
     caseGraphPath,
     ragStorePath,

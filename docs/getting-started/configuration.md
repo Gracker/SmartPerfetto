@@ -146,28 +146,45 @@ npm CLI 不使用 Web UI 的 `Connection` 配置。CLI Provider store 默认是
 `~/.smartperfetto/runtime/data/providers.json`，源码 Web 后端默认是
 `backend/data/providers.json`。只有两个进程显式使用同一个
 `SMARTPERFETTO_BACKEND_DATA_DIR` 时，网页 Provider profile 才会作用于 CLI。
+手工编辑后若 `providers.json` 不是合法的 Provider 数组（JSON 语法错误、缺少或重复
+`id` 等），后端照常启动，但不会用空列表覆盖它：Providers 页和 `smp provider list`
+提示文件无法读取，所有新增、修改、激活、停用和删除都返回
+`provider_store_unreadable`。跟随 active provider 或绑定某个 profile 的分析同样以该
+code（HTTP 409）拒绝，而不是回落到 `.env`：文件里可能配置的是另一个网关或账号，
+此时 active provider 是“未知”而不是“没有”。`/health` 与 `smp doctor` 会报告 AI
+未配置。显式选择系统默认配置（`providerId: null`）的请求或会话仍按 `.env` 运行。
+修复或移走该文件后刷新即可恢复，无需重启。
 第一次用 CLI 时，推荐运行：
 
 ```bash
 smp config init
 ```
 
-它会创建 `~/.smartperfetto/env`。没有显式传 `--env-file` 时，CLI 先读取包内/源码目录的 `backend/.env`，再读取 `~/.smartperfetto/env`，后者覆盖前者；如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。CLI 配置方式仍然遵守同一条规则：选择一个 runtime block，不要把所有 block 都打开。`smp provider list` 和 `smp provider test <providerId>` 只能检查当前 CLI store 中已有的 profile；CLI 当前不提供 Provider profile 的 add、edit 或 activate 命令。
+它会创建 `~/.smartperfetto/env`。没有显式传 `--env-file` 时，CLI 先读取包内/源码目录的 `backend/.env`，再读取 `~/.smartperfetto/env`，后者覆盖前者；如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。CLI 的数据目录（会话、trace 副本、`env`）默认是 `~/.smartperfetto`，可用 `--session-dir <path>` 或环境变量 `SMARTPERFETTO_HOME` 改到别处，前者优先。CLI 配置方式仍然遵守同一条规则：选择一个 runtime block，不要把所有 block 都打开。`smp provider list` 和 `smp provider test <providerId>` 只能检查当前 CLI store 中已有的 profile；CLI 当前不提供 Provider profile 的 add、edit 或 activate 命令。
 
 ## Codebase 选择与 Provider 授权
 
-`Codebases` 页中的注册项不会自动附加到分析。用户必须在当前请求显式选择 codebase 和
-`metadata_only` / `provider_send` 模式。注册且仍可访问的 live root 无需索引就能有界搜索；
-reindex 是可选加速。
+**设置 → 源码库** 中的注册项不会自动附加到分析。每轮在输入框旁的“本轮分析上下文”中显式
+选择源码库和 `仅定位`（`metadata_only`）/ `发送正文`（`provider_send`）模式；CLI 用
+`--codebase-id` 与 `--code-aware`。注册且仍可访问的 live root 无需索引就能有界搜索；
+构建索引是可选加速。
 
-`metadata_only` 只允许定位相对文件、行号和 `referenceId`。`provider_send` 要求注册时
-`sendToProvider` 已开启，并且目标路径同时位于当前 selection 与 consent grant 的交集内。
-放宽 path filter、exclude glob 或新增语言不会自动扩大 provider 授权；使用
-**授权当前范围** / **授权新语言** 显式更新 grant。
+`metadata_only` 只允许定位相对文件、行号和引用 `id`。`provider_send` 需要该源码库已获
+正文授权，且目标文件位于授权范围内。注册本身不能授权：`POST /api/rag/codebases/register`
+带 `sendToProvider: true` 会返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`。正文授权只能在
+审阅服务端给出的披露范围（包含路径、排除规则、语言）之后授予：Web 点 **允许发送正文** →
+**确认允许**（“添加并用于分析”在注册后直接进入这一步），CLI 用
+`smp codebase authorize-content <id>` 查看披露与 token、再用 `--confirm <token>` 授予。之后放宽路径范围或
+新增语言都不会自动扩大授权，需要重新审阅并确认。
 
-成功的 selection、consent、授权、激活、reindex 或删除如果改变当前可用内容，Web UI 会退役
-旧 Agent session 并重置对话，防止新旧权限混用。详细管理、回执与证据语义见
-[Code-Aware Analysis](code-aware-analysis.md)。
+改变已选源码库授权的操作（授予或撤销正文授权、保存范围、删除）会改变本轮分析上下文的授权
+指纹：下一轮分析换用新的后端 session，对话模式要求重新开始对话，防止新旧权限混用。重建索引、
+接受索引候选、未选源码库的变化以及内容相同的重复提交都不会重置会话。运行中撤销授权会终止
+该 run。
+
+部署者可设置 `SMARTPERFETTO_CODE_AWARE=off` 整体关闭源码分析：源码工具不再注册，带
+`codebaseIds` 的请求返回 409 `FEATURE_DISABLED`，Web 上下文弹层显示“后端已关闭源码分析”。详细管理、回执与证据
+语义见 [Code-Aware Analysis](code-aware-analysis.md)。
 
 ## LLM 配置
 
@@ -177,7 +194,7 @@ SmartPerfetto 后端支持这些 runtime path：
 - `openai-agents-sdk`：OpenAI runtime。适合 OpenAI Responses API、Ollama 和支持流式 function/tool calling 的 OpenAI-compatible gateway。
 - `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 report/claim-verification 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
 - `opencode`：可选 public runtime。它会启动加固隔离的 OpenCode server，使用显式 OpenAI-compatible 或 OpenCode model 配置，只暴露 request-scoped SmartPerfetto MCP 工具；不会读取用户自己的 OpenCode CLI 登录态、project config、extension，也不会启用内建 file/shell/web/edit tools。
-- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT，并禁止私有知识分析复用 provider session 或持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
+- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT；每轮都开启新的 provider session，不持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
 
 这些 runtime 是互斥选择的后端编排路径。配置 OpenAI runtime 时不需要先安装或登录 Claude Code；配置 Claude API 时也不需要 OpenAI key，但本机 Claude Code 登录态不能替代 Claude Agent SDK 的显式凭据。Pi Agent Core、OpenCode 和 Qoder 与两者独立。真实模型路径应通过启动/滑动 E2E 验证分析质量；fake-stream 只用于 smoke/test，不能代表等价分析效果。
 
@@ -266,7 +283,7 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_LIGHT_MODEL=gpt-5.4-mini
 ```
 
-官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径；切到它会失去 Responses 侧的会话续接能力，例如 SmartPerfetto OpenAI runtime 使用的 `previousResponseId`。
+官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径。两种协议都不会续接之前的 provider response：每个问题都从新的模型上下文加 SmartPerfetto 有界的 typed history 开始。
 
 Ollama 或 OpenAI-compatible gateway 走 Chat Completions 协议：
 
@@ -294,12 +311,14 @@ SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model
 
 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` 应是 `@earendil-works/pi-ai` 的 Model
 对象形状。SmartPerfetto 会为每个 runtime 实例创建私有的 Pi `Models` / provider /
-credential store，并把 `models.streamSimple.bind(models)` 显式传给 `Agent`，不会设置
+credential store，并把实例私有、按调用用途配置的 stream function 显式传给 `Agent`，不会设置
 进程级默认 stream function。`apiKey` / `apiKeyEnv` / `credential` / `transport` / `thinkingLevel` /
 `thinkingBudgets` / `maxRetryDelayMs` 可以放在同一个 JSON 里作为 SmartPerfetto
 runtime 选项；`apiKey` 和 `credential` 会在传给 Pi Agent Core 的 model state 前剥离，
 避免进入 snapshot 或 report。认证优先级为 JSON `credential` 或 `apiKey`、JSON
 `apiKeyEnv`、当前 Provider Manager runtime 的隔离环境、Pi provider 的常规环境变量。
+
+省略 `thinkingLevel` 时，官方 GLM 主分析请求保留 provider 默认；显式 `off` 请求关闭思考。设置的级别必须受配置模型支持，不能静默换档。已确认支持 `reasoning_effort` 的 GLM 模型可在 model 内配置 `compat:{"supportsReasoningEffort":true}`，并按 provider 支持配置 `thinkingLevelMap`。分类使用独立的低强度或关闭请求，不改变主配置；不支持的组合会明确报告 unavailable。完整边界见 [runtime 架构](../architecture/agent-runtime.md)。
 OAuth 使用 `credential:{"type":"oauth","refresh":"...","access":"...","expires":...}`，
 只对 Pi 内建且声明 OAuth 的 provider 生效；SmartPerfetto 不在分析请求中启动交互式登录，
 临近过期时由该 provider 的 Pi OAuth refresh 契约在实例私有 credential store 中串行刷新。
@@ -450,17 +469,17 @@ SMARTPERFETTO_AI_ENABLED=false
 
 未设置该变量时默认启用 AI。显式值接受 `1/0`、`true/false`、`yes/no`、`on/off`、`enabled/disabled`；无效值会 fail closed，也就是按禁用处理，并在 `/api/runtime-health` 的 `aiPolicy.env.valid=false`（需鉴权）和 `smp doctor` 中暴露原因。
 
-禁用后仍可用：trace 上传/读取、SQL 查询、capture config proposal、Android capture（不带 `--analyze`）、报告读取、Provider profile 列表/编辑/激活/runtime 切换，以及不调用 LLM 的确定性 Skill。会被阻断：agent analyze/resume、场景还原冷启动、Provider connection test、`smp provider test`、`smp capture android --analyze`、LLM Skill step。阻断响应统一包含 `code: "AI_DISABLED"` 和 `retryable: false`。只降级、不阻断：Critical path 等待链分析照常返回，其 AI 总结（feature `critical_path_ai_summary`）改为规则兜底总结，并通过 `aiSummary.fallbackReason: "ai_disabled"` 和 `aiSummary.warnings` 说明原因。
+禁用后仍可用：trace 上传/读取、SQL 查询、capture config proposal、Android capture（不带 `--analyze`）、报告读取、Provider profile 列表/编辑/激活/runtime 切换，以及确定性 Skill（Skill 步骤都不调用模型）。会被阻断：agent analyze/resume、场景还原冷启动、Provider connection test、`smp provider test`、`smp capture android --analyze`。阻断响应统一包含 `code: "AI_DISABLED"` 和 `retryable: false`。只降级、不阻断：Critical path 等待链分析照常返回，其 AI 总结（feature `critical_path_ai_summary`）改为规则兜底总结，并通过 `aiSummary.fallbackReason: "ai_disabled"` 和 `aiSummary.warnings` 说明原因。
 
 三个辅助 AI 总结只降级、不阻断，也都走同一个隔离的单轮模型调用（无工具、无 MCP、不读用户设置、不落会话），跟随调用者的 Provider Manager 配置：
 
 | Feature | 入口 | AI 不可用时 |
 | --- | --- | --- |
-| `critical_path_ai_summary` | `POST /api/critical-path/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
+| `critical_path_ai_summary` | `POST /api/workspaces/:workspaceId/critical-path/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
 | `flamegraph_ai_summary` | `POST /api/flamegraph/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
 | `comparison_ai_conclusion` | 分析结果对比的 AI 结论 | 确定性对比结论，`uncertainty` 写明原因 |
 
-除 AI 开关外，模型调用还要求：调用者有 `agent:run` 权限（只有 `trace:read` 的 viewer 得到 `fallbackReason: "permission_denied"`；对比结论沿用创建对比所需的 `comparison:create`），当前 Provider 是 Claude Agent SDK runtime（对比结论另外支持 OpenAI runtime；其他 runtime 一律降级），以及已配置凭证。`SMARTPERFETTO_COMPARISON_AI_DISABLED=true` 只关闭对比结论，与全局开关同时生效。超时分别由 `CRITICAL_PATH_AI_TIMEOUT_MS`、`FLAMEGRAPH_AI_TIMEOUT_MS`（默认 60000）控制。
+除 AI 开关外，模型调用还要求：调用者有 `agent:run` 权限（只有 `trace:read` 的 viewer 得到 `fallbackReason: "permission_denied"`；对比结论沿用创建对比所需的 `comparison:create`），当前 Provider 是 Claude Agent SDK runtime（对比结论另外支持 OpenAI runtime；其他 runtime 一律降级），以及已配置凭证。`SMARTPERFETTO_COMPARISON_AI_DISABLED=true` 只关闭对比结论，与全局开关同时生效。超时分别由 `CRITICAL_PATH_AI_TIMEOUT_MS`、`FLAMEGRAPH_AI_TIMEOUT_MS`（默认 60000）控制。火焰图的热点分析优先使用 Rust 分析器（`FLAMEGRAPH_ANALYZER_BIN` 指定可执行文件，`FLAMEGRAPH_ANALYZER_TIMEOUT_MS` 默认 60000），不可用时回退到 TypeScript 实现，见 [Critical path 与火焰图](critical-path-and-flamegraph.md)。
 
 ## 分析预算与超时
 
@@ -476,7 +495,6 @@ CLAUDE_FULL_PER_TURN_MS=60000
 CLAUDE_FULL_REQUEST_TIMEOUT_MS=1200000
 CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000
 CLAUDE_QUICK_PER_TURN_MS=40000
-CLAUDE_VERIFIER_TIMEOUT_MS=60000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 OPENAI_FULL_PER_TURN_MS=60000
@@ -499,8 +517,13 @@ OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的�
 总时长，并在其中固定预留一次无工具交付调用；小于初始预算时按初始预算处理，即它只限制延期，不缩短原预算。
 调查仍超时且本轮已有返回数据时，后端用这次预留调用基于已返回数据给出有限结论，结果标记 `partial` / `timeout`；
 没有返回数据或交付调用也超时，则保留“未生成可交付结论”。OpenAI 的
-`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制跨 continuation/session 持有的
-provider history；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制本轮续写/恢复调用可重发的
+当前 run transcript，超出时不会完整重发；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
+
+`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15000，不低于 10000，高于 SQLite 5 秒 busy
+timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保存结论可用的时间，只在这类停止时
+启动。到时仍未保存时，用户读到的结论作为未核验、不完整的回合保留（私有知识或授权已撤销时除外），
+然后停止 run；CLI 则停止本轮且不保存。
 
 分析模式由请求体 `options.analysisMode` 控制：
 
@@ -518,7 +541,7 @@ provider history；Artifact、DataEnvelope、报告和证据来源不会因此�
 后续提问默认继承有界历史摘要，并可按需回查完整旧轮；来源、用户或 Trace 的权限边界
 不会因历史继承而扩大。更早正文不需要每轮全部发送给模型。
 
-前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 SDK session。
+前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 agent session。
 
 ### 证据保留预算
 
@@ -551,13 +574,17 @@ NODE_ENV=development
 # SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
 # 仅当部署管理员确认本机 TUN 使用 RFC 2544 fake-IP 时，精确列出可信 Trace 主机：
 # SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS=storage.googleapis.com
+# JSON / 表单请求体大小上限（默认 50mb；trace 上传走单独的 MAX_FILE_SIZE）：
+# BODY_LIMIT=50mb
+# 场景还原报告的磁盘保留时间（默认 7 天）：
+# SCENE_REPORT_TTL_MS=604800000
 ```
 
 本地开发默认端口：
 
 - Backend: `3000`
 - Perfetto UI: `10000`
-- trace_processor HTTP RPC pool: `9100-9900`
+- trace_processor HTTP RPC pool: `9100-9900`（`TP_PORT_MIN` / `TP_PORT_MAX`）
 
 后端端口优先使用 `SMARTPERFETTO_BACKEND_PORT`；`PORT` 仍保留为
 Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
@@ -565,6 +592,16 @@ Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
 `FRONTEND_URL`，不用重复配置。只有浏览器实际访问的前端 Origin 不同（例如 HTTPS
 域名或反向代理）时才显式设置 `FRONTEND_URL`。浏览器无法安全推导后端地址时，显式设置
 `SMARTPERFETTO_BACKEND_PUBLIC_URL`。
+
+后端接受的浏览器 Origin 默认是本机 `localhost` / `127.0.0.1` 上的前端端口（以及
+8080、5173、5174 开发端口）加上 `FRONTEND_URL`；`CORS_ORIGINS`（逗号分隔）会整体
+替换这份列表。Trace Processor WebSocket 由 Session Cookie、可信 SSO Header 或本地
+免密身份认证时，同样只接受这些 Origin，其他页面（包括同站的兄弟子域名或本机其他端口）
+发起的连接返回 403。Session Cookie 认证的连接还必须带 Origin。由页面自己持有的凭据
+（企业 API Key、Bearer Session Token、Trace Processor 能力协议）认证的连接不检查
+Origin；但请求带着 Session Cookie 且没有 `Authorization: Bearer` 头时（例如 Cookie
+加能力协议），按 Cookie 的规则检查。反向代理不能剥掉浏览器
+的 `Origin` 头，否则可信 SSO Header 模式下的这层检查不生效。
 
 URL Trace 下载默认拒绝所有私有、保留和 RFC 2544 `198.18.0.0/15` 地址。若本机
 TUN 代理把可信公网域名解析为 fake-IP，部署管理员可以通过
@@ -614,6 +651,17 @@ FRONTEND_URL=https://smartperfetto.example.com
 字节，不能复用 OIDC Client Secret。Session 固定为 8 小时、`SameSite=Lax`，Secure
 Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email profile`。
 
+无论哪种认证模式，服务端签名（浏览器 Session、Trace Processor WebSocket 凭证、外部问题
+复核证明，OIDC 下还有 Provider 密钥库的加密 key）都从同一个根按用途派生：依次检查
+`SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`（只用于 WebSocket 凭证）、
+`SMARTPERFETTO_SERVER_SECRET`、`SMARTPERFETTO_SSO_COOKIE_SECRET` 和
+`SMARTPERFETTO_API_KEY`，取第一个去掉首尾空白后足够长的值（按 UTF-8 字节计，WebSocket
+凭证和密钥库要求 32 字节，其余 16 字节），更短的值会被跳过。OIDC 模式例外：启动时第一个
+非空的 `SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` 不足 32 字节就
+拒绝启动，而不是跳过。企业模式下找不到可用值时拒绝签发；其他模式退回进程内随机根，重启后
+Session、WebSocket 凭证和复核证明都会失效。建议始终设置至少 32 字节的
+`SMARTPERFETTO_SERVER_SECRET`，这样所有用途共用同一个根。
+
 使用 `./start.sh` 或 `./scripts/start-dev.sh` 做本地分端口联调时，只设置
 `SMARTPERFETTO_FRONTEND_PORT` 即可，脚本会生成对应的 `FRONTEND_URL`。上面的
 `FRONTEND_URL` 是域名/反向代理部署示例，不需要和本地端口重复填写。
@@ -621,13 +669,16 @@ Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email prof
 同一个 Issuer 下，每个 OIDC Subject 只创建一个由后端管理的个人工作区。不同用户的
 工作区显示名称可以相同，但内部 User ID、Workspace ID、成员关系和所有数据范围都不同；
 OIDC 前端不会允许用户修改工作区、后端地址或 API Key。租户 ID 只由标准化 Issuer
-稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和
-`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` 或旧的 `SMARTPERFETTO_API_KEY` 同时启用。
+稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和启用的
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS`（`true`、`1`、`yes`、`on`、`enabled` 任一值）
+或旧的 `SMARTPERFETTO_API_KEY` 同时启用；OIDC 下 HTTP 请求和 Trace Processor
+WebSocket 都不接受可信 SSO Header 或企业 API Key。
 OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要再配置企业迁移阶段，也不允许
 回退到会忽略用户范围的 `legacy` 或 `dual-write` 模式。
 
 生产模式默认要求 Issuer、回调和前端 URL 全部使用 HTTPS，并使用 Secure Cookie。
-只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`；该开关会
+只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`（`true`、`1`、
+`yes`、`on`、`enabled` 任一值，与其他开关相同）；该开关会
 允许明文 HTTP 并默认关闭 Secure Cookie，不能用于不可信网络。`FRONTEND_URL` 必须是
 浏览器实际访问的前端 Origin，不能填写容器内部地址。前端 URL 与 OIDC 回调必须使用相同
 协议和主机，端口可以不同；前端默认直接从回调地址的 Origin 推导后端地址，不需要再填写
@@ -643,8 +694,19 @@ OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要
 MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
-PERFETTO_PATH=/path/to/perfetto
 ```
+
+trace processor 启动时等待 HTTP 就绪的时间取 `TP_STARTUP_TIMEOUT_MS`（默认 30000）与 trace 大小 ×
+`TP_STARTUP_TIMEOUT_PER_GIB_MS`（默认每 GiB 120000）中的较大者，上限 `TP_STARTUP_TIMEOUT_MAX_MS`
+（默认 900000）；超大 trace 在慢盘上启动超时时调大这几项。
+
+`UPLOAD_DIR` 是上传根目录，相对路径按后端进程的工作目录解析。上传的 trace 文件与其元数据保存在
+`${UPLOAD_DIR}/traces`；上传接口、元数据和后端重启后按 traceId 重新加载 trace 都使用这同一个目录。
+`SMARTPERFETTO_TRACE_UPLOAD_DIR` 只在需要把 trace 目录单独放到别处时设置，它会同时覆盖上述三处
+（npm CLI 用它把 trace 副本放在自己的 home 下）。
+
+后端不会把上传目录作为静态文件对外提供。trace 文件只能通过经过鉴权和归属检查的 trace 下载接口获取
+（`GET /api/traces/:id/file` 或其 workspace 作用域形式）。
 
 默认不需要手动设置 `TRACE_PROCESSOR_PATH`。普通 `./start.sh` 和开发模式 `./scripts/start-dev.sh` 都优先使用经过固定 SHA256 校验的 prebuilt。显式的 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径：启动和 backend `predev` 只检查文件存在、可执行以及 `--version`，不会改权限、按固定 SHA 替换或向该路径下载。
 
@@ -669,7 +731,7 @@ TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts ./star
 TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.sh
 ```
 
-镜像下载仍会按 `scripts/trace-processor-pin.env` 中固定的 SHA256 校验；如果只是想快速使用，优先选择 Docker Hub 镜像，因为镜像内已经包含固定版本的 `trace_processor_shell`。
+镜像需保持 `<PERFETTO_ARTIFACT_VERSION>/<platform>/trace_processor_shell` 的目录结构；`PERFETTO_ARTIFACT_VERSION` 可能是 release tag（如 `v58.2`），也可能是 Google CI 为 main 提交发布的完整 commit SHA，以 `scripts/trace-processor-pin.env` 为准。仓库只内置 Linux x64、macOS arm64、Windows x64 三个平台的 binary，其余平台（如 linux-arm64、mac-amd64）以及 npm CLI、Docker 构建会从该目录下载；Google 对 commit 目录不承诺保留期，长期离线部署建议自建镜像。镜像下载仍会按该文件中固定的 SHA256 校验；如果只是想快速使用，优先选择 Docker Hub 镜像，因为镜像内已经包含固定版本的 `trace_processor_shell`。
 
 macOS 如果拦截 `trace_processor_shell`，可能会看到 `cannot be opened because the developer cannot be verified`、终端输出 `killed`，或脚本提示 `--version smoke test failed`。打开 **系统设置 → 隐私与安全性 → 安全性**，对 `trace_processor_shell` 点 **仍要打开 / Allow Anyway**，重新运行脚本并在弹窗里选择 **打开**。如果你确认 binary 来源可信，也可以：
 
@@ -678,24 +740,23 @@ xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
 chmod +x /absolute/path/to/trace_processor_shell
 ```
 
-## 可选 Android Internals 外部知识
+## 可选文档知识库
 
-外部 Wiki 路径默认拒绝。配置 `SMARTPERFETTO_KNOWLEDGE_ROOTS` 只建立路径
-allowlist；仍需通过 API 独立确认使用权、provider-send 同意、建立索引，并在每次
-分析的 `knowledgeSourceIds` 中显式选择。完整流程见
-[Android Internals 外部知识库](android-internals-knowledge.md)。
+知识库目录默认拒绝。本机 Web UI 可用目录选择器授权单个目录；服务器部署用
+`SMARTPERFETTO_KNOWLEDGE_ROOTS` 建立路径 allowlist（多个目录用平台路径分隔符）。仍需
+独立确认使用权、provider-send 同意、建立索引，并在每次分析的 `knowledgeSourceIds`
+中显式选择。Android Internals Wiki 也按此接入，见
+[把 Android Internals Wiki 作为知识库使用](android-internals-knowledge.md)。
 
 ## 请求限流
 
-内存级限流，适合公开试用环境的基础保护：
+SmartPerfetto 没有内置的请求限流，也不读取旧文档列出的
+`SMARTPERFETTO_USAGE_MAX_REQUESTS`、`SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS` 和
+`SMARTPERFETTO_USAGE_WINDOW_MS`，设置它们没有效果。
 
-```bash
-SMARTPERFETTO_USAGE_MAX_REQUESTS=200
-SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS=100
-SMARTPERFETTO_USAGE_WINDOW_MS=86400000
-```
-
-重启后限流状态会丢失；生产部署如果需要严格配额，应在反向代理或 API 网关层增加持久化限流。
+公开或共享部署请启用 [OIDC 浏览器登录](#oidc-浏览器登录)（或至少配置
+`SMARTPERFETTO_API_KEY`），并在反向代理或 API 网关层做限流。Enterprise workspace 的
+trace 大小、并发 run 与每月 run 配额只约束分析资源，不是按请求计数的限流。
 
 ## Runtime 与 Provider 的边界
 

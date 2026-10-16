@@ -562,6 +562,7 @@ export async function resolveCapabilityTraceProcessorIdentity(
       };
 }
 
+/** @internal Test seam. */
 export function clearCapabilityRuntimeIdentityCaches(): void {
   fileDigestCache.clear();
 }

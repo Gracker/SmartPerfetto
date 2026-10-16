@@ -12,7 +12,7 @@ started successfully on Windows.
 
 | Entry | Recommended host / target | CPU architecture boundary | Runtime bundled | Update path | Current evidence category |
 |---|---|---|---|---|---|
-| Source Web (`./start.sh`) | macOS and Linux; use WSL2 for native Windows development | Constrained by Node.js 24, Go, and current native dependencies | No; uses host Node.js and prepares the pinned trace processor | Synchronize Git, then restart | Source build, readiness, and repository gates |
+| Source Web (`./start.sh`) | macOS and Linux; use WSL2 for native Windows development | Constrained by Node.js 24 and current native dependencies (Go only builds the portable launcher) | No; uses host Node.js and prepares the pinned trace processor | Synchronize Git, then restart | Source build, readiness, and repository gates |
 | npm CLI (`smp`) | macOS, Linux, or Windows shells supported by Node.js 24 | Linux x64, macOS arm64, and Windows x64 bundle trace processor; other hosts use a pinned download and may be unsupported | CLI runtime is in the npm package; no Web launcher | Install an explicit newer npm version | npm pack contract plus real empty-directory install smoke |
 | Docker image | Any Docker host that can run the compatible Linux container; the actual runtime is Linux | Published images are `linux/amd64` and `linux/arm64` | Yes; Node, backend, committed UI, and pinned trace processor | Pull an explicit tag and recreate the container | Image build/health plus published tag/manifest acceptance |
 | Portable archive | Windows 10 / Windows Server 2016 or newer on x64, macOS arm64 13.5+, or Linux x64 glibc 2.34+ on the matching target; musl systems such as Alpine are unsupported | Each archive supports only the target declared by its filename and manifest; Windows and macOS minimum versions are recorded in the manifest, and macOS also follows the packaged `LSMinimumSystemVersion` | Yes; launcher, Node, native dependencies, backend, committed UI, and pinned trace processor | Download the new archive and follow platform data migration/retention guidance | Static package contract + full-payload ELF/Mach-O minimum-version audit + matching-target exact-archive runtime smoke + GitHub release acceptance |
@@ -34,12 +34,13 @@ A Windows/Linux cross-build is not a Windows/Linux runtime smoke, and the
 Docker host OS is not the container target.
 
 The [Windows guide](../getting-started/windows.en.md) is authoritative for user operations.
-The current public v1.7.0 Windows x64 final archive ran on a Windows Server 2025 runner and
-proved bundled runtimes, health, a minimal trace-processor query, shutdown, and port release.
-That is not manual acceptance of Windows 10/11 desktop behavior, SmartScreen, or Provider UI.
-Future archive gates also require real SQLite/sodium loading, a local Provider lifecycle, and
-a Windows DPAPI SecretStore probe; they become evidence only after the matching final archive
-passes them.
+The hosted exact-archive smoke runs the final Windows x64 archive on a Windows
+Server 2025 runner and checks bundled runtimes, health, a minimal
+trace-processor query, real SQLite/sodium loading, a Windows DPAPI SecretStore
+probe, controlled shutdown, and port release; macOS and Linux run on macOS 15
+and Ubuntu 24.04 runners. Whether a given version has that evidence is decided
+by the smoke evidence of its GitHub release. Runner evidence is not manual
+acceptance of Windows 10/11 desktop behavior, SmartScreen, or Provider UI.
 
 ## Network Binding Boundary
 

@@ -3,23 +3,32 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express, { Router, type Request, type Response } from 'express';
-import type { IncomingMessage } from 'http';
+import { STATUS_CODES, type IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
-import { resolveFeatureConfig, serverConfig } from '../config';
+import { isKeylessLocalMode, serverConfig } from '../config';
 import {
   authenticate,
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
+  buildRequestContext,
   requireRequestContext,
+  resolveCredentialIdentity,
+  type ContextIdentity,
   type RequestContext,
-  type RequestContextAuthType,
 } from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID} from '../utils/localDevIdentity';
+import { sanitizeContextId } from '../utils/contextId';
+import { requestIdOf } from '../middleware/requestId';
+import {
+  isOriginAllowedForRequirement,
+  type BrowserOriginRequirement,
+} from '../security/requestOriginPolicy';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import {
+  frontendHolderInput,
   getTraceProcessorLeaseStore,
+  TraceProcessorLeaseUnavailableError,
   type FrontendHolderVisibility,
   type TraceProcessorHolderInput,
   type TraceProcessorLeaseRecord,
@@ -27,8 +36,6 @@ import {
 } from '../services/traceProcessorLeaseStore';
 import { normalizeTraceProcessorQueryPriority } from '../services/traceProcessorSqlWorker';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
-import { EnterpriseSsoService } from '../services/enterpriseSsoService';
-import { EnterpriseApiKeyService } from '../services/enterpriseApiKeyService';
 import type { EnterpriseRepositoryScope } from '../services/enterpriseRepository';
 import {
   issueTraceProcessorProxyCapability,
@@ -60,162 +67,70 @@ class TraceProcessorProxyError extends Error {
   }
 }
 
-interface RequestIdentity {
-  userId: string;
-  authType: RequestContextAuthType;
-  tenantId?: string;
-  workspaceId?: string;
-  roles?: string[];
-  scopes?: string[];
-}
-
 interface ProxyTarget {
   lease: TraceProcessorLeaseRecord;
   port: number;
   scope: EnterpriseRepositoryScope;
 }
 
-function sanitizeContextId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
+/**
+ * The upgrade request's RequestContext. A browser cannot set headers on a
+ * WebSocket upgrade, so the query string supplies scope after the headers;
+ * everything else follows HTTP authentication through buildRequestContext.
+ */
+function upgradeRequestContext(
+  req: IncomingMessage,
+  query: URLSearchParams,
+  identity: ContextIdentity,
+): RequestContext {
+  return buildRequestContext(req, identity, {
+    tenantId: queryId(query, 'tenantId'),
+    workspaceId: queryId(query, 'workspaceId'),
+    windowId: queryId(query, 'windowId'),
+  });
 }
 
-function getHeader(req: IncomingMessage, name: string): string {
-  const value = req.headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value[0] || '';
-  return typeof value === 'string' ? value : '';
+function queryId(query: URLSearchParams, key: string): string {
+  return sanitizeContextId(query.get(key) || '');
 }
 
-function getFirstHeader(req: IncomingMessage, names: string[]): string {
-  for (const name of names) {
-    const value = getHeader(req, name);
-    if (value.trim()) return value;
+/**
+ * An upgrade skips Express, so no CORS check has admitted its Origin; an
+ * ambient credential needs one before any lease work.
+ */
+function requireUpgradeOrigin(
+  req: IncomingMessage,
+  requirement: BrowserOriginRequirement,
+  allowedOrigins: ReadonlySet<string>,
+): void {
+  if (isOriginAllowedForRequirement(req.headers.origin, requirement, allowedOrigins)) return;
+  throw new TraceProcessorProxyError(403, 'Trace processor WebSocket Origin is not allowed');
+}
+
+function resolveUpgradeRequestContext(
+  req: IncomingMessage,
+  query: URLSearchParams,
+  leaseId: string,
+  allowedOrigins: ReadonlySet<string>,
+): RequestContext | null {
+  const credential = resolveCredentialIdentity(req);
+  if (credential.kind === 'identity') {
+    requireUpgradeOrigin(req, credential.originRequirement, allowedOrigins);
+    return upgradeRequestContext(req, query, credential.identity);
   }
-  return '';
-}
-
-function parseHeaderList(req: IncomingMessage, names: string[], fallback: string[]): string[] {
-  const raw = getFirstHeader(req, names);
-  if (!raw.trim()) return fallback;
-  const parsed = raw
-    .split(',')
-    .map(value => sanitizeContextId(value))
-    .filter(Boolean);
-  return parsed.length > 0 ? parsed : fallback;
-}
-
-function trustedHeadersEnabled(): boolean {
-  const value = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value || '').trim().toLowerCase());
-}
-
-function defaultRolesForAuthType(authType: RequestContextAuthType): string[] {
-  return authType === 'dev' ? ['org_admin'] : ['analyst'];
-}
-
-function defaultScopesForAuthType(authType: RequestContextAuthType): string[] {
-  return authType === 'dev'
-    ? ['*']
-    : ['trace:read', 'trace:write', 'agent:run', 'report:read'];
-}
-
-function resolveTrustedSsoIdentity(req: IncomingMessage): RequestIdentity | null {
-  if (!trustedHeadersEnabled()) return null;
-  const userId = sanitizeContextId(getFirstHeader(req, [
-    'x-smartperfetto-sso-user-id',
-    'x-sso-user-id',
-    'x-auth-request-user',
-  ]));
-  if (!userId) return null;
-
-  return {
-    userId,
-    authType: 'sso',
-    tenantId: sanitizeContextId(getFirstHeader(req, [
-      'x-smartperfetto-sso-tenant-id',
-      'x-sso-tenant-id',
-      'x-tenant-id',
-    ])) || undefined,
-    workspaceId: sanitizeContextId(getFirstHeader(req, [
-      'x-smartperfetto-sso-workspace-id',
-      'x-sso-workspace-id',
-      'x-workspace-id',
-    ])) || undefined,
-    roles: parseHeaderList(req, [
-      'x-smartperfetto-sso-roles',
-      'x-sso-roles',
-    ], defaultRolesForAuthType('sso')),
-    scopes: parseHeaderList(req, [
-      'x-smartperfetto-sso-scopes',
-      'x-sso-scopes',
-    ], defaultScopesForAuthType('sso')),
-  };
-}
-
-function queryValue(req: IncomingMessage, key: string): string {
-  const url = new URL(req.url || '/', 'http://127.0.0.1');
-  return sanitizeContextId(url.searchParams.get(key) || '');
-}
-
-function contextFromIdentity(req: IncomingMessage, identity: RequestIdentity): RequestContext {
-  const authType = identity.authType;
-  const requestId =
-    sanitizeContextId(getHeader(req, 'x-request-id')) ||
-    `ws-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-  const windowId =
-    sanitizeContextId(getHeader(req, 'x-window-id')) ||
-    queryValue(req, 'windowId') ||
-    undefined;
-
-  return {
-    tenantId:
-      identity.tenantId ||
-      sanitizeContextId(getFirstHeader(req, ['x-tenant-id', 'x-sso-tenant-id'])) ||
-      queryValue(req, 'tenantId') ||
-      DEFAULT_TENANT_ID,
-    workspaceId:
-      identity.workspaceId ||
-      sanitizeContextId(getFirstHeader(req, ['x-workspace-id', 'x-sso-workspace-id'])) ||
-      queryValue(req, 'workspaceId') ||
-      DEFAULT_WORKSPACE_ID,
-    userId: identity.userId,
-    authType,
-    roles: identity.roles ?? defaultRolesForAuthType(authType),
-    scopes: identity.scopes ?? defaultScopesForAuthType(authType),
-    requestId,
-    ...(windowId ? { windowId } : {}),
-  };
-}
-
-function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): RequestContext | null {
-  const trustedIdentity = resolveTrustedSsoIdentity(req);
-  if (trustedIdentity) return contextFromIdentity(req, trustedIdentity);
-
-  try {
-    const ssoIdentity = EnterpriseSsoService.getInstance()
-      .resolveRequestIdentityFromRequest(req as Request);
-    if (ssoIdentity) return contextFromIdentity(req, ssoIdentity);
-  } catch {
-    // Fall through to API key or dev fallback.
-  }
-
-  try {
-    const apiKeyIdentity = EnterpriseApiKeyService.getInstance()
-      .resolveRequestIdentityFromRequest(req as Request);
-    if (apiKeyIdentity) return contextFromIdentity(req, apiKeyIdentity);
-  } catch {
-    // Fall through to dev fallback.
-  }
+  if (credential.kind === 'rejected') return null;
 
   const capabilityContext = resolveTraceProcessorProxyCapability(
     req.headers['sec-websocket-protocol'],
     leaseId,
   );
-  if (capabilityContext) return capabilityContext;
+  if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
-  if (!resolveFeatureConfig().enterprise && !process.env.SMARTPERFETTO_API_KEY?.trim()) {
-    return contextFromIdentity(req, {
-      userId: queryValue(req, 'userId') || DEFAULT_DEV_USER_ID,
+  if (isKeylessLocalMode()) {
+    // Keyless local mode authenticates by network position, which any page shares.
+    requireUpgradeOrigin(req, 'if_present', allowedOrigins);
+    return upgradeRequestContext(req, query, {
+      userId: queryId(query, 'userId') || DEFAULT_DEV_USER_ID,
       authType: 'dev',
     });
   }
@@ -236,19 +151,14 @@ function frontendHolderForContext(
   metadata: Record<string, unknown> = {},
   frontendVisibility?: FrontendHolderVisibility,
 ): TraceProcessorHolderInput {
-  const holderRef = context.windowId || context.requestId || context.userId;
-  return {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: context.windowId,
+  return frontendHolderInput(context, {
     ...(frontendVisibility ? { frontendVisibility } : {}),
     metadata: {
       requestId: context.requestId,
-      userId: context.userId,
       proxy: 'trace_processor',
       ...metadata,
     },
-  };
+  });
 }
 
 function parseFrontendVisibility(value: unknown): FrontendHolderVisibility {
@@ -447,12 +357,10 @@ async function heartbeatLease(req: Request, res: Response): Promise<void> {
   try {
     lease = store.acquireHolderForLease(scope, lease.id, holder);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('not acquirable')) {
-      throw new TraceProcessorProxyError(409, message);
-    }
-    if (message.includes('not found')) {
-      throw new TraceProcessorProxyError(404, 'Trace processor lease not found');
+    if (error instanceof TraceProcessorLeaseUnavailableError) {
+      throw error.reason === 'not_acquirable'
+        ? new TraceProcessorProxyError(409, error.message)
+        : new TraceProcessorProxyError(404, 'Trace processor lease not found');
     }
     throw error;
   }
@@ -549,26 +457,44 @@ function sendProxyError(res: Response, error: unknown): void {
     });
     return;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  console.error('[TraceProcessorProxy] Proxy error:', message);
-  res.status(502).json({
-    success: false,
+  sendRouteFailure(res, {
+    status: 502,
+    code: 'trace_processor_proxy_failed',
     error: 'Trace processor proxy failed',
-    details: message,
-  });
+    logLabel: '[TraceProcessorProxy] Proxy error',
+  }, error);
 }
 
-function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
-  if (!socket.writable) return;
-  socket.write(
-    `HTTP/1.1 ${statusCode} ${message}\r\n`
+/** How long a rejected upgrade waits for its peer to close before the socket is destroyed. */
+export const REJECTED_UPGRADE_LINGER_MS = 1_000;
+
+/**
+ * Answers an upgrade the server will not take with a complete HTTP response,
+ * then releases the socket. `end()` alone only half-closes it: the HTTP server
+ * allows half-open sockets, so a peer that never closes would keep it open.
+ * The peer's remaining bytes are drained so its close is seen, and the socket
+ * is destroyed after a bounded linger either way. The reason phrase is the
+ * standard one; `message` is only the body. The socket's error listener
+ * belongs to the upgrade dispatcher (`dispatchUpgrade`).
+ */
+export function rejectUpgrade(socket: Duplex, statusCode: number, message: string): void {
+  if (socket.destroyed) return;
+  if (!socket.writable) {
+    socket.destroy();
+    return;
+  }
+  const linger = setTimeout(() => socket.destroy(), REJECTED_UPGRADE_LINGER_MS);
+  linger.unref();
+  socket.once('close', () => clearTimeout(linger));
+  socket.resume();
+  socket.end(
+    `HTTP/1.1 ${statusCode} ${STATUS_CODES[statusCode] ?? 'Error'}\r\n`
     + 'Connection: close\r\n'
     + 'Content-Type: text/plain; charset=utf-8\r\n'
     + `Content-Length: ${Buffer.byteLength(message)}\r\n`
     + '\r\n'
     + message,
   );
-  socket.end();
 }
 
 function websocketRequestHeaders(req: IncomingMessage, targetPort: number): string[] {
@@ -652,11 +578,13 @@ function forwardWebSocketHandshake(
 
 async function proxyWebSocket(
   req: IncomingMessage,
+  query: URLSearchParams,
   socket: Duplex,
   head: Buffer,
   leaseId: string,
+  allowedOrigins: ReadonlySet<string>,
 ): Promise<void> {
-  const context = resolveUpgradeRequestContext(req, leaseId);
+  const context = resolveUpgradeRequestContext(req, query, leaseId, allowedOrigins);
   if (!context) {
     throw new TraceProcessorProxyError(401, 'Trace processor WebSocket requires authentication');
   }
@@ -665,19 +593,24 @@ async function proxyWebSocket(
     websocketConnectedAt: Date.now(),
   });
   getTraceProcessorService().exposeNativePort(target.port);
+  // Built from request input before connecting, so a failure rejects this
+  // promise instead of throwing from a socket event handler.
+  const capabilityProtocol = requestedTraceProcessorCapabilityProtocol(req, leaseId);
+  const request = [
+    'GET /websocket HTTP/1.1',
+    ...websocketRequestHeaders(req, target.port),
+    '',
+    '',
+  ].join('\r\n');
   const upstream = net.connect({
     host: '127.0.0.1',
     port: target.port,
   });
 
+  // Once connected, upstream bytes may already reach the client; an HTTP error can no longer follow.
+  let tunnelled = false;
   upstream.once('connect', () => {
-    const capabilityProtocol = requestedTraceProcessorCapabilityProtocol(req, leaseId);
-    const request = [
-      'GET /websocket HTTP/1.1',
-      ...websocketRequestHeaders(req, target.port),
-      '',
-      '',
-    ].join('\r\n');
+    tunnelled = true;
     upstream.write(request);
     if (head.length > 0) upstream.write(head);
     socket.pipe(upstream);
@@ -689,13 +622,15 @@ async function proxyWebSocket(
   });
 
   upstream.once('error', (error) => {
-    if (!socket.destroyed) {
-      writeUpgradeError(socket, 502, `Trace processor WebSocket proxy failed: ${error.message}`);
-    }
+    console.error('[TraceProcessorProxy] WebSocket upstream error:', error);
+    if (tunnelled) socket.destroy();
+    else rejectUpgrade(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   socket.once('error', () => upstream.destroy());
   socket.once('close', () => upstream.destroy());
-  upstream.once('close', () => socket.destroy());
+  upstream.once('close', () => {
+    if (tunnelled) socket.destroy();
+  });
 }
 
 router.use(authenticate);
@@ -740,29 +675,47 @@ router.post('/:leaseId/restart', express.json({ limit: '32kb' }), async (req, re
   }
 });
 
+/**
+ * Routes a trace-processor WebSocket upgrade. `allowedOrigins` is the
+ * normalized browser origin set the HTTP API admits through CORS.
+ */
 export function handleTraceProcessorProxyUpgrade(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  allowedOrigins: ReadonlySet<string>,
 ): boolean {
-  const url = new URL(req.url || '/', 'http://127.0.0.1');
+  // This listener is synchronous: a malformed request target or escape any
+  // client can send must not escape it as an uncaught error, which shuts the
+  // backend down. `//[` is a valid request line but not a parseable URL.
+  let url: URL;
+  try {
+    url = new URL(req.url || '/', 'http://127.0.0.1');
+  } catch {
+    rejectUpgrade(socket, 400, 'Malformed request target');
+    return true;
+  }
   const match = url.pathname.match(/^\/api\/tp\/([^/]+)\/websocket$/);
   if (!match) return false;
 
-  const leaseId = sanitizeContextId(decodeURIComponent(match[1]));
+  let leaseId: string;
+  try {
+    leaseId = sanitizeContextId(decodeURIComponent(match[1]));
+  } catch {
+    leaseId = '';
+  }
   if (!leaseId) {
-    writeUpgradeError(socket, 400, 'leaseId is required');
+    rejectUpgrade(socket, 400, 'leaseId is required');
     return true;
   }
 
-  void proxyWebSocket(req, socket, head, leaseId).catch((error) => {
+  void proxyWebSocket(req, url.searchParams, socket, head, leaseId, allowedOrigins).catch((error) => {
     if (error instanceof TraceProcessorProxyError) {
-      writeUpgradeError(socket, error.statusCode, error.message);
+      rejectUpgrade(socket, error.statusCode, error.message);
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('[TraceProcessorProxy] WebSocket proxy error:', message);
-    writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
+    console.error('[TraceProcessorProxy] WebSocket proxy error:', error);
+    rejectUpgrade(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   return true;
 }

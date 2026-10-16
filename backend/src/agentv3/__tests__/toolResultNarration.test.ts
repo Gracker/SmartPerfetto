@@ -14,6 +14,24 @@ import {
 } from '../planPhaseEvents';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 
+/**
+ * The tools a runtime can call: the analysis MCP server's registry, plus the
+ * standalone public MCP server (`bin/smartperfetto-mcp.ts`), which OpenCode
+ * reaches behind its standalone gate.
+ */
+function registeredToolNames(): {analysis: Set<string>; all: Set<string>} {
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const read = (...parts: string[]) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8');
+  const analysis = new Set([...read('..', 'claudeMcpServer.ts')
+    .matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)].map((match) => match[1]));
+  const standalone = [...read('..', '..', '..', 'bin', 'smartperfetto-mcp.ts')
+    .matchAll(/registry\.registerSdk\(\s*tool\(\s*'([a-z_]+)'/g)].map((match) => match[1]);
+  expect(analysis.size).toBeGreaterThan(30);
+  expect(standalone.length).toBeGreaterThan(3);
+  return {analysis, all: new Set([...analysis, ...standalone])};
+}
+
 /** MCP results reach the runtimes wrapped in a content-block envelope. */
 function mcpResult(body: unknown) {
   return [{type: 'text', text: JSON.stringify(body)}];
@@ -111,10 +129,49 @@ describe('formatToolResultNarration', () => {
     })).toBe('');
   });
 
+  it('says an idle wait is idle, and names the peer a chain ends in', () => {
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      result: mcpResult({success: true, available: true, waitingMs: 13596, topWaits: [{durationMs: 3002}],
+        anomalies: [{id: 'idle_wait', severity: 'info'}]}),
+    })).toBe('这段等待位于两个 slice 之间，更像线程空闲而不是卡顿耗时');
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      language: 'en',
+      result: mcpResult({success: true, available: true, waitingMs: 30, topWaits: [{durationMs: 25}],
+        anomalies: [{id: 'task_too_long', severity: 'critical'}, {id: 'peer_event_wait', severity: 'warning'}],
+        longestEventWait: {processName: 'com.demo', threadName: 'OkHttp Dispatch',
+          wakeSourceClass: 'network_receive_candidate'}}),
+    })).toBe('The chain ends in com.demo / OkHttp Dispatch waiting for an external event (network-receive candidate); that is the blocker to follow');
+  });
+
+  it.each([
+    ['selector_conflict', {}, 'thread_state_id 不属于指定的线程或区间，需要去掉它或改用它所属的线程'],
+    ['no_thread_state_in_window', {candidates: [{processName: 'com.demo', threadName: 'main'}]},
+      '该线程在区间内没有调度数据，需要换一个有数据的线程，如 com.demo / main'],
+    ['ambiguous_thread_selection', {}, '线程选择匹配到多个线程，需要用 tid 或 utid 指定其中一个'],
+    ['missing_window', {}, '缺少分析区间，需要同时给出 start_ts 和 end_ts'],
+  ])('says what a wait-chain refusal (%s) asks the caller to change', (error, extra, expected) => {
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      isError: true,
+      result: mcpResult({success: false, error, action_required: 'x', ...extra}),
+    })).toBe(expected);
+  });
+
+  it('keeps the generic failure line for a wait-chain failure that is not a refusal', () => {
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      isError: true,
+      result: mcpResult({success: false, error: 'trace processor went away'}),
+    })).toBe('analyze_wait_chain 失败：trace processor went away');
+  });
+
   it.each([
     ['task_state_running', '该线程在这段区间一直在运行，没有等待链可追'],
     ['no_waiting_time', '所选区间内没有等待时间，没有等待链可追'],
     ['no_critical_path_stack', '这段区间取不到等待链，trace 可能缺少 sched_waking'],
+    ['wait_open_at_trace_end', '这段等待到 trace 结束都没有结束，没有唤醒者可追'],
   ])('reports an unavailable wait chain (%s), which sends the model elsewhere', (reason, expected) => {
     expect(formatToolResultNarration({
       toolName: 'analyze_wait_chain',
@@ -216,24 +273,24 @@ describe('formatToolResultNarration', () => {
     })).toBe('');
   });
 
-  it('keeps the retrieval set in step with the registry', () => {
+  it('keeps the retrieval set in step with the registry, both ways', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
-    const serverSource = fs.readFileSync(path.join(__dirname, '..', 'claudeMcpServer.ts'), 'utf8');
-    const registered = [...serverSource.matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)]
-      .map((match) => match[1]);
+    const {all} = registeredToolNames();
     // Every registered tool whose job is to come back with hits must report
     // finding nothing; otherwise the result that should redirect the model is
     // the one line we drop.
-    const retrievalShaped = registered.filter((tool) =>
+    const retrievalShaped = [...all].filter((tool) =>
       /^(lookup_|search_|query_|recall_)/.test(tool) && tool !== 'query_trace');
     const narrationSource = fs.readFileSync(path.join(__dirname, '..', 'toolNarration.ts'), 'utf8');
     const setBlock = narrationSource.slice(
       narrationSource.indexOf('const RETRIEVAL_TOOLS'),
       narrationSource.indexOf('function retrievalHitCount'),
     );
-    const missing = retrievalShaped.filter((tool) => !setBlock.includes(`'${tool}'`)).sort();
-    expect(missing).toEqual([]);
+    const listed = [...setBlock.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+    expect(retrievalShaped.filter((tool) => !listed.includes(tool)).sort()).toEqual([]);
+    // An entry for a tool no server registers is a retired tool still being narrated.
+    expect(listed.filter((tool) => !all.has(tool)).sort()).toEqual([]);
   });
 
   it('returns empty rather than guessing at an unknown tool', () => {
@@ -365,19 +422,10 @@ describe('tool call narration coverage', () => {
    * the mechanical line this layer exists to prevent. Registering a tool and
    * forgetting the sentence is easy; this test makes it loud.
    */
-  it('narrates every tool registered with the MCP server', () => {
+  it('narrates every registered tool, and no tool that is not registered', () => {
     const fs = require('fs') as typeof import('fs');
     const path = require('path') as typeof import('path');
-
-    const serverSource = fs.readFileSync(
-      path.join(__dirname, '..', 'claudeMcpServer.ts'),
-      'utf8',
-    );
-    const registered = new Set(
-      [...serverSource.matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)]
-        .map((match) => match[1]),
-    );
-    expect(registered.size).toBeGreaterThan(30);
+    const {all} = registeredToolNames();
 
     const narrationSource = fs.readFileSync(
       path.join(__dirname, '..', 'toolNarration.ts'),
@@ -391,8 +439,9 @@ describe('tool call narration coverage', () => {
       [...callSection.matchAll(/case '([a-z_]+)'/g)].map((match) => match[1]),
     );
 
-    const missing = [...registered].filter((tool) => !narrated.has(tool)).sort();
-    expect(missing).toEqual([]);
+    expect([...all].filter((tool) => !narrated.has(tool)).sort()).toEqual([]);
+    // A case for a tool no server registers is dead narration left behind by a removal.
+    expect([...narrated].filter((tool) => !all.has(tool)).sort()).toEqual([]);
   });
 });
 
@@ -491,7 +540,8 @@ describe('policy refusal vs tool malfunction', () => {
     }],
     ['an artifact read that must summarize first', {
       success: false,
-      error: 'summary_required_before_rows',
+      error: 'artifact_access_policy_blocked',
+      reason: 'summary_required_before_rows',
       action_required: 'fetch_artifact',
     }],
   ])('recognises %s as a refusal', (_label, body) => {
@@ -523,6 +573,115 @@ describe('policy refusal vs tool malfunction', () => {
       type: 'text',
       text: JSON.stringify({success: false, action_required: '   '}),
     }])).toBe(false);
+  });
+});
+
+/**
+ * Code-aware source refusals cross the external-surface projection as a closed
+ * action token. That keeps them refusals for the circuit breaker and lets the
+ * timeline say why nothing was read instead of "<tool> failed", without the
+ * requested path ever reaching the line.
+ */
+describe('code-aware source refusals across the projection boundary', () => {
+  const {projectToolResultForExternalSurface} =
+    require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+  const {issuePrivateToolResultNarrationReceipt, readPrivateToolResultNarrationReceipt} =
+    require('../toolNarration') as typeof import('../toolNarration');
+
+  it.each([
+    ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'locate_path_with_search_codebase',
+      sourceReferences: []}, '该路径不在已注册的源码范围内'],
+    ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_extension_not_allowed', action_required: 'locate_path_with_search_codebase',
+      sourceReferences: []}, '该路径不在已注册的源码范围内'],
+    ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_path_outside_provider_grant', action_required: 'continue_without_this_file',
+      sourceReferences: []}, '该文件不在发送给模型的授权范围内'],
+    ['inspect_code_symbol', {success: false, codebaseId: 'cb', references: [], processes: [], truncated: false,
+      unsupportedReason: 'source_path_excluded', action_required: 'locate_path_with_search_codebase'},
+    '该路径不在已注册的源码范围内'],
+    ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
+      unsupportedReason: 'source_path_prefix_outside_registered_filters', action_required: 'retry_search_without_path_prefix'},
+    '该路径前缀不在已注册的源码范围内'],
+    ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
+      unsupportedReason: 'source_path_prefix_outside_provider_grant', action_required: 'continue_without_this_path_prefix'},
+    '该路径前缀已注册但未授权发送给模型'],
+    ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
+      unsupportedReason: 'source_search_budget_exceeded', action_required: 'continue_with_existing_source_evidence'},
+    '源码访问已达本次上限'],
+  ] as const)('narrates a %s refusal as refused, not failed', (toolName, body, expected) => {
+    const projected = projectToolResultForExternalSurface(toolName, mcpResult(body));
+
+    expect(projected).toMatchObject({outcome: 'rejected', action_required: body.action_required});
+    expect(isPolicyRefusalResult(projected)).toBe(true);
+    const line = formatToolResultNarration({toolName, result: projected, isError: true});
+    expect(line).toContain(expected);
+    expect(line).not.toContain('失败');
+    const receipt = issuePrivateToolResultNarrationReceipt({toolName, result: projected, isError: true});
+    expect(readPrivateToolResultNarrationReceipt(receipt, toolName, 'zh-CN')?.message).toContain(expected);
+  });
+
+  it.each([
+    ['an action this product never issues', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'read /Users/demo/app/Secret.kt'}],
+    ['a capability gap', {success: false, codebaseId: 'cb', references: [], processes: [], truncated: false,
+      unsupportedReason: 'missing_gitnexus_index'}],
+  ])('does not project %s as a refusal', (_label, body) => {
+    const toolName = 'references' in body ? 'query_code_graph' : 'read_codebase_file';
+    const projected = projectToolResultForExternalSurface(toolName, mcpResult(body));
+
+    expect(projected).not.toHaveProperty('action_required');
+    expect(JSON.stringify(projected)).not.toContain('/Users/demo');
+    expect(isPolicyRefusalResult(projected)).toBe(false);
+    expect(formatToolResultNarration({toolName, result: projected, isError: true})).toBe(`${toolName} 失败`);
+  });
+
+  it.each([
+    ['a match withheld outside the provider grant', 'provider_grant_scope'],
+    ['a time budget', 'time_budget'],
+  ])('does not narrate an empty search cut short by %s as nothing found', (_label, searchIncompleteReason) => {
+    const raw = mcpResult({success: true, codebaseId: 'cb', matches: [], truncated: false, coverageComplete: false,
+      searchIncompleteReason});
+    const projected = projectToolResultForExternalSurface('search_codebase', raw);
+
+    for (const result of [raw, projected]) {
+      expect(formatToolResultNarration({toolName: 'search_codebase', result, language: 'zh-CN'}))
+        .toBe('检索未完整覆盖，结果可能不全');
+      expect(formatToolResultNarration({toolName: 'search_codebase', result, language: 'en'}))
+        .toBe('The search did not cover everything; results may be partial');
+    }
+    expect(formatToolResultNarration({toolName: 'search_codebase', language: 'zh-CN',
+      result: mcpResult({success: true, codebaseId: 'cb', matches: [], truncated: false, coverageComplete: true})}))
+      .toBe('未查到相关资料');
+  });
+
+  it('narrates a refused prefix outside the provider grant as unauthorized, in English too', () => {
+    const projected = projectToolResultForExternalSurface('search_codebase', mcpResult({success: false,
+      codebaseId: 'cb', matches: [], truncated: false, unsupportedReason: 'source_path_prefix_outside_provider_grant',
+      action_required: 'continue_without_this_path_prefix'}));
+
+    expect(formatToolResultNarration({toolName: 'search_codebase', result: projected, isError: true, language: 'en'}))
+      .toContain('registered but not authorized for sending to the model');
+  });
+
+  it('matches neither a reason nor an action by an Object.prototype key', () => {
+    const {sourceAccessRefusalAction, isSourceAccessRefusalAction} =
+      require('../../services/codebase/sourceAccessRefusal') as typeof import('../../services/codebase/sourceAccessRefusal');
+
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(sourceAccessRefusalAction(key)).toBeUndefined();
+      expect(isSourceAccessRefusalAction(key)).toBe(false);
+    }
+  });
+
+  it('does not project an action on a successful source result', () => {
+    const projected = projectToolResultForExternalSurface('search_codebase', mcpResult({
+      success: true, codebaseId: 'cb', matches: [], truncated: false, action_required: 'continue_without_this_file',
+    }));
+
+    expect(projected).not.toHaveProperty('action_required');
+    expect(isPolicyRefusalResult(projected)).toBe(false);
   });
 });
 
@@ -581,5 +740,189 @@ describe('leading-sentence trimming', () => {
       status: 'completed',
       summary: 'The model gave no summary. Evidence recap follows.',
     }, 'en')).toBe('Completed phase "Overview": The model gave no summary.');
+  });
+});
+
+describe('owner narration of source tools', () => {
+  const owner = (toolName: string, body: Record<string, unknown>, language?: 'en') =>
+    formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body), language});
+  const match = (filePath: string, line: number, extra: Record<string, unknown> = {}) =>
+    ({filePath, lineRange: {start: line, end: line}, matchLines: [line], ...extra});
+
+  it('says how many matches came back, from which files, and whether more exist', () => {
+    expect(owner('search_codebase', {success: true, totalMatches: 12, fileCount: 3, moreResults: true,
+      matches: [match('app/src/StartupHooks.kt', 6), match('app/src/Other.kt', 9)]}))
+      .toBe('找到 12 处匹配（StartupHooks.kt 等 3 个文件），还有更多');
+    expect(owner('search_codebase', {success: true, matches: [match('app/src/StartupHooks.kt', 6)]}, 'en'))
+      .toBe('Found 1 match (StartupHooks.kt)');
+  });
+
+  it('separates a complete empty search from a narrowed or incomplete one', () => {
+    expect(owner('search_codebase', {success: true, matches: [], coverageComplete: true, coverageScope: 'codebase'}))
+      .toBe('未找到匹配（已搜索全部授权文件）');
+    expect(owner('search_codebase', {success: true, matches: [], coverageComplete: true, coverageScope: 'path_prefix'}))
+      .toBe('在指定范围内未找到匹配');
+    expect(owner('search_codebase', {success: true, matches: [], coverageComplete: false}))
+      .toBe('检索未完整覆盖，结果可能不全');
+  });
+
+  it('names the read window and whether the file continues', () => {
+    expect(owner('read_codebase_file', {success: true, reference: {filePath: 'app/src/StartupHooks.kt',
+      lineRange: {start: 1, end: 48}}, window: {totalLines: 120, nextStartLine: 49}}))
+      .toBe('读取 StartupHooks.kt L1–L48（共 120 行，后面还有）');
+    expect(owner('read_codebase_file', {success: true, reference: {filePath: 'app/src/StartupHooks.kt',
+      lineRange: {start: 73, end: 120}}, window: {totalLines: 120, nextStartLine: null}}))
+      .toBe('读取 StartupHooks.kt L73–L120');
+  });
+
+  it('names the best located line, its reason, and any ambiguity or framework origin', () => {
+    expect(owner('locate_trace_anchor', {success: true, ambiguous: true,
+      matches: [match('a/src/StartupHooks.kt', 6, {matchedBy: 'trace_call'}), match('b/src/X.kt', 4)]}))
+      .toBe('定位到 StartupHooks.kt:6（trace 调用点），另有 1 个候选；多个模块都有候选，未能唯一确定');
+    expect(owner('locate_trace_anchor', {success: true, matches: [],
+      framework: {implementation: 'aosp', overrides: []}}))
+      .toBe('该 slice 由框架（AOSP）实现，App 中没有可覆写的方法');
+  });
+
+  it('lists found files', () => {
+    expect(owner('find_codebase_files', {success: true, files: [{filePath: 'src/ui/RenderThread.kt'},
+      {filePath: 'src/ui/RenderView.kt'}]}))
+      .toBe('找到 2 个文件（RenderThread.kt 等）');
+  });
+
+  it('says a budget stop as what happens next', () => {
+    expect(owner('read_codebase_file', {success: false, unsupportedReason: 'source_read_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence'}))
+      .toBe('本轮源码读取次数已用完，继续使用已取得的源码证据');
+  });
+
+  it('never reaches a private-context narration', () => {
+    const text = formatToolResultNarration({toolName: 'search_codebase', privateContext: true, result: {},
+      ownerResult: mcpResult({success: true, matches: [match('app/src/SECRET_PATH_CANARY.kt', 1)]})});
+    expect(text).not.toContain('SECRET_PATH_CANARY');
+  });
+});
+
+describe('index generation refusal narration', () => {
+  it.each(['lookup_app_source', 'lookup_aosp_source', 'resolve_symbol', 'propose_patch'])(
+    'says %s refused a rebuilt index, from its external projection', toolName => {
+      const {projectToolResultForExternalSurface} =
+        require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+      const projected = projectToolResultForExternalSurface(toolName, createRuntimeToolResult({success: false,
+        action_required: 'use_search_codebase', unsupportedReason: 'codebase_index_generation_changed',
+        codebaseId: 'cb_private_canary'}, {isError: true}));
+      // The index lookups project to counts and the closed action; the others carry ids only.
+      if (toolName.startsWith('lookup_')) expect(JSON.stringify(projected)).not.toContain('cb_private_canary');
+      expect(formatToolResultNarration({toolName, privateContext: true, result: projected, isError: true}))
+        .toBe('该代码库没有本轮可用的索引（未建立或已重建），未查询索引，可改用源码搜索');
+    });
+});
+
+describe('knowledge tool narration', () => {
+  const owner = (toolName: string, body: Record<string, unknown>, language?: 'en') =>
+    formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body), language});
+  const hit = {id: 'kref-1', knowledgeBaseId: 'eks_' + 'a'.repeat(24), title: 'Render framework',
+    headingPath: ['Render framework', 'XRenderCompositorWorker'], relativePath: 'render/compositor.md',
+    lineRange: {start: 3, end: 6}, excerpt: 'composes every frame'};
+
+  it('tells the owner how many items came back and from which document', () => {
+    expect(owner('search_knowledge', {success: true, hits: [hit, hit]}))
+      .toBe('找到 2 条内部资料（《Render framework › XRenderCompositorWorker》 等）');
+    expect(owner('search_knowledge', {success: true, hits: []}, 'en')).toBe('No match in the internal knowledge');
+    expect(owner('read_knowledge_section', {success: true, reference: hit, part: 2, partCount: 3, text: 'x'}))
+      .toBe('读取 《Render framework › XRenderCompositorWorker》第 2/3 段');
+    expect(owner('read_knowledge_section', {success: true, alreadyDelivered: true,
+      reference: {id: 'kref-1', knowledgeBaseId: hit.knowledgeBaseId}, part: 1, partCount: 1}))
+      .toBe('该段本轮已读过，未重复发送');
+    expect(owner('search_knowledge', {success: false, unsupportedReason: 'knowledge_search_budget_exceeded',
+      action_required: 'continue_with_existing_knowledge'}))
+      .toBe('本轮内部资料检索次数已用完，继续使用已取得的资料');
+  });
+
+  it('says only counts and part position on a private run, from the projection', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const search = projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits: [hit]}));
+    const text = formatToolResultNarration({toolName: 'search_knowledge', privateContext: true, result: search});
+    expect(text).toBe('找到 1 条内部资料，仅作背景依据');
+    const read = projectToolResultForExternalSurface('read_knowledge_section',
+      mcpResult({success: true, reference: hit, part: 1, partCount: 1, text: 'composes every frame', truncated: true}));
+    expect(formatToolResultNarration({toolName: 'read_knowledge_section', privateContext: true, result: read}))
+      .toBe('已读取内部资料章节，仅作背景依据（额度不足，内容已截断）');
+    const refused = projectToolResultForExternalSurface('read_knowledge_section', mcpResult({success: false,
+      action_required: 'use_reference_id_from_search_knowledge', unsupportedReason: 'knowledge_reference_not_issued'}));
+    expect(formatToolResultNarration({toolName: 'read_knowledge_section', privateContext: true, result: refused,
+      isError: true})).toBe('该引用不是本轮检索返回的，未读取');
+    for (const projected of [search, read, refused]) {
+      expect(JSON.stringify(projected)).not.toMatch(/render\/compositor|Render framework|composes every frame|kref-1/);
+    }
+  });
+
+  it('never narrates a malformed result as a success to the owner either', () => {
+    const {excerpt: _excerpt, ...withoutExcerpt} = hit;
+    const {lineRange: _lineRange, ...withoutRange} = hit;
+    for (const [toolName, body] of [
+      ['read_knowledge_section', {part: 1, partCount: 1, text: 'composes every frame'}],
+      ['read_knowledge_section', {success: true, part: 1, partCount: 1, text: 'composes every frame'}],
+      ['read_knowledge_section', {success: true, reference: withoutRange, part: 1, partCount: 1, text: 'x'}],
+      ['search_knowledge', {success: true, hits: [{}]}],
+      ['search_knowledge', {success: true, hits: [withoutExcerpt]}],
+      ['search_knowledge', {success: true, hits: [hit, {...hit, headingPath: 'Render framework'}]}],
+    ] as const) {
+      expect(owner(toolName, body as Record<string, unknown>) ?? '').not.toMatch(/读取|找到/);
+    }
+  });
+
+  it('lets an error result or failed receipt override a success-shaped body on both surfaces', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    for (const [toolName, body] of [
+      ['search_knowledge', {success: true, hits: [hit]}],
+      ['read_knowledge_section', {success: true, reference: hit, part: 1, partCount: 1, text: 'x'}],
+      ['read_knowledge_section', {success: true, alreadyDelivered: true,
+        reference: {id: 'kref-1', knowledgeBaseId: hit.knowledgeBaseId}, part: 1, partCount: 1}],
+    ] as const) {
+      const failed = {content: mcpResult(body as Record<string, unknown>), isError: true};
+      expect(formatToolResultNarration({toolName, result: {}, ownerResult: failed}) ?? '').not.toMatch(/读取|找到|已读过/);
+      expect(formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body as Record<string, unknown>),
+        isError: true}) ?? '').not.toMatch(/读取|找到|已读过/);
+      expect(projectToolResultForExternalSurface(toolName, failed)).toMatchObject({outcome: 'rejected'});
+    }
+    // A wrongly typed flag is not the success it claims.
+    expect(projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits: [hit], truncated: 'yes'})))
+      .toMatchObject({outcome: 'rejected'});
+  });
+
+  it('projects a hit missing a delivered field as a rejection, not a success', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const {excerpt: _excerpt, ...withoutExcerpt} = hit;
+    for (const hits of [[withoutExcerpt], [{...hit, title: 7}], [{...hit, lineRange: {start: 6, end: 3}}]]) {
+      const projected = projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits}));
+      expect(projected).toMatchObject({outcome: 'rejected'});
+      expect(formatToolResultNarration({toolName: 'search_knowledge', privateContext: true, result: projected}))
+        .not.toMatch(/找到/);
+    }
+  });
+
+  it('never narrates success for an unknown shape on a private run', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const read = projectToolResultForExternalSurface('read_knowledge_section',
+      mcpResult({part: 1, partCount: 1, text: 'composes every frame'}));
+    expect(formatToolResultNarration({toolName: 'read_knowledge_section', privateContext: true, result: read}))
+      .not.toMatch(/已读取|找到/);
+    const search = projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits: [{}]}));
+    expect(formatToolResultNarration({toolName: 'search_knowledge', privateContext: true, result: search}))
+      .not.toMatch(/已读取|找到/);
+  });
+
+  it('fails closed on a shape it does not know', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const projected = projectToolResultForExternalSurface('search_knowledge',
+      mcpResult({success: true, hits: 'render/compositor.md Render framework'}));
+    expect(projected).toMatchObject({outcome: 'rejected', chunkRefs: []});
+    expect(JSON.stringify(projected)).not.toContain('render/compositor');
   });
 });

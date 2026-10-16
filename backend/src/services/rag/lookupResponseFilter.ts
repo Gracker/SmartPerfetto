@@ -8,20 +8,14 @@ import type {
   RagSourceKind,
 } from '../../types/sparkContracts';
 import {activeCodebaseGeneration, type CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {ragChunkAudience} from './ragChunkAudience';
 import {sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
 import {sourceSelectionAdmits, sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
+import {estimateTextTokens, type SourceBudget} from '../codebase/sourceBudget';
 import type {CodeLookupLedger} from '../codebase/codeLookupLedger';
-import {redactSecrets} from '../security/secretPatterns';
+import {credentialContextForPath, redactSecrets} from '../security/secretPatterns';
 import {registerCodeAwareLookupForEcho} from '../security/codeAwareOutputRegistry';
 import type {ExternalKnowledgeScope} from '../externalKnowledgeSourceRegistry';
-import type {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
-import {
-  backgroundKnowledgeReferenceFromChunk,
-} from '../androidInternalsPack/backgroundKnowledgeReferences';
-import type {BackgroundKnowledgeReference} from '../../types/sparkContracts';
-import {
-  registerSessionBackgroundKnowledgeReferences,
-} from '../androidInternalsPack/sessionBackgroundKnowledgeRegistry';
 
 export interface SanitizedRagHit {
   chunkId: string;
@@ -47,12 +41,6 @@ export interface SanitizedRagHit {
     verifiedAt?: number;
     lastVerifiedAgainst?: string;
     contentFingerprint?: string;
-    articleId?: string;
-    sectionId?: string;
-    sectionHeading?: string;
-    chunkHash?: string;
-    knowledgePackVersion?: string;
-    knowledgePackFingerprint?: string;
     sourceDirty?: boolean;
     commitProvenance?: RagChunk['commitProvenance'];
   };
@@ -68,51 +56,36 @@ export interface SanitizedRagResult {
   retrievedAt: number;
   unsupportedReason?: string;
   legacyPath: boolean;
-  backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
 }
 
 export interface FilterContext {
-  toolName: 'lookup_app_source' | 'lookup_kernel_source' | 'lookup_aosp_source' |
-    'lookup_oem_sdk' | 'lookup_blog_knowledge';
+  toolName: 'lookup_app_source' | 'lookup_kernel_source' | 'lookup_aosp_source' | 'lookup_oem_sdk';
   turn: number;
   codebaseRegistry?: CodebaseRegistry;
+  /** Audit trail and patch authority; records every delivery and refusal. */
   ledger?: CodeLookupLedger;
+  /**
+   * The run's delivered-token pools: knowledge text and user codebase source
+   * are budgeted apart.
+   */
+  budget?: Pick<SourceBudget, 'sourceTokens' | 'knowledgeTokens'>;
   allowProviderSend?: boolean;
   sessionId?: string;
-  externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
-  knowledgeSourceIds?: string[];
   knowledgeScope?: ExternalKnowledgeScope;
   /** Runs after source authorization/redaction, before body delivery or patch-ledger grants. */
   admitSourceHit?: (hit: SanitizedRagHit) => boolean;
 }
 
-function isUserCodebaseChunk(chunk: RagChunk): boolean {
-  if (chunk.kind === 'app_source' || chunk.kind === 'kernel_source') return true;
-  return (chunk.kind === 'aosp' || chunk.kind === 'oem_sdk') &&
-    chunk.registryOrigin === 'codebase_registry';
-}
-
-function isLegacyChunk(chunk: RagChunk): boolean {
-  if (
-    chunk.kind === 'androidperformance.com' ||
-    chunk.kind === 'project_memory' ||
-    chunk.kind === 'world_memory' ||
-    chunk.kind === 'case_library'
-  ) return true;
+/**
+ * A public chunk whose origin its kind admits: operator-ingested AOSP/OEM docs
+ * come from the legacy ingesters, other public corpora from any origin.
+ */
+function isLegacyPublicChunk(chunk: RagChunk): boolean {
+  if (ragChunkAudience(chunk) !== 'public') return false;
   if (chunk.kind === 'aosp' || chunk.kind === 'oem_sdk') {
     return chunk.registryOrigin === undefined || chunk.registryOrigin === 'legacy_plan55';
   }
-  return false;
-}
-
-function isExternalPrivateKnowledgeChunk(chunk: RagChunk): boolean {
-  return chunk.kind === 'android_internals_wiki' &&
-    chunk.registryOrigin === 'external_knowledge_registry';
-}
-
-function isBuiltInKnowledgePackChunk(chunk: RagChunk): boolean {
-  return chunk.kind === 'android_internals_pack' &&
-    chunk.registryOrigin === 'built_in_knowledge_pack';
+  return true;
 }
 
 function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
@@ -136,42 +109,13 @@ function metadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
     ...(chunk.sourceConfidence ? {sourceConfidence: chunk.sourceConfidence} : {}),
     ...(chunk.lastVerifiedAgainst ? {lastVerifiedAgainst: chunk.lastVerifiedAgainst} : {}),
     ...(chunk.contentFingerprint ? {contentFingerprint: chunk.contentFingerprint} : {}),
-    ...(chunk.articleId ? {articleId: chunk.articleId} : {}),
-    ...(chunk.sectionId ? {sectionId: chunk.sectionId} : {}),
-    ...(chunk.sectionHeading ? {sectionHeading: chunk.sectionHeading} : {}),
-    ...(chunk.chunkHash ? {chunkHash: chunk.chunkHash} : {}),
-    ...(chunk.knowledgePackVersion
-      ? {knowledgePackVersion: chunk.knowledgePackVersion}
-      : {}),
-    ...(chunk.knowledgePackFingerprint
-      ? {knowledgePackFingerprint: chunk.knowledgePackFingerprint}
-      : {}),
     ...(chunk.sourceDirty !== undefined ? {sourceDirty: chunk.sourceDirty} : {}),
     ...(chunk.commitProvenance ? {commitProvenance: chunk.commitProvenance} : {}),
   };
 }
 
-function privateKnowledgeMetadata(chunk: RagChunk): SanitizedRagHit['metadata'] {
-  const sourceStatus = chunk.sourceStatus?.toLowerCase();
-  const sourceConfidence = chunk.sourceConfidence?.toLowerCase();
-  const verifiedAt = Number.isFinite(chunk.verifiedAt) && Number(chunk.verifiedAt) >= 0
-    ? Number(chunk.verifiedAt)
-    : undefined;
-  return {
-    kind: chunk.kind,
-    ...(chunk.knowledgeSourceId ? {knowledgeSourceId: chunk.knowledgeSourceId} : {}),
-    ...(chunk.sourceGeneration ? {sourceGeneration: chunk.sourceGeneration} : {}),
-    ...((sourceStatus === 'finalized' || sourceStatus === 'verified') ? {sourceStatus} : {}),
-    ...((sourceConfidence === 'low' || sourceConfidence === 'medium' || sourceConfidence === 'high')
-      ? {sourceConfidence}
-      : {}),
-    ...(verifiedAt !== undefined ? {verifiedAt} : {}),
-    ...(chunk.contentFingerprint ? {contentFingerprint: chunk.contentFingerprint} : {}),
-  };
-}
-
 function estimateTokens(chunk: RagChunk, snippet: string): number {
-  return chunk.tokenCount ?? Math.max(1, Math.ceil(snippet.length / 4));
+  return chunk.tokenCount ?? Math.max(1, estimateTextTokens(snippet));
 }
 
 export async function filterRagLookup(
@@ -179,7 +123,6 @@ export async function filterRagLookup(
   ctx: FilterContext,
 ): Promise<SanitizedRagResult> {
   const hits: SanitizedRagHit[] = [];
-  const backgroundKnowledgeReferences: BackgroundKnowledgeReference[] = [];
   let allLegacy = true;
 
   for (const hit of raw.results) {
@@ -193,7 +136,16 @@ export async function filterRagLookup(
     }
 
     const chunk = hit.chunk;
-    if (isLegacyChunk(chunk)) {
+    if (isLegacyPublicChunk(chunk)) {
+      // Public retrieved knowledge draws on the knowledge pool like the rest.
+      const tokens = estimateTokens(chunk, chunk.snippet);
+      if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
+        hits.push({chunkId: hit.chunkId, score: hit.score, metadata: metadata(chunk),
+          unsupportedReason: 'budget_exceeded'});
+        ctx.ledger?.record({turn: ctx.turn, ts: Date.now(), toolName: ctx.toolName, chunkIds: [],
+          consentApplied: false, tokensSpent: 0, outcome: 'budget_exceeded', legacyPath: true});
+        continue;
+      }
       hits.push({
         chunkId: hit.chunkId,
         score: hit.score,
@@ -201,6 +153,7 @@ export async function filterRagLookup(
         snippet: chunk.snippet,
         unsupportedReason: hit.unsupportedReason,
       });
+      ctx.budget?.knowledgeTokens.spend(tokens);
       ctx.ledger?.record({
         turn: ctx.turn,
         ts: Date.now(),
@@ -208,7 +161,7 @@ export async function filterRagLookup(
         codebaseId: chunk.codebaseId,
         chunkIds: [chunk.chunkId],
         consentApplied: false,
-        tokensSpent: estimateTokens(chunk, chunk.snippet),
+        tokensSpent: tokens,
         outcome: 'success',
         legacyPath: true,
       });
@@ -216,140 +169,16 @@ export async function filterRagLookup(
     }
 
     allLegacy = false;
-    if (isBuiltInKnowledgePackChunk(chunk)) {
-      const redacted = redactSecrets(chunk.snippet);
-      const tokens = estimateTokens(chunk, redacted.text);
-      if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: metadata(chunk),
-          unsupportedReason: 'budget_exceeded',
-          redactedCount: redacted.redactedCount,
-        });
-        ctx.ledger.record({
-          turn: ctx.turn,
-          ts: Date.now(),
-          toolName: ctx.toolName,
-          chunkIds: [],
-          consentApplied: false,
-          tokensSpent: 0,
-          outcome: 'budget_exceeded',
-          legacyPath: false,
-        });
-        continue;
-      }
-      const reference = backgroundKnowledgeReferenceFromChunk(chunk);
-      if (!reference) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: metadata(chunk),
-          unsupportedReason: 'invalid_background_knowledge_reference',
-          redactedCount: redacted.redactedCount,
-        });
-        continue;
-      }
-      backgroundKnowledgeReferences.push(reference);
-      hits.push({
-        chunkId: hit.chunkId,
-        score: hit.score,
-        metadata: metadata(chunk),
-        snippet: redacted.text,
-        redactedCount: redacted.redactedCount,
-      });
-      ctx.ledger?.record({
-        turn: ctx.turn,
-        ts: Date.now(),
-        toolName: ctx.toolName,
-        chunkIds: [chunk.chunkId],
-        consentApplied: false,
-        tokensSpent: tokens,
-        outcome: 'success',
-        legacyPath: false,
-      });
+    // A retired Wiki chunk is never served: no remaining lookup searches its
+    // kind, and one that surfaces anyway is refused without its text.
+    const audience = ragChunkAudience(chunk);
+    if (audience === 'retired_private') {
+      hits.push({chunkId: hit.chunkId, score: hit.score, unsupportedReason: 'knowledge_kind_retired'});
+      ctx.ledger?.record({turn: ctx.turn, ts: Date.now(), toolName: ctx.toolName, chunkIds: [],
+        consentApplied: true, tokensSpent: 0, outcome: 'rejected', legacyPath: false});
       continue;
     }
-    if (isExternalPrivateKnowledgeChunk(chunk)) {
-      const access = chunk.knowledgeSourceId && ctx.externalKnowledgeRegistry
-        ? ctx.externalKnowledgeRegistry.evaluateAccess(
-            chunk.knowledgeSourceId,
-            ctx.knowledgeScope ?? {},
-            ctx.knowledgeSourceIds ?? [],
-          )
-        : {allowed: false as const, reason: 'source_not_found_or_out_of_scope' as const};
-      const inactiveGeneration = access.allowed &&
-        access.source.activeGeneration !== chunk.sourceGeneration;
-      const blockedReason = !access.allowed
-        ? access.reason
-        : inactiveGeneration
-          ? 'inactive_source_generation'
-          : undefined;
-      if (blockedReason) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: privateKnowledgeMetadata(chunk),
-          unsupportedReason: blockedReason,
-        });
-        ctx.ledger?.record({
-          turn: ctx.turn,
-          ts: Date.now(),
-          toolName: ctx.toolName,
-          chunkIds: [],
-          consentApplied: true,
-          tokensSpent: 0,
-          outcome: blockedReason === 'provider_send_not_consented'
-            ? 'consent_blocked'
-            : 'rejected',
-          legacyPath: false,
-        });
-        continue;
-      }
-      const redacted = redactSecrets(chunk.snippet);
-      const tokens = estimateTokens(chunk, redacted.text);
-      if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
-        hits.push({
-          chunkId: hit.chunkId,
-          score: hit.score,
-          metadata: privateKnowledgeMetadata(chunk),
-          unsupportedReason: 'budget_exceeded',
-          redactedCount: redacted.redactedCount,
-        });
-        ctx.ledger.record({
-          turn: ctx.turn,
-          ts: Date.now(),
-          toolName: ctx.toolName,
-          chunkIds: [],
-          consentApplied: true,
-          tokensSpent: 0,
-          outcome: 'budget_exceeded',
-          legacyPath: false,
-        });
-        continue;
-      }
-      hits.push({
-        chunkId: hit.chunkId,
-        score: hit.score,
-        metadata: privateKnowledgeMetadata(chunk),
-        snippet: redacted.text,
-        redactedCount: redacted.redactedCount,
-      });
-      ctx.ledger?.record({
-        turn: ctx.turn,
-        ts: Date.now(),
-        toolName: ctx.toolName,
-        knowledgeSourceId: chunk.knowledgeSourceId,
-        sourceGeneration: chunk.sourceGeneration,
-        chunkIds: [chunk.chunkId],
-        consentApplied: true,
-        tokensSpent: tokens,
-        outcome: 'success',
-        legacyPath: false,
-      });
-      continue;
-    }
-    if (!isUserCodebaseChunk(chunk)) {
+    if (audience !== 'user_codebase') {
       hits.push({
         chunkId: hit.chunkId,
         score: hit.score,
@@ -485,9 +314,9 @@ export async function filterRagLookup(
       continue;
     }
 
-    const redacted = redactSecrets(chunk.snippet);
+    const redacted = redactSecrets(chunk.snippet, credentialContextForPath(chunk.filePath));
     const tokens = estimateTokens(chunk, redacted.text);
-    if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
+    if (ctx.budget && tokens > ctx.budget.sourceTokens.left()) {
       hits.push({
         chunkId: hit.chunkId,
         score: hit.score,
@@ -495,7 +324,7 @@ export async function filterRagLookup(
         unsupportedReason: 'budget_exceeded',
         redactedCount: redacted.redactedCount,
       });
-      ctx.ledger.record({
+      ctx.ledger?.record({
         turn: ctx.turn,
         ts: Date.now(),
         toolName: ctx.toolName,
@@ -523,11 +352,14 @@ export async function filterRagLookup(
       continue;
     }
     hits.push(sourceHit);
+    ctx.budget?.sourceTokens.spend(tokens);
     ctx.ledger?.record({
       turn: ctx.turn,
       ts: Date.now(),
       toolName: ctx.toolName,
       codebaseId: chunk.codebaseId,
+      // The generation the chunk came from, so a later patch can tell it was rebuilt.
+      ...(chunk.sourceGeneration ? {sourceGeneration: chunk.sourceGeneration} : {}),
       chunkIds: [chunk.chunkId],
       consentApplied: true,
       tokensSpent: tokens,
@@ -543,12 +375,7 @@ export async function filterRagLookup(
     retrievedAt: raw.retrievedAt,
     ...(raw.unsupportedReason ? {unsupportedReason: raw.unsupportedReason} : {}),
     legacyPath: allLegacy,
-    ...(backgroundKnowledgeReferences.length > 0 ? {backgroundKnowledgeReferences} : {}),
   };
-  registerSessionBackgroundKnowledgeReferences(
-    ctx.sessionId,
-    backgroundKnowledgeReferences,
-  );
   registerCodeAwareLookupForEcho(ctx.sessionId, sanitized);
   return sanitized;
 }

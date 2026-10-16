@@ -7,21 +7,21 @@ import os from 'os';
 import path from 'path';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
-import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
+import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} from '../../../tests/helpers/runtimeDraftTerminalState';
+import { ENTERPRISE_DB_PATH_ENV } from '../../services/enterpriseDb';
 import {
   ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV,
   ENTERPRISE_MIGRATION_PHASE_ENV,
 } from '../../services/enterpriseMigration';
 import { getProviderService, resetProviderService } from '../../services/providerManager';
 import {SECRET_STORE_MASTER_KEY_ENV} from '../../services/providerManager/localSecretStore';
-import { saveClaudeSessionMapToRuntimeSnapshots } from '../../services/runtimeSnapshotStore';
-import type { TraceProcessorService } from '../../services/traceProcessorService';
 import * as runtimePromptContext from '../../agentRuntime/runtimePromptContext';
 import {createRuntimePerformanceRecorder, createRuntimePerformanceRun} from '../../agentRuntime/runtimePerformance';
 import {evaluationRuntimeCapabilities} from '../../services/selfEvolution/evaluationRuntimeCapabilities';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as skillLoader from '../../services/skillEngine/skillLoader';
-import * as skillAnalysisAdapter from '../../services/skillEngine/skillAnalysisAdapter';
+import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendorHintParityFixture';
+import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorResolver';
 import {
   withEffectiveRuntimeRegistrySnapshot,
   type EffectiveRuntimeRegistrySnapshot,
@@ -44,7 +44,7 @@ import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from 
 import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIntent';
 import {resolveRuntimeTurnPolicy} from '../../agentRuntime/runtimeTurnPolicy';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
-import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
+import {takeFinalizationContext, takeRunDeliveryRecord} from '../../agentRuntime/analysisFinalizationContext';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
@@ -52,18 +52,26 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {ArtifactStore} from '../artifactStore';
 import * as claudeMcpServer from '../claudeMcpServer';
 import * as claudeSystemPrompt from '../claudeSystemPrompt';
+import * as sceneEntryEvidence from '../../agentRuntime/sceneEntryEvidence';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as analysisPatternMemory from '../analysisPatternMemory';
+import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import {
   createRuntimeSourceFinalizationFixture,
   SOURCE_FINALIZATION_CANARY,
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from '../../agentRuntime/__tests__/sourceFinalizationFixture';
+import {resolveFocusPackageCell} from '../../agentRuntime/__tests__/focusEvidenceFixture';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {analysisContextMemoryPartitionKey} from '../../services/resolvedAnalysisContext';
+import {StoreUnreadableError} from '../../utils/storedData';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 
 function declaredCandidate(body: string): string {
   return `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -139,18 +147,6 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function runtimeSnapshotCount(): number {
-  const db = openEnterpriseDb(dbPath);
-  try {
-    const row = db.prepare<unknown[], { count: number }>(
-      'SELECT COUNT(*) AS count FROM runtime_snapshots',
-    ).get();
-    return row?.count ?? 0;
-  } finally {
-    db.close();
-  }
-}
-
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -202,6 +198,7 @@ function createEffectiveRuntimeRegistrySnapshot(): EffectiveRuntimeRegistrySnaps
     getSkillOrigin: () => undefined,
     getAppliedOverlayIds: () => [],
     getVendorOverride: () => undefined,
+    hasVendorOverrides: () => false,
     getVendorOverridesForSkill: () => [],
     getVendorOverrideLoadIssues: () => [],
     findMatchingSkill: () => undefined,
@@ -248,8 +245,6 @@ afterEach(async () => {
   clearCodeAwareOutputGuards('session-private-stream-recovery');
   sessionContextManager.remove('session-a');
   sessionContextManager.remove('session-quick');
-  sessionContextManager.remove('session-quick-focus-evidence');
-  sessionContextManager.remove('session-quick-selection-trace-fact');
   sessionContextManager.remove('session-language-quick');
   sessionContextManager.remove('session-language-full');
   sessionContextManager.remove('session-provider');
@@ -272,11 +267,10 @@ afterEach(async () => {
   }
 });
 
-describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
+describe('ClaudeRuntime runtime state and snapshots', () => {
   it('scene runtime matrix: runs the pinned Claude provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('claude');
-    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-pinned-claude',
-      enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-pinned-claude', enableSubAgents: false});
     let tool: any;
     let response: any;
     claudeSdkMock.__setQueryImplementation(async function* (params: any) {
@@ -303,8 +297,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   it('scene runtime: extends a producing scene run past its base request budget', async () => {
     const f = createSceneRuntimeMatrixFixture('claude-deadline');
     // The fixed cap alone would cancel this run at 300 ms; tool results keep arriving every 150 ms.
-    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-deadline-claude',
-      enableVerification: false, enableSubAgents: false, maxTurns: 3, fullPathPerTurnMs: 100,
+    const runtime = new ClaudeRuntime(f.traceProcessorService, {model: 'scene-deadline-claude', enableSubAgents: false, maxTurns: 3, fullPathPerTurnMs: 100,
       fullRequestTimeoutMs: 300, maxRunTimeoutMs: 6_000, streamIdleTimeoutMs: 60_000});
     const outcomes: unknown[] = [];
     claudeSdkMock.__setQueryImplementation(async function* (params: any) {
@@ -367,7 +360,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(__testing.chooseClaudeConclusionText({accumulatedAnswer: 'interrupted prose'})).toBe('interrupted prose');
   });
 
-  it('recognizes missing SDK conversations from object-shaped result errors', () => {
+  it('formats object-shaped SDK result errors', () => {
     const message = __testing.getSdkResultErrorMessage({
       type: 'result',
       subtype: 'error_during_execution',
@@ -375,150 +368,16 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     });
 
     expect(message).toBe('Claude analysis error (error_during_execution): No conversation found with session ID: sdk-session-a');
-    expect(__testing.isMissingSdkConversationError(message!)).toBe(true);
   });
 
-  it('loads SDK session mappings from runtime_snapshots on construction', () => {
-    const now = Date.now();
-    saveClaudeSessionMapToRuntimeSnapshots({
-      tenantId: 'tenant-a',
-      workspaceId: 'workspace-a',
-      userId: 'user-a',
-      sessionId: 'session-a',
-      runId: 'run-a',
-      traceId: 'trace-a',
-    }, 'session-a', {
-      sdkSessionId: 'sdk-session-a',
-      updatedAt: now,
-      mode: 'full',
-    });
-
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      expect(runtime.getSdkSessionId('session-a')).toBe('sdk-session-a');
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('does not expose stale SDK session mappings for persistence', () => {
-    const now = 1_700_000_000_000;
-    saveClaudeSessionMapToRuntimeSnapshots({
-      tenantId: 'tenant-a',
-      workspaceId: 'workspace-a',
-      userId: 'user-a',
-      sessionId: 'session-a',
-      runId: 'run-a',
-      traceId: 'trace-a',
-    }, 'session-a', {
-      sdkSessionId: 'sdk-session-a',
-      updatedAt: now - (5 * 60 * 60 * 1000),
-      mode: 'full',
-    });
-
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      expect(runtime.getSdkSessionId('session-a')).toBeUndefined();
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('removes enterprise runtime_snapshots rows during session cleanup', () => {
-    saveClaudeSessionMapToRuntimeSnapshots({
-      tenantId: 'tenant-a',
-      workspaceId: 'workspace-a',
-      userId: 'user-a',
-      sessionId: 'session-a',
-      runId: 'run-a',
-      traceId: 'trace-a',
-    }, 'session-a', {
-      sdkSessionId: 'sdk-session-a',
-      updatedAt: Date.now(),
-      mode: 'full',
-    });
-    expect(runtimeSnapshotCount()).toBe(1);
-
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-
-    runtime.removeSession('session-a');
-    expect(runtimeSnapshotCount()).toBe(0);
-  });
-
-  it('starts fresh without deleting saved provider metadata for this session or its comparison', async () => {
-    saveClaudeSessionMapToRuntimeSnapshots({
-      tenantId: 'tenant-a',
-      workspaceId: 'workspace-a',
-      userId: 'user-a',
-      sessionId: 'session-a',
-      runId: 'run-a',
-      traceId: 'trace-a',
-    }, 'session-a', {
-      sdkSessionId: 'sdk-session-a',
-      updatedAt: Date.now(),
-      mode: 'full',
-    });
-    saveClaudeSessionMapToRuntimeSnapshots({
-      tenantId: 'tenant-a',
-      workspaceId: 'workspace-a',
-      userId: 'user-a',
-      sessionId: 'session-a',
-      runId: 'run-a',
-      traceId: 'trace-a',
-    }, 'session-a:ref:trace-b', {
-      sdkSessionId: 'sdk-session-b',
-      updatedAt: Date.now(),
-      mode: 'full',
-    });
-    expect(runtimeSnapshotCount()).toBe(2);
-
+  it('restores a legacy SDK session id without resuming it or saving it again', async () => {
     intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'existing_only'};
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
-
-    claudeSdkMock.__setQueryImplementation(async function* () {
-      yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Fresh provider answer.'};
-    });
-    try {
-      const result = await runtime.analyze('Question', 'session-a', 'trace-a', {analysisMode: 'full',
-        tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'});
-      expect(result.success).toBe(true);
-      const calls = claudeSdkMock.__getQueryCalls();
-      expect(calls).toHaveLength(2);
-      expect(calls[0].options.resume).toBeUndefined();
-      expect(runtime.getSdkSessionId('session-a')).toBe('sdk-session-a');
-      expect(runtime.getSdkSessionId('session-a', 'trace-b')).toBe('sdk-session-b');
-      expect(runtimeSnapshotCount()).toBe(2);
-    } finally {sessionContextManager.remove('session-a');}
-  });
-
-  it('restores full-mode snapshot SDK mappings with the snapshot timestamp', () => {
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-    const snapshotTimestamp = Date.now() - (5 * 60 * 60 * 1000);
-
-    runtime.restoreFromSnapshot('session-a', 'trace-a', {
-      version: 1,
-      snapshotTimestamp,
-      sessionId: 'session-a',
-      traceId: 'trace-a',
+    const snapshotFields = {
+      referenceTraceId: 'trace-b',
+      comparisonSource: 'raw_trace_pair' as const,
       conversationSteps: [],
       queryHistory: [],
       conclusionHistory: [],
@@ -526,192 +385,57 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       agentResponses: [],
       dataEnvelopes: [],
       hypotheses: [],
-      analysisNotes: [],
+      runSequence: 0,
+      conversationOrdinal: 0,
+    };
+    // Snapshots written before native state was dropped carry the SDK session id
+    // in both the engine state and the top-level mirror.
+    runtime.restoreFromSnapshot('session-a', 'trace-a', {
+      version: 1,
+      snapshotTimestamp: Date.now(),
+      sessionId: 'session-a',
+      traceId: 'trace-a',
+      ...snapshotFields,
+      analysisNotes: [{section: 'observation', content: 'Retained product observation', priority: 'low', timestamp: 1}],
       analysisPlan: null,
       planHistory: [],
       uncertaintyFlags: [],
       engineState: {
         kind: 'claude-agent-sdk',
         provider: { providerId: null, providerSnapshotHash: null },
-        claude: {
-          sdkSessionId: 'sdk-session-a',
-          sdkSessionMode: 'full',
-        },
+        claude: {sdkSessionId: 'sdk-session-legacy', sdkSessionMode: 'full'},
       },
-      runSequence: 0,
-      conversationOrdinal: 0,
-    });
-
-    expect((runtime as any).sessionMap.get('session-a')).toEqual(expect.objectContaining({
-      sdkSessionId: 'sdk-session-a',
-      updatedAt: snapshotTimestamp,
-      mode: 'full',
-    }));
-  });
-
-  it('restores full-mode comparison snapshot SDK mappings under the comparison key', () => {
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-    const snapshotTimestamp = Date.now() - (30 * 60 * 1000);
-
-    runtime.restoreFromSnapshot('session-a', 'trace-a', {
-      version: 1,
-      snapshotTimestamp,
-      sessionId: 'session-a',
-      traceId: 'trace-a',
-      referenceTraceId: 'trace-b',
-      comparisonSource: 'raw_trace_pair',
-      conversationSteps: [],
-      queryHistory: [],
-      conclusionHistory: [],
-      agentDialogue: [],
-      agentResponses: [],
-      dataEnvelopes: [],
-      hypotheses: [],
-      analysisNotes: [],
-      analysisPlan: null,
-      planHistory: [],
-      uncertaintyFlags: [],
-      sdkSessionId: 'sdk-session-compare',
+      sdkSessionId: 'sdk-session-legacy',
       sdkSessionMode: 'full',
-      runSequence: 0,
-      conversationOrdinal: 0,
     });
 
-    expect((runtime as any).sessionMap.get('session-a')).toBeUndefined();
-    expect((runtime as any).sessionMap.get('session-a:ref:trace-b')).toEqual(expect.objectContaining({
-      sdkSessionId: 'sdk-session-compare',
-      updatedAt: snapshotTimestamp,
-      mode: 'full',
-    }));
-    expect(runtime.getSdkSessionId('session-a', 'trace-b')).toBe('sdk-session-compare');
-  });
-
-
-  it('does not restore legacy unmarked SDK mappings from snapshots', () => {
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-session-fresh', num_turns: 1, result: 'Fresh provider answer.'};
     });
-
-    runtime.restoreFromSnapshot('session-a', 'trace-a', {
-      version: 1,
-      snapshotTimestamp: Date.now(),
-      sessionId: 'session-a',
-      traceId: 'trace-a',
-      conversationSteps: [],
-      queryHistory: [],
-      conclusionHistory: [],
-      agentDialogue: [],
-      agentResponses: [],
-      dataEnvelopes: [],
-      hypotheses: [],
-      analysisNotes: [],
-      analysisPlan: null,
-      planHistory: [],
-      uncertaintyFlags: [],
-      sdkSessionId: 'legacy-sdk-session',
-      runSequence: 0,
-      conversationOrdinal: 0,
-    });
-
-    expect((runtime as any).sessionMap.get('session-a')).toBeUndefined();
-  });
-
-  it('does not persist stale SDK session mappings into snapshots', () => {
-    const now = 1_700_000_000_000;
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-    (runtime as any).sessionMap.set('session-a', {
-      sdkSessionId: 'sdk-session-stale',
-      updatedAt: now - (5 * 60 * 60 * 1000),
-      mode: 'full',
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
     try {
-      const snapshot = runtime.takeSnapshot('session-a', 'trace-a', {
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
+      const result = await runtime.analyze('Question', 'session-a', 'trace-a', {analysisMode: 'full',
+        referenceTraceId: 'trace-b', tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'});
+      expect(result.success).toBe(true);
+      const calls = claudeSdkMock.__getQueryCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls[0].options.resume).toBeUndefined();
+      expect(JSON.stringify(calls[0].options)).not.toContain('sdk-session-legacy');
 
-      expect(snapshot.sdkSessionId).toBeUndefined();
-      expect(snapshot.engineState).toMatchObject({
+      const snapshot = runtime.takeSnapshot('session-a', 'trace-a', snapshotFields);
+      expect(snapshot.engineState).toEqual({
         kind: 'claude-agent-sdk',
-        claude: {
-          sdkSessionId: undefined,
-        },
+        provider: {providerId: null, providerSnapshotHash: null},
+        claude: {},
       });
-    } finally {
-      nowSpy.mockRestore();
-    }
+      expect(snapshot.analysisNotes).toEqual([expect.objectContaining({content: 'Retained product observation'})]);
+      expect(JSON.stringify(snapshot)).not.toMatch(/sdk-session-(legacy|fresh)/);
+    } finally {sessionContextManager.remove('session-a');}
   });
 
-  it('persists fresh SDK session mappings into snapshots', () => {
+  it('does not persist intermediate model state for private source sessions', () => {
     const now = 1_700_000_000_000;
     const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
       enableSubAgents: false,
-    });
-    (runtime as any).sessionMap.set('session-a', {
-      sdkSessionId: 'sdk-session-fresh',
-      updatedAt: now - (30 * 60 * 1000),
-      mode: 'full',
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      const snapshot = runtime.takeSnapshot('session-a', 'trace-a', {
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
-
-      expect(snapshot.sdkSessionId).toBe('sdk-session-fresh');
-      expect(snapshot.sdkSessionMode).toBe('full');
-      expect(snapshot.engineState).toEqual(expect.objectContaining({
-        kind: 'claude-agent-sdk',
-        provider: {
-          providerId: null,
-          providerSnapshotHash: null,
-        },
-        claude: {
-          sdkSessionId: 'sdk-session-fresh',
-          sdkSessionMode: 'full',
-        },
-      }));
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('does not persist provider resume or intermediate model state for private source sessions', () => {
-    const now = 1_700_000_000_000;
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-    (runtime as any).sessionMap.set('session-private', {
-      sdkSessionId: 'PRIVATE_PROVIDER_SESSION_CANARY',
-      updatedAt: now,
-      mode: 'full',
     });
     (runtime as any).sessionNotes.set('session-private', [{content: 'PRIVATE_NOTE_CANARY'}]);
     (runtime as any).sessionPlans.set('session-private', {
@@ -745,7 +469,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         conversationOrdinal: 0,
       });
 
-      expect(snapshot.sdkSessionId).toBeUndefined();
       expect(snapshot.analysisNotes).toEqual([]);
       expect(snapshot.analysisPlan).toBeNull();
       expect(snapshot.planHistory).toEqual([]);
@@ -757,98 +480,11 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     }
   });
 
-  it('persists fresh comparison SDK session mappings into snapshots', () => {
-    const now = 1_700_000_000_000;
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-    (runtime as any).sessionMap.set('session-a:ref:trace-b', {
-      sdkSessionId: 'sdk-session-compare',
-      updatedAt: now - (30 * 60 * 1000),
-      mode: 'full',
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      const snapshot = runtime.takeSnapshot('session-a', 'trace-a', {
-        referenceTraceId: 'trace-b',
-        comparisonSource: 'raw_trace_pair',
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
-
-      expect(snapshot.referenceTraceId).toBe('trace-b');
-      expect(snapshot.comparisonSource).toBe('raw_trace_pair');
-      expect(snapshot.sdkSessionId).toBe('sdk-session-compare');
-      expect(snapshot.sdkSessionMode).toBe('full');
-      expect(snapshot.engineState).toMatchObject({
-        kind: 'claude-agent-sdk',
-        claude: {
-          sdkSessionId: 'sdk-session-compare',
-        },
-      });
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('does not expose fresh legacy session-map entries without full-mode ownership', () => {
-    const now = 1_700_000_000_000;
-    const runtime = new ClaudeRuntime({} as any, {
-      enableVerification: false,
-      enableSubAgents: false,
-    });
-    (runtime as any).sessionMap.set('session-a', {
-      sdkSessionId: 'legacy-sdk-session',
-      updatedAt: now,
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      expect(runtime.getSdkSessionId('session-a')).toBeUndefined();
-      const snapshot = runtime.takeSnapshot('session-a', 'trace-a', {
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
-      expect(snapshot.sdkSessionId).toBeUndefined();
-      expect(snapshot.engineState).toMatchObject({
-        kind: 'claude-agent-sdk',
-        claude: {
-          sdkSessionId: undefined,
-        },
-      });
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
   it('inherits product history across budget changes without resuming provider history', async () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
-    });
-    const now = Date.now();
-    (runtime as any).sessionMap.set('session-quick', {
-      sdkSessionId: 'full-sdk-session',
-      updatedAt: now,
-      mode: 'full',
     });
     (runtime as any).architectureCache.set('trace-quick', {
       type: 'STANDARD',
@@ -892,20 +528,15 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].options.resume).toBeUndefined();
     expect(calls[0].prompt).toContain('上一轮回答：主要包名是 com.example.app。');
-    expect(calls[0].options.persistSession).toBe(true);
+    expect(calls[0].options.persistSession).toBe(false);
     expect(calls[0].options.allowedTools).toContain('mcp__smartperfetto__fetch_artifact');
     expect(calls[0].prompt).toContain('继续回答刚才的问题');
-    expect((runtime as any).sessionMap.get('session-quick')).toEqual(expect.objectContaining({
-      sdkSessionId: 'quick-sdk-session',
-      mode: 'full',
-    }));
   });
 
   it('passes the active code-aware mode and selected codebases into the Claude quick prompt', async () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -922,19 +553,19 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       '快速结合源码定位候选机制',
       'session-claude-source-quick',
       'trace-claude-source-quick',
-      {
+      admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'metadata_only',
         codebaseIds: ['cb-claude-quick'],
-      },
+      }),
     );
 
     const call = claudeSdkMock.__getQueryCalls()[0];
     expect(JSON.stringify(call.options.systemPrompt)).toContain('cb-claude-quick');
     expect(JSON.stringify(call.options.systemPrompt)).toContain('metadata_only');
-    expect(JSON.stringify(call.options.systemPrompt)).toContain('源码使用决策契约');
+    expect(JSON.stringify(call.options.systemPrompt)).toContain('## 源码使用');
   });
 
   it('does not run trace preflight for a no-trace conversation turn', async () => {
@@ -944,7 +575,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       }),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -994,7 +624,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         throw new Error('no trace processor exists for conversation');
       }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -1028,7 +657,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
     } as any, {
       outputLanguage: 'zh-CN',
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-language-quick', {
@@ -1070,7 +698,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const focus = jest.spyOn(focusAppDetector, 'detectFocusApps');
     const architecture = jest.spyOn(architectureDetector, 'createArchitectureDetector');
     const knowledge = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase');
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
         session_id: `sdk-bounded-${analysisMode}`, num_turns: 1, result: 'ECONNRESET 是这段记录中的事件名称'};
@@ -1099,7 +727,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const focus = jest.spyOn(focusAppDetector, 'detectFocusApps');
     const architecture = jest.spyOn(architectureDetector, 'createArchitectureDetector');
     const knowledge = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase');
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', is_error: false, stop_reason: null,
         session_id: 'sdk-existing-only', num_turns: 1, result: '之前的证据已经够回答这个问题'};
@@ -1115,15 +743,15 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   it('keeps comparison identity and prior artifacts with existing-only evidence in a fast budget', async () => {
     intentDecision = {...defaultIntent, taskKind: 'comparison', scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'existing_only'};
     const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
-    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
     const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', num_turns: 1, result: 'The earlier evidence is sufficient.'};
     });
     try {
-      const result = await runtime.analyze('Use prior evidence', 'existing-only', 'current', {
+      const result = await runtime.analyze('Use prior evidence', 'existing-only', 'current', admitted({
         analysisMode: 'fast', referenceTraceId: 'reference', knowledgeSourceIds: ['knowledge-selected'],
-      });
+      }));
       expect(result.turnIntent?.evidenceAccess).toBe('existing_only');
       expect(mcp).toHaveBeenCalledWith(expect.objectContaining({allowNewEvidence: false,
         referenceTraceId: 'reference', comparisonContext: expect.objectContaining({referenceTraceId: 'reference', capabilityProbeStatus: 'not_checked'})}));
@@ -1131,6 +759,59 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
       expect(claudeSdkMock.__getQueryCalls()[0].options.allowedTools).toContain('mcp__smartperfetto__fetch_artifact');
     } finally {mcp.mockRestore();}
+  });
+
+  // The same options carry the run's own learning grant, under which
+  // execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint without a vendor preflight, and the run grant', async () => {
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
+    const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: '启动分析完成'};
+    });
+    let runtimeOptions: Parameters<typeof claudeMcpServer.createClaudeMcpServer>[0];
+    try {
+      await runtime.analyze('分析启动性能', 'claude-vendor-hint', 'trace',
+        withDurableLearningPermission({analysisMode: 'full' as const, runId: 'run-claude-mcp'}, NO_PRIVATE_CONTEXT));
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally {mcp.mockRestore();}
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-claude-mcp');
+    expect(traceProcessor.query.mock.calls.some(call =>
+      String((call as unknown[])[1]).includes(TRACE_VENDOR_METADATA_SQL))).toBe(false);
+    await expectRuntimeVendorHintParity({
+      createMcpServer: claudeMcpServer.createClaudeMcpServer, runtimeOptions});
+  });
+
+  // Product-owned scene entry evidence settles before the run's MCP server is
+  // built, and its segment data reaches the shared prompt context.
+  it('collects scene entry evidence before building the MCP server and hands it to the prompt', async () => {
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
+    const order: string[] = [];
+    const evidence = {status: 'not_run' as const, skillId: 'startup_analysis', reason: 'timeout' as const};
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt').mockImplementation(async () => {
+      order.push('scene_evidence');
+      return evidence;
+    });
+    const actualMcp = claudeMcpServer.createClaudeMcpServer;
+    const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer').mockImplementation(options => {
+      order.push('mcp_server');
+      return actualMcp(options);
+    });
+    const prompt = jest.spyOn(claudeSystemPrompt, 'buildSystemPromptParts');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: '启动分析完成'};
+    });
+    try {
+      await runtime.analyze('分析启动性能', 'claude-scene-entry', 'trace', {analysisMode: 'full', runId: 'run-claude-scene'});
+      expect(order).toEqual(['scene_evidence', 'mcp_server']);
+      expect(scene.mock.calls[0][0]).toMatchObject({runId: 'run-claude-scene', traceId: 'trace',
+        turnIntent: expect.objectContaining({sceneId: defaultIntent.sceneId})});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence === evidence)).toBe(true);
+    } finally {
+      scene.mockRestore(); mcp.mockRestore(); prompt.mockRestore();
+    }
   });
 
   // A failed classifier is the turn that knows least about the trace, so it
@@ -1203,6 +884,28 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(JSON.stringify(result)).toBe(snapshot);
       expect(result.conclusion).not.toBe('late result');
     } finally {release.resolve(); restoreEnvValue('CLAUDE_QUICK_MAX_TURNS', previousMaxTurns); jest.useRealTimers();}
+  });
+
+  it('keeps what the run delivered on a provider failure before any accepted answer', async () => {
+    intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
+    const knowledgeUse = {sources: [{knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection' as const,
+      generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 1}], locations: []};
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    const prepare = (runtime as any).prepareAnalysisContext.bind(runtime);
+    jest.spyOn(runtime as any, 'prepareAnalysisContext').mockImplementation(async (...args: unknown[]) => {
+      const context = await prepare(...args);
+      return {...context, sourceUse: {...context.sourceUse, getKnowledgeUse: () => knowledgeUse}};
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      throw new Error('provider failure after a knowledge read');
+    });
+    const result = await runtime.analyze('Question', 'claude-knowledge-failure', 'trace',
+      {analysisMode: 'fast', runId: 'claude-knowledge-failure-run'});
+    expect(result).toMatchObject({success: false, terminationReason: 'execution_error'});
+    expect(takeFinalizationContext(result)).toBeUndefined();
+    expect(takeRunDeliveryRecord(result)).toEqual({runId: 'claude-knowledge-failure-run',
+      sessionId: 'claude-knowledge-failure', knowledgeUse});
   });
 
   it('reports the chosen quick budget when preparation consumes the original deadline before SDK dispatch', async () => {
@@ -1327,6 +1030,137 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {projection.mockRestore(); clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);}
   });
 
+  it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
+    intentDecision = {...defaultIntent};
+    const sessionId = 'claude-private-experience';
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+    const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+    const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: 'done'};
+    });
+    let context: ReturnType<typeof takeFinalizationContext>;
+    try {
+      const result = await runtime.analyze('Analyze scrolling', sessionId, 'trace', admitted({
+        analysisMode: 'full', codeAwareMode: 'metadata_only', codebaseIds: ['cb-private-experience'],
+      }));
+      context = takeFinalizationContext(result);
+      expect(patterns).toHaveBeenCalledTimes(1);
+      expect(negative).toHaveBeenCalledTimes(1);
+      const prompt = JSON.stringify(claudeSdkMock.__getQueryCalls().slice(-1)[0].options.systemPrompt);
+      expect(prompt).toContain('PATTERN_MEMORY_SECTION');
+      expect(prompt).toContain('NEGATIVE_MEMORY_SECTION');
+      expect(prompt).toContain('CASE_BACKGROUND_SECTION');
+    } finally {context?.dispose(); patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); sessionContextManager.remove(sessionId);}
+  });
+
+  // A negative pattern records what failed during the run (here an SQL error
+  // it never fixed), which stays true when the run ends short. A run without
+  // its grant, a failed run and a cancelled run learn nothing.
+  describe('negative-pattern learning across the run lifecycle', () => {
+    beforeEach(() => analysisPatternMemory.setSupersedeStoreForTesting(null));
+    afterEach(() => analysisPatternMemory.resetSupersedeHandlesForTesting());
+
+    async function analyzeAfterFailedApproach(label: string, {granted = true, terminal, cancelWhileVerifying}: {
+      granted?: boolean;
+      terminal?: Record<string, unknown>;
+      cancelWhileVerifying?: boolean;
+    } = {}) {
+      intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
+      const sessionId = `claude-negative-learning-${label}`;
+      const runId = `run-negative-learning-${label}`;
+      const base: AnalysisOptions = {analysisMode: 'full', runId};
+      const options = granted ? withDurableLearningPermission(base, NO_PRIVATE_CONTEXT) : base;
+      const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+        {enableSubAgents: false});
+      (runtime as any).sessionSqlErrors.set(sessionId, [
+        {errorSql: 'SELECT missing_column FROM slice', errorMessage: 'no such column: missing_column', timestamp: Date.now()},
+      ]);
+      (runtime as any).sessionSqlErrorPartitions.set(sessionId, analysisContextMemoryPartitionKey(options));
+      const save = jest.spyOn(analysisPatternMemory, 'saveNegativePattern');
+      mockClaudeVerifierVerifyConclusion.mockImplementation(async () => {
+        if (cancelWhileVerifying) runtime.abortSession(sessionId);
+        return {passed: true, heuristicIssues: [], llmIssues: [], durationMs: 0};
+      });
+      claudeSdkMock.__setQueryImplementation(async function* () {
+        yield terminal ?? {type: 'result', subtype: 'success', num_turns: 1, result: 'The frame budget was missed once.'};
+      });
+      try {
+        const result = await runtime.analyze('A bounded question', sessionId, 'trace', options);
+        takeFinalizationContext(result)?.dispose();
+        // Waits until every save the run started settled, then reads the
+        // authoritative store the way a later run's prefetch does.
+        await new Promise(resolve => setImmediate(resolve));
+        await Promise.all(save.mock.results.map(entry => entry.value));
+        const learned = save.mock.calls.flatMap(([features]) => analysisPatternMemory.matchNegativePatterns(features));
+        return {result, saves: save.mock.calls.length, runId, learned};
+      } finally {save.mockRestore(); sessionContextManager.remove(sessionId);}
+    }
+
+    it('learns the failed approach under the run\'s own grant, readable by a later run', async () => {
+      const {result, learned, runId} = await analyzeAfterFailedApproach('completed');
+      expect(result.completion?.status).toBe('completed');
+      expect(learned).toHaveLength(1);
+      expect(learned[0]).toMatchObject({
+        failedApproaches: [expect.objectContaining({type: 'sql_error', reason: 'no such column: missing_column'})],
+        learningAdmission: {version: 1, basis: 'public_run', runId},
+      });
+    });
+
+    it('learns the failed approach when the run ends at its turn limit', async () => {
+      const {result, learned, runId} = await analyzeAfterFailedApproach('turn-limit',
+        {terminal: {type: 'result', subtype: 'error_max_turns', num_turns: 1}});
+      expect(result.partial).toBe(true);
+      expect(learned.map(entry => entry.learningAdmission?.runId)).toEqual([runId]);
+    });
+
+    it('learns nothing without a grant', async () => {
+      const {result, saves} = await analyzeAfterFailedApproach('ungranted', {granted: false});
+      expect(result.completion?.status).toBe('completed');
+      expect(saves).toBe(0);
+    });
+
+    it('learns nothing from a failed run', async () => {
+      const {result, saves} = await analyzeAfterFailedApproach('failed',
+        {terminal: {type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1, errors: ['provider down']}});
+      expect(result.success).toBe(false);
+      expect(saves).toBe(0);
+    });
+
+    it('learns nothing from a run cancelled after its answer was complete', async () => {
+      const {result, saves} = await analyzeAfterFailedApproach('cancelled', {cancelWhileVerifying: true});
+      expect(mockClaudeVerifierVerifyConclusion).toHaveBeenCalled();
+      expect(result.completion?.status).toBe('cancelled');
+      expect(saves).toBe(0);
+    });
+  });
+
+  it('leaves the terminal state to the finalizer when a draft diagnostic has no repair', async () => {
+    intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer',
+      recommendedComplexity: 'quick'};
+    const sessionId = 'claude-draft-terminal-state';
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    const updates: Array<{type?: string; content?: unknown}> = [];
+    runtime.on('update', update => updates.push(update as any));
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: false, heuristicIssues: [UNREPAIRABLE_DRAFT_ISSUE],
+      llmIssues: [], durationMs: 0});
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Frame 12 missed its deadline by 4 ms.'};
+    });
+    let context: ReturnType<typeof takeFinalizationContext>;
+    try {
+      const result = await runtime.analyze('A bounded question', sessionId, 'trace', {analysisMode: 'fast'});
+      expect(result.completion).toMatchObject({status: 'completed'});
+      expect(mockClaudeVerifierVerifyConclusion).toHaveBeenCalled();
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: false},
+        recordedTurn: sessionContextManager.getOrCreate(sessionId, 'trace').getAllTurns().slice(-1)[0]?.result});
+      context = takeFinalizationContext(result);
+    } finally {context?.dispose(); sessionContextManager.remove(sessionId);}
+  });
+
   it('does not infer insights or save a pattern from a runtime-only verification pass', async () => {
     intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
     const sessionId = 'claude-runtime-pass-not-learning';
@@ -1357,7 +1191,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
       context = takeFinalizationContext(result);
       expect(context?.deliveryContext).toMatchObject({entry: 'runtime_draft', completion: result.completion});
-      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: [], hasCodebaseAccess: false});
+      expect(context?.sourceScope).toMatchObject({codeAwareMode: 'off', selectedCodebaseIds: [], hasCodebaseAccess: false});
     } finally {context?.dispose(); insights.mockRestore(); savePattern.mockRestore(); sessionContextManager.remove(sessionId);}
   });
 
@@ -1407,6 +1241,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(takeFinalizationContext({...result})).toBeUndefined();
       expect(context!.deliveryContext).toMatchObject({completion: result.completion});
       expect(context!.runId).toBe('actual-run');
+      expect(context!.deliveryCall?.model).toBe('pinned-primary-review');
       expect(context!.traceIdentity).toEqual({currentTraceId: 'current-trace', referenceTraceId: 'reference-trace'});
       expect(readView).toHaveBeenCalledTimes(1);
       expect(readView.mock.calls[0][0].currentRunId).toBe(context!.runId);
@@ -1426,7 +1261,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       const sdkCalls = claudeSdkMock.__getQueryCalls();
       expect(sdkCalls).toHaveLength(3);
       expect(sdkCalls[2].options).toMatchObject({model: 'pinned-primary-review', maxTurns: 1,
-        tools: [], allowedTools: [], mcpServers: {}, persistSession: false});
+        tools: [], allowedTools: [], mcpServers: {}, persistSession: false, effort: 'low'});
       expect(sdkCalls[2].options.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe(outputLimit);
       expect(sdkCalls[2].options.resume).toBeUndefined();
       expect(sdkCalls[2].options.cwd).not.toBe(sdkCalls[0].options.cwd);
@@ -1483,7 +1318,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -1528,7 +1362,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     ]));
   });
 
-  it('starts Claude full comparison, registry, and SQL knowledge before current architecture/vendor settle and records preflight phases once', async () => {
+  it('starts Claude full comparison, registry, and SQL knowledge before current architecture settles and records preflight phases once', async () => {
     process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task6';
     const traceId = 'trace-claude-overlap-current';
     const referenceTraceId = 'trace-claude-overlap-reference';
@@ -1546,13 +1380,11 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
 
     const architectureStarted = createDeferred<void>();
     const releaseArchitecture = createDeferred<any>();
-    const releaseVendor = createDeferred<{ vendor: string }>();
     const releaseCompleteness = createDeferred<any>();
     const releaseRegistry = createDeferred<void>();
     const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
@@ -1568,11 +1400,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           }
           return { type: 'STANDARD', confidence: 0.8, evidence: [] };
         }),
-      } as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => releaseVendor.promise),
       } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockImplementation(async () => releaseCompleteness.promise);
@@ -1613,11 +1440,9 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(registrySpy).toHaveBeenCalledTimes(1);
       expect(knowledgeSpy).toHaveBeenCalledTimes(1);
       expect(comparisonSpy).toHaveBeenCalledTimes(1);
-      expect(adapterSpy).not.toHaveBeenCalled();
       expect(completenessSpy).not.toHaveBeenCalled();
     } finally {
       releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
-      releaseVendor.resolve({ vendor: 'xiaomi' });
       releaseCompleteness.resolve(undefined);
       releaseRegistry.resolve();
       releaseKnowledge.resolve({ getContextForAI: () => 'SQL knowledge overlap context' });
@@ -1640,11 +1465,41 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         expect.objectContaining({ name: 'knowledge', outcome: 'ok' }),
       ]));
       architectureSpy.mockRestore();
-      adapterSpy.mockRestore();
       completenessSpy.mockRestore();
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();
       comparisonSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('registers a confident focus detection as citable current-run evidence and renders its locator', async () => {
+    const traceId = 'trace-claude-focus-evidence';
+    const sessionId = 'session-claude-focus-evidence';
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: [], durationMs: 1})), getTrace: jest.fn(() => undefined)};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableSubAgents: false});
+    const spies = [
+      jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized').mockResolvedValue(undefined),
+      jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase').mockResolvedValue({getContextForAI: () => undefined} as any),
+      jest.spyOn(architectureDetector, 'createArchitectureDetector')
+        .mockReturnValue({detect: jest.fn(async () => undefined)} as any),
+      jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness').mockResolvedValue(undefined as any),
+    ];
+    try {
+      const prepared = await (runtime as any).prepareAnalysisContext('分析启动性能', sessionId, traceId,
+        {analysisMode: 'full', runId: 'run-claude-focus'}, {
+          ...typedPreparation(),
+          focusResult: {method: 'oom_adj', confidence: 'high', primaryApp: 'com.example.focus',
+            apps: [{packageName: 'com.example.focus', totalDurationNs: 10, switchCount: 1, score: 40}]},
+          previousTurns: [], sceneType: 'startup',
+        });
+      expect(prepared.systemPrompt).toContain('focusApp.evidence');
+      const resolution = await resolveFocusPackageCell((runtime as any).artifactStores.get(sessionId),
+        prepared.systemPrompt, traceId, 'run-claude-focus');
+      expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.focus'},
+        record: {meta: {traceSide: 'current', traceId}}});
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
       sessionContextManager.remove(sessionId);
     }
   });
@@ -1664,7 +1519,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const releaseRegistry = createDeferred<void>();
@@ -1675,11 +1529,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const architectureDetect = jest.fn(async () => ({type: 'STANDARD', confidence: 0.9, evidence: []}));
     const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
       .mockReturnValue({detect: architectureDetect} as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => ({vendor: 'xiaomi'})),
-      } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockResolvedValue(undefined as any);
 
@@ -1705,13 +1554,11 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     await pending;
     expect(knowledgeSpy).toHaveBeenCalledTimes(1);
     expect(architectureDetect).toHaveBeenCalledTimes(1);
-    expect(adapterSpy).toHaveBeenCalledTimes(1);
     expect(completenessSpy).toHaveBeenCalledTimes(1);
     expect(registrySpy.mock.invocationCallOrder[0]).toBeLessThan(knowledgeSpy.mock.invocationCallOrder[0]);
     expect(knowledgeSpy.mock.invocationCallOrder[0]).toBeLessThan(architectureDetect.mock.invocationCallOrder[0]);
 
     architectureSpy.mockRestore();
-    adapterSpy.mockRestore();
     completenessSpy.mockRestore();
     registrySpy.mockRestore();
     knowledgeSpy.mockRestore();
@@ -1736,7 +1583,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const abortController = new AbortController();
@@ -1747,12 +1593,12 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       throwIfAborted: () => {
         if (abortController.signal.aborted) throw abortError;
       },
+      abort: jest.fn(() => false),
       settle: jest.fn(),
     };
     const architectureStarted = createDeferred<void>();
     const comparisonStarted = createDeferred<void>();
     const releaseArchitecture = createDeferred<any>();
-    const releaseVendor = createDeferred<{ vendor: string }>();
     const releaseCompleteness = createDeferred<any>();
     const releaseRegistry = createDeferred<void>();
     const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
@@ -1771,11 +1617,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           }
           return { type: 'STANDARD', confidence: 0.8, evidence: [] };
         }),
-      } as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => releaseVendor.promise),
       } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockImplementation(async () => releaseCompleteness.promise);
@@ -1819,7 +1660,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       releaseComparison.reject(new Error('comparison rejected after cancellation'));
       releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
       await Promise.resolve();
-      releaseVendor.resolve({ vendor: 'xiaomi' });
       releaseCompleteness.resolve(undefined);
 
       await expect(preparePromise).rejects.toThrow(abortError.message);
@@ -1836,7 +1676,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {
       process.off('unhandledRejection', onUnhandledRejection);
       architectureSpy.mockRestore();
-      adapterSpy.mockRestore();
       completenessSpy.mockRestore();
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();
@@ -1863,7 +1702,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -1934,7 +1772,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         traceFormat: 'perfetto_protobuf',
       })),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -1966,8 +1803,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(0);
       const turns = sessionContextManager.getOrCreate(sessionId, traceId).getAllTurns?.() ?? [];
       expect(turns).toHaveLength(0);
-      expect((runtime as any).sessionMap.get(sessionId)).toBeUndefined();
-      expect(runtimeSnapshotCount()).toBe(0);
       const receipt = runtimePerformanceRecorder.seal();
       expect(receipt.phases.filter(phase => phase.name === 'focus')).toEqual([
         expect.objectContaining({outcome: 'cancelled'}),
@@ -1987,7 +1822,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-cache-boundary', {
@@ -2033,7 +1867,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       context: 'selection_context', data: {kind: 'area', startNs: 100, endNs: 200},
     });
     expect(parseContextRecords(blocks.slice(0, boundaryIndex)).some(record => record.context === 'selection_context')).toBe(false);
-    expect(call.options.persistSession).toBe(true);
   });
 
   it('rejects same-session direct overlap even when run and reference ids differ', async () => {
@@ -2041,7 +1874,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-claude-overlap', {
@@ -2097,7 +1929,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-claude-isolated', {
@@ -2142,12 +1973,11 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     ]);
   });
 
-  it('starts fresh despite a saved provider session and does not retry missing-session errors', async () => {
+  it('does not retry a missing-session provider error', async () => {
     intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
     const sessionId = 'session-claude-missing-saved';
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
       {enableSubAgents: false});
-    (runtime as any).sessionMap.set(sessionId, {sdkSessionId: 'sdk-missing', updatedAt: Date.now(), mode: 'full'});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'error_during_execution', num_turns: 1,
         errors: [{message: 'No conversation found with session ID: sdk-missing'}]};
@@ -2282,7 +2112,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: true,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2345,7 +2174,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2432,7 +2260,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
       outputLanguage: 'zh-CN',
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-language-full', {
@@ -2489,13 +2316,12 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect((runtime as any).config.outputLanguage).toBe('zh-CN');
   });
 
-  it('keeps private full-mode Claude transcripts ephemeral and out of resume maps', async () => {
+  it('never persists or resumes a private full-mode Claude session', async () => {
     const sessionId = 'session-private-sdk';
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-private-sdk', {
@@ -2541,14 +2367,14 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     });
 
     try {
-      const result = await runtime.analyze('分析私有源码热点', sessionId, 'trace-private-sdk', {
+      const result = await runtime.analyze('分析私有源码热点', sessionId, 'trace-private-sdk', admitted({
         analysisMode: 'full',
         codeAwareMode: 'metadata_only',
         codebaseIds: ['private-app'],
         tenantId: 'tenant-private',
         workspaceId: 'workspace-private',
         userId: 'user-private',
-      });
+      }));
 
       expect(result).toMatchObject({
         success: true,
@@ -2562,9 +2388,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(call.options.persistSession).toBe(false);
       expect(call.options.resume).toBeUndefined();
       expect(call.prompt).toContain('PRIVATE_LOCAL_CONTINUITY_CANARY');
-      expect(runtime.getSdkSessionId(sessionId)).toBeUndefined();
-      expect(JSON.stringify(Array.from((runtime as any).sessionMap.values())))
-        .not.toContain('sdk-private-session-canary');
     } finally {
       sessionContextManager.remove(sessionId);
     }
@@ -2586,7 +2409,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         query: async () => ({columns: ['cnt'], rows: [[0]]}),
         getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
       } as any, {
-        enableVerification: false,
         enableSubAgents: false,
       });
       (runtime as any).architectureCache.set(traceId, {
@@ -2605,13 +2427,13 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       });
 
       try {
-        const result = await runtime.analyze('source pending run', sessionId, traceId, {
+        const result = await runtime.analyze('source pending run', sessionId, traceId, admitted({
           analysisMode,
           assistantSurface: analysisMode === 'fast' ? 'conversation' : undefined,
           conversationTraceAttached: analysisMode === 'fast' ? true : undefined,
           codeAwareMode: 'provider_send',
           codebaseIds: [fixture.codebaseId],
-        });
+        }));
 
         expect(result).toMatchObject({
           success: true,
@@ -2645,7 +2467,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2663,13 +2484,13 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
 
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
-      const result = await runtime.analyze('source quick error run', sessionId, traceId, {
+      const result = await runtime.analyze('source quick error run', sessionId, traceId, admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
 
       expect(result.success).toBe(false);
       expect(result.terminationReason).toBe('execution_error');
@@ -2700,7 +2521,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set(traceId, {
@@ -2721,22 +2541,22 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
 
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
-      const terminal = await runtime.analyze('source terminal run', sessionId, traceId, {
+      const terminal = await runtime.analyze('source terminal run', sessionId, traceId, admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
       const context = takeFinalizationContext(terminal)!;
       try {
         expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
-      const next = await runtime.analyze('public second run', sessionId, traceId, {
+      const next = await runtime.analyze('public second run', sessionId, traceId, admitted({
         analysisMode: 'fast',
         codeAwareMode: 'off',
-      });
+      }));
 
       expect(terminal.success).toBe(true);
       expect(terminal.sourceUseDecision).toEqual(decision);
@@ -2757,7 +2577,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-generic-stream-failure', {
@@ -2847,20 +2666,17 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       subtype: 'error_during_execution',
       errors: ['stream terminated before completion'],
       terminationReason: 'execution_error',
-      fallback: 'partial_result_after_stream_termination',
     },
     {
       name: 'maximum-turn termination',
       subtype: 'error_max_turns',
       errors: ['maximum turns reached'],
       terminationReason: 'max_turns',
-      fallback: 'partial_result_after_max_turns',
     },
   ])('sanitizes a private streamed report before returning after $name', async ({
     subtype,
     errors,
     terminationReason,
-    fallback,
   }) => {
     const sessionId = 'session-private-stream-recovery';
     const privateCanary = 'PRIVATE_STREAM_RECOVERY_CANARY';
@@ -2869,7 +2685,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-private-stream-recovery', {
@@ -2918,14 +2733,14 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         '分析私有源码启动热点',
         sessionId,
         'trace-private-stream-recovery',
-        {
+        admitted({
           analysisMode: 'full',
           codeAwareMode: 'metadata_only',
           codebaseIds: ['private-app'],
           tenantId: 'tenant-private',
           workspaceId: 'workspace-private',
           userId: 'user-private',
-        },
+        }),
       );
 
       expect(result).toMatchObject({
@@ -2940,6 +2755,12 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         status: subtype === 'error_max_turns' ? 'incomplete' : 'failed',
         reason: subtype === 'error_max_turns' ? 'turn_limit' : 'provider_error',
       });
+      // The process view shows this notice as a result-completeness warning.
+      const maxTurnsNotices = updates.filter(update =>
+        update.type === 'degraded' && update.content?.fallback === 'partial_result_after_max_turns');
+      expect(maxTurnsNotices).toEqual(subtype === 'error_max_turns'
+        ? [expect.objectContaining({content: expect.objectContaining({partial: true, terminationReason: 'max_turns'})})]
+        : []);
     } finally {
       sessionContextManager.remove(sessionId);
     }
@@ -2956,6 +2777,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       production: false,
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
 
     expect(sdkPrompt).toBe('stable\n\nvolatile');
@@ -2967,7 +2789,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({ columns: [], rows: [] }),
       getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-context-pressure', {
@@ -3044,7 +2865,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     (runtime as any).architectureCache.set('trace-evaluation-usage', {
@@ -3131,7 +2951,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       query: async () => ({columns: ['cnt'], rows: [[0]]}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
     } as any, {
-      enableVerification: false,
       enableSubAgents: false,
       maxTurns: 1,
       fullPathPerTurnMs: 100,
@@ -3210,7 +3029,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableVerification: false, enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
     (runtime as any).architectureCache.set('trace-invalid-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
@@ -3232,6 +3051,51 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     takeFinalizationContext(result)?.dispose();
   });
 
+  it('lets a slow declaration repair finish inside the run deadline and records the call', async () => {
+    // A declaration for dozens of claims took GLM over two minutes; a fixed 120 s cap discarded every one.
+    jest.useFakeTimers({doNotFake: ['nextTick', 'setImmediate']});
+    let repairStarted = false;
+    const body = 'Frame 12 missed its deadline.';
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: [], rows: []}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1,
+      fullPathPerTurnMs: 600_000, fullRequestTimeoutMs: 2_400_000, streamIdleTimeoutMs: 600_000});
+    (runtime as any).architectureCache.set('trace-slow-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    let sdkCallCount = 0;
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      sdkCallCount += 1;
+      if (sdkCallCount === 2) {
+        repairStarted = true;
+        await new Promise(resolve => setTimeout(resolve, 150_000));
+      }
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-slow-declaration', num_turns: 1,
+        total_cost_usd: 0.1, result: candidateWithPopulation(body, sdkCallCount === 1 ? 'everywhere' : 'cited_rows', 'miss')};
+    });
+    const recorder = createRuntimePerformanceRecorder();
+    try {
+      const pending = withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze('分析当前证据', 'session-slow-declaration', 'trace-slow-declaration', {
+          analysisMode: 'full', runId: 'claude-slow-declaration', packageName: 'com.example.app',
+          runManifestAttributionSink: createNoopAttributionSink(recorder),
+        }));
+      let settled = false;
+      void pending.finally(() => {settled = true;}).catch(() => undefined);
+      // Step the clock: earlier stages wait on their own timers before the repair starts.
+      for (let step = 0; step < 400 && !settled; step++) await jest.advanceTimersByTimeAsync(1_000);
+      expect(repairStarted).toBe(true);
+      const result = await pending;
+      expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+      expect(result.completion).toMatchObject({status: 'completed', attemptId: expect.stringContaining(':correction:1')});
+      expect(recorder.seal().modelCalls).toContainEqual(expect.objectContaining({
+        purpose: 'declaration_repair', trigger: 'invalid_declaration', outcome: 'ok'}));
+      takeFinalizationContext(result)?.dispose();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps the issue-based correction when a rejected declaration is too large to repair', async () => {
     const body = `${'Frame 12 missed its deadline. '.repeat(4700)}`.trimEnd();
     expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(128 * 1024);
@@ -3239,7 +3103,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableVerification: false, enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
     (runtime as any).architectureCache.set('trace-oversized-declaration', {type: 'STANDARD', confidence: 0.9, evidence: []});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: false, durationMs: 1, llmIssues: [], heuristicIssues: [
       {type: 'missing_evidence', severity: 'error', message: 'Needs evidence', recoveryKind: 'correct_evidence'}]});
@@ -3262,7 +3126,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: [], rows: []}),
       getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
-    } as any, {enableVerification: false, enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    } as any, {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
     (runtime as any).architectureCache.set('trace-missing-declaration', {
       type: 'STANDARD', confidence: 0.9, evidence: [],
     });
@@ -3296,7 +3160,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     {name: '128 KiB output cap', body: 'x'.repeat(128 * 1024), maxBudgetUsd: undefined, totalCostUsd: undefined},
   ])('does not dispatch declaration completion past the $name', async ({body, maxBudgetUsd, totalCostUsd}) => {
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4, ...(maxBudgetUsd === undefined ? {} : {maxBudgetUsd})});
+      {enableSubAgents: false, maxTurns: 4, ...(maxBudgetUsd === undefined ? {} : {maxBudgetUsd})});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', session_id: 'sdk-declaration-no-dispatch', num_turns: 1,
@@ -3316,7 +3180,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(Buffer.byteLength(body, 'utf8')).toBeLessThan(128 * 1024);
     expect(Buffer.byteLength(repaired, 'utf8')).toBeGreaterThan(128 * 1024);
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -3332,11 +3196,44 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(result.completion?.attemptId).not.toContain(':correction:1');
   });
 
-  it('retains the original Claude attempt when a dispatched declaration completion changes the body', async () => {
+  it('counts one turn per model response, not per streamed content block, so the delivery turn survives', async () => {
+    // The SDK emits one assistant message per content block, all with the response id.
+    // Counting messages spent the reserved delivery turn of a 1-response run (claude glm-5.3 E2E).
+    const body = 'One response answer.';
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false, maxTurns: 4});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    let sdkCallCount = 0;
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      sdkCallCount += 1;
+      if (sdkCallCount === 1) {
+        for (const text of ['a', 'b', 'c', 'd', 'e']) {
+          yield {type: 'assistant', parent_tool_use_id: null,
+            message: {id: 'msg-one-response', role: 'assistant', content: [{type: 'text', text}]}};
+        }
+      }
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-one-response', num_turns: 1,
+        result: sdkCallCount === 1 ? body : declaredCandidate(body)};
+    });
+
+    const result = await runtime.analyze('分析当前证据', 'session-claude-one-response', 'trace-one-response',
+      {analysisMode: 'full', runId: 'claude-one-response', packageName: 'com.example.app'});
+
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    // Classification and the declaration repair ask for low effort; the answer keeps the run's own.
+    const classifierCalls = rawClaudeSdkMock.__getQueryCalls().filter(isClassifierCall);
+    expect(classifierCalls.map((call: any) => call.options.effort)).toEqual(['low']);
+    const [answerCall, repairCall] = claudeSdkMock.__getQueryCalls();
+    expect((answerCall as any).options.effort).not.toBe('low');
+    expect((repairCall as any).options.effort).toBe('low');
+  });
+
+  it('keeps the original Claude body and takes the declaration when a completion changes the body', async () => {
     const body = 'Original bounded answer.';
     const changed = declaredCandidate('Changed bounded answer.');
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
     claudeSdkMock.__setQueryImplementation(async function* () {
@@ -3352,18 +3249,19 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         packageName: 'com.example.app'});
 
     expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-    expect(result.conclusion).toBe(body);
-    expect(result.completion).toMatchObject({status: 'completed', runId: 'claude-declaration-changed-body',
-      conclusionFingerprint: analysisDeliveryFingerprint(body)});
-    expect(result.completion?.attemptId).not.toContain(':correction:1');
+    // The completion's declaration is delivered; its edited prose never is.
+    expect(inspectCandidateProtocol(result.conclusion)).toMatchObject({status: 'valid'});
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
+    expect(result.completion).toMatchObject({status: 'completed', runId: 'claude-declaration-changed-body'});
+    expect(result.completion?.attemptId).toContain(':correction:1');
     expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
   });
 
-  it('rejects a Claude declaration returned after authorization changes without replacing the first candidate', async () => {
+  it('ends the run when authorization changes during a declaration repair', async () => {
     const body = 'Authorized candidate body.';
     const repaired = declaredCandidate(body);
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
-      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+      {enableSubAgents: false, maxTurns: 4});
     mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
     let sdkCallCount = 0;
     let revoked = false;
@@ -3379,12 +3277,94 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       return realAuthorization(...args);
     });
     try {
-      const result = await runtime.analyze('分析当前证据', 'session-claude-declaration-authorization-change',
-        'trace-declaration-authorization-change', {analysisMode: 'full', packageName: 'com.example.app'});
+      await expect(runtime.analyze('分析当前证据', 'session-claude-declaration-authorization-change',
+        'trace-declaration-authorization-change', admitted({analysisMode: 'full', packageName: 'com.example.app',
+          codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})))
+        .rejects.toThrow('analysis_context_changed_restart_required');
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion?.attemptId).not.toContain(':correction:1');
     } finally {authorization.mockRestore();}
+  });
+
+  describe('authorization is checked before every SDK dispatch', () => {
+    // The mock plays the CLI: it awaits the hooks where the real CLI does, before
+    // sending the prompt and before the request that follows a tool batch.
+    const runHook = async (params: any, event: 'UserPromptSubmit' | 'PostToolBatch') =>
+      params.options.hooks[event][0].hooks[0]({hook_event_name: event}, undefined, {signal: new AbortController().signal});
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+    const PRIVATE_RUN = {analysisMode: 'full' as const, packageName: 'com.example.app',
+      codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+    const newRuntime = () => new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false, maxTurns: 4});
+
+    it('ends the run when authorization changes after a body read, before the continuation that resends it', async () => {
+      let revoked = false;
+      let requests = 0;
+      let continuation: unknown;
+      claudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        expect(await runHook(params, 'UserPromptSubmit')).toEqual({});
+        requests += 1;
+        yield {type: 'assistant', parent_tool_use_id: null, message: {content: [
+          {type: 'tool_use', id: 'read-1', name: 'mcp__smartperfetto__read_codebase_file', input: {}}]}};
+        revoked = true; // The body was returned; consent is withdrawn before the next request.
+        continuation = await runHook(params, 'PostToolBatch');
+        if ((continuation as {continue?: boolean}).continue === false) return;
+        requests += 1;
+        yield {type: 'result', subtype: 'success', num_turns: 2, result: 'Must never be requested.'};
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(newRuntime().analyze('分析当前证据', 'session-claude-revoked-continuation', 'trace-claude-revoked',
+          admitted(PRIVATE_RUN))).rejects.toThrow('analysis_context_changed_restart_required');
+        expect(continuation).toEqual({continue: false, stopReason: 'analysis_context_changed_restart_required'});
+        expect(requests).toBe(1);
+        expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+      } finally {authorization.mockRestore();}
+    });
+
+    it('refuses a request for a check that could not run without calling it a revoke', async () => {
+      let verdict: unknown;
+      let failOnce = false;
+      claudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        failOnce = true; // One registry read fails; nothing was revoked.
+        verdict = await runHook(params, 'PostToolBatch');
+        expect(await runHook(params, 'PostToolBatch')).toEqual({});
+        yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Authorized answer.'};
+      });
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (failOnce) { failOnce = false; throw new StoreUnreadableError('codebase registry'); }
+        return real(...args);
+      });
+      try {
+        const result = await newRuntime().analyze('分析当前证据', 'session-claude-check-failed', 'trace-claude-revoked', admitted(PRIVATE_RUN));
+        expect(verdict).toEqual({continue: false, stopReason: 'analysis_context_check_failed'});
+        expect(result.terminationMessage ?? '').not.toContain('analysis_context_changed_restart_required');
+      } finally {authorization.mockRestore();}
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the first request', async () => {
+      let revoked = false;
+      let requests = 0;
+      claudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        revoked = true; // Between the runtime's last check and the CLI sending the prompt.
+        const verdict = await runHook(params, 'UserPromptSubmit');
+        if (verdict.continue === false) return;
+        requests += 1;
+        yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Must never be requested.'};
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(newRuntime().analyze('分析当前证据', 'session-claude-revoked-before-dispatch', 'trace-claude-revoked',
+          admitted(PRIVATE_RUN))).rejects.toThrow('analysis_context_changed_restart_required');
+        expect(requests).toBe(0);
+      } finally {authorization.mockRestore();}
+    });
   });
 
   it('uses scoped Claude provider tuning when preparing full SDK options', async () => {
@@ -3421,7 +3401,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           fullPerTurnMs: 10000,
           effort: 'max',
           enableSubAgents: true,
-          enableVerification: false,
         },
       });
       svc.activate(provider.id);
@@ -3430,7 +3409,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         query: async () => ({ columns: [], rows: [] }),
         getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
       } as any, {
-        enableVerification: false,
         enableSubAgents: false,
         model: 'base-claude-main',
         maxTurns: 60,
@@ -3522,7 +3500,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           maxTurns: 4,
           fullPerTurnMs: 10000,
           effort: 'max',
-          enableVerification: true,
           enableSubAgents: false,
         },
       });
@@ -3532,7 +3509,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         query: async () => ({ columns: [], rows: [] }),
         getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
       } as any, {
-        enableVerification: true,
         enableSubAgents: false,
         model: 'base-claude-main',
         maxTurns: 60,
@@ -3665,7 +3641,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       })),
     };
     const runtime = new ClaudeRuntime(traceProcessor as any, {
-      enableVerification: false,
       enableSubAgents: false,
     });
     const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')
@@ -3677,11 +3652,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
       .mockReturnValue({
         detect: jest.fn(async () => ({ type: 'STANDARD', confidence: 0.9, evidence: [] })),
-      } as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => ({ vendor: 'xiaomi' })),
       } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockResolvedValue(undefined as any);
@@ -3737,7 +3707,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(3);
       expect(focusSpy).toHaveBeenCalledTimes(1);
       expect(architectureSpy).toHaveBeenCalledTimes(1);
-      expect(adapterSpy).toHaveBeenCalledTimes(1);
       expect(completenessSpy).toHaveBeenCalledTimes(1);
       expect(registrySpy).toHaveBeenCalledTimes(1);
       expect(knowledgeSpy).toHaveBeenCalledTimes(1);
@@ -3775,7 +3744,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {
       focusSpy.mockRestore();
       architectureSpy.mockRestore();
-      adapterSpy.mockRestore();
       completenessSpy.mockRestore();
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();

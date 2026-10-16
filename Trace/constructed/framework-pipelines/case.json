@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "2472d73dd70e3a358077bfcfa7bfbbfeb281b5e0b421a1251cbfd337369c3c57",
+    "sha256": "40a9f1246bd8826f44d22b7e4fbcb21049b4116deb23ed3634fcbc4f592dca1b",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "framework-pipelines-v1",
     "output": "Trace/.generated/constructed/framework-pipelines/trace.pftrace",
-    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
   },
   "coverage": {
     "skills": [
@@ -129,16 +129,18 @@
         "mode": "semantic",
         "source_file": "backend/skills/modules/framework/art_module.skill.yaml",
         "parameters": {
-          "package": "com.smartperfetto.fixture"
+          "package": "com.example.launch.aosp.heavy"
         },
         "required_steps": [
           "gc_overview",
+          "gc_totals",
           "gc_events",
           "gc_during_main_thread",
           "jit_events"
         ],
         "required_sql_steps": [
           "gc_overview",
+          "gc_totals",
           "gc_events",
           "gc_during_main_thread",
           "jit_events"
@@ -149,6 +151,7 @@
         "semantic_step": "gc_overview",
         "required_columns": [
           "gc_type",
+          "gc_kind",
           "gc_count",
           "total_gc_ms",
           "avg_gc_ms",

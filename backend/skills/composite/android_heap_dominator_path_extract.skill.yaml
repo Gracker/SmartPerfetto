@@ -3,7 +3,7 @@
 # This file is part of SmartPerfetto. See LICENSE for details.
 
 name: android_heap_dominator_path_extract
-version: "1.0"
+version: "1.1"
 type: composite
 category: memory
 tier: B
@@ -54,7 +54,7 @@ inputs:
   - name: process_name
     type: string
     required: false
-    description: "Optional process name substring"
+    description: "Optional process name, exact or name:* subprocess (fragments/heap_target_process.sql); when nothing matches, dumps without a process name (e.g. .hprof) are used and flagged process_name_unavailable_upid_fallback"
   - name: graph_sample_ts
     type: timestamp
     required: false
@@ -80,20 +80,135 @@ steps:
         - name: object_count
           label: "Heap Objects"
           type: number
+        - name: placeholder_object_count
+          label: "Placeholder Objects (self_size=-1)"
+          type: number
+        - name: incomplete_dump_count
+          label: "Incomplete Dumps"
+          type: number
+        - name: process_identity
+          label: "Process Identity"
+          type: string
         - name: status
           label: "Status"
           type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
       SELECT
-        COUNT(DISTINCT printf('%d:%d', o.upid, o.graph_sample_ts)) AS sample_count,
-        COUNT(*) AS object_count,
-        CASE WHEN COUNT(*) > 0 THEN 'heap_graph_available' ELSE 'no_heap_graph_data' END AS status
-      FROM heap_graph_object AS o
-      LEFT JOIN process AS pr ON pr.upid = o.upid
-      WHERE (${upid} IS NULL OR o.upid = ${upid})
-        AND ('${process_name|}' = '' OR LOWER(COALESCE(pr.name, '')) GLOB '*' || LOWER('${process_name|}') || '*')
-        AND (${graph_sample_ts} IS NULL OR o.graph_sample_ts = ${graph_sample_ts})
+        COUNT(*) AS sample_count,
+        (SELECT COUNT(*) FROM heap_graph_scoped_objects) AS object_count,
+        COALESCE(SUM(placeholder_object_count), 0) AS placeholder_object_count,
+        COALESCE(SUM(dump_completeness = 'incomplete_dump'), 0) AS incomplete_dump_count,
+        COALESCE(GROUP_CONCAT(DISTINCT process_identity), 'none') AS process_identity,
+        CASE
+          WHEN COUNT(*) > 0 THEN 'heap_graph_available'
+          WHEN EXISTS (SELECT 1 FROM heap_graph) THEN 'no_heap_graph_for_requested_process'
+          ELSE 'no_heap_graph_data'
+        END AS status
+      FROM heap_graph_dump_scope
     save_as: data_check
+
+  # Dominator-tree pass over every dump (the scan macro reads real tables, and
+  # Skill fragments can only be injected into a leading WITH, so the process
+  # scope is applied by dominator_paths below).
+  - id: dominator_tree_pass
+    type: atomic
+    name: "Dominator tree pass"
+    optional: true
+    display:
+      level: hidden
+    sql: |
+      -- Trace processors up to v58.2 sum self_size = -1 placeholder objects
+      -- into class nodes; clamp so an incomplete dump can never go negative.
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_cumulatives AS
+      SELECT *
+      FROM _graph_aggregating_scan!(
+        (
+          SELECT id AS source_node_id, parent_id AS dest_node_id
+          FROM _heap_graph_dominator_class_tree
+          WHERE parent_id IS NOT NULL
+        ),
+        (
+          SELECT
+            parent.id,
+            parent.self_count AS cumulative_count,
+            MAX(parent.self_size, 0) AS cumulative_size
+          FROM _heap_graph_dominator_class_tree AS parent
+          LEFT JOIN _heap_graph_dominator_class_tree AS child
+            ON child.parent_id = parent.id
+          WHERE child.id IS NULL
+        ),
+        (cumulative_count, cumulative_size),
+        (
+          WITH child_totals AS (
+            SELECT
+              id,
+              SUM(cumulative_count) AS cumulative_count,
+              SUM(cumulative_size) AS cumulative_size
+            FROM $table
+            GROUP BY id
+          )
+          SELECT
+            child_totals.id,
+            child_totals.cumulative_count + node.self_count AS cumulative_count,
+            child_totals.cumulative_size + MAX(node.self_size, 0) AS cumulative_size
+          FROM child_totals
+          JOIN _heap_graph_dominator_class_tree AS node USING (id)
+        )
+      );
+
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_top_dominator_nodes AS
+      SELECT id
+      FROM (
+        SELECT
+          tree.id,
+          ROW_NUMBER() OVER (
+            PARTITION BY tree.upid, tree.graph_sample_ts
+            ORDER BY MAX(tree.self_size, 0) DESC, cumulative.cumulative_size DESC, tree.id
+          ) AS row_number
+        FROM _heap_graph_dominator_class_tree AS tree
+        JOIN __sp_heap_dominator_cumulatives AS cumulative USING (id)
+      )
+      WHERE row_number = 1;
+
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_ancestor_ids AS
+      SELECT id
+      FROM _tree_reachable_ancestors_or_self!((
+        SELECT id, parent_id FROM _heap_graph_dominator_class_tree
+      ), (SELECT id FROM __sp_heap_top_dominator_nodes));
+
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_labels AS
+      SELECT
+        tree.id,
+        tree.parent_id,
+        IFNULL(tree.name, '[Unknown]') || ' [' || tree.self_count || ']' AS label,
+        tree.root_type
+      FROM _heap_graph_dominator_class_tree AS tree
+      JOIN __sp_heap_dominator_ancestor_ids AS ancestor USING (id);
+
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_paths AS
+      WITH RECURSIVE paths(id, path, root_type) AS (
+        SELECT
+          id,
+          '[' || COALESCE(root_type, 'ROOT') || '] ' || label AS path,
+          COALESCE(root_type, 'ROOT') AS root_type
+        FROM __sp_heap_dominator_labels
+        WHERE parent_id IS NULL
+        UNION ALL
+        SELECT
+          child.id,
+          parent.path || ' -> ' || child.label AS path,
+          parent.root_type
+        FROM paths AS parent
+        JOIN __sp_heap_dominator_labels AS child ON child.parent_id = parent.id
+      )
+      SELECT id, path, root_type
+      FROM paths;
+
+      SELECT COUNT(*) AS top_node_count FROM __sp_heap_top_dominator_nodes
+    save_as: dominator_tree_pass
 
   - id: dominator_paths
     type: atomic
@@ -135,115 +250,35 @@ steps:
         - name: retained_size_bytes
           label: "Retained Size"
           type: bytes
+        - name: process_identity
+          label: "Process Identity"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
     sql: |
-      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_cumulatives AS
-      SELECT *
-      FROM _graph_aggregating_scan!(
-        (
-          SELECT id AS source_node_id, parent_id AS dest_node_id
-          FROM _heap_graph_dominator_class_tree
-          WHERE parent_id IS NOT NULL
-        ),
-        (
-          SELECT
-            parent.id,
-            parent.self_count AS cumulative_count,
-            parent.self_size AS cumulative_size
-          FROM _heap_graph_dominator_class_tree AS parent
-          LEFT JOIN _heap_graph_dominator_class_tree AS child
-            ON child.parent_id = parent.id
-          WHERE child.id IS NULL
-        ),
-        (cumulative_count, cumulative_size),
-        (
-          WITH child_totals AS (
-            SELECT
-              id,
-              SUM(cumulative_count) AS cumulative_count,
-              SUM(cumulative_size) AS cumulative_size
-            FROM $table
-            GROUP BY id
-          )
-          SELECT
-            child_totals.id,
-            child_totals.cumulative_count + node.self_count AS cumulative_count,
-            child_totals.cumulative_size + node.self_size AS cumulative_size
-          FROM child_totals
-          JOIN _heap_graph_dominator_class_tree AS node USING (id)
-        )
-      );
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_heap_top_dominator_nodes AS
-      SELECT id
-      FROM (
-        SELECT
-          tree.id,
-          ROW_NUMBER() OVER (
-            PARTITION BY tree.upid, tree.graph_sample_ts
-            ORDER BY tree.self_size DESC, cumulative.cumulative_size DESC, tree.id
-          ) AS row_number
-        FROM _heap_graph_dominator_class_tree AS tree
-        JOIN __sp_heap_dominator_cumulatives AS cumulative USING (id)
-        LEFT JOIN process AS pr ON pr.upid = tree.upid
-        WHERE (${upid} IS NULL OR tree.upid = ${upid})
-          AND ('${process_name|}' = '' OR LOWER(COALESCE(pr.name, '')) GLOB '*' || LOWER('${process_name|}') || '*')
-          AND (${graph_sample_ts} IS NULL OR tree.graph_sample_ts = ${graph_sample_ts})
-      )
-      WHERE row_number = 1;
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_ancestor_ids AS
-      SELECT id
-      FROM _tree_reachable_ancestors_or_self!((
-        SELECT id, parent_id FROM _heap_graph_dominator_class_tree
-      ), (SELECT id FROM __sp_heap_top_dominator_nodes));
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_labels AS
-      SELECT
-        tree.id,
-        tree.parent_id,
-        IFNULL(tree.name, '[Unknown]') || ' [' || tree.self_count || ']' AS label,
-        tree.root_type
-      FROM _heap_graph_dominator_class_tree AS tree
-      JOIN __sp_heap_dominator_ancestor_ids AS ancestor USING (id);
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_heap_dominator_paths AS
-      WITH RECURSIVE paths(id, path, root_type) AS (
-        SELECT
-          id,
-          '[' || COALESCE(root_type, 'ROOT') || '] ' || label AS path,
-          COALESCE(root_type, 'ROOT') AS root_type
-        FROM __sp_heap_dominator_labels
-        WHERE parent_id IS NULL
-        UNION ALL
-        SELECT
-          child.id,
-          parent.path || ' -> ' || child.label AS path,
-          parent.root_type
-        FROM paths AS parent
-        JOIN __sp_heap_dominator_labels AS child ON child.parent_id = parent.id
-      )
-      SELECT id, path, root_type
-      FROM paths;
-
       WITH input AS (
         SELECT MIN(MAX(COALESCE(${max_rows|500}, 500), 1), 500) AS max_rows
       )
       SELECT
         tree.upid AS upid,
-        COALESCE(pr.name, printf('upid:%d', tree.upid)) AS process_name,
+        scope.process_name,
         printf('%d', tree.graph_sample_ts) AS graph_sample_ts,
         COALESCE(p.path, '[ROOT] ' || COALESCE(tree.name, '[Unknown]')) AS path,
         COALESCE(tree.name, '[Unknown]') AS class_name,
         COALESCE(p.root_type, 'ROOT') AS root_type,
         tree.self_count AS self_count,
         c.cumulative_count AS retained_count,
-        tree.self_size AS self_size_bytes,
-        c.cumulative_size AS retained_size_bytes
+        MAX(tree.self_size, 0) AS self_size_bytes,
+        c.cumulative_size AS retained_size_bytes,
+        scope.process_identity
       FROM __sp_heap_top_dominator_nodes AS top
       JOIN _heap_graph_dominator_class_tree AS tree ON tree.id = top.id
       JOIN __sp_heap_dominator_cumulatives AS c ON c.id = top.id
+      JOIN heap_graph_dump_scope AS scope
+        ON scope.upid = tree.upid
+        AND scope.graph_sample_ts = tree.graph_sample_ts
       LEFT JOIN __sp_heap_dominator_paths AS p ON p.id = top.id
-      LEFT JOIN process AS pr ON pr.upid = tree.upid
       ORDER BY c.cumulative_size DESC, tree.self_size DESC, p.path
       LIMIT (SELECT max_rows FROM input)
     save_as: dominator_paths
@@ -252,6 +287,6 @@ output:
   format: structured
   fields:
     - name: data_check
-      description: "Heap graph sample and object availability; zero means unavailable evidence, not absence of a leak"
+      description: "Heap graph sample and object availability; zero means unavailable evidence, not absence of a leak. incomplete_dump_count > 0 (placeholder objects or heap graph packet errors) means retained sizes are lower bounds"
     - name: dominator_paths
       description: "Bounded per-(upid, graph_sample_ts) dominator paths with propagated root and cumulative retained size"

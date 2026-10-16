@@ -23,6 +23,7 @@ import {
   projectPrivateSessionStateSnapshot,
 } from '../security/privateAnalysisProjection';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
+import type {FinalInvestigationAssessment} from '../../types/analysisInvestigationAssessment';
 import type {DeterministicNativeRowIdentity} from '../../types/claimVerification';
 import {projectPrivateAnalysisDelivery} from '../security/analysisDeliveryProjection';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
@@ -36,6 +37,8 @@ function deliveredResult(): AnalysisResult {
     schemaVersion: 1, status: 'resolved', source: 'semantic', taskKind: 'fact',
     sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
     deliverable: 'answer', evidenceAccess: 'existing_only', registryFingerprint: 'registry-1',
+    // Carried so its round trip keeps the intent fingerprint the assessments bind to.
+    sourceNeed: 'locate',
   };
   return {
     sessionId: 'session-delivery', success: true, findings: [], hypotheses: [], conclusion,
@@ -272,6 +275,89 @@ describe('final delivery private projection', () => {
     } finally { clearCodeAwareOutputGuards(result.sessionId); }
   });
 
+  it('keeps how the run\'s source depth was decided on every surface, and drops a forged one', () => {
+    const current = deliveredResult();
+    const depth = {requested: 'auto', effective: 'locate', origin: 'budget', fallbackReason: 'intent_unavailable'} as const;
+    current.sourceUseDecision = sanitizeSourceUseDecision({schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+      codeAwareMode: 'provider_send', selectedCodebaseIds: ['app'], status: 'pending', attemptedTools: [],
+      queriedCodebaseIds: [], usedCodebaseIds: [], references: [], depth})!;
+    expect(current.sourceUseDecision.depth).toEqual(depth);
+    for (const projected of [projectPrivateAnalysisResult(current.sessionId, current, 'en'),
+      projectOwnerAnalysisResult(current.sessionId, current, 'en')]) {
+      expect(projected.sourceUseDecision?.depth).toEqual(depth);
+      const snapshot = JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(projected)));
+      expect(projectPrivateAnalysisResult(current.sessionId, snapshot, 'en').sourceUseDecision?.depth).toEqual(depth);
+    }
+    for (const forged of [{...depth, effective: 'everything'}, {...depth, origin: 'model'},
+      {...depth, requested: 'deep'}]) {
+      expect(sanitizeSourceUseDecision({...current.sourceUseDecision, depth: forged})).not.toHaveProperty('depth');
+    }
+    expect(sanitizeSourceUseDecision({...current.sourceUseDecision, depth: {...depth, fallbackReason: 'because'}})?.depth)
+      .toEqual({requested: 'auto', effective: 'locate', origin: 'budget'});
+  });
+
+  it('keeps the answer\'s written source locations for the owner only', () => {
+    const current = deliveredResult();
+    const citation = 'src/private/Secret.kt:L12';
+    current.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@2', status: 'partial', bindings: [],
+      claims: [{claimId: 'claim-1', status: 'unbound', sourceReferenceIds: [], traceEvidenceRefIds: []}],
+      citations: [{citation, filePath: 'src/private/Secret.kt', lineRange: {start: 12, end: 12}, status: 'unmatched'}],
+      issues: [{severity: 'warning', code: 'source_citation_unmatched', citation,
+        message: 'the answer cites a source location this run never returned'}]};
+    const strict = projectPrivateAnalysisResult(current.sessionId, current, 'en').sourceClaimVerificationResult;
+    expect(strict).toMatchObject({schemaVersion: 'source_claim_verifier@2', citations: [],
+      claims: [{claimId: 'claim-1', status: 'unbound'}]});
+    expect(JSON.stringify(strict)).not.toContain('Secret.kt');
+    const owner = projectOwnerAnalysisResult(current.sessionId, current, 'en').sourceClaimVerificationResult;
+    expect(owner).toMatchObject({citations: [{citation, status: 'unmatched'}], issues: [{citation}]});
+  });
+
+  it('keeps knowledge_use@1 on every surface, its citations for the owner only, and drops a malformed one whole', () => {
+    const current = deliveredResult();
+    const base = `eks_${'a'.repeat(24)}`;
+    const citation = 'kb:team/render notes.md#L12-L14';
+    current.knowledgeUse = {schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 2}],
+      citations: [{citation, relativePath: 'team/render notes.md', lineRange: {start: 12, end: 14}, status: 'located',
+        knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'}]};
+    const owner = projectOwnerAnalysisResult(current.sessionId, current, 'en');
+    expect(owner.knowledgeUse).toEqual(current.knowledgeUse);
+    const strict = projectPrivateAnalysisResult(current.sessionId, current, 'en');
+    expect(strict.knowledgeUse).toEqual({schemaVersion: 'knowledge_use@1', sources: current.knowledgeUse.sources, citations: []});
+    expect(JSON.stringify(strict.knowledgeUse)).not.toContain('render notes');
+    // Knowledge use binds nothing: the delivery verdict and report binding are untouched by it.
+    expect(owner.deliveryAssurance).toEqual(current.deliveryAssurance);
+    for (const stored of [copyAnalysisResultForSnapshot(owner), JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(owner)))]) {
+      expect(stored.knowledgeUse).toEqual(current.knowledgeUse);
+      expect(projectOwnerAnalysisResult(current.sessionId, stored, 'en').knowledgeUse).toEqual(current.knowledgeUse);
+    }
+    const forged = {...current, knowledgeUse: {...current.knowledgeUse, citations: [{...current.knowledgeUse.citations[0],
+      relativePath: '/Users/someone/private.md'}]}} as AnalysisResult;
+    for (const projected of [projectOwnerAnalysisResult(current.sessionId, forged, 'en'), copyAnalysisResultForSnapshot(forged)]) {
+      expect(projected).not.toHaveProperty('knowledgeUse');
+    }
+    // An older result has no record: absent, never an empty one.
+    const {knowledgeUse: _knowledgeUse, ...historical} = current;
+    expect(projectOwnerAnalysisResult(current.sessionId, historical, 'en')).not.toHaveProperty('knowledgeUse');
+  });
+
+  it('keeps a valid optional knowledge reference count and drops only a malformed one', () => {
+    const counted = deliveredResult();
+    counted.analysisReceipt!.nonEvidenceContext.knowledgeReferenceCount = 3;
+    for (const projected of [projectPrivateAnalysisResult(counted.sessionId, counted, 'en'), copyAnalysisResultForSnapshot(counted)]) {
+      expect(projected.analysisReceipt?.nonEvidenceContext.knowledgeReferenceCount).toBe(3);
+    }
+    const malformed = deliveredResult();
+    (malformed.analysisReceipt!.nonEvidenceContext as Record<string, unknown>).knowledgeReferenceCount = -1;
+    for (const projected of [projectPrivateAnalysisResult(malformed.sessionId, malformed, 'en'), copyAnalysisResultForSnapshot(malformed)]) {
+      expect(projected.analysisReceipt).toBeDefined();
+      expect(projected.analysisReceipt?.nonEvidenceContext).not.toHaveProperty('knowledgeReferenceCount');
+    }
+    // An older receipt without the count stays complete and reads as not recorded.
+    const legacy = projectPrivateAnalysisResult(deliveredResult().sessionId, deliveredResult(), 'en');
+    expect(legacy.analysisReceipt?.nonEvidenceContext).not.toHaveProperty('knowledgeReferenceCount');
+  });
+
   it('does not issue missing historical metadata, and invalidates report intent binding when dropping diagnostics', () => {
     const current = deliveredResult();
     current.turnIntent = {...current.turnIntent!, reason: 'PRIVATE_REASON', actualModel: 'PRIVATE_MODEL'};
@@ -286,6 +372,31 @@ describe('final delivery private projection', () => {
     expect(restored).not.toHaveProperty('completion');
     expect(restored).not.toHaveProperty('deliveryAssurance');
     expect(restored).not.toHaveProperty('turnIntent');
+  });
+
+  it('projects every kept diagnostic through the owner guard, withdrawing a binding it changes', () => {
+    const current = deliveredResult();
+    const canary = 'PRIVATE_DIAGNOSTIC_CANARY';
+    current.turnIntent = {...current.turnIntent!, reason: 'plain reason', actualModel: `model-${canary}`, finishReason: canary};
+    current.completion = {...current.completion!, sdkFinishReason: canary};
+    current.reportAssessment!.binding.intentFingerprint = analysisDeliveryFingerprint(current.turnIntent);
+    registerCodeAwareCanary(current.sessionId, canary);
+    try {
+      const projected = projectOwnerAnalysisResult(current.sessionId, current, 'en');
+      expect(JSON.stringify(projected)).not.toContain(canary);
+      expect(projected.turnIntent?.reason).toBe('plain reason');
+      expect(projected.reportAssessment?.binding.intentFingerprint).toBe('');
+    } finally { clearCodeAwareOutputGuards(current.sessionId); }
+  });
+
+  it('keeps intent diagnostics for the owner, so the report binding and its verdict survive', () => {
+    const current = deliveredResult();
+    current.turnIntent = {...current.turnIntent!, reason: 'Scrolling jank in the feed', actualModel: 'model-a'};
+    current.reportAssessment!.binding.intentFingerprint = analysisDeliveryFingerprint(current.turnIntent);
+    const projected = projectOwnerAnalysisResult(current.sessionId, current, 'en');
+    expect(projected.turnIntent).toEqual(current.turnIntent);
+    expect(projected.reportAssessment).toEqual(current.reportAssessment);
+    expect(projected.deliveryAssurance?.report).toBe(current.deliveryAssurance?.report);
   });
 
   it('invalidates report coverage when its copied claim IDs change, and tolerates malformed nested entries', () => {
@@ -330,7 +441,7 @@ describe('final delivery private projection', () => {
     result.reportAssessment!.binding.conclusionContractFingerprint = analysisDeliveryFingerprint(result.conclusionContract);
     result.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@1', status: 'passed', issues: [],
       bindings: [{claimId: 'claim-1', mechanismStatus: 'corroborated', sourceReferenceIds: [reference.id],
-        traceEvidenceRefIds: ['evidence-1'], reason: 'PRIVATE_BINDING_DIAGNOSTIC'}]};
+        traceEvidenceRefIds: ['evidence-1'], reason: 'PRIVATE_BINDING_DIAGNOSTIC'} as any]};
     const projected = projectPrivateAnalysisResult(result.sessionId, result, 'en');
     expect(projected.conclusion).toBe(result.conclusion);
     expect(projected.claimVerificationResult).toEqual(result.claimVerificationResult);
@@ -352,8 +463,8 @@ describe('final delivery private projection', () => {
     result.conclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
       claims: [{id: 'claim-1', text: result.conclusion, references: []}], uncertainties: [], nextSteps: [],
       sourceUseDecision: result.sourceUseDecision, sourceReferences: decision.references,
-      sourceClaimBindings: [{claimId: 'claim-1', mechanismStatus: 'corroborated', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['evidence-1'], reason: 'RAW_REASON_CANARY'}]};
-    result.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@1', status: 'passed', issues: [], bindings: result.conclusionContract.sourceClaimBindings!};
+      sourceClaimBindings: [{claimId: 'claim-1', mechanismStatus: 'corroborated', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['evidence-1'], reason: 'RAW_REASON_CANARY'} as any]};
+    result.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@1', status: 'passed', issues: [], bindings: result.conclusionContract!.sourceClaimBindings!};
     result.reportAssessment!.binding.conclusionContractFingerprint = analysisDeliveryFingerprint(result.conclusionContract);
     const stored = copyAnalysisResultForSnapshot(result);
     expect(stored.conclusion).toBe(result.conclusion);
@@ -497,12 +608,13 @@ function snapshot(): SessionStateSnapshot {
       patchCount: 0,
       referencedCodebaseIds: ['codebase-a', 'bad path'],
       usedCodebaseIds: ['codebase-a', '/Users/chris/Code/App'],
+      // A retired write-only field older snapshots still carry; knowledge_use@1 replaced it.
       usedKnowledgeSources: [{
         knowledgeSourceId: 'knowledge-a',
         sourceGenerations: ['generation-7'],
       }],
       sourceUseDecision,
-    },
+    } as SessionStateSnapshot['codeLookupSummary'],
     sourceUseDecision,
     codebaseSnapshot: [{
       codebaseId: 'codebase-a',
@@ -556,10 +668,6 @@ describe('private session snapshot provenance', () => {
       patchCount: 0,
       referencedCodebaseIds: ['codebase-a'],
       usedCodebaseIds: ['codebase-a'],
-      usedKnowledgeSources: [{
-        knowledgeSourceId: 'knowledge-a',
-        sourceGenerations: ['generation-7'],
-      }],
       sourceUseDecision: {
         schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
         codeAwareMode: 'provider_send',
@@ -829,7 +937,7 @@ describe('owner source analysis delivery', () => {
   it('retains authorized declaration text while redacting credentials', () => {
     const sessionId = 'owner-contract';
     const source = 'fun readStartupPolicySynchronously() = policyFile.readText()';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'owner-contract-read', codebaseId: 'app',
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'owner-contract-read', codebaseId: 'app',
       filePath: 'src/StartupHooks.kt', lineRange: {start: 28, end: 28}, text: source}]);
     const contract = {schemaVersion: 'conclusion_contract_v1' as const, mode: 'focused_answer' as const,
       conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
@@ -849,7 +957,7 @@ describe('owner source analysis delivery', () => {
   it.each(['quality_gate_failed', 'plan_incomplete'] as const)('retains a generated answer and diagnostics for %s', terminationReason => {
     const result = deliveredResult();
     const source = 'fun dispatchWork() { trace.beginSection("startup"); }';
-    registerOnDemandSourceLookupForEcho(result.sessionId, [{referenceId: 'owner-read', codebaseId: 'app', filePath: 'src/Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(result.sessionId, [{id: 'owner-read', codebaseId: 'app', filePath: 'src/Main.kt', text: source}]);
     registerPrivateAnalysisQueryForEcho(result.sessionId, source);
     result.conclusion = `Source candidate: ${source}`;
     result.success = false;
@@ -868,7 +976,7 @@ describe('owner source analysis delivery', () => {
     const result = deliveredResult();
     const source = 'fun renderFrame() { invalidate(); }';
     result.conclusion = source;
-    registerOnDemandSourceLookupForEcho(result.sessionId, [{referenceId: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(result.sessionId, [{id: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
     const snapshot = normalizeSessionStateSnapshot({version: 1, snapshotTimestamp: 1, sessionId: result.sessionId,
       traceId: 'trace', codeAwareMode: 'provider_send', codebaseIds: ['app'], finalResult: result,
       conversationSteps: [], queryHistory: [], conclusionHistory: [], agentDialogue: [], agentResponses: [],
@@ -881,6 +989,14 @@ describe('owner source analysis delivery', () => {
 
 
 describe('investigation assessment result surfaces', () => {
+  /**
+   * Every FinalInvestigationAssessment field. A field added to the type fails
+   * to compile here, then the fixture check below until `withInvestigation`
+   * carries it, then the round trip until the delivery copier copies it.
+   */
+  const INVESTIGATION_ASSESSMENT_FIELDS = {schemaVersion: true, binding: true, status: true, requirements: true,
+    evidenceRecords: true, ledgerAcquisition: true} as const satisfies Record<keyof FinalInvestigationAssessment, true>;
+
   function withInvestigation(): AnalysisResult {
     const result = deliveredResult();
     result.investigationAssessment = {schemaVersion: 1, status: 'checked',
@@ -896,11 +1012,21 @@ describe('investigation assessment result surfaces', () => {
         value: 0, unit: 'ns', coverage: '100', denominator: '100'}],
       requirements: [{requirementId: 'scheduler', domain: 'scheduling', applicability: 'applicable',
         coverage: 'covered', acquisition: 'observed', evidenceStatus: 'observed', scopeMatch: 'matched',
-        contentLocations: [{start: 0, end: 20}], evidenceRecordIds: ['capture-1']}]};
+        contentLocations: [{start: 0, end: 20}], evidenceRecordIds: ['capture-1']}],
+      ledgerAcquisition: [{requirementId: 'scheduler', domain: 'scheduling', applicability: 'applicable',
+        declaredMetrics: ['system.thread.state.duration'], status: 'observed', observedMetrics: ['system.thread.state.duration']},
+      {requirementId: 'backpressure', domain: 'dependency_chain', applicability: 'not_applicable', declaredMetrics: [],
+        condition: {metricId: 'render.frame.buffer_stuffing.rate', operator: 'gte', value: 30, observed: 12, met: false},
+        status: 'not_declared', observedMetrics: []}]};
     result.investigationAssessment.binding.evidenceRecordsFingerprint = analysisDeliveryFingerprint(result.investigationAssessment.evidenceRecords);
     result.deliveryAssurance = {...result.deliveryAssurance!, investigation: 'passed', investigationEvidence: 'passed'};
     return result;
   }
+
+  it('round-trips a fixture that carries every assessment field', () => {
+    expect(Object.keys(withInvestigation().investigationAssessment!).sort())
+      .toEqual(Object.keys(INVESTIGATION_ASSESSMENT_FIELDS).sort());
+  });
 
   it('keeps exact assessment through safe owner projection and snapshot serialization', () => {
     const result = withInvestigation();
@@ -923,6 +1049,25 @@ describe('investigation assessment result surfaces', () => {
       expect(copy.deliveryAssurance?.investigationEvidence).toBe('not_checked');
       expect(copy.completion).toEqual(result.completion);
     });
+
+  it('withdraws ledger acquisition with the rest of an invalidated assessment', () => {
+    const copy = projectPrivateAnalysisDelivery(withInvestigation(), {conclusion: 'changed body'}, text => text,
+      {privateMetadata: false});
+    expect(copy.investigationAssessment?.ledgerAcquisition).toEqual([
+      expect.objectContaining({requirementId: 'scheduler', applicability: 'applicable', status: 'unknown', observedMetrics: []}),
+      expect.objectContaining({requirementId: 'backpressure', applicability: 'unknown', status: 'unknown', observedMetrics: []})]);
+    expect(copy.deliveryAssurance?.investigation).toBe('not_checked');
+  });
+
+  it('drops a ledger row outside the closed vocabulary and invalidates its assessment', () => {
+    const result = withInvestigation();
+    const [row] = result.investigationAssessment!.ledgerAcquisition!;
+    result.investigationAssessment!.ledgerAcquisition = [{...row, status: 'proved'} as never];
+    const copy = copyAnalysisResultForSnapshot(result);
+    expect(copy.investigationAssessment?.ledgerAcquisition).toEqual([]);
+    expect(copy.investigationAssessment?.requirements[0].coverage).toBe('unknown');
+    expect(copy.deliveryAssurance?.investigation).toBe('not_checked');
+  });
 
   it('projects original scalar values without converting null, zero, false or exact ns strings', () => {
     const result = withInvestigation();

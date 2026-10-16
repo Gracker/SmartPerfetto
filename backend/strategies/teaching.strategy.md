@@ -39,21 +39,6 @@ keywords:
   - source code
   - 这个slice
 
-plan_template:
-  mandatory_aspects:
-    - id: architecture_detection
-      match_keywords: ['detect_architecture', 'architecture', '架构', 'pipeline', '管线', '教学']
-      suggestion: '教学场景建议包含架构检测阶段 (detect_architecture)'
-      required_expected_calls:
-        - tool: detect_architecture
-    - id: pipeline_teaching
-      match_keywords: ['teach', 'explain', '说明', '解释', 'thread', '线程', 'slice', 'mermaid', 'invoke_skill']
-      suggestion: '教学场景建议包含管线教学内容获取阶段 (invoke_skill with pipeline skill)'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: rendering_pipeline_detection
-        - tool: invoke_skill
-          skill_id: scene_reconstruction
 ---
 
 #### teaching Core Strategy

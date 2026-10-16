@@ -12,14 +12,13 @@ import path from 'path';
 import fs from 'fs';
 import {
   StoredSession,
-  StoredMessage,
   SessionFilter,
   SessionListResponse,
   SessionMetadata,
+  StoredSqlResult,
 } from '../models/sessionSchema';
 import {
   EntityStore,
-  EntityStoreSnapshot,
 } from '../agent/context/entityStore';
 import { EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
 import { FocusStore, FocusStoreSnapshot } from '../agent/context/focusStore';
@@ -28,9 +27,24 @@ import {
   normalizeSessionStateSnapshot,
   type SessionStateSnapshot,
 } from '../agentv3/sessionStateSnapshot';
-import { backendDataPath } from '../runtimePaths';
 import { applyEnterpriseMinimalSchema } from './enterpriseSchema';
 import { resolveEnterpriseDbPath } from './enterpriseDb';
+import { logStoredReadFailure, tryParseStoredJson } from '../utils/storedData';
+
+/**
+ * A session column's JSON. A client picks the session by id before any owner
+ * check, so a parse error must not reach it: it would quote another user's session.
+ */
+function readSessionColumn<T>(
+  sessionId: string,
+  column: 'metadata' | 'sql_result',
+  text: string | null | undefined,
+): {ok: true; value: T | undefined} | {ok: false} {
+  if (!text) return {ok: true, value: undefined};
+  const parsed = tryParseStoredJson<T>(text, `analysis session ${column}`);
+  if (!parsed.ok) logStoredReadFailure('[SessionPersistence] Session column unreadable', parsed.error, {sessionId, column});
+  return parsed;
+}
 
 // DB path is resolved lazily (in the constructor) rather than at module load.
 // Module-load resolution would capture `process.cwd()` at the time of the first
@@ -162,6 +176,9 @@ export class SessionPersistenceService {
     `).get(sessionId) as any;
 
     if (!sessionRow) return null;
+    const metadata = readSessionColumn<SessionMetadata>(sessionId, 'metadata', sessionRow.metadata);
+    // Metadata names the session's owner: unreadable, it is a session no caller may see.
+    if (!metadata.ok) return null;
 
     const messages = this.db.prepare(`
       SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp ASC
@@ -174,14 +191,17 @@ export class SessionPersistenceService {
       question: sessionRow.question,
       createdAt: sessionRow.created_at,
       updatedAt: sessionRow.updated_at,
-      metadata: sessionRow.metadata ? JSON.parse(sessionRow.metadata) : undefined,
-      messages: messages.map((msg: any) => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        timestamp: msg.timestamp,
-        sqlResult: msg.sql_result ? JSON.parse(msg.sql_result) : undefined,
-      })),
+      metadata: metadata.value,
+      messages: messages.map((msg: any) => {
+        const sqlResult = readSessionColumn<StoredSqlResult>(sessionId, 'sql_result', msg.sql_result);
+        return {
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          sqlResult: sqlResult.ok ? sqlResult.value : undefined,
+        };
+      }),
     };
   }
 
@@ -226,16 +246,19 @@ export class SessionPersistenceService {
     const sessions = this.db.prepare(query).all(...params) as any[];
 
     return {
-      sessions: sessions.map(row => ({
-        id: row.id,
-        traceId: row.trace_id,
-        traceName: row.trace_name,
-        question: row.question,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-        messages: [], // Exclude messages from list view
-      })),
+      sessions: sessions.flatMap(row => {
+        const metadata = readSessionColumn<SessionMetadata>(row.id, 'metadata', row.metadata);
+        return !metadata.ok ? [] : [{
+          id: row.id,
+          traceId: row.trace_id,
+          traceName: row.trace_name,
+          question: row.question,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          metadata: metadata.value,
+          messages: [], // Exclude messages from list view
+        }];
+      }),
       totalCount,
       hasMore: (filter.offset || 0) + sessions.length < totalCount,
     };
@@ -252,37 +275,6 @@ export class SessionPersistenceService {
       console.error('[SessionPersistence] Failed to delete session:', error);
       return false;
     }
-  }
-
-  /**
-   * Get all sessions for a specific trace
-   */
-  getSessionsByTrace(traceId: string): StoredSession[] {
-    const rows = this.db.prepare(`
-      SELECT id FROM sessions WHERE trace_id = ? ORDER BY created_at DESC
-    `).all(traceId) as any[];
-
-    return rows
-      .map(row => this.getSession(row.id))
-      .filter((s): s is StoredSession => s !== null);
-  }
-
-  /**
-   * Export sessions as JSON for backup
-   */
-  exportSessions(traceId?: string): string {
-    const sessions = traceId
-      ? this.getSessionsByTrace(traceId)
-      : this.listSessions({ limit: 1000 }).sessions;
-
-    return JSON.stringify({
-      exportedAt: Date.now(),
-      count: sessions.length,
-      sessions: sessions.map(s => ({
-        ...s,
-        messages: this.getSession(s.id)?.messages || [],
-      })),
-    }, null, 2);
   }
 
   /**
@@ -885,5 +877,3 @@ export class SessionPersistenceService {
     }
   }
 }
-
-export default SessionPersistenceService;

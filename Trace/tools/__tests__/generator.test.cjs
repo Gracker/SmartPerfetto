@@ -461,6 +461,35 @@ test('materializes ANR and perf callstack evidence for conditional SQL branches'
   fs.rmSync(tempDir, {recursive: true, force: true});
 });
 
+test('places a GPU work period at its trace time when MONOTONIC_RAW trails BOOTTIME', () => {
+  // gpu_work_period carries its own MONOTONIC_RAW bounds. A real base trace
+  // records that clock behind BOOTTIME by the time the device slept; an
+  // overlay that wrote trace time there would land the period that far late.
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-gpu-work-clock-'));
+  const outputPath = path.join(tempDir, 'combined.pftrace');
+  const clocks = {anchorNs: '1000000000', monotonicRawAnchorNs: '400000000', usedPids: new Set()};
+  const base = encodeScenarioOverlay(repoRoot, fixtureScenario(), {...clocks, sequenceId: 474747});
+  const scenario = fixtureScenario();
+  scenario.signals.push({
+    type: 'gpu-work-period',
+    at_ns: '50000000',
+    duration_ns: '10000000',
+    gpu_id: 0,
+    uid: 10999,
+    active_duration_ns: '8000000',
+    cpu: 0,
+  });
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {...clocks, sequenceId: 484848});
+  materializeTrace(base.buffer, overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.gpu.work_period;
+    SELECT s.ts, s.dur, trace_end() <= 1500000000 AS bounded
+    FROM android_gpu_work_period_track t JOIN slice s ON s.track_id = t.id`);
+  assert.match(output, /\n1050000000,10000000,1\s*$/);
+  fs.rmSync(tempDir, {recursive: true, force: true});
+});
+
 test('materializes source-level Android log events for logcat SQL', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-android-log-'));
   const outputPath = path.join(tempDir, 'combined.pftrace');
@@ -553,6 +582,7 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
       cpu: 0,
     },
     {type: 'gpu-frequency', at_ns: '90000000', gpu_id: 0, value: 700000, cpu: 0},
+    {type: 'gpu-memory-total', at_ns: '95000000', gpu_id: 0, process: 'app', size_bytes: '67108864', cpu: 0},
     {type: 'cpu-frequency', at_ns: '100000000', cpu_id: 0, value: 1800000, cpu: 0},
     {
       type: 'irq-span',
@@ -620,6 +650,7 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
     INCLUDE PERFETTO MODULE android.gpu.mali_power_state;
     INCLUDE PERFETTO MODULE linux.cpu.idle;
     INCLUDE PERFETTO MODULE android.memory.lmk;
+    INCLUDE PERFETTO MODULE android.gpu.memory;
     SELECT
       (SELECT COUNT(*) FROM memory_rss_and_swap_per_process) AS rss,
       (SELECT COUNT(*) FROM android_battery_charge) AS battery,
@@ -635,8 +666,108 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
       (SELECT COUNT(*) FROM slice s JOIN process_track pt ON pt.id = s.track_id WHERE s.name = 'SyntheticAsync') AS async_process_slice,
       (SELECT COUNT(*) FROM slice s JOIN process_track pt ON pt.id = s.track_id WHERE pt.name = 'SyntheticTrack' AND s.name = 'SyntheticTrackEvent') AS named_async,
       (SELECT COUNT(*) FROM android_lmk_events WHERE process_name = 'com.smartperfetto.fixture') AS lmk,
-      (SELECT COUNT(*) FROM android_oom_adj_intervals) AS oom_adj`);
-  assert.match(output, /\n(?:[1-9][0-9]*,){14}[1-9][0-9]*\s*$/);
+      (SELECT COUNT(*) FROM android_oom_adj_intervals) AS oom_adj,
+      (SELECT COUNT(*) FROM android_gpu_memory_per_process m JOIN process p USING (upid)
+        WHERE p.name = 'com.smartperfetto.fixture' AND m.gpu_memory = 67108864) AS gpu_memory`);
+  assert.match(output, /\n(?:[1-9][0-9]*,){15}[1-9][0-9]*\s*$/);
+});
+
+test('encodes an interrupt-context wakeup, a received network packet and its package name', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'peer', name: 'com.smartperfetto.peer', uid: 10998});
+  scenario.actors.threads.push({id: 'net', process: 'app', name: 'OkHttp Network'});
+  scenario.signals.push(
+    {type: 'sched-running', at_ns: '10000000', duration_ns: '1000000', thread: 'net', cpu: 1, end_state: 'S'},
+    {type: 'android-network-packet', at_ns: '19500000', direction: 'received', interface: 'wlan0',
+      length: 1500, owner_process: 'app'},
+    {type: 'android-network-packet', at_ns: '19600000', direction: 'transmitted', interface: 'wlan0',
+      length: 60, owner_process: 'peer'},
+    {type: 'sched-waking', at_ns: '20000000', cpu: 1, thread: 'net', waker_thread: null, target_cpu: 1,
+      sched_priority: 120, irq_context: 'softirq'},
+    {type: 'sched-running', at_ns: '20100000', duration_ns: '1000000', thread: 'net', cpu: 1, end_state: 'S'},
+    {type: 'android-packages-list', at_ns: '0', packages: [
+      {name: 'com.smartperfetto.fixture', process: 'app'}, {name: 'com.smartperfetto.peer', process: 'peer'}]},
+  );
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 454545,
+  });
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-network-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.network_packets;
+    SELECT
+      (SELECT COUNT(*) FROM thread_state ts JOIN thread t USING (utid)
+        WHERE t.name = 'OkHttp Network' AND ts.state IN ('R', 'R+') AND ts.irq_context = 1) AS irq_wakes,
+      (SELECT group_concat(package_name || '/' || direction || '/' || socket_uid || '/' || packet_length, ';')
+        FROM (SELECT * FROM android_network_packets ORDER BY ts)) AS packets`);
+  assert.match(output, /\n1,"com\.smartperfetto\.fixture\/Received\/10999\/1500;com\.smartperfetto\.peer\/Transmitted\/10998\/60"\s*$/);
+  assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+    {type: 'sched-waking', at_ns: '1', cpu: 0, thread: 'net', waker_thread: null, target_cpu: 0,
+      sched_priority: 120, irq_context: 'nmi'}]}, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}),
+  /irq_context must be hardirq or softirq/);
+});
+
+test('encodes a synchronous binder call that trace processor pairs into one transaction', () => {
+  const scenario = fixtureScenario();
+  scenario.actors.processes.push({id: 'server', name: 'system_server', uid: 1000});
+  scenario.actors.threads.push({id: 'server-binder', process: 'server', name: 'binder:1000_2'});
+  scenario.signals.push({type: 'binder-transaction', at_ns: '10000000', duration_ns: '3000000',
+    thread: 'main', server_thread: 'server-binder', cpu: 1, server_cpu: 2, code: 7});
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 515151,
+  });
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-binder-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.binder;
+    SELECT group_concat(client_process || '/' || client_thread || '/' || server_process || '/'
+      || client_dur || '/' || is_sync, ';') AS txns
+    FROM android_binder_txns`);
+  assert.match(output, /\n"com\.smartperfetto\.fixture\/main\/system_server\/3000000\/1"\s*$/);
+  for (const invalid of [{server_thread: 'main'}, {duration_ns: '2'}, {server_thread: null}]) {
+    assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+      {type: 'binder-transaction', at_ns: '1', duration_ns: '1000', thread: 'main', server_thread: 'server-binder',
+        ...invalid}]}, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}), /binder-transaction/);
+  }
+});
+
+test('encodes a D-state blocked reason with its kernel symbol, and an interpolated frame', () => {
+  const scenario = fixtureScenario();
+  scenario.signals.push(
+    {type: 'sched-running', at_ns: '10000000', duration_ns: '1000000', thread: 'main', cpu: 1, end_state: 'D'},
+    {type: 'sched-blocked-reason', at_ns: '11000001', thread: 'main', cpu: 1, io_wait: true,
+      function_name: 'filemap_fault'},
+    {type: 'sched-waking', at_ns: '15000000', cpu: 1, thread: 'main', waker_thread: null, target_cpu: 1, sched_priority: 120},
+    {type: 'sched-running', at_ns: '15100000', duration_ns: '1000000', thread: 'main', cpu: 1, end_state: 'S'},
+    {type: 'frame-timeline', at_ns: '20000000', duration_ns: '8000000', process: 'app', cookie: 7, token: 70,
+      display_frame_token: -1, layer_name: 'InterpolatedLayer'},
+  );
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 474747,
+  });
+  const outputPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'trace-blocked-reason-')), 'trace.pftrace');
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    SELECT
+      (SELECT group_concat(ts.state || '/' || ts.io_wait || '/' || ts.blocked_function || '/' || ts.dur, ';')
+        FROM thread_state ts JOIN thread t USING (utid) WHERE t.name = 'main' AND ts.state = 'D') AS blocked,
+      (SELECT group_concat(display_frame_token, ';') FROM actual_frame_timeline_slice
+        WHERE layer_name = 'InterpolatedLayer') AS interpolated`);
+  assert.match(output, /\n"D\/1\/filemap_fault\/4000000","-1"\s*$/);
+  for (const invalid of [{io_wait: 'yes'}, {thread: null}]) {
+    assert.throws(() => encodeScenarioOverlay(repoRoot, {...scenario, signals: [
+      {type: 'sched-blocked-reason', at_ns: '1', thread: 'main', io_wait: false, ...invalid}]},
+    {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 1}), /sched-blocked-reason/);
+  }
 });
 
 function thermalLimitSignals() {
@@ -1012,6 +1143,94 @@ test('rejects malformed or unbounded managed heap graphs', () => {
   );
 });
 
+function frameworkStateScenario() {
+  return {
+    schema_version: 1,
+    clock: {anchor: 'trace-start', duration_ns: '1000000000'},
+    actors: {
+      processes: [
+        {id: 'app', name: 'com.smartperfetto.fixture', uid: 10123},
+        {id: 'system', name: 'system_server', uid: 1000},
+      ],
+      threads: [
+        {id: 'main', process: 'app', name: 'main', is_main: true},
+        {id: 'am', process: 'system', name: 'ActivityManager', is_main: true},
+      ],
+    },
+    signals: [
+      {type: 'android-process-state-change', at_ns: '100000000', thread: 'am', target_process: 'app',
+        prev_proc_state: 'PROCESS_STATE_TOP', cur_proc_state: 'PROCESS_STATE_LAST_ACTIVITY',
+        prev_oom_score: 0, cur_oom_score: 700, reason: 'OOM_ADJ_REASON_ACTIVITY'},
+      {type: 'android-process-state-change', at_ns: '400000000', thread: 'am', target_process: 'app',
+        prev_proc_state: 'PROCESS_STATE_LAST_ACTIVITY', cur_proc_state: 'PROCESS_STATE_CACHED_ACTIVITY'},
+      {type: 'android-process-state-snapshot', at_ns: '900000000', records: [
+        {process: 'app', proc_state: 'PROCESS_STATE_CACHED_ACTIVITY', oom_score: 900},
+        {process: 'system', proc_state: 'PROCESS_STATE_PERSISTENT', oom_score: -900},
+      ]},
+      {type: 'statsd-atom', at_ns: '200000000', atom: 'app_standby_bucket_changed',
+        fields: {package_name: 'com.smartperfetto.fixture', user_id: 0, bucket: 'BUCKET_RARE', main_reason: 'MAIN_TIMEOUT'}},
+      {type: 'statsd-atom', at_ns: '450000000', atom: 'app_freeze_changed', process: 'app',
+        fields: {action: 'FREEZE_APP', unfreeze_reason_v2: 'UFR_NONE'}},
+      {type: 'battery-stats-span', at_ns: '150000000', duration_ns: '300000000', process: 'system', thread: 'am',
+        event: 'longwake', owner_process: 'app', tag: 'SyncJob'},
+      {type: 'atrace-slice', at_ns: '450000000', duration_ns: '1000000', process: 'system', thread: 'am',
+        name: 'Freeze com.smartperfetto.fixture:{pid:app}'},
+      {type: 'atrace-slice', at_ns: '700000000', duration_ns: '1000000', process: 'system', thread: 'am',
+        name: 'Unfreeze com.smartperfetto.fixture:{pid:app} 18'},
+    ],
+  };
+}
+
+test('materializes framework process state, statsd atoms, battery stats and freezer slices', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-framework-state-'));
+  const outputPath = path.join(tempDir, 'combined.pftrace');
+  const overlay = encodeScenarioOverlay(repoRoot, frameworkStateScenario(), {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 555555,
+  });
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.process_state;
+    INCLUDE PERFETTO MODULE android.app_wakelocks;
+    INCLUDE PERFETTO MODULE android.standby_bucket;
+    INCLUDE PERFETTO MODULE android.freezer;
+    SELECT
+      (SELECT GROUP_CONCAT(state || ':' || dur, ',') FROM (
+        SELECT state, dur FROM _android_process_state_intervals
+        WHERE process_name = 'com.smartperfetto.fixture' ORDER BY ts, state_rank)) AS states,
+      (SELECT name || ':' || uid || ':' || dur FROM android_app_wakelocks) AS wakelock,
+      (SELECT bucket || ':' || main_reason FROM android_standby_bucket) AS bucket,
+      (SELECT freezer_state || ':' || pid FROM android_freezer_state_statsd) AS freeze_atom,
+      (SELECT unfreeze_reason_str || ':' || dur FROM android_freezer_events) AS freeze_slice`);
+  const pid = overlay.identities.processes.app;
+  assert.equal(output.trim().split(/\r?\n/)[1], [
+    '"TOP:0,LAST_ACTIVITY:300000000,CACHED_ACTIVITY:301000000"',
+    '"SyncJob:10123:300000000"',
+    '"BUCKET_RARE:MAIN_TIMEOUT"',
+    `"FREEZE_APP:${pid}"`,
+    '"binder_txns:250000000"',
+  ].join(','));
+});
+
+test('rejects framework signals outside the pinned proto and atom allow-list', () => {
+  const encode = (mutate) => {
+    const scenario = frameworkStateScenario();
+    mutate(scenario.signals);
+    return () => encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1', usedPids: new Set(), sequenceId: 1});
+  };
+  assert.throws(encode((signals) => { signals[0].cur_proc_state = 'CACHED'; }), /ProcessStateEnum value name/);
+  assert.throws(encode((signals) => { signals[3].atom = 'screen_state_changed'; }), /atom is unsupported/);
+  assert.throws(encode((signals) => { signals[3].fields.bucket = 'BUCKET_NOPE'; }), /value name/);
+  assert.throws(encode((signals) => { signals[3].fields.not_a_field = 1; }), /has no field not_a_field/);
+  assert.throws(encode((signals) => { signals[3].process = 'app'; }), /has no process fields/);
+  assert.throws(encode((signals) => { signals[5].event = 'wakelock'; }), /event is unsupported/);
+  assert.throws(encode((signals) => { signals[5].tag = 'a"b'; }), /must not contain a quote/);
+  assert.throws(encode((signals) => { signals[6].name = 'Freeze x:{pid:missing}'; }), /unknown process missing/);
+  assert.throws(encode((signals) => { signals[6].name = 'owner x ({tid:missing})'; }), /unknown thread missing/);
+});
+
 test('rejects unsafe or imprecise scenario values', () => {
   const invalid = fixtureScenario();
   invalid.signals[0].at_ns = 1;
@@ -1081,6 +1300,81 @@ test('probes a real base and builds a combined trace inside its bounds', () => {
   );
   assert.match(output, /\n1,1,0\s*$/);
   assert.ok(Object.values(build.provenance.cpu_map).every((cpu) => Number(cpu) > 0));
+});
+
+const SYSTEM_INFO_IDENTITY_SQL = `SELECT name, COALESCE(str_value, CAST(int_value AS TEXT)) AS value
+  FROM metadata WHERE name IN ('android_build_fingerprint', 'android_device_manufacturer',
+    'android_soc_model', 'android_sdk_version') ORDER BY name`;
+
+function assertIdentity(tracePath, {fingerprint, manufacturer, sdk, soc}) {
+  assert.match(queryTrace(tracePath, SYSTEM_INFO_IDENTITY_SQL), new RegExp([
+    `"android_build_fingerprint","${fingerprint}"`,
+    `"android_device_manufacturer","${manufacturer}"`,
+    `"android_sdk_version","${sdk}"`,
+    `"android_soc_model","${soc}"`,
+  ].join('\\s+')));
+}
+
+function systemInfoScenario(identity) {
+  const scenario = fixtureScenario();
+  scenario.signals.push({type: 'android-system-info', at_ns: '0', ...identity});
+  return scenario;
+}
+
+test('encodes the declared SystemInfo device identity as trace metadata', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-system-info-'));
+  t.after(() => fs.rmSync(tempDir, {recursive: true, force: true}));
+  const outputPath = path.join(tempDir, 'trace.pftrace');
+  const overlay = encodeScenarioOverlay(repoRoot, systemInfoScenario({
+    android_build_fingerprint: 'acme/widget/widget:16/AB1.000/1:user/release-keys',
+    android_device_manufacturer: 'Acme',
+    android_soc_model: 'MT6000',
+    android_sdk_version: 36,
+  }), {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 424243});
+
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  assertIdentity(outputPath, {fingerprint: 'acme/widget/widget:16/AB1.000/1:user/release-keys',
+    manufacturer: 'Acme', sdk: 36, soc: 'MT6000'});
+});
+
+test('replaces a real base identity and refuses one the overlay cannot remove', (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-system-info-base-'));
+  t.after(() => fs.rmSync(tempDir, {recursive: true, force: true}));
+  const basePath = resolveCaseTrace(repoRoot, 'android-startup-light');
+  const scenarioPath = path.join(tempDir, 'scenario.json');
+  const overlayPath = path.join(tempDir, 'trace.overlay.pftrace');
+  const outputPath = path.join(tempDir, 'trace.pftrace');
+  const identity = {
+    android_build_fingerprint: 'acme/widget/widget:15/AB1.000/1:user/release-keys',
+    android_soc_model: 'MT6000',
+    android_sdk_version: 35,
+  };
+  const build = (declared) => {
+    fs.writeFileSync(scenarioPath, `${JSON.stringify(systemInfoScenario(declared), null, 2)}\n`);
+    return buildConstructedTrace(repoRoot, {caseId: 'system-info-identity', basePath, scenarioPath, overlayPath, outputPath});
+  };
+
+  // The base records a manufacturer (Google); leaving it undeclared would
+  // let the base's value pass as the declared device's.
+  assert.throws(() => build(identity), /android_device_manufacturer=\["Google"\].*cannot remove one/s);
+  assert.equal(fs.existsSync(overlayPath), false);
+
+  build({...identity, android_device_manufacturer: 'Acme'});
+  assertIdentity(outputPath, {fingerprint: 'acme/widget/widget:15/AB1.000/1:user/release-keys',
+    manufacturer: 'Acme', sdk: 35, soc: 'MT6000'});
+});
+
+test('rejects an empty, malformed or repeated SystemInfo identity', () => {
+  const encode = (scenario) => encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000', usedPids: new Set(), sequenceId: 424244,
+  });
+  assert.throws(() => encode(systemInfoScenario({})), /must set at least one of/);
+  assert.throws(() => encode(systemInfoScenario({android_sdk_version: 0})), /android_sdk_version must be a positive/);
+  assert.throws(() => encode(systemInfoScenario({android_soc_model: ' '})), /android_soc_model must be a non-empty/);
+  const repeated = systemInfoScenario({android_soc_model: 'MT6000'});
+  repeated.signals.push({type: 'android-system-info', at_ns: '0', android_soc_model: 'SM8650'});
+  assert.throws(() => encode(repeated), /more than one android-system-info/);
 });
 
 test('rebuilds a repository constructed case with matching source hash and provenance', () => {

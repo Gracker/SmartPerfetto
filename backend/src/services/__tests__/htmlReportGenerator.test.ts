@@ -97,7 +97,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [makeEnvelopeWithFrameId(1435508)],
       result: {
         sessionId: 'session-1',
@@ -134,6 +133,45 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('&lt;/span&gt;&lt;img');
   });
 
+  test('lists the internal knowledge a run delivered and grades its cited locations, never as evidence', () => {
+    const base = `eks_${'a'.repeat(24)}`;
+    const reportFor = (knowledgeUse?: unknown) => new HTMLReportGenerator().generateAgentDrivenHTML({
+      traceId: 'trace-knowledge', query: 'Explain XRenderCompositorWorker', outputLanguage: 'en', timestamp: Date.now(),
+      hypotheses: [], dialogue: [], dataEnvelopes: [],
+      result: {sessionId: 'session-knowledge', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.8, rounds: 1, totalDurationMs: 1, ...(knowledgeUse ? {knowledgeUse: knowledgeUse as never} : {}),
+        analysisReceipt: {schemaVersion: 1, runId: 'run', sessionId: 'session-knowledge', traceId: 'trace-knowledge',
+          mode: 'fast', resolvedMode: 'quick', providerId: null, generatedAt: 1,
+          traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
+          nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0,
+            ...(knowledgeUse ? {knowledgeReferenceCount: 2} : {})},
+          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+          qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable',
+            identityResolution: 'not_applicable'}, outputs: {}}},
+    });
+    const html = reportFor({schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: base, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`, deliveredReferenceCount: 2}],
+      citations: [
+        {citation: 'kb:render/fence.md#L2-L3', relativePath: 'render/fence.md', lineRange: {start: 2, end: 3},
+          status: 'located', knowledgeBaseId: base, referenceId: 'kref-00000000-0000-4000-8000-000000000000'},
+        {citation: 'kb:render/<b>.md#L1', relativePath: 'render/<b>.md', lineRange: {start: 1, end: 1}, status: 'unmatched'},
+      ]});
+    expect(html).toContain('Internal Knowledge Used');
+    expect(html).toContain('background, not trace evidence');
+    expect(html).toContain('kb:render/fence.md#L2-L3');
+    expect(html).toContain('Located only; full text not delivered in this run');
+    expect(html).toContain('Not returned in this run');
+    expect(html).toContain('2 reference(s) delivered');
+    expect(html).toContain('Knowledge references');
+    expect(html).not.toContain('<b>.md');
+    // Not recorded, or not a valid record: no section and no receipt row.
+    for (const absent of [undefined, {schemaVersion: 'knowledge_use@1', sources: [{knowledgeBaseId: '../x'}], citations: []}]) {
+      const other = reportFor(absent);
+      expect(other).not.toContain('Internal Knowledge Used');
+    }
+    expect(reportFor()).not.toContain('Knowledge references');
+  });
+
   test('renders partial warning for degraded agent results', () => {
     const generator = new HTMLReportGenerator();
     const message = '最终结果质量闸门发现 provider 没有产出可独立交付的完整结论';
@@ -143,7 +181,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-partial',
@@ -171,7 +208,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [makeEnvelopeWithQueryReview()],
       result: {
         sessionId: 'session-query-review',
@@ -199,7 +235,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-receipt',
@@ -317,6 +352,10 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('分析回执');
     expect(html).toContain('Trace 证据');
     expect(html).toContain('Evidence refs');
+    // A receipt written before the reference/proof split renders without those rows.
+    expect(html).toContain('<span>断言总数</span><span>5</span>');
+    expect(html).toContain('<span>未支持</span><span>1</span>');
+    expect(html).not.toContain('<span>引用匹配</span>');
     expect(html).toContain('report-receipt');
     expect(html).toContain('snapshot-receipt');
     expect(html).toContain('Capability Manifest');
@@ -354,7 +393,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: 1,
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-capability-status',
@@ -376,7 +414,8 @@ describe('HTMLReportGenerator', () => {
           generatedAt: 1,
           traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
           nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
-          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0,
+            referencesMatchedClaims: 0, propositionProvedClaims: 0},
           qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
           outputs: {},
           capabilityManifest: {
@@ -392,12 +431,14 @@ describe('HTMLReportGenerator', () => {
 
     expect(html).toContain(reason);
     expect(html).not.toContain('must_not_render');
+    expect(html).toContain('<span>引用匹配</span><span>0</span>');
+    expect(html).toContain('<span>命题证明</span><span>0</span>');
   });
 
-  test('formats layered duration-like keys in ms only', () => {
+  test('keeps legacy quantities literal without declared units', () => {
     const generator = new HTMLReportGenerator() as any;
-    expect(generator.formatLayeredCellValue(1338654478, 'dur_ns')).toBe('1338.65ms');
-    expect(generator.formatLayeredCellValue(1500, 'startup_time_ms')).toBe('1500.00ms');
+    expect(generator.formatLayeredCellValue(1338654478, 'dur_ns')).toBe('1338654478');
+    expect(generator.formatLayeredCellValue(1500, 'startup_time_ms')).toBe('1500');
   });
 
   test('renders ordered conversation timeline in report', () => {
@@ -428,7 +469,6 @@ describe('HTMLReportGenerator', () => {
           sourceEventType: 'stage_transition',
         },
       ],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-2',
@@ -503,7 +543,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [summaryEnvelope],
       result: {
         sessionId: 'session-4',
@@ -528,7 +567,7 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('execute_sql_on:1:params_hash:reference');
     expect(html).toContain('total_rows');
     expect(html).toContain('10');
-    expect(html).toContain('smartperfetto-report-layout-fix-v3');
+    expect(html).toContain('smartperfetto-report-layout-fix-v4');
     expect(html).toContain('grid-template-columns: repeat(auto-fit, minmax(180px, 1fr))');
     expect(html).toContain('.header .meta .badge');
     expect(html).toContain('.summary-box .metric-card .metric-label');
@@ -539,9 +578,28 @@ describe('HTMLReportGenerator', () => {
     expect(html).toMatch(
       /\.metric-card \.value,[\s\S]*?font-size: 28px;/,
     );
-    expect(html).toContain('class="metric-label label"');
-    expect(html).toContain('class="metric-value value"');
+    expect(html).toContain('class="report-metric-table"');
+    expect(html).toContain('<th>指标</th><th>数值</th>');
     expect(html).not.toContain('无汇总数据');
+  });
+
+  test('labels a DataEnvelope whose trace side is stamped only in its provenance', () => {
+    const envelope = {
+      meta: {type: 'sql_result', version: '2.0.0', source: 'execute_sql', timestamp: 1},
+      traceProvenance: {traceId: 'trace-ref', traceSide: 'reference', paneSide: 'right'},
+      display: {layer: 'overview', format: 'summary', title: 'Provenance-marked summary'},
+      data: {summary: {title: 'SQL Summary', content: 'Total rows: 1', metrics: []}},
+    } as unknown as DataEnvelope;
+
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML({
+      traceId: 'trace-current', query: 'compare', timestamp: 1, hypotheses: [], dialogue: [],
+      dataEnvelopes: [envelope],
+      result: {sessionId: 'session-p', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.8, rounds: 1, totalDurationMs: 1},
+    } as any);
+
+    expect(html).toContain('Provenance-marked summary');
+    expect(html).toContain('右侧/参考 Trace');
   });
 
   test('renders every claim, reference, verifier issue and identity without preview-only tails', () => {
@@ -614,7 +672,7 @@ describe('HTMLReportGenerator', () => {
     } as any;
 
     const html = new HTMLReportGenerator().generateAgentDrivenHTML(data);
-    expect(html).toContain('未核验原因：结论声明格式无效，断言未进入核验：invalid_relation_proposal:invalid_kind,invalid_semantics');
+    expect(html).toContain('断言核验: 未核验 — 无结构化断言（结论声明格式无效，断言未进入核验：invalid_relation_proposal:invalid_kind,invalid_semantics）');
   });
 
   test('keeps formal reference roles and complete values visible without raw diagnostic bundles', () => {
@@ -877,7 +935,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [envelope],
       result: {
         sessionId: 'session-claim',
@@ -967,7 +1024,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [firstEnvelope, secondEnvelope],
       result: {
         sessionId: 'session-claim-duplicate',
@@ -997,7 +1053,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [firstEnvelope, secondEnvelope],
       result: {
         sessionId: 'session-claim-duplicate',
@@ -1054,7 +1109,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [envelope],
       result: {
         sessionId: 'session-source-ref-only',
@@ -1114,7 +1168,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [diagnosticEnvelope],
       result: {
         sessionId: 'session-5',
@@ -1136,6 +1189,43 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('无数据');
   });
 
+  test('renders skipped and failed steps as not observed instead of an empty table', () => {
+    const generator = new HTMLReportGenerator();
+    const tableEnvelope = (stepId: string, meta: Partial<DataEnvelope['meta']>): DataEnvelope => ({
+      meta: {type: 'skill_result', version: '2.0.0', source: 'click_response_analysis', timestamp: Date.now(),
+        skillId: 'click_response_analysis', stepId, ...meta},
+      display: {layer: 'list', format: 'table', title: stepId},
+      data: {columns: ['event_count'], rows: []},
+    });
+    const render = (outputLanguage: 'zh-CN' | 'en') => generator.generateAgentDrivenHTML({
+      traceId: 'trace-skip',
+      query: '分析点击响应',
+      timestamp: Date.now(),
+      hypotheses: [],
+      dialogue: [],
+      outputLanguage,
+      dataEnvelopes: [
+        tableEnvelope('input_events', {executionStatus: 'skipped',
+          executionMessage: 'Step skipped: its condition was not met (${has_input} > 0)'}),
+        tableEnvelope('optional_probe', {executionStatus: 'optional_error', executionError: 'no such table: android_input_events'}),
+      ],
+      result: {sessionId: 'session-skip', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.8, rounds: 1, totalDurationMs: 1000},
+    });
+
+    const zh = render('zh-CN');
+    expect(zh).toContain('未执行：条件不满足');
+    expect(zh).toContain('${has_input} &gt; 0');
+    expect(zh).toContain('查询失败');
+    expect(zh).toContain('no such table: android_input_events');
+    expect(zh).not.toContain('>无数据<');
+    expect(zh).not.toContain('0 行');
+    const en = render('en');
+    expect(en).toContain('Not run: condition not met');
+    expect(en).toContain('Query failed');
+    expect(en).not.toContain('>No data<');
+  });
+
   test('renders generic SQL DataEnvelope with an explanatory report title and purpose', () => {
     const generator = new HTMLReportGenerator();
     const html = generator.generateAgentDrivenHTML({
@@ -1144,7 +1234,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [{
         meta: {
           type: 'sql_result',
@@ -1310,7 +1399,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-3',
@@ -1342,7 +1430,7 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('cdn.jsdelivr.net');
   });
 
-  test('renders case recommendations with strong guidance and partial evidence gaps', () => {
+  test('renders case recommendations as signature matches with their evidence and gaps', () => {
     const generator = new HTMLReportGenerator();
     const html = generator.generateAgentDrivenHTML({
       traceId: 'trace-case-rec',
@@ -1350,7 +1438,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-case-rec',
@@ -1372,6 +1459,7 @@ describe('HTMLReportGenerator', () => {
               primaryRootCause: 'shader_compile',
               matchStrength: 'strong',
               evidenceRefs: ['ev_shader_compile'],
+              matchedSignatures: ['reason_code', 'render_slices'],
               learnedProvenance: {
                 candidateId: 'cand-html-1',
                 supportingEvidence: 3,
@@ -1402,6 +1490,9 @@ describe('HTMLReportGenerator', () => {
               primary_root_cause: 'sched_delay_in_slice',
               match_strength: 'partial',
               evidence_gap: '缺少 CPU 频率 ramp 与掉帧窗口重叠证据。',
+              // A hit from before evidence references were fixed: its signature names were copied in.
+              evidenceRefs: ['reason_code'],
+              matchedSignatures: ['reason_code'],
               recommendations: {
                 app: [{
                   id: 'app.reduce_ui_work',
@@ -1423,13 +1514,16 @@ describe('HTMLReportGenerator', () => {
       },
     });
 
-    expect(html).toContain('相似案例与优化建议');
+    expect(html).toContain('人工案例签名匹配');
+    expect(html).toContain('不是经过验证的结论');
     expect(html).toContain('case_id');
     expect(html).toContain('scroll_shader_compile_pixel8_001');
     expect(html).toContain('学习案例');
     expect(html).toContain('3 次正向反馈');
-    expect(html).toContain('strong 匹配');
-    expect(html).toContain('可作为直接建议');
+    expect(html).toContain('strong：必需签名全部满足，且有支持签名匹配');
+    expect(html).not.toContain('可作为直接建议');
+    expect(html).toContain('证据: <code>ev_shader_compile</code>');
+    expect(html).toContain('匹配签名: <code>reason_code</code>, <code>render_slices</code>');
     expect(html).toContain('App 侧建议');
     expect(html).toContain('OEM/厂商侧建议');
     expect(html).toContain('applies_when');
@@ -1437,10 +1531,11 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('risks');
     expect(html).toContain('预热会增加启动或首屏内存/CPU');
     expect(html).toContain('scroll_scheduler_freq_mixed_001');
-    expect(html).toContain('partial 匹配');
-    expect(html).toContain('仅作背景参考');
+    expect(html).toContain('partial：必需签名全部满足，没有支持签名匹配');
     expect(html).toContain('evidence_gap');
     expect(html).toContain('缺少 CPU 频率 ramp 与掉帧窗口重叠证据。');
+    // A signature name is shown as a match, never as evidence.
+    expect(html).not.toContain('证据: <code>reason_code</code>');
   });
 
   test('renders agent-driven report shell in English when configured', () => {
@@ -1460,7 +1555,6 @@ describe('HTMLReportGenerator', () => {
         text: 'Starting analysis',
         timestamp: Date.now(),
       }],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-en',
@@ -1494,4 +1588,200 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('对话时间线');
     expect(html).not.toContain('查看原始 Mermaid 图');
   });
+});
+
+
+describe('complete HTML report presentation', () => {
+  const envelope = (data: unknown, format = 'table', meta: Record<string, unknown> = {}): DataEnvelope => ({
+    meta: {type: 'sql_result', version: '2.0', source: 'execute_sql', timestamp: 1, ...meta},
+    display: {layer: 'overview', format, title: 'Captured observations'}, data,
+  } as DataEnvelope);
+  const report = (dataEnvelopes: DataEnvelope[], language: 'zh-CN' | 'en' = 'zh-CN') =>
+    new HTMLReportGenerator().generateAgentDrivenHTML({
+      traceId: 'trace-report', query: 'Explain observations', outputLanguage: language,
+      timestamp: 1714600000000, hypotheses: [], dialogue: [], dataEnvelopes,
+      result: {sessionId: 'report-session', success: true, findings: [], hypotheses: [],
+        conclusion: 'Keep the canonical conclusion.', confidence: 0.8, rounds: 1, totalDurationMs: 10},
+    });
+
+  test('retains short runtime duration instead of rounding it to zero seconds', () => {
+    expect(report([])).toContain('>10 ms</div>');
+  });
+
+  test.each(['summary', 'metric'])('renders %s observations with precise values, units and explicit severity', format => {
+    const html = report([envelope({summary: {title: 'Observed metrics', content: '', metrics: [
+      {label: 'thread_id', value: '00123', severity: 'info'},
+      {label: 'duration', value: 6.944123456, unit: 'ms', severity: 'warning'},
+      {label: '<img src=x onerror=alert(1)>', value: '<script>bad()</script>', unit: '|ms', severity: 'critical'},
+    ]}}, format, {evidenceRefId: 'captured-metric-ref', sourceToolCallId: 'captured-tool'})], 'en');
+    expect(html).toContain('class="report-metric-table"');
+    expect(html).toContain('6.944123456ms');
+    expect(html).toContain('00123');
+    expect(html).toContain('Warning');
+    expect(html).toContain('Critical');
+    expect(html).toContain('&lt;script&gt;bad()&lt;/script&gt;|ms');
+    expect(html).not.toContain('<img src=x');
+    expect(html).not.toContain('🟢');
+    expect(html).toContain('captured-metric-ref');
+    expect(html).toContain('captured-tool');
+    expect(html).not.toContain('No data');
+  });
+
+  test('retains envelopes that differ only in middle rows, even with the same evidence identity', () => {
+    const first = Array.from({length: 12}, (_, i) => [i, i === 5 ? 'middle-a' : 'same']);
+    const second = first.map(row => [...row]); second[5][1] = 'middle-b';
+    for (const meta of [{}, {evidenceRefId: 'same-ref', sourceToolCallId: 'same-tool'}]) {
+      const html = report([envelope({columns: ['id', 'value'], rows: first}, 'table', meta),
+        envelope({columns: ['id', 'value'], rows: second}, 'table', meta)]);
+      expect(html).toContain('middle-a'); expect(html).toContain('middle-b');
+    }
+  });
+
+  test('retains long summary tails and all captured consumer evidence', () => {
+    const shared = 'Prefix '.repeat(100);
+    const html = report([
+      envelope({summary: {title: 'First', content: shared + 'FIRST_TAIL'}}, 'summary'),
+      envelope({summary: {title: 'Second', content: shared + 'SECOND_TAIL'}}, 'summary'),
+      envelope({columns: ['value'], rows: [['scrolling evidence']]}, 'table', {skillId: 'scrolling_analysis', stepId: 'get_app_jank_frames'}),
+      envelope({columns: ['value'], rows: [['CONSUMER_EVIDENCE']]}, 'table', {skillId: 'consumer_jank_detection', stepId: 'consumer_jank_summary'}),
+    ]);
+    expect(html).toContain('FIRST_TAIL'); expect(html).toContain('SECOND_TAIL');
+    expect(html).toContain('CONSUMER_EVIDENCE');
+  });
+
+  test('deduplicates only a complete identical envelope', () => {
+    const data = envelope({columns: ['value'], rows: [['identical']]});
+    const html = report([data, JSON.parse(JSON.stringify(data))]);
+    expect(html.match(/class="envelope-card"/g)).toHaveLength(1);
+  });
+
+  test('keeps varying metadata in rows and maps reordered metadata by column name', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const data = envelope({columns: ['process_name', 'value'], rows: [['app-a', 1], ['app-b', 2]]});
+    data.display.columns = [{name: 'value', type: 'number'}, {name: 'process_name', type: 'string', label: 'Process'}];
+    data.display.metadataFields = ['process_name'];
+    let html = generator.generateTableFromEnvelope(data, null);
+    expect(html).toContain('app-a'); expect(html).toContain('app-b'); expect(html).toContain('<th>Process</th>');
+    data.data.rows = [['app-a', 1], ['app-a', 2]];
+    html = generator.generateTableFromEnvelope(data, null);
+    expect(html).toContain('Process: <strong>app-a</strong>');
+    expect(html).not.toContain('Process: <strong>1</strong>');
+  });
+
+  test('renders every legacy column and nested value, and allows primitive hidden rows to expand', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const row = Object.fromEntries(Array.from({length: 14}, (_, i) => [`field_${i}`, i]));
+    expect(generator.renderDataTable([row], [])).toContain('Field 13');
+    expect(generator.renderDataTable(['first'], ['HIDDEN_PRIMITIVE'])).toContain('toggleTableRows');
+    const nested = Object.fromEntries(Array.from({length: 14}, (_, i) => [`field_${i}`, Array.from({length: 9}, (_, j) => `value_${i}_${j}`)]));
+    expect(generator.renderNestedObject(nested)).toContain('value_13_8');
+    expect(generator.formatLayeredCellValue(nested, 'data')).toContain('value_13_8');
+    expect(generator.renderDeepAnalysisCard({items: [{tail: 'ARRAY_OBJECT_TAIL'}]}, 0)).toContain('ARRAY_OBJECT_TAIL');
+  });
+
+  test('does not infer unit, percentage or health from legacy names and preserves numeric precision', () => {
+    const generator = new HTMLReportGenerator() as any;
+    expect(generator.formatLayeredCellValue(6.944123456, 'time_ms')).toBe('6.944123456');
+    expect(generator.formatLayeredCellValue(0.25, 'failure_rate')).toBe('0.25');
+    expect(generator.formatCellValue(6.944123456, 'value')).toBe('6.944123456');
+    const html = generator.renderOverviewData({duration: 6.944123456, error_rate: 0.25, observed: false});
+    expect(html).toContain('6.944123456'); expect(html).not.toContain('25.0%');
+    expect(html).not.toContain('#10b981'); expect(html).not.toContain('❌');
+  });
+
+  test('respects authored time units and does not assume unknown units are seconds', () => {
+    const generator = new HTMLReportGenerator() as any;
+    expect(generator.formatCellValueFromDefinition(2.5, {name: 'value', type: 'duration', unit: 'ms'}, null)).toContain('2.5 ms');
+    const unknown = generator.formatCellValueFromDefinition(5, {name: 'value', type: 'duration', format: 'duration_ms', unit: 'frames'}, null);
+    expect(unknown).not.toContain('5000'); expect(unknown).toContain('5');
+    expect(generator.formatCellValueFromDefinition(0.5, {name: 'value', type: 'percentage', format: 'percentage', unit: '%'}, null)).toContain('0.5%');
+    expect(generator.formatCellValueFromDefinition(6.944123456, {name: 'value', type: 'number'}, null)).toBe('6.944123456');
+  });
+
+  test('retains chart data and timeline payloads instead of claiming there is no data', () => {
+    const html = report([
+      envelope({chart: {type: 'bar', data: [{label: 'CHART_OBSERVATION', value: 6.944123456}]}}, 'chart'),
+      envelope({text: 'TIMELINE_OBSERVATION'}, 'timeline'),
+    ]);
+    expect(html).toContain('CHART_OBSERVATION'); expect(html).toContain('6.944123456');
+    expect(html).toContain('TIMELINE_OBSERVATION'); expect(html).not.toContain('无数据');
+  });
+
+  test('escapes legacy identity, SQL, Skill headings and generates safe deep-section control ids', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const payload = '<img src=x onerror="alert(1)">';
+    const html = generator.generateHTML({sessionId: payload, traceId: payload, question: 'Question', answer: 'Answer',
+      timestamp: 1, metrics: {totalDuration: 1, iterationsCount: 1, sqlQueriesCount: 1},
+      collectedResults: [{sql: payload, timestamp: 1, result: {columns: [], rows: [], rowCount: 0, durationMs: 1}}],
+      skillEngineResult: {skillName: payload, sections: {step: {title: payload, data: [{value: 1}]}}, diagnostics: []},
+    });
+    expect(html).not.toContain('<img src=x'); expect(html).toContain('&lt;img');
+    const deep = generator.generateLayerContent({["session_'bad"]: {["frame_'bad"]: {display: {title: 'Frame'}, data: {diagnosis_summary: 'summary'}}}}, 'deep');
+    expect(deep).not.toContain("toggleDeepSession('session_'bad')");
+    expect(deep).not.toContain("id=\"session_'bad");
+  });
+  test('keeps raw timestamps, constant nested metadata, additional columns and complete conversation text', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const shared = {nested: 'x'.repeat(200) + 'METADATA_TAIL'};
+    expect(generator.generateTable(['event_ts', 'event_ts_rel', 'shared'], [
+      {event_ts: 'ABSOLUTE_ANCHOR', event_ts_rel: 0, shared},
+      {event_ts: 'ABSOLUTE_ANCHOR_2', event_ts_rel: 1, shared},
+    ])).toContain('METADATA_TAIL');
+    expect(generator.generateTable(['event_ts', 'event_ts_rel'], [{event_ts: 'ABSOLUTE_ANCHOR', event_ts_rel: 0}])).toContain('ABSOLUTE_ANCHOR');
+    const data = envelope({columns: ['shown', 'internal', 'extra'], rows: [[1, 'HIDDEN_VALUE', 'UNCONFIGURED_VALUE']]});
+    data.display.columns = [{name: 'shown', type: 'number'}, {name: 'internal', type: 'string', hidden: true}];
+    const html = generator.generateTableFromEnvelope(data, null, 'en');
+    expect(html).toContain('Additional captured columns');
+    expect(html).toContain('HIDDEN_VALUE'); expect(html).toContain('UNCONFIGURED_VALUE');
+    const timeline = generator.normalizeConversationTimeline([{ordinal: 1, text: 'x'.repeat(300) + 'TIMELINE_TAIL', phase: 'progress'}], [], 'en');
+    expect(timeline[0].text).toContain('TIMELINE_TAIL');
+  });
+
+  test('does not round relative time or introduce binary percentage artifacts', () => {
+    const generator = new HTMLReportGenerator() as any;
+    expect(generator.formatCellValueFromDefinition('1234567890123456789',
+      {name: 'event', type: 'timestamp', format: 'timestamp_relative', unit: 'ns'}, 1234567890000000000n)).toContain('0.123456789s');
+    expect(generator.formatCellValueFromDefinition(0.29, {name: 'value', type: 'percentage', format: 'percentage', unit: 'ratio'}, null)).toBe('29%');
+    expect(generator.formatCellValueFromDefinition(-0.00291, {name: 'value', type: 'percentage', format: 'percentage', unit: 'ratio'}, null)).toBe('-0.291%');
+  });
+
+  test('retains all case matches and unrepresented legacy frame/card fields', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const html = generator.renderCaseRecommendationsSection({caseRecommendations: Array.from({length: 12}, (_, i) =>
+      ({caseId: 'case_' + i, title: 'MATCH_' + i}))}, 'en');
+    expect(html).toContain('MATCH_11'); expect(html).not.toContain('hits omitted');
+    expect(generator.renderDeepAnalysisCard({title: 'Title', name: 'ADDITIONAL_NAME', id: 'ACTUAL_ID', type: 'category', severity: 'warning'}, 0)).toContain('ADDITIONAL_NAME');
+    expect(generator.renderDeepAnalysisCard({title: 'Title', id: 'ACTUAL_ID'}, 0)).toContain('ACTUAL_ID');
+    const frames = generator.renderDeepFrameAnalysis({full_analysis: {
+      extra: 'FRAME_TAIL', cpu_freq_timeline: Array.from({length: 25}, (_, i) => ({cpu: i, freq_mhz: 100, relative_ms: i})),
+    }});
+    expect(frames).toContain('FRAME_TAIL'); expect(frames).toContain('C24'); expect(frames).not.toContain('还有 5 次变化');
+  });
+
+  test('malformed verification stays annotated without blocking the readable conclusion', () => {
+    const data = claimDetailReport({claims: []});
+    data.result.claimVerificationResult = {schemaVersion: 'claim_verifier@2', passed: true, claimResults: null} as any;
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML(data);
+    expect(html).toContain('Keep the original conclusion.');
+    expect(html).toContain('核验详情不可用');
+  });
+
+  test('retains structured legacy details and escapes empty-section titles', () => {
+    const generator = new HTMLReportGenerator() as any;
+    expect(generator.generateDetailContent({success: true, sections: {detail: {title: 'Detail', data: {text: 'STRUCTURED_DETAIL_TAIL'}}}})).toContain('STRUCTURED_DETAIL_TAIL');
+    const payload = '<img src=x onerror="alert(1)">';
+    const html = generator.generateDetailContent({success: true, sections: {empty: {title: payload, data: []}}});
+    expect(html).not.toContain('<img'); expect(html).toContain('&lt;img');
+    expect(generator.generateDetailContent({success: true, sections: {frame_diagnosis: {data: [{diagnosis: 'Finding', detail: 'DIAGNOSTIC_TAIL'}]}}})).toContain('DIAGNOSTIC_TAIL');
+  });
+
+  test('legacy frame observations retain zero counts and leave missing frequency unknown', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const html = generator.renderDeepFrameAnalysis({full_analysis: {
+      cpu_frequency: {big_avg_mhz: 1200}, main_thread_slices: [{name: 'zero-count', total_ms: 1, count: 0}],
+    }});
+    expect(html).not.toContain('>0 MHz');
+    expect(html).toMatch(/zero-count<\/td>[\s\S]*?>0<\/td>/);
+  });
+
 });

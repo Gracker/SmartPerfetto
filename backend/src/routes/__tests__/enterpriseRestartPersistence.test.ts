@@ -29,6 +29,10 @@ import {
 import agentRoutes from '../agentRoutes';
 import reportRoutes, { persistReport, reportStore } from '../reportRoutes';
 import traceRoutes from '../simpleTraceRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -65,13 +69,13 @@ function restoreEnvValue(key: string, value: string | undefined): void {
   }
 }
 
-function makeApp(): express.Express {
+async function makeApp() {
   const app = express();
   app.use(express.json());
   app.use('/api/traces', traceRoutes);
   app.use('/api/reports', reportRoutes);
   app.use('/api/agent/v1', agentRoutes);
-  return app;
+  return loopbackServers.listen(app);
 }
 
 function ssoHeaders(req: request.Test, workspaceId = WORKSPACE_ID): request.Test {
@@ -124,6 +128,7 @@ async function seedRestartState(): Promise<void> {
     workspaceId: WORKSPACE_ID,
     userId: USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
   });
 
   const persistence = SessionPersistenceService.getInstance();
@@ -164,6 +169,7 @@ async function seedRestartState(): Promise<void> {
     traceId: TRACE_ID,
     query: 'restart interrupted running run',
     mode: 'agent',
+    privateContext: NO_PRIVATE_CONTEXT,
   }, 'running', { now: GENERATED_AT + 2000 });
 }
 
@@ -189,6 +195,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await loopbackServers.close();
   SessionPersistenceService.resetForTests();
   resetAnalysisRunStoreForTests();
   reportStore.clear();
@@ -221,7 +228,7 @@ describe('enterprise restart persistence', () => {
       error: 'backend restart during active analysis',
     });
 
-    const app = makeApp();
+    const app = await makeApp();
 
     const tracesRes = await ssoHeaders(request(app).get('/api/traces'));
     expect(tracesRes.status).toBe(200);

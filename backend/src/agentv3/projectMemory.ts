@@ -57,6 +57,7 @@ import {
   removeScopedKnowledgeRecord,
   upsertScopedKnowledgeRecord,
 } from '../services/scopedKnowledgeStore';
+import {KnowledgeCurationError} from '../services/knowledgeCurationError';
 
 const VALID_PROMOTION_TRIGGERS: ReadonlySet<MemoryPromotionTrigger> = new Set([
   'user_feedback',
@@ -296,22 +297,22 @@ export class ProjectMemory {
   ): void {
     this.load();
     if (!VALID_PROMOTION_TRIGGERS.has(policy.trigger)) {
-      throw new Error(
+      throw new KnowledgeCurationError('memory_promotion_rejected',
         `Invalid promotion trigger '${policy.trigger}'; auto-promotion is forbidden`,
       );
     }
     if (policy.toScope === 'world' && policy.trigger !== 'reviewer_approval') {
-      throw new Error(
+      throw new KnowledgeCurationError('memory_promotion_rejected',
         `Promotion to scope='world' requires trigger='reviewer_approval'; got '${policy.trigger}'`,
       );
     }
     if (policy.trigger === 'reviewer_approval' && !policy.reviewer) {
-      throw new Error(
+      throw new KnowledgeCurationError('memory_promotion_rejected',
         "Promotion with trigger='reviewer_approval' requires a `reviewer` field",
       );
     }
     if (policy.trigger === 'skill_eval_pass' && !policy.evalCaseId) {
-      throw new Error(
+      throw new KnowledgeCurationError('memory_promotion_rejected',
         "Promotion with trigger='skill_eval_pass' requires an `evalCaseId` field",
       );
     }
@@ -323,10 +324,10 @@ export class ProjectMemory {
         )?.record
       : this.entries.get(entryId);
     if (!entry) {
-      throw new Error(`Cannot promote: entry '${entryId}' not found`);
+      throw new KnowledgeCurationError('memory_entry_not_found', `Cannot promote: entry '${entryId}' not found`, 404);
     }
     if (entry.scope !== policy.fromScope) {
-      throw new Error(
+      throw new KnowledgeCurationError('memory_promotion_rejected',
         `Promotion fromScope='${policy.fromScope}' does not match current scope '${entry.scope}'`,
       );
     }

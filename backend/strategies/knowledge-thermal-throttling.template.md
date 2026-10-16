@@ -39,20 +39,27 @@ Actual frequency stays where it always was: `cpufreq` counters on `cpu_counter_t
 Rank the answer by what the trace can actually support. Each rung down is a weaker claim, not a
 worse device.
 
-1. **Cooling-device transition coincident with the limit change** — strongest. A `cdev` state step
-   at the same timestamp as a `cpu_max_frequency_limit` change names the thermal actor directly.
-   Report the cooling device name and the temperature context around it.
+1. **Limit write applied by a tied cooling device** — strongest. The `cpu_max_frequency_limit` value
+   drops within 1 ms AFTER a tightening `cdev` transition, and that cooling device is tied to the
+   same policy by timing (most of its transitions are followed by that policy's limit changes). The
+   device name never establishes the tie. Report the device and the temperature context.
 2. **Userspace thermal daemon active shortly before the limit change** — a *candidate*, never a
    confirmation. On platforms where the daemon writes sysfs directly there is no kernel event to
    correlate, so proximity is all there is.
-3. **Limit changed with no cooling or thermal evidence** — non-thermal until proven otherwise.
-   PowerHAL and vendor perf services, game/battery/power-saving modes, and OEM policy daemons all
-   move the same cap. Say the limit changed and that the trigger is unidentified.
-4. **Only a cpufreq ceiling observed, no limit track at all** — an observation, not an attribution.
-   The capability is missing; ask for the ftrace events rather than inferring a cause.
+3. **Cooling activity that did not apply this write** — a tied device merely active, or only
+   devices not tied to this policy active. Concurrent mitigation, not the actor.
+4. **Limit changed with no thermal evidence** — the trigger is unidentified. PowerHAL and vendor perf
+   services, game/battery/power-saving modes, and OEM policy daemons all move the same cap, but
+   absence of observed thermal evidence is not proof of a non-thermal trigger — and when the trace
+   captured no cooling transitions at all, thermal evidence was simply not recorded.
+5. **Onset not observed** — the limit was already in force at the first sample (or right after an
+   invalid sample). Report duration and impact only.
+6. **Only a cpufreq ceiling observed, no valid max-limit sample** — an observation, not an
+   attribution. The capability is missing; ask for the ftrace events rather than inferring a cause.
 
-A claim of *thermal* throttling requires rung 1 or 2 plus temperature context. Rungs 3 and 4 must
-never be written as thermal.
+Every limit write is judged on its own: an episode can hold confirmed tightenings and unexplained
+ones, and a relaxation is never a cause. A claim of *thermal* throttling requires rung 1, or rung 2
+worded as a candidate, plus temperature context. Rungs 3–6 must never be written as thermal.
 
 ## Platform differences
 

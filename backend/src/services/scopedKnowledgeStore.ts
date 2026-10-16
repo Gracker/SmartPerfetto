@@ -6,18 +6,18 @@ import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
-import { openEnterpriseDb } from './enterpriseDb';
+import { openEnterpriseDb, openEnterpriseDbReadOnly } from './enterpriseDb';
+import { RETIRED_RAG_CHUNK_SQL } from './retiredCaseData';
 import { createEnterpriseWorkspaceRepository } from './enterpriseRepository';
 import {
   enterpriseDbReadAuthorityEnabled,
   enterpriseDbWritesEnabled,
   legacyFilesystemWritesEnabled,
 } from './enterpriseMigration';
+import {ragPublicAudienceSql} from './rag/ragChunkAudience';
 import {buildRagSearchTokenText} from './rag/searchTokens';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 
-const DEFAULT_TENANT_ID = 'default-dev-tenant';
-const DEFAULT_WORKSPACE_ID = 'default-workspace';
-const DEFAULT_USER_ID = 'dev-user-123';
 const SAFE_SCOPE_SEGMENT_RE = /^[a-zA-Z0-9._:-]+$/;
 
 interface KnowledgeEntryRow extends Record<string, unknown> {
@@ -51,6 +51,8 @@ interface KnowledgeEnvelope<T> {
   sourceWorkspaceId: string;
   sourceRunId?: string;
   record: T;
+  /** See `UpsertOptions.attestation`. */
+  attestation?: unknown;
 }
 
 export interface KnowledgeScope {
@@ -72,6 +74,7 @@ export interface ScopedKnowledgeRecord<T> {
   externalId: string;
   rowScope: string;
   record: T;
+  attestation?: unknown;
   sourceRunId?: string;
   createdAt: number;
   updatedAt: number;
@@ -80,9 +83,10 @@ export interface ScopedKnowledgeRecord<T> {
 /** Enumerate DB partitions that own one of the requested row scopes. */
 export function listScopedKnowledgePartitions(
   rowScopes: readonly string[],
+  opts: KnowledgeReadOptions = {},
 ): KnowledgeScope[] {
   if (rowScopes.length === 0) return [];
-  return withKnowledgeDb((db) => {
+  return readKnowledgeDb(opts, (db) => {
     const params: Record<string, string> = {};
     const placeholders = rowScopes.map((rowScope, index) => {
       params[`rowScope${index}`] = rowScope;
@@ -97,13 +101,26 @@ export function listScopedKnowledgePartitions(
       tenantId: row.tenant_id,
       workspaceId: row.workspace_id,
     }));
-  });
+  }) ?? [];
+}
+
+interface KnowledgeReadOptions {
+  /**
+   * Never create or migrate the database. With no database yet, read nothing;
+   * with no knowledge table yet, read nothing, or throw
+   * `knowledge_store_unmigrated` when `requireReadable`.
+   */
+  readOnly?: boolean;
+  /** A row that exists but cannot be decoded throws instead of reading as missing. */
+  requireReadable?: boolean;
 }
 
 interface ListOptions {
   rowScope?: string;
   rowScopePrefix?: string;
   includeSystem?: boolean;
+  /** A listed row that cannot be decoded throws instead of being skipped. */
+  requireReadable?: boolean;
 }
 
 interface UpsertOptions {
@@ -111,6 +128,13 @@ interface UpsertOptions {
   updatedAt?: number;
   sourceRunId?: string;
   embeddingRef?: string;
+  /**
+   * A writer's proof about the record, kept in the row envelope beside it so a
+   * caller that shapes only the record cannot supply it. It survives only a
+   * write that sets it again: any other write, one by an older version that
+   * rebuilds the envelope included, drops it.
+   */
+  attestation?: unknown;
 }
 
 export interface ScopedKnowledgeUpsert<T> {
@@ -128,9 +152,9 @@ export interface ScopedRagGenerationPair {
 
 export interface ScopedRagSearchOptions {
   rowScopes?: readonly string[];
-  selection: 'public' | 'codebase' | 'knowledge' | 'none';
+  /** `public` reads the public audience; `codebase` reads exactly the given codebase generations. */
+  selection: 'public' | 'codebase';
   codebaseGenerations?: readonly ScopedRagGenerationPair[];
-  knowledgeSourceGenerations?: readonly ScopedRagGenerationPair[];
   scopeFingerprint?: string;
   queryTokens?: readonly string[];
   candidateLimit?: number;
@@ -153,7 +177,11 @@ export interface ScopedRagMaintenanceFilter {
   codebaseId?: string;
   knowledgeSourceId?: string;
   sourceGeneration?: string;
-  excludeSourceGeneration?: string;
+  /**
+   * With `sourceGeneration` `codebase_1`, also match chunks written before
+   * chunks carried a generation, as search does.
+   */
+  includeLegacyDefaultGeneration?: boolean;
   scopeFingerprint?: string;
 }
 
@@ -167,7 +195,7 @@ interface MutateOptions extends UpsertOptions {
   rowScope: string;
 }
 
-interface ScopedKnowledgeMutation<T> {
+export interface ScopedKnowledgeMutation<T> {
   kind: string;
   externalId: string;
   mutate: (current: T | undefined) => T;
@@ -215,7 +243,7 @@ export function resolveKnowledgeScope(
   );
   const userId = scope.userId
     ? sanitizeScopeSegment(scope.userId, 'userId')
-    : DEFAULT_USER_ID;
+    : DEFAULT_DEV_USER_ID;
   const sourceRunId = scope.sourceRunId || scope.runId;
   return {
     tenantId,
@@ -318,37 +346,41 @@ export function mutateScopedKnowledgeRecord<T>(
  * Atomically update one SQLite record and a synchronous replica side effect.
  * The side effect runs after the database write but before COMMIT, so a file
  * lock/persist failure rolls the SQLite transaction back instead of leaving a
- * silently successful half-write.
+ * silently successful half-write. `withReplica` holds a replica's own lock
+ * around the read, the mutation and the side effect, for a mutation that must
+ * see the replica as it will be written; it is entered inside the transaction,
+ * so locks are still taken database first.
  */
 export function mutateScopedKnowledgeRecordWithSideEffect<T>(
   kind: string,
   externalId: string,
   scopeInput: KnowledgeScope | undefined,
-  mutate: (current: T | undefined) => {record: T; rowScope: string},
-  sideEffect: (record: T, current: T | undefined) => void,
+  mutate: (current: T | undefined, currentAttestation: unknown) =>
+    {record: T; rowScope: string; attestation?: unknown},
+  sideEffect: (record: T, current: T | undefined, attestation: unknown) => void,
   opts: UpsertOptions = {},
+  withReplica: <R>(body: () => R) => R = body => body(),
 ): T {
   const scope = resolveKnowledgeScope(scopeInput);
   return withKnowledgeDb((db) => {
-    const tx = db.transaction(() => {
+    const tx = db.transaction(() => withReplica(() => {
       ensureEnterpriseKnowledgeGraph(db, scope);
       const repo = createEnterpriseWorkspaceRepository<KnowledgeEntryRow>(db, 'memory_entries');
       const rowId = scopedKnowledgeRowId(kind, externalId, scope);
       const existing = repo.getById(scope, rowId);
-      const current = existing
-        ? parseKnowledgeRow<T>(kind, existing)?.record
-        : undefined;
-      const next = mutate(current);
+      const parsed = existing ? parseKnowledgeRow<T>(kind, existing) : undefined;
+      const current = parsed?.record;
+      const next = mutate(current, parsed?.attestation);
       upsertScopedKnowledgeRecordInDb(db, repo, scope, {
         kind,
         externalId,
         rowScope: next.rowScope,
         record: next.record,
-        options: opts,
+        options: {...opts, attestation: next.attestation},
       });
-      sideEffect(next.record, current);
+      sideEffect(next.record, current, next.attestation);
       return next.record;
-    });
+    }));
     return tx.immediate();
   });
 }
@@ -406,9 +438,10 @@ export function getScopedKnowledgeRecord<T>(
   kind: string,
   externalId: string,
   scopeInput?: KnowledgeScope,
+  opts: KnowledgeReadOptions = {},
 ): ScopedKnowledgeRecord<T> | undefined {
   const scope = resolveKnowledgeScope(scopeInput);
-  return withKnowledgeDb((db) => {
+  return readKnowledgeDb(opts, (db) => {
     const repo = createEnterpriseWorkspaceRepository<KnowledgeEntryRow>(
       db,
       'memory_entries',
@@ -417,7 +450,58 @@ export function getScopedKnowledgeRecord<T>(
       scope,
       scopedKnowledgeRowId(kind, externalId, scope),
     );
-    return row ? parseKnowledgeRow<T>(kind, row) : undefined;
+    if (!row) return undefined;
+    const record = parseKnowledgeRow<T>(kind, row);
+    if (!record && opts.requireReadable) throw new Error('knowledge_record_unreadable');
+    return record;
+  });
+}
+
+/** The owner columns of one RAG chunk row; the row's content is neither returned nor parsed. */
+export interface ScopedRagChunkOwnerRow {
+  /** `rag:<chunk kind>`. */
+  scope: string;
+  registryOrigin?: string;
+  codebaseId?: string;
+  sourceGeneration?: string;
+  scopeFingerprint?: string;
+}
+
+/**
+ * One RAG chunk's owner, selecting only the indexed owner columns, so a caller
+ * can decide whether it may use a chunk before reading its body. Retired case
+ * chunks are excluded as every RAG read excludes them (that filter evaluates
+ * the row, as it does for every read).
+ */
+export function getScopedRagChunkOwner(
+  kind: string,
+  externalId: string,
+  scopeInput?: KnowledgeScope,
+): ScopedRagChunkOwnerRow | undefined {
+  const scope = resolveKnowledgeScope(scopeInput);
+  return withKnowledgeDb((db) => {
+    const row = db.prepare<unknown[], {
+      scope: string;
+      rag_registry_origin: string | null;
+      rag_codebase_id: string | null;
+      rag_source_generation: string | null;
+      rag_scope_fingerprint: string | null;
+    }>(`
+      SELECT scope, rag_registry_origin, rag_codebase_id, rag_source_generation, rag_scope_fingerprint
+      FROM memory_entries
+      WHERE id = ? AND tenant_id = ? AND workspace_id = ?
+        AND scope LIKE 'rag:%'
+        AND NOT ${RETIRED_RAG_CHUNK_SQL}
+      LIMIT 1
+    `).get(scopedKnowledgeRowId(kind, externalId, scope), scope.tenantId, scope.workspaceId);
+    if (!row) return undefined;
+    return {
+      scope: row.scope,
+      ...(row.rag_registry_origin ? {registryOrigin: row.rag_registry_origin} : {}),
+      ...(row.rag_codebase_id ? {codebaseId: row.rag_codebase_id} : {}),
+      ...(row.rag_source_generation ? {sourceGeneration: row.rag_source_generation} : {}),
+      ...(row.rag_scope_fingerprint ? {scopeFingerprint: row.rag_scope_fingerprint} : {}),
+    };
   });
 }
 
@@ -466,9 +550,6 @@ function scopedRagMaintenanceWhere(
   if (Boolean(filter.codebaseId) === Boolean(filter.knowledgeSourceId)) {
     throw new Error('Exactly one RAG maintenance owner id is required');
   }
-  if (filter.sourceGeneration && filter.excludeSourceGeneration) {
-    throw new Error('RAG maintenance generation filters are mutually exclusive');
-  }
   const params: Record<string, string> = {
     tenantId: scope.tenantId,
     workspaceId: scope.workspaceId,
@@ -493,11 +574,10 @@ function scopedRagMaintenanceWhere(
   }
   if (filter.sourceGeneration) {
     params.sourceGeneration = filter.sourceGeneration;
-    clauses.push('rag_source_generation = @sourceGeneration');
-  }
-  if (filter.excludeSourceGeneration) {
-    params.excludeSourceGeneration = filter.excludeSourceGeneration;
-    clauses.push(`COALESCE(rag_source_generation, '') <> @excludeSourceGeneration`);
+    clauses.push(filter.includeLegacyDefaultGeneration
+      ? `(rag_source_generation = @sourceGeneration
+          OR (rag_source_generation IS NULL AND @sourceGeneration = 'codebase_1'))`
+      : 'rag_source_generation = @sourceGeneration');
   }
   return {where: clauses.join('\n AND '), params};
 }
@@ -541,11 +621,9 @@ export function getScopedRagStats(
     WHERE tenant_id = @tenantId
       AND workspace_id = @workspaceId
       AND scope LIKE 'rag:%'
+      AND NOT ${RETIRED_RAG_CHUNK_SQL}
       AND (
-        (
-          scope <> 'rag:android_internals_wiki'
-          AND COALESCE(rag_registry_origin, '') <> 'codebase_registry'
-        )
+        ${ragPublicAudienceSql({scope: 'scope', registryOrigin: 'rag_registry_origin', codebaseId: 'rag_codebase_id'})}
         OR (
           @scopeFingerprint IS NOT NULL
           AND rag_scope_fingerprint = @scopeFingerprint
@@ -615,7 +693,11 @@ export function listScopedKnowledgeRecords<T>(
       ORDER BY updated_at DESC, id ASC
     `).all(params);
     return rows
-      .map(row => parseKnowledgeRow<T>(kind, row))
+      .map(row => {
+        const record = parseKnowledgeRow<T>(kind, row);
+        if (!record && opts.requireReadable) throw new Error('knowledge_record_unreadable');
+        return record;
+      })
       .filter((record): record is ScopedKnowledgeRecord<T> => Boolean(record));
   });
 }
@@ -641,7 +723,9 @@ export function searchScopedRagKnowledgeRecords<T>(
       ? `((memory_entries.tenant_id = @tenantId AND memory_entries.workspace_id = @workspaceId)
           OR (memory_entries.tenant_id = @systemTenantId AND memory_entries.workspace_id = @systemWorkspaceId))`
       : `(memory_entries.tenant_id = @tenantId AND memory_entries.workspace_id = @workspaceId)`;
-    const indexClauses = [ownerClause, `memory_entries.scope LIKE 'rag:%'`];
+    // Retired case chunks are not part of the index: a store holding only
+    // them reads as empty, and they never take a candidate slot below.
+    const indexClauses = [ownerClause, `memory_entries.scope LIKE 'rag:%'`, `NOT ${RETIRED_RAG_CHUNK_SQL}`];
     const eligibleClauses = [...indexClauses, 'memory_entries.rag_unsupported_reason IS NULL'];
 
     if (opts.rowScopes && opts.rowScopes.length > 0) {
@@ -655,48 +739,31 @@ export function searchScopedRagKnowledgeRecords<T>(
       eligibleClauses.push('0');
     }
 
-    const addGenerationPairs = (
-      column: 'rag_codebase_id' | 'rag_knowledge_source_id',
-      pairs: readonly ScopedRagGenerationPair[] | undefined,
-      prefix: string,
-      allowLegacyDefault: boolean,
-    ): void => {
+    if (opts.selection === 'codebase') {
+      const pairs = opts.codebaseGenerations;
       if (!pairs || pairs.length === 0 || !opts.scopeFingerprint) {
         eligibleClauses.push('0');
-        return;
+      } else {
+        params.scopeFingerprint = opts.scopeFingerprint;
+        const pairClauses = pairs.map((pair, index) => {
+          const idName = `codebaseId${index}`;
+          const generationName = `codebaseGeneration${index}`;
+          params[idName] = pair.id;
+          params[generationName] = pair.generation;
+          // Chunks written before chunks carried a generation belong to `codebase_1`.
+          return `(memory_entries.rag_codebase_id = @${idName} AND
+            (memory_entries.rag_source_generation = @${generationName}
+              OR (memory_entries.rag_source_generation IS NULL AND @${generationName} = 'codebase_1')))`;
+        });
+        eligibleClauses.push(`(${pairClauses.join(' OR ')})`);
+        eligibleClauses.push('memory_entries.rag_scope_fingerprint = @scopeFingerprint');
       }
-      params.scopeFingerprint = opts.scopeFingerprint;
-      const pairClauses = pairs.map((pair, index) => {
-        const idName = `${prefix}Id${index}`;
-        const generationName = `${prefix}Generation${index}`;
-        params[idName] = pair.id;
-        params[generationName] = pair.generation;
-        const generationClause = allowLegacyDefault
-          ? `(memory_entries.rag_source_generation = @${generationName}
-              OR (memory_entries.rag_source_generation IS NULL AND @${generationName} = 'codebase_1'))`
-          : `memory_entries.rag_source_generation = @${generationName}`;
-        return `(memory_entries.${column} = @${idName} AND ${generationClause})`;
-      });
-      eligibleClauses.push(`(${pairClauses.join(' OR ')})`);
-      eligibleClauses.push('memory_entries.rag_scope_fingerprint = @scopeFingerprint');
-    };
-
-    if (opts.selection === 'codebase') {
-      addGenerationPairs('rag_codebase_id', opts.codebaseGenerations, 'codebase', true);
-    } else if (opts.selection === 'knowledge') {
-      addGenerationPairs(
-        'rag_knowledge_source_id',
-        opts.knowledgeSourceGenerations,
-        'knowledge',
-        false,
-      );
-    } else if (opts.selection === 'public') {
-      eligibleClauses.push(`COALESCE(memory_entries.rag_registry_origin, '') NOT IN (
-        'codebase_registry', 'external_knowledge_registry'
-      )`);
-      eligibleClauses.push(`memory_entries.scope <> 'rag:android_internals_wiki'`);
     } else {
-      eligibleClauses.push('0');
+      eligibleClauses.push(ragPublicAudienceSql({
+        scope: 'memory_entries.scope',
+        registryOrigin: 'memory_entries.rag_registry_origin',
+        codebaseId: 'memory_entries.rag_codebase_id',
+      }));
     }
 
     const addExact = (column: string, value: string | undefined, name: string): void => {
@@ -796,13 +863,32 @@ export function searchScopedRagKnowledgeRecords<T>(
   });
 }
 
-function withKnowledgeDb<T>(fn: (db: Database.Database) => T): T {
-  const db = openEnterpriseDb();
+function withKnowledgeDb<T>(
+  fn: (db: Database.Database) => T,
+  db: Database.Database = openEnterpriseDb(),
+): T {
   try {
     return fn(db);
   } finally {
     db.close();
   }
+}
+
+/** A read-only connection cannot create or migrate the schema it would read (`KnowledgeReadOptions.readOnly`). */
+function readKnowledgeDb<T>(
+  opts: KnowledgeReadOptions,
+  fn: (db: Database.Database) => T,
+): T | undefined {
+  if (!opts.readOnly) return withKnowledgeDb(fn);
+  const db = openEnterpriseDbReadOnly();
+  if (!db) return undefined;
+  return withKnowledgeDb(() => {
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_entries'`).get()) {
+      if (opts.requireReadable) throw new Error('knowledge_store_unmigrated');
+      return undefined;
+    }
+    return fn(db);
+  }, db);
 }
 
 function mutateScopedKnowledgeRecordInDb<T>(
@@ -877,6 +963,7 @@ function upsertScopedKnowledgeRecordInDb<T>(
     sourceWorkspaceId: scope.workspaceId,
     ...(sourceRunId ? {sourceRunId} : {}),
     record: entry.record,
+    attestation: options.attestation,
   };
   const updateValues = {
     scope: entry.rowScope,
@@ -1030,6 +1117,7 @@ function parseKnowledgeRow<T>(
       externalId: parsed.externalId,
       rowScope: row.scope,
       record: parsed.record,
+      ...(parsed.attestation !== undefined ? {attestation: parsed.attestation} : {}),
       ...(row.source_run_id ? {sourceRunId: row.source_run_id} : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,

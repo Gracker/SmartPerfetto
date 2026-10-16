@@ -7,12 +7,10 @@ import {createHash} from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import {
-  type CodebaseRef,
-  type CodebaseRegistry,
-  type CodebaseScope,
-} from './codebaseRegistry';
+import type {CodebaseRef, CodebaseRegistry, CodebaseScope} from './codebaseRegistry';
+import {channelAuthorizedRoots} from './codebaseCapability';
 import {PathSecurityGate} from './pathSecurityGate';
+import {hardenedGitEnvironment, hardenedGitPrefixArguments} from './subprocessHardening';
 import {
   assertCodebaseRootIdentity,
   codebaseSourcePathMatches,
@@ -140,18 +138,18 @@ function sanitizedEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function execFileUtf8(
-  command: string,
+/** Git on a registered checkout never runs its repository-controlled helpers. */
+function execGitUtf8(
+  root: string,
   args: readonly string[],
-  options: {cwd?: string; timeout: number; maxBuffer: number},
+  options: {timeout: number; maxBuffer: number},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
-      command,
-      [...args],
+      'git',
+      [...hardenedGitPrefixArguments(root), ...args],
       {
-        cwd: options.cwd,
-        env: sanitizedEnv(),
+        env: hardenedGitEnvironment(),
         encoding: 'utf8',
         timeout: options.timeout,
         maxBuffer: options.maxBuffer,
@@ -296,11 +294,15 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
     if (!resolved.success) return resolved.result;
     const args = ['context', '--repo', resolved.root];
     if (input.filePath) {
-      const filePath = this.gate.validateRelativeSourcePath(input.filePath);
-      if (!codebaseSourcePathMatches(resolved.ref, filePath)) {
+      // A path the source policy does not admit is answered as data, never echoed.
+      // Excludes come from the selection policy, as for read_codebase_file, so a
+      // path search_codebase returns is never refused here.
+      const admission = this.gate.admitRelativeSourcePath(input.filePath, {enforceConfiguredExcludes: false});
+      if (!admission.admitted) return this.unsupported(input.codebaseId, admission.reason);
+      if (!codebaseSourcePathMatches(resolved.ref, admission.path)) {
         return this.unsupported(input.codebaseId, 'source_path_outside_registered_filters');
       }
-      args.push(`--file=${filePath}`);
+      args.push(`--file=${admission.path}`);
     }
     args.push('--limit', String(limit), '--', symbol);
     return this.runGitNexus(resolved.ref, resolved.root, args, limit);
@@ -322,9 +324,7 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
     try {
       root = await this.gate.validateRoot(
         ref.rootRealpath,
-        ref.rootAuthorization === 'native_picker'
-          ? {additionalAllowlistRoots: [ref.rootRealpath]}
-          : undefined,
+        channelAuthorizedRoots(ref),
       );
       assertCodebaseRootIdentity(ref.rootRealpath, root);
     } catch {
@@ -406,16 +406,16 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
     }
     if (!indexedRevision) return 'unknown';
     try {
-      const dirty = await execFileUtf8(
-        'git',
-        ['-C', root, 'status', '--porcelain=v1', '--untracked-files=all', '--', '.'],
+      const dirty = await execGitUtf8(
+        root,
+        ['status', '--porcelain=v1', '--untracked-files=all', '--', '.'],
         {
           timeout: 1_000,
           maxBuffer: 128 * 1024,
         },
       );
       if (dirty.trim()) return 'stale';
-      const head = (await execFileUtf8('git', ['-C', root, 'rev-parse', 'HEAD'], {
+      const head = (await execGitUtf8(root, ['rev-parse', 'HEAD'], {
         timeout: 1_000,
         maxBuffer: 1024,
       })).trim();
@@ -475,7 +475,7 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
       candidate = relative;
     }
     try {
-      const filePath = this.gate.validateRelativeSourcePath(candidate);
+      const filePath = this.gate.validateRelativeSourcePath(candidate, {enforceConfiguredExcludes: false});
       return codebaseSourcePathMatches(ref, filePath) ? filePath : undefined;
     } catch {
       return undefined;

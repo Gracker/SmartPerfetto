@@ -58,6 +58,29 @@ export interface ModelEvidenceProjectionStatus {
   truncatedCellsOmitted?: number;
 }
 
+/**
+ * Marker for model-visible results whose rows carry their own artifact-wide
+ * index. A reordered sample or a page from a non-zero offset cannot be cited
+ * by its position, so each row states the index a reference must name.
+ */
+export const INDEXED_ROW_SHAPE = 'indexed_rows@1';
+
+/** A model-visible row with its zero-based index in the complete captured result. */
+export interface IndexedEvidenceRow {
+  rowIndex: number;
+  values: unknown[];
+}
+
+/** Index a contiguous page whose first row is `firstRowIndex` in the complete result. */
+export function indexEvidenceRows(page: readonly unknown[][], firstRowIndex: number): IndexedEvidenceRow[] {
+  return page.map((values, position) => ({rowIndex: firstRowIndex + position, values}));
+}
+
+/** Pick rows of the complete result by index, in the given order (e.g. a reordered sample). */
+export function indexEvidenceRowsAt(rows: readonly unknown[][], indices: readonly number[]): IndexedEvidenceRow[] {
+  return indices.map(rowIndex => ({rowIndex, values: rows[rowIndex]}));
+}
+
 export interface ModelEvidenceProjection<T = unknown> {
   data: T;
   modelProjection: ModelEvidenceProjectionStatus;
@@ -86,6 +109,22 @@ export function evidenceCaptureHash(value: unknown): string {
     return JSON.stringify(input) ?? 'null';
   };
   return createHash('sha256').update(canonical(value)).digest('hex');
+}
+
+/** A field's producer declaration; the origin is added by `nativeProducerFields`. */
+export type DeclaredFieldSemantics = Omit<CapturedFieldSemantics, 'origin'>;
+
+/**
+ * Binds a native producer's declared fields to one fingerprint of the
+ * definition that gives them meaning. The definition must contain everything
+ * that does (producer, version, columns, declarations), so a change to any of
+ * it yields a new fingerprint.
+ */
+export function nativeProducerFields(definition: unknown,
+  declared: Readonly<Record<string, DeclaredFieldSemantics>>): Record<string, CapturedFieldSemantics> {
+  const definitionFingerprint = evidenceCaptureHash(definition);
+  return Object.fromEntries(Object.entries(declared).map(([column, field]) =>
+    [column, {...field, origin: {kind: 'native_producer' as const, definitionFingerprint}}]));
 }
 
 export function captureEvidenceTable(data: unknown,
@@ -298,13 +337,23 @@ export function bindCapturedAnchorFacts(anchor: object, witness: EvidenceTableWi
 }
 export function getCapturedAnchorFacts(anchor: object): CapturedAnchorFacts | undefined {return anchorFacts.get(anchor);}
 
-const unreadableAnchors = new WeakMap<object, string>();
+const uncheckedAnchors = new WeakMap<object, string>();
 /**
  * Issued by the claim builder from a typed read outcome that shows only that
  * the product could not read the cited evidence. A copied or serialized anchor
  * carries no mark, so a reason string alone never downgrades a missing reference.
  */
 export function markUnreadableEvidenceAnchor(anchor: object, reason: string): void {
-  if (!unreadableAnchors.has(anchor)) unreadableAnchors.set(anchor, reason);
+  if (!uncheckedAnchors.has(anchor)) uncheckedAnchors.set(anchor, reason);
 }
-export function unreadableEvidenceAnchorReason(anchor: object): string | undefined {return unreadableAnchors.get(anchor);}
+/**
+ * Issued by the claim builder when a citation spans fields of mixed process
+ * scope: its target-scoped part would bind the target identity, but the
+ * citation as a whole cannot. The evidence was read and shows no conflict;
+ * like an unreadable read, the reference stays unchecked rather than missing.
+ */
+export function markIdentityUnboundEvidenceAnchor(anchor: object): void {
+  if (!uncheckedAnchors.has(anchor)) uncheckedAnchors.set(anchor, 'cited_scope_identity_unbound');
+}
+/** Why an issued mark leaves a missing reference unchecked; never derived from a reason string. */
+export function uncheckedEvidenceAnchorReason(anchor: object): string | undefined {return uncheckedAnchors.get(anchor);}

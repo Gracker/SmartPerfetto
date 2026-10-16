@@ -3,10 +3,14 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import * as fs from 'fs';
+import type {Server} from 'http';
+import {randomUUID} from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
 
 import {describe, it, expect, beforeEach, afterEach, jest} from '@jest/globals';
+import {types as utilTypes} from 'util';
+
 import express from 'express';
 import request from 'supertest';
 
@@ -21,28 +25,41 @@ import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {NativeDirectoryPicker} from '../../services/codebase/nativeDirectoryPicker';
 import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
 import {CodebaseManagementService} from '../../services/codebase/codebaseManagementService';
-import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
-import {AndroidInternalsWikiIngester} from '../../services/androidInternalsWiki/androidInternalsWikiIngester';
+import {CodebaseStateError} from '../../services/codebase/codebaseRequestError';
+import {
+  ExternalKnowledgeSourceRegistry,
+  type RegisterExternalKnowledgeSourceInput,
+} from '../../services/externalKnowledgeSourceRegistry';
+import {DocumentCollectionIngester} from '../../services/knowledge/documentCollectionIngester';
+import {DocumentCollectionStore} from '../../services/knowledge/documentCollectionStore';
+import {seedRetiredWikiChunks} from '../../../tests/helpers/retiredRagChunks';
+import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
+
+const loopbackServers = createLoopbackServerFixture();
 
 let tmpDir: string;
 let store: RagStore;
 let registry: CodebaseRegistry;
 let externalKnowledgeRegistry: ExternalKnowledgeSourceRegistry;
 let app: express.Express;
+let server: Server;
+let testInstanceId: string;
 let directoryPicker: NativeDirectoryPicker;
 let codebaseManagementService: CodebaseManagementService;
 let pickerSelectedRoot: string;
 let pickerSelectionSequence: number;
 let externalPickerDir: string | undefined;
+const originalKnowledgeRoots = process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
 const DEFAULT_SCOPE = {
   tenantId: 'default-dev-tenant',
   workspaceId: 'default-workspace',
   userId: 'dev-user-123',
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-admin-test-'));
-  store = new RagStore(path.join(tmpDir, 'rag.json'));
+  process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = tmpDir;
+  store = new RagStore(storePath());
   registry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
   externalKnowledgeRegistry = new ExternalKnowledgeSourceRegistry(
     path.join(tmpDir, 'external-knowledge-sources.json'),
@@ -66,40 +83,12 @@ beforeEach(() => {
     runCommand: async () => ({stdout: `${pickerSelectedRoot}\n`, stderr: ''}),
     idGenerator: () => `picker-selection-${++pickerSelectionSequence}`,
   });
-  const wikiGate = new PathSecurityGate({
-    allowlistRoots: [tmpDir],
-    allowedExtensions: ['.md'],
-  });
-  const skillsPath = path.join(tmpDir, 'audit-skills');
-  fs.mkdirSync(skillsPath, {recursive: true});
-  fs.writeFileSync(path.join(skillsPath, 'handler.skill.yaml'), [
-    'name: handler_callbacks',
-    'meta:',
-    '  tags: [handler]',
-    'triggers:',
-    '  keywords: [Handler]',
-  ].join('\n'));
-  const fixtureManifestPath = path.join(tmpDir, 'public-fixtures.yaml');
-  fs.writeFileSync(fixtureManifestPath, [
-    'fixtures:',
-    '  - id: fixture-a',
-    '    assertions:',
-    '      - query_id: handler_callbacks/callbacks',
-  ].join('\n'));
-  const capabilityMapPath = path.join(tmpDir, 'capability-map.yaml');
-  fs.writeFileSync(capabilityMapPath, [
-    'version: 1',
-    'domains:',
-    '  - id: handler',
-    '    terms: [handler]',
-    '    skill_tags: [handler]',
-    '    validations:',
-    '      - skill_id: handler_callbacks',
-    '        observable_claim: callback slices are observable',
-    '        assertion_ref: backend/skills/public-fixtures.yaml#fixture-a:handler_callbacks/callbacks',
-    '        article_paths: [src/article.md]',
-  ].join('\n'));
+  testInstanceId = randomUUID();
   app = express();
+  app.use((_req, res, next) => {
+    res.setHeader('x-test-instance', testInstanceId);
+    next();
+  });
   app.use(express.json({limit: '5mb'}));
   app.use('/api/rag', createRagAdminRoutes(store, {
     registry,
@@ -107,20 +96,18 @@ beforeEach(() => {
     codebaseManagementService,
     directoryPicker,
     externalKnowledgeRegistry,
-    androidInternalsWikiIngester: new AndroidInternalsWikiIngester(
-      store,
+    documentCollectionIngester: new DocumentCollectionIngester(
       externalKnowledgeRegistry,
-      wikiGate,
+      new DocumentCollectionStore(path.join(tmpDir, 'knowledge-index')),
     ),
-    androidInternalsWikiAuditPaths: {
-      capabilityMapPath,
-      skillsPath,
-      fixtureManifestPath,
-    },
   } as any));
+  server = await loopbackServers.listen(app);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await loopbackServers.close();
+  if (originalKnowledgeRoots === undefined) delete process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
+  else process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = originalKnowledgeRoots;
   if (fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   }
@@ -129,6 +116,8 @@ afterEach(() => {
   }
   externalPickerDir = undefined;
 });
+
+const storePath = () => path.join(tmpDir, 'rag.json');
 
 function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
   return {
@@ -141,25 +130,35 @@ function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
   };
 }
 
-function createCommittedWiki(rootName: string, body = 'Handler callback details'): string {
+/**
+ * A source the retired Android Internals Wiki connector registered and
+ * indexed: registration no longer types the kind, so the cast stands in for
+ * that stored state. Its RagStore chunks are placed on disk as the connector left them.
+ */
+async function seedRetiredWikiSource(rootName: string, chunkIds: readonly string[] = ['wiki-a', 'wiki-b']) {
   const root = path.join(tmpDir, rootName);
-  fs.mkdirSync(path.join(root, 'src'), {recursive: true});
-  fs.writeFileSync(path.join(root, 'src', 'article.md'), [
-    '---',
-    'title: Android internals',
-    'status: finalized',
-    'confidence: high',
-    'tags: [handler]',
-    '---',
-    '# Android internals',
-    body,
-  ].join('\n'));
-  require('child_process').execFileSync('git', ['init', '-q', root]);
-  require('child_process').execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
-  require('child_process').execFileSync('git', ['-C', root, 'config', 'user.name', 'Test']);
-  require('child_process').execFileSync('git', ['-C', root, 'add', '.']);
-  require('child_process').execFileSync('git', ['-C', root, 'commit', '-qm', 'fixture']);
-  return root;
+  fs.mkdirSync(root, {recursive: true});
+  const source = externalKnowledgeRegistry.register({
+    kind: 'android_internals_wiki',
+    displayName: 'Android Internals Wiki',
+    rootRealpath: root,
+    revision: 'a'.repeat(40),
+    contentFingerprint: 'b'.repeat(64),
+    dirty: false,
+    license: 'CC-BY-NC-SA-4.0',
+    rightsAcknowledged: true,
+    sendToProvider: true,
+    consentedBy: DEFAULT_SCOPE.userId,
+    scope: DEFAULT_SCOPE,
+  } as unknown as RegisterExternalKnowledgeSourceInput);
+  await externalKnowledgeRegistry.withIngestLease(source.sourceId, DEFAULT_SCOPE, lease => lease.activateGeneration({
+    generation: 'wiki-generation-1', revision: source.revision, contentFingerprint: source.contentFingerprint,
+    dirty: false, indexedArticleCount: 1, indexedChunkCount: chunkIds.length,
+  }));
+  seedRetiredWikiChunks(storePath(), chunkIds.map(chunkId => ({chunkId, knowledgeSourceId: source.sourceId,
+    sourceGeneration: 'wiki-generation-1', snippet: 'RETIRED_WIKI_SNIPPET Handler queue', filePath: 'src/article.md'})),
+  DEFAULT_SCOPE);
+  return {root, sourceId: source.sourceId};
 }
 
 describe('GET /api/rag/stats', () => {
@@ -168,7 +167,7 @@ describe('GET /api/rag/stats', () => {
     store.addChunk(
       makeChunk({chunkId: 'b', kind: 'aosp', license: 'Apache-2.0'}),
     );
-    const res = await request(app).get('/api/rag/stats');
+    const res = await request(server).get('/api/rag/stats');
     expect(res.status).toBe(200);
     expect(res.body.stats['androidperformance.com'].chunkCount).toBe(1);
     expect(res.body.stats.aosp.chunkCount).toBe(1);
@@ -178,7 +177,7 @@ describe('GET /api/rag/stats', () => {
 describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
   it('returns a known chunk', async () => {
     store.addChunk(makeChunk({chunkId: 'a'}));
-    const res = await request(app).get('/api/rag/chunks/a');
+    const res = await request(server).get('/api/rag/chunks/a');
     expect(res.status).toBe(200);
     expect(res.body.chunk.chunkId).toBe('a');
   });
@@ -203,8 +202,8 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
       language: 'kotlin',
     }), DEFAULT_SCOPE);
 
-    const read = await request(app).get('/api/rag/chunks/source-a');
-    const remove = await request(app).delete('/api/rag/chunks/source-a');
+    const read = await request(server).get('/api/rag/chunks/source-a');
+    const remove = await request(server).delete('/api/rag/chunks/source-a');
 
     expect(read.status).toBe(200);
     expect(read.body.chunk.snippet).toBeUndefined();
@@ -216,21 +215,12 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
   });
 
   it('keeps private wiki chunks off generic admin chunk and search endpoints', async () => {
-    store.addChunk(makeChunk({
-      chunkId: 'wiki-private',
-      kind: 'android_internals_wiki',
-      uri: 'android-internals-wiki://source-a/article',
-      title: 'PRIVATE_WIKI_TITLE',
-      snippet: 'PRIVATE_WIKI_SNIPPET Handler queue',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: 'source-a',
-      sourceGeneration: 'generation-a',
-      filePath: 'src/article.md',
-    }), DEFAULT_SCOPE);
+    seedRetiredWikiChunks(storePath(), [{chunkId: 'wiki-private', knowledgeSourceId: 'source-a',
+      sourceGeneration: 'generation-a', title: 'PRIVATE_WIKI_TITLE', snippet: 'PRIVATE_WIKI_SNIPPET Handler queue',
+      filePath: 'src/article.md'}], DEFAULT_SCOPE);
 
-    const chunkResponse = await request(app).get('/api/rag/chunks/wiki-private');
-    const searchResponse = await request(app)
+    const chunkResponse = await request(server).get('/api/rag/chunks/wiki-private');
+    const searchResponse = await request(server)
       .post('/api/rag/search')
       .send({query: 'Handler queue', kinds: ['android_internals_wiki']});
 
@@ -242,19 +232,19 @@ describe('GET / DELETE /api/rag/chunks/:chunkId', () => {
   });
 
   it('404 on missing chunkId', async () => {
-    const res = await request(app).get('/api/rag/chunks/missing');
+    const res = await request(server).get('/api/rag/chunks/missing');
     expect(res.status).toBe(404);
   });
 
   it('DELETE removes the chunk', async () => {
     store.addChunk(makeChunk({chunkId: 'a'}));
-    const res = await request(app).delete('/api/rag/chunks/a');
+    const res = await request(server).delete('/api/rag/chunks/a');
     expect(res.status).toBe(200);
     expect(store.getChunk('a')).toBeUndefined();
   });
 
   it('DELETE returns 404 for missing chunk', async () => {
-    const res = await request(app).delete('/api/rag/chunks/missing');
+    const res = await request(server).delete('/api/rag/chunks/missing');
     expect(res.status).toBe(404);
   });
 });
@@ -270,7 +260,7 @@ describe('POST /api/rag/search', () => {
   });
 
   it('runs a search and returns ranked hits', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/rag/search')
       .send({query: 'binder transactions'});
     expect(res.status).toBe(200);
@@ -279,14 +269,14 @@ describe('POST /api/rag/search', () => {
   });
 
   it('respects kinds filter', async () => {
-    const res = await request(app)
+    const res = await request(server)
       .post('/api/rag/search')
       .send({query: 'binder', kinds: ['aosp']});
     expect(res.body.result.results).toHaveLength(0);
   });
 
   it('400 on missing query', async () => {
-    const res = await request(app).post('/api/rag/search').send({});
+    const res = await request(server).post('/api/rag/search').send({});
     expect(res.status).toBe(400);
   });
 
@@ -296,7 +286,7 @@ describe('POST /api/rag/search', () => {
     [{query: 'binder', kinds: Array.from({length: 101}, () => 'aosp')}, 'kinds'],
     [{query: 'binder', codebaseIds: Array.from({length: 101}, (_, index) => `cb-${index}`)}, 'codebaseIds'],
   ])('400 on bounded search input violations', async (body, field) => {
-    const res = await request(app).post('/api/rag/search').send(body);
+    const res = await request(server).post('/api/rag/search').send(body);
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('invalid_rag_search_input');
@@ -304,217 +294,495 @@ describe('POST /api/rag/search', () => {
   });
 });
 
-describe('Android Internals Wiki routes', () => {
-  it('previews the official article inventory without returning corpus prose', async () => {
-    const root = path.join(tmpDir, 'wiki');
-    fs.mkdirSync(path.join(root, 'src'), {recursive: true});
-    fs.writeFileSync(path.join(root, 'src', 'handler.md'), [
-      '---',
-      'title: Handler internals',
-      'status: finalized',
-      '---',
-      '# Handler internals',
-      'PRIVATE_WIKI_CANARY message queue details',
-    ].join('\n'));
-    require('child_process').execFileSync('git', ['init', '-q', root]);
-    require('child_process').execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
-    require('child_process').execFileSync('git', ['-C', root, 'config', 'user.name', 'Test']);
-    require('child_process').execFileSync('git', ['-C', root, 'add', '.']);
-    require('child_process').execFileSync('git', ['-C', root, 'commit', '-qm', 'fixture']);
-
-    const response = await request(app)
-      .post('/api/rag/android-internals/preview')
-      .send({rootPath: root});
-
-    expect(response.status).toBe(200);
-    expect(response.body.preview).toEqual(expect.objectContaining({
-      totalArticles: 1,
-      metadataErrorCount: 0,
-      dirtyAcceptedArticleCount: 0,
-      contentFingerprint: expect.any(String),
-      revision: expect.any(String),
+describe('retired Android Internals Wiki connector', () => {
+  it.each([
+    ['post', '/api/rag/android-internals/preview'],
+    ['post', '/api/rag/android-internals/sources'],
+    ['get', '/api/rag/android-internals/sources'],
+    ['post', '/api/rag/android-internals/sources/eks_000000000000000000000000/reindex'],
+    ['patch', '/api/rag/android-internals/sources/eks_000000000000000000000000/consent'],
+    ['delete', '/api/rag/android-internals/sources/eks_000000000000000000000000/index'],
+    ['get', '/api/rag/android-internals/sources/eks_000000000000000000000000/audit'],
+    ['get', '/api/rag/android-internals/anything/else'],
+  ] as const)('answers %s %s with 410 and points to /api/rag/knowledge', async (method, url) => {
+    const response = await request(server)[method](url).send({rootPath: tmpDir, rightsAcknowledged: true});
+    expect(response.status).toBe(410);
+    expect(response.headers.deprecation).toBe('true');
+    expect(response.body).toEqual(expect.objectContaining({
+      success: false,
+      migration: {successor: null, fallback: '/api/rag/knowledge'},
     }));
-    expect(JSON.stringify(response.body)).not.toContain('PRIVATE_WIKI_CANARY');
+    expect(JSON.stringify(response.body)).not.toContain(tmpDir);
   });
 
-  it('registers a scoped source only after rights and provider consent are explicit', async () => {
-    const root = path.join(tmpDir, 'registered-wiki');
-    fs.mkdirSync(path.join(root, 'src'), {recursive: true});
-    fs.writeFileSync(path.join(root, 'src', 'handler.md'), [
-      '---',
-      'title: Handler internals',
-      'status: finalized',
-      '---',
-      '# Handler internals',
-      'Message queue details',
-    ].join('\n'));
-    require('child_process').execFileSync('git', ['init', '-q', root]);
-    require('child_process').execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
-    require('child_process').execFileSync('git', ['-C', root, 'config', 'user.name', 'Test']);
-    require('child_process').execFileSync('git', ['-C', root, 'add', '.']);
-    require('child_process').execFileSync('git', ['-C', root, 'commit', '-qm', 'fixture']);
+  it('touches no stored source: a retired record stays as it was and its chunks stay in place', async () => {
+    const {sourceId} = await seedRetiredWikiSource('untouched-wiki');
+    for (const [method, url] of [
+      ['patch', `/api/rag/android-internals/sources/${sourceId}/consent`],
+      ['delete', `/api/rag/android-internals/sources/${sourceId}/index`],
+      ['post', `/api/rag/android-internals/sources/${sourceId}/reindex`],
+    ] as const) {
+      expect((await request(server)[method](url).send({sendToProvider: false})).status).toBe(410);
+    }
+    expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).toEqual(expect.objectContaining({
+      sendToProvider: true, activeGeneration: 'wiki-generation-1'}));
+    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(2);
+  });
 
-    const response = await request(app)
-      .post('/api/rag/android-internals/sources')
-      .send({
-        rootPath: root,
-        displayName: 'Android Internals Wiki',
-        rightsAcknowledged: true,
-        sendToProvider: true,
-      });
-
-    expect(response.status).toBe(200);
-    expect(response.body.source).toEqual(expect.objectContaining({
-      sourceId: expect.any(String),
-      kind: 'android_internals_wiki',
-      license: 'CC-BY-NC-SA-4.0',
-      rightsAcknowledged: true,
-      sendToProvider: true,
-      revision: expect.any(String),
-      contentFingerprint: expect.any(String),
-    }));
-    expect(response.body.source.rootRealpath).toBeUndefined();
-
-    const listed = await request(app).get('/api/rag/android-internals/sources');
+  it('lists a stored retired record as retired under /knowledge, lets its consent be revoked, never granted', async () => {
+    const {root, sourceId} = await seedRetiredWikiSource('listed-wiki');
+    const listed = await request(server).get('/api/rag/knowledge');
     expect(listed.status).toBe(200);
-    expect(listed.body.sources).toEqual([
-      expect.objectContaining({sourceId: response.body.source.sourceId}),
-    ]);
+    expect(listed.body.sources).toEqual([expect.objectContaining({
+      sourceId, kind: 'android_internals_wiki', retired: true, sendToProvider: true, hasActiveIndex: true})]);
     expect(JSON.stringify(listed.body)).not.toContain(root);
-  });
+    expect(externalKnowledgeRegistry.evaluateAccess(sourceId, DEFAULT_SCOPE, [sourceId]))
+      .toEqual({allowed: false, reason: 'knowledge_kind_retired'});
 
-  it('reindexes a registered source and atomically activates its generation', async () => {
-    const root = path.join(tmpDir, 'indexed-wiki');
-    fs.mkdirSync(path.join(root, 'src'), {recursive: true});
-    fs.writeFileSync(path.join(root, 'src', 'handler.md'), [
-      '---',
-      'title: Handler internals',
-      'status: finalized',
-      'confidence: high',
-      'tags: [handler]',
-      '---',
-      '# Handler internals',
-      '消息队列 Handler callback execution details',
-    ].join('\n'));
-    require('child_process').execFileSync('git', ['init', '-q', root]);
-    require('child_process').execFileSync('git', ['-C', root, 'config', 'user.email', 'test@example.com']);
-    require('child_process').execFileSync('git', ['-C', root, 'config', 'user.name', 'Test']);
-    require('child_process').execFileSync('git', ['-C', root, 'add', '.']);
-    require('child_process').execFileSync('git', ['-C', root, 'commit', '-qm', 'fixture']);
-    const registered = await request(app)
-      .post('/api/rag/android-internals/sources')
-      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
-    const sourceId = registered.body.source.sourceId;
-
-    const response = await request(app)
-      .post(`/api/rag/android-internals/sources/${sourceId}/reindex`)
-      .send({});
-
-    expect(response.status).toBe(200);
-    expect(response.body.result).toEqual(expect.objectContaining({
-      sourceId,
-      indexedArticleCount: 1,
-      indexedChunkCount: expect.any(Number),
-      generation: expect.any(String),
-    }));
-    expect(response.body.result.indexedChunkCount).toBeGreaterThan(0);
-    expect(store.getStats(DEFAULT_SCOPE).android_internals_wiki.chunkCount).toBeGreaterThan(0);
-  });
-
-  it('revokes provider consent immediately for subsequent indexing', async () => {
-    const root = createCommittedWiki('revoked-wiki');
-    const registered = await request(app)
-      .post('/api/rag/android-internals/sources')
-      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
-    const sourceId = registered.body.source.sourceId;
-
-    const revoked = await request(app)
-      .patch(`/api/rag/android-internals/sources/${sourceId}/consent`)
-      .send({sendToProvider: false});
-    const reindex = await request(app)
-      .post(`/api/rag/android-internals/sources/${sourceId}/reindex`)
-      .send({});
-
+    const revoked = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: false});
     expect(revoked.status).toBe(200);
-    expect(revoked.body.source).toEqual(expect.objectContaining({
-      sourceId,
-      sendToProvider: false,
-    }));
-    expect(reindex.status).toBe(400);
-    expect(reindex.body.error).toBe('provider_send_not_consented');
+    expect(revoked.body.source).toEqual(expect.objectContaining({sourceId, sendToProvider: false, retired: true}));
+    expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
+    // A consent the kind can never use is refused, and nothing is written.
+    const granted = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
+    expect(granted.status).toBe(409);
+    expect(granted.body.code).toBe('KNOWLEDGE_SOURCE_RETIRED');
+    expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
   });
+});
 
-  it('clears every index generation without deleting source registration', async () => {
-    const root = createCommittedWiki('cleared-wiki');
-    const registered = await request(app)
-      .post('/api/rag/android-internals/sources')
-      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
-    const sourceId = registered.body.source.sourceId;
-    await request(app)
-      .post(`/api/rag/android-internals/sources/${sourceId}/reindex`)
-      .send({});
+/** Every console.error and console.warn line while `act` runs, for asserting what the logs may contain. */
+async function logsDuring(act: () => Promise<void>): Promise<string> {
+  const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await act();
+    return JSON.stringify([...error.mock.calls, ...warn.mock.calls], (_key, value) =>
+      value instanceof Error || utilTypes.isNativeError(value)
+        ? {...value, message: (value as Error).message, stack: (value as Error).stack} : value);
+  } finally {
+    error.mockRestore();
+    warn.mockRestore();
+  }
+}
 
-    const cleared = await request(app)
-      .delete(`/api/rag/android-internals/sources/${sourceId}/index`);
+/** Removes `directory` just before the gate opens it, as a concurrent deletion would. */
+function removeWhenOpened(directory: string) {
+  const fsPromises = require('fs/promises') as typeof import('fs/promises');
+  const original = fsPromises.opendir;
+  return jest.spyOn(fsPromises, 'opendir').mockImplementation(async (target, ...rest) => {
+    if (String(target) === fs.realpathSync(path.dirname(directory)) + path.sep + path.basename(directory)) {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+    return original(target, ...rest);
+  });
+}
 
-    expect(cleared.status).toBe(200);
-    expect(cleared.body).toEqual({
-      success: true,
-      removedChunkCount: expect.any(Number),
-      source: expect.objectContaining({
-        sourceId,
-        indexedArticleCount: 0,
-        indexedChunkCount: 0,
-      }),
+describe('document collection routes', () => {
+  function collection(name: string, files: Record<string, string>): string {
+    const root = path.join(tmpDir, name);
+    for (const [relativePath, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, relativePath)), {recursive: true});
+      fs.writeFileSync(path.join(root, relativePath), content);
+    }
+    return root;
+  }
+
+  function expectNoRoot(body: unknown, root: string): void {
+    const text = JSON.stringify(body);
+    expect(text).not.toContain(root);
+    expect(text).not.toContain(fs.realpathSync(root));
+  }
+
+  it('previews counts and skip reasons and refuses a folder with nothing indexable', async () => {
+    const root = collection('docs-preview', {
+      'guide.md': '# Guide\nRenderThread notes\n',
+      'blank.txt': '  \n',
+      'image.png': 'binary',
     });
-    expect(cleared.body.removedChunkCount).toBeGreaterThan(0);
-    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(0);
-    expect(cleared.body.source.activeGeneration).toBeUndefined();
-  });
-
-  it('audits every registered article without returning article prose', async () => {
-    const root = createCommittedWiki('audited-wiki', 'AUDIT_PRIVATE_WIKI_CANARY Handler details');
-    const registered = await request(app)
-      .post('/api/rag/android-internals/sources')
-      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: false});
-    const sourceId = registered.body.source.sourceId;
-
-    const audited = await request(app)
-      .get(`/api/rag/android-internals/sources/${sourceId}/audit`);
-
-    expect(audited.status).toBe(200);
-    expect(audited.body.audit.report).toEqual(expect.objectContaining({
-      totalArticles: 1,
-      counts: expect.objectContaining({validated_trace_skill: 1}),
-      rows: [expect.objectContaining({
-        relativePath: 'src/article.md',
-        disposition: 'validated_trace_skill',
-        observableClaim: 'callback slices are observable',
-      })],
+    const preview = await request(server).post('/api/rag/knowledge/preview').send({rootPath: root});
+    expect(preview.status).toBe(200);
+    expect(preview.body.preview).toEqual(expect.objectContaining({
+      documentCount: 1,
+      skipped: {empty_text: 1, extension_not_allowed: 1},
+      contentFingerprint: expect.any(String),
     }));
-    expect(JSON.stringify(audited.body)).not.toContain('AUDIT_PRIVATE_WIKI_CANARY');
+    expectNoRoot(preview.body, root);
+    expect(JSON.stringify(preview.body)).not.toContain('RenderThread notes');
+
+    const empty = collection('docs-empty', {'blank.md': '\n', 'data.json': '{}'});
+    const refused = await request(server).post('/api/rag/knowledge/preview').send({rootPath: empty});
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual(expect.objectContaining({
+      code: 'KNOWLEDGE_COLLECTION_EMPTY',
+      details: {empty_text: 1, extension_not_allowed: 1},
+    }));
+    const registerEmpty = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: empty, rightsAcknowledged: true});
+    expect(registerEmpty.status).toBe(400);
+    expect(registerEmpty.body.code).toBe('KNOWLEDGE_COLLECTION_EMPTY');
+
+    const outside = await request(server).post('/api/rag/knowledge/preview').send({rootPath: os.tmpdir()});
+    expect(outside.status).toBe(400);
+    expect(outside.body).toEqual(expect.objectContaining({
+      code: 'KNOWLEDGE_ROOT_BLOCKED',
+      details: {blockedReason: 'root_outside_allowlist'},
+    }));
   });
 
-  it('blocks audit when a registered root is replaced by a different realpath', async () => {
-    const root = createCommittedWiki('audit-root-before-swap');
-    const registered = await request(app)
-      .post('/api/rag/android-internals/sources')
-      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: false});
+  it('registers, reindexes, searches and lists a collection without provider consent', async () => {
+    const root = collection('docs-team', {
+      'render/compositor.md': '# 渲染线程\nXRenderCompositorWorker 负责合成每一帧。\n',
+      'site/index.html': '<h1>Binder</h1><p>binder transactions</p>',
+    });
+    const missingRights = await request(server).post('/api/rag/knowledge/register').send({rootPath: root});
+    expect(missingRights.status).toBe(400);
+    expect(missingRights.body.code).toBe('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED');
+    const tooLong = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, description: 'x'.repeat(281)});
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.code).toBe('KNOWLEDGE_SOURCE_METADATA_INVALID');
+
+    const registered = await request(server).post('/api/rag/knowledge/register').send({
+      rootPath: root,
+      displayName: 'Team docs',
+      description: 'Internal render framework and trace tags',
+      attribution: 'Render team',
+      rightsAcknowledged: true,
+    });
+    expect(registered.status).toBe(200);
+    expect(registered.body.source).toEqual(expect.objectContaining({
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      description: 'Internal render framework and trace tags',
+      attribution: 'Render team',
+      sendToProvider: false,
+      documentCount: 0,
+      hasActiveIndex: false,
+    }));
+    expectNoRoot(registered.body, root);
     const sourceId = registered.body.source.sourceId;
-    const replacement = createCommittedWiki(
-      'audit-root-replacement',
-      'AUDIT_REALPATH_DRIFT_PRIVATE_CANARY',
-    );
-    fs.rmSync(root, {recursive: true, force: true});
-    fs.symlinkSync(replacement, root, 'dir');
 
-    const audited = await request(app)
-      .get(`/api/rag/android-internals/sources/${sourceId}/audit`);
+    const reindex = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    expect(reindex.status).toBe(200);
+    expect(reindex.body.result).toEqual(expect.objectContaining({sourceId, documentCount: 2}));
+    expectNoRoot(reindex.body, root);
 
-    expect(audited.status).toBe(400);
-    expect(audited.body.error).toBe('knowledge_root_realpath_drift');
-    expect(JSON.stringify(audited.body)).not.toContain('AUDIT_REALPATH_DRIFT_PRIVATE_CANARY');
+    const search = await request(server).post(`/api/rag/knowledge/${sourceId}/search`)
+      .send({query: 'XRenderCompositorWorker'});
+    expect(search.status).toBe(200);
+    expect(search.body).toEqual(expect.objectContaining({
+      success: true,
+      generation: reindex.body.result.generation,
+    }));
+    expect(search.body.hits[0]).toEqual(expect.objectContaining({
+      relativePath: 'render/compositor.md',
+      title: '渲染线程',
+      headingPath: ['渲染线程'],
+      startLine: 1,
+      endLine: 2,
+      snippet: expect.stringContaining('XRenderCompositorWorker'),
+    }));
+    const cjk = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: '合成'});
+    expect(cjk.body.hits[0].relativePath).toBe('render/compositor.md');
+    const badQuery = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: ' '});
+    expect(badQuery.status).toBe(400);
+
+    const listed = await request(server).get('/api/rag/knowledge');
+    expect(listed.body.sources).toEqual([expect.objectContaining({
+      sourceId,
+      kind: 'document_collection',
+      description: 'Internal render framework and trace tags',
+      documentCount: 2,
+      hasActiveIndex: true,
+    })]);
+    expectNoRoot(listed.body, root);
   });
+
+  it('re-registration keeps consent when omitted and revokes it only when explicit', async () => {
+    const root = collection('docs-consent', {'a.md': '# A\nalpha\n'});
+    const first = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
+    expect(first.body.source.sendToProvider).toBe(true);
+    const omitted = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    expect(omitted.body.source.sendToProvider).toBe(true);
+    const revoked = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: false});
+    expect(revoked.body.source.sendToProvider).toBe(false);
+    const invalid = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: 'yes'});
+    expect(invalid.status).toBe(400);
+  });
+
+  it('keeps every collection route inside the caller workspace', async () => {
+    const root = collection('docs-scoped', {'a.md': '# A\nalpha\n'});
+    const registered = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    const sourceId = registered.body.source.sourceId;
+    await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+
+    const other = (req: request.Test) => req.set('X-Workspace-Id', 'workspace-b');
+    expect((await other(request(server).get('/api/rag/knowledge'))).body.sources).toEqual([]);
+    for (const response of [
+      await other(request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'})),
+      await other(request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})),
+      await other(request(server).delete(`/api/rag/knowledge/${sourceId}`)),
+    ]) {
+      expect(response.status).toBe(404);
+      expect(response.body.code).toBe('KNOWLEDGE_SOURCE_NOT_FOUND');
+    }
+    const search = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
+    expect(search.body.hits).toHaveLength(1);
+  });
+
+  it('deletes a collection with its index files, and deletes a retired Wiki source with its chunks', async () => {
+    const root = collection('docs-delete', {'a.md': '# A\nalpha\n'});
+    const registered = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    const sourceId = registered.body.source.sourceId;
+    await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    const indexRoot = path.join(tmpDir, 'knowledge-index');
+    const indexFiles = () => fs.readdirSync(indexRoot, {recursive: true}).filter(entry =>
+      String(entry).endsWith('.sqlite'));
+    expect(indexFiles()).toHaveLength(1);
+
+    const deleted = await request(server).delete(`/api/rag/knowledge/${sourceId}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual(expect.objectContaining({success: true, sourceId, deleted: true}));
+    expect(indexFiles()).toHaveLength(0);
+    expect((await request(server).get('/api/rag/knowledge')).body.sources).toEqual([]);
+    const searchAfter = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
+    expect(searchAfter.status).toBe(404);
+    const again = await request(server).delete(`/api/rag/knowledge/${sourceId}`);
+    expect(again.status).toBe(404);
+
+    const {sourceId: wikiId} = await seedRetiredWikiSource('deleted-wiki');
+    // Another source's chunk of the same kind is not this deletion's to clear.
+    seedRetiredWikiChunks(storePath(), [{chunkId: 'other-wiki', knowledgeSourceId: `eks_${'9'.repeat(24)}`,
+      sourceGeneration: 'other-generation'}], DEFAULT_SCOPE);
+    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(3);
+    const otherWorkspace = await request(server).delete(`/api/rag/knowledge/${wikiId}`).set('X-Workspace-Id', 'workspace-b');
+    expect(otherWorkspace.status).toBe(404);
+    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(3);
+    const wikiDeleted = await request(server).delete(`/api/rag/knowledge/${wikiId}`);
+    expect(wikiDeleted.status).toBe(200);
+    expect(wikiDeleted.body).toEqual(expect.objectContaining({success: true, sourceId: wikiId, deleted: true}));
+    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE}).map(chunk => chunk.chunkId))
+      .toEqual(['other-wiki']);
+    expect(externalKnowledgeRegistry.get(wikiId, DEFAULT_SCOPE)).toBeUndefined();
+    expect((await request(server).get('/api/rag/knowledge')).body.sources).toEqual([]);
+  });
+
+  describe('directory picker registration', () => {
+    const ORIGIN = 'http://127.0.0.1:10000';
+    const local = (req: request.Test) => req.set('Origin', ORIGIN);
+
+    function pickedCollection(): string {
+      // Outside SMARTPERFETTO_KNOWLEDGE_ROOTS (tmpDir): only the picker can admit it.
+      externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-knowledge-root-'));
+      fs.writeFileSync(path.join(externalPickerDir, 'guide.md'), '# Guide\nPickedFolderCanary notes\n');
+      pickerSelectedRoot = externalPickerDir;
+      return externalPickerDir;
+    }
+
+    async function pick(): Promise<string> {
+      const selection = await local(request(server).post('/api/rag/codebases/directory-picker')).send({purpose: 'knowledge'});
+      expect(selection.status).toBe(200);
+      return selection.body.directorySelectionId;
+    }
+
+    it('previews without using the selection up, registers once, and trusts only that source\'s own root', async () => {
+      const root = pickedCollection();
+      const badPurpose = await local(request(server).post('/api/rag/codebases/directory-picker')).send({purpose: 'other'});
+      expect(badPurpose.status).toBe(400);
+      const selectionId = await pick();
+
+      const raw = await request(server).post('/api/rag/knowledge/preview').send({rootPath: root});
+      expect(raw.body).toEqual(expect.objectContaining({
+        code: 'KNOWLEDGE_ROOT_BLOCKED', details: {blockedReason: 'root_outside_allowlist'}}));
+      for (const refused of [
+        await request(server).post('/api/rag/knowledge/preview').send({rootPath: root, directorySelectionId: selectionId}),
+        await request(server).post('/api/rag/knowledge/preview')
+          .set('Host', 'smartperfetto.example.com').set('Origin', 'https://smartperfetto.example.com')
+          .send({rootPath: root, directorySelectionId: selectionId}),
+      ]) {
+        expect(refused.status).toBe(403);
+        expect(refused.body.code).toBe('DIRECTORY_PICKER_UNAVAILABLE');
+      }
+      const mismatch = await local(request(server).post('/api/rag/knowledge/preview'))
+        .send({rootPath: tmpDir, directorySelectionId: selectionId});
+      expect(mismatch.status).toBe(400);
+      expect(mismatch.body.code).toBe('DIRECTORY_SELECTION_PATH_MISMATCH');
+      const otherWorkspace = await local(request(server).post('/api/rag/knowledge/preview'))
+        .set('X-Workspace-Id', 'workspace-b').send({rootPath: root, directorySelectionId: selectionId});
+      expect(otherWorkspace.status).toBe(403);
+      expect(otherWorkspace.body.code).toBe('DIRECTORY_SELECTION_SCOPE_MISMATCH');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const preview = await local(request(server).post('/api/rag/knowledge/preview'))
+          .send({rootPath: root, directorySelectionId: selectionId});
+        expect(preview.status).toBe(200);
+        expect(preview.body.preview.documentCount).toBe(1);
+        expectNoRoot(preview.body, root);
+      }
+
+      // A registration that fails after taking the selection gives it back.
+      const noRights = await local(request(server).post('/api/rag/knowledge/register'))
+        .send({rootPath: root, directorySelectionId: selectionId});
+      expect(noRights.body.code).toBe('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED');
+      const registered = await local(request(server).post('/api/rag/knowledge/register'))
+        .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
+      expect(registered.status).toBe(200);
+      expectNoRoot(registered.body, root);
+      expect(JSON.stringify(registered.body)).not.toContain('rootAuthorization');
+      const sourceId = registered.body.source.sourceId;
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
+      const replay = await local(request(server).post('/api/rag/knowledge/register'))
+        .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
+      expect(replay.status).toBe(400);
+      expect(replay.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+
+      // The source's own root is trusted for its reindex, and nothing else is.
+      const reindex = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect(reindex.status).toBe(200);
+      expectNoRoot(reindex.body, root);
+      const search = await request(server).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'PickedFolderCanary'});
+      expect(search.body.hits).toHaveLength(1);
+      for (const rawAgain of [
+        await request(server).post('/api/rag/knowledge/preview').send({rootPath: root}),
+        await request(server).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true}),
+        await request(server).post('/api/rag/knowledge/preview').set('X-Workspace-Id', 'workspace-b').send({rootPath: root}),
+      ]) {
+        expect(rawAgain.body.code).toBe('KNOWLEDGE_ROOT_BLOCKED');
+      }
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorizations).toEqual(['native_picker']);
+
+      // Deleting the source revokes the channel with it.
+      expect((await request(server).delete(`/api/rag/knowledge/${sourceId}`)).status).toBe(200);
+      const afterDelete = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect(afterDelete.status).toBe(404);
+      expect(afterDelete.body.code).toBe('KNOWLEDGE_SOURCE_NOT_FOUND');
+    });
+
+    it('gives a source registered by its raw path no channel: its reindex follows the configured allowlist', async () => {
+      const root = collection('docs-allowlisted', {'a.md': '# A\nalpha\n'});
+      const registered = await request(server).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true});
+      const sourceId = registered.body.source.sourceId;
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorizations');
+      expect((await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})).status).toBe(200);
+      process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = path.join(tmpDir, 'elsewhere');
+      const blocked = await request(server).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect(blocked.body).toEqual(expect.objectContaining({
+        code: 'KNOWLEDGE_ROOT_BLOCKED', details: {blockedReason: 'root_outside_allowlist'}}));
+    });
+
+    const canReadOnlyAsOwner = typeof process.getuid === 'function' && process.getuid() !== 0;
+    (canReadOnlyAsOwner ? it : it.skip)('keeps the picked folder out of responses and logs when a subdirectory cannot be read', async () => {
+      const root = pickedCollection();
+      const locked = path.join(root, 'locked');
+      fs.mkdirSync(locked);
+      fs.writeFileSync(path.join(locked, 'inside.md'), '# Inside\n');
+      const selectionId = await pick();
+      fs.chmodSync(locked, 0o000);
+      try {
+        const responses: request.Response[] = [];
+        const logs = await logsDuring(async () => {
+          responses.push(await local(request(server).post('/api/rag/knowledge/preview'))
+            .send({rootPath: root, directorySelectionId: selectionId}));
+          responses.push(await local(request(server).post('/api/rag/knowledge/register'))
+            .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true}));
+        });
+        expect(responses.map(response => [response.status, response.body.code])).toEqual([
+          [500, 'KNOWLEDGE_COLLECTION_PREVIEW_FAILED'],
+          [500, 'KNOWLEDGE_COLLECTION_REGISTER_FAILED'],
+        ]);
+        for (const response of responses) {
+          expect(response.body.requestId).toEqual(expect.any(String));
+          expectNoRoot(response.body, root);
+        }
+        expect(logs).toContain('EACCES');
+        expect(logs).toContain('opendir');
+        expect(logs).not.toContain(root);
+        expect(logs).not.toContain(fs.realpathSync(root));
+
+        // The failed registration gave the selection back; the reindex of the registered source logs no path either.
+        fs.chmodSync(locked, 0o755);
+        const registered = await local(request(server).post('/api/rag/knowledge/register'))
+          .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
+        expect(registered.status).toBe(200);
+        fs.chmodSync(locked, 0o000);
+        let reindex!: request.Response;
+        const reindexLogs = await logsDuring(async () => {
+          reindex = await request(server).post(`/api/rag/knowledge/${registered.body.source.sourceId}/reindex`).send({});
+        });
+        expect(reindex.status).toBe(500);
+        expect(reindex.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
+        expectNoRoot(reindex.body, root);
+        expect(reindexLogs).toContain('EACCES');
+        expect(reindexLogs).not.toContain(fs.realpathSync(root));
+      } finally {
+        fs.chmodSync(locked, 0o755);
+      }
+    });
+
+    it('keeps the picked folder out of responses and logs when a subdirectory disappears mid-read', async () => {
+      const root = pickedCollection();
+      const vanishing = path.join(root, 'vanishing');
+      fs.mkdirSync(vanishing);
+      fs.writeFileSync(path.join(vanishing, 'gone.md'), '# Gone\n');
+      const selectionId = await pick();
+      const opendir = removeWhenOpened(vanishing);
+      let response!: request.Response;
+      try {
+        const logs = await logsDuring(async () => {
+          response = await local(request(server).post('/api/rag/knowledge/preview'))
+            .send({rootPath: root, directorySelectionId: selectionId});
+        });
+        expect(response.status).toBe(500);
+        expect(response.body.code).toBe('KNOWLEDGE_COLLECTION_PREVIEW_FAILED');
+        expectNoRoot(response.body, root);
+        expect(logs).toContain('ENOENT');
+        expect(logs).not.toContain(fs.realpathSync(root));
+      } finally {
+        opendir.mockRestore();
+      }
+    });
+
+    it('lets exactly one of two concurrent registrations use a selection', async () => {
+      const root = pickedCollection();
+      const selectionId = await pick();
+      const body = {rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true};
+      const responses = await Promise.all([
+        local(request(server).post('/api/rag/knowledge/register')).send(body),
+        local(request(server).post('/api/rag/knowledge/register')).send(body),
+      ]);
+      expect(responses.map(response => response.status).sort()).toEqual([200, 400]);
+      expect(responses.find(response => response.status === 400)!.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+    });
+  });
+
+  it('sets a collection\'s provider consent under /knowledge', async () => {
+    const root = collection('docs-consent-route', {'a.md': '# A\nalpha\n'});
+    const registered = await request(server).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    const sourceId = registered.body.source.sourceId;
+    const granted = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
+    expect(granted.status).toBe(200);
+    expect(granted.body.source).toEqual(expect.objectContaining({
+      sourceId, kind: 'document_collection', sendToProvider: true, documentCount: 0, hasActiveIndex: false}));
+    expectNoRoot(granted.body, root);
+    expect(externalKnowledgeRegistry.evaluateAccess(sourceId, DEFAULT_SCOPE, [sourceId]).allowed).toBe(true);
+    const revoked = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: false});
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.source.sendToProvider).toBe(false);
+    expect((await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: 'yes'})).status)
+      .toBe(400);
+    const otherWorkspace = await request(server).patch(`/api/rag/knowledge/${sourceId}/consent`)
+      .set('X-Workspace-Id', 'workspace-b').send({sendToProvider: true});
+    expect(otherWorkspace.status).toBe(404);
+    expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
+  });
+
 });
 
 describe('codebase routes', () => {
@@ -533,7 +801,7 @@ describe('codebase routes', () => {
       rootPath: root,
       kind: 'aosp',
     }, DEFAULT_SCOPE);
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: root, kind: 'aosp'});
 
@@ -546,7 +814,7 @@ describe('codebase routes', () => {
     const root = path.join(tmpDir, 'aosp-manifest-reason');
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'Foo.java'), 'class Foo {}\n');
-    const requestPreview = async (reason: string) => {
+    const requestPreview = async (reason: string | Error) => {
       const previewGate = new PathSecurityGate({allowlistRoots: [tmpDir]});
       const previewService = new CodebaseManagementService({
         registry,
@@ -554,7 +822,7 @@ describe('codebase routes', () => {
         gate: previewGate,
         sourceEnumerator: new SourceEnumerator(),
         readAospManifestProjects: async () => {
-          throw new Error(reason);
+          throw typeof reason === 'string' ? new Error(reason) : reason;
         },
       });
       const previewApp = express();
@@ -566,7 +834,7 @@ describe('codebase routes', () => {
         directoryPicker,
         externalKnowledgeRegistry,
       }));
-      return request(previewApp)
+      return request(await loopbackServers.listen(previewApp))
         .post('/api/rag/codebases/preview')
         .send({rootPath: root, kind: 'aosp'});
     };
@@ -582,7 +850,7 @@ describe('codebase routes', () => {
     expect(known.status).toBe(200);
     expect(known.body.preview.manifestUnavailableReason).toBe('source_metadata_too_large');
 
-    const drift = await requestPreview('codebase_root_realpath_drift');
+    const drift = await requestPreview(new CodebaseStateError('codebase_root_realpath_drift'));
     expect(drift.status).toBe(400);
     expect(drift.body.error).toBe('codebase_root_realpath_drift');
   });
@@ -601,14 +869,19 @@ describe('codebase routes', () => {
       lastIngestError: tokenCanary,
     }, DEFAULT_SCOPE);
 
-    const list = await request(app).get('/api/rag/codebases');
-    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
-    const audit = await request(app).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
+    const list = await request(server).get('/api/rag/codebases');
+    const detail = await request(server).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const audit = await request(server).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
     const unknown = JSON.stringify({list: list.body, detail: detail.body, audit: audit.body});
 
     expect(list.status).toBe(200);
     expect(detail.status).toBe(200);
-    expect(audit.status).toBe(200);
+    expect({
+      status: audit.status,
+      body: audit.body,
+      instance: audit.headers['x-test-instance'],
+      registered: registry.get(ref.codebaseId, DEFAULT_SCOPE) !== undefined,
+    }).toMatchObject({status: 200, instance: testInstanceId, registered: true});
     expect(unknown).not.toContain(tokenCanary);
     expect(unknown).not.toContain('rootAuthorization');
     expect(unknown).toContain('codebase_operation_failed');
@@ -617,7 +890,7 @@ describe('codebase routes', () => {
       lastIngestStatus: 'blocked_by_security',
       lastIngestError: 'codebase_root_realpath_drift',
     }, DEFAULT_SCOPE);
-    const knownAudit = await request(app).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
+    const knownAudit = await request(server).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
     expect(knownAudit.body.audit.lastIngestError).toBe('codebase_root_realpath_drift');
     expect(JSON.stringify(knownAudit.body)).not.toContain(tokenCanary);
   });
@@ -631,7 +904,7 @@ describe('codebase routes', () => {
       `<manifest>${' '.repeat(4 * 1024 * 1024)}</manifest>`,
     );
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: root, kind: 'aosp'});
 
@@ -646,7 +919,7 @@ describe('codebase routes', () => {
     const root = path.join(tmpDir, 'empty-codebase');
     fs.mkdirSync(root, {recursive: true});
 
-    const response = await request(app)
+    const response = await request(server)
       .post('/api/rag/codebases/register')
       .send({rootPath: root, kind: 'app_source'});
 
@@ -663,7 +936,7 @@ describe('codebase routes', () => {
     fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class SelectedMain\n');
     pickerSelectedRoot = externalPickerDir;
 
-    const capability = await request(app)
+    const capability = await request(server)
       .get('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000');
     expect(capability.status).toBe(200);
@@ -672,7 +945,7 @@ describe('codebase routes', () => {
       provider: 'zenity',
     });
 
-    const selection = await request(app)
+    const selection = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({});
@@ -683,7 +956,7 @@ describe('codebase routes', () => {
       directorySelectionId: 'picker-selection-1',
     });
 
-    const blockedWithoutSelection = await request(app)
+    const blockedWithoutSelection = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: externalPickerDir});
     expect(blockedWithoutSelection.body.preview).toMatchObject({
@@ -691,7 +964,7 @@ describe('codebase routes', () => {
       blockedReason: 'root_outside_allowlist',
     });
 
-    const preview = await request(app)
+    const preview = await request(server)
       .post('/api/rag/codebases/preview')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({
@@ -704,7 +977,7 @@ describe('codebase routes', () => {
       acceptedFileCount: 1,
     });
 
-    const registered = await request(app)
+    const registered = await request(server)
       .post('/api/rag/codebases/register')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({
@@ -721,7 +994,7 @@ describe('codebase routes', () => {
     expect(registered.body.codebase.rootAuthorization).toBeUndefined();
     expect(registry.get(registered.body.codebase.codebaseId, DEFAULT_SCOPE))
       .toMatchObject({rootAuthorization: 'native_picker'});
-    const listed = await request(app).get('/api/rag/codebases');
+    const listed = await request(server).get('/api/rag/codebases');
     expect(listed.body.codebases).toEqual(expect.arrayContaining([
       expect.objectContaining({
         codebaseId: registered.body.codebase.codebaseId,
@@ -729,14 +1002,14 @@ describe('codebase routes', () => {
     ]));
     expect(listed.body.codebases).toEqual(await codebaseManagementService.list(DEFAULT_SCOPE));
     expect(JSON.stringify(listed.body)).not.toContain('rootAuthorization');
-    const audit = await request(app)
+    const audit = await request(server)
       .get(`/api/rag/codebases/${registered.body.codebase.codebaseId}/audit`);
     expect(audit.body.audit).toEqual(
       codebaseManagementService.audit(registered.body.codebase.codebaseId, DEFAULT_SCOPE),
     );
     expect(JSON.stringify(audit.body)).not.toContain('rootAuthorization');
 
-    const reused = await request(app)
+    const reused = await request(server)
       .post('/api/rag/codebases/register')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({
@@ -748,13 +1021,181 @@ describe('codebase routes', () => {
     expect(reused.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
   });
 
+  it('keeps a picked source folder out of codebase responses and logs when enumeration fails on the filesystem', async () => {
+    externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-codebase-leak-'));
+    fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
+    pickerSelectedRoot = externalPickerDir;
+    const pickedRoot = fs.realpathSync(externalPickerDir);
+    // What a traversal that loses a directory throws: the absolute path in the message and fields.
+    const fsError = Object.assign(new Error(`EACCES: permission denied, opendir '${pickedRoot}/feature'`), {
+      code: 'EACCES', errno: -13, syscall: 'opendir', path: `${pickedRoot}/feature`});
+    const enumerate = jest.spyOn(SourceEnumerator.prototype, 'enumerate').mockRejectedValue(fsError);
+    try {
+      for (const route of ['preview', 'register'] as const) {
+        const selection = await request(server).post('/api/rag/codebases/directory-picker')
+          .set('Origin', 'http://127.0.0.1:10000').send({});
+        let response!: request.Response;
+        const logs = await logsDuring(async () => {
+          response = await request(server).post(`/api/rag/codebases/${route}`)
+            .set('Origin', 'http://127.0.0.1:10000')
+            .send({rootPath: externalPickerDir, directorySelectionId: selection.body.directorySelectionId});
+        });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(response.body.code).toBe(route === 'preview' ? 'CODEBASE_PREVIEW_FAILED' : 'CODEBASE_REGISTER_FAILED');
+        expect(JSON.stringify(response.body)).not.toContain(pickedRoot);
+        // The management preview answers its own fixed failure without logging; registration logs the errno.
+        if (route === 'register') expect(logs).toContain('EACCES');
+        expect(logs).not.toContain(pickedRoot);
+      }
+    } finally {
+      enumerate.mockRestore();
+    }
+  });
+
+  describe('codebase registration with a directory selection', () => {
+    let clock: number;
+    let enumerations: number;
+    let releaseEnumeration: (() => void) | undefined;
+    let pickerApp: express.Express;
+    let pickerServer: Server;
+
+    beforeEach(async () => {
+      externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-codebase-register-'));
+      fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
+      pickerSelectedRoot = externalPickerDir;
+      clock = 1_000;
+      enumerations = 0;
+      releaseEnumeration = undefined;
+      const realEnumerator = new SourceEnumerator();
+      const picker = new NativeDirectoryPicker({
+        platform: 'linux',
+        env: {DISPLAY: ':0', PATH: '/usr/bin'},
+        distribution: 'source',
+        enterprise: false,
+        bindHost: '127.0.0.1',
+        findExecutable: name => name === 'zenity' ? '/usr/bin/zenity' : undefined,
+        runCommand: async () => ({stdout: `${pickerSelectedRoot}\n`, stderr: ''}),
+        now: () => clock,
+        selectionTtlMs: 5_000,
+        idGenerator: () => `ttl-selection-${++pickerSelectionSequence}`,
+      });
+      pickerApp = express();
+      pickerApp.use(express.json());
+      pickerApp.use('/api/rag', createRagAdminRoutes(store, {
+        registry,
+        gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+        codebaseManagementService,
+        directoryPicker: picker,
+        externalKnowledgeRegistry,
+        sourceEnumerator: {
+          enumerate: async (input: Parameters<SourceEnumerator['enumerate']>[0]) => {
+            enumerations += 1;
+            if (releaseEnumeration === undefined) {
+              await new Promise<void>(resolve => { releaseEnumeration = resolve; });
+            }
+            return realEnumerator.enumerate(input);
+          },
+        } as unknown as SourceEnumerator,
+      }));
+      pickerServer = await loopbackServers.listen(pickerApp);
+    });
+
+    const pickFolder = async () => (await request(pickerServer).post('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000').send({})).body.directorySelectionId as string;
+    const register = (selectionId: string, extra: Record<string, unknown> = {}) => request(pickerServer)
+      .post('/api/rag/codebases/register').set('Origin', 'http://127.0.0.1:10000')
+      .send({kind: 'app_source', rootPath: externalPickerDir, directorySelectionId: selectionId, ...extra});
+
+    it('holds the selection for the whole registration: a concurrent replay never enumerates', async () => {
+      const selectionId = await pickFolder();
+      const first = register(selectionId).then(response => response);
+      try {
+        // Wait until the first registration is enumerating, holding the selection.
+        while (releaseEnumeration === undefined) await new Promise(resolve => setImmediate(resolve));
+        const replay = await register(selectionId);
+        expect(replay.status).toBe(400);
+        expect(replay.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+        expect(enumerations).toBe(1);
+      } finally {
+        releaseEnumeration?.();
+      }
+      expect((await first).status).toBe(200);
+      expect(registry.list(DEFAULT_SCOPE)).toHaveLength(1);
+    });
+
+    it('gives a failed registration\'s selection back until it expires, and not after', async () => {
+      releaseEnumeration = () => undefined;
+      // An empty selection fails after the selection was taken: it comes back for a retry.
+      fs.mkdirSync(path.join(externalPickerDir!, 'docs'));
+      fs.writeFileSync(path.join(externalPickerDir!, 'docs', 'notes.txt'), 'not source\n');
+      const selectionId = await pickFolder();
+      const empty = await register(selectionId, {pathFilters: ['docs']});
+      expect(empty.status).toBe(400);
+      expect(empty.body.error).toBe('effective_source_selection_empty');
+      clock = 5_999;
+      const retried = await register(selectionId);
+      expect(retried.status).toBe(200);
+      expect(retried.body.codebase).toMatchObject({displayName: path.basename(externalPickerDir!)});
+
+      // A failure that ends after the expiry does not give it back.
+      const late = await pickFolder();
+      const failing = jest.spyOn(registry, 'register').mockImplementationOnce(() => {
+        clock += 10_000;
+        throw new Error('registry_write_failed');
+      });
+      const failed = await register(late);
+      failing.mockRestore();
+      expect(failed.status).toBe(500);
+      const afterExpiry = await register(late);
+      expect(afterExpiry.status).toBe(400);
+      expect(afterExpiry.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+
+      // At the boundary the selection has expired.
+      const boundary = await pickFolder();
+      clock += 5_000;
+      const expired = await register(boundary);
+      expect(expired.body.code).toBe('DIRECTORY_SELECTION_EXPIRED');
+    });
+  });
+
+  it('refuses provider-send consent at registration without registering or using the selection', async () => {
+    externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-consent-refused-'));
+    fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
+    pickerSelectedRoot = externalPickerDir;
+    const selection = await request(server).post('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000').send({});
+    const body = {kind: 'app_source', rootPath: externalPickerDir, directorySelectionId: selection.body.directorySelectionId};
+
+    const refused = await request(server).post('/api/rag/codebases/register')
+      .set('Origin', 'http://127.0.0.1:10000').send({...body, sendToProvider: true});
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual(expect.objectContaining({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'}));
+    expect(refused.body.error).toContain('authorizeContent');
+    expect(JSON.stringify(refused.body)).not.toContain(externalPickerDir);
+    expect(registry.list(DEFAULT_SCOPE)).toEqual([]);
+    // The selection is still there: the registration it was meant for goes ahead, without consent.
+    expect(() => directoryPicker.validateSelection(selection.body.directorySelectionId, externalPickerDir!, DEFAULT_SCOPE))
+      .not.toThrow();
+    const registered = await request(server).post('/api/rag/codebases/register')
+      .set('Origin', 'http://127.0.0.1:10000').send({...body, sendToProvider: false});
+    expect(registered.status).toBe(200);
+    const codebaseId = registered.body.codebase.codebaseId;
+    expect(registry.get(codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
+
+    // Consent comes from the disclosure the registration returned.
+    const granted = await request(server).patch(`/api/rag/codebases/${codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: registered.body.codebase.contentDisclosure.token});
+    expect(granted.status).toBe(200);
+    expect(registry.get(codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(true);
+  });
+
   it('rejects remote directory-picker requests and cross-workspace selection reuse', async () => {
-    const missingOriginPick = await request(app)
+    const missingOriginPick = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .send({});
     expect(missingOriginPick.status).toBe(403);
 
-    const remoteCapability = await request(app)
+    const remoteCapability = await request(server)
       .get('/api/rag/codebases/directory-picker')
       .set('Host', 'smartperfetto.example.com')
       .set('Origin', 'https://smartperfetto.example.com');
@@ -764,18 +1205,18 @@ describe('codebase routes', () => {
       reason: 'remote_request',
     });
 
-    const remotePick = await request(app)
+    const remotePick = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .set('Host', 'smartperfetto.example.com')
       .set('Origin', 'https://smartperfetto.example.com')
       .send({});
     expect(remotePick.status).toBe(403);
 
-    const selection = await request(app)
+    const selection = await request(server)
       .post('/api/rag/codebases/directory-picker')
       .set('Origin', 'http://127.0.0.1:10000')
       .send({});
-    const mismatch = await request(app)
+    const mismatch = await request(server)
       .post('/api/rag/codebases/preview')
       .set('Origin', 'http://127.0.0.1:10000')
       .set('X-Workspace-Id', 'workspace-b')
@@ -792,7 +1233,7 @@ describe('codebase routes', () => {
     fs.mkdirSync(root);
     fs.writeFileSync(path.join(root, 'Main.c'), 'int main(void) { return 0; }\n');
 
-    const missingKernelVendor = await request(app)
+    const missingKernelVendor = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'kernel_source',
@@ -802,7 +1243,7 @@ describe('codebase routes', () => {
     expect(missingKernelVendor.status).toBe(400);
     expect(missingKernelVendor.body.error).toContain('`vendor` is required');
 
-    const missingKernelScope = await request(app)
+    const missingKernelScope = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'kernel_source',
@@ -812,7 +1253,7 @@ describe('codebase routes', () => {
     expect(missingKernelScope.status).toBe(400);
     expect(missingKernelScope.body.error).toContain('`pathFilters` is required');
 
-    const missingAospLicense = await request(app)
+    const missingAospLicense = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'aosp',
@@ -821,7 +1262,7 @@ describe('codebase routes', () => {
     expect(missingAospLicense.status).toBe(400);
     expect(missingAospLicense.body.error).toContain('`licenseTag` is required');
 
-    const appSource = await request(app)
+    const appSource = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'app_source',
@@ -869,7 +1310,7 @@ describe('codebase routes', () => {
       snippet: 'class Expired',
     }), DEFAULT_SCOPE);
 
-    const listed = await request(app).get('/api/rag/codebases');
+    const listed = await request(server).get('/api/rag/codebases');
 
     expect(listed.status).toBe(200);
     expect(listed.body.codebases[0]).toMatchObject({
@@ -921,13 +1362,13 @@ describe('codebase routes', () => {
         throw new Error('simulated_cleanup_failure');
       });
 
-    const first = await request(app).get('/api/rag/codebases');
+    const first = await request(server).get('/api/rag/codebases');
     expect(first.status).toBe(200);
     expect(first.body.codebases.find((entry: any) => entry.codebaseId === ref.codebaseId))
       .toMatchObject({maintenanceWarning: 'inactive_chunk_cleanup_failed'});
     expect(store.getChunk('expired-cleanup-chunk', DEFAULT_SCOPE)).toBeDefined();
 
-    const second = await request(app).get('/api/rag/codebases');
+    const second = await request(server).get('/api/rag/codebases');
     expect(second.status).toBe(200);
     expect(store.getChunk('expired-cleanup-chunk', DEFAULT_SCOPE)).toBeUndefined();
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.maintenanceWarning).toBeUndefined();
@@ -973,7 +1414,7 @@ describe('codebase routes', () => {
     );
     await leaseHeld;
 
-    const response = await request(app).get('/api/rag/codebases');
+    const response = await request(server).get('/api/rag/codebases');
 
     expect(response.status).toBe(200);
     expect(store.getChunk('in-flight-reindex-chunk', DEFAULT_SCOPE)).toBeDefined();
@@ -984,6 +1425,8 @@ describe('codebase routes', () => {
   });
 
   it('preserves omitted selection fields and rejects empty, unchanged, or invalid final policies', async () => {
+    fs.mkdirSync(path.join(tmpDir, 'src'));
+    fs.writeFileSync(path.join(tmpDir, 'src', 'Main.kt'), 'class Main\n');
     const appRef = registry.register({
       kind: 'app_source',
       displayName: 'Scoped App',
@@ -991,7 +1434,7 @@ describe('codebase routes', () => {
       pathFilters: ['src'],
       ...DEFAULT_SCOPE,
     });
-    const updated = await request(app)
+    const updated = await request(server)
       .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
       .send({excludeGlobs: ['**/generated/**']});
 
@@ -1003,10 +1446,10 @@ describe('codebase routes', () => {
       indexGeneration: appRef.indexGeneration + 1,
     });
 
-    const empty = await request(app)
+    const empty = await request(server)
       .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
       .send({});
-    const unchanged = await request(app)
+    const unchanged = await request(server)
       .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
       .send({excludeGlobs: ['**/generated/**', '**/generated/**']});
     expect(empty.status).toBe(400);
@@ -1024,7 +1467,7 @@ describe('codebase routes', () => {
       pathFilters: ['drivers/android'],
       ...DEFAULT_SCOPE,
     });
-    const invalidKernel = await request(app)
+    const invalidKernel = await request(server)
       .patch(`/api/rag/codebases/${kernel.codebaseId}/selection`)
       .send({pathFilters: []});
     expect(invalidKernel.status).toBe(400);
@@ -1071,7 +1514,7 @@ describe('codebase routes', () => {
       filePath: 'Candidate.kt',
     }), DEFAULT_SCOPE);
 
-    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const detail = await request(server).get(`/api/rag/codebases/${ref.codebaseId}`);
     expect(detail.status).toBe(200);
     expect(detail.body.codebase.grantRevision).toBe(1);
     registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
@@ -1090,7 +1533,7 @@ describe('codebase routes', () => {
       sourceGeneration: 'candidate-replacement',
       filePath: 'Replacement.kt',
     }), DEFAULT_SCOPE);
-    const staleAccepted = await request(app)
+    const staleAccepted = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/accept`)
       .send({
         selectionPolicyRevision: 1,
@@ -1100,7 +1543,7 @@ describe('codebase routes', () => {
     expect(staleAccepted.status).toBe(409);
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.pendingGeneration?.candidateGenerationId)
       .toBe('candidate-replacement');
-    const accepted = await request(app)
+    const accepted = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/accept`)
       .send({
         selectionPolicyRevision: 1,
@@ -1137,13 +1580,13 @@ describe('codebase routes', () => {
       chunkCount: 1,
       createdAt: Date.now(),
     });
-    const staleRejected = await request(app)
+    const staleRejected = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/reject`)
       .send({candidateGenerationId: 'candidate-reject-a'});
     expect(staleRejected.status).toBe(409);
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.pendingGeneration?.candidateGenerationId)
       .toBe('candidate-reject-b');
-    const rejected = await request(app)
+    const rejected = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/pending/reject`)
       .send({candidateGenerationId: 'candidate-reject-b'});
     expect(rejected.status).toBe(200);
@@ -1162,7 +1605,7 @@ describe('codebase routes', () => {
       ...DEFAULT_SCOPE,
     });
 
-    const response = await request(app)
+    const response = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeAvailableExtensions: true});
 
@@ -1171,7 +1614,7 @@ describe('codebase routes', () => {
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.consent.sendToProvider).toBe(false);
 
     registry.setProviderConsent(ref.codebaseId, DEFAULT_SCOPE, true, DEFAULT_SCOPE.userId);
-    const ambiguous = await request(app)
+    const ambiguous = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeAvailableExtensions: true, sendToProvider: false});
     expect(ambiguous.status).toBe(400);
@@ -1183,21 +1626,25 @@ describe('codebase routes', () => {
       kind: 'app_source',
       displayName: 'Expanded selection',
       rootPath: tmpDir,
-      pathFilters: ['app'],
+      pathFilters: ['app', 'lib'],
       sendToProvider: true,
       ...DEFAULT_SCOPE,
     });
-    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {
-      pathFilters: ['app', 'lib'],
-      excludeGlobs: [],
-    });
+    // A grant narrower than its selection, as a record from an older version holds it.
+    const registryPath = path.join(tmpDir, 'codebases.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.includePrefixes = ['app'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
 
-    const response = await request(app)
+    const response = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeCurrentSelection: true});
-    const ambiguous = await request(app)
+    const ambiguous = await request(server)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeCurrentSelection: true, authorizeAvailableExtensions: true});
+    const ambiguousContent = await request(server)
+      .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, sendToProvider: true});
 
     expect(response.status).toBe(200);
     expect(response.body.codebase).toMatchObject({providerGrantScopeCurrent: true});
@@ -1207,6 +1654,100 @@ describe('codebase routes', () => {
     });
     expect(ambiguous.status).toBe(400);
     expect(ambiguous.body.error).toContain('mutually exclusive');
+    expect(ambiguousContent.status).toBe(400);
+    expect(ambiguousContent.body.error).toContain('mutually exclusive');
+  });
+
+  it('grants the current selection and every language in one idempotent consent action', async () => {
+    const ref = registry.register({
+      kind: 'app_source', displayName: 'Content consent', rootPath: tmpDir, pathFilters: ['app', 'lib'],
+      sendToProvider: false, ...DEFAULT_SCOPE,
+    });
+    const registryPath = path.join(tmpDir, 'codebases.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.includePrefixes = ['app'];
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+
+    // The narrow actions keep their precondition: no consent, no grant.
+    const narrow = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeCurrentSelection: true});
+    expect(narrow.status).toBe(409);
+    expect(narrow.body.error).toBe('provider_send_consent_required');
+
+    // The combined grant needs the token of the scope the caller disclosed.
+    const enabled = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({sendToProvider: true});
+    expect(enabled.status).toBe(400);
+    expect(enabled.body).toEqual(expect.objectContaining({success: false, code: 'CODEBASE_CONSENT_DISCLOSURE_REQUIRED'}));
+    expect(enabled.body.error).toContain('authorizeContent');
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)!.consent.sendToProvider).toBe(false);
+    const untokened = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true});
+    expect(untokened.status).toBe(400);
+    expect(untokened.body.code).toBe('CODEBASE_CONSENT_DISCLOSURE_REQUIRED');
+    const detail = await request(server).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const listed = await request(server).get('/api/rag/codebases');
+    const token = detail.body.codebase.contentDisclosure.token;
+    expect(token).toMatch(/^cd1:/);
+    expect(detail.body.codebase).not.toHaveProperty('contentDisclosureToken');
+    expect(listed.body.codebases.find((item: {codebaseId: string}) => item.codebaseId === ref.codebaseId)
+      .contentDisclosure.token).toBe(token);
+
+    const granted = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: token});
+    expect(granted.status).toBe(200);
+    expect(granted.body.codebase).toMatchObject({eligibleForSendToProvider: true, providerGrantScopeCurrent: true,
+      availableNotConsentedExtensions: []});
+    const repeated = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: token});
+    expect(repeated.body.codebase.consent).toEqual(granted.body.codebase.consent);
+    expect(JSON.stringify(granted.body)).not.toContain(tmpDir);
+    // Revoking with an explicit false is unchanged.
+    const revoked = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({sendToProvider: false});
+    expect(revoked.status).toBe(200);
+    expect(revoked.body.codebase.eligibleForSendToProvider).toBe(false);
+
+    // A selection edited after the disclosure refuses the old token and grants nothing.
+    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {pathFilters: ['app', 'lib', 'tools']});
+    const afterEdit = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+    const stale = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeContent: true, contentDisclosureToken: token});
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({code: 'CODEBASE_CONSENT_DISCLOSURE_STALE', error: 'consent_disclosure_stale'});
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)).toEqual(afterEdit);
+  });
+
+  it('previews a selection edit with relative paths and refuses saving a proven empty or stale selection', async () => {
+    const root = path.join(tmpDir, 'selection-preview-repo');
+    fs.mkdirSync(path.join(root, 'feature'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'feature', 'A.kt'), 'class A\n');
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    const ref = registry.register({kind: 'app_source', displayName: 'Preview', rootPath: root, ...DEFAULT_SCOPE});
+
+    const preview = await request(server).post(`/api/rag/codebases/${ref.codebaseId}/selection/preview`)
+      .send({pathFilters: ['feature']});
+    expect(preview.status).toBe(200);
+    expect(preview.body.selectionPreview).toMatchObject({status: 'complete', selectionPolicyRevision: 1,
+      preview: {acceptedFileCount: 1, acceptedFiles: [{relativePath: 'feature/A.kt'}]}});
+    expect(JSON.stringify(preview.body)).not.toContain(root);
+
+    const empty = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+      .send({excludeGlobs: ['**/*.kt']});
+    expect(empty.status).toBe(400);
+    expect(empty.body.code).toBe('CODEBASE_SELECTION_EMPTY_MATCH');
+
+    const saved = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+      .send({pathFilters: ['feature'], expectedSelectionPolicyRevision: 1});
+    expect(saved.status).toBe(200);
+    const stale = await request(server).patch(`/api/rag/codebases/${ref.codebaseId}/selection`)
+      .send({pathFilters: [], expectedSelectionPolicyRevision: 1});
+    expect(stale.status).toBe(409);
+    expect(stale.body.code).toBe('CODEBASE_SELECTION_STALE');
+
+    const missing = await request(server).post('/api/rag/codebases/cb_missing/selection/preview').send({});
+    expect(missing.status).toBe(404);
   });
 
   it('rejects ambiguous provider consent and unsafe path filters', async () => {
@@ -1214,10 +1755,10 @@ describe('codebase routes', () => {
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
 
-    const ambiguousConsent = await request(app)
+    const ambiguousConsent = await request(server)
       .post('/api/rag/codebases/register')
       .send({displayName: 'Repo', rootPath: root, sendToProvider: 'false'});
-    const traversalFilter = await request(app)
+    const traversalFilter = await request(server)
       .post('/api/rag/codebases/register')
       .send({displayName: 'Repo', rootPath: root, pathFilters: ['../private']});
 
@@ -1236,7 +1777,7 @@ describe('codebase routes', () => {
       'package com.example\nclass MainActivity { fun simulateHeavyLaunch() {} }\n',
     );
 
-    const preview = await request(app)
+    const preview = await request(server)
       .post('/api/rag/codebases/preview')
       .send({rootPath: root});
     expect(preview.status).toBe(200);
@@ -1248,19 +1789,18 @@ describe('codebase routes', () => {
       bytesSelected: expect.any(Number),
     });
 
-    const registered = await request(app)
+    const registered = await request(server)
       .post('/api/rag/codebases/register')
       .send({
         kind: 'app_source',
         displayName: 'HighPerformanceMini',
         rootPath: root,
-        sendToProvider: true,
       });
     expect(registered.status).toBe(200);
     const codebaseId = registered.body.codebase.codebaseId;
     expect(registered.body.codebase.rootPath).toBeUndefined();
 
-    const reindex = await request(app)
+    const reindex = await request(server)
       .post(`/api/rag/codebases/${codebaseId}/reindex`)
       .send({});
     expect(reindex.status).toBe(200);
@@ -1274,7 +1814,7 @@ describe('codebase routes', () => {
       }),
     });
 
-    const symbols = await request(app)
+    const symbols = await request(server)
       .get(`/api/rag/codebases/${codebaseId}/symbols`)
       .query({symbol: 'MainActivity'});
     expect(symbols.status).toBe(200);
@@ -1284,37 +1824,19 @@ describe('codebase routes', () => {
       filePath: 'launch-aosp/src/main/java/com/example/MainActivity.kt',
     }));
 
-    const search = await request(app)
+    const search = await request(server)
       .post('/api/rag/search')
       .send({query: 'simulateHeavyLaunch', kinds: ['app_source'], codebaseIds: [codebaseId]});
     expect(search.status).toBe(200);
     expect(JSON.stringify(search.body)).not.toContain('simulateHeavyLaunch()');
     expect(search.body.result.results[0].chunk.snippetHash).toEqual(expect.any(String));
 
-    const chunkId = search.body.result.results[0].chunkId;
-    const excerpt = await request(app)
+    // No route returns an indexed chunk's raw text.
+    const excerpt = await request(server)
       .get(`/api/rag/codebases/${codebaseId}/excerpt`)
-      .query({chunkId});
-    expect(excerpt.status).toBe(200);
-    expect(excerpt.body.excerpt.text).toContain('simulateHeavyLaunch()');
-    expect(excerpt.body.excerpt.filePath).toBe('launch-aosp/src/main/java/com/example/MainActivity.kt');
-
-    store.addChunk(makeChunk({
-      chunkId: 'stale-generation',
-      kind: 'app_source',
-      uri: 'codebase://stale/MainActivity.kt',
-      snippet: 'STALE_GENERATION_PRIVATE_CANARY',
-      codebaseId,
-      registryOrigin: 'codebase_registry',
-      sourceGeneration: 'codebase_0',
-      filePath: 'MainActivity.kt',
-      language: 'kotlin',
-    }), DEFAULT_SCOPE);
-    const staleExcerpt = await request(app)
-      .get(`/api/rag/codebases/${codebaseId}/excerpt`)
-      .query({chunkId: 'stale-generation'});
-    expect(staleExcerpt.status).toBe(404);
-    expect(JSON.stringify(staleExcerpt.body)).not.toContain('STALE_GENERATION_PRIVATE_CANARY');
+      .query({chunkId: search.body.result.results[0].chunkId});
+    expect(excerpt.status).toBe(404);
+    expect(JSON.stringify(excerpt.body)).not.toContain('simulateHeavyLaunch()');
   });
 
   it('uses the injected source enumerator for registration and reindex', async () => {
@@ -1333,11 +1855,12 @@ describe('codebase routes', () => {
       externalKnowledgeRegistry,
     } as any));
 
-    const registered = await request(isolated)
+    const isolatedServer = await loopbackServers.listen(isolated);
+    const registered = await request(isolatedServer)
       .post('/api/rag/codebases/register')
       .send({kind: 'app_source', rootPath: root, sendToProvider: false});
     expect(registered.status).toBe(200);
-    const reindexed = await request(isolated)
+    const reindexed = await request(isolatedServer)
       .post(`/api/rag/codebases/${registered.body.codebase.codebaseId}/reindex`)
       .send({});
     expect(reindexed.status).toBe(200);
@@ -1355,7 +1878,7 @@ describe('codebase routes', () => {
         ...DEFAULT_SCOPE,
       });
 
-      const response = await request(app)
+      const response = await request(server)
         .post(`/api/rag/codebases/${ref.codebaseId}/reindex`)
         .send({});
 
@@ -1376,7 +1899,7 @@ describe('codebase routes', () => {
     fs.mkdirSync(root);
     fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main {\n' + '  fun next() = Unit\n'.repeat(400) + '}\n');
     const ref = registry.register({kind: 'app_source', displayName: 'Capacity', rootPath: root, ...DEFAULT_SCOPE});
-    const response = await request(app).post(`/api/rag/codebases/${ref.codebaseId}/reindex`).send({maxChunks: 1});
+    const response = await request(server).post(`/api/rag/codebases/${ref.codebaseId}/reindex`).send({maxChunks: 1});
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({
       success: false, code: 'CODEBASE_INDEX_CAPACITY_EXCEEDED', onDemandAvailable: true,
@@ -1429,13 +1952,13 @@ describe('codebase routes', () => {
       sourceGeneration: 'codebase_2_active',
     }), otherScope);
 
-    const forbidden = await request(app).delete(`/api/rag/codebases/${other.codebaseId}`);
+    const forbidden = await request(server).delete(`/api/rag/codebases/${other.codebaseId}`);
     expect(forbidden.status).toBe(200);
     expect(forbidden.body).toMatchObject({success: true, alreadyDeleted: true});
     expect(registry.get(other.codebaseId, otherScope)).toBeDefined();
     expect(store.getChunk('keep-other-tenant', otherScope)).toBeDefined();
 
-    const deleted = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const deleted = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
     expect(deleted.status).toBe(200);
     expect(deleted.body).toEqual({
       success: true,
@@ -1459,9 +1982,9 @@ describe('codebase routes', () => {
       ...DEFAULT_SCOPE,
     });
     const leaseSpy = jest.spyOn(registry, 'withIngestLease')
-      .mockRejectedValueOnce(new Error('codebase_reindex_in_progress'));
+      .mockRejectedValueOnce(new CodebaseStateError('codebase_reindex_in_progress'));
 
-    const response = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const response = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
 
     expect(response.status).toBe(409);
     expect(response.body).toMatchObject({success: false, code: 'CODEBASE_BUSY'});
@@ -1492,7 +2015,7 @@ describe('codebase routes', () => {
         throw new Error('simulated_cleanup_failure');
       });
 
-    const interrupted = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const interrupted = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
 
     expect(interrupted.status).toBe(500);
     expect(interrupted.body).toMatchObject({
@@ -1509,14 +2032,14 @@ describe('codebase routes', () => {
     expect(retired?.contentFingerprint).toBeUndefined();
     expect(store.getChunk('retry-delete-chunk', DEFAULT_SCOPE)).toBeDefined();
 
-    const reindex = await request(app)
+    const reindex = await request(server)
       .post(`/api/rag/codebases/${ref.codebaseId}/reindex`)
       .send({});
     expect(reindex.status).toBe(400);
     expect(reindex.body.error).toBe('codebase_deleting');
 
     removeSpy.mockRestore();
-    const retried = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const retried = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
     expect(retried.status).toBe(200);
     expect(retried.body).toMatchObject({
       success: true,
@@ -1525,7 +2048,7 @@ describe('codebase routes', () => {
     });
     expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)).toBeUndefined();
 
-    const repeated = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
+    const repeated = await request(server).delete(`/api/rag/codebases/${ref.codebaseId}`);
     expect(repeated.status).toBe(200);
     expect(repeated.body).toEqual({
       success: true,

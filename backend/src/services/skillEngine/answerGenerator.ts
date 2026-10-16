@@ -9,8 +9,8 @@
  * 将结构化数据转换为用户可理解的答案
  */
 
-import { DiagnosticResult, DisplayResult } from './types';
 import { DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS } from '../../config/thresholds';
+import { outsideTargetScopeFields } from '../../types/identityContract';
 
 // =============================================================================
 // 类型定义
@@ -325,7 +325,7 @@ export class AnswerGenerator {
     const uniqueSuggestions = [...new Set(allSuggestions)];
 
     if (uniqueSuggestions.length === 0) {
-      return this.generateNoSuggestionAnswer(context);
+      return this.generateNoSuggestionAnswer();
     }
 
     const subject = this.extractProblemSubject(originalQuestion);
@@ -494,7 +494,7 @@ export class AnswerGenerator {
   /**
    * 生成无建议回答
    */
-  private generateNoSuggestionAnswer(context: AnswerContext): string {
+  private generateNoSuggestionAnswer(): string {
     return `基于当前分析结果，性能表现正常，暂无具体优化建议。` +
            `\n\n如需深入分析，可以尝试：` +
            `\n1. 提供更长时间的 trace 数据` +
@@ -542,7 +542,7 @@ export class AnswerGenerator {
   private extractEvidence(sections: Record<string, any>): string[] {
     const evidence: string[] = [];
 
-    for (const [key, section] of Object.entries(sections)) {
+    for (const section of Object.values(sections)) {
       if (!section.data || !Array.isArray(section.data) || section.data.length === 0) {
         continue;
       }
@@ -579,12 +579,15 @@ export class AnswerGenerator {
   private extractKeyMetrics(sections: Record<string, any>): string[] {
     const metrics: string[] = [];
 
-    for (const [key, section] of Object.entries(sections)) {
+    for (const section of Object.values(sections)) {
       if (!section.data || !Array.isArray(section.data) || section.data.length === 0) {
         continue;
       }
 
-      const row = section.data[0];
+      // Key metrics describe the analysed app, not fields declared trace-wide or peer.
+      const outsideTarget = outsideTargetScopeFields(section.scopeProvenance);
+      const row = Object.fromEntries(Object.entries(section.data[0])
+        .filter(([field]) => !outsideTarget(field))) as Record<string, any>;
 
       // 帧相关
       if (row.total_frames != null) {
@@ -618,7 +621,7 @@ export class AnswerGenerator {
   private extractLocations(sections: Record<string, any>): string[] {
     const locations: string[] = [];
 
-    for (const [key, section] of Object.entries(sections)) {
+    for (const section of Object.values(sections)) {
       if (!section.data || !Array.isArray(section.data)) {
         continue;
       }

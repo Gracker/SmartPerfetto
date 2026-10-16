@@ -10,6 +10,7 @@ import type {CapabilityManifestTraceProcessorIdentityV1} from '../../types/capab
 import type {CapturedFieldSemantics} from './evidenceCapture';
 import {analyzeRawSqlDirectProjection, resolveRawSqlDirectProjection,
   type RawSqlDirectProjectionAnalysis} from './rawSqlDirectProjection';
+import {resolveRawSqlExpressionUnits, RAW_SQL_EXPRESSION_UNIT_POLICY} from './rawSqlExpressionUnits';
 
 export interface RawSqlNativeProvenance {readonly kind: 'raw_sql_native_provenance'}
 export interface RawSqlBootstrapCapability {readonly kind: 'raw_sql_bootstrap_capability'}
@@ -209,17 +210,21 @@ export function sealRawSqlNativeQuery(query: RawSqlNativeQuery | undefined, resu
   const schema = relation ? state.schema.get(canonical(relation.name)) : undefined;
   if (!schema) return;
   const mapping = resolveRawSqlDirectProjection(issued.analysis, result.columns, schema.map(column => column.name));
-  if (!mapping) return;
+  const expressionUnits = resolveRawSqlExpressionUnits(issued.analysis, result.columns, schema);
+  if (!mapping && !Object.keys(expressionUnits).length) return;
   const fields: Record<string, CapturedFieldSemantics> = Object.create(null);
   const selectedSqlHash = createHash('sha256').update(issued.sql).digest('hex').slice(0, 12);
   const definitionFingerprint = fingerprint({native: state.definitionFingerprint, processorId: state.processorId,
-    epoch: issued.epoch, sql: issued.sql, relation, schema, mapping});
-  for (const column of mapping) {
+    epoch: issued.epoch, sql: issued.sql, relation, schema, mapping, expressionUnits,
+    expressionUnitPolicy: RAW_SQL_EXPRESSION_UNIT_POLICY});
+  for (const column of mapping ?? []) {
     if (schema.find(source => source.name === column.sourceColumn)?.type !== 'DURATION') continue;
     fields[column.outputColumn] = Object.freeze({origin: Object.freeze({kind: 'native_producer', selectedSqlHash, definitionFingerprint}), unit: 'ns'});
   }
+  for (const [column, unit] of Object.entries(expressionUnits)) fields[column] = Object.freeze({
+    origin: Object.freeze({kind: 'native_producer', selectedSqlHash, definitionFingerprint}), unit});
   const rowSchema = relation ? state.rowSchemas?.get(canonical(relation.name)) : undefined;
-  const idOutputs = rowSchema ? mapping.filter(column => canonical(column.sourceColumn) === rowSchema.idColumn) : [];
+  const idOutputs = rowSchema ? (mapping ?? []).filter(column => canonical(column.sourceColumn) === rowSchema.idColumn) : [];
   const nativeRows = rowSchema && state.traceId && idOutputs.length ? result.rows.map(row => {
     const values = idOutputs.map(column => Array.isArray(row) ? row[result.columns.indexOf(column.outputColumn)] :
       row && typeof row === 'object' ? (row as Record<string, unknown>)[column.outputColumn] : undefined);

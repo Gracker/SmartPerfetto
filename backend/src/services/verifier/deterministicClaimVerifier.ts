@@ -14,15 +14,18 @@ import type {
   DeterministicClaimProof,
   DeterministicClaimProofKind,
 } from '../../types/claimVerification';
+import {claimReferenceIssueCode} from '../../types/claimVerification';
 import {
   getCapturedAnchorFacts,
-  unreadableEvidenceAnchorReason,
+  uncheckedEvidenceAnchorReason,
   type CapturedFieldSemantics,
   type EvidenceScalar,
 } from '../evidence/evidenceCapture';
 import {evidenceReferenceKey} from '../evidence/claimEvidencePreparation';
 import {compareRationals as compare, exactNumber, type Rational} from '../../utils/exactDecimal';
 import {referenceBindingFailureIsAdvisory} from '../evidence/evidenceReadView';
+import {classifyComparisonSides} from '../evidence/comparisonSides';
+import {claimUnitFor as unitFor, declaredUnitAcceptsProducerDimension, type ClaimUnit as Unit} from './claimUnits';
 
 export interface DeterministicClaimVerifierInput {
   claimSupport?: ClaimSupportV1[];
@@ -33,13 +36,12 @@ type CapturedFacts = NonNullable<ReturnType<typeof getCapturedAnchorFacts>>;
 type BoundAnchor = {anchor: EvidenceAnchorV1; facts: CapturedFacts};
 type BoundCell = BoundAnchor & {column: string; value: EvidenceScalar; field?: CapturedFieldSemantics};
 type Resolution<T> = {value: T} | {reason: string};
-type Unit = {dimension: string; numerator: bigint; denominator: bigint};
 
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);
-const proofKinds: Readonly<Record<string, DeterministicClaimProofKind>> = Object.freeze({
+// `source_location` stays in the stored union for historical results; no current rule produces it.
+const proofKinds: Readonly<Record<string, Exclude<DeterministicClaimProofKind, 'source_location'>>> = Object.freeze({
   'numeric.cell': 'numeric_cell',
   'captured.cell': 'captured_cell',
-  'source.location': 'source_location',
   'interval.overlap': 'interval_overlap',
   'comparison.delta': 'comparison_delta',
 });
@@ -52,37 +54,6 @@ export interface SupportedDeterministicClaimRule {
 export const SUPPORTED_DETERMINISTIC_CLAIM_RULES: readonly SupportedDeterministicClaimRule[] = Object.freeze(
   Object.entries(proofKinds).map(([id, proofKind]) => Object.freeze({id, proofKind})),
 );
-
-// These are explicit unit definitions, not aliases inferred from a column name.
-const units: Readonly<Record<string, Unit>> = {
-  ns: {dimension: 'time', numerator: 1n, denominator: 1n},
-  us: {dimension: 'time', numerator: 1000n, denominator: 1n},
-  'µs': {dimension: 'time', numerator: 1000n, denominator: 1n},
-  'μs': {dimension: 'time', numerator: 1000n, denominator: 1n},
-  ms: {dimension: 'time', numerator: 1000000n, denominator: 1n},
-  s: {dimension: 'time', numerator: 1000000000n, denominator: 1n},
-  count: {dimension: 'count', numerator: 1n, denominator: 1n},
-  frame: {dimension: 'frames', numerator: 1n, denominator: 1n},
-  frames: {dimension: 'frames', numerator: 1n, denominator: 1n},
-  event: {dimension: 'events', numerator: 1n, denominator: 1n},
-  events: {dimension: 'events', numerator: 1n, denominator: 1n},
-  ratio: {dimension: 'ratio', numerator: 1n, denominator: 1n},
-  '%': {dimension: 'ratio', numerator: 1n, denominator: 100n},
-  percent: {dimension: 'ratio', numerator: 1n, denominator: 100n},
-  B: {dimension: 'bytes', numerator: 1n, denominator: 1n},
-  bytes: {dimension: 'bytes', numerator: 1n, denominator: 1n},
-  KiB: {dimension: 'bytes', numerator: 1024n, denominator: 1n},
-  MiB: {dimension: 'bytes', numerator: 1048576n, denominator: 1n},
-  GiB: {dimension: 'bytes', numerator: 1073741824n, denominator: 1n},
-  Hz: {dimension: 'frequency', numerator: 1n, denominator: 1n},
-  kHz: {dimension: 'frequency', numerator: 1000n, denominator: 1n},
-  MHz: {dimension: 'frequency', numerator: 1000000n, denominator: 1n},
-  GHz: {dimension: 'frequency', numerator: 1000000000n, denominator: 1n},
-};
-
-function unitFor(unit: string | undefined): Unit | undefined {
-  return unit !== undefined && hasOwn(units, unit) ? units[unit] : undefined;
-}
 
 function exactPrimitiveMatch(expected: unknown, actual: unknown): boolean {
   if (expected === null || actual === null) return expected === actual;
@@ -147,8 +118,8 @@ function verifyAnchor(anchor: EvidenceAnchorV1, ineligible: boolean): ClaimRefer
   // An ineligible binding is never read, so how its anchor failed is moot.
   if (ineligible) return [{...base, status: 'ineligible', message: 'claim binding is ineligible'}];
   const failure = anchorFailure(anchor);
-  // Only an issued read outcome can show the product failed to read; the reason string alone cannot.
-  if (failure) return [{...base, status: unreadableEvidenceAnchorReason(anchor) ? 'not_checked' : 'missing', message: failure}];
+  // Only an issued mark can leave a missing reference unchecked; the reason string alone cannot.
+  if (failure) return [{...base, status: uncheckedEvidenceAnchorReason(anchor) ? 'not_checked' : 'missing', message: failure}];
   const facts = getCapturedAnchorFacts(anchor);
   if (!facts) return [{...base, status: 'not_checked', message: anchor.missingReason || 'immutable execution capture is unavailable'}];
   if (!anchor.cells?.length) return [{...base, status: 'not_checked', message: 'no expected cell value was supplied'}];
@@ -266,7 +237,10 @@ function numericProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): Deter
   if (!trustedField(cell.field) || !actualUnit || !expectedUnit) {
     return proof(kind, 'candidate', 'unit_authority_unknown', anchors);
   }
-  if (actualUnit.dimension !== expectedUnit.dimension) return proof(kind, 'rejected', 'unit_dimension_mismatch', anchors);
+  if (actualUnit.dimension !== expectedUnit.dimension &&
+      !declaredUnitAcceptsProducerDimension(semantics.numeric.unit, actualUnit.dimension)) {
+    return proof(kind, 'rejected', 'unit_dimension_mismatch', anchors);
+  }
   const actual = exactNumber(cell.value);
   const expected = exactNumber(semantics.numeric.value);
   if (!actual || !expected) return proof(kind, 'candidate', 'exact_numeric_value_unavailable', anchors);
@@ -290,8 +264,22 @@ function capturedCellProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): 
   if ('reason' in resolved) return proof(kind, 'candidate', resolved.reason);
   const {anchor, value} = resolved.value;
   const matched = exactPrimitiveMatch(subject.value, value);
+  if (!matched && losslessPrimitiveEncoding(subject.value, value)) {
+    // The same value in another JSON type ('858' vs 858) neither proves the
+    // declared string nor contradicts the captured value. The reference layer
+    // reports this pair as an unresolved type, not a mismatch (verifyAnchor).
+    return proof(kind, 'candidate', 'captured_value_type_mismatch', [anchor]);
+  }
   return proof(kind, matched ? 'proved' : 'rejected',
     matched ? 'captured_cell_value_proved' : 'captured_cell_value_rejected', [anchor]);
+}
+
+/** A declared string that is exactly the captured number's decimal value ('858' or '858.0' for 858). */
+function losslessPrimitiveEncoding(declared: unknown, actual: EvidenceScalar): boolean {
+  if (typeof declared !== 'string' || typeof actual !== 'number') return false;
+  const expected = exactNumber(declared);
+  const captured = exactNumber(actual);
+  return Boolean(expected && captured && compare(expected, captured) === 0);
 }
 
 function exactNanoseconds(value: EvidenceScalar, field: CapturedFieldSemantics): bigint | undefined {
@@ -354,7 +342,8 @@ function intervalProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): Dete
 
 function comparisonProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): DeterministicClaimProof {
   const kind = 'comparison_delta';
-  if (semantics.scope.subjectRefs?.length !== 1 || semantics.scope.objectRefs?.length !== 1 || !semantics.numeric) {
+  const numeric = semantics.numeric;
+  if (semantics.scope.subjectRefs?.length !== 1 || semantics.scope.objectRefs?.length !== 1 || !numeric) {
     return proof(kind, 'candidate', 'comparison_scope_requires_two_cells');
   }
   const current = resolveCell(claim, semantics.scope.subjectRefs[0]);
@@ -364,9 +353,11 @@ function comparisonProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): De
   const left = current.value;
   const right = reference.value;
   const anchors = [left.anchor, right.anchor];
-  if (left.anchor.context.traceSide !== 'current' || right.anchor.context.traceSide !== 'reference') {
-    return proof(kind, 'rejected', 'comparison_side_mismatch', anchors);
-  }
+  // A missing trace id on a current/reference pair keeps going: the cells'
+  // captured field semantics below decide it, as before the shared rule.
+  const sides = classifyComparisonSides(left.anchor.context, right.anchor.context);
+  if (sides === 'comparison_not_cross_trace') return proof(kind, 'candidate', sides, anchors);
+  if (sides === 'comparison_side_mismatch') return proof(kind, 'rejected', sides, anchors);
   if (!trustedField(left.field) || !trustedField(right.field)) return proof(kind, 'candidate', 'comparison_metric_authority_unknown', anchors);
   for (const key of ['metricId', 'aggregation', 'populationKey'] as const) {
     if (!left.field[key] || !right.field[key]) return proof(kind, 'candidate', `comparison_${key}_unknown`, anchors);
@@ -381,19 +372,24 @@ function comparisonProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): De
   if (leftRole !== rightRole) return proof(kind, 'rejected', 'comparison_field_scope_mismatch', anchors);
   const leftUnit = unitFor(left.field.unit);
   const rightUnit = unitFor(right.field.unit);
-  const declaredUnit = unitFor(semantics.numeric.unit);
+  const declaredUnit = unitFor(numeric.unit);
   if (!leftUnit || !rightUnit || !declaredUnit) return proof(kind, 'candidate', 'unit_authority_unknown', anchors);
-  if (leftUnit.dimension !== rightUnit.dimension || leftUnit.dimension !== declaredUnit.dimension) {
+  // Left and right are both producer units: they stay strictly same-dimension.
+  // The declared unit accepts each producer side by matching its dimension, or
+  // through the one-directional generic `count` -> frames|events equivalence.
+  const declaredAccepts = (producer: Unit): boolean => declaredUnit.dimension === producer.dimension ||
+    declaredUnitAcceptsProducerDimension(numeric.unit, producer.dimension);
+  if (leftUnit.dimension !== rightUnit.dimension || !declaredAccepts(leftUnit) || !declaredAccepts(rightUnit)) {
     return proof(kind, 'rejected', 'unit_dimension_mismatch', anchors);
   }
   const leftNumber = exactNumber(left.value);
   const rightNumber = exactNumber(right.value);
-  const declaredNumber = exactNumber(semantics.numeric.value);
+  const declaredNumber = exactNumber(numeric.value);
   if (!leftNumber || !rightNumber || !declaredNumber) return proof(kind, 'candidate', 'exact_numeric_value_unavailable', anchors);
   const a = scale(leftNumber, leftUnit);
   const b = scale(rightNumber, rightUnit);
   const delta = {numerator: a.numerator * b.denominator - b.numerator * a.denominator, denominator: a.denominator * b.denominator};
-  const matched = numericOperator(compare(delta, scale(declaredNumber, declaredUnit)), semantics.numeric.operator);
+  const matched = numericOperator(compare(delta, scale(declaredNumber, declaredUnit)), numeric.operator);
   return proof(kind, matched ? 'proved' : 'rejected', matched ? 'cited_metric_delta_proved' : 'comparison_delta_rejected', anchors);
 }
 
@@ -405,10 +401,6 @@ function deterministicProof(claim: ClaimSupportV1, references: ClaimReferenceVer
   if (!semantics) return proof(kind, 'not_checked', 'semantics_not_declared');
   if (claim.bindingEligibility !== 'eligible') return proof(kind, 'candidate', 'binding_eligibility_unchecked');
   if (kind === 'none') return proof(kind, 'candidate', 'unsupported_predicate');
-  // Source locations are evaluated against the private current-run source ledger
-  // by the shared finalizer, never against Trace anchors or model metadata here.
-  if (kind === 'source_location') return proof(kind, 'not_checked', 'source_evidence_required');
-  if (semantics.source) return proof(kind, 'candidate', 'source_declaration_not_supported');
   const unresolved = references.some(reference => reference.status === 'missing' || reference.status === 'ambiguous' || reference.status === 'value_mismatch');
   // An extra broken citation must not hide a contradiction in the predicate's
   // own captured inputs. Evaluate those inputs, but never prove from bad refs.
@@ -458,12 +450,15 @@ function issueForReference(claim: ClaimSupportV1, reference: ClaimReferenceVerif
   // Unverified references are reported once per claim and reason by verifyClaim.
   if (reference.status === 'matched' || reference.status === 'not_checked' || reference.status === 'ineligible') return undefined;
   const anchors = claim.anchors.filter(anchor => anchor.anchorId === reference.anchorId);
-  const advisory = claim.kind !== 'identity' && !claim.semantics?.source &&
-    anchors.length === 1 && referenceBindingFailureIsAdvisory(anchors[0], reference.status);
+  // References and typed semantics may cite the same cell with different
+  // redundant identifiers. Each resulting anchor must retain its own issued
+  // read authority; matching anchor IDs alone confer no advisory standing.
+  const advisory = claim.kind !== 'identity' &&
+    anchors.length > 0 && anchors.every(anchor => referenceBindingFailureIsAdvisory(anchor, reference.status));
   return {
     claimId: claim.claimId,
     severity: advisory ? 'warning' : 'error',
-    code: `claim_reference_${reference.status}`,
+    code: claimReferenceIssueCode(reference.status),
     message: reference.message || `claim reference ${reference.status}`,
     evidenceRefId: reference.evidenceRefId,
   };
@@ -478,11 +473,11 @@ function verifyClaim(claim: ClaimSupportV1): {result: ClaimVerificationClaimResu
   const ineligible = claim.bindingEligibility === 'ineligible';
   if (ineligible) issues.push({claimId: claim.claimId, severity: 'warning', code: 'binding_ineligible',
     message: 'the conclusion declaration was not admitted for verification'});
-  const unreadable = ineligible ? new Set<string>() : new Set(claim.anchors.flatMap(anchor => {
-    const reason = unreadableEvidenceAnchorReason(anchor);
+  const unchecked = ineligible ? new Set<string>() : new Set(claim.anchors.flatMap(anchor => {
+    const reason = uncheckedEvidenceAnchorReason(anchor);
     return reason ? [reason] : [];
   }));
-  for (const reason of unreadable) {
+  for (const reason of unchecked) {
     issues.push({claimId: claim.claimId, severity: 'warning', code: 'claim_reference_unverified', message: reason});
   }
   if (evaluated.status === 'rejected' || evaluated.status === 'candidate') issues.push({

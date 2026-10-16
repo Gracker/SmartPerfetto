@@ -10,6 +10,7 @@ import {execFileSync} from 'child_process';
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {activeCodebaseGeneration, CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {CodebaseStateError} from '../codebase/codebaseRequestError';
 import {
   PathSecurityGate,
   readAcceptedTextFileSync,
@@ -126,7 +127,7 @@ describe('AppSourceIngester', () => {
 
     try {
       expect(() => readOpenedTextFileBoundedSync(descriptor, opened, 1_024))
-        .toThrow('source_file_changed_or_too_large');
+        .toThrow('source_file_changed_during_read');
     } finally {
       fs.closeSync(descriptor);
     }
@@ -448,7 +449,7 @@ describe('AppSourceIngester', () => {
       operation({
         operationId: 'stale-operation',
         assertHeld: () => {
-          if (!leaseValid) throw new Error('codebase_reindex_lease_lost');
+          if (!leaseValid) throw new CodebaseStateError('codebase_reindex_lease_lost');
         },
         updateIngestStatus: () => {
           throw new Error('stale status update must not run');
@@ -517,12 +518,12 @@ describe('AppSourceIngester', () => {
     });
     releaseEnumeration();
 
+    // The first build is fenced by the generation the edit advanced; a codebase
+    // that was never indexed is not told to reindex.
     await expect(ingest).rejects.toThrow('codebase_index_generation_changed');
     expect(narrowed.selectionPolicyRevision).toBe(2);
-    expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({
-      activeIndexState: 'none',
-      reindexRequired: 'selection_scope_changed',
-    }));
+    expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({activeIndexState: 'none'}));
+    expect(registry.get(ref.codebaseId)?.reindexRequired).toBeUndefined();
     expect(store.listChunks({scope: ref})).toHaveLength(0);
   });
 

@@ -15,21 +15,18 @@ import {
 } from './overlayReconciler';
 import {ProposalApplicationService} from './proposalApplicationService';
 import {ProposalStore} from './proposalStore';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../utils/localDevIdentity';
 
 /**
  * Seed scope reconciled on startup even when the overlay registry is empty.
  *
  * It must equal the scope non-enterprise runs actually resolve to, otherwise the
- * seed reconciles a scope no run ever uses. `agentRoutes.runManifestScopeFromSession`
- * falls back to `DEFAULT_TENANT_ID` / `DEFAULT_WORKSPACE_ID` from
- * `middleware/auth.ts`; those literals are duplicated here — as
- * `scopedKnowledgeStore.ts` and `codebase/codebaseRegistry.ts` already do —
- * because `middleware/auth.ts` imports services and a value import would close a
- * runtime require cycle.
+ * seed reconciles a scope no run ever uses: `agentRoutes.runManifestScopeFromSession`
+ * falls back to the same local identity (`utils/localDevIdentity.ts`).
  */
 export const LOCAL_SELF_EVOLUTION_SCOPE: RunManifestScope = Object.freeze({
-  tenantId: 'default-dev-tenant',
-  workspaceId: 'default-workspace',
+  tenantId: DEFAULT_TENANT_ID,
+  workspaceId: DEFAULT_WORKSPACE_ID,
 });
 
 export interface SelfEvolutionStartupResult {

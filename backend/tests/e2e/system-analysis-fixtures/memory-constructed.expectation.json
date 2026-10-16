@@ -18,7 +18,7 @@
       "verification": "proved",
       "unit": "ns",
       "oracle": {
-        "sql": "SELECT s.id AS row_id, s.dur AS duration_ns, s.ts AS start_ts, s.ts + s.dur AS end_ts, t.upid, t.utid FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t USING(utid) JOIN process p USING(upid) WHERE s.name = 'GC Young Concurrent' AND t.name = 'RenderThread' AND p.name = 'com.smartperfetto.fixture'",
+        "sql": "SELECT s.id AS row_id, s.dur AS duration_ns, s.ts AS start_ts, s.ts + s.dur AS end_ts, t.upid, t.utid FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t USING(utid) JOIN process p USING(upid) WHERE s.name = 'Alloc young concurrent copying GC' AND t.name = 'RenderThread' AND p.name = 'com.smartperfetto.fixture'",
         "column": "duration_ns",
         "unit": "ns",
         "anchorMatch": {

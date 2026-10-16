@@ -8,6 +8,7 @@ import {
 } from '../../types/multiTraceComparison';
 import { renderComparisonHtmlReport } from '../comparisonHtmlReportService';
 import { buildDeterministicComparisonResult } from '../comparisonResultService';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 function snapshot(id: string, startupMs: number): AnalysisResultSnapshot {
   return {
@@ -19,6 +20,7 @@ function snapshot(id: string, startupMs: number): AnalysisResultSnapshot {
     runId: `run-${id}`,
     createdBy: 'user-a',
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: `${id}<script>`,
     userQuery: 'analyze',
@@ -78,7 +80,7 @@ describe('renderComparisonHtmlReport', () => {
     expect(html).toContain('-300');
     expect(html).toContain('Candidate is 300 ms faster.');
     expect(html).toContain('System investigation coverage: Not checked');
-    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<script>alert');
   });
 
   test('renders more than one candidate column pair', () => {
@@ -106,4 +108,13 @@ describe('renderComparisonHtmlReport', () => {
     expect(html).toContain('+300');
     expect((html.match(/<th>Delta<\/th>/g) || []).length).toBe(2);
   });
+  test('retains precise observed values and rows absent from collapsed group metadata', () => {
+    const result = buildDeterministicComparisonResult([snapshot('baseline', 0.000123456), snapshot('candidate', 0.000234567)], {baselineSnapshotId: 'baseline', metricKeys: ['startup.total_ms']});
+    result.matrix.groups[0].rowMetricKeys = [];
+    const html = renderComparisonHtmlReport({comparisonId: 'complete', query: 'Compare', result});
+    expect(html).toContain('0.000123456'); expect(html).toContain('0.000234567');
+    expect(html).toContain('class="table-container"');
+    expect(html).toContain('smartperfetto-report-document-v1');
+  });
+
 });

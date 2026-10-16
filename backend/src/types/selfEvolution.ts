@@ -8,12 +8,13 @@ import type {
   RuntimePerformanceReceiptV1,
   RuntimePerformanceRecorder,
 } from '../agentRuntime/runtimePerformance';
+import type {
+  RuntimeToolResultAuditReceiptV1,
+  RuntimeToolResultAuditRecorder,
+} from '../agentRuntime/runtimeToolResultAudit';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 import type {AdaptiveRoutingReceiptV1} from './adaptiveRouting';
-import type {
-  PhaseHint,
-  StrategyRegistryContribution,
-} from '../agentv3/strategyLoader';
+import type {StrategyRegistryContribution} from '../agentv3/strategyLoader';
 import type {
   DisplayConfig,
   SkillStep,
@@ -209,6 +210,11 @@ export interface RunInjectionAttribution {
   patterns: RunInjectionReference[];
   skillNotes: RunInjectionReference[];
   cases: RunInjectionReference[];
+  /**
+   * Always empty for new runs: strategy phase hints were never injected and
+   * have been removed. Kept so manifests sealed before then, which may carry
+   * entries, and new ones share one schema.
+   */
   phaseHints: RunInjectionReference[];
   knowledgeDocs: RunInjectionReference[];
 }
@@ -252,6 +258,8 @@ export interface RunManifestV1 {
   capabilityFlags: string[];
   capabilityManifest?: CapabilityManifestAttributionV1;
   performance?: RuntimePerformanceReceiptV1;
+  /** What each tool call handed to its runtime for the model, before transport truncation. */
+  toolResults?: RuntimeToolResultAuditReceiptV1;
 
   referenceTraceId?: string;
   comparisonIdentity?: string;
@@ -797,6 +805,13 @@ export interface EvolutionOverlayProvenanceV1 {
   scope: RunManifestScope;
 }
 
+/**
+ * `phase_hint_delta` and `retire_phase_hint` (and a contribution's
+ * `append_phase_hints` operation) were persisted before strategy phase hints
+ * were removed. They are read back verbatim so their overlay's content hash
+ * verifies; reconciliation quarantines them (`isInertStrategyDelta`) and no
+ * new overlay of these shapes is created.
+ */
 export type EvolutionStrategyDeltaV1 =
   | {
       kind: 'strategy_contribution';
@@ -808,7 +823,8 @@ export type EvolutionStrategyDeltaV1 =
       scene: string;
       hintId: string;
       beforeContentHash?: string;
-      after?: PhaseHint;
+      /** The hint as stored; its shape is no longer a live contract. */
+      after?: Readonly<Record<string, unknown>>;
     }
   | {
       kind: 'retire_phase_hint';
@@ -1009,24 +1025,6 @@ export interface RepositoryTargetBindingV1 {
   contentHash: string;
 }
 
-export interface RepositoryPatchArtifactV1 {
-  schemaVersion: 1;
-  artifactId: string;
-  proposalId: string;
-  gateAttemptId: string;
-  gateAttemptOrdinal: number;
-  targetBindingContentHash: string;
-  patch: string;
-  patchContentHash: string;
-  reversePatch: string;
-  reversePatchContentHash: string;
-  applyCheck: 'passed';
-  sourceMaintainer: true;
-  gitCapability: 'available';
-  createdAt: number;
-  contentHash: string;
-}
-
 export interface ContributionBundleArtifactV1 {
   schemaVersion: 1;
   artifactId: string;
@@ -1102,6 +1100,31 @@ export const FEEDBACK_TARGET_KINDS = [
 
 export type FeedbackTargetKind = (typeof FEEDBACK_TARGET_KINDS)[number];
 
+/**
+ * Target kinds whose feature is retired (`case_candidate`: learned cases).
+ * Older feedback logs still decode and rebuild with them, but new feedback
+ * cannot target them and no active view returns them: effective feedback,
+ * its statistics, and the dirty targets awaiting projection.
+ */
+export const RETIRED_FEEDBACK_TARGET_KINDS = [
+  'case_candidate',
+] as const satisfies readonly FeedbackTargetKind[];
+
+export type ActiveFeedbackTargetKind = Exclude<
+  FeedbackTargetKind,
+  (typeof RETIRED_FEEDBACK_TARGET_KINDS)[number]
+>;
+
+/**
+ * Whether new feedback names a retired target, by kind or by the
+ * `caseCandidateId` field that only case candidate feedback carried. Takes
+ * unchecked input: it guards typed and untyped writers alike.
+ */
+export function isRetiredFeedbackTarget(feedback: {targetKind?: unknown; caseCandidateId?: unknown}): boolean {
+  return (RETIRED_FEEDBACK_TARGET_KINDS as readonly unknown[]).includes(feedback.targetKind) ||
+    feedback.caseCandidateId !== undefined;
+}
+
 export const FEEDBACK_EVENT_KINDS = [
   'created',
   'replaced',
@@ -1142,7 +1165,12 @@ export interface FeedbackEventV1 {
   timestamp: string;
 }
 
-export interface AppendFeedbackEventInput {
+/**
+ * One feedback command as a log line records it. Replaying an older log still
+ * meets retired targets, so this keeps them; new feedback is the narrower
+ * `AppendFeedbackEventInput`.
+ */
+export interface FeedbackCommand {
   kind: FeedbackEventKind;
   feedbackId?: string;
   supersedesEventId?: string;
@@ -1161,6 +1189,11 @@ export interface AppendFeedbackEventInput {
   actor: FeedbackEventV1['actor'];
   scope: RunManifestScope;
   timestamp?: string;
+}
+
+/** New feedback, which cannot name a retired target. */
+export interface AppendFeedbackEventInput extends Omit<FeedbackCommand, 'targetKind' | 'caseCandidateId'> {
+  targetKind: ActiveFeedbackTargetKind;
 }
 
 export interface AppendFeedbackEventResult {
@@ -1241,6 +1274,7 @@ export interface RunManifestSceneAttribution {
 export interface RunManifestAttributionSink {
   readonly identity: RunManifestIdentity;
   readonly runtimePerformanceRecorder?: RuntimePerformanceRecorder;
+  readonly toolResultAuditRecorder?: RuntimeToolResultAuditRecorder;
   recordScene(input: RunManifestSceneAttribution): void;
   recordRuntime(input: RunManifestRuntimeAttribution): void;
   recordMode(input: {

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {randomUUID} from 'crypto';
+import {selfEvolutionErrorCode} from './selfEvolutionErrorCode';
 
 import type {
   AppliedProposalRevisionV1,
@@ -16,6 +17,7 @@ import type {
 import type {
   EvolutionGenerationHeadV1,
 } from './evolutionOverlayRegistry';
+import {projectReconciliationReportForAdmin} from './reconciliationReportView';
 
 const MAX_OPERATIONS = 100;
 const MAX_OPERATIONS_PER_SCOPE = 20;
@@ -180,8 +182,9 @@ export class SelfEvolutionAdminService {
       proposalCounts: countProposalStates(proposals),
       overlayCounts: countOverlayStates(overlays),
       generationHead: this.dependencies.generationHead(scope),
-      latestReconciliation:
+      latestReconciliation: projectReconciliationReportForAdmin(
         this.dependencies.latestReconciliation(scope),
+      ),
       operations: {
         running: scopedOperations.filter(operation =>
           operation.state === 'running').length,
@@ -339,7 +342,9 @@ export class SelfEvolutionAdminService {
   reconciliation(
     scope: RunManifestScope,
   ): UpgradeReconciliationReportV1 | null {
-    return this.dependencies.latestReconciliation(scope);
+    return projectReconciliationReportForAdmin(
+      this.dependencies.latestReconciliation(scope),
+    );
   }
 
   operationalMetrics(scope: RunManifestScope): {
@@ -409,7 +414,7 @@ export class SelfEvolutionAdminService {
         type: 'failed',
         stage: 'failed',
         message: 'curation_failed',
-        errorCode: safeErrorCode(error),
+        errorCode: selfEvolutionErrorCode(error, 'self_evolution_operation_failed'),
       });
     }
   }
@@ -638,12 +643,6 @@ function assertActionId(value: string): void {
   }
 }
 
-function safeErrorCode(error: unknown): string {
-  const code = error instanceof Error ? error.message : String(error);
-  return /^[a-z0-9_:-]{1,160}$/.test(code)
-    ? code
-    : 'self_evolution_operation_failed';
-}
 
 export const selfEvolutionAdminServiceContract = Object.freeze({
   maxOperations: MAX_OPERATIONS,

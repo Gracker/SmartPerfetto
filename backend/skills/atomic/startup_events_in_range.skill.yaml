@@ -22,6 +22,7 @@ prerequisites:
   modules:
     - android.startup.startups
     - android.startup.time_to_display
+    - android.startup.startup_events
 
 inputs:
   - name: package
@@ -80,6 +81,16 @@ display:
       format: duration_ms
       unit: ns
       hidden: true
+    - name: dur_without_trampoline_ms
+      label: "去 Trampoline 耗时"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: trampoline_ms
+      label: "Trampoline 耗时"
+      type: duration
+      format: duration_ms
+      unit: ms
     - name: ttid_ms
       label: "TTID"
       type: duration
@@ -164,6 +175,30 @@ sql: |
     LEFT JOIN process p ON p.upid = asp.upid
     GROUP BY s.startup_id
   ),
+  -- Launch trampoline (SDK 33+): one launchingActivity# span can cover a
+  -- trampoline launch plus the launch it redirects to, so android_startups.dur
+  -- includes time the target package did not own. Same rule as upstream
+  -- android_startups.dur_without_trampoline (ed3848d341): the target package
+  -- own last "launching:" slice when an earlier launch precedes it in the span,
+  -- else dur. Computed from _startup_events (present in older runtimes too) so
+  -- the value does not depend on which trace_processor build is attached.
+  startup_trampoline AS (
+    SELECT
+      s.startup_id,
+      MIN(COALESCE((
+        SELECT le.dur
+        FROM _startup_events le
+        WHERE le.package_name = s.package
+          AND le.ts < s.ts_end
+          AND le.ts > (
+            SELECT MIN(e.ts) FROM _startup_events e
+            WHERE e.ts >= s.ts AND e.ts < s.ts_end
+          )
+        ORDER BY le.ts DESC
+        LIMIT 1
+      ), s.dur), s.dur) AS dur_without_trampoline
+    FROM android_startups s
+  ),
   startup_process_identity AS (
     SELECT
       startup_id,
@@ -192,6 +227,7 @@ sql: |
       END as startup_type,
       s.ts,
       s.dur,
+      tr.dur_without_trampoline,
       ttd.time_to_initial_display,
       ttd.time_to_full_display,
       CASE
@@ -216,6 +252,7 @@ sql: |
     LEFT JOIN startup_type_signals sts USING (startup_id)
     LEFT JOIN process_age pa USING (startup_id)
     LEFT JOIN startup_process_identity spi USING (startup_id)
+    LEFT JOIN startup_trampoline tr USING (startup_id)
     WHERE (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
       AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
@@ -231,6 +268,10 @@ sql: |
     printf('%d', ts) as start_ts,
     printf('%d', ts + dur) as end_ts,
     printf('%d', dur) as dur_ns,
+    -- Clamped to dur: a later same-package launch overlapping the span must
+    -- not produce a negative trampoline.
+    dur_without_trampoline / 1e6 as dur_without_trampoline_ms,
+    (dur - dur_without_trampoline) / 1e6 as trampoline_ms,
     time_to_initial_display / 1e6 as ttid_ms,
     time_to_full_display / 1e6 as ttfd_ms,
     CASE startup_type

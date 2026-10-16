@@ -2,44 +2,19 @@ name: backend-agent-regression-gate
 
 on:
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full local backend gate and Trace corpus regression
+        type: boolean
+        default: false
   pull_request:
-    paths:
-      - "package.json"
-      - "package-lock.json"
-      - "biome.json"
-      - "knip.json"
-      - "start.sh"
-      - "scripts/**"
-      - "backend/**"
-      - "frontend/**"
-      - "rust/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "docker-compose*.yml"
-      - "scripts/trace-processor-pin.env"
-      - "Trace/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/**"
   push:
-    branches:
-      - main
-    paths:
-      - "package.json"
-      - "package-lock.json"
-      - "biome.json"
-      - "knip.json"
-      - "start.sh"
-      - "scripts/**"
-      - "backend/**"
-      - "frontend/**"
-      - "rust/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "docker-compose*.yml"
-      - "scripts/trace-processor-pin.env"
-      - "Trace/**"
-      - ".github/dependabot.yml"
-      - ".github/workflows/**"
+    branches: [main]
+
+# New commits supersede automatic runs. Manual acceptance runs have their own group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
@@ -49,38 +24,74 @@ permissions:
 # scripts/start-dev.sh, Dockerfile, and backend/scripts/ensure-trace-processor.cjs).
 
 jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      platform: ${{ steps.scope.outputs.platform }}
+      docker: ${{ steps.scope.outputs.docker }}
+      rust: ${{ steps.scope.outputs.rust }}
+    steps:
+      - name: Checkout event diff
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Select environment checks
+        id: scope
+        run: node scripts/ci-change-scope.cjs
+
   quality:
+    needs: scope
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch Perfetto source identity history
+        shell: bash
+        run: |
+          if [ "$(git -C perfetto rev-parse --is-shallow-repository)" = "true" ]; then
+            git -C perfetto fetch --unshallow --tags origin
+          else
+            git -C perfetto fetch --tags origin
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: "24"
           cache: "npm"
-          cache-dependency-path: "package-lock.json"
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
 
-      - name: Install root dependencies
-        run: npm ci
+      - name: Install root and backend dependencies
+        run: npm ci && npm --prefix backend ci
 
-      - name: Install ShellCheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install verification tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck ripgrep
 
-      - name: Run quality checks
-        run: npm run quality
+      - name: Run repository CI checks
+        run: npm run verify:ci
 
       - name: Setup Rust
+        if: needs.scope.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run Rust analyzer checks
+        if: needs.scope.outputs.rust == 'true'
         run: npm run rust:verify
 
-  gate:
+  backend:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -97,14 +108,24 @@ jobs:
       - name: Install root and backend dependencies
         run: npm ci && npm --prefix backend ci
 
-      - name: Run PR verification gate
+      - name: Install source-search test dependency
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Run backend CI gate
+        if: ${{ !inputs.full }}
+        run: npm --prefix backend run verify:ci
+
+      - name: Run full local backend gate
+        if: inputs.full
         run: npm --prefix backend run verify:pr
 
   cross-platform-contracts:
+    needs: scope
+    if: needs.scope.outputs.platform == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -147,14 +168,19 @@ jobs:
           GO111MODULE: "off"
         run: go test ./scripts/portable-health-probe
 
-      - name: Test and build the Windows portable launcher
+      - name: Test the Windows portable launcher
         if: ${{ matrix.os == 'windows-latest' }}
         shell: pwsh
         env:
           GO111MODULE: "off"
-        run: |
-          go test ./scripts/portable-launcher
-          go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher
+        run: go test ./scripts/portable-launcher
+
+      - name: Build the Windows portable launcher
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        env:
+          GO111MODULE: "off"
+        run: go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher
 
       - name: Build the fixed Windows gate helper
         if: ${{ matrix.os == 'windows-latest' }}
@@ -169,13 +195,13 @@ jobs:
 
       - name: Verify cross-platform runtime contracts
         if: ${{ matrix.os != 'windows-latest' }}
-        run: npm run test:governance && npm --prefix backend run typecheck
+        run: npm run test:governance
 
       - name: Verify Windows cross-platform runtime contracts
         if: ${{ matrix.os == 'windows-latest' }}
         env:
           SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: ${{ runner.temp }}/smartperfetto-windows-gate-helper.exe
-        run: npm run test:governance && npm --prefix backend run typecheck
+        run: npm run test:governance
 
       - name: Test Windows Provider secret storage
         if: ${{ matrix.os == 'windows-latest' }}
@@ -184,6 +210,7 @@ jobs:
           src/services/providerManager/__tests__/localSecretStore.test.ts
 
   trace-corpus:
+    if: inputs.full
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -208,6 +235,8 @@ jobs:
         run: npm run trace:regression
 
   docker-smoke:
+    needs: scope
+    if: needs.scope.outputs.docker == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -234,3 +263,26 @@ jobs:
           docker exec smartperfetto-runtime-smoke curl -fsS http://127.0.0.1:3000/assistant-shell | grep -qi '<html'
           docker exec smartperfetto-runtime-smoke curl -fsS http://127.0.0.1:3000/admin-control-plane | grep -qi '<html'
           docker exec smartperfetto-runtime-smoke /app/backend/node_modules/opencode-ai/bin/opencode.exe --version
+
+  # Keep one stable required-check candidate. A skipped optional job is allowed;
+  # failed/cancelled dependencies and skipped mandatory jobs must fail this gate.
+  gate:
+    needs: [scope, quality, backend, cross-platform-contracts, trace-corpus, docker-smoke]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check CI results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node <<'NODE'
+          const jobs = JSON.parse(process.env.NEEDS_JSON);
+          const required = new Set(['scope', 'quality', 'backend']);
+          const failed = Object.entries(jobs).filter(([name, job]) =>
+            job.result !== 'success' && (required.has(name) || job.result !== 'skipped'));
+          if (failed.length) {
+            console.error('CI did not pass:', failed.map(([name, job]) => `${name}: ${job.result}`).join(', '));
+            process.exit(1);
+          }
+          NODE

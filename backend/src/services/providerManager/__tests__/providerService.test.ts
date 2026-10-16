@@ -1,10 +1,13 @@
 // backend/src/services/providerManager/__tests__/providerService.test.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { jest } from '@jest/globals';
 import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
+import { ProviderRequestError } from '../providerRequestError';
 import { ProviderService } from '../providerService';
+import { ProviderStoreUnreadableError } from '../providerStore';
 import type { ProviderCreateInput } from '../types';
 
 function makeTmpDir(): string {
@@ -44,6 +47,43 @@ describe('ProviderService', () => {
 
     it('throws on missing name', () => {
       expect(() => svc.create({ ...validInput, name: '' })).toThrow();
+    });
+  });
+
+  describe('caller-fixable errors are typed so routes can return their text', () => {
+    function thrown(run: () => unknown): ProviderRequestError {
+      try {
+        run();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ProviderRequestError);
+        return error as ProviderRequestError;
+      }
+      throw new Error('expected a ProviderRequestError');
+    }
+
+    it.each([
+      ['no body', undefined, 'Request body must be an object'],
+      ['no connection', { ...validInput, connection: undefined }, 'connection is required'],
+      ['non-string name', { ...validInput, name: 42 }, 'Provider name is required'],
+      ['unsupported runtime', { ...validInput, type: 'openai', connection: { agentRuntime: 'claude-agent-sdk' } },
+        'Provider type "openai" does not support claude-agent-sdk'],
+    ])('create rejects %s as an invalid request', (_name, input, message) => {
+      const error = thrown(() => svc.create(input as unknown as ProviderCreateInput));
+      expect(error.code).toBe('provider_invalid_request');
+      expect(error.message).toBe(message);
+    });
+
+    it('update rejects malformed fields as an invalid request', () => {
+      const p = svc.create(validInput);
+      expect(thrown(() => svc.update(p.id, undefined as never)).code).toBe('provider_invalid_request');
+      expect(thrown(() => svc.update(p.id, { name: 7 } as never)).message).toBe('Provider name must be a string');
+      expect(thrown(() => svc.update(p.id, { connection: 'x' } as never)).message).toBe('connection must be an object');
+    });
+
+    it('an unknown id is a not-found error with its original text', () => {
+      const error = thrown(() => svc.activate('fake-id'));
+      expect(error.code).toBe('provider_not_found');
+      expect(error.message).toBe('Provider not found: fake-id');
     });
   });
 
@@ -491,10 +531,8 @@ describe('ProviderService', () => {
           effort: 'max',
           fullPerTurnMs: 90000,
           quickPerTurnMs: 45000,
-          verifierTimeoutMs: 70000,
           classifierTimeoutMs: 15000,
           enableSubAgents: true,
-          enableVerification: false,
         },
       });
       svc.activate(p.id);
@@ -506,9 +544,7 @@ describe('ProviderService', () => {
       expect(env.OPENAI_CLASSIFIER_TIMEOUT_MS).toBe('15000');
       expect(env.OPENAI_MAX_BUDGET_USD).toBeUndefined();
       expect(env.OPENAI_EFFORT).toBeUndefined();
-      expect(env.OPENAI_VERIFIER_TIMEOUT_MS).toBeUndefined();
       expect(env.OPENAI_ENABLE_SUB_AGENTS).toBeUndefined();
-      expect(env.OPENAI_ENABLE_VERIFICATION).toBeUndefined();
       expect(env.CLAUDE_MAX_TURNS).toBeUndefined();
     });
 
@@ -723,6 +759,78 @@ describe('ProviderService', () => {
       svc.update(p.id, { name: 'Renamed' });
       expect(svc.get(p.id)!.name).toBe('Renamed');
       expect(svc.getEnvForProvider(p.id)!.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+    });
+  });
+
+  describe('unreadable providers.json', () => {
+    it('starts, and refuses every mutation before taking a mutation lease', async () => {
+      const file = path.join(dir, 'providers.json');
+      const seed = new ProviderService(path.join(dir, 'bootstrap.json'));
+      const created = seed.create(validInput);
+      seed.activate(created.id);
+      const content = await fsp.readFile(path.join(dir, 'bootstrap.json'), 'utf-8');
+      const broken = content.slice(0, content.length - 3);
+      await fsp.writeFile(file, broken);
+
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const broke = new ProviderService(file);
+        expect(broke.getStoreStatus()).toBe('unreadable');
+        expect(broke.list()).toEqual([]);
+        const generation = broke.getMutationGeneration();
+
+        const mutations: Array<() => unknown> = [
+          () => broke.create(validInput),
+          () => broke.update(created.id, { name: 'x' }),
+          () => broke.delete(created.id),
+          () => broke.activate(created.id),
+          () => broke.deactivateAll(),
+          () => broke.switchAgentRuntime(created.id, 'openai-agents-sdk'),
+          () => broke.rotateSecret(created.id),
+        ];
+        for (const mutate of mutations) {
+          expect(mutate).toThrow(ProviderStoreUnreadableError);
+        }
+        expect(broke.getMutationGeneration()).toEqual(generation);
+        expect(broke.listInFlightMutations()).toEqual([]);
+        expect(await fsp.readFile(file, 'utf-8')).toBe(broken);
+
+        await fsp.writeFile(file, content);
+        expect(broke.getStoreStatus()).toBe('ok');
+        expect(broke.getRawEffectiveProvider()?.id).toBe(created.id);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('refuses to resolve the provider an analysis uses instead of reporting none', async () => {
+      const file = path.join(dir, 'providers.json');
+      const created = svc.create(validInput);
+      svc.activate(created.id);
+      const content = await fsp.readFile(file, 'utf-8');
+      await fsp.writeFile(file, content.slice(0, content.length - 3));
+
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        // The active provider is unknown, not absent; a pin is unknown, not deleted.
+        for (const resolve of [
+          () => svc.getRawEffectiveProvider(),
+          () => svc.getEffectiveEnv(),
+          () => svc.getRawProvider(created.id),
+          () => svc.getEnvForProvider(created.id),
+        ]) {
+          expect(resolve).toThrow(ProviderStoreUnreadableError);
+          expect(resolve).toThrow('the AI provider for this analysis is unknown');
+        }
+        // Provider management reads still report what the store publishes.
+        expect(svc.getRaw(created.id)).toBeUndefined();
+
+        await fsp.writeFile(file, content);
+        expect(svc.getRawEffectiveProvider()?.id).toBe(created.id);
+        expect(svc.getEffectiveEnv()?.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });

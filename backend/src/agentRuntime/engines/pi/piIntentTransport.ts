@@ -4,19 +4,38 @@
 
 import type {PiAgentCoreProviderRuntime} from './piAgentCoreProvider';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
+import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 
 export interface PiIntentTransportInput extends IntentTransportInput {
-  providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn'>;
+  providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
+  purpose?: RuntimeModelCallPurpose;
   maxOutputTokens?: number;
+}
+
+/**
+ * Output token cap for a call that states only a byte limit: 4 bytes per
+ * token rounded up, plus 25% headroom, at most the model's own cap. Without
+ * one, an OpenAI-completions provider applies its own default output cap, and
+ * a GLM review then stopped at `length` (`incomplete_output`).
+ */
+export function piOutputTokensForByteLimit(outputByteLimit: number, modelMaxTokens: number): number {
+  return Math.max(1, Math.min(Math.ceil(Math.ceil(outputByteLimit / 4) * 1.25), Math.floor(modelMaxTokens)));
 }
 
 /** Reuses the resolved Pi provider and its captured auth without creating an Agent. */
 export function runPiIntentTransport(input: PiIntentTransportInput) {
   return runIntentTransport(input, async scope => {
-    const {model, streamFn} = input.providerRuntime;
+    const {model} = input.providerRuntime;
     if ((input.maxOutputTokens !== undefined
       && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens <= 0))
       || !Number.isFinite(model.maxTokens) || model.maxTokens <= 0) {
+      return {status: 'unavailable', reason: 'invalid_configuration'};
+    }
+    let streamFn: PiAgentCoreProviderRuntime['streamFn'];
+    try {
+      streamFn = input.providerRuntime.streamFnForPurpose?.(input.purpose ?? 'review')
+        ?? input.providerRuntime.streamFn;
+    } catch {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
     const result = await streamFn(model, {
@@ -27,7 +46,8 @@ export function runPiIntentTransport(input: PiIntentTransportInput) {
       signal: scope.signal,
       timeoutMs: scope.remainingMs(),
       maxRetries: 0,
-      ...(input.maxOutputTokens !== undefined ? {maxTokens: Math.min(input.maxOutputTokens, model.maxTokens)} : {}),
+      maxTokens: input.maxOutputTokens !== undefined ? Math.min(input.maxOutputTokens, model.maxTokens)
+        : piOutputTokensForByteLimit(input.outputByteLimit, model.maxTokens),
       cacheRetention: 'none',
     }).result();
     scope.throwIfInactive();

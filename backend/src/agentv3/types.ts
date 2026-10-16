@@ -4,16 +4,18 @@
 
 import type { ArchitectureInfo } from '../agent/detectors/types';
 import type { Finding } from '../agent/types';
-import type { DetectedFocusApp } from './focusAppDetector';
+import type { FocusAppTarget } from '../agentRuntime/focusAppTarget';
 import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
-import type {SourceUseStatus} from '../services/codebase/sourceUseDecision';
-import type {CapabilityManifestResolutionV1} from '../types/capabilityManifest';
+import {KNOWLEDGE_TOOL_NAMES} from '../services/knowledge/knowledgeTools';
+import type {SourceAuthorizationPromptData} from '../services/codebase/selectedCodebaseCapabilities';
+import type {CapabilityManifestResolutionV1, CapabilityUnprobedReasonCode} from '../types/capabilityManifest';
 import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
+import type {LearningAdmission} from '../services/security/durableLearning';
 
 // =============================================================================
 // Query Complexity Classification
@@ -103,6 +105,8 @@ export interface ClaudeAnalysisContext {
   strategyRegistry?: ReadonlyStrategyRegistrySnapshot;
   turnIntent?: AnalysisTurnIntent;
   onDemandContext?: boolean;
+  /** Product-run scene entry evidence for this turn (`buildSceneEvidencePromptData`). */
+  sceneEvidence?: import('../agentRuntime/sceneEntryEvidence').SceneEvidencePromptData;
   /**
    * The preflight the run actually performed. A runtime may narrow what the
    * intent alone implies — a conversation turn with no attached trace gathers
@@ -111,10 +115,10 @@ export interface ClaudeAnalysisContext {
    */
   preflight?: RuntimeTurnPolicy['preflight'];
   architecture?: ArchitectureInfo;
+  /** Effective package: `focusTarget.packageName` when the run resolved one. */
   packageName?: string;
-  focusApps?: DetectedFocusApp[];
-  /** Detection method used for focus apps — affects display labels */
-  focusMethod?: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none';
+  /** Provenance of `packageName` plus ranked focus-app candidates (resolveFocusAppTarget). */
+  focusTarget?: FocusAppTarget;
   previousFindings?: Finding[];
   conversationSummary?: string;
   /** Perfetto SQL knowledge context matched to the user query (from ExtendedSqlKnowledgeBase) */
@@ -145,7 +149,7 @@ export interface ClaudeAnalysisContext {
   comparison?: ComparisonContext;
   /** Trace data completeness diagnosis — injected at session init, informs data gap guidance */
   traceCompleteness?: TraceCompleteness;
-  /** Detected trace OS — determines knowledge injection and SQL dialect */
+  /** Detected trace OS (`unknown` without positive evidence), rendered into `trace_context` */
   traceOs?: 'android' | 'harmonyos' | 'unknown';
   /** Detected trace format */
   traceFormat?: 'perfetto_protobuf' | 'systrace_text' | 'atrace_text' | 'unknown';
@@ -155,6 +159,8 @@ export interface ClaudeAnalysisContext {
   codeAwareMode?: CodeAwareMode;
   /** Explicitly whitelisted codebase ids for this session. */
   codebaseIds?: string[];
+  /** Per-codebase capabilities and the run's source budget, from the run's MCP server. */
+  sourceAuthorization?: SourceAuthorizationPromptData;
 }
 
 // =============================================================================
@@ -196,8 +202,9 @@ export interface TracePairContext {
 export interface ComparisonContext {
   referenceTraceId: string;
   tracePairContext?: TracePairContext;
+  /** Reference-side effective package; always inferred (`referenceFocusTarget.source`). */
   referencePackageName?: string;
-  referenceFocusApps?: DetectedFocusApp[];
+  referenceFocusTarget?: FocusAppTarget;
   referenceArchitecture?: ArchitectureInfo;
   /** Intersection of stdlib capabilities available on both trace processors */
   commonCapabilities: string[];
@@ -237,8 +244,41 @@ export interface CapabilityProbeResult {
   primaryTable: string;
   /** Approximate row count (only when status is 'available' or 'insufficient_or_scene_absent') */
   rowEstimate?: number;
-  /** Human-readable reason when not available */
+  /**
+   * Set only when the probe could not determine the capability (a module or
+   * probe query did not finish). Such an entry sits in `missingConfig`, but it
+   * is not a probe that found the data absent. Routine causes stay implied by
+   * the bucket and `rowEstimate`, which keeps the prompt payload small.
+   */
+  reasonCode?: CapabilityUnprobedReasonCode;
+  /** Human-readable reason when not available, or how to read available rows */
   reason?: string;
+  /** Set when the rows were counted from the raw-event fallback, not the primary table. */
+  rowSource?: 'raw_event_fallback';
+}
+
+/** One positive `stats` row whose trace_processor severity is `data_loss`. */
+export interface TraceDataLossStat {
+  name: string;
+  /** Index for indexed stats (CPU, buffer, ...); null for single stats. */
+  idx: number | null;
+  value: number;
+}
+
+/**
+ * Capture-loss evidence read from trace_processor's own `stats` table and
+ * recovery metadata. `data_loss_detected` sets `absenceEvidence` to
+ * `not_proof`: a missing event may have been dropped rather than never emitted.
+ * `unknown` means the probe could not read the stats, not that the trace is clean.
+ */
+export interface TraceDataLossDiagnosis {
+  status: 'none_detected' | 'data_loss_detected' | 'unknown';
+  absenceEvidence?: 'not_proof';
+  /** Largest positive data-loss stats, bounded; see `lossStatRowCount` for the total. */
+  lossStats?: TraceDataLossStat[];
+  lossStatRowCount?: number;
+  /** `trace_recovery_reason` metadata: the trace was recovered, not cleanly finalized. */
+  recoveryReason?: string;
 }
 
 /** Complete trace data availability diagnosis. */
@@ -253,6 +293,12 @@ export interface TraceCompleteness {
   insufficient: CapabilityProbeResult[];
   /** Timestamp of diagnosis */
   diagnosedAt: number;
+  /**
+   * Trace-wide capture loss. Kept outside the capability buckets: those say
+   * whether an analysis has data at all, this says whether the data that is
+   * present can prove an event did *not* happen.
+   */
+  dataLoss?: TraceDataLossDiagnosis;
   /** Probe-time shadow snapshot; current prompt/chat consumers intentionally ignore it. */
   capabilityManifestResolution?: CapabilityManifestResolutionV1;
 }
@@ -376,11 +422,6 @@ export interface AnalysisPlanV3 {
   /** Agent-declared waivers for mandatory plan-template aspects. */
   waivers?: PlanAspectWaiver[];
   /**
-   * Bounded status-only marker used by provider-neutral completion gates.
-   * Full source references and free-text reasons stay outside the plan.
-   */
-  sourceUseDecisionStatus?: SourceUseStatus;
-  /**
    * Mandatory aspects the agent failed to cover *and* did not waive after
    * the hard-gate gave up enforcing (max attempts reached). Surfaced by
    * `verifyPlanAdherence` as an error so the final verifier still flags
@@ -416,27 +457,21 @@ const INFORMATIONAL_TOOL_NAMES = new Set([
   // Persists reasoning across turns; it does not collect trace evidence and
   // cannot stand in for producing the final report.
   'write_analysis_note',
+  // Owner-selected document knowledge is background, never trace evidence:
+  // reading it cannot satisfy an evidence phase.
+  ...KNOWLEDGE_TOOL_NAMES,
 ]);
 
-const CONTROL_TOOL_NAMES = new Set([
-  'record_source_use_decision',
-]);
-
-export type PlanToolCapability = 'evidence' | 'control' | 'informational';
+export type PlanToolCapability = 'evidence' | 'informational';
 
 export function getPlanToolCapability(toolName: string): PlanToolCapability {
   const shortName = shortToolName(toolName);
   if (INFORMATIONAL_TOOL_NAMES.has(shortName)) return 'informational';
-  if (CONTROL_TOOL_NAMES.has(shortName)) return 'control';
   return 'evidence';
 }
 
 export function isInformationalToolName(toolName: string): boolean {
   return getPlanToolCapability(toolName) === 'informational';
-}
-
-export function isControlCapableToolName(toolName: string): boolean {
-  return getPlanToolCapability(toolName) === 'control';
 }
 
 export function isEvidenceCapableToolName(toolName: string): boolean {
@@ -496,8 +531,6 @@ export interface ToolCallRecord {
   planCapability?: PlanToolCapability;
   /** Explicit execution outcome when the runtime result exposed one. Failed calls remain auditable but never satisfy evidence gates. */
   success?: boolean;
-  /** True only when a source lookup returned at least one locatable CodeRef; no source content is persisted here. */
-  returnedCodeReferences?: boolean;
   /** Phase ID this tool call was matched to (if any) */
   matchedPhaseId?: string;
   /** Explicit invocation attribution retained even when it cannot bind to a current phase. */
@@ -588,6 +621,8 @@ export interface AnalysisPatternEntry {
   lastFeedbackAt?: number;
   /** Provenance fields tying this entry to the originating run. */
   provenance?: PatternProvenance;
+  /** Proof that a public run wrote it; an entry without one is never read or merged into. */
+  learningAdmission?: LearningAdmission;
   /**
    * Bucket key for quota-fair eviction. Format depends on bucket type:
    * positive = `${sceneType}::${archType}::${domainHash}`,
@@ -622,6 +657,8 @@ export interface NegativePatternEntry {
   lastFeedbackAt?: number;
   /** Provenance fields tying this entry to the originating run. */
   provenance?: PatternProvenance;
+  /** See AnalysisPatternEntry.learningAdmission. */
+  learningAdmission?: LearningAdmission;
   /** Bucket key for quota-fair eviction (negative form: scene::arch::failureModeHash). */
   bucketKey?: string;
 }

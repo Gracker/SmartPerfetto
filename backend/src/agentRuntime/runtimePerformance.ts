@@ -6,7 +6,9 @@ import {createHash} from 'crypto';
 import {performance as nodePerformance} from 'perf_hooks';
 
 import {immutableCanonicalSnapshot} from '../services/selfEvolution/canonicalJson';
+import {isPlainObject} from '../utils/llmJson';
 import type {RuntimeToolConcurrencyFallbackReason} from './runtimeToolConcurrency';
+import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
 
 export type RuntimePhaseName =
   | 'classification'
@@ -17,6 +19,7 @@ export type RuntimePhaseName =
   | 'comparison'
   | 'skill_registry'
   | 'knowledge'
+  | 'scene_evidence'
   | 'sdk_start'
   | 'provider'
   | 'verification'
@@ -49,23 +52,166 @@ export interface RuntimePerformanceSqlReceiptV1 {
   outcome: RuntimePerformanceOutcome;
 }
 
+/**
+ * Why a model call was made. `continuation` asks for more or corrected answer
+ * text; `declaration_repair` asks only for the machine declaration of an
+ * unchanged body; `review` is the finalizer's one no-tool semantic review.
+ */
+export const RUNTIME_MODEL_CALL_PURPOSES = [
+  'classification', 'answer_turn', 'declaration_repair', 'continuation', 'review',
+] as const;
+export type RuntimeModelCallPurpose = typeof RUNTIME_MODEL_CALL_PURPOSES[number];
+
+/** The closed condition that admitted a continuation or declaration repair. */
+export const RUNTIME_MODEL_CALL_TRIGGERS = [
+  'output_limit', 'empty_body', 'invalid_protocol', 'missing_declaration', 'invalid_declaration', 'turn_limit', 'timeout',
+] as const;
+export type RuntimeModelCallTrigger = typeof RUNTIME_MODEL_CALL_TRIGGERS[number];
+
+/** Why the finalizer's semantic review was required. */
+export const RUNTIME_FINAL_REVIEW_TRIGGERS = [
+  'report', 'selection', 'source', 'investigation', 'claims_verifiable', 'acknowledgement',
+] as const;
+export type RuntimeFinalReviewTrigger = typeof RUNTIME_FINAL_REVIEW_TRIGGERS[number];
+
+export const RUNTIME_FINAL_REVIEW_NECESSITIES = ['required', 'not_required', 'declaration_ineligible'] as const;
+
+/** Request-side reasoning setting; `provider_default` sends no reasoning control. */
+export type RuntimeModelCallReasoning = 'provider_default' | 'disabled';
+
+/** Provider-reported token counts, copied only when the provider returns them. */
+export interface RuntimeModelCallUsageV1 {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cachedInputTokens?: number;
+}
+
+/** Closed request-size bucket of a model call's prompt and system text. */
+export const RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS = ['le32k', 'le128k', 'gt128k'] as const;
+export type RuntimeModelCallInputBytesBucket = typeof RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS[number];
+
+export function runtimeModelCallInputBytesBucket(bytes: number): RuntimeModelCallInputBytesBucket | undefined {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return undefined;
+  return bytes <= 32 * 1024 ? 'le32k' : bytes <= 128 * 1024 ? 'le128k' : 'gt128k';
+}
+
+/** The URL origin of a configured provider base URL; never its path, query or credentials. */
+export function runtimeProviderOrigin(baseUrl: unknown): string | undefined {
+  if (typeof baseUrl !== 'string' || !baseUrl.trim()) return undefined;
+  try {
+    const url = new URL(baseUrl.trim());
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.origin.length <= 256 ? url.origin : undefined;
+  } catch { return undefined; }
+}
+
+export interface RuntimePerformanceModelCallReceiptV1 {
+  purpose: RuntimeModelCallPurpose;
+  trigger?: RuntimeModelCallTrigger;
+  /** Model the provider reported, else the one requested. Internal receipt only. */
+  model?: string;
+  /** Origin of the configured provider base URL (`runtimeProviderOrigin`). Internal receipt only. */
+  providerOrigin?: string;
+  inputBytesBucket?: RuntimeModelCallInputBytesBucket;
+  reasoning?: RuntimeModelCallReasoning;
+  startOffsetMs: number;
+  durationMs: number;
+  /** Time from this call's dispatch to its first provider output, when the stream exposes it. */
+  firstOutputMs?: number;
+  outcome: RuntimePerformanceOutcome;
+  /** Visible body vs machine declaration characters of the text this call produced. */
+  output?: {bodyChars: number; sidecarChars: number};
+  usage?: RuntimeModelCallUsageV1;
+}
+
+/**
+ * A delivery call's budget decision made before dispatch
+ * (`assessDeliveryCallBudget`): the estimate it compared and where it came from.
+ */
+export interface RuntimePerformanceDeliveryBudgetReceiptV1 {
+  purpose: RuntimeModelCallPurpose;
+  decision: 'dispatch' | 'skip';
+  source: 'stats' | 'default';
+  estimateMs: number;
+  remainingMs: number;
+  /** Why the estimate is a fixed default. */
+  diagnostic?: 'stats_not_configured' | 'stats_unreadable' | 'no_samples';
+}
+
+/**
+ * Whether the finalizer's semantic review was required, and what required it.
+ * Counts only; no claim ids, text or evidence values.
+ */
+export interface RuntimePerformanceFinalReviewReceiptV1 {
+  necessity: typeof RUNTIME_FINAL_REVIEW_NECESSITIES[number];
+  triggers: RuntimeFinalReviewTrigger[];
+  declaredClaimCount: number;
+}
+
+export const RUNTIME_DECLARATION_STATUSES = ['absent', 'valid', 'partially_valid', 'invalid'] as const;
+export const RUNTIME_DECLARATION_REPAIR_OUTCOMES = [
+  'not_requested', 'accepted', 'rejected', 'budget_skipped', 'cancelled', 'error', 'not_completed',
+] as const;
+
+/** The first canonical declaration and its repair outcome; counts and closed facts only. */
+export interface RuntimePerformanceDeclarationReceiptV1 {
+  status: typeof RUNTIME_DECLARATION_STATUSES[number];
+  declaredClaimCount: number;
+  repair: typeof RUNTIME_DECLARATION_REPAIR_OUTCOMES[number];
+}
+
 export interface RuntimePerformanceReceiptV1 {
   schemaVersion: 1;
   firstOutputMs?: number;
   phases: RuntimePerformancePhaseReceiptV1[];
   tools: RuntimePerformanceToolReceiptV1[];
   sql: RuntimePerformanceSqlReceiptV1[];
+  /** Absent in receipts recorded before per-call records existed. */
+  modelCalls?: RuntimePerformanceModelCallReceiptV1[];
+  finalReview?: RuntimePerformanceFinalReviewReceiptV1;
+  declaration?: RuntimePerformanceDeclarationReceiptV1;
+  deliveryBudgets?: RuntimePerformanceDeliveryBudgetReceiptV1[];
+  /** The run's product-owned scene entry evidence attempt; never a model tool call. */
+  sceneEvidence?: RuntimePerformanceSceneEvidenceReceiptV1;
   truncated?: {
     phases: number;
     tools: number;
     sql: number;
+    modelCalls?: number;
   };
 }
 
-type RuntimePerformanceTruncationBucket = 'phases' | 'tools' | 'sql';
+type RuntimePerformanceTruncationBucket = 'phases' | 'tools' | 'sql' | 'modelCalls';
 
 export interface RuntimePerformanceSpan {
   end(outcome?: RuntimePerformanceOutcome): void;
+}
+
+export interface RuntimeModelCallStart {
+  purpose: RuntimeModelCallPurpose;
+  trigger?: RuntimeModelCallTrigger;
+  model?: string;
+  reasoning?: RuntimeModelCallReasoning;
+  providerOrigin?: string;
+  inputBytesBucket?: RuntimeModelCallInputBytesBucket;
+}
+
+export interface RuntimeModelCallEnd {
+  outcome?: RuntimePerformanceOutcome;
+  /** Replaces the requested model when the provider reported the one it used. */
+  model?: string;
+  /** Request-side reasoning control, when only the transport knows it. */
+  reasoning?: RuntimeModelCallReasoning;
+  output?: {bodyChars: number; sidecarChars: number};
+  usage?: unknown;
+}
+
+/** One model call; every method is a no-op after `end`, and observability never throws. */
+export interface RuntimeModelCallSpan {
+  recordFirstOutput(): void;
+  /** Fix the end time at the provider's terminal event; `end` may attach facts later. */
+  markDone(usage?: unknown): void;
+  end(input?: RuntimeModelCallEnd): void;
 }
 
 export interface RuntimePerformanceRecorderOptions {
@@ -74,6 +220,7 @@ export interface RuntimePerformanceRecorderOptions {
   maxPhases?: number;
   maxTools?: number;
   maxSql?: number;
+  maxModelCalls?: number;
   maxHashInputBytes?: number;
 }
 
@@ -99,6 +246,7 @@ interface RuntimePerformanceSink {
 }
 
 const MAX_MS = 7 * 24 * 60 * 60 * 1_000;
+const MAX_MODEL_NAME_CHARS = 128;
 const HASH_PREFIX_LENGTH = 32;
 const DEFAULT_MAX_RECEIPT_ITEMS = 512;
 const DEFAULT_MAX_HASH_INPUT_BYTES = 256;
@@ -160,6 +308,7 @@ export class RuntimePerformanceRecorder {
   private readonly maxPhases: number;
   private readonly maxTools: number;
   private readonly maxSql: number;
+  private readonly maxModelCalls: number;
   private readonly maxHashInputBytes: number;
   private readonly startedAt: number;
   private lastOffsetMs = 0;
@@ -167,11 +316,20 @@ export class RuntimePerformanceRecorder {
   private readonly phases: RuntimePerformancePhaseReceiptV1[] = [];
   private readonly tools: RuntimePerformanceToolReceiptV1[] = [];
   private readonly sql: RuntimePerformanceSqlReceiptV1[] = [];
+  private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
+  private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
+  private declaration: RuntimePerformanceDeclarationReceiptV1 | undefined;
+  // Independent of capped timing arrays. Absence from those arrays cannot
+  // establish that no repair was attempted.
+  private declarationRepair: RuntimePerformanceDeclarationReceiptV1['repair'] = 'not_requested';
+  private readonly deliveryBudgets: RuntimePerformanceDeliveryBudgetReceiptV1[] = [];
+  private sceneEvidence: RuntimePerformanceSceneEvidenceReceiptV1 | undefined;
   private nextToolSequence = 0;
   private readonly truncated = {
     phases: 0,
     tools: 0,
     sql: 0,
+    modelCalls: 0,
   };
   private sealedReceipt: RuntimePerformanceReceiptV1 | undefined;
 
@@ -181,6 +339,7 @@ export class RuntimePerformanceRecorder {
     this.maxPhases = positiveCap(options.maxPhases, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxTools = positiveCap(options.maxTools, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxSql = positiveCap(options.maxSql, DEFAULT_MAX_RECEIPT_ITEMS);
+    this.maxModelCalls = positiveCap(options.maxModelCalls, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxHashInputBytes = positiveCap(
       options.maxHashInputBytes,
       DEFAULT_MAX_HASH_INPUT_BYTES,
@@ -194,9 +353,15 @@ export class RuntimePerformanceRecorder {
       || this.phases.length > 0
       || this.tools.length > 0
       || this.sql.length > 0
+      || this.modelCalls.length > 0
+      || this.finalReview !== undefined
+      || this.declaration !== undefined
+      || this.deliveryBudgets.length > 0
+      || this.sceneEvidence !== undefined
       || this.truncated.phases > 0
       || this.truncated.tools > 0
       || this.truncated.sql > 0
+      || this.truncated.modelCalls > 0
     );
   }
 
@@ -305,6 +470,131 @@ export class RuntimePerformanceRecorder {
     });
   }
 
+  startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan {
+    this.assertCollecting('start_model_call');
+    const startOffsetMs = this.offsetMs();
+    if (!this.declaration && input.purpose === 'declaration_repair') this.declarationRepair = 'not_completed';
+    let firstOutputMs: number | undefined;
+    let doneOffsetMs: number | undefined;
+    let doneUsage: unknown;
+    let ended = false;
+    return {
+      recordFirstOutput: () => {
+        if (ended || firstOutputMs !== undefined || doneOffsetMs !== undefined) return;
+        firstOutputMs = this.offsetMs() - startOffsetMs;
+      },
+      markDone: usage => {
+        if (ended || doneOffsetMs !== undefined) return;
+        doneOffsetMs = this.offsetMs();
+        doneUsage = usage;
+      },
+      end: (end = {}) => {
+        if (ended || this.sealedReceipt) return;
+        ended = true;
+        // A native success is not declaration acceptance. Keep an explicit
+        // acceptance decision even if the transport attaches its facts later.
+        if (!this.declaration && input.purpose === 'declaration_repair' &&
+          this.declarationRepair !== 'accepted' && this.declarationRepair !== 'rejected') {
+          this.declarationRepair = end.outcome === 'cancelled' || end.outcome === 'error' ? end.outcome : 'not_completed';
+        }
+        const model = boundedModelName(end.model) ?? boundedModelName(input.model);
+        const usage = normalizeModelCallUsage(end.usage ?? doneUsage);
+        const output = end.output && Number.isSafeInteger(end.output.bodyChars) && end.output.bodyChars >= 0 &&
+          Number.isSafeInteger(end.output.sidecarChars) && end.output.sidecarChars >= 0
+          ? {bodyChars: end.output.bodyChars, sidecarChars: end.output.sidecarChars} : undefined;
+        this.pushCapped('modelCalls', this.maxModelCalls, this.modelCalls, {
+          purpose: input.purpose,
+          ...(input.trigger ? {trigger: input.trigger} : {}),
+          ...(model ? {model} : {}),
+          ...(runtimeProviderOrigin(input.providerOrigin) ? {providerOrigin: runtimeProviderOrigin(input.providerOrigin)} : {}),
+          ...(input.inputBytesBucket && RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS.includes(input.inputBytesBucket)
+            ? {inputBytesBucket: input.inputBytesBucket} : {}),
+          ...(end.reasoning ?? input.reasoning ? {reasoning: end.reasoning ?? input.reasoning} : {}),
+          startOffsetMs,
+          durationMs: boundedMs((doneOffsetMs ?? this.offsetMs()) - startOffsetMs, 'model_call_duration'),
+          ...(firstOutputMs !== undefined ? {firstOutputMs: boundedMs(firstOutputMs, 'model_call_first_output')} : {}),
+          outcome: end.outcome ?? 'ok',
+          ...(output ? {output} : {}),
+          ...(usage ? {usage} : {}),
+        });
+      },
+    };
+  }
+
+  /**
+   * The run's own finalization decides first; a later finalization that shares
+   * this manifest scope cannot replace that decision.
+   */
+  recordFinalReview(input: RuntimePerformanceFinalReviewReceiptV1): void {
+    this.assertCollecting('record_final_review');
+    if (this.finalReview) return;
+    this.finalReview = {
+      necessity: input.necessity,
+      triggers: [...new Set(input.triggers)],
+      declaredClaimCount: Number.isSafeInteger(input.declaredClaimCount) && input.declaredClaimCount >= 0
+        ? input.declaredClaimCount : 0,
+    };
+  }
+
+  /** Only the declaration acceptance boundary may supply either decision. */
+  recordDeclarationRepair(outcome: 'accepted' | 'rejected'): void {
+    this.assertCollecting('record_declaration_repair');
+    if (outcome !== 'accepted' && outcome !== 'rejected') throw new Error('runtime_performance_invalid_declaration_repair');
+    if (this.declaration) return;
+    this.declarationRepair = outcome;
+  }
+
+  /** Freeze all declaration facts at the first canonical finalization, not at seal. */
+  recordFinalDeclaration(input: Omit<RuntimePerformanceDeclarationReceiptV1, 'repair'>): void {
+    this.assertCollecting('record_final_declaration');
+    assertKnownFields(input as unknown as Record<string, unknown>, ['status', 'declaredClaimCount']);
+    if (!RUNTIME_DECLARATION_STATUSES.includes(input.status)) throw new Error('runtime_performance_invalid_declaration_status');
+    if (!Number.isSafeInteger(input.declaredClaimCount) || input.declaredClaimCount < 0) {
+      throw new Error('runtime_performance_invalid_declaration_count');
+    }
+    if (this.declaration) return;
+    this.declaration = {status: input.status, declaredClaimCount: input.declaredClaimCount, repair: this.declarationRepair};
+  }
+
+  recordDeliveryBudget(input: RuntimePerformanceDeliveryBudgetReceiptV1): void {
+    this.assertCollecting('record_delivery_budget');
+    if (!this.declaration && input.purpose === 'declaration_repair' &&
+      this.declarationRepair !== 'accepted' && this.declarationRepair !== 'rejected') {
+      if (input.decision === 'skip') this.declarationRepair = 'budget_skipped';
+      if (input.decision === 'dispatch') this.declarationRepair = 'not_completed';
+    }
+    if (this.deliveryBudgets.length >= DEFAULT_MAX_RECEIPT_ITEMS) return;
+    this.deliveryBudgets.push({purpose: input.purpose, decision: input.decision, source: input.source,
+      estimateMs: boundedMs(input.estimateMs, 'delivery_budget_estimate'),
+      remainingMs: boundedMs(input.remainingMs, 'delivery_budget_remaining'),
+      ...(input.diagnostic ? {diagnostic: input.diagnostic} : {})});
+  }
+
+  /** At most one entry Skill per run: the first record wins. Closed fields only. */
+  recordSceneEvidence(input: RuntimePerformanceSceneEvidenceReceiptV1): void {
+    this.assertCollecting('record_scene_evidence');
+    assertKnownFields(input as unknown as Record<string, unknown>,
+      ['skillId', 'status', 'reason', 'durationMs', 'artifactCount', 'captureCount']);
+    if (this.sceneEvidence) return;
+    if (!/^[a-z][a-z0-9_]{0,127}$/.test(input.skillId)) throw new Error('runtime_performance_invalid_scene_skill');
+    if (input.status !== 'ran' && input.status !== 'not_run') throw new Error('runtime_performance_invalid_scene_status');
+    if (input.status === 'not_run' ? !isSceneEntryNotRunReason(input.reason) : input.reason !== undefined) {
+      throw new Error('runtime_performance_invalid_scene_reason');
+    }
+    const count = (value: number, label: string) => {
+      if (!Number.isSafeInteger(value) || value < 0) throw new Error(`runtime_performance_invalid_scene_count:${label}`);
+      return value;
+    };
+    this.sceneEvidence = {
+      skillId: input.skillId,
+      status: input.status,
+      ...(input.reason ? {reason: input.reason} : {}),
+      durationMs: boundedMs(input.durationMs, 'scene_evidence_duration'),
+      artifactCount: count(input.artifactCount, 'artifacts'),
+      captureCount: count(input.captureCount, 'captures'),
+    };
+  }
+
   seal(): RuntimePerformanceReceiptV1 {
     if (this.sealedReceipt) return this.sealedReceipt;
     const receipt: RuntimePerformanceReceiptV1 = {
@@ -315,10 +605,21 @@ export class RuntimePerformanceRecorder {
       phases: [...this.phases],
       tools: [...this.tools],
       sql: [...this.sql],
+      ...(this.modelCalls.length > 0 ? {modelCalls: [...this.modelCalls]} : {}),
+      ...(this.finalReview ? {finalReview: this.finalReview} : {}),
+      ...(this.declaration ? {declaration: this.declaration} : {}),
+      ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
+      ...(this.sceneEvidence ? {sceneEvidence: this.sceneEvidence} : {}),
       ...(this.truncated.phases > 0
         || this.truncated.tools > 0
         || this.truncated.sql > 0
-        ? {truncated: {...this.truncated}}
+        || this.truncated.modelCalls > 0
+        ? {truncated: {
+          phases: this.truncated.phases,
+          tools: this.truncated.tools,
+          sql: this.truncated.sql,
+          ...(this.truncated.modelCalls > 0 ? {modelCalls: this.truncated.modelCalls} : {}),
+        }}
         : {}),
     };
     this.sealedReceipt = immutableCanonicalSnapshot(receipt);
@@ -355,6 +656,44 @@ export class RuntimePerformanceRecorder {
   }
 }
 
+/** A model name is configuration, not content; keep it short and printable. */
+function boundedModelName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return trimmed ? trimmed.slice(0, MAX_MODEL_NAME_CHARS) : undefined;
+}
+
+function tokenCount(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Copy only the token counts a provider returned. Accepts the Agents SDK
+ * camelCase usage and the raw Chat Completions / Responses snake_case shapes.
+ */
+export function normalizeModelCallUsage(value: unknown): RuntimeModelCallUsageV1 | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const usage = value;
+  const inputDetails = [usage.inputTokensDetails, usage.input_tokens_details, usage.prompt_tokens_details]
+    .find(isPlainObject);
+  const outputDetails = [usage.outputTokensDetails, usage.output_tokens_details, usage.completion_tokens_details]
+    .find(isPlainObject);
+  const inputTokens = tokenCount(usage.inputTokens, usage.input_tokens, usage.prompt_tokens);
+  const outputTokens = tokenCount(usage.outputTokens, usage.output_tokens, usage.completion_tokens);
+  const reasoningTokens = tokenCount(outputDetails?.reasoning_tokens, outputDetails?.reasoningTokens);
+  const cachedInputTokens = tokenCount(inputDetails?.cached_tokens, inputDetails?.cachedTokens);
+  const result: RuntimeModelCallUsageV1 = {
+    ...(inputTokens !== undefined ? {inputTokens} : {}),
+    ...(outputTokens !== undefined ? {outputTokens} : {}),
+    ...(reasoningTokens !== undefined ? {reasoningTokens} : {}),
+    ...(cachedInputTokens !== undefined ? {cachedInputTokens} : {}),
+  };
+  return Object.keys(result).length ? result : undefined;
+}
+
 function positiveCap(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -372,11 +711,73 @@ export function createRuntimePerformanceRecorder(
 export interface RuntimePerformanceRun {
   finishClassification(outcome?: RuntimePerformanceOutcome): void;
   startPhase(name: RuntimePhaseName): RuntimePerformanceSpan;
+  startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan;
+  /** The run's scene entry evidence receipt; never throws. */
+  recordSceneEvidence(input: RuntimePerformanceSceneEvidenceReceiptV1): void;
   recordFirstOutput(): void;
   finalize(outcome?: RuntimePerformanceOutcome): void;
 }
 
 const noopSpan: RuntimePerformanceSpan = {end: () => undefined};
+const noopModelCallSpan: RuntimeModelCallSpan = {
+  recordFirstOutput: () => undefined, markDone: () => undefined, end: () => undefined,
+};
+
+/**
+ * Start a model-call record on an optional recorder. Observability never
+ * throws into the call it measures, including after the receipt was sealed.
+ */
+export function startRuntimeModelCall(
+  recorder: RuntimePerformanceRecorder | undefined,
+  input: RuntimeModelCallStart,
+): RuntimeModelCallSpan {
+  let span: RuntimeModelCallSpan;
+  try {
+    span = recorder?.startModelCall(input) ?? noopModelCallSpan;
+  } catch {
+    return noopModelCallSpan;
+  }
+  const guard = (operation: () => void) => {
+    try { operation(); } catch { /* Runtime performance is internal observability only. */ }
+  };
+  return {
+    recordFirstOutput: () => guard(() => span.recordFirstOutput()),
+    markDone: usage => guard(() => span.markDone(usage)),
+    end: input => guard(() => span.end(input)),
+  };
+}
+
+/** Record the finalizer's review decision on an optional recorder; never throws. */
+export function recordRuntimeFinalReview(
+  recorder: RuntimePerformanceRecorder | undefined,
+  input: RuntimePerformanceFinalReviewReceiptV1,
+): void {
+  try { recorder?.recordFinalReview(input); } catch { /* Internal observability only. */ }
+}
+
+/** Record the acceptance boundary's decision; never alters the candidate or throws. */
+export function recordRuntimeDeclarationRepair(
+  recorder: RuntimePerformanceRecorder | undefined,
+  outcome: 'accepted' | 'rejected',
+): void {
+  try { recorder?.recordDeclarationRepair(outcome); } catch { /* Internal observability only. */ }
+}
+
+/** Record the first canonical declaration without changing its verification state. */
+export function recordRuntimeFinalDeclaration(
+  recorder: RuntimePerformanceRecorder | undefined,
+  input: Omit<RuntimePerformanceDeclarationReceiptV1, 'repair'>,
+): void {
+  try { recorder?.recordFinalDeclaration(input); } catch { /* Internal observability only. */ }
+}
+
+/** Record a delivery call's pre-dispatch budget decision on an optional recorder; never throws. */
+export function recordRuntimeDeliveryBudget(
+  recorder: RuntimePerformanceRecorder | undefined,
+  input: RuntimePerformanceDeliveryBudgetReceiptV1,
+): void {
+  try { recorder?.recordDeliveryBudget(input); } catch { /* Internal observability only. */ }
+}
 
 export function createRuntimePerformanceRun(
   sink?: RuntimePerformanceSink,
@@ -423,6 +824,10 @@ export function createRuntimePerformanceRun(
   return {
     finishClassification,
     startPhase,
+    startModelCall: input => startRuntimeModelCall(recorder, input),
+    recordSceneEvidence: input => {
+      try { recorder?.recordSceneEvidence(input); } catch { /* Internal observability only. */ }
+    },
     recordFirstOutput: () => {
       try {
         recorder?.recordFirstOutput();

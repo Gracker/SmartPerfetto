@@ -30,6 +30,7 @@ import {
   createRuntimePerformanceRecorder,
   type RuntimePerformanceRecorder,
 } from '../../agentRuntime/runtimePerformance';
+import {RuntimeToolResultAuditRecorder} from '../../agentRuntime/runtimeToolResultAudit';
 import type {AdaptiveRoutingReceiptV1} from '../../types/adaptiveRouting';
 
 export interface CreateRunManifestBuilderInput {
@@ -80,6 +81,7 @@ function copySkillDefinition(
 export class RunManifestBuilder implements RunManifestAttributionSink {
   readonly identity: RunManifestIdentity;
   readonly runtimePerformanceRecorder: RuntimePerformanceRecorder;
+  readonly toolResultAuditRecorder: RuntimeToolResultAuditRecorder;
 
   private readonly runManifestId: string;
   private readonly startedAt: number;
@@ -111,6 +113,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
   private sqlErrorCount = 0;
   private turns = 0;
   private sealedManifest: RunManifestV1 | undefined;
+  private readonly sealObservers: Array<(manifest: RunManifestV1) => void> = [];
 
   constructor(input: CreateRunManifestBuilderInput) {
     this.identity = immutableCanonicalSnapshot({
@@ -123,6 +126,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     this.now = input.now ?? Date.now;
     this.onDiagnostic = input.onDiagnostic;
     this.runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    this.toolResultAuditRecorder = new RuntimeToolResultAuditRecorder();
     this.actor = input.userId ? {userId: input.userId} : undefined;
     this.runtime = {
       runtime: input.runtime,
@@ -142,7 +146,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       ? {...input.resumeAncestry}
       : undefined;
     for (const category of Object.keys(emptyInjections()) as RunInjectionCategory[]) {
-      this.injections.set(category, new Map());
+      if (category !== 'phaseHints') this.injections.set(category, new Map());
     }
   }
 
@@ -451,6 +455,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     const performance = this.runtimePerformanceRecorder.hasRecordedData
       ? this.runtimePerformanceRecorder.seal()
       : undefined;
+    const toolResults = this.toolResultAuditRecorder.hasRecordedData
+      ? this.toolResultAuditRecorder.seal()
+      : undefined;
     const manifest: RunManifestV1 = {
       schemaVersion: 1,
       runManifestId: this.runManifestId,
@@ -496,6 +503,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         ? {capabilityManifest: this.capabilityManifest}
         : {}),
       ...(performance ? {performance} : {}),
+      ...(toolResults ? {toolResults} : {}),
       ...(this.referenceTraceId ? {referenceTraceId: this.referenceTraceId} : {}),
       ...(this.comparisonIdentity
         ? {comparisonIdentity: this.comparisonIdentity}
@@ -505,14 +513,25 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         patterns: this.sortedInjection('patterns'),
         skillNotes: this.sortedInjection('skillNotes'),
         cases: this.sortedInjection('cases'),
-        phaseHints: this.sortedInjection('phaseHints'),
+        // Strategy phase hints reach no analysis, so nothing records one; the
+        // field stays (always empty) so every stored manifest keeps one shape.
+        phaseHints: [],
         knowledgeDocs: this.sortedInjection('knowledgeDocs'),
       },
       turns: this.turns,
       wallclockMs: Math.max(0, sealedAt - this.startedAt),
     };
     this.sealedManifest = immutableCanonicalSnapshot(manifest);
+    for (const observer of this.sealObservers.splice(0)) {
+      try { observer(this.sealedManifest); } catch { /* Seal observers are observability only. */ }
+    }
     return this.sealedManifest;
+  }
+
+  /** Called once with the sealed manifest; a throwing observer never affects the seal. */
+  addSealObserver(observer: (manifest: RunManifestV1) => void): void {
+    if (this.sealedManifest) return;
+    this.sealObservers.push(observer);
   }
 
   private assertCollecting(operation: string): void {

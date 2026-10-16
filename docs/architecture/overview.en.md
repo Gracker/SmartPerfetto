@@ -66,7 +66,7 @@ and frontend readiness.
 | Express backend | `backend/src/index.ts` | Route registration, health checks, middleware, process cleanup |
 | OIDC and request identity | `backend/src/routes/enterpriseAuthRoutes.ts`, `enterpriseSsoService.ts`, `middleware/auth.ts` | Login callback, session/CSRF, personal-workspace ownership, and request-scoped tenant/workspace/RBAC binding |
 | Runtime contract and registry | `backend/src/agentRuntime/runtimeKinds.ts`, `runtimeDescriptors.ts`, `runtimeSelection.ts` | Defines the current production runtime set, capabilities, canonical loaders, and per-session selection |
-| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations of the five currently registered runtimes behind shared orchestrator, result, and safety contracts |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations behind shared orchestrator, result and safety contracts; Pi keeps classification and main reasoning request policies within each provider instance |
 | Shared agent capabilities | `backend/src/agentv3/` | MCP server/registry, strategy injection, planning, verification, and memory; individual runtime files may remain as compatibility re-exports |
 | OpenAI compatibility facades | `backend/src/agentOpenAI/` | Re-exports old import paths; the canonical OpenAI implementation lives under `agentRuntime/engines/openai/` |
 | Assistant application | `backend/src/assistant/` | Session management, stream projection, result contracts |
@@ -76,7 +76,7 @@ and frontend readiness.
 | Self-Evolution | `backend/src/services/selfEvolution/`, `backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest, feedback projection, eval/replay, proposal gates, overlays, reconciliation, and the RBAC control plane |
 | Agent external feedback | `backend/src/services/externalIssueReporting/`, `agentExternalIssueRoutes.ts`, AI Assistant plugin | Source-run signals, pinned-provider triage, strict validation, and deidentified GitHub drafts with no automatic submission |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | Local path registration, index-free on-demand search/read, optional source indexing, symbol resolution, private projection, and patch status verification |
-| External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | Full-corpus Wiki audit, version/fingerprint identity, generation indexing, license/consent/scope, and private-content projection |
+| Document knowledge bases | `backend/src/services/knowledge/`, `externalKnowledgeSourceRegistry.ts` | Folder registration/preview, FTS5/BM25 generation indexing, `search_knowledge`/`read_knowledge_section`, `kb:` citations and `knowledge_use@1`, license/consent/scope, retired kinds, and private-content projection |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | Trace loading, RPC management, SQL query execution |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML report generation |
 | Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalSemanticAssessment.ts`, `evidence/`, `verifier/`, `analysisResultSnapshotPipeline.ts` | Original propositions, captures, finite proof and at most one semantic review, followed by shared projection/persistence |
@@ -153,8 +153,10 @@ to come from the existing configuration sources.
 
 The five runtimes share acquisition budgets and closeout state. Budgets above one
 reserve the last call for a tool-free conclusion from returned facts, remaining
-gaps, and next steps. Cancellation, deadlines, revoked authority, and provider
-errors do not trigger another summary. Delivery retains `incomplete/turn_limit`;
+gaps, and next steps. Cancellation, revoked authority, and provider errors do not
+trigger another summary. An OpenAI acquisition timeout with returned data may
+use the reserved delivery budget for closeout, retaining `partial/timeout`.
+Turn-limit delivery retains `incomplete/turn_limit`;
 text delivery does not establish complete evidence. OpenCode stops after observing
 the limit, records actual overshoot, and cannot add a summary after an overshoot.
 
@@ -162,8 +164,9 @@ Each user question starts a fresh physical model context. Within the same logica
 session, owner, trace, provider, and source authorization checks precede a bounded
 preview of recent conclusions, gaps, and evidence locators. `read_session_history`
 pages older records without creating current-run verification witnesses. A single
-database transaction persists the logical descriptor and full turn records, so
-page reopening and backend restart share one recovery path. The CLI reuses the
+database transaction persists the logical descriptor and full turn records, once
+per run (a second terminal write is refused), so page reopening and backend
+restart share one recovery path. The CLI reuses the
 same typed history contract. See [Agent Runtime Architecture](agent-runtime.en.md).
 
 ## Main Analysis Data Flow
@@ -171,6 +174,8 @@ same typed history contract. See [Agent Runtime Architecture](agent-runtime.en.m
 Jank investigation starts with continuous execution on the target process's main thread. `main_thread_frame_work` and the top-level work tables in `scrolling_analysis` share SQL fragments for observed doFrame phases, tasks and thread states, retaining source locators. FrameTimeline adds outcome evidence. Nested hotspots, ambiguous track attribution, unannotated execution and missing scheduling data remain distinct; missing data never means idle. Top-level work tables feed display, synthesis and artifacts so selecting a nested Skill's first payload cannot discard the task evidence.
 
 Strategy frontmatter `investigation_requirements` is separate from report formatting. The shared typed-intent prompt builder reads these evidence obligations from the run's pinned strategy snapshot for investigation answers and reports. Bounded questions apply only relevant obligations; facts and acknowledgements gain no investigation recipe, and `existing_only` gains no retrieval authority. Older snapshots may omit the optional field; declared requirements participate in the fingerprint.
+
+Strategy frontmatter `entry_skill` declares a scene's entry Skill: for a resolved `scene_wide` `read_new` investigation with a mounted single trace and no reference/comparison, the product runs it before the model's first turn (only once its identity gate reports `verified`) and hands the result to the model in the bounded `scene_evidence` prompt segment, which is never dropped whole. It shares `skillRunCore` with `invoke_skill` but is not a model tool call and enters neither `toolResults` nor plan call records. Captures enter the investigation ledger; `RuntimePerformance` records the phase and receipt. The body of the strategy detail marked `default` reaches the first turn as the most expendable prompt segment, its title still listed with the other details. See [Agent Runtime Architecture](agent-runtime.en.md).
 
 All runtimes use this pinned-context builder. Missing intent or registry fails explicitly, with no legacy quick/full template fallback. The final conclusion is the primary deliverable; budgets and intermediate table previews do not cap its findings, claims or prose. The input discipline budget is 16,000 estimated tokens, with identity and evidence obligations protected from trimming. Actual output or review capacity limits must remain explicit incomplete states.
 
@@ -194,6 +199,7 @@ metadata-only visibility.
       -> selected runtime analyze()
       -> native typed intent -> scope / evidence access / budget / deliverable
       -> eligible automatic prefetch or on-demand context
+      -> product-owned scene entry evidence (strategy entry_skill)
          -> shared TraceCompleteness probe when requested
          -> shadow capability_manifest@1 probe-time snapshot
 
@@ -202,16 +208,16 @@ metadata-only visibility.
       -> execute_sql -> trace_processor_shell
       -> invoke_skill -> SkillExecutor -> SQL / DataEnvelope
       -> lookup_knowledge / lookup_sql_schema / fetch_artifact
-      -> lookup_blog_knowledge(source=android_internals_pack)
-         -> session-pinned signed Pack -> FTS5/BM25 -> redacted, budgeted background citations
-      -> lookup_blog_knowledge(source=android_internals_wiki)
-         -> request source allowlist + live registry consent/scope check
-         -> active RAG generation -> bounded attributed background context
-      (neither Android Internals source is current-trace evidence)
+      -> search_knowledge / read_knowledge_section (only when this turn selected a document knowledge base)
+         -> per-turn selection + live registry consent/scope check -> pinned index generation
+         -> FTS5/BM25 -> kref- references, kb: citations, separate token pool
+      (knowledge is background, not current-trace evidence; the Android Internals Wiki joins as a document knowledge base)
       -> selected codebase + live authorization + on-demand source access
-         -> record_source_use_decision (explicit status, not a mandatory prerequisite)
-         -> search_codebase / read_codebase_file (live root, no index required)
-      -> resolve_symbol / lookup_app_source / lookup_aosp_source / lookup_kernel_source
+         -> per-codebase capabilities (search / read_body / index / graph) + run depth and budget -> source_authorization
+         -> search_codebase / read_codebase_file / find_codebase_files (live root, no index required)
+         -> query_code_graph / inspect_code_symbol (only when a selected codebase has a GitNexus index)
+      -> resolve_symbol / lookup_app_source / lookup_kernel_source (only with an active index)
+      -> lookup_aosp_source
          -> LookupResponseFilter -> CodeRef metadata
       -> propose_patch -> PatchProposer -> verified / sketch / unverified
 
@@ -225,7 +231,14 @@ metadata-only visibility.
 
 5. Backend streams output
    SDK events -> runtime bridge -> privacy/narrative projection -> SSE
-      -> frontend renders progress, tables, thoughts, answer tokens
+      -> frontend renders progress, tables, thoughts
+   draftAnswerStreaming runtime (Claude/OpenAI) -> answer_token draft + answer_segment_reset
+      -> owner projection + narrative projection + coalescing -> live only (never replayed or persisted), replaced by conclusion
+   finalizeAnalysisResult dispatches the semantic review -> provisional conclusion (final body, verdict pending)
+   no review required -> plain conclusion after finalization, before report/snapshot generation (no pending cue)
+   stop after the provisional conclusion -> review-only (answered at once), run still commits `~`;
+      second stop -> wait up to the review-stop watchdog, then abort; no commit in time ->
+      read body stored as an unverified partial turn (not for private knowledge / revoked authority)
 
 6. Finish and report
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata
@@ -345,8 +358,23 @@ valid declarations are not truth or authorization. `existing_only` prohibits
 new acquisition, and `read_new` still respects request permissions. Planning and
 source access are on demand. The finalizer preserves original propositions and
 performs at most one no-tool semantic review under the original deadline, pinned
-provider and owner/authorization checks. The finite proof catalog is defined in
+provider and owner/authorization checks, and sends it only when `✓` is still
+reachable or an obligation needs it: a report, a selection, source access or
+source declarations, an investigation requirement the evidence ledger does not
+rule out, a claim that could still reach `✓` under a perfect review, or a
+zero-claim pure acknowledgement. Every other answer records the not-checked
+reason `not_required` and ends `~` (an accepted residual: a contradiction only
+the review would find goes undetected; a finite-proof `unsupported` still
+yields `!`). The finite proof catalog is defined in
 source; general causality and unknown fields cannot be presented as proved.
+
+Review, declaration repair and continuation compare the time left with an
+estimated duration before dispatch. Insufficient time preserves the answer; a
+skipped review records `budget_insufficient`. Report delivery and missing-body continuation
+remain bounded by the original deadline. Declaration validation is per entry:
+root failures reject the whole declaration, while item failures retain
+`partially_valid` and leave other valid claims eligible for checking. See
+[Agent Runtime Architecture](agent-runtime.en.md#final-result-and-quality-artifacts).
 
 Conversation may retain original captures within a logical session's exact
 trace/authorization/owner scope while physical run/session IDs remain unique.

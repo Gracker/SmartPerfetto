@@ -2,10 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {
-  parseStrategyContribution,
-  type PhaseHint,
-} from '../../agentv3/strategyLoader';
+import {parseStrategyContribution} from '../../agentv3/strategyLoader';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {ApplicationBuildIdentity} from '../applicationUpdate/types';
 import type {
@@ -25,7 +22,6 @@ import type {
   EvolutionValidationBoundInputsV1,
   ContributionBundleArtifactV1,
   ProposalChannelArtifactRevisionV1,
-  RepositoryPatchArtifactV1,
   UpgradeReconciliationReportV1,
 } from '../../types/selfEvolution';
 import {
@@ -98,12 +94,6 @@ export function createEvolutionOverlayPayloadFromTreatmentEntry(
           contribution: entry.contribution,
         },
       });
-    case 'phase_hint_delta':
-      return parseEvolutionOverlayPayloadV1({
-        schemaVersion: 1,
-        payloadKind: 'strategy_delta',
-        strategyDelta: entry,
-      });
     case 'skill_note':
       return parseEvolutionOverlayPayloadV1({
         schemaVersion: 1,
@@ -120,26 +110,16 @@ export function createEvolutionOverlayPayloadFromTreatmentEntry(
         },
       });
     case 'retire_injection':
-      return entry.category === 'phaseHints'
-        ? parseEvolutionOverlayPayloadV1({
-            schemaVersion: 1,
-            payloadKind: 'strategy_delta',
-            strategyDelta: {
-              kind: 'retire_phase_hint',
-              hintId: entry.id,
-              contentHash: entry.contentHash,
-              ...(entry.scene ? {scene: entry.scene} : {}),
-            },
-          })
-        : parseEvolutionOverlayPayloadV1({
-            schemaVersion: 1,
-            payloadKind: 'skill_note',
-            skillNoteDelta: {
-              kind: 'retire_skill_note',
-              noteId: entry.id,
-              contentHash: entry.contentHash,
-            },
-          });
+      if (entry.category !== 'skillNotes') fail('inert_injection_target');
+      return parseEvolutionOverlayPayloadV1({
+        schemaVersion: 1,
+        payloadKind: 'skill_note',
+        skillNoteDelta: {
+          kind: 'retire_skill_note',
+          noteId: entry.id,
+          contentHash: entry.contentHash,
+        },
+      });
   }
 }
 
@@ -177,11 +157,29 @@ export function parseEvolutionOverlayPayloadV1(
   fail('evolution_overlay_payload_kind_invalid');
 }
 
+/**
+ * A strategy delta that targets phase hints, which no analysis reads. Overlays
+ * persisted before their removal still parse, so their content hash verifies;
+ * reconciliation quarantines them instead of applying them, and no new overlay
+ * of this shape is created.
+ */
+export function isInertStrategyDelta(delta: EvolutionStrategyDeltaV1): boolean {
+  return delta.kind !== 'strategy_contribution'
+    || delta.contribution.operations.some(operation =>
+      operation.op === 'append_phase_hints');
+}
+
 export function createEvolutionOverlayArtifactV1(input: {
   artifactId: string;
   payload: EvolutionOverlayPayloadV1;
   provenance: EvolutionOverlayProvenanceV1;
 }): EvolutionOverlayArtifactV1 {
+  if (
+    input.payload.payloadKind === 'strategy_delta'
+    && isInertStrategyDelta(input.payload.strategyDelta)
+  ) {
+    fail('inert_injection_target');
+  }
   const withoutHash = {
     schemaVersion: 1 as const,
     artifactId: input.artifactId,
@@ -695,65 +693,6 @@ export function parseEvolutionDegradationAlertV1(
   ) as unknown as EvolutionDegradationAlertV1;
 }
 
-export function createRepositoryPatchArtifactV1(
-  input: Omit<RepositoryPatchArtifactV1, 'schemaVersion' | 'contentHash'>,
-): RepositoryPatchArtifactV1 {
-  const withoutHash = {schemaVersion: 1 as const, ...input};
-  return parseRepositoryPatchArtifactV1({
-    ...withoutHash,
-    contentHash: canonicalContentHash(withoutHash),
-  });
-}
-
-export function parseRepositoryPatchArtifactV1(
-  value: unknown,
-): RepositoryPatchArtifactV1 {
-  const artifact = record(value, 'repository_patch_artifact_invalid');
-  exactKeys(artifact, [
-    'schemaVersion',
-    'artifactId',
-    'proposalId',
-    'gateAttemptId',
-    'gateAttemptOrdinal',
-    'targetBindingContentHash',
-    'patch',
-    'patchContentHash',
-    'reversePatch',
-    'reversePatchContentHash',
-    'applyCheck',
-    'sourceMaintainer',
-    'gitCapability',
-    'createdAt',
-    'contentHash',
-  ]);
-  if (
-    artifact.schemaVersion !== 1
-    || !nonEmpty(artifact.artifactId)
-    || !nonEmpty(artifact.proposalId)
-    || !nonEmpty(artifact.gateAttemptId)
-    || !positiveInteger(artifact.gateAttemptOrdinal)
-    || !hash(artifact.targetBindingContentHash)
-    || typeof artifact.patch !== 'string'
-    || !artifact.patch
-    || artifact.patchContentHash !== canonicalContentHash(artifact.patch)
-    || typeof artifact.reversePatch !== 'string'
-    || !artifact.reversePatch
-    || artifact.reversePatchContentHash
-      !== canonicalContentHash(artifact.reversePatch)
-    || artifact.applyCheck !== 'passed'
-    || artifact.sourceMaintainer !== true
-    || artifact.gitCapability !== 'available'
-    || !nonNegativeInteger(artifact.createdAt)
-    || !hash(artifact.contentHash)
-  ) {
-    fail('repository_patch_artifact_invalid');
-  }
-  return verifyHashedRecord(
-    artifact,
-    'repository_patch_artifact_hash_mismatch',
-  ) as unknown as RepositoryPatchArtifactV1;
-}
-
 export function createContributionBundleArtifactV1(
   input: Omit<ContributionBundleArtifactV1, 'schemaVersion' | 'contentHash'>,
 ): ContributionBundleArtifactV1 {
@@ -893,7 +832,9 @@ function parseEvolutionStrategyDelta(value: unknown): EvolutionStrategyDeltaV1 {
     exactKeys(delta, ['kind', 'contribution']);
     return {
       kind: 'strategy_contribution',
-      contribution: parseStrategyContribution(delta.contribution),
+      contribution: parseStrategyContribution(delta.contribution, {
+        legacyPhaseHints: 'read',
+      }),
     };
   }
   if (delta.kind === 'phase_hint_delta') {
@@ -923,7 +864,9 @@ function parseEvolutionStrategyDelta(value: unknown): EvolutionStrategyDeltaV1 {
       ...(delta.beforeContentHash
         ? {beforeContentHash: delta.beforeContentHash as string}
         : {}),
-      ...(delta.after ? {after: delta.after as PhaseHint} : {}),
+      ...(delta.after
+        ? {after: delta.after as Readonly<Record<string, unknown>>}
+        : {}),
     });
   }
   if (delta.kind === 'retire_phase_hint') {

@@ -14,11 +14,6 @@ export interface SourceChunk {
   symbol?: string;
 }
 
-export interface OffsetChunk {
-  text: string;
-  offset: number;
-}
-
 export function estimateTokenCount(text: string): number {
   return Math.max(1, Math.round(text.length / 4));
 }
@@ -127,33 +122,5 @@ export function chunkSourceBySymbols(content: string, maxChars: number): SourceC
       });
     }
   }
-  return out;
-}
-
-export function chunkTextByParagraphs(text: string, maxChars: number): OffsetChunk[] {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) return [];
-  const paragraphs = trimmed
-    .split(/\n\s*\n+/)
-    .map(p => p.trim())
-    .filter(p => p.length > 0);
-  const out: OffsetChunk[] = [];
-  let cursor = 0;
-  let buf = '';
-  let bufStart = 0;
-  for (const p of paragraphs) {
-    if (buf.length === 0) {
-      buf = p;
-      bufStart = cursor;
-    } else if (buf.length + 2 + p.length <= maxChars) {
-      buf += '\n\n' + p;
-    } else {
-      out.push({text: buf, offset: bufStart});
-      buf = p;
-      bufStart = cursor;
-    }
-    cursor += p.length + 2;
-  }
-  if (buf.length > 0) out.push({text: buf, offset: bufStart});
   return out;
 }

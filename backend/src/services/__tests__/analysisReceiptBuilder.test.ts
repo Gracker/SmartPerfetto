@@ -206,7 +206,8 @@ describe('buildAnalysisReceipt', () => {
     expect(receipt.qualityGates).toEqual({
       finalReportContract: expected, claimVerification: expected, identityResolution: expected,
     });
-    expect(receipt.claimAudit).toEqual({totalClaims: 1, verifiedClaims: 1, unsupportedClaims: 0, uncertainClaims: 0});
+    expect(receipt.claimAudit).toEqual({totalClaims: 1, verifiedClaims: 1, unsupportedClaims: 0, uncertainClaims: 0,
+      referencesMatchedClaims: 0});
     expect(result).toEqual(before);
     expect(result.deliveryAssurance).toBe(assurance);
   });
@@ -376,6 +377,7 @@ describe('buildAnalysisReceipt', () => {
       verifiedClaims: 1,
       unsupportedClaims: 1,
       uncertainClaims: 0,
+      referencesMatchedClaims: 0,
     });
     expect(receipt.qualityGates).toEqual({
       finalReportContract: 'not_applicable',
@@ -426,6 +428,28 @@ describe('buildAnalysisReceipt', () => {
       identityResolution: 'not_applicable',
     });
     expect(receipt.outputs).toEqual({ reportError: 'report failed' });
+  });
+
+  it('counts delivered knowledge references only when the run recorded knowledge use', () => {
+    const base = {
+      runManifestId: 'manifest-knowledge',
+      session: {sessionId: 'session-knowledge', traceId: 'trace-knowledge', dataEnvelopes: []},
+    };
+    const result = {sessionId: 'session-knowledge', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+      confidence: 0.7, rounds: 1, totalDurationMs: 10};
+    const recorded = buildAnalysisReceipt({...base, result: {...result, knowledgeUse: {schemaVersion: 'knowledge_use@1',
+      sources: [
+        {knowledgeBaseId: `eks_${'a'.repeat(24)}`, kind: 'document_collection', generation: `dc_${'1'.repeat(32)}`,
+          deliveredReferenceCount: 3},
+        {knowledgeBaseId: `eks_${'b'.repeat(24)}`, kind: 'android_internals_wiki', generation: 'wiki_1',
+          deliveredReferenceCount: 2},
+      ], citations: []}}});
+    expect(recorded.nonEvidenceContext.knowledgeReferenceCount).toBe(5);
+    const none = buildAnalysisReceipt({...base, result: {...result, knowledgeUse: {schemaVersion: 'knowledge_use@1',
+      sources: [], citations: []}}});
+    expect(none.nonEvidenceContext.knowledgeReferenceCount).toBe(0);
+    // Not recorded is not zero: the count is absent.
+    expect(buildAnalysisReceipt({...base, result}).nonEvidenceContext).not.toHaveProperty('knowledgeReferenceCount');
   });
 
   it('projects a finalized report assessment into the generated report receipt', () => {
@@ -509,5 +533,28 @@ describe('buildAnalysisReceipt', () => {
       unsupportedClaims: 1,
       uncertainClaims: 0,
     });
+  });
+
+  it('counts matched references and proved propositions separately from verified claims', () => {
+    const proof = (status: string) => ({kind: 'numeric_cell', status, reason: 'r', anchorIds: [], evidenceRefIds: []});
+    const receipt = buildAnalysisReceipt({
+      runManifestId: 'manifest-receipt-5',
+      session: {sessionId: 'session-claim-split', traceId: 'trace-claim-split', dataEnvelopes: []},
+      result: {
+        sessionId: 'session-claim-split', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.7, rounds: 2, totalDurationMs: 800,
+        claimVerificationResult: {
+          schemaVersion: 'claim_verifier@2', status: 'partial', policy: 'record_only', passed: false,
+          checkedClaimCount: 3, unsupportedClaimCount: 0, issues: [],
+          claimResults: [
+            {claimId: 'a', status: 'partial', referenceCells: [{status: 'matched'}], deterministicProof: proof('proved')},
+            {claimId: 'b', status: 'partial', referenceCells: [{status: 'matched'}, {status: 'not_checked'}], deterministicProof: proof('candidate')},
+            {claimId: 'c', status: 'partial', referenceCells: [{status: 'matched'}], deterministicProof: proof('candidate')},
+          ],
+        } as unknown as ClaimVerificationResult,
+      },
+    });
+    expect(receipt.claimAudit).toEqual({totalClaims: 3, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 3,
+      referencesMatchedClaims: 2, propositionProvedClaims: 1});
   });
 });

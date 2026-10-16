@@ -7,6 +7,9 @@ import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {projectToolResultForExternalSurface} from '../services/rag/toolResultProjectionFilter';
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from './runtimeToolResult';
 import type {RuntimeToolObserver} from './runtimeToolObserver';
+import type {AnalysisTurnIntent} from './analysisTurnIntent';
+import {buildNativeOutputCompletionPrompt} from './runtimeConclusionProtocol';
+import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../services/canonicalAnalysisResult';
 
 /** The last model call belongs to delivery; one-turn configurations cannot add a call. */
 export function resolveRuntimeTurnBudget(maxTurns: number) {
@@ -43,6 +46,12 @@ function boundedValue(value: unknown, state: {nodes: number; omitted: number}, d
     return result;
   }
   return undefined;
+}
+
+interface DeliveryPromptInput {
+  query: string;
+  priorConclusion: string;
+  outputLanguage?: OutputLanguage;
 }
 
 interface ToolExcerpt {
@@ -97,25 +106,43 @@ export function createRuntimeTurnCloseoutTape(options: {maxBytes?: number} = {})
   };
   /** At least one call returned data that survived projection; an unreadable result gives a delivery call nothing. */
   const hasReturnedData = () => [...entries.values()].some(entry => entry.state === 'returned' && entry.returnedData !== undefined);
-  const buildPrompt = (input: {
-    query: string;
-    priorConclusion: string;
-    outputLanguage?: OutputLanguage;
-    /** Which acquisition budget ran out; the delivery call is the same for both. */
-    budgetExhausted?: 'turn_limit' | 'timeout';
-  }): string | undefined => {
+  const returnedData = () => ({kind: 'current_run_returned_data_excerpts',
+    completeTranscript: false, verified: false, modelConsumptionKnown: false,
+    omittedCalls, unavailableResults, entries: [...entries.values()]});
+  const render = (templateName: string, input: DeliveryPromptInput,
+    extra: Record<string, string> = {}): string | undefined => {
     let template: string | undefined;
-    try { template = loadPromptTemplate(`prompt-runtime-turn-closeout-${input.outputLanguage === 'en' ? 'en' : 'zh'}`); }
+    try { template = loadPromptTemplate(`${templateName}-${input.outputLanguage === 'en' ? 'en' : 'zh'}`); }
     catch { return undefined; }
     if (!template?.trim()) return undefined;
     return renderTemplate(template.replace(/<!--[\s\S]*?-->/g, '').trim(), {
-      budget_exhausted: input.budgetExhausted ?? 'turn_limit',
+      ...extra,
       original_query: boundedText(input.query, 6000),
       prior_conclusion: boundedText(input.priorConclusion, 8000),
-      returned_data: JSON.stringify({kind: 'current_run_returned_data_excerpts',
-        completeTranscript: false, verified: false, modelConsumptionKnown: false,
-        omittedCalls, unavailableResults, entries: [...entries.values()]}),
+      returned_data: JSON.stringify(returnedData()),
     });
   };
-  return {observe, buildPrompt, hasReturnedData};
+  const buildPrompt = (input: DeliveryPromptInput & {
+    /** Which acquisition budget ran out; the delivery call is the same for both. */
+    budgetExhausted?: 'turn_limit' | 'timeout';
+  }): string | undefined => render('prompt-runtime-turn-closeout', input,
+    {budget_exhausted: input.budgetExhausted ?? 'turn_limit'});
+  /**
+   * A completed run whose final reply had no answer body (only a declaration,
+   * or nothing): the one delivery call writes the body from the same returned
+   * data. Without returned data there is nothing to answer from, so no prompt.
+   */
+  const buildEmptyBodyPrompt = (input: DeliveryPromptInput): string | undefined =>
+    hasReturnedData() ? render('prompt-runtime-empty-body-continuation', input) : undefined;
+  const buildOutputLimitPrompt = (input: DeliveryPromptInput & {intent: AnalysisTurnIntent}): string | undefined => {
+    if (!hasReturnedData() || input.priorConclusion.trim()) return undefined;
+    return buildNativeOutputCompletionPrompt({candidate: input.priorConclusion, intent: input.intent,
+      diagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(input.priorConclusion), 'native', 1),
+      outputLanguage: input.outputLanguage ?? 'zh-CN',
+      issues: [{type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
+        message: JSON.stringify({nativeCompletion: {status: 'incomplete', reason: 'output_limit'},
+          originalQuery: boundedText(input.query, 6000), returnedData: returnedData()})}],
+    });
+  };
+  return {observe, buildPrompt, buildEmptyBodyPrompt, buildOutputLimitPrompt, hasReturnedData};
 }

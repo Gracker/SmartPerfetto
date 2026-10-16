@@ -2,40 +2,51 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {randomUUID} from 'node:crypto';
+import {createHash, randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import type {ConclusionBindingEligibility, ConclusionContract} from '../agent/core/conclusionContract';
-import {isIssuedFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
+import {
+  isIssuedFinalizationContext,
+  takeRunDeliveryRecord,
+  type RuntimeFinalizationContext,
+} from '../agentRuntime/analysisFinalizationContext';
 import type {ComparisonReportSection} from '../agentv3/sessionStateSnapshot';
+import type {ClaimSupportV1} from '../types/evidenceContract';
 import {getFinalReportContract} from '../agentv3/strategyLoader';
 import type {DataEnvelope} from '../types/dataContract';
 import {analysisDeliveryFingerprint, reportRequirementsFingerprint, sameAnalysisCandidate,
-  type AnalysisCandidateIdentity, type AnalysisCaseRetrievalState, type AnalysisDeliveryContext,
+  type AnalysisCandidateIdentity, type AnalysisDeliveryContext,
   type FinalReportAssessment, type PinnedAnalysisReportRequirements} from '../types/analysisDelivery';
-import type {ClaimVerificationResult, ClaimVerificationClaimResult, ClaimVerificationIssue} from '../types/claimVerification';
+import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
+import type {ClaimSemanticReviewTrace, ClaimVerificationResult, ClaimVerificationClaimResult, ClaimVerificationIssue} from '../types/claimVerification';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection} from './canonicalAnalysisResult';
 import {attachSourceUseToAnalysisResult, verifySourceClaimBindings} from './codebase/sourceClaimVerifier';
+import {buildKnowledgeUse} from './knowledge/knowledgeUse';
 import {prepareAnalysisRelations} from './evidence/analysisRelationPreparation';
-import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedIdentityResolutions} from './evidence/claimEvidencePreparation';
-import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId,
-  collectVerifiedTraceOccurrenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
-import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT,
-  type FinalSemanticAssessment, type FinalSemanticSnapshot} from './finalSemanticAssessment';
-import {SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
+import {evidenceReferenceKey, prepareClaimEvidence, preparedClaimEvidenceSnapshot,
+  preparedIdentityResolutions} from './evidence/claimEvidencePreparation';
+import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
+import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_RULE_VERSION,
+  semanticReviewNotRequired, type FinalSemanticAssessment, type FinalSemanticSnapshot,
+  type SemanticClaimAssessment} from './finalSemanticAssessment';
+import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
+import {countLocatedNumbersShowingRounding, locatedNumbersShowDeclaredRounding} from './finalSemanticNumericDisplay';
+import {assessNumericPresentations} from './numericPresentationAssessment';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
   type FinalResultQualityIssue} from './finalResultQualityGate';
-import {projectCodeAwareStructuredText, withOwnerCodeAwareProjection} from './security/codeAwareOutputRegistry';
+import {withOwnerCodeAwareProjection} from './security/codeAwareOutputRegistry';
 import {projectConclusionSemanticInput} from './security/conclusionProtocolProjection';
 import {projectStoredConclusionSourceMetadata} from './security/analysisDeliveryProjection';
+import {getCapturedAnchorFacts} from './evidence/evidenceCapture';
 import {compactSemanticEvidenceSnapshot} from './evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot} from './evidence/semanticSourceSnapshot';
-import {compactInvestigationEvidenceForSemantic} from './evidence/investigationEvidenceLedger';
-import {applySourceLocationProofs} from './codebase/sourceLocationProof';
+import {compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets} from './evidence/investigationEvidenceLedger';
 import {isUnusedSourceDecision, type SourceExecutionScopeV1, type SourceUseDecisionV1} from './codebase/sourceUseDecision';
 import {projectOwnerClaimVerification, projectOwnerClaimSupport,
   projectOwnerConclusionContract} from './security/privateAnalysisProjection';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
-import {assessInvestigationAcquisition, assessLedgerAcquisition} from './finalInvestigationContractGate';
+import {assessInvestigationAcquisition, assessLedgerAcquisition,
+  investigationRequirementNeedsReview} from './finalInvestigationContractGate';
 import type {ResolvedAnalysisInvestigationRequirements} from '../types/analysisInvestigation';
 import type {FinalInvestigationAssessment} from '../types/analysisInvestigationAssessment';
 import {consumeSceneRuntimeSeal, type SceneRuntimeSeal} from '../agent/scene/sceneRuntimeBinding';
@@ -44,6 +55,9 @@ import {projectSceneTimelineForOwner} from '../agent/scene/sceneTimelineProjecti
 import type {SceneScope} from '../agent/scene/sceneTimelineContract';
 import {issueSceneTimelinePublication, type SceneTimelinePublication} from '../agent/scene/sceneTimelinePublication';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
+import type {FinalizationProgressEvent, FinalizationProgressObserver} from './finalizationProgress';
+import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
+import {recordRuntimeFinalDeclaration, recordRuntimeFinalReview, type RuntimeFinalReviewTrigger} from '../agentRuntime/runtimePerformance';
 
 export interface AnalysisFinalizationOwner {
   runId: string;
@@ -62,10 +76,41 @@ export interface FinalizeAnalysisResultInput {
   dataEnvelopes?: readonly DataEnvelope[];
   comparisonReportSection?: ComparisonReportSection;
   comparisonIdentity?: FinalResultComparisonIdentity;
-  caseRetrieval?: AnalysisCaseRetrievalState;
+  /** Curated-case hits the server retrieved for this run. */
+  caseRecommendations?: readonly CaseKnowledgeReportRecommendation[];
   conversation?: NonNullable<Parameters<typeof canonicalizeAnalysisResult>[1]>['conversation'];
   /** Issued product sidecar, separate from a provider's accepted body or result JSON. */
   scene?: {seal: SceneRuntimeSeal; scope: SceneScope; outputLanguage: OutputLanguage; providerId?: string | null};
+  /**
+   * Live progress for the one semantic review: `final_review_started` only when
+   * a provider request is actually sent, then exactly one `final_review_finished`.
+   * Observer failures are ignored; they never change finalization.
+   */
+  onProgress?: FinalizationProgressObserver;
+  /**
+   * Deliver first, verify after. Called at most once, synchronously, at the
+   * moment the single semantic review is dispatched, with the canonical body
+   * exactly as the review sees it. The review cannot rewrite that body, so a
+   * surface may show it at once as an answer whose verdict is pending; the
+   * verdict and any appended notices arrive with the finalized result. Never
+   * called for scene runs, when no review is dispatched, or for an empty body.
+   * The payload is unprojected: each surface applies its own owner projection.
+   * Return `false` when the surface did not actually deliver it (for example the
+   * run no longer owns its stream); the review-started progress then does not
+   * claim the answer is readable. Observer failures count as not delivered.
+   */
+  onProvisionalAnswer?: (answer: ProvisionalAnalysisAnswer) => boolean | void;
+  /**
+   * Stops the semantic review only. Finalization continues and records the
+   * review as `not_checked` / `cancelled_by_user`; `owner.signal` still cancels
+   * the whole finalization.
+   */
+  reviewStopSignal?: AbortSignal;
+}
+
+export interface ProvisionalAnalysisAnswer {
+  /** Canonical, sidecar-free body; the review is bound to exactly this text. */
+  readonly conclusion: string;
 }
 
 export interface FinalizedAnalysisResult {
@@ -133,18 +178,89 @@ function assertOwner(owner: AnalysisFinalizationOwner): void {
 
 function pinnedRequirements(context: RuntimeFinalizationContext): PinnedAnalysisReportRequirements | undefined {
   if (context.turnIntent.status !== 'resolved' || context.turnIntent.deliverable !== 'report') return undefined;
+  // A registered scene may declare no section requirements. Pin that resolved
+  // empty set; an unknown scene still has no authoritative report policy.
+  if (!context.strategyRegistry.getStrategy(context.turnIntent.sceneId)) return undefined;
   const contract = getFinalReportContract(context.turnIntent.sceneId, context.strategyRegistry);
-  if (!contract) return undefined;
   return {sceneId: context.turnIntent.sceneId, registryFingerprint: context.strategyRegistry.registryFingerprint,
-    requirements: contract.requiredSections.map(({id, label, description, required, condition}) => ({
+    requirements: (contract?.requiredSections ?? []).map(({id, label, description, required, condition}) => ({
       id, label, description, required, condition,
     }))};
+}
+
+/** Located body offsets of one claim's review, each with a short hash of the text it covers. */
+function semanticReviewTrace(review: SemanticClaimAssessment, body: string): ClaimSemanticReviewTrace {
+  return {consistency: review.consistency, contentLocations: review.contentLocations.map(({start, end}) => ({start, end,
+    textHash: createHash('sha256').update(body.slice(start, end)).digest('hex').slice(0, 16)}))};
+}
+
+/**
+ * The one protocol-legal path from a review `numeric_mismatch` to the
+ * display-rounding warning, fail-closed on every condition: a `captured.cell`
+ * or completely proved `numeric.cell` eq proposition has one subjectRef; one
+ * matching anchor cell carries the immutable original value and producer unit;
+ * numeric propositions additionally require actual display precision loss. Every
+ * issue location lies inside the claim-level contentLocations the review
+ * returned for this claim. Each exact location must select one faithful display
+ * of that cell, so separately located repetitions are allowed but a broad span
+ * with competing values is not. This explains only display arithmetic, never
+ * subject or scope agreement, and grants no verified standing.
+ */
+function sameCapturedCell(
+  claim: NonNullable<ConclusionContract['claims']>[number],
+  support: ClaimSupportV1 | undefined,
+  review: SemanticClaimAssessment,
+  issue: SemanticClaimAssessment['issues'][number],
+  body: string,
+  prior: ClaimVerificationClaimResult,
+): {value: number | string; unit: string; requirePrecisionLoss: boolean} | undefined {
+  const semantics = claim.semantics;
+  const numericCell = semantics?.predicate === 'numeric.cell';
+  if (!semantics || (semantics.predicate !== 'captured.cell' && !numericCell) || !support) return undefined;
+  const finiteProof = prior.deterministicProof;
+  if (numericCell && (semantics.numeric?.operator !== 'eq' || finiteProof?.kind !== 'numeric_cell' ||
+      finiteProof.status !== 'proved' || prior.propositionCoverage?.status !== 'complete')) return undefined;
+  const subject = semantics.scope.subjectRefs?.length === 1 &&
+    (semantics.scope.objectRefs?.length || 0) === 0 ? semantics.scope.subjectRefs[0] : undefined;
+  if (!subject || subject.rowIndex === undefined || subject.rowIndex < 0 || !subject.column) return undefined;
+  const {rowIndex, column} = subject;
+  const referenceKey = evidenceReferenceKey(subject);
+  // The unit is producer authority: the captured field semantics the anchor
+  // carries, never a display string on the cell.
+  const matches = (support.anchors ?? []).flatMap(anchor => {
+    const facts = getCapturedAnchorFacts(anchor);
+    const unit = facts?.fields[column]?.unit;
+    if (!facts || facts.originalRowIndex !== rowIndex || !unit || !unit.trim()) return [];
+    if (facts.referenceKey !== undefined ? facts.referenceKey !== referenceKey
+      : !subject.evidenceRefId || anchor.evidenceRefId !== subject.evidenceRefId) return [];
+    if (numericCell && !finiteProof?.anchorIds.includes(anchor.anchorId)) return [];
+    return (anchor.cells ?? [])
+      .filter(cell => cell.rowIndex === rowIndex && cell.column === column)
+      .map(() => ({value: facts.row[column], unit}));
+  });
+  if (matches.length !== 1) return undefined;
+  const {value, unit} = matches[0];
+  if (!(typeof value === 'number' && Number.isFinite(value) ||
+    typeof value === 'string' && /^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value))) return undefined;
+  // Every issue location must belong to this claim's located body text.
+  const inside = (location: {start: number; end: number}) =>
+    review.contentLocations.some(({start, end}) => location.start >= start && location.end <= end);
+  if (!issue.contentLocations.length || !issue.contentLocations.every(inside)) return undefined;
+  // Validate every selected value, not just the matching candidates counted by
+  // the locator helper. One wrong repeat, range or comparison keeps the error.
+  const cellNumeric = {operator: 'eq', value, unit};
+  const faithful = (locations: readonly {start: number; end: number}[]) => locations.length > 0 &&
+    locations.every(location => countLocatedNumbersShowingRounding(body, [location], cellNumeric) === 1 &&
+      locatedNumbersShowDeclaredRounding(body, [location], cellNumeric, numericCell));
+  return faithful(review.contentLocations) && faithful(issue.contentLocations)
+    ? {value, unit, requirePrecisionLoss: numericCell} : undefined;
 }
 
 /** Finite proof never promotes itself; the full current proposition must agree with the body. */
 function joinClaimVerification(input: {
   contract?: ConclusionContract;
   draft: ClaimVerificationResult;
+  claimSupport?: readonly ClaimSupportV1[];
   semantic?: FinalSemanticAssessment;
   candidate: AnalysisCandidateIdentity;
   body: string;
@@ -155,27 +271,73 @@ function joinClaimVerification(input: {
   const eligible = input.bindingEligibility !== 'ineligible' && contract?.bindingEligibility !== 'ineligible';
   const bound = Boolean(eligible && semantic && ['checked', 'coverage_incomplete'].includes(semantic.status) &&
     sameAnalysisCandidate(semantic.binding?.canonicalCandidate, candidate, body));
-  const complete = Boolean(bound && semantic &&
-    semantic.coverage.body === 'complete' && semantic.coverage.claims === 'complete' &&
-    sameAnalysisCandidate(semantic.binding?.canonicalCandidate, candidate, body));
+  const bodyReviewed = Boolean(bound && semantic &&
+    (semantic.bodyReviewCoverage ?? semantic.coverage.body) === 'complete');
+  // Omission defects still block whole-answer acceptance even when the parser
+  // confirms the body was reviewed completely and individual claims can pass.
+  const complete = Boolean(bound && semantic?.coverage.body === 'complete' && semantic.coverage.claims === 'complete');
   const issues: ClaimVerificationIssue[] = [...draft.issues];
-  const claimResults: ClaimVerificationClaimResult[] = declarations.map(claim => {
+  const reviewOf = (id: string) => {
+    const reviews = semantic?.claims.filter(item => item.claimId === id) ?? [];
+    return reviews.length === 1 ? reviews[0] : undefined;
+  };
+  const supportById = new Map((input.claimSupport ?? []).map(support => [support.claimId, support]));
+  const claimResults: ClaimVerificationClaimResult[] = declarations.map((claim): ClaimVerificationClaimResult => {
     const id = claim.id ?? '';
     const drafts = draft.claimResults.filter(item => item.claimId === id);
-    const reviews = semantic?.claims.filter(item => item.claimId === id) ?? [];
     const prior = drafts.length === 1 ? drafts[0] : undefined;
-    const review = reviews.length === 1 ? reviews[0] : undefined;
+    const review = reviewOf(id);
     const unique = id.length > 0 && declarations.filter(item => item.id === id).length === 1;
-    if (!unique || !prior || !eligible) return {...prior, claimId: id, status: 'not_checked'};
+    // A claim that failed its own item validation is outside verification and
+    // the review's scope: it stays not_checked whatever a review row says.
+    if (!unique || !prior || !eligible || claim.valid === false) return {...prior, claimId: id, status: 'not_checked'};
     if (prior.status === 'unsupported' || prior.deterministicProof?.status === 'rejected') {
       return {...prior, status: 'unsupported'};
     }
-    if (bound && review?.consistency === 'inconsistent') {
-      for (const issue of review.issues) issues.push({claimId: id, severity: 'error',
-        code: semanticClaimIssueCode(issue.code), message: `Claim ${id}: ${issue.code}`});
+    const presentation = prior.numericPresentation;
+    if (presentation?.status === 'mismatch') {
+      issues.push({claimId: id, severity: 'error', code: 'numeric_presentation_mismatch',
+        message: `Claim ${id}: ${presentation.reason}`});
       return {...prior, status: 'unsupported'};
     }
-    if (!complete || review?.consistency !== 'consistent') return {...prior, status: 'partial'};
+    if (presentation?.status === 'not_checked') issues.push({claimId: id, severity: 'warning',
+      code: 'numeric_presentation_not_checked', message: `Claim ${id}: ${presentation.reason}`});
+    if (bound && review?.consistency === 'inconsistent') {
+      // Only the issue's own validated text: an unlocatable review is unknown
+      // rather than a contradiction. A downgrade to display rounding
+      // additionally needs the captured-cell identity of plan 2 D: the same
+      // shown value in another cell's place is a real mismatch.
+      const displayRounding = (issue: typeof review.issues[number]): boolean => {
+        if (issue.code !== 'numeric_mismatch' || (presentation &&
+            !(presentation.status === 'not_checked' && presentation.reason === 'quote_unresolved'))) return false;
+        const cell = sameCapturedCell(claim, supportById.get(id), review, issue, body, prior);
+        return cell ? locatedNumbersShowDeclaredRounding(body, issue.contentLocations,
+          {operator: 'eq', value: cell.value, unit: cell.unit}, cell.requirePrecisionLoss) : false;
+      };
+      // Only a dispute located entirely on a checked literal can be called an
+      // arithmetic disagreement. A whole-sentence/scope dispute keeps standing.
+      const displayDisagreement = (issue: typeof review.issues[number]): boolean =>
+        presentation?.status === 'matched' && issue.code === 'numeric_mismatch' &&
+        issue.contentLocations.length > 0 && issue.contentLocations.every(location =>
+          presentation.locations.some(checked => location.start >= checked.start && location.end <= checked.end) &&
+          review.contentLocations.some(claimLocation => location.start >= claimLocation.start && location.end <= claimLocation.end));
+      const contradictions = review.issues.filter(issue => !displayRounding(issue) && !displayDisagreement(issue));
+      for (const issue of review.issues) issues.push(contradictions.includes(issue)
+        ? {claimId: id, severity: 'error', code: semanticClaimIssueCode(issue.code), message: `Claim ${id}: ${issue.code}`}
+        : {claimId: id, severity: 'warning', code: displayDisagreement(issue)
+          ? 'numeric_presentation_review_disagreement' : SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE,
+          message: `Claim ${id}: the body shows the declared value at its displayed precision`});
+      // An unmarked rounding is not verified, but it contradicts nothing.
+      return {...prior, status: contradictions.length ? 'unsupported' : 'partial'};
+    }
+    // Coverage of another claim cannot revoke this claim's complete proof and
+    // located review. Whole-answer acceptance still requires complete coverage.
+    if (!bodyReviewed || review?.consistency !== 'consistent' || !review.contentLocations.length) {
+      return {...prior, status: 'partial'};
+    }
+    if (presentation && (presentation.status !== 'matched' ||
+        !presentation.locations.every(location => review.contentLocations.some(span =>
+          location.start >= span.start && location.end <= span.end)))) return {...prior, status: 'partial'};
     const semantics = claim.semantics;
     if (semantics && (semantics.discourse !== 'asserted' || semantics.modality !== 'certain' ||
       claim.kind === 'inference' || claim.kind === 'recommendation')) {
@@ -183,8 +345,13 @@ function joinClaimVerification(input: {
     }
     return {...prior, status: prior.deterministicProof?.status === 'proved' &&
       prior.propositionCoverage?.status === 'complete' ? 'verified' : 'partial'};
+  }).map(result => {
+    const review = bound ? reviewOf(result.claimId) : undefined;
+    return review ? {...result, semanticReview: semanticReviewTrace(review, body)} : result;
   });
-  if (bound && semantic?.omissions.length) issues.push({claimId: '', severity: 'error',
+  // An undeclared assertion was never checked: the answer cannot pass, but it
+  // contradicts nothing, so it leaves the result unverified rather than failed.
+  if (bound && semantic?.omissions.length) issues.push({claimId: '', severity: 'warning',
     code: SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, message: 'The answer contains assertions missing from its declared claims.'});
   const unsupportedClaimCount = claimResults.filter(claim => claim.status === 'unsupported').length;
   const failed = unsupportedClaimCount > 0 || issues.some(issue => issue.severity === 'error');
@@ -196,13 +363,122 @@ function joinClaimVerification(input: {
     unsupportedClaimCount, claimResults, issues,
     ...(semantic?.reason ? {notCheckedReason: semantic.reason,
       ...(semantic.notCheckedDetail ? {notCheckedDetail: semantic.notCheckedDetail} : {})}
-      : !passed && !failed ? {notCheckedReason: 'complete_proposition_review_unavailable'} : {})};
+      // A completed review that left claims unverified names why in its issues,
+      // not as an unavailable review.
+      : !passed && !failed && !complete ? {notCheckedReason: 'complete_proposition_review_unavailable'} : {})};
+}
+
+/**
+ * Why the one semantic review must run; empty when `✓` is unreachable and no
+ * obligation (report, selection, source, investigation, acknowledgement) needs
+ * it. That skip is an accepted residual: a contradiction only the review would
+ * find (`~` becoming `!`) then goes undetected, while a deterministic
+ * `unsupported` from finite proof still yields `!`. The review is the only check of the whole body against
+ * the declarations, the obligations and the selection (G2), so it runs when a
+ * report, a selection, source access or declarations, or a resolved
+ * investigation obligation gives it something to decide, and when a verified
+ * (`✓`) verdict is still reachable. That last test asks the real join what a
+ * perfect review would yield, so it covers inference and recommendation claims
+ * exactly as the verdict does; the hypothetical review is never returned or
+ * persisted. A zero-claim answer can reach `✓` only through a review, and only
+ * a non-factual acknowledgement asks for one; every other zero-claim answer
+ * stays `~` without a review.
+ */
+function semanticReviewTriggers(input: {
+  context: RuntimeFinalizationContext;
+  delivery: AnalysisDeliveryContext;
+  selectionPresent: boolean;
+  sourceScope?: Readonly<SourceExecutionScopeV1>;
+  rawDeclaration: unknown;
+  investigationRequirements?: ResolvedAnalysisInvestigationRequirements;
+  contract?: ConclusionContract;
+  finiteProofs: ClaimVerificationResult;
+  candidate: AnalysisCandidateIdentity;
+  body: string;
+  bindingEligibility: ConclusionBindingEligibility;
+}): RuntimeFinalReviewTrigger[] {
+  const {context, delivery, contract, candidate, body} = input;
+  const intent = context.turnIntent;
+  const triggers: RuntimeFinalReviewTrigger[] = [];
+  if (intent.status === 'resolved' && intent.deliverable === 'report') triggers.push('report');
+  if (input.selectionPresent) triggers.push('selection');
+  // Source access, not a source call: authorized source-derived history reaches
+  // the prompt without one. Read the raw declaration: a malformed source field is
+  // still a source declaration.
+  if (input.sourceScope?.hasCodebaseAccess ||
+    (input.rawDeclaration !== undefined && input.rawDeclaration !== null && !hasNoSourceDeclarations(input.rawDeclaration))) {
+    triggers.push('source');
+  }
+  const investigation = input.investigationRequirements;
+  if (investigation?.status === 'resolved' && investigation.requirements.some(requirement =>
+    investigationRequirementNeedsReview(requirement, context.investigationEvidence))) triggers.push('investigation');
+  // Only claims that passed their own item validation can ever reach `✓`; the
+  // hypothetical perfect review judges exactly the valid declared set.
+  const declarations = (contract?.claims ?? []).filter(claim => claim.valid !== false);
+  if (declarations.length > 0) {
+    const perfectReview: FinalSemanticAssessment = {schemaVersion: 'final_semantic_assessment@1',
+      ruleVersion: FINAL_SEMANTIC_RULE_VERSION, binding: {snapshotFingerprint: 'hypothetical_review', canonicalCandidate: candidate},
+      status: 'checked', consistency: 'consistent',
+      coverage: {body: 'complete', claims: 'complete', report: 'not_applicable'},
+      claims: declarations.map(claim => ({claimId: claim.id ?? '', consistency: 'consistent',
+        contentLocations: [{start: 0, end: body.length}], issues: []})),
+      omissions: [], requirements: []};
+    if (joinClaimVerification({contract, draft: input.finiteProofs, semantic: perfectReview, candidate, body,
+      bindingEligibility: input.bindingEligibility}).passed) triggers.push('claims_verifiable');
+  } else if (intent.status === 'resolved' && intent.taskKind === 'acknowledgement' &&
+    (input.bindingEligibility === 'eligible' || input.bindingEligibility === 'legacy_unchecked') &&
+    // An acknowledgement rendered from its own proof already has claims not_applicable.
+    !(delivery.entry === 'new_finalization' && delivery.outputOrigin === 'evidence_rendered' &&
+      delivery.evidenceRenderedProof?.kind === 'acknowledgement')) {
+    triggers.push('acknowledgement');
+  }
+  return triggers;
+}
+
+const CASE_PROJECTION_ROUNDS = 3;
+
+/**
+ * The one semantic review judges only claims that passed their own item
+ * validation (plan A.2): the snapshot's contract carries the valid claims and
+ * none of the raw invalid entries, so the review cannot spend its budget on
+ * rows outside its scope. Diagnostics keep naming the dropped entries.
+ */
+function contractForSemanticReview(contract: ConclusionContract | undefined): ConclusionContract | undefined {
+  if (!contract) return undefined;
+  const claims = contract.claims;
+  const invalid = claims?.some(claim => claim.valid === false) === true;
+  const hasRaw = (['rawClaims', 'rawRelationProposals', 'rawDeclaration'] as const)
+    .some(key => Object.prototype.hasOwnProperty.call(contract, key));
+  if (!invalid && !hasRaw) return contract;
+  const {rawClaims: _rawClaims, rawRelationProposals: _rawRelations, rawDeclaration: _rawDeclaration, ...rest} = contract;
+  return {...rest, ...(claims ? {claims: claims.filter(claim => claim.valid !== false)} : {})};
+}
+
+/**
+ * Project the hits inside the contract they join, as every later owner surface
+ * projects that contract, until the projection stops changing them. A guard can
+ * withhold a value or field name a hit's structure requires, such as its match
+ * strength; the next projection's normalization then drops that hit (or that
+ * recommendation), so a result accepted after one round would differ on every
+ * later surface and invalidate the bindings made from this contract.
+ */
+function withRetrievedCaseRecommendations(sessionId: string, contract: ConclusionContract,
+  recommendations: readonly CaseKnowledgeReportRecommendation[]): ConclusionContract {
+  let hits = [...recommendations];
+  for (let round = 0; round < CASE_PROJECTION_ROUNDS; round++) {
+    const projected = projectOwnerConclusionContract(sessionId, {...contract, caseRecommendations: hits})
+      ?.caseRecommendations ?? [];
+    if (round > 0 && analysisDeliveryFingerprint(projected) === analysisDeliveryFingerprint(hits)) {
+      return projected.length ? {...contract, caseRecommendations: projected} : contract;
+    }
+    hits = projected;
+  }
+  return contract;
 }
 
 function semanticReportAssessment(input: {
   candidate: AnalysisCandidateIdentity; result: AnalysisResult; context: RuntimeFinalizationContext;
-  evidenceFingerprint: string; requirements?: PinnedAnalysisReportRequirements;
-  caseRetrieval?: AnalysisCaseRetrievalState; semantic: FinalSemanticAssessment;
+  evidenceFingerprint: string; requirements?: PinnedAnalysisReportRequirements; semantic: FinalSemanticAssessment;
 }): FinalReportAssessment | undefined {
   const {requirements, semantic, candidate, context, result} = input;
   if (!requirements) return undefined;
@@ -212,8 +488,7 @@ function semanticReportAssessment(input: {
     evidenceFingerprint: input.evidenceFingerprint,
     requirementsFingerprint: reportRequirementsFingerprint(requirements),
     registryFingerprint: context.strategyRegistry.registryFingerprint,
-    intentFingerprint: analysisDeliveryFingerprint(context.turnIntent),
-    caseRetrievalFingerprint: analysisDeliveryFingerprint(input.caseRetrieval)},
+    intentFingerprint: analysisDeliveryFingerprint(context.turnIntent)},
     status: !bound ? 'not_checked' : semantic.status === 'checked' || semantic.status === 'coverage_incomplete'
       ? semantic.coverage.report === 'incomplete' ? 'coverage_incomplete' : 'checked'
       : semantic.status,
@@ -297,6 +572,11 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       }
       consumedContexts.add(context);
     }
+    // A result without an answer to finalize still carries what its run delivered.
+    const deliveryRecord = takeRunDeliveryRecord(input.result);
+    if (deliveryRecord && (deliveryRecord.runId !== owner.runId || deliveryRecord.sessionId !== input.result.sessionId)) {
+      throw new Error('finalization_run_identity_mismatch');
+    }
     const query = input.query;
     const providerQuery = context?.getProviderQuery(owner.signal);
     if (providerQuery?.analysisContextFingerprint !== undefined &&
@@ -315,8 +595,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     const comparisonIdentity = expectedPair && (expectedPair.referenceTraceId || suppliedIdentity)
       ? {...(pairConflict ? {} : suppliedIdentity), currentTraceId: expectedPair.currentTraceId,
         referenceTraceId: expectedPair.referenceTraceId} : suppliedIdentity;
-    const caseRetrieval = frozenSnapshot(input.caseRetrieval ?? (context?.deliveryContext.entry !== 'historical_restore'
-      ? context?.deliveryContext.caseRetrieval : undefined));
+    const caseRecommendations = frozenSnapshot(input.caseRecommendations);
     const nativeDeclaration = context?.getNativeDeclaration(original, owner.signal);
     const canonical = canonicalizeAnalysisResult(original, {context: context?.deliveryContext, nativeDeclaration, conversation});
     if (!isIssuedCanonicalAnalysisProjection(canonical.projection)) throw new Error('unissued_canonical_projection');
@@ -355,17 +634,50 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       comparisonReportSection, relationCandidates: relations.relationCandidates,
       relationActivationClaimIds: relations.relationActivationClaimIds, preparedEvidence: prepared,
       bindingEligibility: canonical.bindingEligibility, policy: 'record_only'});
+    const numericPresentations = assessNumericPresentations({contract: validationContract,
+      claims: draft.claimVerificationResult.claimResults, support: draft.claimSupport, body: result.conclusion, candidate});
+    draft.claimVerificationResult.claimResults = draft.claimVerificationResult.claimResults.map(claim => {
+      const numericPresentation = numericPresentations.get(claim.claimId);
+      return numericPresentation ? {...claim, numericPresentation} : claim;
+    });
     const requirements = context ? pinnedRequirements(context) : undefined;
     const investigationRequirements = context ? resolveAnalysisInvestigationRequirements({
       intent: context.turnIntent, strategyRegistry: context.strategyRegistry}) : undefined;
     let semantic: FinalSemanticAssessment | undefined;
+    const selectionScope = context?.getSelection(owner.signal);
+    const declaredClaimCount = validationContract?.claims?.length ?? 0;
+    const declarationStatuses = [canonical.protocolDiagnostics?.sidecar.status, canonical.protocolDiagnostics?.typedJson?.status];
+    recordRuntimeFinalDeclaration(currentRuntimePerformanceRecorder(), {
+      status: canonical.bindingEligibility === 'ineligible' || declarationStatuses.includes('invalid') ? 'invalid' :
+        declarationStatuses.includes('valid') ? 'valid' :
+          declarationStatuses.includes('partially_valid') ? 'partially_valid' : 'absent',
+      declaredClaimCount,
+    });
+    // An ineligible declaration keeps its own unchecked reason; its review is never sent.
+    const reviewTriggers = context && canonical.bindingEligibility !== 'ineligible' ? semanticReviewTriggers({
+      context, delivery, selectionPresent: selectionScope?.present === true, sourceScope, rawDeclaration,
+      investigationRequirements, contract: validationContract, finiteProofs: draft.claimVerificationResult,
+      candidate, body: result.conclusion,
+      bindingEligibility: canonical.bindingEligibility}) : undefined;
     if (context) {
+      recordRuntimeFinalReview(currentRuntimePerformanceRecorder(), {
+        necessity: !reviewTriggers ? 'declaration_ineligible' : reviewTriggers.length ? 'required' : 'not_required',
+        triggers: reviewTriggers ?? [], declaredClaimCount});
+    }
+    if (context && reviewTriggers?.length === 0) {
+      // Bound to the candidate and every input of the necessity decision, hashed once.
+      semantic = semanticReviewNotRequired(candidate, analysisDeliveryFingerprint({decision: 'not_required',
+        candidate, bindingEligibility: canonical.bindingEligibility, declaredClaimCount,
+        turnIntent: context.turnIntent, hasCodebaseAccess: sourceScope?.hasCodebaseAccess === true,
+        investigationRequirements: investigationRequirements ?? null, finiteProofs: draft.claimVerificationResult}));
+    } else if (context) {
       const diagnostics = canonical.protocolDiagnostics;
-      const selectionScope = context.getSelection(owner.signal);
       const snapshot: FinalSemanticSnapshot = {inputCoverage: 'complete', declarationBindingEligibility: canonical.bindingEligibility,
         query: providerQuery?.text ?? query,
-        body: result.conclusion, conclusionContract: validationContract, evidenceSnapshot, sourceUse,
-        capabilitySnapshot: context.capabilityEvidence, reportRequirements: requirements, caseRetrieval,
+        body: result.conclusion, conclusionContract: contractForSemanticReview(validationContract), evidenceSnapshot, sourceUse,
+        ...(numericPresentations.size ? {numericPresentation: [...numericPresentations].map(([claimId, assessment]) =>
+          ({claimId, ...assessment}))} : {}),
+        capabilitySnapshot: context.capabilityEvidence, reportRequirements: requirements,
         investigationRequirements,
         ...(selectionScope ? {selectionScope} : {}),
         protocolDiagnostics: diagnostics ? {sidecar: {status: diagnostics.sidecar.status,
@@ -387,7 +699,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         projected.changed ? {...value, inputCoverage: 'incomplete',
           inputProjectionIssue: projected.limited ? 'structure_limit' : 'content_projection', query: '', body: result.conclusion,
           conclusionContract: undefined, protocolDiagnostics: undefined, evidenceSnapshot: null,
-          sourceUse: undefined, capabilitySnapshot: undefined, caseRetrieval: undefined, investigationEvidence: undefined}
+          sourceUse: undefined, capabilitySnapshot: undefined, investigationEvidence: undefined, numericPresentation: undefined}
           : compactSemanticSourceSnapshot({...projected.value,
             evidenceSnapshot: compactSemanticEvidenceSnapshot(projected.value.evidenceSnapshot)});
       let safeSnapshot: FinalSemanticSnapshot;
@@ -396,15 +708,19 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       } else {
         // Select the largest complete-cohort ledger projection that fits the exact
         // shared prompt assembly. Every candidate crosses the same security boundary.
-        let low = 0, high = FINAL_SEMANTIC_INPUT_BYTE_LIMIT;
+        // The search runs over the budgets where a cohort enters the view, so each
+        // round sizes a distinct view: the prompt is assembled synchronously and
+        // its cost comes out of the review's own deadline.
+        const budgets = investigationEvidenceSemanticBudgets(context.investigationEvidence);
+        let low = 0, high = budgets.length - 1;
         let best: FinalSemanticSnapshot | undefined;
-        let smallestOverLimit: {budget: number; snapshot: FinalSemanticSnapshot} | undefined;
+        let smallestOverLimit: FinalSemanticSnapshot | undefined;
         let unsafe: FinalSemanticSnapshot | undefined;
         let templateUnavailable: FinalSemanticSnapshot | undefined;
         while (low <= high) {
-          const budget = Math.floor((low + high) / 2);
-          const ledger = compactInvestigationEvidenceForSemantic(context.investigationEvidence, budget);
-          if (!ledger) {low = budget + 1; continue;}
+          const index = Math.floor((low + high) / 2);
+          const ledger = compactInvestigationEvidenceForSemantic(context.investigationEvidence, budgets[index]);
+          if (!ledger) break;
           const value = {...snapshot, investigationEvidence: ledger};
           const projected = projectSnapshot(value);
           const candidateSnapshot = safeProjection(value, projected);
@@ -415,26 +731,46 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
           catch {templateUnavailable = candidateSnapshot; break;}
           if (!assembled) {templateUnavailable = candidateSnapshot; break;}
           const bytes = Buffer.byteLength(assembled.prompt, 'utf8');
-          if (bytes <= FINAL_SEMANTIC_INPUT_BYTE_LIMIT) {best = candidateSnapshot; low = budget + 1;}
-          else {
-            if (!smallestOverLimit || budget < smallestOverLimit.budget) smallestOverLimit = {budget, snapshot: candidateSnapshot};
-            high = budget - 1;
-          }
+          if (bytes <= FINAL_SEMANTIC_INPUT_BYTE_LIMIT) {best = candidateSnapshot; low = index + 1;}
+          // The search only moves down after an overflow, so the latest one is the smallest.
+          else {smallestOverLimit = candidateSnapshot; high = index - 1;}
         }
-        const baseProjection = safeProjection(snapshot, projectSnapshot(snapshot));
-        const noLedgerFits = baseProjection.inputCoverage === 'complete'
-          ? {...baseProjection, inputCoverage: 'incomplete' as const, inputProjectionIssue: 'semantic_input_limit' as const}
-          : baseProjection;
-        safeSnapshot = unsafe ?? templateUnavailable ?? best ?? smallestOverLimit?.snapshot ?? noLedgerFits;
+        // The ledger-free view is projected only when no ledger view was selected.
+        const noLedgerFits = (): FinalSemanticSnapshot => {
+          const baseProjection = safeProjection(snapshot, projectSnapshot(snapshot));
+          return baseProjection.inputCoverage === 'complete'
+            ? {...baseProjection, inputCoverage: 'incomplete', inputProjectionIssue: 'semantic_input_limit'}
+            : baseProjection;
+        };
+        safeSnapshot = unsafe ?? templateUnavailable ?? best ?? smallestOverLimit ?? noLedgerFits();
       }
       assertOwner(owner);
-      semantic = await assessFinalSemantics({context, canonicalCandidate: candidate, snapshot: safeSnapshot, signal: owner.signal});
+      const report = (event: FinalizationProgressEvent) => {
+        try { input.onProgress?.(event); } catch { /* Progress observers never change finalization. */ }
+      };
+      const deliverProvisional = (): boolean => {
+        const onProvisionalAnswer = input.onProvisionalAnswer;
+        if (!onProvisionalAnswer || input.scene || !result.conclusion.trim()) return false;
+        try {
+          assertOwner(owner);
+          return onProvisionalAnswer({conclusion: result.conclusion}) !== false;
+        } catch { return false; /* Delivery observers never change finalization. */ }
+      };
+      let reviewDispatched = false;
+      semantic = await assessFinalSemantics({context, canonicalCandidate: candidate, snapshot: safeSnapshot, signal: owner.signal,
+        ...(input.reviewStopSignal ? {stopSignal: input.reviewStopSignal} : {}),
+        onDispatch: ({deadlineMs}) => {
+          reviewDispatched = true;
+          report({stage: 'final_review_started', deadlineAt: deadlineMs, ...(deliverProvisional() ? {answerReadable: true} : {})});
+        }});
       assertOwner(owner);
+      if (reviewDispatched) {
+        report({stage: 'final_review_finished', status: semantic.status, ...(semantic.reason ? {reason: semantic.reason} : {})});
+      }
     }
-    const finiteProofs = applySourceLocationProofs({contract: validationContract, sourceUse,
-      draft: draft.claimVerificationResult});
-    result.claimVerificationResult = joinClaimVerification({contract: validationContract, draft: finiteProofs,
-      semantic, candidate, body: result.conclusion, bindingEligibility: canonical.bindingEligibility});
+    result.claimVerificationResult = joinClaimVerification({contract: validationContract, draft: draft.claimVerificationResult,
+      claimSupport: draft.claimSupport, semantic, candidate, body: result.conclusion,
+      bindingEligibility: canonical.bindingEligibility});
     const statusByClaim = new Map(result.claimVerificationResult.claimResults.map(claim => [claim.claimId, claim.status]));
     result.claimSupport = draft.claimSupport.map(support => {
       const status = statusByClaim.get(support.claimId);
@@ -443,9 +779,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     });
     result.identityResolutions = preparedIdentityResolutions(prepared);
     result.sourceClaimVerificationResult = verifySourceClaimBindings({conclusionContract: validationContract,
-      actualSourceUseDecision: sourceUse, semanticsPolicy: 'declared',
-      matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(result.claimVerificationResult),
-      verifiedTraceOccurrenceRefIdsByClaimId: collectVerifiedTraceOccurrenceRefIdsByClaimId(result.claimVerificationResult)});
+      actualSourceUseDecision: sourceUse, body: result.conclusion,
+      matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(result.claimVerificationResult)});
     if (nativeDeclaration) {
       // The verdict is computed from original values. Only its owner-safe projection enters private delivery artifacts.
       const storedContract = projectStoredConclusionSourceMetadata(validationContract, result.sourceUseDecision);
@@ -457,6 +792,19 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       result.claimVerificationResult = projectOwnerClaimVerification(result.sessionId, result.claimVerificationResult)!;
       result.claimSupport = projectOwnerClaimSupport(result.sessionId, result.claimSupport);
     }
+    // After the contract's owner projection, before any binding fingerprints it.
+    if (result.conclusionContract && caseRecommendations?.length) {
+      result.conclusionContract = withRetrievedCaseRecommendations(result.sessionId, result.conclusionContract,
+        caseRecommendations);
+    }
+    // Only finalization records knowledge use, from the run's own delivery
+    // record (its context's, or the record a contextless failure keeps) and
+    // the final body; a runtime-supplied value never survives. It is display
+    // and audit: no verification or delivery verdict reads it.
+    const knowledgeUse = buildKnowledgeUse(context ? context.knowledgeUse : deliveryRecord?.knowledgeUse,
+      result.conclusion);
+    if (knowledgeUse) result.knowledgeUse = knowledgeUse;
+    else delete result.knowledgeUse;
     const claimsFingerprint = analysisDeliveryFingerprint(result.conclusionContract?.claims ?? []);
     const sourceUseFingerprint = analysisDeliveryFingerprint(result.sourceUseDecision);
     const sourceScopeFingerprint = sourceScope ? analysisDeliveryFingerprint(sourceScope) : undefined;
@@ -468,12 +816,12 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       sourceVerificationBinding: result.sourceClaimVerificationResult ? {candidate, claimsFingerprint, evidenceFingerprint,
         sourceUseFingerprint, sourceScopeFingerprint, conclusionContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract),
         verificationFingerprint: analysisDeliveryFingerprint(result.sourceClaimVerificationResult)} : undefined,
-      reportRequirements: requirements, caseRetrieval,
+      reportRequirements: requirements,
       investigationRequirements, investigationEvidence: context?.investigationEvidence,
       investigationAssessment: context && investigationRequirements ? buildInvestigationAssessment({
         candidate, result, context, evidenceFingerprint, requirements: investigationRequirements, semantic}) : undefined,
       reportAssessment: context && semantic ? semanticReportAssessment({candidate, result, context,
-        evidenceFingerprint, requirements, caseRetrieval, semantic}) : undefined};
+        evidenceFingerprint, requirements, semantic}) : undefined};
     assertOwner(owner);
     const qualityIssue = applyFinalResultQualityGate({result, query, context: delivery, comparisonIdentity});
     assertOwner(owner);

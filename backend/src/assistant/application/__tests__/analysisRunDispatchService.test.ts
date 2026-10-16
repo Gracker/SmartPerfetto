@@ -14,9 +14,9 @@ import * as processor from '../../../services/traceProcessorService';
 import * as lease from '../../../services/analysisRunTraceProcessorLease';
 import * as manifests from '../../../services/selfEvolution/runManifestLifecycle';
 import {SessionPersistenceService} from '../../../services/sessionPersistenceService';
-import {getDefaultAndroidInternalsPackResolver} from '../../../services/androidInternalsPack/androidInternalsPackResolver';
 import {assertAiFeatureEnabled} from '../../../services/aiCapabilityPolicy';
 import type {SessionLogger} from '../../../services/sessionLogger';
+import {resolveAnalysisPrivateContext} from '../../../services/security/analysisPrivateContext';
 
 type Deps = AnalysisRunDispatchDependencies<AnalysisDispatchSession>;
 
@@ -48,7 +48,7 @@ function fixture(entry: AnalysisRunDispatchInput['entry'] = 'analysis') {
   const smart = jest.fn<Deps['runSmartAnalysis']>(async () => {});
   const releaseScene = jest.fn<() => void | Promise<void>>();
   const sceneHook = jest.fn(async () => ({bindOptions: <T>(options: T) => options, seal: () => undefined, release: releaseScene}));
-  const lifecycle = {builder: {}} as manifests.RunManifestLifecycle;
+  const lifecycle = {builder: {addSealObserver: jest.fn()}} as unknown as manifests.RunManifestLifecycle;
   let runSequence = 0;
   const deps: AnalysisRunDispatchDependencies<AnalysisDispatchSession> = {
     assistantAppService: app, httpAnalysisRunLeaseControllers: new WeakMap(), admittedLocalAnalysisRuns: new WeakMap(),
@@ -59,7 +59,7 @@ function fixture(entry: AnalysisRunDispatchInput['entry'] = 'analysis') {
     startSessionRun: jest.fn<Deps['startSessionRun']>((value, query, requestId) => {
       const sequence = ++runSequence;
       const run = {runId: sequence === 1 ? 'run' : `run-${sequence}`, sequence, query, requestId,
-        startedAt: Date.now(), status: 'pending' as const};
+        startedAt: Date.now(), status: 'pending' as const, privateContext: resolveAnalysisPrivateContext(value)};
       value.activeRun = run;
       return run;
     }),
@@ -68,12 +68,12 @@ function fixture(entry: AnalysisRunDispatchInput['entry'] = 'analysis') {
     }),
     isSessionRunCancelled: value => value.activeRun?.status === 'cancelled',
     abortHttpFinalizationRuns: jest.fn(), isStaleRun: (value, runId) => value.activeRun?.runId !== runId,
-    settleSessionRunExecution: jest.fn(), resetSessionRuntimeForSourceActivation: async () => {},
+    settleSessionRunExecution: jest.fn(),
     createHttpRunManifestLifecycle: jest.fn(async () => lifecycle),
     sealCompletedHttpRunManifest: jest.fn(), finalizeHttpRunManifestLifecycle: jest.fn(), persistSessionRunState: jest.fn(),
-    cancelActiveAnalysisSourceEnrichment: async () => false, assignSessionOwner: () => {},
+    assignSessionOwner: () => {},
     requestedSessionIsVisible: () => true, resolveVisibleSessionReferenceTraceIdForTrace: () => undefined,
-    buildRecoveredResultFromContext: () => null, ensureToolsRegistered: jest.fn(),
+    buildRecoveredResultFromContext: () => null,
     isDedicatedSceneReplayRequest: query => query === 'scene reconstruction',
     runSmartAnalysis: smart, smartSelectionReportId: () => undefined,
     analyzeOptionsErrorMessage: error => error.message, smartPreviewSelectionErrorMessage: () => 'stale',
@@ -97,7 +97,6 @@ beforeEach(() => {
     getOrLoadTrace: jest.fn(async () => ({id: 'trace'})),
   } as unknown as processor.TraceProcessorService);
   jest.spyOn(SessionPersistenceService, 'getInstance').mockReturnValue({} as SessionPersistenceService);
-  jest.spyOn(getDefaultAndroidInternalsPackResolver(), 'resolve').mockReturnValue(undefined);
   jest.spyOn(manifests, 'withRunManifestLifecycle').mockImplementation((_lifecycle, execute) => execute());
   jest.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -148,6 +147,13 @@ describe('shared analysis run dispatch', () => {
       body: {code: 'SCENE_REPLAY_SEPARATED'}});
     expect(f.sceneHook).not.toHaveBeenCalled();
     expect(f.prepare).not.toHaveBeenCalled();
+  });
+
+  it('registers the durable delivery-call stats observer on the run manifest', async () => {
+    const f = fixture();
+    await dispatchAnalysisRun(f.input, f.deps);
+    const lifecycle = await (f.deps.createHttpRunManifestLifecycle as jest.Mock<any>).mock.results[0]!.value;
+    expect(lifecycle.builder.addSealObserver).toHaveBeenCalledWith(expect.any(Function));
   });
 
   it('preserves the accepted run response and dispatches the session-pinned provider', async () => {

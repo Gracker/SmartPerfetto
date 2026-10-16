@@ -9,6 +9,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import {substituteSqlPlaceholders} from './sqlTemplate';
+import {SKILL_LAYOUT} from './skillLayout';
 
 /** The built-in skills directory shipped with the backend. */
 export function builtInSkillsDir(): string {
@@ -25,6 +27,14 @@ export function readSkillFragmentFile(fragmentsDir: string, file: string): strin
   return fs.readFileSync(path.join(fragmentsDir, file), 'utf-8').trim();
 }
 
+/** Every fragment of a Skill root by registry key, read as the loader reads them. */
+export function readSkillFragments(skillsDir: string): Map<string, string> {
+  const fragmentsDir = path.join(skillsDir, SKILL_LAYOUT.fragmentsDir);
+  if (!fs.existsSync(fragmentsDir)) return new Map();
+  return new Map(fs.readdirSync(fragmentsDir).filter(file => file.endsWith('.sql'))
+    .map(file => [skillFragmentKey(file), readSkillFragmentFile(fragmentsDir, file)]));
+}
+
 const builtInCache = new Map<string, string>();
 
 /**
@@ -34,53 +44,18 @@ const builtInCache = new Map<string, string>();
 export function builtInSkillFragment(file: string): string {
   const cached = builtInCache.get(file);
   if (cached !== undefined) return cached;
-  const content = readSkillFragmentFile(path.join(builtInSkillsDir(), 'fragments'), file);
+  const content = readSkillFragmentFile(path.join(builtInSkillsDir(), SKILL_LAYOUT.fragmentsDir), file);
   builtInCache.set(file, content);
   return content;
 }
 
-/** One `${path}` or `${path|default}` placeholder found in SQL. */
-export interface SqlPlaceholder {
-  /** The whole token, e.g. `${max_rows|50}`. */
-  match: string;
-  path: string;
-  /** The text after `|`, when the placeholder declares one. */
-  defaultValue?: string;
-  /** Whether the token sits inside a single-quoted SQL string literal. */
-  insideQuotes: boolean;
-}
-
-/** True when `offset` in `sql` lies inside a single-quoted literal (`''` escapes a quote). */
-function insideSingleQuotes(sql: string, offset: number): boolean {
-  let inSingle = false;
-  for (let i = 0; i < offset; i++) {
-    if (sql[i] !== "'") continue;
-    if (inSingle && sql[i + 1] === "'") {
-      i++;
-      continue;
-    }
-    inSingle = !inSingle;
+/** The built-in text of a declared `fragments/<file>.sql` path, or undefined when there is none. */
+export function builtInFragmentText(fragmentPath: string): string | undefined {
+  try {
+    return builtInSkillFragment(fragmentPath.replace(/^fragments\//, ''));
+  } catch {
+    return undefined;
   }
-  return inSingle;
-}
-
-/**
- * The one placeholder scanner for Skill SQL and fragments: every `${...}`
- * token is handed to `resolve`, which returns its SQL text or throws. Skill
- * steps and the critical-path engine bind values differently; they find and
- * parse placeholders the same way.
- */
-export function substituteSqlPlaceholders(sql: string, resolve: (placeholder: SqlPlaceholder) => string): string {
-  return sql.replace(/\$\{([^}]+)\}/g, (match: string, body: string, offset: number, full: string) => {
-    const raw = String(body ?? '').trim();
-    const pipe = raw.indexOf('|');
-    return resolve({
-      match,
-      path: pipe >= 0 ? raw.slice(0, pipe).trim() : raw,
-      ...(pipe >= 0 ? {defaultValue: raw.slice(pipe + 1).trim()} : {}),
-      insideQuotes: insideSingleQuotes(full, offset),
-    });
-  });
 }
 
 /**

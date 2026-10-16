@@ -7,7 +7,7 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 
 const backendRoot = path.resolve(__dirname, '../../..');
-const deepseekE2E = require(path.join(backendRoot, 'scripts/run-deepseek-agent-e2e.cjs')) as {
+const glmE2E = require(path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs')) as {
   buildChildEnv(
     apiKey: string,
     runtimeKind: string,
@@ -16,10 +16,10 @@ const deepseekE2E = require(path.join(backendRoot, 'scripts/run-deepseek-agent-e
 };
 
 describe('Qoder BYOK tooling', () => {
-  it('documents Qoder as an explicit DeepSeek E2E runtime', () => {
+  it('documents Qoder as an explicit GLM Coding Plan E2E runtime', () => {
     const result = spawnSync(
       process.execPath,
-      [path.join(backendRoot, 'scripts/run-deepseek-agent-e2e.cjs'), '--help'],
+      [path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs'), '--help'],
       {cwd: backendRoot, encoding: 'utf8'},
     );
 
@@ -29,21 +29,21 @@ describe('Qoder BYOK tooling', () => {
     expect(result.stdout).toContain('BYOK does not replace Qoder authentication');
   });
 
-  it('maps DeepSeek into Qoder BYOK without replacing Qoder authentication', () => {
+  it('maps GLM Coding Plan into Qoder BYOK without replacing Qoder authentication', () => {
     const keys = [
       'QODER_PERSONAL_ACCESS_TOKEN',
-      'DEEPSEEK_BASE_URL',
-      'DEEPSEEK_MODEL',
-      'DEEPSEEK_LIGHT_MODEL',
+      'GLM_BASE_URL',
+      'GLM_MODEL',
+      'GLM_LIGHT_MODEL',
     ] as const;
     const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
     process.env.QODER_PERSONAL_ACCESS_TOKEN = 'qoder-auth-secret';
-    delete process.env.DEEPSEEK_BASE_URL;
-    delete process.env.DEEPSEEK_MODEL;
-    delete process.env.DEEPSEEK_LIGHT_MODEL;
+    delete process.env.GLM_BASE_URL;
+    delete process.env.GLM_MODEL;
+    delete process.env.GLM_LIGHT_MODEL;
     try {
-      const env = deepseekE2E.buildChildEnv(
-        'deepseek-provider-secret',
+      const env = glmE2E.buildChildEnv(
+        'glm-test-provider-key',
         'qoder-agent-sdk',
         '/tmp/qoder-e2e-test',
       );
@@ -51,11 +51,11 @@ describe('Qoder BYOK tooling', () => {
       expect(env).toMatchObject({
         SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
         QODER_PERSONAL_ACCESS_TOKEN: 'qoder-auth-secret',
-        QODER_MODEL: 'deepseek-v4-pro',
-        QODER_LIGHT_MODEL: 'deepseek-flash',
-        QODER_BYOK_API_KEY: 'deepseek-provider-secret',
-        QODER_BYOK_PROVIDER: 'deepseek',
-        QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+        QODER_MODEL: 'glm-5.3',
+        QODER_LIGHT_MODEL: 'glm-5.3-flash',
+        QODER_BYOK_API_KEY: 'glm-test-provider-key',
+        QODER_BYOK_PROVIDER: 'glm',
+        QODER_BYOK_BASE_URL: 'https://open.bigmodel.cn/api/coding/paas/v4',
         QODER_BYOK_STYLE: 'openai',
       });
       expect(env.QODER_PERSONAL_ACCESS_TOKEN).not.toBe(env.QODER_BYOK_API_KEY);

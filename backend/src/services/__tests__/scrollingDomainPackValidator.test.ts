@@ -25,7 +25,7 @@ function makeFrontmatter(
       severity: 'critical',
     },
     context: {
-      app_architecture: 'android_view_standard',
+      app_architecture: 'standard',
       device_vendor: 'pixel',
       os_version: 'Android 15',
       refresh_rate_hz: 120,

@@ -5,6 +5,8 @@
 import crypto from 'crypto';
 import {investigationStatusLines} from './analysisInvestigationPresentation';
 import { persistReport } from '../routes/reportRoutes';
+import {REPORT_LAYOUT_FIX_CSS} from './reportLayoutAssets';
+import {REPORT_DOCUMENT_SCRIPT, REPORT_DOCUMENT_NO_SCRIPT} from './reportDocumentAssets';
 import type {
   ComparisonDelta,
   ComparisonMatrixCell,
@@ -42,8 +44,7 @@ function escapeHtml(value: unknown): string {
 }
 
 function formatNumber(value: number): string {
-  if (Number.isInteger(value)) return String(value);
-  return value.toFixed(2).replace(/\.?0+$/, '');
+  return escapeHtml(String(value));
 }
 
 function formatValue(cell: ComparisonMatrixCell | undefined, unit?: string): string {
@@ -112,7 +113,7 @@ function renderMetricTable(result: ComparisonResult): string {
   }).join('');
 
   const renderTable = (rows: ComparisonMatrixRow[]): string => `
-    <table>
+    <div class="table-container"><table>
       <thead>
         <tr>
           <th>Metric</th>
@@ -122,18 +123,20 @@ function renderMetricTable(result: ComparisonResult): string {
         </tr>
       </thead>
       <tbody>${renderRows(rows)}</tbody>
-    </table>
+    </table></div>
   `;
 
   const groups = matrix.groups || [];
   if (groups.length === 0) return renderTable(matrix.rows);
 
   const rowsByMetricKey = new Map(matrix.rows.map(row => [row.metricKey, row]));
-  return groups.map(group => {
+  const represented = new Set<string>();
+  const grouped = groups.map(group => {
     const groupRows = group.rowMetricKeys
       .map(metricKey => rowsByMetricKey.get(metricKey))
       .filter((row): row is ComparisonMatrixRow => Boolean(row));
     if (groupRows.length === 0) return '';
+    groupRows.forEach(row => represented.add(row.metricKey));
     const summary = `${group.rowCount} metrics, ${group.significantChangeCount} significant`;
     return `
       <details class="metric-group" ${group.defaultCollapsed ? '' : 'open'}>
@@ -145,6 +148,8 @@ function renderMetricTable(result: ComparisonResult): string {
       </details>
     `;
   }).join('');
+  const remaining = matrix.rows.filter(row => !represented.has(row.metricKey));
+  return grouped + (remaining.length ? renderTable(remaining) : '');
 }
 
 function renderSnapshots(result: ComparisonResult): string {
@@ -194,10 +199,11 @@ export function renderComparisonHtmlReport(input: RenderComparisonHtmlReportInpu
     .neutral { color: #49566a; }
     ul { margin: 8px 0 0 20px; padding: 0; }
     li { margin: 6px 0; }
+    ${REPORT_LAYOUT_FIX_CSS}
   </style>
 </head>
 <body>
-  <main data-comparison-id="${escapeHtml(input.comparisonId)}">
+  <main class="comparison-report" data-comparison-id="${escapeHtml(input.comparisonId)}">
     <h1>SmartPerfetto Comparison Report</h1>
     <div class="meta">Comparison ${escapeHtml(input.comparisonId)} &middot; Generated ${escapeHtml(generatedAt)}</div>
     <h2>User Request</h2>
@@ -214,6 +220,8 @@ export function renderComparisonHtmlReport(input: RenderComparisonHtmlReportInpu
       <div class="panel"><strong>Uncertainty</strong>${renderList(conclusion.uncertainty)}</div>
     </section>
   </main>
+<script>${REPORT_DOCUMENT_SCRIPT}</script>
+${REPORT_DOCUMENT_NO_SCRIPT}
 </body>
 </html>`;
 }
@@ -241,6 +249,8 @@ export function persistComparisonHtmlReport(
     workspaceId: input.scope.workspaceId,
     userId: input.scope.userId,
     visibility: 'private',
+    // The report embeds the input snapshots, so it inherits their audience.
+    privateContext: input.comparison.privateContext,
   });
 
   return {

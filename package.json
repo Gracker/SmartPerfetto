@@ -1,6 +1,6 @@
 {
   "name": "smart-perfetto",
-  "version": "1.14.0",
+  "version": "1.16.2",
   "description": "AI-powered Perfetto analysis platform",
   "private": true,
   "scripts": {
@@ -14,12 +14,13 @@
     "shellcheck": "shellcheck -x start.sh scripts/*.sh",
     "check:frontend-prebuild": "node scripts/check-frontend-prebuild.cjs",
     "test:node-env": "bash scripts/test-node-env.sh",
-    "test:governance": "npm run check:test-registration && npm run check:orphaned-modules && node --test scripts/__tests__/check-perfetto-skills-impact.test.mjs scripts/__tests__/check-test-registration.test.mjs scripts/__tests__/check-orphaned-modules.test.mjs scripts/__tests__/process-harness.test.mjs scripts/__tests__/service-lifecycle.test.mjs scripts/__tests__/startup-contracts.test.mjs scripts/__tests__/frontend-server-health.test.mjs scripts/__tests__/check-frontend-prebuild.test.mjs scripts/__tests__/ensure-trace-processor.test.mjs scripts/__tests__/runtime-distribution-assets.test.mjs scripts/__tests__/release-portable.test.mjs scripts/__tests__/portable-release-smoke-workflow.test.mjs scripts/__tests__/verify-portable-package-safety.test.mjs scripts/__tests__/smoke-portable-archive.test.mjs scripts/__tests__/verify-portable-smoke-evidence.test.mjs scripts/__tests__/native-runtime-compat.test.mjs scripts/__tests__/dual-trace-e2e-services.test.mjs scripts/__tests__/perfetto-stdlib-docs.test.mjs scripts/__tests__/verify-docs.test.mjs scripts/__tests__/find-macho-files.test.mjs scripts/__tests__/i18n-heading-contract.test.mjs Trace/tools/__tests__/builder.test.cjs Trace/tools/__tests__/catalog.test.cjs Trace/tools/__tests__/cli.test.cjs Trace/tools/__tests__/generator.test.cjs Trace/tools/__tests__/skill-sql-contract.test.cjs",
+    "test:governance": "npm run check:test-registration && npm run check:orphaned-modules && npm run check:unused-exports && node --test scripts/__tests__/ci-change-scope.test.mjs scripts/__tests__/check-perfetto-skills-impact.test.mjs scripts/__tests__/check-test-registration.test.mjs scripts/__tests__/check-orphaned-modules.test.mjs scripts/__tests__/check-unused-exports.test.mjs scripts/__tests__/process-harness.test.mjs scripts/__tests__/service-lifecycle.test.mjs scripts/__tests__/startup-contracts.test.mjs scripts/__tests__/frontend-server-health.test.mjs scripts/__tests__/check-frontend-prebuild.test.mjs scripts/__tests__/ensure-trace-processor.test.mjs scripts/__tests__/runtime-distribution-assets.test.mjs scripts/__tests__/release-portable.test.mjs scripts/__tests__/portable-release-smoke-workflow.test.mjs scripts/__tests__/verify-portable-package-safety.test.mjs scripts/__tests__/smoke-portable-archive.test.mjs scripts/__tests__/verify-portable-smoke-evidence.test.mjs scripts/__tests__/native-runtime-compat.test.mjs scripts/__tests__/dual-trace-e2e-services.test.mjs scripts/__tests__/perfetto-stdlib-docs.test.mjs scripts/__tests__/public-export-policy-coverage.test.mjs scripts/__tests__/verify-docs.test.mjs scripts/__tests__/find-macho-files.test.mjs scripts/__tests__/i18n-heading-contract.test.mjs Trace/tools/__tests__/builder.test.cjs Trace/tools/__tests__/catalog.test.cjs Trace/tools/__tests__/cli.test.cjs Trace/tools/__tests__/generator.test.cjs Trace/tools/__tests__/skill-sql-contract.test.cjs",
     "verify:docs": "node scripts/verify-docs.mjs",
     "verify:i18n": "npm --prefix backend run check:skill-localizations && node scripts/verify-i18n.mjs",
     "sync:rendering-pipelines": "node scripts/sync-rendering-pipelines.mjs",
     "check:rendering-pipelines": "node scripts/sync-rendering-pipelines.mjs --check",
     "verify:rendering-pipelines": "npm run check:rendering-pipelines && node --test scripts/__tests__/sync-rendering-pipelines.test.mjs scripts/__tests__/rendering-pipeline-runtime-assets.test.mjs && npm --prefix backend run generate:pipeline-detection -- --check",
+    "test:e2e:reports": "node scripts/run-html-report-browser-e2e.cjs",
     "test:e2e:dual-trace": "node scripts/run-dual-trace-browser-e2e.cjs",
     "test:e2e:dual-trace-real": "node scripts/run-dual-trace-browser-e2e.cjs --real-provider",
     "trace:validate": "node Trace/tools/trace-corpus.cjs validate --check-generated",
@@ -47,7 +48,11 @@
     "quality": "npm run lint && npm run format:check && npm run deadcode && npm run shellcheck",
     "verify:pr": "npm run test:governance && npm run verify:docs && npm run verify:i18n && npm run verify:rendering-pipelines && npm run quality && npm run check:frontend-prebuild && npm run rust:verify && npm --prefix backend run verify:pr",
     "check:test-registration": "node scripts/check-test-registration.mjs",
-    "check:orphaned-modules": "node scripts/check-orphaned-modules.mjs"
+    "check:orphaned-modules": "node scripts/check-orphaned-modules.mjs",
+    "check:unused-exports": "node scripts/check-unused-exports.mjs",
+    "ci:scope": "node scripts/ci-change-scope.cjs",
+    "verify:ci": "npm run test:governance && npm run verify:docs && npm run verify:i18n && npm run verify:rendering-pipelines && npm run quality && npm run check:frontend-prebuild",
+    "verify:dev": "npm run verify:ci && npm --prefix backend run verify:ci"
   },
   "engines": {
     "node": ">=24.0.0 <25.0.0"
