@@ -471,3 +471,25 @@ describe('fragments/gpu_frequency_intervals.sql', () => {
     expect(windowed(250, 150, 'SELECT * FROM gpu_frequency_window')).toEqual([]);
   });
 });
+
+describe('game_fps_analysis missing target evidence', () => {
+  it.each(['missing', 'empty', 'null'])('keeps jank unknown when detection is %s', async state => {
+    db = new Database(':memory:');
+    db.exec(`CREATE TABLE process(upid INTEGER, name TEXT);
+      INSERT INTO process VALUES(1, 'com.example');
+      CREATE TABLE actual_frame_timeline_slice(ts INTEGER, dur INTEGER, upid INTEGER, surface_frame_token INTEGER);`);
+    for (let i = 0; i < 10; i++) db.prepare('INSERT INTO actual_frame_timeline_slice VALUES(?, 1, 1, 1)').run(i * 50 * MS);
+    const file = 'atomic/game_fps_analysis.skill.yaml';
+    const authored = load(file).steps.find((step: any) => step.id === 'jank_detection');
+    const jank = {...authored, sql: authored.sql.replaceAll('${package}', '')
+      .replaceAll('${start_ts}', 'NULL').replaceAll('${end_ts}', 'NULL')};
+    const producers = state === 'missing' ? [] : [
+      stub('detect_target_fps', 'fps_detection', state === 'empty' ? [] : [{}], ['target_interval_ns']),
+    ];
+    const result = await run(db, file, [...producers, jank]);
+    expect(result('jank_detection')).toEqual([expect.objectContaining({
+      total_frames: 9, target_fps: null, jank_count: null, severe_jank_count: null,
+      freeze_count: null, jank_rate: null, quality_rating: null,
+    })]);
+  });
+});

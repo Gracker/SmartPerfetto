@@ -8183,7 +8183,7 @@
     },
     "game_fps_analysis": {
       "source_file": "backend/skills/atomic/game_fps_analysis.skill.yaml",
-      "source_sha256": "afe29e2e27d3fbd6899c8b09c61c286650fe26e2f3f9585158f7f3d7818a7966",
+      "source_sha256": "f104c2ead1d211e29902fa0d4c1b768f407c2f8d942c1076311f373222ff92ab",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -8200,7 +8200,7 @@
           "id": "detect_target_fps",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "de02c16cac6e2e85ab0591755136fa34cfae4e46c64f2f8a69f8569e0ee67293",
+          "sha256": "8a943044703c99b66cd7d1ce72debe89111232770893b4fd81307b3b70c88a3b",
           "required_columns": [
             "detected_fps_mode",
             "target_interval_ns",
@@ -8214,7 +8214,8 @@
           "placeholders": [
             "${start_ts}",
             "${end_ts}",
-            "${package}"
+            "${package}",
+            "${target_fps}"
           ],
           "process_scope_valid": null,
           "forceable": true
@@ -8249,7 +8250,7 @@
           "id": "jank_detection",
           "at": "steps[2].sql",
           "top_level_index": 2,
-          "sha256": "256278fdd61ffb1d40555bf89b51388d556c1a42ee253e3baf11ff0dff643265",
+          "sha256": "ae7246e55b541c7e94cd7e68d3c2e30a42ec67cbff4fbf6738f1cc7c1e4d3817",
           "required_columns": [
             "total_frames",
             "jank_count",
@@ -8266,7 +8267,7 @@
           "placeholders": [
             "${start_ts}",
             "${end_ts}",
-            "${target_fps}",
+            "${fps_detection.data[0].target_interval_ns|NULL}",
             "${package}"
           ],
           "process_scope_valid": null,
