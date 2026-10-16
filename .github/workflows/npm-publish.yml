@@ -136,7 +136,7 @@ jobs:
           test -z "$(git status --porcelain)"
 
       - name: Set up Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           package-manager-cache: false
@@ -202,7 +202,7 @@ jobs:
       VERSION: ${{ needs.package.outputs.version }}
     steps:
       - name: Set up Node.js 24 for npm OIDC
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -271,7 +271,7 @@ jobs:
       VERSION: ${{ needs.package.outputs.version }}
     steps:
       - name: Set up Node.js 24
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           package-manager-cache: false
@@ -329,7 +329,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up supported Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           package-manager-cache: false
