@@ -992,7 +992,7 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
     'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1',
     'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
-    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+    'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
   ]) {
     assert.match(workflow, new RegExp(action.replace('/', '\\/')));
   }
