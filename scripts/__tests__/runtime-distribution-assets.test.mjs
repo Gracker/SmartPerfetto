@@ -495,7 +495,7 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
   assert.match(publishJob, /id-token:\s*write/);
   assert.match(
     publishJob,
-    /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/,
+    /actions\/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333/,
   );
   assert.match(publishJob, /dist\.integrity/);
   assert.match(publishJob, /REGISTRY_INTEGRITY/);
