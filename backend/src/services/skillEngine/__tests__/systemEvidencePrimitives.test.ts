@@ -37,7 +37,7 @@ const fixture = () => {
   db.exec('UPDATE cpu_frequency_counters SET id=rowid,track_id=cpu,ucpu=cpu');
   return db;
 };
-const query = (db: Database.Database, name: string, options: {start?: number; end?: number; utid?: number; windows?: string} = {}) => {
+const query = (db: Database.Database, name: string, options: {start?: number; end?: number; utid?: number; windows?: string; package?: string} = {}) => {
   const [file,step] = name.split('#');
   const definition = name.includes('/') ? yaml.load(fs.readFileSync(path.join(process.cwd(),'skills',file+'.skill.yaml'),'utf8')) as any : load(name);
   const skill = step ? definition.steps.find((item:any)=>item.id===step) : definition;
@@ -45,8 +45,9 @@ const query = (db: Database.Database, name: string, options: {start?: number; en
   const fragments = (skill.sql_fragments||[]).map((file: string) => fs.readFileSync(path.join(process.cwd(), 'skills', file), 'utf8')).join('\n,\n');
   sql = sql.replace(/\bWITH(\s+RECURSIVE)?\s+/, (_:string,recursive:string|undefined)=>`WITH${recursive||''} ${fragments}\n,\n`);
   if (options.windows) sql = sql.replace('SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts', options.windows);
+  const packageName = options.package ?? 'stale-name';
   const params: Record<string, string> = {start_ts: String(options.start ?? 10000000), end_ts: String(options.end ?? 40000000),
-    '__process_scope.upid': '42', package: 'stale-name', 'package|':'stale-name','thread_name|':'','top_k|20':'20','target_process.data[0].upid':'42','sched_delay_critical_ms|16':'16','freq_bucket_mhz|100':'100','top_k|15':'15','bucket_ms|50':'50',tid:'NULL',utid: options.utid === undefined ? 'NULL' : String(options.utid)};
+    '__process_scope.upid': '42', package: packageName, 'package|':packageName,'thread_name|':'','top_k|20':'20','target_process.data[0].upid':'42','sched_delay_critical_ms|16':'16','freq_bucket_mhz|100':'100','top_k|15':'15','bucket_ms|50':'50',tid:'NULL',utid: options.utid === undefined ? 'NULL' : String(options.utid)};
   sql = sql.replace(/\$\{([^}]+)\}/g, (_: string, key: string) => {
     if (!(key in params)) throw new Error(`Unknown parameter ${key}`);
     return params[key];
@@ -213,7 +214,8 @@ describe('canonical system evidence primitives', () => {
       expect(selection.find(row=>row.utid===2)).toMatchObject({total_cpu_ms:0,q4a_uninterruptible_ms:30,total_observed_threads:2});
       expect(selection.every(row=>!Object.prototype.hasOwnProperty.call(row,'q4a_io_blocked_ms'))).toBe(true);
       expect(query(db,'atomic/sched_latency_in_range')[0]).toMatchObject({utid:1,total_runnable_ms:15,runnable_preempted_ms:15});
-      expect(query(db,'composite/cpu_analysis#core_type_stats').reduce((sum,row)=>sum+row.total_time_ms,0)).toBe(15);
+      expect(query(db,'composite/cpu_analysis#core_type_stats',{package:'app'}).reduce((sum,row)=>sum+row.total_time_ms,0)).toBe(15);
+      expect(query(db,'composite/cpu_analysis#core_type_stats',{package:'stale-name'})).toEqual([]);
     } finally {db.close();}
   });
   it('carries every raw evidence field through executor projection and artifact restoration', async () => {
