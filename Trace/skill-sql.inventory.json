@@ -4952,7 +4952,7 @@
     },
     "cpu_analysis": {
       "source_file": "backend/skills/composite/cpu_analysis.skill.yaml",
-      "source_sha256": "d92fc12306d640e35692ee32b71bec6aa951ed61f3d8f5b0f4f24b2bafacc9af",
+      "source_sha256": "d9d9bcda96cb9471278f153d74bd7bf5116d197b1f29e700e4ac9681d930e619",
       "type": "composite",
       "execution": "steps",
       "declared_modules": [
@@ -5001,7 +5001,7 @@
           "id": "core_type_stats",
           "at": "steps[2].sql",
           "top_level_index": 2,
-          "sha256": "06a2ff81322bd8ea569f38daf0b13a61ae2e6e7ea29f03336985b0a67844ac83",
+          "sha256": "3bef72df00088e47f5f718aa25e2f8776fda21aa4b26b38110599362f2b6c174",
           "required_columns": [
             "upid",
             "window_start_ts",
@@ -5021,7 +5021,8 @@
           "placeholders": [
             "${start_ts}",
             "${end_ts}",
-            "${target_process.data[0].upid}"
+            "${target_process.data[0].upid}",
+            "${package}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -5030,7 +5031,7 @@
           "id": "thread_cpu_usage",
           "at": "steps[3].sql",
           "top_level_index": 3,
-          "sha256": "327259075983248dbece7e5c03dd5906a55f17fbf3e3cb64bc6d794d751022de",
+          "sha256": "24c41d1195ed6dc4de271344f0167be4916c3d902a11c782fe54bd3edbb6f892",
           "required_columns": [
             "upid",
             "window_start_ts",
@@ -5050,7 +5051,8 @@
           "placeholders": [
             "${start_ts}",
             "${end_ts}",
-            "${target_process.data[0].upid}"
+            "${target_process.data[0].upid}",
+            "${package}"
           ],
           "process_scope_valid": true,
           "forceable": true
@@ -5119,7 +5121,7 @@
           "id": "main_thread_cores",
           "at": "steps[6].sql",
           "top_level_index": 6,
-          "sha256": "a121e3a9b0dfef8d848a24dd3bc2e4f551a465039d2e20ac2ebdb41a948a7d87",
+          "sha256": "76c6fe4e458265cc80ed1f079f524b9f540c316c42f8c8d11fce6f2bed35eb0e",
           "required_columns": [
             "upid",
             "window_start_ts",
@@ -5137,7 +5139,8 @@
           "placeholders": [
             "${start_ts}",
             "${end_ts}",
-            "${target_process.data[0].upid}"
+            "${target_process.data[0].upid}",
+            "${package}"
           ],
           "process_scope_valid": true,
           "forceable": true

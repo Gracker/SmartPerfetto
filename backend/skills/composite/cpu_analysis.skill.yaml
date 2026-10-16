@@ -279,6 +279,7 @@ steps:
       JOIN effective_target_processes p ON t.upid = p.upid
       LEFT JOIN system_cpu_topology ct ON ss.ucpu = ct.ucpu
       WHERE p.upid = ${target_process.data[0].upid}
+        AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND (${start_ts} IS NULL OR ss.ts + ss.dur > ${start_ts})
         AND (${end_ts} IS NULL OR ss.ts < ${end_ts})
       GROUP BY ct.core_type
@@ -373,6 +374,7 @@ steps:
       JOIN effective_target_processes p ON t.upid = p.upid
       LEFT JOIN system_cpu_topology ct ON ss.ucpu = ct.ucpu
       WHERE p.upid = ${target_process.data[0].upid}
+        AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND (${start_ts} IS NULL OR ss.ts + ss.dur > ${start_ts})
         AND (${end_ts} IS NULL OR ss.ts < ${end_ts})
       GROUP BY t.utid
@@ -645,7 +647,9 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN effective_target_processes p ON t.upid = p.upid
-        WHERE p.upid = ${target_process.data[0].upid} AND t.tid = p.pid
+        WHERE p.upid = ${target_process.data[0].upid}
+        AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
+        AND t.tid = p.pid
         LIMIT 1
       )
       SELECT
