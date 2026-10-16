@@ -731,7 +731,7 @@ test('backend CI installs both dependency trees for the fast and manual full gat
     join(root, '.github/workflows/backend-agent-regression-gate.yml'), 'utf8',
   ));
   const steps = workflow.jobs.backend.steps;
-  const setup = steps.find(step => step.uses === 'actions/setup-node@v7');
+  const setup = steps.find(step => step.uses?.startsWith('actions/setup-node@'));
   assert.match(setup.with['cache-dependency-path'], /package-lock\.json\s+backend\/package-lock\.json/);
   assert.ok(steps.some(step => step.run === 'npm ci && npm --prefix backend ci'));
   assert.ok(steps.some(step => step.run === 'npm --prefix backend run verify:ci'));
