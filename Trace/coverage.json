@@ -3220,7 +3220,7 @@
         "steps": [
           {
             "id": "detect_target_fps",
-            "sha256": "de02c16cac6e2e85ab0591755136fa34cfae4e46c64f2f8a69f8569e0ee67293",
+            "sha256": "8a943044703c99b66cd7d1ce72debe89111232770893b4fd81307b3b70c88a3b",
             "required_columns": [
               "detected_fps_mode",
               "target_interval_ns",
@@ -3247,7 +3247,7 @@
           },
           {
             "id": "jank_detection",
-            "sha256": "256278fdd61ffb1d40555bf89b51388d556c1a42ee253e3baf11ff0dff643265",
+            "sha256": "ae7246e55b541c7e94cd7e68d3c2e30a42ec67cbff4fbf6738f1cc7c1e4d3817",
             "required_columns": [
               "total_frames",
               "jank_count",
@@ -7787,7 +7787,7 @@
           },
           {
             "id": "core_type_stats",
-            "sha256": "06a2ff81322bd8ea569f38daf0b13a61ae2e6e7ea29f03336985b0a67844ac83",
+            "sha256": "3bef72df00088e47f5f718aa25e2f8776fda21aa4b26b38110599362f2b6c174",
             "required_columns": [
               "upid",
               "window_start_ts",
@@ -7805,7 +7805,7 @@
           },
           {
             "id": "thread_cpu_usage",
-            "sha256": "327259075983248dbece7e5c03dd5906a55f17fbf3e3cb64bc6d794d751022de",
+            "sha256": "24c41d1195ed6dc4de271344f0167be4916c3d902a11c782fe54bd3edbb6f892",
             "required_columns": [
               "upid",
               "window_start_ts",
@@ -7856,7 +7856,7 @@
           },
           {
             "id": "main_thread_cores",
-            "sha256": "a121e3a9b0dfef8d848a24dd3bc2e4f551a465039d2e20ac2ebdb41a948a7d87",
+            "sha256": "76c6fe4e458265cc80ed1f079f524b9f540c316c42f8c8d11fce6f2bed35eb0e",
             "required_columns": [
               "upid",
               "window_start_ts",
