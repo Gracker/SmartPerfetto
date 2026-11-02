@@ -13,6 +13,20 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.16.4] - 2026-11-02
+
+### Fixed
+
+- Ship the previously uncommitted AI Assistant layout repairs: resize right and bottom docks within the available page area, keep drafts across docking and collapse, and resize floating windows from either horizontal edge.
+- Keep each resize gesture bound to its owning pointer. Cancellation, capture loss, window blur and removal release listeners and restore the previous cursor and text-selection styles; another pointer cannot end an active gesture.
+- Follow Perfetto's selected light or dark theme in the assistant and Provider configuration, including readable foreground colors on selected runtime controls.
+- Display assistant message blocks immediately without staggered reveal delays.
+
+### Changed
+
+- Keep frequent conversation actions in the header and group tools, layout controls and preset analyses into native menus. Narrow panels use drawers for history and trace selection; comparison panes retain usable selectors and resize controls.
+- Add keyboard and double-click reset controls to dock dividers and document the updated layout in Chinese and English.
+
 ## [1.16.3] - 2026-11-02
 
 ### Fixed

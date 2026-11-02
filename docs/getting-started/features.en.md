@@ -34,6 +34,14 @@ Output:
 - Server verification details are collapsed by default; expand them for the full evidence and source references. Verification warnings remain visible. Completed analyses are delivered normally, with verification concerns and coverage gaps labelled separately for users to assess against the evidence.
 - With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once finished it is shown in full, marked as being verified, and the verdict follows. A first stop at that point ends only the verification and keeps the answer. The Pi, OpenCode and Qoder runtimes show no draft: the answer appears once it is finished. Sessions with source or knowledge selected also show a draft, but only to you and only after the same redacting projection as the final answer; once any draft text needs redaction, the draft is withdrawn for the rest of the run and the projected answer appears when it is finished.
 
+### Panel Layout And Shortcuts
+
+- Drag the panel edge to adjust width or height; double-click to restore its default size. Focus the divider to use arrow keys, `Shift` for larger steps, `Home` / `End` for minimum / maximum, or `Enter` to reset.
+- The header keeps Dual View, New Chat, History and Collapse within reach. `Tools and layout` contains result comparison, capture configuration, Scene Story, settings, right / bottom docking and floating-window controls.
+- `Quick analysis` at the top right of the input provides tutorial, scene and performance shortcuts. Selection analysis and Critical path actions still appear directly when a selection is available.
+- Click the collapsed AI rail to reopen it. Resizing, switching right / bottom docking and collapsing preserve the input draft. History, scene and trace pickers use drawers in narrow panels.
+- Resize a floating window horizontally from either side, or in both dimensions from its bottom-right corner. The panel and Provider configuration follow Perfetto's current theme.
+
 ### Browser Trace Tools And Local WASM
 
 The committed Perfetto frontend also includes trace exploration capabilities
@@ -59,7 +67,7 @@ analysis only once a backend Skill, strategy, or tool uses it.
 
 - **Critical-path analysis**: after you select a `thread_state` task on the
   timeline, a `Critical-path analysis` button appears next to the AI Assistant
-  preset questions. It opens a drawer with the wakeup chain, anomaly
+  selection analysis control. It opens a drawer with the wakeup chain, anomaly
   assessment, related modules, next steps, and copyable verification SQL;
   "Continue in the conversation" hands the result to the chat.
 - **Flamegraph**: the `火焰图` (flamegraph) tab in the AI Assistant view reads
