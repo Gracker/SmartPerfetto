@@ -7,7 +7,7 @@ import {startTraceProcessorLeaseSupervisor} from '../traceProcessorLeaseSupervis
 describe('TraceProcessorLeaseSupervisor', () => {
   it('destroys exactly the processors returned by the lease sweep', () => {
     const store = {
-      sweepExpired: jest.fn(() => ({
+      sweepExpired: jest.fn((_now: number, _canRelease: (lease: any) => boolean) => ({
         holdersRemoved: 2,
         leasesReleased: 2,
         releasedLeases: [
@@ -30,6 +30,7 @@ describe('TraceProcessorLeaseSupervisor', () => {
     };
     const service = {
       cleanupLeaseProcessor: jest.fn(),
+      isLeaseProcessorBusy: jest.fn(() => false),
     };
     const handle = startTraceProcessorLeaseSupervisor({
       intervalMs: 60_000,
@@ -40,7 +41,11 @@ describe('TraceProcessorLeaseSupervisor', () => {
     const result = handle.runOnce(1234);
     handle.stop();
 
-    expect(store.sweepExpired).toHaveBeenCalledWith(1234);
+    expect(store.sweepExpired).toHaveBeenCalledWith(1234, expect.any(Function));
+    const canRelease = store.sweepExpired.mock.calls[0][1];
+    expect(canRelease({traceId: 'trace-a', id: 'lease-a', mode: 'isolated'})).toBe(true);
+    service.isLeaseProcessorBusy.mockReturnValue(true);
+    expect(canRelease({traceId: 'trace-a', id: 'lease-a', mode: 'isolated'})).toBe(false);
     expect(result.leasesReleased).toBe(2);
     expect(service.cleanupLeaseProcessor).toHaveBeenNthCalledWith(
       1,

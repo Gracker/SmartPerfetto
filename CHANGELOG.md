@@ -13,6 +13,23 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.16.3] - 2026-11-02
+
+### Fixed
+
+- AI Assistant conversations render completed and restored history without mixing keyed Mithril messages with null children, preserving the provisional answer's DOM identity when it becomes final.
+- Abandoned shared trace processors release native processes and listening ports after the last holder disappears and a configurable idle grace elapses. Active queries, initialization, recovery and other holders remain protected; uploaded trace files are retained.
+- CPU analysis retains the selected process identity, and FPS/jank analysis shares the same selected display target while preserving unknown values.
+
+### Changed
+
+- Update compatible upload, test and repository tooling dependencies. Pi runtime packages remain aligned at the existing verified version pending a coordinated major-version migration.
+- Configure holderless processor retention with `TP_IDLE_TIMEOUT_MS` (default 120000 milliseconds), independently of live-window heartbeat grace.
+
+### Verification limits
+
+- The public Perfetto-Skills projection of the CPU/FPS fixes remains deferred under PRs #314 and #315; this release does not claim that the independent repository has been synchronized.
+
 ## [1.16.2] - 2026-10-14
 
 ### Fixed

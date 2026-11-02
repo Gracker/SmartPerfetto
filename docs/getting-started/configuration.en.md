@@ -810,7 +810,16 @@ backend-unaware static directory.
 MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
+TP_IDLE_TIMEOUT_MS=120000
 ```
+
+After the last holder is released or its heartbeat expires, the backend retains a shared trace processor
+for at most `TP_IDLE_TIMEOUT_MS` milliseconds (default 2 minutes; invalid or nonpositive integers fall
+back to the default), then reclaims its process and port in the 30-second lease sweep. Active holders,
+queries, initialization and recovery prevent reclamation. Background windows keep their existing
+visibility-specific heartbeat grace. Processor reclamation does not delete uploaded files. If closing
+a window does not explicitly release its holder, its heartbeat TTL must expire first. An isolated
+processor can be reclaimed as soon as its last holder expires.
 
 A trace processor waits for HTTP readiness for the larger of
 `TP_STARTUP_TIMEOUT_MS` (default 30000) and the trace size ×
