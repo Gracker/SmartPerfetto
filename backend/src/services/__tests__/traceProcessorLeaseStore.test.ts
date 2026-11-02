@@ -334,4 +334,49 @@ describe('TraceProcessorLeaseStore', () => {
     })]);
     expect(store.getLeaseById(scope, lease.id)?.state).toBe('released');
   });
+
+  it('caps holderless shared retention even after a previous agent extended it', () => {
+    const lease = store.acquireHolder(scope, 'trace-a', {holderType: 'agent_run', holderRef: 'run-a'}, {now: 1000});
+    store.markStarting(scope, lease.id);
+    store.markReady(scope, lease.id);
+    const expiredAt = 1000 + 5 * 60 * 1000;
+    expect(store.sweepExpired(expiredAt).leasesReleased).toBe(0);
+    expect(store.getLeaseById(scope, lease.id)?.expiresAt).toBe(expiredAt + 120_000);
+    expect(store.sweepExpired(expiredAt + 119_999).leasesReleased).toBe(0);
+    const busy = jest.fn(() => false);
+    expect(store.sweepExpired(expiredAt + 120_000, busy).leasesReleased).toBe(0);
+    expect(busy).toHaveBeenCalledWith(expect.objectContaining({id: lease.id, holderCount: 0}));
+    expect(store.sweepExpired(expiredAt + 120_001).releasedLeases).toEqual([
+      expect.objectContaining({id: lease.id, traceId: 'trace-a', mode: 'shared'}),
+    ]);
+    expect(store.sweepExpired(expiredAt + 120_002).leasesReleased).toBe(0);
+  });
+
+  it('preserves a new window during the idle grace and restarts the grace after it leaves', () => {
+    const lease = store.acquireHolder(scope, 'trace-a', {holderType: 'frontend_http_rpc', holderRef: 'window-a'}, {now: 1000});
+    store.markStarting(scope, lease.id);
+    store.markReady(scope, lease.id);
+    store.sweepExpired(91_000);
+    store.acquireHolderForLease(scope, lease.id, {holderType: 'frontend_http_rpc', holderRef: 'window-b'}, {now: 200_000});
+    expect(store.sweepExpired(220_000).leasesReleased).toBe(0);
+    expect(store.getLeaseById(scope, lease.id)?.state).toBe('active');
+    expect(store.sweepExpired(290_000).leasesReleased).toBe(0);
+    expect(store.sweepExpired(410_000).leasesReleased).toBe(1);
+  });
+
+  it('uses a configured grace after explicit final release without expiring another holder', () => {
+    store = new TraceProcessorLeaseStore(db, {idleTimeoutMs: 5000});
+    const now = Date.now();
+    const lease = store.acquireHolder(scope, 'trace-a', {holderType: 'agent_run', holderRef: 'run-a'}, {now});
+    store.markStarting(scope, lease.id);
+    store.markReady(scope, lease.id);
+    store.acquireHolderForLease(scope, lease.id, {holderType: 'frontend_http_rpc', holderRef: 'window-a'}, {now});
+    store.releaseHolder(scope, lease.id, 'agent_run', 'run-a');
+    expect(store.sweepExpired(now + 6000).leasesReleased).toBe(0);
+    const idle = store.releaseHolder(scope, lease.id, 'frontend_http_rpc', 'window-a');
+    expect(idle.expiresAt).toBeLessThanOrEqual(Date.now() + 5000);
+    expect(store.sweepExpired(idle.expiresAt! - 1).leasesReleased).toBe(0);
+    expect(store.sweepExpired(idle.expiresAt!).leasesReleased).toBe(1);
+  });
+
 });

@@ -261,7 +261,16 @@ export class TraceProcessorLeaseUnavailableError extends Error {
 }
 
 export class TraceProcessorLeaseStore {
-  constructor(private readonly db: Database.Database = openEnterpriseDb()) {}
+  private readonly idleTimeoutMs: number;
+
+  constructor(
+    private readonly db: Database.Database = openEnterpriseDb(),
+    options: {idleTimeoutMs?: number} = {},
+  ) {
+    const configured = options.idleTimeoutMs ?? Number(process.env.TP_IDLE_TIMEOUT_MS);
+    this.idleTimeoutMs = Number.isSafeInteger(configured) && configured > 0
+      ? configured : 2 * 60 * 1000;
+  }
 
   close(): void {
     this.db.close();
@@ -400,13 +409,15 @@ export class TraceProcessorLeaseStore {
   ): TraceProcessorLeaseRecord {
     assertNonEmpty(leaseId, 'leaseId');
     assertNonEmpty(holderRef, 'holderRef');
-    const lease = this.mustGetLease(scope, leaseId);
-    this.db.prepare(`
-      DELETE FROM trace_processor_holders
-      WHERE lease_id = ? AND holder_type = ? AND holder_ref = ?
-    `).run(lease.id, holderType, holderRef);
-    this.refreshLeaseActivityState(scope, lease.id);
-    return this.getLeaseById(scope, lease.id)!;
+    return this.db.transaction(() => {
+      const lease = this.mustGetLease(scope, leaseId);
+      this.db.prepare(`
+        DELETE FROM trace_processor_holders
+        WHERE lease_id = ? AND holder_type = ? AND holder_ref = ?
+      `).run(lease.id, holderType, holderRef);
+      this.refreshLeaseActivityState(scope, lease.id);
+      return this.getLeaseById(scope, lease.id)!;
+    }).immediate();
   }
 
   markStarting(scope: EnterpriseRepositoryScope, leaseId: string): TraceProcessorLeaseRecord {
@@ -497,11 +508,31 @@ export class TraceProcessorLeaseStore {
     return row !== undefined;
   }
 
-  sweepExpired(now = Date.now()): TraceProcessorLeaseSweepResult {
+  sweepExpired(
+    now = Date.now(),
+    canRelease: (lease: TraceProcessorLeaseRecord) => boolean = () => true,
+  ): TraceProcessorLeaseSweepResult {
+    return this.db.transaction(() => this.sweepExpiredInTransaction(now, canRelease)).immediate();
+  }
+
+  private sweepExpiredInTransaction(
+    now: number,
+    canRelease: (lease: TraceProcessorLeaseRecord) => boolean,
+  ): TraceProcessorLeaseSweepResult {
     const holderResult = this.db.prepare(`
       DELETE FROM trace_processor_holders
       WHERE expires_at IS NOT NULL AND expires_at <= ?
     `).run(now);
+
+    // Holder heartbeat TTLs protect live/background windows. Once the last
+    // holder is gone, retention is a short grace, not the former holder's
+    // multi-hour TTL (which may have been extended by an earlier agent run).
+    this.db.prepare(`
+      UPDATE trace_processor_leases
+      SET expires_at = MIN(COALESCE(expires_at, ?), ?)
+      WHERE state NOT IN ('released', 'failed')
+        AND NOT EXISTS (SELECT 1 FROM trace_processor_holders h WHERE h.lease_id = trace_processor_leases.id)
+    `).run(now + this.idleTimeoutMs, now + this.idleTimeoutMs);
 
     this.db.prepare(`
       UPDATE trace_processor_leases
@@ -528,8 +559,9 @@ export class TraceProcessorLeaseStore {
       GROUP BY l.id
       HAVING COUNT(h.id) = 0
     `).all(now) as LeaseRow[];
+    const releasedRows = releasableRows.filter(lease => canRelease(this.mapLease(lease)));
 
-    for (const lease of releasableRows) {
+    for (const lease of releasedRows) {
       this.db.prepare(`
         UPDATE trace_processor_leases
         SET state = 'released'
@@ -539,8 +571,8 @@ export class TraceProcessorLeaseStore {
 
     return {
       holdersRemoved: holderResult.changes,
-      leasesReleased: releasableRows.length,
-      releasedLeases: releasableRows.map((lease) => ({
+      leasesReleased: releasedRows.length,
+      releasedLeases: releasedRows.map((lease) => ({
         id: lease.id,
         tenantId: lease.tenant_id,
         workspaceId: lease.workspace_id,
@@ -615,6 +647,11 @@ export class TraceProcessorLeaseStore {
       const nextState: TraceProcessorLeaseState = holderCount > 0 ? 'active' : 'idle';
       if (nextState !== state) {
         this.db.prepare(`UPDATE trace_processor_leases SET state = ? WHERE id = ?`).run(nextState, lease.id);
+        if (nextState === 'idle') {
+          const expiresAt = Date.now() + this.idleTimeoutMs;
+          this.db.prepare(`UPDATE trace_processor_leases SET expires_at = MIN(COALESCE(expires_at, ?), ?) WHERE id = ?`)
+            .run(expiresAt, expiresAt, lease.id);
+        }
       }
     }
   }

@@ -52,7 +52,9 @@ Keep a stable `always()` aggregate gate without workflow PR path filters; reject
 failed/cancelled jobs and skipped mandatory jobs. Superseded automatic runs may
 cancel; manual runs remain independent. Native jobs need not repeat Linux
 checks. Docker nightly/manual uses fast checks; version tags retain full backend
-`verify:pr`. Workflow edits/local runs are not hosted passing evidence.
+`verify:pr`. Native macOS/Windows jobs also run backend `test:raw-sql-provenance`
+for actual processor provenance, idle reclamation and port release. Workflow
+edits/local runs are not hosted passing evidence.
 
 CI subsets select existing owned suites, not extra local owners. Credential-filter
 functional cases remain in `test:ci-privacy`; pathological-input performance

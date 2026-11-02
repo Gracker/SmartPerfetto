@@ -53,6 +53,36 @@ async function initializeUpload(
 // =============================================================================
 
 describe('TraceProcessorService cancellation', () => {
+  it('defers lease reclamation for queries, initialization and recovery under the exact processor key', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-tp-idle-'));
+    try {
+      const service = new TraceProcessorService(root);
+      const internal = service as any;
+      const key = internal.processorKeyForLease('trace-a', 'lease-a', 'isolated');
+      const processor = {status: 'ready', activeQueries: 0};
+      internal.processors.set(key, processor);
+      const busy = () => service.isLeaseProcessorBusy('trace-a', 'lease-a', 'isolated');
+      expect(busy()).toBe(false);
+      processor.activeQueries = 1;
+      expect(busy()).toBe(true);
+      expect(service.isLeaseProcessorBusy('trace-a', 'lease-b', 'isolated')).toBe(false);
+      processor.activeQueries = 0;
+      for (const status of ['initializing', 'busy']) {
+        processor.status = status;
+        expect(busy()).toBe(true);
+      }
+      processor.status = 'ready';
+      for (const name of ['processorCreationInProgress', 'leaseRestartInProgress', 'recoveryInProgress']) {
+        internal[name].set(key, Promise.resolve(processor));
+        expect(busy()).toBe(true);
+        internal[name].delete(key);
+      }
+      expect(busy()).toBe(false);
+    } finally {
+      fs.rmSync(root, {recursive: true, force: true});
+    }
+  });
+
   it('does not wait for shared auto-recovery when the query signal aborts', async () => {
     const service = new TraceProcessorService(fs.mkdtempSync(path.join(os.tmpdir(), 'sp-tp-cancel-')));
     const traceId = 'trace-cancel-recovery';

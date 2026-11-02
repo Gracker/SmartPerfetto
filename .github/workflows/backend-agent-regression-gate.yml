@@ -203,6 +203,9 @@ jobs:
           SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: ${{ runner.temp }}/smartperfetto-windows-gate-helper.exe
         run: npm run test:governance
 
+      - name: Verify native processor provenance and idle reclamation
+        run: npm --prefix backend run test:raw-sql-provenance
+
       - name: Test Windows Provider secret storage
         if: ${{ matrix.os == 'windows-latest' }}
         run: >-

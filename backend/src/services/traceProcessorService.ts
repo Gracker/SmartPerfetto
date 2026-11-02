@@ -1532,6 +1532,13 @@ export class TraceProcessorService extends EventEmitter {
     return cleaned;
   }
 
+  public isLeaseProcessorBusy(traceId: string, leaseId: string, mode: TraceProcessorLeaseMode): boolean {
+    const key = this.processorKeyForLease(traceId, leaseId, mode);
+    const processor = this.processors.get(key) ?? TraceProcessorFactory.get(key);
+    return this.processorCreationInProgress.has(key) || this.leaseRestartInProgress.has(key) || this.recoveryInProgress.has(key) ||
+      Boolean(processor && (processor.status === 'initializing' || processor.status === 'busy' || processor.activeQueries > 0));
+  }
+
   public cleanupLeaseProcessor(
     traceId: string,
     leaseId: string,

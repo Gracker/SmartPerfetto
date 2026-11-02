@@ -26,7 +26,8 @@ export function startTraceProcessorLeaseSupervisor(options: {
   const runOnce = (now = Date.now()): TraceProcessorLeaseSweepResult => {
     const store = options.store ?? getTraceProcessorLeaseStore();
     const service = options.service ?? getTraceProcessorService();
-    const result = store.sweepExpired(now);
+    const result = store.sweepExpired(now, lease =>
+      !service.isLeaseProcessorBusy(lease.traceId, lease.id, lease.mode));
     for (const lease of result.releasedLeases) {
       service.cleanupLeaseProcessor(lease.traceId, lease.id, lease.mode);
     }

@@ -8,7 +8,10 @@ import os from 'os';
 import path from 'path';
 import {randomUUID} from 'crypto';
 import {TraceProcessorService, TRACE_LOAD_METADATA_SQL} from '../traceProcessorService';
-import {TraceProcessorFactory, WorkingTraceProcessor} from '../workingTraceProcessor';
+import {TraceProcessorFactory, WorkingTraceProcessor, isProcessAlive} from '../workingTraceProcessor';
+import {canBindLoopbackPort} from '../portPool';
+import {waitForCondition} from '../../../tests/utils';
+import {startTraceProcessorLeaseSupervisor} from '../traceProcessorLeaseSupervisor';
 import {prepareAnalysisRunTraceProcessorLeases} from '../analysisRunTraceProcessorLease';
 import {getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} from '../traceProcessorLeaseStore';
 import {analyzeRawSqlDirectProjection} from '../evidence/rawSqlDirectProjection';
@@ -63,6 +66,26 @@ describe('trace loading keeps the shared processor shareable', () => {
         expect(shared.status).toBe('ready');
       }
       expect(service.getRunningNativeProcessorObservation(traceId)?.status).toBe('trusted');
+
+      // Multiple abandoned pages must release their actual native processes,
+      // ports and pool entries without deleting the uploaded traces.
+      const secondTraceId = await service.loadTraceFromFilePath(FIXTURE);
+      const secondRun = await prepareAnalysisRunTraceProcessorLeases({service, scope, runId: randomUUID(), sessionId: randomUUID(),
+        currentTraceId: secondTraceId, signal: new AbortController().signal, assertCurrent: () => undefined});
+      secondRun.release();
+      const processors = [shared, TraceProcessorFactory.get(secondTraceId) as WorkingTraceProcessor];
+      const identities = processors.map(processor => ({pid: processor.getRuntimeStats().pid!, port: processor.httpPort}));
+      identities.forEach(({pid}) => expect(isProcessAlive(pid)).toBe(true));
+      const supervisor = startTraceProcessorLeaseSupervisor({store: getTraceProcessorLeaseStore(), service});
+      try {
+        expect(supervisor.runOnce(Date.now() + 120_001).leasesReleased).toBe(2);
+        await waitForCondition(() => identities.every(({pid}) => !isProcessAlive(pid)), {timeoutMs: 10_000, intervalMs: 50});
+        for (const {port} of identities) expect(await canBindLoopbackPort(port)).toBe(true);
+        expect(TraceProcessorFactory.getStats().count).toBe(0);
+        for (const id of [traceId, secondTraceId]) expect(await fs.stat(service.getTraceFilePath(id))).toBeDefined();
+      } finally {
+        supervisor.stop();
+      }
     } finally {
       if (service) service.cleanupProcessorsForTraces(service.getAllTraces().map(trace => trace.id));
       TraceProcessorFactory.cleanup();

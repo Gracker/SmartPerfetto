@@ -694,7 +694,14 @@ OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要
 MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
+TP_IDLE_TIMEOUT_MS=120000
 ```
+
+最后一个 holder 释放或心跳过期后，后端最多再保留共享 trace processor
+`TP_IDLE_TIMEOUT_MS` 毫秒（默认 2 分钟；非正整数或无效值使用默认值），由每 30 秒的
+lease sweep 回收进程和端口。仍有 holder、查询、初始化或恢复任务时不会回收；后台窗口
+继续沿用可见性对应的心跳宽限。这里只释放 processor，不删除上传文件。关闭窗口后若未显式
+释放 holder，需先等待其心跳 TTL 到期；隔离 processor 在最后一个 holder 到期后即可回收。
 
 trace processor 启动时等待 HTTP 就绪的时间取 `TP_STARTUP_TIMEOUT_MS`（默认 30000）与 trace 大小 ×
 `TP_STARTUP_TIMEOUT_PER_GIB_MS`（默认每 GiB 120000）中的较大者，上限 `TP_STARTUP_TIMEOUT_MAX_MS`
