@@ -10,7 +10,7 @@ import {describe, expect, it} from '@jest/globals';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
 import {SkillExecutor} from '../skillExecutor';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
-import {evidenceTableFor, projectEvidenceColumnUnitsForModel} from '../../evidence/evidenceCapture';
+import {evidenceTableFor, projectEvidenceCaptureMetadataForModel} from '../../evidence/evidenceCapture';
 import type {RuntimeToolInvocationEvent} from '../../../agentRuntime/runtimeToolObserver';
 import {runWithinRuntimeToolInvocation} from '../../../agentRuntime/runtimeToolInvocationContext';
 import {prepareClaimEvidence} from '../../evidence/claimEvidencePreparation';
@@ -79,7 +79,8 @@ describe('scrolling_analysis frame_timeline_population', () => {
     expect(result.success).toBe(true);
     const display = result.displayResults[0];
     const witness = evidenceTableFor(display)!;
-    expect(projectEvidenceColumnUnitsForModel(display.data, witness)).toMatchObject({total_frames: 'frames', jank_frames: 'frames'});
+    expect(projectEvidenceCaptureMetadataForModel(display.data, witness).columnUnits)
+      .toMatchObject({total_frames: 'frames', jank_frames: 'frames'});
 
     const store = new ArtifactStore();
     const observation = (phase: 'started' | 'completed') => ({toolCallId: 'call', toolName: 'invoke_skill', params: {}, extra: {},

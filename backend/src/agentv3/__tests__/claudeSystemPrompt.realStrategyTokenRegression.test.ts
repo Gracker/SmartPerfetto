@@ -30,8 +30,55 @@ import {loadSourceUsePrompt} from '../../services/codebase/sourceUseDecision';
 import {buildSceneEvidencePromptData, SCENE_EVIDENCE_MAX_BYTES, SCENE_EVIDENCE_MAX_CELLS} from '../../agentRuntime/sceneEntryEvidence';
 import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 import {MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS} from '../../services/codebase/codeAwareFeature';
+import {buildNativeOutputCompletionPrompt} from '../../agentRuntime/runtimeConclusionProtocol';
+import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 
 describe('typed prompt with real strategy assets', () => {
+  it.each((['canonical_v1', 'authoring_v1', 'authoring_v2'] as const).flatMap(declarationSyntax =>
+    (['zh-CN', 'en'] as const).map(outputLanguage => ({declarationSyntax, outputLanguage}))))
+  ('R5 scopes real $declarationSyntax main and full-continuation grammar in $outputLanguage', ({declarationSyntax, outputLanguage}) => {
+    const context = {...makeWorstCaseContext('startup'), declarationSyntax, outputLanguage};
+    const parts = buildSystemPromptParts(context);
+    const guide = parts.segments.find(segment => segment.label === 'conclusion_declaration')!.content;
+    expect(guide).toContain('Main/full-answer:');
+    expect(guide).toContain('explicit continuation transport');
+    expect(guide).toContain('Declaration-only repair:');
+    expect(guide).toContain('request-frozen syntax');
+    expect(guide).toContain('Canonical contract =');
+    expect(guide).toContain('relative to that object');
+    if (declarationSyntax !== 'canonical_v1') {
+      expect(guide).toContain('Envelope has only `authoringVersion`, `referenceDictionary`, `contract`');
+      expect(guide).not.toMatch(/Full-v1 (?:also works|supported)/);
+      if (declarationSyntax === 'authoring_v2') {
+        expect(guide).toContain('`$.contract.conclusions/clusters/evidenceChain/uncertainties/nextSteps`');
+        expect(guide).not.toContain('absent root');
+      }
+    }
+    const candidate = 'Body with ordinary JSON:\n```json\n{"sample":true}\n```';
+    const diagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(candidate), 'native', 1);
+    const shared = buildNativeOutputCompletionPrompt({candidate, diagnostic, intent: context.turnIntent!, issues: [], outputLanguage});
+    expect(shared).toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
+    expect(shared).toContain('`-->`');
+    expect(shared).not.toContain('{{sidecarOpeningMarker}}');
+    expect(shared).not.toContain('{{sidecarClosingMarker}}');
+    expect(shared).toContain(outputLanguage === 'en' ? 'complete, self-contained body and declaration' : '完整');
+    expect(shared).not.toContain('request-frozen syntax');
+    // The OpenAI runtime uses this exact asset and renderer in its private
+    // full-answer branch; unlike the shared continuation it follows the original contract.
+    const openAi = renderTemplate(stripTemplateComments(loadPromptTemplate(
+      `prompt-openai-final-report-continuation-${outputLanguage === 'en' ? 'en' : 'zh'}`)!), {
+      turn_intent: JSON.stringify(context.turnIntent), completion_reason: 'output_limit',
+      candidate_protocol_diagnostic: JSON.stringify(diagnostic),
+    });
+    expect(openAi).toContain(outputLanguage === 'en' ? 'original scene, evidence, source-reference, and conclusion-declaration contracts' : '原有');
+    expect(openAi).not.toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
+    expect(parts.droppedLabels).toEqual(['scene_default_detail']);
+    expect(parts.truncatedLabels).toEqual([]);
+    console.info('[R5Grammar:rendered]', JSON.stringify({declarationSyntax, outputLanguage,
+      systemBytes: Buffer.byteLength(parts.fullPrompt), systemTokens: estimatePromptTokens(parts.fullPrompt),
+      sharedContinuationBytes: Buffer.byteLength(shared), sharedContinuationTokens: estimatePromptTokens(shared),
+      openAiContinuationBytes: Buffer.byteLength(openAi), openAiContinuationTokens: estimatePromptTokens(openAi)}));
+  });
   it.each(['zh-CN', 'en'] as const)('connects metric obligations to permission-bounded discovery without increasing the shared asset budget: %s', outputLanguage => {
     const template = loadPromptTemplate('prompt-investigation-findings')!;
     // Frozen pre-discovery asset: new guidance must not evict existing context.

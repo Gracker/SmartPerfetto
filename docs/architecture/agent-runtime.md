@@ -295,7 +295,9 @@ HTTP、CLI、conversation 与直接 runtime 调用共用私有 `RuntimeAdmission
 完成；`partial`、`completion.reason=turn_limit` 和 `terminationReason=max_turns` 保留。
 触顶后不再追加模型语义审核，确定性证据检查仍可执行。原生 `length/output_limit` 表示单次输出未写完，可在原始预算和截止时间内使用同一预留额度补齐完整正文与声明；只有新候选获得自身 completed/stop 记录并通过严格协议后才接受。失败、取消、未知、pending tool/deferred 状态不能据此续写，续写失败保留原始未完成凭据。
 
-声明 authoring 是输入语法，不能生成证据或补全模型未提交的命题。`SMARTPERFETTO_CONCLUSION_AUTHORING` 默认 `canonical_v1`，可显式选择 `authoring_v1` / `authoring_v2`；非法值在本轮配置阶段拒绝。引用字典只在规定 schema 位置展开，每次使用均计入展开后的字节、节点与深度限额，完整内联引用仍可使用。@2 仅把未提交的根集合编译为空集合、把唯一 `{text:string}` 载体编译为原字符串；不修补 claim、单位、量词、来源或引用。raw 输入、编译材料与独立核验保持分离，无法解码的 authoring 不具备声明修复的保全基线。JSON 失败仅记录闭集格式事实及可确认的 UTF-16 位置/长度，不保存原文或包含输入的解析器错误消息。
+声明 authoring 是输入语法，不能生成证据或补全模型未提交的命题。`SMARTPERFETTO_CONCLUSION_AUTHORING` 默认 `canonical_v1`，可显式选择 `authoring_v1` / `authoring_v2`；非法值在本轮配置阶段拒绝。引用字典只在规定 schema 位置展开，每次使用均计入展开后的字节、节点与深度限额，完整内联引用仍可使用。@2 仅把 `$.contract` 中未提交的集合编译为空集合、把其中 uncertainties/nextSteps 里仅含 `text:string` 的对象条目编译为原字符串；不修补 claim、单位、量词、来源或引用。raw 输入、编译材料与独立核验保持分离，无法解码的 authoring 不具备声明修复的保全基线。JSON 失败仅记录闭集格式事实及可确认的 UTF-16 位置/长度，不保存原文或包含输入的解析器错误消息。
+
+Authoring 外层仅有 `authoringVersion/referenceDictionary/contract`，canonical 字段均在 `contract` 内。主回答使用选定框架；产品完整续写保留其明确指定的既有格式。声明专用修复只输出固定语法的裸 JSON，正式外壳由服务端生成；这不表示已隔离为新的模型上下文。
 
 `check_conclusion_draft` 的 `diagnosticMode=claims_only` 可检查选定声明而不重复发送完整正文，presentation 明确为 `not_checked`；默认 `presentation` 仍要求完整正文。草稿输入的字符 guard 与 64 KiB UTF-8 执行上限分别生效；最终交付始终进行完整正文、声明、呈现与证据校验。
 

@@ -4,7 +4,8 @@
 
 import {describe, expect, it, jest} from '@jest/globals';
 import {renderConclusionContractSidecar, wrapConclusionContractSidecarPayload, wrapConclusionAuthoringPayload,
-  conclusionDeclarationValidationPayload} from '../../agent/core/conclusionContract';
+  conclusionDeclarationValidationPayload, conclusionDeclarationAuthoring} from '../../agent/core/conclusionContract';
+import {estimatePromptTokens} from '../../agentv3/claudeSystemPrompt';
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import {
   acceptNativeDeclarationCompletion,
@@ -65,6 +66,109 @@ describe('authoring declaration completion preserves expanded meaning', () => {
   const request = (raw: unknown) => requestNativeDeclarationCompletion({intent: intent('investigation'),
     completion: {status: 'completed'}, candidate: `${body}\n${frame(raw)}`, remainingDeliveryTurns: 1, repairInvalid: true});
   const fix = (raw: ReturnType<typeof make>) => {raw.contract.claims[1].semantics.numeric.unit = 'ms'; return raw;};
+
+  it.each((['canonical_v1', 'authoring_v1', 'authoring_v2'] as const).flatMap(syntax =>
+    (['en', 'zh-CN'] as const).flatMap(outputLanguage =>
+      (['missing', 'root', 'claim', 'relation'] as const).map(failure => ({syntax, outputLanguage, failure})))))
+  ('R5 pins actual $syntax repair grammar for $failure in $outputLanguage', ({syntax, outputLanguage, failure}) => {
+    const raw = fix(make());
+    raw.authoringVersion = syntax === 'authoring_v2' ? 'conclusion_authoring@2' : 'conclusion_authoring@1';
+    const corrected = syntax === 'canonical_v1'
+      ? conclusionDeclarationValidationPayload(inspectCandidateProtocol(frame(fix(make()))).sidecar) as Record<string, any>
+      : raw as Record<string, any>;
+    const broken = JSON.parse(JSON.stringify(corrected));
+    const contract = syntax === 'canonical_v1' ? broken : broken.contract;
+    if (failure === 'root') contract.clusters = ['invalid shorthand'];
+    if (failure === 'claim' || failure === 'relation') contract.claims[1].semantics.numeric.unit = 0;
+    if (failure === 'relation') contract.relationProposals = [{schemaVersion: 'evidence_relation_candidate@1',
+      id: 'proposal:one', kind: 'overlap', direction: 'symmetric', subject: raw.referenceDictionary[0],
+      object: raw.referenceDictionary[1], proofBindings: {subject: {endpointColumn: 'id'}}}];
+    const candidate = failure === 'missing' ? body : `${body}\n${syntax === 'canonical_v1'
+      ? renderConclusionContractSidecar(broken) : wrapConclusionAuthoringPayload(JSON.stringify(broken), syntax)}`;
+    const repair = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate, remainingDeliveryTurns: 1, repairInvalid: true,
+      declarationSyntax: failure === 'missing' ? syntax : 'authoring_v1'});
+    // Obtain an admitted request from the production gate; do not invent a
+    // repair for decoder-invalid envelopes or relation-only failures.
+    expect(repair).toBeDefined();
+    expect(repair!.declarationSyntax ?? 'canonical_v1').toBe(syntax);
+    expect(repair!.originalBody).toBe(body);
+    const prompt = buildNativeDeclarationCompletionPrompt({request: repair!, intent: intent('investigation'), outputLanguage});
+    const instruction = prompt.split(outputLanguage === 'en' ? 'Native candidate data:' : '原生候选数据：')[0];
+    expect(instruction).toContain(outputLanguage === 'en' ? 'declaration-only repair' : '仅声明修复');
+    expect(instruction).toContain(syntax);
+    if (syntax !== 'canonical_v1') {
+      expect(instruction).toContain('$.contract');
+      expect(instruction).toContain(outputLanguage === 'en' ? 'only three outer keys' : '外层仅三个键');
+      expect(instruction).not.toContain(outputLanguage === 'en' ? 'absent root' : '缺失的根');
+    }
+    if (failure === 'relation' || failure === 'missing') {
+      const relationInstruction = failure === 'relation'
+        ? buildRelationProposalRecoveryPromptFragment(repair!.diagnostic, outputLanguage) : instruction;
+      expect(relationInstruction).toContain(outputLanguage === 'en' ? 'after dictionary expansion' : '字典展开后');
+      expect(relationInstruction).toContain('$ref');
+      expect(prompt).toContain(relationInstruction);
+    }
+    expect(prompt).toContain(JSON.stringify({schemaVersion: 1, kind: 'original_native_candidate', body}));
+    if (failure !== 'missing') expect(prompt).toContain(JSON.stringify({schemaVersion: 1,
+      kind: 'rejected_declaration', text: repair!.rejectedDeclaration}));
+    console.info('[R5Grammar:repair]', JSON.stringify({syntax, outputLanguage, failure,
+      bytes: Buffer.byteLength(prompt), estimatedTokens: estimatePromptTokens(prompt)}));
+  });
+
+  it('R5 keeps wrong outer fields invalid and ordinary JSON in the body without relocating declarations', () => {
+    const raw = fix(make()); raw.authoringVersion = 'conclusion_authoring@2';
+    const {uncertainties, nextSteps, ...contract} = raw.contract;
+    const misplaced = {...raw, contract, uncertainties, nextSteps};
+    const framed = wrapConclusionAuthoringPayload(JSON.stringify(misplaced), 'authoring_v2');
+    const parsed = inspectCandidateProtocol(`${body}\n${framed}`);
+    expect(conclusionDeclarationAuthoring(parsed.sidecar)).toMatchObject({status: 'invalid', code: 'invalid_envelope'});
+    expect(requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate: `${body}\n${framed}`, remainingDeliveryTurns: 1, repairInvalid: true})).toBeUndefined();
+    const ordinary = `${body}\n\`\`\`json\n${JSON.stringify(raw)}\n\`\`\``;
+    expect(inspectCandidateProtocol(ordinary)).toMatchObject({canonicalBody: ordinary, sidecar: {status: 'absent'}});
+    const request = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate: ordinary, remainingDeliveryTurns: 1, declarationSyntax: 'authoring_v2'})!;
+    expect(request).toMatchObject({reason: 'missing_declaration', originalBody: ordinary});
+    const accepted = acceptNativeDeclarationCompletion({request, completion: {status: 'completed'}, candidate: JSON.stringify(raw)})!;
+    expect(inspectCandidateProtocol(accepted).canonicalBody.trimEnd()).toBe(ordinary);
+  });
+
+  it.each((['en', 'zh-CN'] as const).flatMap(outputLanguage =>
+    (['framing', 'json'] as const).map(failure => ({outputLanguage, failure}))))
+  ('R5 uses admitted canonical $failure repair in $outputLanguage', ({outputLanguage, failure}) => {
+    const full = conclusionDeclarationValidationPayload(inspectCandidateProtocol(frame(fix(make()))).sidecar) as any;
+    const correct = renderConclusionContractSidecar(full);
+    const broken = failure === 'framing' ? correct.replace('```json', '```JSON') : correct.replace('"claims":', '"claims" ');
+    const candidate = `${body}\n${broken}`;
+    const request = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate, remainingDeliveryTurns: 1, repairInvalid: true, declarationSyntax: 'authoring_v2'});
+    expect(request).toBeDefined();
+    expect(request!.diagnostic.issueCodes).toContain(failure === 'framing' ? 'invalid_framing' : 'invalid_json');
+    expect(request!.declarationSyntax).toBeUndefined();
+    const prompt = buildNativeDeclarationCompletionPrompt({request: request!, intent: intent('investigation'), outputLanguage});
+    expect(prompt).toContain('`canonical_v1`');
+    expect(prompt).toContain(outputLanguage === 'en' ? 'declaration-only repair' : '仅声明修复');
+    const accepted = acceptNativeDeclarationCompletion({request: request!, completion: {status: 'completed'}, candidate: JSON.stringify(full)})!;
+    expect(inspectCandidateProtocol(accepted)).toMatchObject({status: 'valid', canonicalBody: expect.stringContaining(body)});
+    expect(inspectCandidateProtocol(accepted).sidecar.contract!.claims!.map(claim => claim.id)).toEqual(['valid-a', 'invalid-b']);
+  });
+
+  it.each(['authoring_v1', 'authoring_v2'] as const)('R5 preserves legal %s relation dictionary slots and expanded endpoints', syntax => {
+    const raw = fix(make());
+    const payload = {...raw, authoringVersion: syntax === 'authoring_v1' ? 'conclusion_authoring@1' : 'conclusion_authoring@2',
+      contract: {...raw.contract, relationProposals: [{schemaVersion: 'evidence_relation_candidate@1',
+        id: 'proposal:one', kind: 'overlap', direction: 'symmetric', subject: {$ref: 0}, object: {$ref: 1}}]}};
+    const inspected = inspectCandidateProtocol(`${body}\n${wrapConclusionAuthoringPayload(JSON.stringify(payload), syntax)}`);
+    expect(inspected.status).toBe('valid');
+    expect(inspected.sidecar.rawPayload).toEqual(payload);
+    expect(conclusionDeclarationValidationPayload(inspected.sidecar)).toMatchObject({relationProposals: [{
+      id: 'proposal:one', subject: raw.referenceDictionary[0], object: raw.referenceDictionary[1]}]});
+    const invalid = {...payload, contract: {...payload.contract, relationProposals: [{
+      ...payload.contract.relationProposals[0], explanation: 'extra field'}]}};
+    expect(inspectCandidateProtocol(wrapConclusionAuthoringPayload(JSON.stringify(invalid), syntax)).sidecar.issues)
+      .toEqual(expect.arrayContaining([expect.objectContaining({code: 'invalid_relation_proposal'})]));
+  });
 
   it('compiles v2 shape without a repair while retaining invalid claims and their one same-version repair', () => {
     const makeV2 = () => {

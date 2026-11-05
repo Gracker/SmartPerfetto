@@ -1,6 +1,6 @@
 {
   "note": "Backend exports no production module uses, in or outside its own file: used only by tests, or by nothing, including barrel re-exports nothing imports through the barrel. Each entry is accepted debt, and a suite over it vouches for nothing the product does. Shrink this list; do not grow it.",
-  "generated": "2026-10-04",
+  "generated": "2026-11-05",
   "unusedExports": [
     "src/agent/scene/buildSmartChatReport.ts#buildSmartChatReport",
     "src/agent/scene/sceneTimelineContract.ts#SceneTimelineProposal",
@@ -10,10 +10,6 @@
     "src/agentRuntime/engines/openai/index.ts#createOpenAIRuntime",
     "src/agentRuntime/engines/openai/openAiComplexityClassifier.ts#classifyQueryWithOpenAILightModel",
     "src/agentRuntime/engines/openai/openAiRuntime.ts#createOpenAIRuntime",
-    "src/agentRuntime/engines/opencode/openCodeRuntime.ts#createOpenCodeRuntimeDefinition",
-    "src/agentRuntime/engines/opencode/openCodeRuntime.ts#extractOpenCodeAssistantText",
-    "src/agentRuntime/engines/opencode/openCodeRuntime.ts#getOpenCodeRuntimeDiagnostics",
-    "src/agentRuntime/engines/opencode/openCodeRuntime.ts#projectOpenCodeEventToStreamingUpdate",
     "src/agentRuntime/engines/qoder/qoderRuntime.ts#QoderRuntime",
     "src/agentRuntime/engines/qoder/qoderRuntime.ts#getQoderRuntimeDiagnostics",
     "src/agentRuntime/experimentalRuntime.ts#EXPERIMENTAL_OPENCODE_RUNTIME_KIND",

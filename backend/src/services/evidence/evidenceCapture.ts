@@ -231,12 +231,6 @@ export function projectEvidenceCaptureMetadataForModel<T>(displayData: T, witnes
   return {captureRows: context.table.rows.length ? 'available' : 'empty', ...(columnUnits ? {columnUnits} : {})};
 }
 
-/** Current issued, direct-mapped producer units for model context; never evidence authority. */
-export function projectEvidenceColumnUnitsForModel<T>(displayData: T, witness?: EvidenceTableWitness):
-  Readonly<Record<string, string>> | undefined {
-  return projectEvidenceCaptureMetadataForModel(displayData, witness).columnUnits;
-}
-
 /**
  * Produce bounded, typed cells for the model from the current issued witness.
  * This is data only: capture identity, field semantics and proof authority stay

@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-按以下精确格式修复 `relationProposals`。集合必须是数组。每个条目只能包含 `schemaVersion`、`id`、`kind`、`direction`、`subject`、`object`、`proof`、`proofBindings`、`metricColumn`、`value`、`unit`、`deltaDirection`。必填字段为 `schemaVersion: "evidence_relation_candidate@1"`、匹配 `^proposal:[A-Za-z0-9][A-Za-z0-9_.:-]*$` 的 `id`、一个合法 `kind`、一个合法 `direction` 和 `subject`。kind 只能是 `overlap`、`wakeup`、`blocking_state`、`binder_peer`、`lock_owner`、`comparison_delta`、`derived`；direction 只能是 `subject_to_object`、`object_to_subject`、`symmetric`。
+以下字段相对 canonical contract（canonical_v1 为整个 JSON，authoring 为 `$.contract`）。按以下格式修复其 `relationProposals`；端点字段规则针对字典展开后，authoring 的 `subject/object/proof` 槽仍可使用合法 `{"$ref":index}`，不增加引用槽。集合必须是数组。每个条目只能包含 `schemaVersion`、`id`、`kind`、`direction`、`subject`、`object`、`proof`、`proofBindings`、`metricColumn`、`value`、`unit`、`deltaDirection`。必填字段为 `schemaVersion: "evidence_relation_candidate@1"`、匹配 `^proposal:[A-Za-z0-9][A-Za-z0-9_.:-]*$` 的 `id`、一个合法 `kind`、一个合法 `direction` 和 `subject`。kind 只能是 `overlap`、`wakeup`、`blocking_state`、`binder_peer`、`lock_owner`、`comparison_delta`、`derived`；direction 只能是 `subject_to_object`、`object_to_subject`、`symmetric`。
 
 `subject`、可选 `object`、可选 `proof` 都只能包含 `evidenceRefId`、`sourceRef`、`sourceToolCallId`、`artifactId`、`sourceArtifactId`、`rowIndex`、`rowSelector`、`column`、`value`。每个端点至少需要一个非空标识；可选标识和 `column` 必须是非空字符串；`rowIndex` 必须是非负安全整数；`rowSelector` 必须是非空对象，键非空，值只能是字符串、有限数字或布尔值。端点的 `value` 还可显式为 null。
 

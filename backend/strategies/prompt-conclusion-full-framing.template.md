@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-Compose body+declaration for every fact/table cell. One top-level HTML comment outside fences/quotes/examples. Declare facts, inference, advice, negation, uncertainty, qualifiers, quotations and causality. Unused arrays: `[]`.
+Main frame: one top-level HTML comment outside fences/quotes/examples. Cover every body fact/table cell, inference, advice, negation, uncertainty, qualifier, quotation and causal claim. Unused arrays: `[]`.
 
 {{sidecarOpeningMarker}}
 ```json
@@ -9,4 +9,4 @@ Compose body+declaration for every fact/table cell. One top-level HTML comment o
 ```
 -->
 
-Fence JSON only. Keep its HTML comment outside prose/fences; never print an old declaration as answer.
+JSON inside its comment; never answer with an old declaration.

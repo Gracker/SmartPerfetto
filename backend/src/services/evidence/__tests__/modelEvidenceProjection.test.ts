@@ -6,7 +6,7 @@ import {describe, expect, it, jest} from '@jest/globals';
 import * as capture from '../evidenceCapture';
 import {captureEvidenceTable, MODEL_EVIDENCE_STRING_MAX_BYTES,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, MODEL_EVIDENCE_UNIT_MAX_BYTES,
-  projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel} from '../evidenceCapture';
+  projectEvidenceCaptureMetadataForModel, projectEvidenceTableForModel} from '../evidenceCapture';
 import {projectModelEvidenceMetadata} from '../modelEvidenceMetadata';
 import {stringifyRuntimeToolResult} from '../../../agentRuntime/runtimeToolSpec';
 import {createRuntimeToolResult} from '../../../agentRuntime/runtimeToolResult';
@@ -20,7 +20,7 @@ describe('model evidence projection', () => {
       modelEvidence: {registeredMetricBinding: 'present'}}, witness);
     expect(projected).toEqual({columnUnits: {dur: 'ns'}, modelEvidence: {
       captureRows: 'available', columnUnits: 'available', registeredMetricBinding: 'absent'}});
-    expect(projectEvidenceColumnUnitsForModel(data, witness)).toEqual(projected.columnUnits);
+    expect(projectEvidenceCaptureMetadataForModel(data, witness).columnUnits).toEqual(projected.columnUnits);
     expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_FINGERPRINT|verified|proofEligible/);
     expect(data.rows).toEqual([[33000000, 'task', 33]]);
   });
@@ -52,7 +52,7 @@ describe('model evidence projection', () => {
     expect(projectModelEvidenceMetadata({...display, columnUnits: {dur: 'ns'},
       modelEvidence: {captureRows: 'available', registeredMetricBinding: 'present'}}, witness))
       .toEqual({modelEvidence: {captureRows: 'unavailable', columnUnits: 'unknown', registeredMetricBinding: 'unknown'}});
-    expect(projectEvidenceColumnUnitsForModel(display, witness)).toBeUndefined();
+    expect(projectEvidenceCaptureMetadataForModel(display, witness).columnUnits).toBeUndefined();
   });
 
   it('keeps unsafe or untrusted units unknown rather than inferring them from numeric-looking aliases', () => {

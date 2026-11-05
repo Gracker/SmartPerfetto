@@ -9,7 +9,7 @@
 
 重新按系统提示的完整结论声明 schema 校验每个字段，而非仅修复诊断列出的字段。特别检查 conclusions 中每项的有限 rank 和字符串 statement，evidenceChain 的 conclusionId/text，以及每个 claim 的 id/text/kind/references/semantics。claim.kind 使用系统协议目录，关系 kind 不能用作 claim.kind。引用保留原始 JSON 类型和已签发标识，不能复制上一份声明中与实际捕获不符的类型。关系端点与 proofBindings 遵循后附的已有 schema，不猜测证明列。
 
-正文后只附一个顶层声明注释。起始行精确为 `<!-- smartperfetto:conclusion-contract@1`；第二行为三个反引号紧接 json；然后输出完整 JSON，再独立输出三个反引号行和 `-->` 行。不要外包额外 fence。JSON 用紧凑序列化，减少格式空白，保持所有字段、条目、值和含义；不截断正文或声明。JSON 字符串中的 <、>、& 用对应 Unicode 转义，解码后值不变。不要声称校验已通过。
+正文后只附一个顶层声明注释。起始行精确为 `{{sidecarOpeningMarker}}`；第二行为三个反引号紧接 json；然后输出完整 JSON，再独立输出三个反引号行和 `{{sidecarClosingMarker}}` 行。不要外包额外 fence。JSON 用紧凑序列化，减少格式空白，保持所有字段、条目、值和含义；不截断正文或声明。JSON 字符串中的 <、>、& 用对应 Unicode 转义，解码后值不变。不要声称校验已通过。
 
 本轮意图：
 {{turn_intent}}

@@ -258,6 +258,8 @@ export function buildNativeOutputCompletionPrompt(input: {
   const data = JSON.stringify({schemaVersion: 1, kind: 'original_native_candidate', body: input.candidate})
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
   const prompt = renderRequiredLocalizedStrategyTemplate('prompt-native-output-completion', input.outputLanguage, {
+    sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
+    sidecarClosingMarker: '-->',
     original_candidate_json: data,
     candidate_protocol_diagnostic: JSON.stringify({candidateProtocolDiagnostic: sanitizeCandidateProtocolDiagnostic(input.diagnostic)}),
     correction_context: JSON.stringify(projectRuntimeCorrectionContext(input.issues)),
