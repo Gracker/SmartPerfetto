@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-Pass body and declarationJson as strings; declarationJson is JSON text, not a nested object. success means diagnostic processing only, never certification (coverageNotChecked=true; finalCertification=false).
+declarationJson is JSON text, not a nested object. success means processing only; coverageNotChecked=true and finalCertification=false.
 
-Report labels are not issued evidence IDs. Prefer one unambiguous issued artifactId when provided; add other identifiers only for that same capture. referenceDiagnostics locate submitted references by collection/ordinal and known failure codes or identifier field names; they do not resolve replacements or authorize reads.
+claims_only checks selected claims without body or presentation. Omitted mode/presentation needs the complete body for quote occurrences. Do not resend unchanged claims to chase a pass.
 
-For input_budget_or_body_invalid, inputBudget locates the oversized input or empty body. Preserve the full body: compact JSON or diagnose claim batches against that same body, retaining every claim in the final declaration. Syntax feedback has payloadChars and an optional UTF-16 offset, never parser text.
+Report labels are not evidence IDs. Prefer one unambiguous issued artifactId; other IDs must identify that same capture. referenceDiagnostics locate submitted references by collection/ordinal and failure code; they grant no replacement, proof or read permission.
+
+inputBudget reports UTF-8 bytes, separate from character limits. Oversized input needs lossless compact authoring or a targeted subset; retain every claim in the final declaration. New authoring's expanded bytes are bounded too. Syntax feedback has payloadChars/UTF-16 offset, never parser text.

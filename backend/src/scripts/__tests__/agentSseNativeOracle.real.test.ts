@@ -7,7 +7,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import {once} from 'events';
-import {collectAgentSseOracleEvidence, parseAgentSseExpectation} from '../verifyAgentSseScrolling';
+import {collectAgentSseOracleEvidence, parseAgentSseExpectation, resolveVerificationSliceSelection} from '../verifyAgentSseScrolling';
 import {TraceProcessorService} from '../../services/traceProcessorService';
 import {TraceProcessorFactory} from '../../services/workingTraceProcessor';
 import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
@@ -73,6 +73,21 @@ function expectReleased(group: AnalysisRunTraceProcessorLeases) {
 }
 
 describe('real native oracle lease lifecycle', () => {
+  it('derives a slice locator hint from the actual selected native row without treating it as evidence', async () => {
+    await withLoadedTrace(async (service, traceId) => {
+      const selected = await resolveVerificationSliceSelection({service, traceId, timeoutMs: 10_000,
+        selector: {processName: 'com.smartperfetto.fixture', threadName: 'main',
+          eventName: 'StartupHooks.initializeOnMainThread#before-first-frame-sync-policy'}});
+      expect(selected.purpose).toBe('input_scope_not_verified_evidence');
+      expect(selected.identity).toMatchObject({traceId, table: 'slice', utid: expect.any(Number), upid: expect.any(Number)});
+      expect(selected.selectionContext).toMatchObject({kind: 'track_event', nativeTable: selected.identity.table,
+        eventId: selected.identity.eventId, ts: selected.identity.ts, dur: 42_000_000});
+      const native = await service.query(traceId,
+        `SELECT id, ts, dur, track_id FROM slice WHERE id = ${selected.identity.eventId}`);
+      expect(native.rows).toEqual([[selected.identity.eventId, selected.identity.ts, 42_000_000, selected.identity.trackId]]);
+    });
+  });
+
   it('binds the synthetic source marker to exact thread-state and first-frame boundaries', async () => {
     await withLoadedTrace(async (service, traceId) => {
       const result = await service.query(traceId, `

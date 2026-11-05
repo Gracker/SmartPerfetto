@@ -145,6 +145,8 @@ export function projectConclusionProtocol(sessionId: string | undefined, raw: st
   const fallback = sanitizeCodeAwareStructuredTextWithReceipt(sessionId, raw);
   if (fallback.disposition === 'replaced') return fallback;
   const sidecar = parseConclusionContractSidecar(raw);
+  // Shared ingress expands only the private validation view of an authoring frame.
+  // `raw` remains the native candidate; public projection below is always canonical full-v1.
   const typed = sidecar.status === 'absent' ? parseTypedConclusionContractJson(raw) : undefined;
   const parsed = sidecar.status !== 'absent' ? sidecar : typed;
   if (!parsed || parsed.status === 'absent') return fallback;

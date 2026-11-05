@@ -3,7 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it, jest} from '@jest/globals';
-import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionContractSidecarPayload, wrapConclusionAuthoringPayload,
+  conclusionDeclarationValidationPayload} from '../../agent/core/conclusionContract';
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import {
   acceptNativeDeclarationCompletion,
@@ -13,6 +14,8 @@ import {
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
   recoverNativeDeclarationPayload,
+  recoverNativeDeclarationValidationPayload,
+  isNativeDeclarationRecoveryBlocked,
   INVALID_NATIVE_DECLARATION,
 } from '../runtimeConclusionProtocol';
 import {buildCandidateProtocolDiagnostic, inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
@@ -45,6 +48,172 @@ const declaration = (mode: 'focused_answer' | 'need_input' = 'focused_answer') =
     uncertainties: [],
     nextSteps: [],
   });
+
+describe('authoring declaration completion preserves expanded meaning', () => {
+  const make = () => ({authoringVersion: 'conclusion_authoring@1', referenceDictionary: [
+    {evidenceRefId: 'data:a', rowIndex: 0, column: 'dur_ms', value: 1},
+    {evidenceRefId: 'data:b', rowIndex: 0, column: 'dur_ms', value: 2},
+  ], contract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+    evidenceChain: [], uncertainties: [], nextSteps: [], claims: [0, 1].map(index => ({
+      id: index === 0 ? 'valid-a' : 'invalid-b', kind: 'numeric', text: index === 0 ? 'A is 1 ms.' : 'B is 2 ms.',
+      references: [{$ref: index}], semantics: {predicate: 'numeric.cell', polarity: 'affirmed', discourse: 'asserted',
+        quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows', subjectRefs: [{$ref: index}]},
+        numeric: {operator: 'eq', value: index + 1, unit: index === 0 ? 'ms' : 0 as string | number}},
+    }))}});
+  const frame = (raw: unknown) => wrapConclusionAuthoringPayload(JSON.stringify(raw));
+  const body = 'A is 1 ms. B is 2 ms.';
+  const request = (raw: unknown) => requestNativeDeclarationCompletion({intent: intent('investigation'),
+    completion: {status: 'completed'}, candidate: `${body}\n${frame(raw)}`, remainingDeliveryTurns: 1, repairInvalid: true});
+  const fix = (raw: ReturnType<typeof make>) => {raw.contract.claims[1].semantics.numeric.unit = 'ms'; return raw;};
+
+  it('compiles v2 shape without a repair while retaining invalid claims and their one same-version repair', () => {
+    const makeV2 = () => {
+      const full = make();
+      const {conclusions: _c, clusters: _cl, evidenceChain: _e, uncertainties: _u, nextSteps: _n, ...rest} = full.contract;
+      return {...full, authoringVersion: 'conclusion_authoring@2', contract: {...rest,
+        uncertainties: [{text: 'Exact uncertainty.'}], nextSteps: [{text: 'Exact recommendation.'}]}};
+    };
+    const original = makeV2();
+    const candidate = `${body}\n${wrapConclusionAuthoringPayload(JSON.stringify(original), 'authoring_v2')}`;
+    const repair = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate, remainingDeliveryTurns: 1, repairInvalid: true, declarationSyntax: 'authoring_v1'})!;
+    expect(repair).toMatchObject({declarationSyntax: 'authoring_v2', originalBody: body});
+    const fixed = makeV2(); fixed.contract.claims[1].semantics.numeric.unit = 'ms';
+    const accepted = acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: JSON.stringify(fixed)})!;
+    const inspected = inspectCandidateProtocol(accepted);
+    expect(inspected.status).toBe('valid');
+    expect(inspected.canonicalBody.trim()).toBe(body);
+    expect(inspected.sidecar.rawPayload).toEqual(fixed);
+    expect(conclusionDeclarationValidationPayload(inspected.sidecar)).toMatchObject({conclusions: [], clusters: [],
+      evidenceChain: [], uncertainties: ['Exact uncertainty.'], nextSteps: ['Exact recommendation.']});
+    expect(requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate: accepted, remainingDeliveryTurns: 1, repairInvalid: true})).toBeUndefined();
+    expect(buildNativeDeclarationCompletionPrompt({request: repair, intent: intent('investigation'), outputLanguage: 'en'}))
+      .toContain('fixed transport is `authoring_v2`');
+    expect(buildNativeDeclarationCompletionPrompt({request: repair, intent: intent('investigation'), outputLanguage: 'zh-CN'}))
+      .toContain('`authoring_v2`');
+    const changed = makeV2(); changed.contract.claims[1].semantics.numeric.unit = 'ms';
+    changed.contract.claims[0].semantics.numeric.value = 9;
+    expect(acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: JSON.stringify(changed)})).toBeUndefined();
+    for (const alternative of [frame(fix(make())), declaration()]) {
+      expect(acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: alternative})).toBeUndefined();
+    }
+    expect(acceptNativeDeclarationCompletion({request: request(make())!, completion: {status: 'completed'},
+      candidate: wrapConclusionAuthoringPayload(JSON.stringify(fixed), 'authoring_v2')})).toBeUndefined();
+    const missing = requestNativeDeclarationCompletion({intent: intent('fact'), completion: {status: 'completed'},
+      candidate: body, remainingDeliveryTurns: 1, declarationSyntax: 'authoring_v2'})!;
+    expect(acceptNativeDeclarationCompletion({request: missing, completion: {status: 'completed'}, candidate: JSON.stringify(fixed)})).toBeDefined();
+  });
+
+  it('uses one authoring transport and preserves the original body and raw wire', () => {
+    const original = make();
+    const repair = request(original)!;
+    expect(repair).toMatchObject({declarationSyntax: 'authoring_v1', originalBody: body, declaredClaimIds: ['valid-a', 'invalid-b']});
+    expect(recoverNativeDeclarationPayload(`${body}\n${frame(original)}`)).toEqual(original);
+    expect(recoverNativeDeclarationValidationPayload(`${body}\n${frame(original)}`)).toMatchObject({claims: [
+      {references: [original.referenceDictionary[0]]}, {references: [original.referenceDictionary[1]]},
+    ]});
+    const candidate = JSON.stringify(fix(make()));
+    const accepted = acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate})!;
+    const parsed = inspectCandidateProtocol(accepted);
+    expect(parsed.canonicalBody.trim()).toBe(body);
+    expect(parsed.sidecar.rawPayload).toEqual(JSON.parse(candidate));
+    expect(parsed.status).toBe('valid');
+    const prompt = buildNativeDeclarationCompletionPrompt({request: repair, intent: intent('investigation'), outputLanguage: 'en'});
+    expect(prompt).toContain('fixed transport is `authoring_v1`');
+    expect(prompt).not.toContain('fixed transport is `canonical_v1`');
+  });
+
+  it('allows dictionary renumbering only when original valid expanded claims stay identical', () => {
+    const repair = request(make())!;
+    const reordered = fix(make());
+    reordered.referenceDictionary.reverse();
+    for (const claim of reordered.contract.claims) {
+      claim.references[0].$ref = 1 - claim.references[0].$ref;
+      claim.semantics.scope.subjectRefs[0].$ref = 1 - claim.semantics.scope.subjectRefs[0].$ref;
+    }
+    expect(acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: JSON.stringify(reordered)}))
+      .toBeDefined();
+    const substituted = fix(make());
+    substituted.referenceDictionary[0].value = 9;
+    expect(acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: JSON.stringify(substituted)}))
+      .toBeUndefined();
+  });
+
+  it('rejects converting authoring repair to full-v1 and keeps an existing full declaration full', () => {
+    const repair = request(make())!;
+    const full = conclusionDeclarationValidationPayload(inspectCandidateProtocol(frame(fix(make()))).sidecar);
+    expect(acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: JSON.stringify(full)}))
+      .toBeUndefined();
+    const invalidFull = conclusionDeclarationValidationPayload(inspectCandidateProtocol(frame(make())).sidecar);
+    const legacy = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate: `${body}\n${renderConclusionContractSidecar(invalidFull as any)}`, remainingDeliveryTurns: 1,
+      repairInvalid: true, declarationSyntax: 'authoring_v1'})!;
+    expect(legacy.declarationSyntax).toBeUndefined();
+    expect(acceptNativeDeclarationCompletion({request: legacy, completion: {status: 'completed'}, candidate: JSON.stringify(full)}))
+      .toBeDefined();
+  });
+
+  it('uses the run preference only when the declaration is missing', () => {
+    const repair = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate: body, remainingDeliveryTurns: 1, declarationSyntax: 'authoring_v1'})!;
+    expect(repair.declarationSyntax).toBe('authoring_v1');
+    expect(acceptNativeDeclarationCompletion({request: repair, completion: {status: 'completed'}, candidate: JSON.stringify(fix(make()))}))
+      .toBeDefined();
+  });
+
+  it('cannot erase nested authored claims when an authoring envelope uses the old full-v1 frame', () => {
+    const wrongFrame = wrapConclusionContractSidecarPayload(JSON.stringify(fix(make())));
+    const candidate = `${body}\n${wrongFrame}`;
+    const parsed = inspectCandidateProtocol(candidate);
+    expect(parsed.status).toBe('invalid');
+    const forced = {...request(make())!, rejectedDeclaration: wrongFrame, originalRootInvalid: true,
+      declarationSyntax: 'canonical_v1' as const};
+    // This empty full declaration used to pass because the wrapper has no top-level claims.
+    expect(acceptNativeDeclarationCompletion({request: forced, completion: {status: 'completed'}, candidate: declaration()}))
+      .toBeUndefined();
+    expect(isNativeDeclarationRecoveryBlocked(parsed.sidecar)).toBe(true);
+    expect(recoverNativeDeclarationValidationPayload(candidate)).toBeUndefined();
+    expect(requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate, remainingDeliveryTurns: 1, repairInvalid: true})).toBeUndefined();
+  });
+
+  it('blocks incompatible authoring metadata in a whole typed canonical JSON candidate', () => {
+    const candidate = JSON.stringify({...fix(make()), schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], claims: [], relationProposals: [], uncertainties: [], nextSteps: []});
+    const parsed = inspectCandidateProtocol(candidate);
+    expect(parsed.sidecar.status).toBe('absent');
+    expect(parsed.typedJson?.status).toBe('invalid');
+    expect(isNativeDeclarationRecoveryBlocked(candidate)).toBe(true);
+    expect(isNativeDeclarationRecoveryBlocked(parsed)).toBe(true);
+    const forced = {...request(make())!, rejectedDeclaration: candidate, originalRootInvalid: true,
+      declarationSyntax: 'canonical_v1' as const};
+    expect(acceptNativeDeclarationCompletion({request: forced, completion: {status: 'completed'}, candidate: declaration()}))
+      .toBeUndefined();
+  });
+
+  it.each(['unknown_version', 'bad_dictionary', 'invalid_json', 'competing_frames'] as const)('never uses root repair exemption for %s', failure => {
+    const raw: any = make();
+    if (failure === 'unknown_version') raw.authoringVersion = 'conclusion_authoring@99';
+    if (failure === 'bad_dictionary') raw.referenceDictionary = {};
+    const rejectedDeclaration = failure === 'invalid_json' ? frame(raw).replace('"contract":', '"contract" ')
+      : failure === 'competing_frames' ? `${frame(raw)}\n${declaration()}` : frame(raw);
+    const candidate = `${body}\n${rejectedDeclaration}`;
+    const inspected = inspectCandidateProtocol(candidate);
+    expect(isNativeDeclarationRecoveryBlocked(inspected.sidecar)).toBe(true);
+    expect(recoverNativeDeclarationValidationPayload(candidate)).toBeUndefined();
+    expect(requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate, remainingDeliveryTurns: 1, repairInvalid: true})).toBeUndefined();
+    const forced = {...request(make())!, rejectedDeclaration, originalRootInvalid: true};
+    expect(acceptNativeDeclarationCompletion({request: forced, completion: {status: 'completed'}, candidate: JSON.stringify(fix(make()))}))
+      .toBeUndefined();
+  });
+
+  it.each(['incomplete', 'cancelled', 'failed'] as const)('does not convert native %s into completed', status => {
+    expect(acceptNativeDeclarationCompletion({request: request(make())!, completion: {status}, candidate: JSON.stringify(fix(make()))}))
+      .toBeUndefined();
+  });
+});
 
 describe('runtime native declaration completion', () => {
   const semantics = {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
@@ -755,6 +924,29 @@ describe('runtime native declaration completion', () => {
       expect(inspected.status).toBe('partially_valid');
       expect(inspected.sidecar.contract?.claims?.map(claim => [claim.id, claim.valid]))
         .toEqual([['a', undefined], ['b', undefined], ['c', false]]);
+    });
+
+    it('rejects making a valid claim invalid even when the total invalid count decreases', () => {
+      const invalid = {semantics: {...semantics, scope: {population: 'nowhere'}}};
+      const original = `${body}\n\n${contract([claim('a'), claim('b', invalid), claim('c', invalid)])}`;
+      const request = repair(original)!;
+      expect(request).toBeDefined();
+      expect(accept(request, contract([claim('a'), claim('b'), claim('c')]))).toBeDefined();
+      const tradedValidity = contract([claim('a', invalid), claim('b'), claim('c')]);
+      expect(accept(request, tradedValidity)).toBeUndefined();
+      expect(rejectionReason(tradedValidity, original)).toBe('valid_claim_changed');
+    });
+
+    it('rejects dropping a trailing valid claim without an id while fixing another claim', () => {
+      const noId = claim('c', {id: undefined});
+      const original = `${body}\n\n${contract([claim('a'),
+        claim('b', {semantics: {...semantics, scope: {population: 'nowhere'}}}), noId])}`;
+      const request = repair(original)!;
+      expect(request).toBeDefined();
+      expect(accept(request, contract([claim('a'), claim('b'), noId]))).toBeDefined();
+      const shortened = contract([claim('a'), claim('b')]);
+      expect(accept(request, shortened)).toBeUndefined();
+      expect(rejectionReason(shortened, original)).toBe('claim_positions_changed');
     });
 
     it('rejects a repair that fixes no invalid claim', () => {

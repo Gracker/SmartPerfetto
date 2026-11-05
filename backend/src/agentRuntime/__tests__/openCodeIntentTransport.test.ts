@@ -4,6 +4,7 @@
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {runOpenCodeIntentTransport, type OpenCodeClassifierHost, type OpenCodeIntentTransportInput} from '../engines/opencode/openCodeIntentTransport';
+import {OpenAITextPolicyConfigurationError} from '../../services/providerManager/openAiChatCompletionsCompat';
 
 type ClassifierSession = OpenCodeClassifierHost['client']['session'];
 
@@ -64,6 +65,18 @@ describe('OpenCode intent transport', () => {
     const {input, createClassifierHost} = fixture();
     await runOpenCodeIntentTransport({...input, purpose: 'classification'});
     expect(createClassifierHost).toHaveBeenCalledWith(expect.objectContaining({purpose: 'classification'}));
+  });
+
+  it('forwards the request-side observer and rejects unsupported policy before a provider call', async () => {
+    const {input, createClassifierHost, session} = fixture();
+    const observer = {reasoning: jest.fn()};
+    createClassifierHost.mockRejectedValue(new OpenAITextPolicyConfigurationError());
+    expect(await runOpenCodeIntentTransport({...input, observer, purpose: 'classification'}))
+      .toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+    expect(createClassifierHost).toHaveBeenCalledTimes(1);
+    expect(createClassifierHost).toHaveBeenCalledWith(expect.objectContaining({observer}));
+    expect(session.create).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
   });
 
   it('rejects a reply from a step after a tool call, which the prompt alone does not show', async () => {

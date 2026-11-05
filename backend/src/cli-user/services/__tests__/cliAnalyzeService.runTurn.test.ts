@@ -21,6 +21,7 @@ import {createAnalysisHistoryReader, resolveAnalysisHistoryReader, toAnalysisHis
 import {AnalysisHistoryStore} from '../../../services/analysisHistoryStore';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import type {AnalysisOptions} from '../../../agent/core/orchestratorTypes';
+import {readRuntimeAdmission} from '../../../agentRuntime/runtimeTaskDeadline';
 import {
   MAX_CODEBASE_IDS_PER_ANALYSIS,
   MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS,
@@ -261,6 +262,57 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     // A public run may learn across sessions under its own run id.
     const runOptions = mockAnalyze.mock.calls[0][3] as AnalysisOptions;
     expect(resolveDurableLearningPermission(runOptions)).toEqual({runId: openScope.runId});
+  });
+
+  it.each([undefined, 60_000])('keeps admission across Trace loading instead of restarting at analyze (timeout=%s)', async taskTimeoutMs => {
+    const service = new CliAnalyzeService();
+    let now = 1000;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const load = jest.spyOn(service, 'loadTrace').mockImplementation(async () => {now = 36_000; return 'trace-cli';});
+    const original = mockAnalyze.getMockImplementation()!;
+    let deadline: number | undefined;
+    let admittedAt: number | undefined;
+    let receivedOptions: AnalysisOptions | undefined;
+    mockAnalyze.mockImplementation(async (...args) => {
+      receivedOptions = args[3];
+      deadline = readRuntimeAdmission(receivedOptions!, {runId: receivedOptions!.runId!, sessionId: args[1]})?.task?.facts.hardDeadlineAt;
+      admittedAt = readRuntimeAdmission(receivedOptions!, {runId: receivedOptions!.runId!, sessionId: args[1]})?.facts.admittedAt;
+      return original(...args);
+    });
+    try {
+      await service.runTurn({...cliTurnBinding, tracePath: '/fixture/trace', taskTimeoutMs,
+        query: 'Analyze startup', onEvent: jest.fn()});
+      expect(admittedAt).toBe(1000);
+      expect(deadline).toBe(taskTimeoutMs === undefined ? undefined : 61_000);
+      expect(() => readRuntimeAdmission(receivedOptions!, {runId: receivedOptions!.runId!,
+        sessionId: 'cli-session-quality'})?.task).toThrow('disposed');
+    } finally {load.mockRestore(); clock.mockRestore();}
+  });
+
+  it('waits for preparation to drain after task expiry without cancelling its lease owner', async () => {
+    jest.useFakeTimers({now: 1000});
+    try {
+      const entered = deferred<void>();
+      const draining = deferred<void>();
+      let ownerSignal: AbortSignal | undefined;
+      mockPrepareTraceLeases.mockImplementation(async (input: {signal: AbortSignal}) => {
+        ownerSignal = input.signal;
+        entered.resolve();
+        await draining.promise;
+        return {entries: [], release: mockReleaseTraceLeases, run: async (fn: () => Promise<unknown>) => fn()};
+      });
+      const run = new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', taskTimeoutMs: 10,
+        query: 'Analyze startup', onEvent: jest.fn()});
+      const rejected = expect(run).rejects.toThrow('Runtime task deadline exceeded');
+      await entered.promise;
+      jest.advanceTimersByTime(11);
+      expect(ownerSignal?.aborted).toBe(false);
+      expect(mockReleaseTraceLeases).not.toHaveBeenCalled();
+      draining.resolve();
+      await rejected;
+      expect(mockAnalyze).not.toHaveBeenCalled();
+      expect(mockReleaseTraceLeases).toHaveBeenCalledTimes(1);
+    } finally {jest.useRealTimers();}
   });
 
   it('leaves no durable run row when the analysis never reaches the archive', async () => {

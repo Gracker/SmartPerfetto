@@ -215,9 +215,10 @@ function columnUnitsForModel(context: DirectModelProjectionTable): Readonly<Reco
   return entries.length > 0 ? Object.freeze(Object.fromEntries(entries)) : undefined;
 }
 
-/** Current issued, direct-mapped producer units for model context; never evidence authority. */
-export function projectEvidenceColumnUnitsForModel<T>(displayData: T, witness?: EvidenceTableWitness):
-  Readonly<Record<string, string>> | undefined {
+/** Availability of the backing capture, not completeness of a page, query or trace population. */
+export function projectEvidenceCaptureMetadataForModel<T>(displayData: T, witness?: EvidenceTableWitness): {
+  captureRows: 'available' | 'empty' | 'unavailable'; columnUnits?: Readonly<Record<string, string>>;
+} {
   const context = directModelProjectionTable(displayData, witness);
   if (typeof context === 'string' || context.table.rows.some((row, rowIndex) =>
     context.rawIndexes.some((index, columnIndex) => {
@@ -225,8 +226,15 @@ export function projectEvidenceColumnUnitsForModel<T>(displayData: T, witness?: 
       if (raw === undefined) return true;
       const projected = typeof raw === 'string' ? boundedModelString(raw).value : raw;
       return !Object.is(context.displayRows[rowIndex][columnIndex], projected);
-    }))) return undefined;
-  return columnUnitsForModel(context);
+    }))) return {captureRows: 'unavailable'};
+  const columnUnits = columnUnitsForModel(context);
+  return {captureRows: context.table.rows.length ? 'available' : 'empty', ...(columnUnits ? {columnUnits} : {})};
+}
+
+/** Current issued, direct-mapped producer units for model context; never evidence authority. */
+export function projectEvidenceColumnUnitsForModel<T>(displayData: T, witness?: EvidenceTableWitness):
+  Readonly<Record<string, string>> | undefined {
+  return projectEvidenceCaptureMetadataForModel(displayData, witness).columnUnits;
 }
 
 /**

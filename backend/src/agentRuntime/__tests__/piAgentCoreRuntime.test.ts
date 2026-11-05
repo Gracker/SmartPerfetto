@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { z } from 'zod';
 import type { StreamingUpdate } from '../../agent/types';
 import type { SessionStateSnapshot } from '../../agentv3/sessionStateSnapshot';
@@ -46,15 +46,19 @@ import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
 import * as sceneEntryEvidence from '../sceneEntryEvidence';
+import {createSelectedFoundationFixture, installSelectedNativeSignerMocks, installSelectedRuntimeFixture} from '../../../tests/helpers/selectedEvidenceFoundationFixture';
+import * as selectedSkillLoader from '../../services/skillEngine/skillLoader';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
+import * as architectureDetectorModule from '../../agent/detectors/architectureDetector';
+import * as traceCompletenessModule from '../../agentv3/traceCompletenessProber';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import * as finalizationModule from '../analysisFinalizationContext';
 import * as runtimeCallStats from '../../services/runtimeCallStats';
@@ -67,6 +71,7 @@ import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} fro
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
+import {createRuntimeAdmissionScope} from '../runtimeTaskDeadline';
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
 jest.mock('../engines/claude/claudeVerifier', () => {
@@ -197,6 +202,8 @@ const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
 
 // Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
 // estimates; budget skips have their own tests below.
+afterEach(() => {jest.useRealTimers();});
+
 beforeEach(() => {
   jest.spyOn(runtimeCallStats, 'admitDeliveryCall').mockClear().mockImplementation((recorder, input) =>
     realAdmitDeliveryCall(recorder, {...input, failOpen: true}));
@@ -2006,10 +2013,12 @@ describe('experimental Pi agent-core runtime contract', () => {
   });
 
   it('returns one timeout result and no session turn when Pi hangs before provider output', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
     const sessionId = 'session-pi-request-timeout';
     const traceId = 'trace-pi';
     const never = createDeferred<unknown[]>();
-    FakePiAgent.promptHandler = async () => never.promise;
+    const entered = createDeferred<void>();
+    FakePiAgent.promptHandler = async () => {entered.resolve(); return never.promise;};
     FakePiAgent.abortHandler = () => {
       never.resolve([{
         role: 'assistant',
@@ -2033,11 +2042,13 @@ describe('experimental Pi agent-core runtime contract', () => {
     );
 
     const analysis = runtime.analyze('first', sessionId, traceId, {analysisMode: 'fast'});
-
-    await expect(Promise.race([
+    await entered.promise;
+    const outcome = Promise.race([
       analysis,
       rejectAfter(250, () => runtime.abortSession(sessionId)),
-    ])).resolves.toMatchObject({
+    ]);
+    await jest.advanceTimersByTimeAsync(250);
+    await expect(outcome).resolves.toMatchObject({
       success: false,
       terminationReason: 'timeout',
       conclusion: expect.stringContaining('timeout'),
@@ -2403,11 +2414,13 @@ describe('experimental Pi agent-core runtime contract', () => {
   }));
 
   it('keeps same-session ownership until abort cleanup settles and suppresses late Pi events', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
     const sessionId = 'session-pi-abort-join';
     const traceId = 'trace-pi';
     const releasePrompt = createDeferred<unknown[]>();
+    const entered = createDeferred<void>();
     const updates: StreamingUpdate[] = [];
-    FakePiAgent.promptHandler = async () => releasePrompt.promise;
+    FakePiAgent.promptHandler = async () => {entered.resolve(); return releasePrompt.promise;};
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
       {kind: 'pi-agent-core', source: 'env'},
@@ -2425,7 +2438,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     runtime.on('update', update => updates.push(update));
 
     const first = runtime.analyze('first', sessionId, traceId, {analysisMode: 'fast'});
-    await delay(40);
+    await entered.promise;
+    await jest.advanceTimersByTimeAsync(40);
     let secondError: Error | undefined;
     const second = runtime.analyze('second', sessionId, traceId, {analysisMode: 'fast'})
       .catch((error: Error) => {
@@ -2436,10 +2450,12 @@ describe('experimental Pi agent-core runtime contract', () => {
       await Promise.resolve();
       expect(secondError).toBeDefined();
       expect(secondError!.message).toMatch(/already in progress/i);
-      const firstResult = await Promise.race([
+      const resultPromise = Promise.race([
         first,
         rejectAfter(500, () => runtime.abortSession(sessionId)),
       ]);
+      await jest.advanceTimersByTimeAsync(80);
+      const firstResult = await resultPromise;
       expect(firstResult).toMatchObject({
         success: false,
         terminationReason: 'timeout',
@@ -2449,7 +2465,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         content: [{type: 'text', text: 'LATE_ABORT_IGNORING_PROVIDER_TEXT'}],
       }]);
       await second;
-      await delay(25);
+      await jest.advanceTimersByTimeAsync(25);
       expect(JSON.stringify(updates)).not.toContain('LATE_ABORT_IGNORING_PROVIDER_TEXT');
     } finally {
       releasePrompt.resolve([{
@@ -2462,11 +2478,13 @@ describe('experimental Pi agent-core runtime contract', () => {
   });
 
   it('keeps same-session ownership across repeated attempts until abort-ignored prompt settles', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
     const sessionId = 'session-pi-abort-repeated-overlap';
     const traceId = 'trace-pi';
     const releasePrompt = createDeferred<unknown[]>();
+    const entered = createDeferred<void>();
     const updates: StreamingUpdate[] = [];
-    FakePiAgent.promptHandler = async () => releasePrompt.promise;
+    FakePiAgent.promptHandler = async () => {entered.resolve(); return releasePrompt.promise;};
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
       {kind: 'pi-agent-core', source: 'env'},
@@ -2484,7 +2502,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     runtime.on('update', update => updates.push(update));
 
     const first = runtime.analyze('first', sessionId, traceId, {analysisMode: 'fast'});
-    await delay(80);
+    await entered.promise;
+    await jest.advanceTimersByTimeAsync(80);
     await expect(first).resolves.toMatchObject({
       success: false,
       terminationReason: 'timeout',
@@ -2531,7 +2550,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       content: [{type: 'text', text: 'late cleanup'}],
     }]);
     await waitUntil(() => FakePiAgent.instances.length === 1);
-    await delay(20);
+    await jest.advanceTimersByTimeAsync(20);
     FakePiAgent.promptHandler = undefined;
     FakePiAgent.promptMessages = [{
       role: 'assistant',
@@ -3174,6 +3193,75 @@ describe('experimental Pi agent-core runtime contract', () => {
       });
   }
 
+  it('selected foundation: real native and metric precede focus and share the MCP store', async () => {
+    const restoreSigner = installSelectedNativeSignerMocks();
+    const fixture = await createSelectedFoundationFixture({traceId: 'trace-pi', runId: 'selected-pi', registerExecutor: false});
+    const wired = installSelectedRuntimeFixture(fixture);
+    const requestSelection = {...fixture.input.selectionContext!};
+    const registryReady = jest.spyOn(selectedSkillLoader, 'ensureSkillRegistryInitialized').mockImplementationOnce(async () => {
+      await Promise.resolve();
+      Object.assign(requestSelection, {eventId: 999, ts: 999, dur: 999});
+    });
+    piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', targetUse: 'current_selection'};
+    const order: string[] = [];
+    const query = fixture.query.getMockImplementation()!;
+    fixture.query.mockImplementation(async (...args) => {order.push('metric'); return query(...args);});
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockImplementation(async () => {
+      order.push('focus'); return {apps: [], method: 'none'};
+    });
+    const architecture = jest.spyOn(architectureDetectorModule, 'createArchitectureDetector').mockReturnValue({detect: async () => undefined} as any);
+    const completeness = jest.spyOn(traceCompletenessModule, 'probeTraceCompleteness').mockResolvedValue(undefined as any);
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const legacy = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    const prompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    try {
+      await typedRuntime({trace: fixture.input.traceProcessorService}).analyze('Explain this selected work', 'selected-pi', 'trace-pi',
+        {analysisMode: 'full', runId: 'selected-pi', selectionContext: requestSelection});
+      expect(order).toEqual(['metric', 'focus']);
+      expect(fixture.queryBounded.mock.calls[0][1]).toBe('SELECT id, ts, dur, track_id FROM slice WHERE id = 7');
+      expect(requestSelection).toMatchObject({eventId: 999});
+      expect(selected).toHaveBeenCalledTimes(1); expect(legacy).not.toHaveBeenCalled();
+      expect(wired.createExecutor.mock.results.filter(call => call.type === 'return' && call.value === fixture.executor)).toHaveLength(1);
+      expect(wired.registerSkills).toHaveBeenCalledTimes(1); expect(wired.registerFragments).toHaveBeenCalledTimes(1);
+      const store = selected.mock.calls[0][0].artifactStore;
+      expect(mcp.mock.calls[0][0]).toMatchObject({artifactStore: store, skillExecutor: fixture.executor});
+      expect(prompt.mock.calls[0][0].sceneEvidence).toMatchObject({kind: 'selected_foundation', native: {status: 'captured'}, metric: {status: 'committed'}});
+      expect(store.createEvidenceReadView({ownerKey: 'owner', currentRunId: 'selected-pi', allowedTraces: [{traceId: 'trace-pi', traceSide: 'current'}]})
+        .investigationEvidence!().records).toEqual([expect.objectContaining({upid: 42, utid: 43, value: 80})]);
+    } finally {registryReady.mockRestore(); wired.restore(); restoreSigner(); focus.mockRestore(); architecture.mockRestore(); completeness.mockRestore(); selected.mockRestore(); legacy.mockRestore(); mcp.mockRestore(); prompt.mockRestore();}
+  });
+
+  it('selected foundation: holds the run guard while cancelled native work drains', async () => {
+    const restoreSigner = installSelectedNativeSignerMocks();
+    const sessionId = 'selected-pi-drain';
+    const fixture = await createSelectedFoundationFixture({traceId: 'trace-pi', runId: sessionId, registerExecutor: false});
+    const wired = installSelectedRuntimeFixture(fixture);
+    piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', targetUse: 'current_selection'};
+
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => {enter = resolve;}), held = new Promise<void>(resolve => {release = resolve;});
+    fixture.queryBounded.mockImplementationOnce(async () => {enter(); await held; return fixture.nativeResponse;});
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps');
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const runtime = typedRuntime({trace: fixture.input.traceProcessorService});
+    const operation = runtime.analyze('Explain selected work', sessionId, 'trace-pi',
+      {analysisMode: 'full', runId: sessionId, selectionContext: fixture.input.selectionContext});
+    const settled = operation.then(value => ({value}), error => ({error}));
+    try {
+      await Promise.race([entered, settled.then(() => {throw new Error('analysis settled before selected native lookup');})]);
+      expect(focus).not.toHaveBeenCalled();
+      void runtime.abortSession(sessionId);
+      await Promise.resolve();
+      await expect(runtime.analyze('successor', sessionId, 'trace-pi')).rejects.toThrow(/already in progress/);
+      expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+      release(); await settled;
+      expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+      expect(selected).toHaveBeenCalledTimes(1);
+      expect(selected.mock.calls[0][0].artifactStore.size).toBe(0);
+    } finally {release(); await settled; wired.restore(); restoreSigner(); focus.mockRestore(); selected.mockRestore();}
+  });
+
   it('scene runtime matrix: runs the pinned Pi provider through shared proposal and private seal', async () => {
     const f = createSceneRuntimeMatrixFixture('pi');
     const runtime = typedRuntime({trace: f.traceProcessorService});
@@ -3210,6 +3298,132 @@ describe('experimental Pi agent-core runtime contract', () => {
       passed: true, heuristicIssues: [], llmIssues: [], durationMs: 0,
     }));
   }
+
+  it.each([undefined, 45_000])('uses product admission for the native absolute budget (explicit=%s)', async taskTimeoutMs => {
+    jest.useFakeTimers({now: 36_000, doNotFake: ['nextTick', 'setImmediate']});
+    passVerification();
+    const sessionId = `pi-admission-${taskTimeoutMs ?? 'default'}`;
+    const runId = `${sessionId}-run`;
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId, admittedAt: 1000, taskTimeoutMs,
+      ownerSignal: owner.signal, assertCurrent() {}});
+    FakePiAgent.promptMessages = [{role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: declaredPiCandidate('The captured value is 17.')}]}];
+    const runtime = typedRuntime({env: {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '60000',
+      AGENT_QUICK_MAX_TURNS: '1', AGENT_QUICK_PER_TURN_MS: '60000'}});
+    try {
+      const result = await runtime.analyze('question', sessionId, 'trace-pi', scope.bind({analysisMode: 'fast' as const}, sessionId));
+      const context = takeFinalizationContext(result)!;
+      try {
+        expect(context.deadlineMs).toBe(taskTimeoutMs === undefined ? 61_000 : 46_000);
+        expect(piClassifierCalls[0].options.timeoutMs).toBeLessThanOrEqual(taskTimeoutMs === undefined ? 25_000 : 10_000);
+        expect(owner.signal.aborted).toBe(false);
+      } finally {context.dispose();}
+    } finally {scope.dispose(); runtime.cleanupSession(sessionId); sessionContextManager.remove(sessionId);}
+  });
+
+  it('does not classify or create a native Agent when the product task expired during preparation', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    const scope = createRuntimeAdmissionScope({runId: 'expired-pi', admittedAt: 0, taskTimeoutMs: 10, assertCurrent() {}});
+    try {
+      const result = await typedRuntime().analyze('question', 'expired-pi', 'trace-pi', scope.bind({}, 'expired-pi'));
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(piClassifierCalls).toHaveLength(0);
+      expect(FakePiAgent.instances).toHaveLength(0);
+    } finally {scope.dispose(); sessionContextManager.remove('expired-pi');}
+  });
+
+  it('drains an expired focus query without starting later preparation or releasing its guard early', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', scope: 'scene_wide',
+      recommendedComplexity: 'full', deliverable: 'report'};
+    const sessionId = 'pi-focus-task-deadline';
+    const entered = createDeferred<void>();
+    const focus = createDeferred<{columns: string[]; rows: unknown[][]; durationMs: number}>();
+    const traceProcessorService = createFakeTraceProcessorService();
+    traceProcessorService.query.mockImplementationOnce(async () => {entered.resolve(); return focus.promise;});
+    const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+    const architecture = jest.spyOn(architectureDetectorModule, 'createArchitectureDetector');
+    const completeness = jest.spyOn(traceCompletenessModule, 'probeTraceCompleteness');
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'pi-focus-expiry', admittedAt: 1000, taskTimeoutMs: 50,
+      ownerSignal: owner.signal, assertCurrent() {}});
+    const runtime = new PiAgentCoreRuntime(traceProcessorService, {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON, [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '60000',
+        [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV]: '5'},
+      moduleLoader: async () => ({Agent: FakePiAgent}), providerRuntimeLoader: loadFakePiProviderRuntime,
+    });
+    try {
+      const pending = runtime.analyze('question', sessionId, 'trace-pi', scope.bind({analysisMode: 'full' as const}, sessionId));
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(55);
+      const result = await pending;
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(owner.signal.aborted).toBe(false);
+      await expect(runtime.analyze('next', sessionId, 'trace-pi')).rejects.toThrow(/already in progress/);
+      focus.resolve({columns: [], rows: [], durationMs: 1});
+      await jest.advanceTimersByTimeAsync(0);
+      // The admitted focus step may finish its own internal queries; no later prep stage starts.
+      expect(architecture).not.toHaveBeenCalled();
+      expect(completeness).not.toHaveBeenCalled();
+      expect(scene).not.toHaveBeenCalled();
+      expect(FakePiAgent.instances).toHaveLength(0);
+      const next = await runtime.analyze('next', sessionId, 'trace-pi', {analysisMode: 'fast'});
+      expect(next.success).toBe(true);
+      takeFinalizationContext(next)?.dispose();
+    } finally {
+      focus.resolve({columns: [], rows: [], durationMs: 1});
+      await jest.advanceTimersByTimeAsync(0);
+      scope.dispose(); scene.mockRestore(); architecture.mockRestore(); completeness.mockRestore(); runtime.cleanupSession(sessionId); sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('keeps the completed candidate when task expiry interrupts repair and holds the guard until prompt drain', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+    passVerification();
+    const sessionId = 'pi-repair-task-deadline';
+    const body = 'The captured marker is present; causal coverage remains unverified.';
+    const entered = createDeferred<void>();
+    const repair = createDeferred<unknown[]>();
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'pi-repair-run', admittedAt: 1000, taskTimeoutMs: 50,
+      ownerSignal: owner.signal, assertCurrent() {}});
+    const runtime = typedRuntime({env: {[PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV]: '60000',
+      [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV]: '5'}});
+    FakePiAgent.promptHandler = async (_agent, _prompt, index) => {
+      if (index === 2) {entered.resolve(); return repair.promise;}
+      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: body}]}];
+    };
+    try {
+      const running = runtime.analyze('question', sessionId, 'trace-pi', scope.bind({analysisMode: 'fast' as const}, sessionId));
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(55);
+      const result = await running;
+      expect(result.conclusion).toBe(body);
+      expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
+      expect(owner.signal.aborted).toBe(false);
+      const context = takeFinalizationContext(result)!;
+      try {
+        expect(context.deadlineMs).toBe(1050);
+        await expect(context.dispatchText({prompt: 'review', systemPrompt: '', deadlineMs: 50_000,
+          outputByteLimit: 8192, signal: owner.signal})).resolves.toMatchObject({status: 'unavailable', reason: 'timeout'});
+      } finally {context.dispose();}
+      await expect(runtime.analyze('next', sessionId, 'trace-pi')).rejects.toThrow(/already in progress/);
+      repair.resolve([{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'LATE_REPAIR_MUST_NOT_REPLACE_BODY'}]}]);
+      await jest.advanceTimersByTimeAsync(0);
+      expect(result.conclusion).toBe(body);
+      expect(sessionContextManager.getOrCreate(sessionId, 'trace-pi').getAllTurns?.()).toHaveLength(1);
+      FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop',
+        content: [{type: 'text', text: declaredPiCandidate('The next run is independent.')}]}];
+      const next = await runtime.analyze('next', sessionId, 'trace-pi');
+      expect(next.success).toBe(true);
+      takeFinalizationContext(next)?.dispose();
+    } finally {
+      repair.resolve([]);
+      await jest.advanceTimersByTimeAsync(0);
+      scope.dispose(); runtime.cleanupSession(sessionId); sessionContextManager.remove(sessionId);
+    }
+  });
 
   it.each([false, true])('keeps pending exploration advisory after native completion or failure: failed=%s', async nativeError => {
     const body = 'The observed value is 17.';
@@ -3723,6 +3937,19 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
     expect(result.completion).toMatchObject({status: 'completed', attemptId: '2'});
     expect(Buffer.byteLength(result.conclusion, 'utf8')).toBeLessThan(64 * 1024);
+  });
+
+  it('does not correct an undecodable authoring candidate through the ordinary Pi recovery path', async () => {
+    passVerification();
+    const native = `Body remains.\n${wrapConclusionAuthoringPayload('{"authoringVersion":"unsupported"}')}`;
+    FakePiAgent.promptMessages = [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: native}]}];
+    const result = await typedRuntime().analyze('query', 'pi-authoring-unrecoverable', 'trace-pi');
+    expect(FakePiAgent.instances[0].promptCount).toBe(1);
+    expect(result.completion).toMatchObject({status: 'completed'});
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
+    const context = takeFinalizationContext(result)!;
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+    finally {context.dispose();}
   });
 
   it('does not dispatch declaration completion when the original body cannot fit the Pi output cap', async () => {

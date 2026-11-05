@@ -36,7 +36,7 @@ import {
   type SkillRunRefusal,
 } from '../agentv3/skillRunCore';
 import {summarizeToolCallInput} from '../agentv3/toolCallSummary';
-import type {SelectionContext} from '../agentv3/types';
+import type {SelectionContext, TracePairContext} from '../agentv3/types';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {AnalysisContextAuthorizationChangedError} from '../services/resolvedAnalysisContext';
 import type {SkillRegistryView} from '../services/skillEngine/skillAnalysisAdapter';
@@ -60,6 +60,8 @@ import {runWithinRuntimeToolInvocation} from './runtimeToolInvocationContext';
 import {createRuntimeToolResult} from './runtimeToolResult';
 import {withRunAuthorizationOnly, type RuntimeToolResult, type SharedToolSpec} from './runtimeToolSpec';
 import type {RuntimeTurnPolicy} from './runtimeTurnPolicy';
+import {acquireSelectedEvidenceFoundation, shouldCollectSelectedEvidenceFoundation,
+  type SelectedFoundationResult} from './selectedEvidenceFoundation';
 
 /** Total hard limit of one attempt, from its start to settling. */
 export const SCENE_ENTRY_TIMEOUT_MS = 20_000;
@@ -78,6 +80,8 @@ export interface SceneEntryEvidenceInput {
   traceId: string;
   /** The run's reference trace, when it compares two traces. */
   referenceTraceId?: string;
+  /** Presence makes a selected event's pane ambiguous, even without a reference id. */
+  tracePairContext?: TracePairContext;
   /**
    * The MCP server's `conversationTraceAttached`: false for a conversation with
    * no mounted trace, whose registry registers no acquisition tool at all.
@@ -145,7 +149,7 @@ export interface SceneEntryEvidenceOutcome {
 }
 
 /** What the `scene_evidence` segment carries; JSON, at most SCENE_EVIDENCE_MAX_BYTES. */
-export interface SceneEvidencePromptData {
+export interface SceneWideEvidencePromptData {
   status: 'ran' | 'not_run';
   skillId: string;
   reason?: SceneEntryNotRunReason;
@@ -158,6 +162,18 @@ export interface SceneEvidencePromptData {
   cells?: {fields: typeof SCENE_EVIDENCE_CELL_FIELDS; key: SceneEvidenceCellTuple[]; summary: SceneEvidenceCellTuple[]};
   omittedCellCount?: number;
 }
+
+export interface SelectedEvidencePromptData {
+  kind: 'selected_foundation';
+  native: SelectedFoundationResult['native'];
+  metric: Omit<SelectedFoundationResult['metric'], 'cells' | 'omittedCellCount' | 'artifacts'>;
+  identity?: SelectedFoundationResult['identity'];
+  artifacts?: SelectedFoundationResult['metric']['artifacts'];
+  cells?: {fields: typeof SCENE_EVIDENCE_CELL_FIELDS; selected: SceneEvidenceCellTuple[]};
+  omittedArtifactCount: number;
+  omittedCellCount: number;
+}
+export type SceneEvidencePromptData = SceneWideEvidencePromptData | SelectedEvidencePromptData;
 
 export const SCENE_EVIDENCE_CELL_FIELDS = ['artifactId', 'rowIndex', 'column', 'value', 'unit'] as const;
 export type SceneEvidenceCellTuple = [string, number, string, unknown, string | null];
@@ -476,7 +492,7 @@ function byteLength(data: SceneEvidencePromptData): number {
  * end, keeping ① and ②, and only then the trailing locators. Undefined when the
  * run declared nothing or asked for nothing the model needs to know about.
  */
-export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome | undefined): SceneEvidencePromptData | undefined {
+export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome | undefined): SceneWideEvidencePromptData | undefined {
   if (!outcome?.skillId || (outcome.reason && SILENT_REASONS.has(outcome.reason))) return undefined;
   if (outcome.status === 'not_run') {
     return {status: 'not_run', skillId: outcome.skillId, reason: outcome.reason,
@@ -488,7 +504,7 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
   let key = outcome.keyCells.slice(0, SCENE_EVIDENCE_MAX_CELLS).map(tuple);
   let summary = outcome.summaryCells.slice(0, SCENE_EVIDENCE_MAX_CELLS - key.length).map(tuple);
   let artifacts = [...outcome.artifacts];
-  const build = (): SceneEvidencePromptData => ({
+  const build = (): SceneWideEvidencePromptData => ({
     status: 'ran', skillId: outcome.skillId!,
     ...(outcome.identity ? {identity: outcome.identity} : {}),
     ...(outcome.artifactIdRange ? {artifactIdRange: outcome.artifactIdRange} : {}),
@@ -508,6 +524,34 @@ export async function collectSceneEvidenceForPrompt(
   input: SceneEntryEvidenceInput,
 ): Promise<SceneEvidencePromptData | undefined> {
   return buildSceneEvidencePromptData(await acquireSceneEntryEvidence(input));
+}
+
+/** A handled failure is still handled: never reacquire after stateful prefetch. */
+export async function collectSelectedEvidenceForPrompt(
+  input: Omit<SceneEntryEvidenceInput, 'focusTarget'>,
+): Promise<{handled: true; data: SceneEvidencePromptData | undefined} | {handled: false}> {
+  if (!shouldCollectSelectedEvidenceFoundation(input)) return {handled: false};
+  if (!isToolAllowedForScope(ENTRY_SKILL_TOOL_ACCESS,
+    {sessionId: '', hasCodebaseAccess: false, allowNewEvidence: input.policy.allowNewEvidence})) {
+    return {handled: true, data: undefined};
+  }
+  const outcome = await acquireSelectedEvidenceFoundation({...input, timeoutMs: input.timeoutMs ?? SCENE_ENTRY_TIMEOUT_MS});
+  const {artifacts: allArtifacts, cells: allCells, omittedCellCount, ...metric} = outcome.metric;
+  // Identity, window and availability precede values; all display layers share this budget.
+  const priority = {identity: 0, window: 1, status: 2, value: 3, coverage: 4, denominator: 5};
+  let selected: SceneEvidenceCellTuple[] = [...allCells].sort((a, b) => priority[a.role] - priority[b.role])
+    .slice(0, SCENE_EVIDENCE_MAX_CELLS - (outcome.native.status === 'captured' ? 4 : 0)).map(cell => [cell.artifactId, cell.rowIndex, cell.column, cell.value, cell.unit ?? null]);
+  let artifacts = [...allArtifacts];
+  const build = (): SelectedEvidencePromptData => ({kind: 'selected_foundation', native: outcome.native, metric,
+    ...(outcome.identity ? {identity: outcome.identity} : {}),
+    ...(artifacts.length ? {artifacts} : {}),
+    ...(selected.length ? {cells: {fields: SCENE_EVIDENCE_CELL_FIELDS, selected}} : {}),
+    omittedArtifactCount: allArtifacts.length - artifacts.length,
+    omittedCellCount: omittedCellCount + allCells.length - selected.length});
+  while (selected.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) selected.pop();
+  while (artifacts.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) artifacts.pop();
+  // Private metadata is never truncated into an apparently valid locator.
+  return {handled: true, data: byteLength(build()) <= SCENE_EVIDENCE_MAX_BYTES ? build() : undefined};
 }
 
 /**

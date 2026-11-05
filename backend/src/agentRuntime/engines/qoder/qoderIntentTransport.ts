@@ -5,6 +5,9 @@
 import {isAbsolute} from 'node:path';
 import {QODER_BYOK_API_KEY_ENV, type QoderRuntimeConfig} from './qoderConfig';
 import type {QoderSdkModule} from './qoderSdkLoader';
+import {resolveModelExecutionProfile, type ModelEffectiveSettings, type ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
+import {resolveModelExecutionPolicy, type ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
+import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 import {
   INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS,
   intentTransportTextResult,
@@ -26,6 +29,11 @@ export interface QoderIntentTransportInput extends IntentTransportInput {
   isolatedClassifierDirectory: string;
   /** The run's authorization, checked after the SDK and auth resolved, right before `query`. */
   beforeQuery?: () => void;
+  purpose?: RuntimeModelCallPurpose;
+  authoredReasoning?: ModelEffectiveSettings['authoredReasoning'];
+  effectiveSettings?: ModelEffectiveSettings;
+  sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
+  onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -55,11 +63,27 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
     const model = input.config.lightModel ?? input.config.model;
-    const byok = input.config.byok;
+    const byok = {...input.config.byok};
+    const scopedEnv = {...input.scopedEnv};
+    const cliPath = input.config.cliPath;
+    const purpose = input.purpose;
     const byokRequested = Boolean(byok.apiKey || byok.provider || byok.baseUrl || byok.style);
     if (byokRequested && (!byok.apiKey || !byok.provider || !model)) {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
+    let execution: ReturnType<typeof resolveModelExecutionPolicy>;
+    try {
+      // This native SDK has no verified generic reasoning control. Do not pretend to honor a required override.
+      if (input.authoredReasoning !== undefined) return {status: 'unavailable', reason: 'invalid_configuration'};
+      const profile = resolveModelExecutionProfile({runtimeKind: 'qoder-agent-sdk', modelId: model, baseUrl: byok.baseUrl,
+        protocol: byok.style === 'openai' ? 'chat_completions' : byok.style === 'anthropic' ? 'anthropic_messages' : 'native',
+        sdk: input.sdkIdentity ?? {packageName: '@qoder-ai/qoder-agent-sdk', version: 'unknown', adapterContractVersion: 'qoder-text-query@1'},
+        sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'installed_sdk'},
+        effective: {...input.effectiveSettings, maxTurns: 1, maxOutputTokens: undefined,
+          authoredReasoning: undefined, sdkEffectiveReasoning: undefined}});
+      execution = resolveModelExecutionPolicy({profile, purpose: purpose ?? 'answer_turn', selection: 'preserve'});
+      if (execution.status === 'unsupported') return {status: 'unavailable', reason: 'invalid_configuration'};
+    } catch {return {status: 'unavailable', reason: 'invalid_configuration'};}
     const sdk = await input.loadSdk();
     scope.throwIfInactive();
     const auth = await input.resolveAuth(sdk);
@@ -73,6 +97,8 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
     });
     if (scope.signal.aborted) onAbort();
     input.beforeQuery?.();
+    try {if (purpose !== undefined) input.onExecutionPolicy?.(execution.receipt);} catch { /* Observation only. */ }
+    try {input.observer?.reasoning?.('provider_default');} catch { /* Observation only. */ }
     const candidate = sdk.query({
       prompt: input.prompt,
       options: {
@@ -83,12 +109,12 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
         closeGraceMs: INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS / 2,
         controlRequestTimeoutMs: Math.max(1, Math.min(scope.remainingMs(), INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS)),
         ...(model ? {model} : {}),
-        ...(input.config.cliPath ? {pathToQoderCLIExecutable: input.config.cliPath} : {}),
+        ...(cliPath ? {pathToQoderCLIExecutable: cliPath} : {}),
         tools: [], allowedTools: [], mcpServers: {}, strictMcpConfig: true,
         settingSources: [], skills: [], plugins: [], promptSuggestions: false,
         permissionMode: 'dontAsk',
         abortController,
-        env: Object.fromEntries(Object.entries(input.scopedEnv).filter(([key]) => key !== QODER_BYOK_API_KEY_ENV)),
+        env: Object.fromEntries(Object.entries(scopedEnv).filter(([key]) => key !== QODER_BYOK_API_KEY_ENV)),
         ...(byokRequested ? {
           resolveModel: () => ({model: {
             provider: byok.provider, api_key: byok.apiKey, model,

@@ -7,6 +7,7 @@ import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCo
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
 import { mergeIsolatedProviderEnv } from './envIsolation';
 import { providerNotFound } from './providerRequestError';
+import {parseOpenAIAnalysisReasoningEffort} from './modelExecutionProfile';
 import type { ProviderService } from './providerService';
 import type { AgentRuntimeKind, ProviderConfig, ProviderScope, ProviderTuning } from './types';
 
@@ -132,6 +133,7 @@ const OPENAI_RUNTIME_ENV_KEYS = [
   'OPENAI_LIGHT_MODEL',
   'OPENAI_BASE_URL',
   'OPENAI_AGENTS_PROTOCOL',
+  'OPENAI_ANALYSIS_REASONING_EFFORT',
   'OPENAI_MAX_TURNS',
   'OPENAI_FULL_PER_TURN_MS',
   'OPENAI_QUICK_PER_TURN_MS',
@@ -235,6 +237,9 @@ function publicRuntimeEnvironment(
   env: Record<string, string | undefined>,
   runtimeKind: AgentRuntimeKind,
 ): Record<string, string> {
+  if (runtimeKind === 'openai-agents-sdk') {
+    parseOpenAIAnalysisReasoningEffort(env.OPENAI_ANALYSIS_REASONING_EFFORT);
+  }
   const picked = pickEnv(env, runtimeEnvironmentKeys(runtimeKind));
   if (runtimeKind !== 'qoder-agent-sdk' || !picked.QODER_BYOK_BASE_URL) return picked;
 

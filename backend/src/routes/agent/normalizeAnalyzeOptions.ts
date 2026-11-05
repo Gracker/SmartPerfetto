@@ -510,6 +510,9 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
         'INVALID_SELECTION_CONTEXT',
       );
     }
+    if (raw.nativeTable !== undefined && raw.nativeTable !== 'slice') {
+      throw new AnalyzeOptionsError('track_event selectionContext.nativeTable is unsupported', 'INVALID_SELECTION_CONTEXT');
+    }
     const trackUri = normalizeOptionalString(raw.trackUri, 512);
     return {
       kind: 'track_event',
@@ -517,6 +520,7 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
       eventId: raw.eventId,
       ts: raw.ts,
       ...(raw.dur !== undefined ? {dur: raw.dur as number} : {}),
+      ...(raw.nativeTable === undefined ? {} : {nativeTable: 'slice' as const}),
       ...(trackUri ? {trackUri} : {}),
     };
   }

@@ -10,7 +10,8 @@ import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../tests/helpers/
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIProvider, Runner, RunContext, tool, withTrace} from '@openai/agents';
+import {EventEmitter} from 'events';
+import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIResponsesModel, OpenAIProvider, Runner, RunContext, StreamedRunResult, tool, withTrace, type ModelSettings} from '@openai/agents';
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
 import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRuntime/answerDraftStream';
@@ -18,6 +19,10 @@ import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import {chatCompletionResponse, createOpenAiConfigForTest} from '../../../tests/helpers/openAiRuntimeFixture';
+import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
+import {createOpenAIToolsFromMcpDefinitions} from '../openAiToolAdapter';
+import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorService} from '../../services/analysisRunTraceProcessorLease';
+import type {TraceProcessorLeaseRecord} from '../../services/traceProcessorLeaseStore';
 import * as finalization from '../../agentRuntime/analysisFinalizationContext';
 import * as runtimeCallStats from '../../services/runtimeCallStats';
 import {ArtifactStore} from '../../agentv3/artifactStore';
@@ -32,7 +37,15 @@ import {
 import * as patternMemory from '../../agentv3/analysisPatternMemory';
 import * as configModule from '../../agentRuntime/engines/openai/openAiConfig';
 import * as intentTransport from '../../agentRuntime/engines/openai/openAiIntentTransport';
+import * as reasoningCompat from '../../agentRuntime/engines/openai/mimoReasoningCompat';
+import * as requestPurpose from '../../services/providerManager/openAiChatCompletionsCompat';
 import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIntent';
+import * as turnIntentRuntime from '../../agentRuntime/analysisTurnIntent';
+import * as effectiveSkillRegistry from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
+import * as skillExecutors from '../../services/skillEngine/skillExecutor';
+import * as skillLoading from '../../services/skillEngine/skillLoader';
+import {beginRawSqlNativeQuery, readRawSqlNativeProvenanceSnapshot} from '../../services/evidence/rawSqlNativeProvenance';
+import {createSelectedFoundationFixture, installSelectedNativeSignerMocks} from '../../../tests/helpers/selectedEvidenceFoundationFixture';
 import * as systemPrompt from '../../agentv3/claudeSystemPrompt';
 import * as focusDetector from '../../agentv3/focusAppDetector';
 import * as mcpModule from '../../agentv3/claudeMcpServer';
@@ -41,7 +54,7 @@ import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAware
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import * as localizedStrategyTemplate from '../../agentv3/localizedStrategyTemplate';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
-import {renderConclusionContractSidecar, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract, type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
@@ -51,8 +64,9 @@ import {resolveFocusPackageCell} from '../../agentRuntime/__tests__/focusEvidenc
 import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendorHintParityFixture';
 import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorResolver';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
-import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import {createRuntimePerformanceRecorder, type RuntimePerformanceOutcome} from '../../agentRuntime/runtimePerformance';
 import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerformanceContext';
+import {createRuntimeAdmissionScope} from '../../agentRuntime/runtimeTaskDeadline';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
@@ -150,8 +164,10 @@ function responseDone(text: string, status = 'completed') {
   }}};
 }
 function sdkStream(text: string, {status = 'completed', nativeText = text, id = 'response-current', events = [] as any[]} = {}) {
+  // This fixture's native payload is already materialized. Only projection consumption remains.
+  const nativeLoop = Promise.resolve();
   return {currentTurn: 1, finalOutput: text, history: [{role: 'assistant', content: text}], lastResponseId: id,
-    state: {}, completed: Promise.resolve(), async *[Symbol.asyncIterator]() {
+    state: {}, completed: Promise.resolve(), _getStreamLoopPromise: () => nativeLoop, async *[Symbol.asyncIterator]() {
       yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
       yield* events;
       yield responseDone(nativeText, status);
@@ -448,7 +464,15 @@ describe('GLM native reasoning continuity', () => {
     const toolResults = labels.map((label, index) => JSON.stringify({step: index + 1, label, ok: true}));
     const calls = labels.map((label, index) => ({id: `glm-tool-${index + 1}`, type: 'function',
       function: {name: 'read_metric', arguments: JSON.stringify({step: index + 1, label})}}));
-    const execute = jest.fn(async ({step}: {step: number; label: string}) => toolResults[step - 1]);
+    let clock = 0;
+    const actualModels = ['glm-actual-first', 'glm-actual-second', 'glm-actual-final', 'glm-actual-followup'];
+    const headerWaits = [7, 432, 383, 11];
+    const execute = jest.fn(async ({step}: {step: number; label: string}) => {
+      // Let the consumer observe response_done before advancing the tool-only clock.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      clock += 97;
+      return toolResults[step - 1];
+    });
     const metric = tool({name: 'read_metric', description: 'Read one fixture metric',
       parameters: z.object({step: z.number(), label: z.string()}), execute});
     const {runtime, updates} = createRuntimeWithUpdates();
@@ -460,7 +484,7 @@ describe('GLM native reasoning continuity', () => {
     const requestBytes: number[] = [];
     const wire = (turn: number) => {
       const frame = (delta: Record<string, unknown>, finish: string | null = null) => `data: ${JSON.stringify({
-        id: `glm-response-${turn}`, object: 'chat.completion.chunk', created: 1, model,
+        id: `glm-response-${turn}`, object: 'chat.completion.chunk', created: 1, model: actualModels[turn],
         choices: [{index: 0, delta, finish_reason: finish}],
       })}\n\n`;
       const text = turn < 2 ? frame({role: 'assistant', reasoning_content: reasons[turn].slice(0, 7)}) +
@@ -469,7 +493,9 @@ describe('GLM native reasoning continuity', () => {
           arguments: calls[turn].function.arguments.slice(0, 10)}}]}) +
         frame({tool_calls: [{index: 0, function: {arguments: calls[turn].function.arguments.slice(10)}}]}) +
         frame({}, 'tool_calls') : frame({role: 'assistant', content: turn === 2 ? nativeAnswer : nextAnswer}) + frame({}, 'stop');
-      const bytes = new TextEncoder().encode(text + 'data: [DONE]\n\n');
+      const usage = `data: ${JSON.stringify({id: `glm-response-${turn}`, object: 'chat.completion.chunk',
+        created: 1, model: actualModels[turn], choices: [], usage: {prompt_tokens: 100 + turn, completion_tokens: 20 + turn}})}\n\n`;
+      const bytes = new TextEncoder().encode(text + usage + 'data: [DONE]\n\n');
       // Every Chinese codepoint and SSE line crosses transport chunk boundaries.
       return new Response(new ReadableStream({start(controller) {
         for (let index = 0; index < bytes.length; index++) controller.enqueue(bytes.slice(index, index + 1));
@@ -481,10 +507,11 @@ describe('GLM native reasoning continuity', () => {
       const body = input instanceof Request ? await input.clone().text() : init?.body;
       requests.push(JSON.parse(String(body)));
       requestBytes.push(Buffer.byteLength(String(body)));
+      clock += headerWaits[requests.length - 1];
       return wire(requests.length - 1);
     });
     const sessionId = 'glm-native-private';
-    const recorder = createRuntimePerformanceRecorder();
+    const recorder = createRuntimePerformanceRecorder({now: () => clock});
     const scope = createRuntimePerformanceScope({recorder,
       identity: {runId: 'glm-first', sessionId, scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
     const first = await scope.run(() => runtime.analyze('读取两项指标。', sessionId, 'conversation-placeholder', {
@@ -498,6 +525,13 @@ describe('GLM native reasoning continuity', () => {
     expect(measured.modelRequests?.every(item => item.purpose === 'answer_turn' && item.fetchOutcome === 'headers')).toBe(true);
     expect(measured.modelRequests![1].body.normalized!.components.reasoning).toBeGreaterThan(0);
     expect(measured.modelRequests![2].body.bodyBytes!).toBeGreaterThan(measured.modelRequests![0].body.bodyBytes!);
+    const modelCalls = measured.modelCalls!.filter(call => call.purpose === 'answer_turn');
+    expect(modelCalls.map(call => call.durationMs)).toEqual(headerWaits.slice(0, 3));
+    expect(modelCalls.map(call => call.firstOutputMs)).toEqual(headerWaits.slice(0, 3));
+    expect(modelCalls.map(call => call.startOffsetMs)).toEqual(measured.modelRequests!.map(request => request.startOffsetMs));
+    expect(modelCalls.map(call => call.model)).toEqual(actualModels.slice(0, 3));
+    expect(modelCalls.map(call => call.usage)).toEqual([0, 1, 2].map(turn => ({inputTokens: 100 + turn, outputTokens: 20 + turn,
+      reasoningTokens: 0, cachedInputTokens: 0})));
     expect(JSON.stringify(measured)).not.toContain(canary);
     scope.dispose();
     expect(execute.mock.calls.map(call => call[0])).toEqual([{step: 1, label: labels[0]}, {step: 2, label: labels[1]}]);
@@ -524,6 +558,619 @@ describe('GLM native reasoning continuity', () => {
     expect(second.conclusion).toBe(nextAnswer);
     expect(JSON.stringify(updates)).not.toContain(canary);
     attachedDeliveryContext(second);
+  });
+});
+
+describe('OpenAI attempt-bound model-call timing', () => {
+  const declaration = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+    conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: []});
+  const answer = `${declaration}\nA bounded fixture answer.\n`;
+  function wire(id: string, model: string, delta: unknown, finish = 'stop', outputTokens = 23) {
+    return new Response([
+      {id, object: 'chat.completion.chunk', created: 1, model, choices: [{index: 0, delta, finish_reason: null}]},
+      {id, object: 'chat.completion.chunk', created: 1, model, choices: [{index: 0, delta: {}, finish_reason: finish}]},
+      {id, object: 'chat.completion.chunk', created: 1, model, choices: [], usage: {prompt_tokens: 101, completion_tokens: outputTokens}},
+    ].map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n',
+    {headers: {'content-type': 'text/event-stream'}});
+  }
+  function configure(overrides: Partial<ReturnType<typeof createOpenAiConfigForTest>> = {}) {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({protocol: 'chat_completions',
+      baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', model: 'glm-flash', lightModel: 'glm-flash',
+      maxTurns: 5, quickMaxTurns: 5, ...overrides}));
+  }
+
+  it.each(['retry', 'error', 'cancelled'] as const)('counts SDK fetch %s without manufacturing a completed logical call', async outcome => {
+    configure();
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const runtime = createOpenAiRuntimeForTest();
+    const sessionId = `fetch-timing-${outcome}`;
+    let clock = 0, dispatches = 0;
+    const execute = jest.fn(async () => {
+      await new Promise<void>(resolve => setImmediate(resolve)); clock += 97; return '{"value":1}';
+    });
+    const metric = tool({name: 'read_metric', description: 'Read fixture metric', parameters: z.object({}), execute});
+    prepareStub(runtime).mockImplementation(async (...args: any[]) => ({systemPrompt: 'Use the metric tool, then answer.',
+      tools: [metric], allowedTools: ['read_metric'], hypotheses: [],
+      sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns}));
+    const transport = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      dispatches++;
+      if (dispatches === 1) {
+        clock += 11;
+        return wire('first', 'actual-first', {role: 'assistant', tool_calls: [{index: 0, id: 'metric-call',
+          type: 'function', function: {name: 'read_metric', arguments: '{}'}}]}, 'tool_calls', 17);
+      }
+      if (dispatches === 2) {
+        clock += 43;
+        if (outcome === 'cancelled') {
+          runtime.abortSession(sessionId);
+          throw new DOMException('Fixture cancellation', 'AbortError');
+        }
+        return new Response('{"error":{"message":"fixture error"}}', {status: outcome === 'retry' ? 429 : 400,
+          headers: {'content-type': 'application/json', 'retry-after-ms': '1'}});
+      }
+      clock += 79;
+      return wire('last', 'actual-last', {role: 'assistant', content: answer}, 'stop', 29);
+    });
+    const recorder = createRuntimePerformanceRecorder({now: () => clock});
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: sessionId, sessionId,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    try {
+      const result = scope.run(() => runtime.analyze('Read the fixture.', sessionId, 'conversation-placeholder', {
+        providerId: null, runId: sessionId, assistantSurface: 'conversation', conversationTraceAttached: false}));
+      if (outcome === 'cancelled') await expect(result).rejects.toThrow();
+      else expect((await result).completion.status).toBe(outcome === 'retry' ? 'completed' : 'failed');
+      const measured = recorder.seal(), calls = measured.modelCalls!.filter(call => call.purpose === 'answer_turn');
+      expect(transport).toHaveBeenCalledTimes(outcome === 'retry' ? 3 : 2);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]).toMatchObject({durationMs: 11, model: 'actual-first', outcome: 'ok', usage: {outputTokens: 17}});
+      expect(calls[1]).toMatchObject({startOffsetMs: 108, durationMs: outcome === 'retry' ? 122 : 43,
+        outcome: outcome === 'retry' ? 'ok' : outcome});
+      expect(measured.modelRequests).toHaveLength(outcome === 'retry' ? 3 : 2);
+      if (outcome === 'retry') expect(calls[1]).toMatchObject({model: 'actual-last', firstOutputMs: 122, usage: {outputTokens: 29}});
+    } finally {scope.dispose();}
+  });
+
+  it.each(['fresh_signal', 'omitted_signal'] as const)(
+    'keeps an actual SDK late fetch on its original attempt with %s', async signalKind => {
+      configure({quickPathPerTurnMs: 100, maxRunTimeoutMs: 3_000, streamIdleTimeoutMs: 30});
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const runtime = createOpenAiRuntimeForTest(), sessionId = `late-fetch-${signalKind}`;
+      prepareStub(runtime).mockImplementation(async (...args: any[]) => {
+        // Pre-acquired evidence admits the existing timeout closeout; the test does not change its policy.
+        const invocation = {toolCallId: 'fixture-sql', toolName: 'execute_sql', params: {}, extra: {}};
+        await args[4].toolObserver({...invocation, phase: 'started'});
+        await args[4].toolObserver({...invocation, phase: 'completed', result: {
+          content: [{type: 'text', text: '{"columns":["value"],"rows":[[1]],"success":true}'}]}});
+        return {systemPrompt: 'Use retained fixture evidence.', tools: [], allowedTools: [], hypotheses: [],
+          sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns};
+      });
+      const releaseOld = createDeferred<void>(), oldForwarded = createDeferred<void>(), oldAborted = createDeferred<void>();
+      const newDone = createDeferred<void>(), releaseNew = createDeferred<void>();
+      const realCompat = reasoningCompat.createMimoReasoningContentFetch;
+      const forwarded: Array<{input: unknown; body: unknown; signal?: AbortSignal}> = [];
+      let wireAttempts = 0;
+      jest.spyOn(reasoningCompat, 'createMimoReasoningContentFetch').mockImplementation(baseFetch => realCompat(async (input, init) => {
+        const ordinal = ++wireAttempts;
+        if (ordinal === 1) await releaseOld.promise;
+        const options = {...init};
+        if (ordinal === 1) {
+          // The installed SDK supplies a derived signal. Its identity is deliberately not our attribution key.
+          expect((init as RequestInit).signal?.aborted).toBe(true);
+          if (signalKind === 'fresh_signal') options.signal = new AbortController().signal;
+          else delete options.signal;
+        }
+        forwarded.push({input, body: options.body, signal: options.signal as AbortSignal | undefined});
+        const response = await baseFetch!(input, options);
+        if (ordinal === 1) oldForwarded.resolve();
+        return response;
+      }));
+      const nativeStreams: any[] = [];
+      const realRun = Runner.prototype.run;
+      let attempts = 0;
+      jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+        const attempt = ++attempts, runner = this;
+        let native: any;
+        const nativeReady = createDeferred<any>();
+        void nativeReady.promise.catch(() => undefined);
+        if (attempt === 1) args[2].signal.addEventListener('abort', () => oldAborted.resolve(), {once: true});
+        const start = async () => {
+          try {
+            native = await (realRun as any).apply(runner, args);
+            nativeStreams.push(native); void native.completed.catch(() => undefined);
+            nativeReady.resolve(native);
+          } catch (error) {nativeReady.reject(error); throw error;}
+        };
+        // Exercise both run-created and lazy-consume-created SDK async chains.
+        if (signalKind === 'fresh_signal') await start();
+        return new Proxy({}, {get: (_target, key) => {
+          if (key === '_getStreamLoopPromise') return () => nativeReady.promise.then(stream => stream._getStreamLoopPromise());
+          if (key === Symbol.asyncIterator) return async function* () {
+            if (!native) await start();
+            for await (const event of native) {
+              yield event;
+              if (attempt === 2 && event.type === 'raw_model_stream_event' && event.data?.type === 'response_done') {
+                newDone.resolve(); await releaseNew.promise;
+              }
+            }
+          };
+          const value = native?.[key];
+          return typeof value === 'function' ? value.bind(native) : value;
+        }});
+      });
+      let clock = 0;
+      const transport = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+        expect(init?.signal?.aborted).toBe(false);
+        const late = forwarded.length === 1; // serial drain delivers the aborted old request first
+        clock += late ? 777 : 431;
+        return wire(late ? 'old' : 'new', late ? 'actual-old' : 'actual-new',
+          {role: 'assistant', content: answer}, 'stop', late ? 991 : 23);
+      });
+      const recorder = createRuntimePerformanceRecorder({now: () => clock});
+      const scope = createRuntimePerformanceScope({recorder, identity: {runId: sessionId, sessionId,
+        scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+      const pending = scope.run(() => runtime.analyze('Read retained evidence.', sessionId, 'conversation-placeholder', {
+        providerId: null, runId: sessionId, assistantSurface: 'conversation', conversationTraceAttached: false}));
+      const beforeCompletion = (boundary: Promise<void>) => Promise.race([boundary,
+        pending.then(() => {throw new Error('Runtime completed before the expected native SDK boundary');})]);
+      try {
+        await beforeCompletion(oldAborted.promise);
+        expect(attempts).toBe(1);
+        expect(wireAttempts).toBe(1);
+        releaseOld.resolve(); await beforeCompletion(oldForwarded.promise);
+        await beforeCompletion(newDone.promise);
+        releaseNew.resolve(); await pending;
+        await Promise.allSettled(nativeStreams.map(stream => stream._getStreamLoopPromise()));
+        const calls = recorder.seal().modelCalls!.filter(call => call.purpose !== 'classification');
+        expect(attempts).toBe(2);
+        expect(wireAttempts).toBe(2);
+        expect(transport).toHaveBeenCalledTimes(2);
+        expect(transport.mock.calls.map(([input, init]) => [input, init?.body]))
+          .toEqual(forwarded.map(item => [item.input, item.body]));
+        expect(forwarded[0].signal).toEqual(signalKind === 'fresh_signal' ? expect.any(AbortSignal) : undefined);
+        expect(calls).toHaveLength(2);
+        expect(calls[0]).toMatchObject({purpose: 'answer_turn', outcome: 'cancelled'});
+        expect(calls[1]).toMatchObject({purpose: 'continuation', outcome: 'ok', durationMs: 431,
+          model: 'actual-new', usage: {inputTokens: 101, outputTokens: 23}});
+        expect(JSON.stringify(calls)).not.toContain('actual-old');
+      } finally {releaseOld.resolve(); releaseNew.resolve(); await pending.catch(() => undefined); scope.dispose();}
+    });
+
+  it('does not treat repeated SDK starts without response_done as successful calls when fetch is mocked away', async () => {
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: 'duplicate-start', sessionId: 'duplicate-start',
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    mockRun({...sdkStream(''), currentTurn: 2, async *[Symbol.asyncIterator]() {
+      yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
+      yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
+      throw new Error('Fixture stream failure');
+    }});
+    try {
+      const result = await scope.run(() => runtime.analyze('query', 'duplicate-start', 'trace', {providerId: null}));
+      expect(result.rounds).toBe(2);
+      expect(recorder.seal().modelCalls?.filter(call => call.purpose === 'answer_turn')).toEqual([
+        expect.objectContaining({outcome: 'error'}),
+      ]);
+    } finally {scope.dispose();}
+  });
+});
+
+describe('OpenAI native drain ownership', () => {
+  const frame = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+    conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: []});
+  const nextAnswer = `${frame}\nThe next run completed.\n`;
+  const lateAnswer = `${frame}\nLATE_NATIVE_MUST_NOT_PUBLISH\n`;
+  const options = {providerId: null, assistantSurface: 'conversation' as const, conversationTraceAttached: false};
+  const eventLoopBoundary = () => new Promise<void>(resolve => setImmediate(resolve));
+
+  function configureDrain(protocol: 'chat_completions' | 'responses' = 'chat_completions') {
+    jest.useFakeTimers({now: 10_000, doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask']});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      protocol, quickMaxTurns: 1, quickTargetTurns: 1,
+      quickPathPerTurnMs: 1_000, maxRunTimeoutMs: 1_000, streamIdleTimeoutMs: 60_000,
+    }));
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  }
+
+  /** Captures the installed SDK result without fabricating its lifetime or replacing its iterator. */
+  function observeRealStreams() {
+    const first = createDeferred<{stream: any; drain: Promise<unknown>}>();
+    const drains: Promise<unknown>[] = [];
+    const realRun = Runner.prototype.run;
+    const run = jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (realRun as any).apply(this, args);
+      const getter = (stream as {_getStreamLoopPromise?: () => unknown})._getStreamLoopPromise;
+      expect(typeof getter).toBe('function');
+      const drain = getter!.call(stream) as Promise<unknown>;
+      expect(drain).toEqual(expect.objectContaining({then: expect.any(Function)}));
+      void stream.completed.catch(() => undefined);
+      void drain.catch(() => undefined);
+      drains.push(drain);
+      if (drains.length === 1) first.resolve({stream, drain});
+      return stream;
+    });
+    return {first: first.promise, drains, run};
+  }
+
+  function observeProviderPhaseEnds(recorder: ReturnType<typeof createRuntimePerformanceRecorder>) {
+    const starts = recorder.startPhase.bind(recorder);
+    const ends: Array<jest.Mock<(outcome?: RuntimePerformanceOutcome) => void>> = [];
+    jest.spyOn(recorder, 'startPhase').mockImplementation(name => {
+      const phase = starts(name);
+      if (name !== 'provider') return phase;
+      const end = jest.fn(phase.end); ends.push(end);
+      return {end};
+    });
+    return ends;
+  }
+
+  /** Exercise the real lease-owner API with no SQLite, processor process or SQL dependency. */
+  function leaseFixture(sessionId: string) {
+    const controller = new AbortController();
+    const scope = {tenantId: 'test', workspaceId: 'test'};
+    const trace = {id: 'trace', filename: 'fixture.trace', size: 1, uploadTime: new Date(0), status: 'ready' as const};
+    const cleanup = jest.fn(() => true);
+    const service = Object.assign(new EventEmitter(), {
+      getTrace: (id: string) => id === trace.id ? trace : undefined,
+      getTraceFilePath: () => '/fixture/trace', getTraceSourceKind: () => 'local_file',
+      getAnalysisRunProcessorPolicy: (_id: string, query?: {leaseId?: string}) => ({sourceKind: 'local_file',
+        requiresIsolation: !query?.leaseId, reason: query?.leaseId ? 'trusted' : 'shared_tainted'}),
+      ensureProcessorForLease: jest.fn(async () => ({})), cleanupLeaseProcessor: cleanup,
+      runWithLeases: async <T>(_contexts: unknown, fn: () => Promise<T>) => fn(),
+    }) as unknown as AnalysisRunTraceProcessorService;
+    let record: TraceProcessorLeaseRecord = {id: `lease-${sessionId}`, tenantId: scope.tenantId,
+      workspaceId: scope.workspaceId, traceId: 'trace', mode: 'isolated', state: 'pending', rssBytes: null,
+      heartbeatAt: 0, expiresAt: null, holderCount: 1, holders: []};
+    const transition = (state: TraceProcessorLeaseRecord['state']) => jest.fn(() => (record = {...record, state}));
+    const store = {acquireHolder: jest.fn(() => record), releaseHolder: jest.fn(() => record),
+      markStarting: transition('starting'), markReady: transition('ready'), markFailed: transition('failed'),
+      beginDraining: transition('released'), heartbeatHolder: jest.fn(() => record)};
+    return {controller, store, cleanup, input: {service, store, scope, runId: `run-${sessionId}`, sessionId,
+      currentTraceId: 'trace', signal: controller.signal, assertCurrent() {},
+      ensureBackingMetadata: () => undefined}};
+  }
+
+  it.each(['timeout', 'user_cancel'] as const)('R1 keeps real HTTP and owner pending until ignored-abort fetch drains: %s', async trigger => {
+    configureDrain();
+    const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime);
+    const recordTurn = jest.spyOn(runtime, 'recordTurn');
+    const sessionId = `real-http-drain-${trigger}`;
+    const lease = leaseFixture(sessionId);
+    const entered = createDeferred<AbortSignal>(), releaseFetch = createDeferred<void>();
+    const observed = observeRealStreams();
+    let clock = 0;
+    const recorder = createRuntimePerformanceRecorder({now: () => clock});
+    const providerEnds = observeProviderPhaseEnds(recorder);
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: sessionId, sessionId,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    let fetchSettled = false, executionSettled = false, nativeSettled = false, dispatches = 0;
+    let handle: Awaited<ReturnType<typeof prepareAnalysisRunTraceProcessorLeases>> | undefined;
+    let outcome: Promise<{value?: any; error?: unknown}> | undefined;
+    const transport = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (++dispatches === 1) {
+        const signal = input instanceof Request ? input.signal : init?.signal;
+        expect(signal).toBeInstanceOf(AbortSignal);
+        entered.resolve(signal as AbortSignal);
+        // Intentionally ignore this real supplied abort signal. No replacement/deletion of it.
+        await releaseFetch.promise;
+        fetchSettled = true;
+        return chatCompletionResponse('old-held-http', {role: 'assistant', content: lateAnswer}, 'stop');
+      }
+      return chatCompletionResponse('next-http', {role: 'assistant', content: nextAnswer}, 'stop');
+    });
+    try {
+      handle = await prepareAnalysisRunTraceProcessorLeases(lease.input);
+      const owned = scope.run(() => handle!.run(() => runtime.analyze('old query', sessionId, 'trace', options)))
+        .finally(() => {handle!.release(); executionSettled = true;});
+      outcome = owned.then(value => ({value}), error => ({error}));
+      const signal = await entered.promise;
+      const {stream, drain} = await observed.first;
+      void drain.then(() => {nativeSettled = true;}, () => {nativeSettled = true;});
+      clock = 100;
+      if (trigger === 'timeout') await jest.advanceTimersByTimeAsync(1_001);
+      else {
+        // Product user cancellation revokes holders immediately; it does not attest native drain.
+        lease.controller.abort(new DOMException('User cancelled', 'AbortError'));
+        expect(lease.store.releaseHolder).toHaveBeenCalledTimes(1);
+        expect(lease.cleanup).toHaveBeenCalledTimes(1);
+        await runtime.abortSession(sessionId);
+      }
+      await stream.completed;
+      await eventLoopBoundary();
+      expect(signal.aborted).toBe(true);
+      expect(fetchSettled).toBe(false);
+      expect(nativeSettled).toBe(false); // installed SDK boundary, not a mocked getter
+      expect(providerEnds).toHaveLength(1);
+      expect(providerEnds[0]).not.toHaveBeenCalled();
+      clock = 600; // additional held-native time belongs to provider, not a longer model call
+      await eventLoopBoundary();
+      expect(providerEnds[0]).not.toHaveBeenCalled();
+      if (trigger === 'user_cancel') {
+        expect(lease.store.releaseHolder).toHaveBeenCalledTimes(1);
+      }
+      const independent = await runtime.analyze('independent query', `${sessionId}-other`, 'trace', options);
+      expect(independent.completion.status).toBe('completed'); attachedDeliveryContext(independent);
+      // Red before the adapter fix: public completed has released this run while real fetch is held.
+      expect(executionSettled).toBe(false);
+      if (trigger === 'timeout') expect(lease.store.releaseHolder).not.toHaveBeenCalled();
+      expect(recordTurn.mock.calls.some(([input]) => (input as any).sessionId === sessionId)).toBe(false);
+      await expect(runtime.analyze('blocked successor', sessionId, 'trace', options)).rejects.toThrow('already in progress');
+      expect(transport).toHaveBeenCalledTimes(2); // held old HTTP plus the independent session only
+      releaseFetch.resolve();
+      await drain;
+      const result = await outcome;
+      expect(providerEnds[0]).toHaveBeenCalledTimes(1);
+      const measured = recorder.seal();
+      expect(measured.phases.filter(phase => phase.name === 'provider')).toEqual([
+        {name: 'provider', startOffsetMs: 0, durationMs: 600, outcome: trigger === 'timeout' ? 'error' : 'cancelled'},
+      ]);
+      expect(measured.modelCalls?.filter(call => call.purpose === 'answer_turn')).toEqual([
+        expect.objectContaining({durationMs: 100, outcome: 'cancelled'}),
+      ]);
+      if (trigger === 'user_cancel') expect(result.error).toBeDefined();
+      else {
+        expect(result.value.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+        attachedDeliveryContext(result.value);
+      }
+      expect(fetchSettled).toBe(true);
+      expect(lease.store.releaseHolder).toHaveBeenCalledTimes(1);
+      if (trigger === 'user_cancel') expect(lease.cleanup).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(updates)).not.toContain('LATE_NATIVE_MUST_NOT_PUBLISH');
+      expect(recordTurn.mock.calls.some(([input]) => String((input as any).result?.conclusion).includes('LATE_NATIVE_MUST_NOT_PUBLISH'))).toBe(false);
+      const successor = await runtime.analyze('successor after drain', sessionId, 'trace', options);
+      expect(successor.completion.status).toBe('completed'); attachedDeliveryContext(successor);
+      expect(transport).toHaveBeenCalledTimes(3);
+    } finally {
+      releaseFetch.resolve();
+      await Promise.allSettled(observed.drains);
+      await outcome;
+      handle?.release();
+      scope.dispose();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(['timeout', 'user_cancel'] as const)('R2 waits for an already-started shared-registry tool and its real SDK loop: %s', async trigger => {
+    configureDrain();
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const recordTurn = jest.spyOn(runtime, 'recordTurn');
+    const sessionId = `real-shared-tool-drain-${trigger}`;
+    const entered = createDeferred<AbortSignal>(), releaseTool = createDeferred<void>();
+    const observed = observeRealStreams();
+    let clock = 0;
+    const recorder = createRuntimePerformanceRecorder({now: () => clock});
+    const providerEnds = observeProviderPhaseEnds(recorder);
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: sessionId, sessionId,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    let handlerSettled = false, nativeSettled = false, executionSettled = false;
+    let outcome: Promise<{value?: any; error?: unknown}> | undefined;
+    const handler = jest.fn(async (_args: Record<string, unknown>, extra: {signal?: AbortSignal}) => {
+      expect(extra.signal).toBeInstanceOf(AbortSignal);
+      await eventLoopBoundary(); // let the real native response_done freeze this model call's usage/time
+      entered.resolve(extra.signal!);
+      try {
+        await releaseTool.promise; // started shared work is not replaced by an abort-racing fake completion
+        return {content: [{type: 'text' as const, text: 'LATE_SHARED_TOOL_MUST_NOT_PUBLISH'}]};
+      } finally {handlerSettled = true;}
+    });
+    prepareStub(runtime).mockImplementation(async (...args: any[]) => {
+      const registry = new McpToolRegistry({requestScope: {sessionId: args[1], hasCodebaseAccess: false, allowNewEvidence: true},
+        runId: args[4].runId, runAuthorization: args[4].runAuthorization, canInvokeTool: args[4].isActive,
+        toolObserver: args[4].toolObserver});
+      registry.registerShared({name: 'read_drain_fixture', description: 'Read a lifecycle fixture', inputSchema: {},
+        exposure: 'public', evidenceEffect: 'acquire', handler});
+      return {systemPrompt: 'Read the shared fixture, then answer.', tools: createOpenAIToolsFromMcpDefinitions(registry.list()),
+        allowedTools: ['read_drain_fixture'], hypotheses: [], sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns};
+    });
+    const transport = jest.spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(async () => {
+        clock = 31;
+        const chunk = {id: 'held-shared-tool', object: 'chat.completion.chunk', created: 1, model: 'actual-tool-model'};
+        return new Response([
+          {...chunk, choices: [{index: 0, delta: {role: 'assistant', tool_calls: [{index: 0,
+            id: 'held-shared-tool-call', type: 'function', function: {name: 'read_drain_fixture', arguments: '{}'}}]}, finish_reason: null}]},
+          {...chunk, choices: [{index: 0, delta: {}, finish_reason: 'tool_calls'}]},
+          {...chunk, choices: [], usage: {prompt_tokens: 101, completion_tokens: 23}},
+        ].map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n',
+        {headers: {'content-type': 'text/event-stream'}});
+      })
+      .mockImplementation(async () => chatCompletionResponse('after-tool-drain', {role: 'assistant', content: nextAnswer}, 'stop'));
+    try {
+      const pending = scope.run(() => runtime.analyze('old query', sessionId, 'trace', options))
+        .finally(() => {executionSettled = true;});
+      const settled: Promise<{value?: any; error?: unknown}> = pending.then((value: any) => ({value}), (error: unknown) => ({error}));
+      outcome = settled;
+      const signal = await entered.promise;
+      const {stream, drain} = await observed.first;
+      void drain.then(() => {nativeSettled = true;}, () => {nativeSettled = true;});
+      clock = 100;
+      if (trigger === 'timeout') await jest.advanceTimersByTimeAsync(1_001);
+      else await runtime.abortSession(sessionId);
+      await stream.completed;
+      await eventLoopBoundary();
+      expect(signal.aborted).toBe(true);
+      expect(handlerSettled).toBe(false);
+      expect(nativeSettled).toBe(false);
+      expect(providerEnds).toHaveLength(1);
+      expect(providerEnds[0]).not.toHaveBeenCalled();
+      clock = 600;
+      await eventLoopBoundary();
+      expect(providerEnds[0]).not.toHaveBeenCalled();
+      expect(transport).toHaveBeenCalledTimes(1); // no new turn while old shared work remains pending
+      // Red before the adapter fix: runtime owner drains independently of the still-running handler.
+      expect(executionSettled).toBe(false);
+      expect(recordTurn).not.toHaveBeenCalled();
+      await expect(runtime.analyze('blocked successor', sessionId, 'trace', options)).rejects.toThrow('already in progress');
+      releaseTool.resolve();
+      await drain;
+      const result = await settled;
+      expect(providerEnds[0]).toHaveBeenCalledTimes(1);
+      const measured = recorder.seal();
+      expect(measured.phases.filter(phase => phase.name === 'provider')).toEqual([
+        {name: 'provider', startOffsetMs: 0, durationMs: 600, outcome: trigger === 'timeout' ? 'error' : 'cancelled'},
+      ]);
+      expect(measured.modelCalls?.filter(call => call.purpose === 'answer_turn')).toEqual([
+        expect.objectContaining({model: 'actual-tool-model', durationMs: 31,
+          usage: {inputTokens: 101, outputTokens: 23, reasoningTokens: 0, cachedInputTokens: 0}}),
+      ]);
+      expect(handlerSettled).toBe(true);
+      expect(transport).toHaveBeenCalledTimes(1);
+      if (trigger === 'user_cancel') expect(result.error).toBeDefined();
+      else {
+        expect(result.value.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+        attachedDeliveryContext(result.value);
+      }
+      expect(JSON.stringify(updates)).not.toContain('LATE_SHARED_TOOL_MUST_NOT_PUBLISH');
+      const successor = await runtime.analyze('successor after drain', sessionId, 'trace', options);
+      expect(successor.completion.status).toBe('completed'); attachedDeliveryContext(successor);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(transport).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseTool.resolve();
+      await Promise.allSettled(observed.drains);
+      await outcome;
+      scope.dispose();
+      jest.useRealTimers();
+    }
+  });
+
+  it.each(['native', 'consumer'] as const)('drains the other operation when the known %s promise rejects first', async rejects => {
+    configureDrain('responses');
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const entered = createDeferred<void>(), consumerGate = createDeferred<void>(), native = createDeferred<void>();
+    void native.promise.catch(() => undefined);
+    const stream = {...sdkStream(nextAnswer), _getStreamLoopPromise: () => native.promise,
+      async *[Symbol.asyncIterator]() {
+        entered.resolve();
+        if (rejects === 'consumer') throw new Error('consumer fixture rejected');
+        await consumerGate.promise;
+        yield responseDone(nextAnswer);
+      }};
+    const run = mockRun(stream);
+    let settled = false;
+    const pending: Promise<any> = runtime.analyze('query', `all-settled-${rejects}`, 'trace', options)
+      .finally(() => {settled = true;});
+    void pending.catch(() => undefined);
+    try {
+      await entered.promise;
+      if (rejects === 'native') {native.reject(new Error('known native rejection')); await jest.advanceTimersByTimeAsync(1_001);}
+      await eventLoopBoundary();
+      expect((run.mock.calls[0][2] as {signal: AbortSignal}).signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      expect(runtime.nativeDrainContractFault).toBeUndefined();
+      await expect(runtime.analyze('blocked', `all-settled-${rejects}`, 'trace', options)).rejects.toThrow('already in progress');
+      if (rejects === 'native') consumerGate.resolve(); else native.resolve();
+      const result = await pending;
+      expect(result.completion).toMatchObject(rejects === 'native'
+        ? {status: 'incomplete', reason: 'timeout'} : {status: 'failed', reason: 'provider_error'});
+      attachedDeliveryContext(result);
+      run.mockResolvedValue(sdkStream(nextAnswer));
+      const next = await runtime.analyze('after known failure', `all-settled-${rejects}`, 'trace', options);
+      expect(next.completion.status).toBe('completed'); attachedDeliveryContext(next);
+    } finally {
+      consumerGate.resolve(); native.resolve();
+      await pending.catch(() => undefined);
+      jest.useRealTimers();
+    }
+  });
+
+  it('releases a known failed SDK startup without poisoning the adapter', async () => {
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const run = mockRun().mockRejectedValueOnce(new Error('known startup failure')).mockResolvedValue(sdkStream(nextAnswer));
+    const failed = await runtime.analyze('query', 'failed-startup-drain', 'trace', options);
+    expect(failed.completion).toMatchObject({status: 'failed', reason: 'provider_error'});
+    expect(runtime.nativeDrainContractFault).toBeUndefined();
+    const next = await runtime.analyze('after startup failure', 'failed-startup-drain', 'trace', options);
+    expect(next.completion.status).toBe('completed'); attachedDeliveryContext(next);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects an unsupported installed SDK before any native dispatch without poisoning a healthy retry', async () => {
+    const prototype = StreamedRunResult.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, '_getStreamLoopPromise')!;
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const run = mockRun(sdkStream(nextAnswer));
+    try {
+      Object.defineProperty(prototype, '_getStreamLoopPromise', {configurable: true, value: undefined});
+      await expect(runtime.analyze('query', 'unsupported-sdk', 'trace', options)).rejects
+        .toMatchObject({code: 'OPENAI_SDK_NATIVE_DRAIN_UNAVAILABLE'});
+      expect(run).not.toHaveBeenCalled();
+      expect(runtime.nativeDrainContractFault).toBeUndefined();
+    } finally {Object.defineProperty(prototype, '_getStreamLoopPromise', descriptor);}
+    const next = await runtime.analyze('supported now', 'unsupported-sdk', 'trace', options);
+    expect(next.completion.status).toBe('completed'); attachedDeliveryContext(next);
+  });
+
+  it.each(['missing', 'throws', 'nonpromise'] as const)('fails closed across reset when a dispatched stream has %s native drain', async kind => {
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const malformed: any = sdkStream(nextAnswer);
+    if (kind === 'missing') delete malformed._getStreamLoopPromise;
+    else malformed._getStreamLoopPromise = kind === 'throws'
+      ? () => {throw new Error('PRIVATE_BAD_GETTER');} : () => undefined;
+    const run = mockRun(malformed);
+    const sessionId = `unknown-drain-${kind}`;
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: sessionId, sessionId,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    let error: any;
+    try {await scope.run(() => runtime.analyze('query', sessionId, 'trace', options));}
+    catch (caught) {error = caught;}
+    finally {scope.dispose();}
+    expect(error).toMatchObject({code: 'OPENAI_SDK_NATIVE_DRAIN_UNAVAILABLE'});
+    expect(recorder.seal().phases.filter(phase => phase.name === 'provider')).toEqual([
+      expect.objectContaining({name: 'provider', outcome: 'error'}),
+    ]);
+    expect(error.message).toContain('restart this process');
+    expect(error.message).not.toContain('PRIVATE_BAD_GETTER');
+    expect(() => runtime.executionGuard.begin({runtime: 'openai-agents-sdk', sessionId})).toThrow('already in progress');
+    runtime.abortSession(sessionId); runtime.reset();
+    for (const blocked of [sessionId, `${sessionId}-other`]) {
+      await expect(runtime.analyze('blocked', blocked, 'trace', options)).rejects
+        .toMatchObject({code: 'OPENAI_SDK_NATIVE_DRAIN_UNAVAILABLE'});
+    }
+    expect(run).toHaveBeenCalledTimes(1);
+    const healthy = createOpenAiRuntimeForTest(); prepareStub(healthy); run.mockResolvedValue(sdkStream(nextAnswer));
+    const next = await healthy.analyze('healthy instance', `${sessionId}-healthy`, 'trace', options);
+    expect(next.completion.status).toBe('completed'); attachedDeliveryContext(next);
+  });
+
+  it('keeps a completed candidate when native drain exhausts the absolute deadline before planned repair', async () => {
+    configureDrain();
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      quickMaxTurns: 3, quickPathPerTurnMs: 1_000, maxRunTimeoutMs: 3_000, streamIdleTimeoutMs: 60_000,
+    }));
+    const body = 'The original completed candidate remains.';
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const native = createDeferred<void>(), fenced = createDeferred<void>();
+    const run = mockRun().mockImplementation(async (_agent: unknown, _input: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {signal: AbortSignal};
+      options.signal.addEventListener('abort', () => fenced.resolve(), {once: true});
+      return {...sdkStream(body), history: [{role: 'user', content: 'query'}, {role: 'assistant', content: body}],
+        _getStreamLoopPromise: () => native.promise};
+    });
+    let settled = false;
+    const pending: Promise<any> = runtime.analyze('query', 'post-drain-hard-cap', 'trace', {...options, taskTimeoutMs: 3_000})
+      .finally(() => {settled = true;});
+    void pending.catch(() => undefined);
+    try {
+      await fenced.promise;
+      expect(settled).toBe(false);
+      expect(run).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(3_001);
+      native.resolve();
+      const result = await pending;
+      expect(result.conclusion).toBe(body);
+      expect(result.completion).toMatchObject({status: 'completed'});
+      expect(run).toHaveBeenCalledTimes(1); // no recovery dispatch with zero remaining time
+      const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+      expect(context.deadlineMs).toBeLessThanOrEqual(Date.now());
+      // Transport availability is not admission: the original deadline rejects an actual request.
+      expect(await context.dispatchText({prompt: 'review', systemPrompt: 'review protocol',
+        signal: new AbortController().signal, deadlineMs: Date.now() + 60_000, outputByteLimit: 1024}))
+        .toEqual({status: 'unavailable', reason: 'timeout'});
+      expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1); // classification only
+    } finally {native.resolve(); await pending.catch(() => undefined); jest.useRealTimers();}
   });
 });
 
@@ -609,7 +1256,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
   it('ignores late tool results from an already cancelled stream', async () => {
     const entered = createDeferred<void>(); const release = createDeferred<void>();
     const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime);
-    mockRun({currentTurn: 1, finalOutput: 'late', history: [], completed: Promise.resolve(), async *[Symbol.asyncIterator]() {
+    mockRun({...sdkStream('late'), history: [], _getStreamLoopPromise: () => release.promise, async *[Symbol.asyncIterator]() {
       entered.resolve(); await release.promise;
       yield {type: 'run_item_stream_event', name: 'tool_output', item: {rawItem: {callId: 'late', output: '{"success":true}'}}};
     }});
@@ -626,13 +1273,27 @@ describe('OpenAI cancellation and bounded recovery', () => {
     expect((await runtime.analyze('parallel', 'independent', 'trace', {providerId: null})).success).toBe(true);
     release.resolve(); expect((await first).success).toBe(true);
   });
-  it('cancels immediately even when provider creation ignores its abort signal', async () => {
-    const entered = createDeferred<void>();
+  it('signals cancellation immediately but owns delayed provider creation until its native lifetime arrives', async () => {
+    const entered = createDeferred<AbortSignal>(); const creation = createDeferred<ReturnType<typeof sdkStream>>();
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    mockRun().mockImplementation(() => {entered.resolve(); return new Promise(() => undefined);});
+    mockRun().mockImplementation((_agent: unknown, _input: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {signal: AbortSignal};
+      entered.resolve(options.signal); return creation.promise;
+    });
+    let settled = false;
     const pending = runtime.analyze('query', 'cancel-stalled-provider', 'trace', {providerId: null});
-    const rejected = expect(pending).rejects.toThrow(); await entered.promise;
-    runtime.abortSession('cancel-stalled-provider'); await rejected;
+    void pending.then(() => {settled = true;}, () => {settled = true;});
+    const rejected = expect(pending).rejects.toThrow();
+    try {
+      const signal = await entered.promise;
+      runtime.abortSession('cancel-stalled-provider');
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(signal.aborted).toBe(true);
+      expect(settled).toBe(false);
+      await expect(runtime.analyze('blocked', 'cancel-stalled-provider', 'trace', {providerId: null})).rejects.toThrow('already in progress');
+      creation.resolve(sdkStream('late creation'));
+      await rejected;
+    } finally {creation.resolve(sdkStream('late creation')); await pending.catch(() => undefined);}
   });
   it('counts the single failed closeout attempt after a native turn cap', async () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
@@ -644,10 +1305,20 @@ describe('OpenAI cancellation and bounded recovery', () => {
   it('returns a candidate-bound timeout without re-entering the provider', async () => {
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...createOpenAiConfigForTest(), streamIdleTimeoutMs: 10});
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    const run = mockRun(); run.mockImplementation(() => new Promise(() => undefined));
-    const result = await runtime.analyze('query', 'timeout', 'trace', {providerId: null});
-    expect(run).toHaveBeenCalledTimes(1); expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
-    expect(result.conclusion).toBe(''); expect(result.partial).toBe(true);
+    const aborted = createDeferred<void>(); const creation = createDeferred<ReturnType<typeof sdkStream>>();
+    const run = mockRun().mockImplementation((_agent: unknown, _input: unknown, rawOptions: unknown) => {
+      const options = rawOptions as {signal: AbortSignal};
+      options.signal.addEventListener('abort', () => aborted.resolve(), {once: true});
+      return creation.promise;
+    });
+    const pending = runtime.analyze('query', 'timeout', 'trace', {providerId: null});
+    try {
+      await aborted.promise;
+      creation.resolve(sdkStream('late creation'));
+      const result = await pending;
+      expect(run).toHaveBeenCalledTimes(1); expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(result.conclusion).toBe(''); expect(result.partial).toBe(true);
+    } finally {creation.resolve(sdkStream('late creation')); await pending.catch(() => undefined);}
   });
 
   describe('run budget on a slow but producing endpoint (Round 60 SP-E2E-08)', () => {
@@ -657,10 +1328,19 @@ describe('OpenAI cancellation and bounded recovery', () => {
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     const toolOutput = (callId: string) => ({type: 'run_item_stream_event', name: 'tool_output',
       item: {rawItem: {callId, name: 'execute_sql', output: '{"success":true}'}}});
-    const hang = () => new Promise<never>(() => undefined);
-    function streamOf(events: () => AsyncGenerator<any>, text = '') {
-      return {currentTurn: 1, finalOutput: text, history: [{role: 'assistant', content: text}], lastResponseId: 'slow',
-        state: {}, completed: Promise.resolve(), [Symbol.asyncIterator]: events};
+    const untilAbort = (signal: AbortSignal) => new Promise<void>(resolve => {
+      if (signal.aborted) resolve();
+      else signal.addEventListener('abort', () => resolve(), {once: true});
+    });
+    function streamOf(events: (signal: AbortSignal) => AsyncGenerator<any>, text = '') {
+      return async (_agent: unknown, _input: unknown, rawOptions: unknown) => {
+        const options = rawOptions as {signal: AbortSignal};
+        const nativeLoop = createDeferred<void>();
+        return {...sdkStream(text), lastResponseId: 'slow', _getStreamLoopPromise: () => nativeLoop.promise,
+          async *[Symbol.asyncIterator]() {
+            try {yield* events(options.signal);} finally {nativeLoop.resolve();}
+          }};
+      };
     }
     function prepareWithReturnedData(runtime: any) {
       return prepareStub(runtime).mockImplementation(async (...args: any[]) => {
@@ -679,7 +1359,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
       jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(slowConfig());
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-      const run = mockRun(streamOf(async function* () {
+      const run = mockRun().mockImplementation(streamOf(async function* () {
         yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
         for (let i = 0; i < 4; i++) { await sleep(150); yield toolOutput(`slow-${i}`); }
         yield responseDone('slow answer');
@@ -695,7 +1375,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
       jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(slowConfig());
       jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-      const run = mockRun(streamOf(async function* () {
+      const run = mockRun().mockImplementation(streamOf(async function* () {
         yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
         for (let i = 0; i < 10; i++) {
           await sleep(60);
@@ -740,10 +1420,13 @@ describe('OpenAI cancellation and bounded recovery', () => {
     });
 
     it.each([
-      ['https://api.deepseek.com/v1', 'responses', {reasoning: {effort: 'none'}}],
-      ['https://gateway.example/v1', 'responses', undefined],
-    ] as const)('delivers returned data after timeout with provider-aware closeout controls: %s %s', async (baseURL, protocol, controls) => {
-      jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...slowConfig(), baseURL, protocol});
+      ['https://api.deepseek.com/v1', 'responses', {reasoning: {effort: 'none'}}, undefined],
+      ['https://gateway.example/v1', 'responses', undefined, undefined],
+      ['https://api.deepseek.com/v1', 'responses', {reasoning: {effort: 'none'}}, 'low'],
+      ['https://gateway.example/v1', 'responses', undefined, 'low'],
+    ] as const)('delivers returned data after timeout with provider-aware closeout controls: %s %s %s %s', async (baseURL, protocol, controls, analysisReasoningEffort) => {
+      jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...slowConfig(), baseURL, protocol,
+        model: 'deepseek-flash', lightModel: 'deepseek-flash', analysisReasoningEffort});
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       const recorder = createRuntimePerformanceRecorder();
       const sink = {identity: {runId: 'timeout-run', sessionId: 'timeout-delivery', scope: {tenantId: 't', workspaceId: 'w'}},
@@ -754,11 +1437,11 @@ describe('OpenAI cancellation and bounded recovery', () => {
         recordInjection: jest.fn(), recordToolAllowlist: jest.fn(), recordTurn: jest.fn(),
       } as unknown as RunManifestAttributionSink;
       const runtime = createOpenAiRuntimeForTest(); prepareWithReturnedData(runtime);
-      const run = mockRun().mockResolvedValueOnce(streamOf(async function* () {
+      const run = mockRun().mockImplementationOnce(streamOf(async function* (signal) {
         yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
         yield toolOutput('slow-0');
-        await hang();
-      }) as any).mockResolvedValueOnce(sdkStream('Main thread waited 195 ms; the owner is not established.'));
+        await untilAbort(signal);
+      })).mockResolvedValueOnce(sdkStream('Main thread waited 195 ms; the owner is not established.'));
       const startedAt = Date.now();
       const result = await runtime.analyze('query', 'timeout-delivery', 'trace',
         {analysisMode: 'fast', providerId: null, runManifestAttributionSink: sink});
@@ -770,10 +1453,12 @@ describe('OpenAI cancellation and bounded recovery', () => {
       const closeoutSettings = (run.mock.calls[1][0] as any).modelSettings;
       expect(mainSettings.providerData ?? {}).not.toHaveProperty('thinking');
       expect(mainSettings.providerData ?? {}).not.toHaveProperty('reasoning');
+      expect(mainSettings.reasoning).toEqual(analysisReasoningEffort ? {effort: analysisReasoningEffort} : undefined);
+      expect(closeoutSettings).not.toHaveProperty('reasoning');
       if (controls) expect(closeoutSettings.providerData).toMatchObject(controls);
       else expect(closeoutSettings.providerData).toEqual(mainSettings.providerData);
       expect(recorder.seal().modelCalls).toEqual(expect.arrayContaining([
-        expect.objectContaining({purpose: 'answer_turn', reasoning: 'provider_default', outcome: 'cancelled'}),
+        expect.objectContaining({purpose: 'answer_turn', reasoning: analysisReasoningEffort ? 'enabled' : 'provider_default', outcome: 'cancelled'}),
         expect.objectContaining({purpose: 'continuation', trigger: 'timeout',
           reasoning: controls ? 'disabled' : 'provider_default', outcome: 'ok'}),
       ]));
@@ -797,11 +1482,14 @@ describe('OpenAI cancellation and bounded recovery', () => {
       jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(slowConfig());
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       const runtime = createOpenAiRuntimeForTest(); prepareWithReturnedData(runtime);
-      const run = mockRun().mockResolvedValueOnce(streamOf(async function* () {
+      const run = mockRun().mockImplementationOnce(streamOf(async function* (signal) {
         yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
         yield toolOutput('slow-0');
-        await hang();
-      }) as any).mockImplementationOnce(() => hang());
+        await untilAbort(signal);
+      })).mockImplementationOnce(async (_agent: unknown, _input: unknown, rawOptions: unknown) => {
+        const options = rawOptions as {signal: AbortSignal};
+        await untilAbort(options.signal); return sdkStream('late delivery');
+      });
       const result = await runtime.analyze('query', 'timeout-delivery-failed', 'trace', {analysisMode: 'fast', providerId: null});
       expect(run).toHaveBeenCalledTimes(2);
       expect(result).toMatchObject({conclusion: '', partial: true, completion: {status: 'incomplete', reason: 'timeout'}});
@@ -812,7 +1500,10 @@ describe('OpenAI cancellation and bounded recovery', () => {
       jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(slowConfig());
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
       const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-      const run = mockRun(); run.mockImplementation(() => hang());
+      const run = mockRun().mockImplementation(async (_agent: unknown, _input: unknown, rawOptions: unknown) => {
+        const options = rawOptions as {signal: AbortSignal};
+        await untilAbort(options.signal); return sdkStream('late creation');
+      });
       const result = await runtime.analyze('query', 'timeout-nothing', 'trace', {analysisMode: 'fast', providerId: null});
       expect(run).toHaveBeenCalledTimes(1);
       expect(result).toMatchObject({conclusion: '', completion: {status: 'incomplete', reason: 'timeout'}});
@@ -842,7 +1533,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
       {type: 'function_call_result', callId: 'evidence-1', output: '{"rows":[{"dur":9}]}'}];
     const error = new MaxTurnsExceededError('Max turns (49) exceeded', {history, _currentTurn: 50} as any);
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    const run = mockRun().mockResolvedValueOnce({currentTurn: 50, history, completed: Promise.resolve(),
+    const run = mockRun().mockResolvedValueOnce({...sdkStream(''), currentTurn: 50, history,
       async *[Symbol.asyncIterator]() {
         for (let i = 0; i < 49; i++) yield {type: 'raw_model_stream_event', data: {type: 'response_started'}};
         throw error;
@@ -1009,6 +1700,9 @@ describe('OpenAI bounded output-limit recovery', () => {
       const repairDuration = repairKind === 'invalid_protocol' ? 332_508 : 212_918;
       const sessionId = `late-${repairKind}-${outcome}`;
       const repairEntered = createDeferred<void>();
+      const releaseRepair = createDeferred<void>();
+      let pending: Promise<any> | undefined;
+      let settled = false;
       try {
         jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...createOpenAiConfigForTest(),
           quickPathPerTurnMs: 40_000, quickMaxTurns: 50, maxRunTimeoutMs: 3_600_000,
@@ -1026,15 +1720,17 @@ describe('OpenAI bounded output-limit recovery', () => {
           },
         }).mockImplementationOnce(async () => {
           repairEntered.resolve();
-          if (outcome !== 'completed') return new Promise(() => undefined);
+          if (outcome !== 'completed') {await releaseRepair.promise; return sdkStream('late repair');}
           // Captured fault-r2 success or ANR cancellation duration: either is
           // beyond investigation time but fits the existing delivery reserve.
           await new Promise(resolve => setTimeout(resolve, repairDuration));
           return recoverableStream(repairKind === 'invalid_protocol' ? `${body}\n${protocolSidecar}` : protocolSidecar, 'completed');
         });
-        const pending = runtime.analyze('query', sessionId, 'trace',
-          {analysisMode: 'fast', providerId: null});
-        const rejected = outcome === 'cancelled' ? expect(pending).rejects.toThrow() : undefined;
+        const active: Promise<any> = runtime.analyze('query', sessionId, 'trace',
+          {analysisMode: 'fast', providerId: null}).finally(() => {settled = true;});
+        pending = active;
+        void active.catch(() => undefined);
+        const rejected = outcome === 'cancelled' ? expect(active).rejects.toThrow() : undefined;
         await repairEntered.promise;
         expect(run.mock.calls[1][2]).toMatchObject({maxTurns: 1});
         expect((run.mock.calls[1][0] as any).tools).toEqual([]);
@@ -1049,11 +1745,13 @@ describe('OpenAI bounded output-limit recovery', () => {
         }
         if (outcome === 'cancelled') {
           runtime.abortSession(sessionId);
+          releaseRepair.resolve();
           await rejected;
           expect(updates.some(update => update.type === 'conclusion')).toBe(false);
         } else {
           await jest.advanceTimersByTimeAsync(outcome === 'completed' ? repairDuration : 560_000);
-          const result = await pending;
+          if (outcome !== 'completed') {expect(settled).toBe(false); releaseRepair.resolve();}
+          const result = await active;
           expect(result.completion).toMatchObject({status: 'completed'});
           expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(body);
           expect(inspectCandidateProtocol(result.conclusion).status).toBe(outcome === 'completed' ? 'valid'
@@ -1065,6 +1763,9 @@ describe('OpenAI bounded output-limit recovery', () => {
         }
         expect(run).toHaveBeenCalledTimes(2);
       } finally {
+        releaseRepair.resolve();
+        if (pending && !settled && outcome === 'completed') await jest.advanceTimersByTimeAsync(repairDuration);
+        await pending?.catch(() => undefined);
         jest.useRealTimers();
       }
     });
@@ -1195,6 +1896,19 @@ describe('OpenAI bounded output-limit recovery', () => {
     finalizationContexts.push(context);
     expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
     expect(inspectCandidateProtocol(first).sidecar.rawPayload).toEqual(payload);
+  });
+
+  it('does not turn an undecodable authoring candidate into a whole-answer continuation', async () => {
+    const native = `Body remains.\n${wrapConclusionAuthoringPayload('{"authoringVersion":"unsupported"}')}`;
+    const {runtime} = createRuntimeWithUpdates(); prepareStub(runtime);
+    const run = mockRun().mockResolvedValue(recoverableStream(native, 'completed'));
+    const result = await runtime.analyze('query', 'authoring-unrecoverable', 'trace', {providerId: null});
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.completion.status).toBe('completed');
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
+    const context = finalization.takeFinalizationContext(result)!;
+    finalizationContexts.push(context);
+    expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);
   });
 
   it.each(['sidecar-only', 'invalid-schema'])('repairs a native completed %s candidate before finalization', async kind => {
@@ -1579,8 +2293,8 @@ describe('OpenAI bounded output-limit recovery', () => {
     const rejected = expect(pending).rejects.toBeDefined();
     await entered.promise;
     await runtime.abortSession('cancelled-recovery');
-    await rejected;
     late.resolve(sdkStream('late answer'));
+    await rejected;
     await Promise.resolve();
     expect(run).toHaveBeenCalledTimes(2);
     expect(updates.some(update => update.type === 'conclusion')).toBe(false);
@@ -1617,6 +2331,21 @@ describe('OpenAI bounded output-limit recovery', () => {
       expect(result.completion).toMatchObject({status: 'completed'});
     });
 
+    it('retains the native completed candidate when repair policy is unsupported without dispatch or retry', async () => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const selectPolicy = jest.spyOn(requestPurpose, 'resolveOpenAITextRequestPurpose')
+        .mockImplementation(() => {throw new requestPurpose.OpenAITextPolicyConfigurationError();});
+      const run = mockRun(recoverableStream(rejected, 'completed'));
+      const result = await runtime.analyze('query', 'declaration-repair-unsupported-policy', 'trace', {providerId: null});
+      expect(selectPolicy).toHaveBeenCalledTimes(1);
+      expect(selectPolicy).toHaveBeenCalledWith(expect.objectContaining({purpose: 'declaration_repair',
+        model: 'pinned-light', outputOnly: true, effective: {maxOutputTokens: 1024}}));
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(runtimeCallStats.admitDeliveryCall).not.toHaveBeenCalled();
+      expect(nativeRaw(result)).toBe(rejected);
+      expect(result.completion).toMatchObject({status: 'completed'});
+    });
+
     it('keeps the original body when the repair changes it', async () => {
       const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
       const run = mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'completed'))
@@ -1641,9 +2370,9 @@ describe('OpenAI bounded output-limit recovery', () => {
       expect(result.completion).toMatchObject({status: 'completed', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
     });
 
-    it('keeps the full-answer continuation for an output limit before any declaration repair', async () => {
+    it.each([undefined, 'low'] as const)('keeps the full-answer continuation and analysis effort %s before any declaration repair', async analysisReasoningEffort => {
       jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...createOpenAiConfigForTest(),
-        baseURL: 'https://api.deepseek.com/v1', protocol: 'responses'});
+        baseURL: 'https://api.deepseek.com/v1', protocol: 'responses', analysisReasoningEffort});
       const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
       const run = mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'incomplete'))
         .mockResolvedValueOnce(recoverableStream(declared(), 'completed'));
@@ -1654,6 +2383,7 @@ describe('OpenAI bounded output-limit recovery', () => {
       for (const call of run.mock.calls) {
         expect((call[0] as any).modelSettings.providerData ?? {}).not.toHaveProperty('thinking');
         expect((call[0] as any).modelSettings.providerData ?? {}).not.toHaveProperty('reasoning');
+        expect((call[0] as any).modelSettings.reasoning).toEqual(analysisReasoningEffort ? {effort: analysisReasoningEffort} : undefined);
       }
     });
 
@@ -1681,7 +2411,8 @@ describe('OpenAI bounded output-limit recovery', () => {
       expect(recoveryPrompt(run)).not.toContain('`invalid_declaration`');
     });
 
-    it('records each model call with its purpose in the internal performance receipt', async () => {
+    it.each([undefined, 'low'] as const)('records each model call and explicit analysis effort %s in the internal receipt', async analysisReasoningEffort => {
+      jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({analysisReasoningEffort}));
       const recorder = createRuntimePerformanceRecorder();
       const sink = {identity: {runId: 'perf-run', sessionId: 'perf-session', scope: {tenantId: 't', workspaceId: 'w'}},
         runtimePerformanceRecorder: recorder, recordScene: jest.fn(), recordRuntime: jest.fn(), recordMode: jest.fn(),
@@ -1699,26 +2430,282 @@ describe('OpenAI bounded output-limit recovery', () => {
       expect(calls.map(call => [call.purpose, call.trigger])).toEqual([
         ['classification', undefined], ['answer_turn', undefined], ['declaration_repair', 'invalid_declaration'],
       ]);
-      expect(calls[0]).toMatchObject({model: 'pinned-light', outcome: 'ok'});
+      expect(calls[0]).toMatchObject({model: 'pinned-light', providerOrigin: 'https://provider.invalid', outcome: 'ok'});
       const bodyChars = inspectCandidateProtocol(rejected).canonicalBody.length;
-      expect(calls[1]).toMatchObject({model: 'pinned-light', reasoning: 'provider_default', outcome: 'ok',
-        output: {bodyChars, sidecarChars: rejected.length - bodyChars}});
+      expect(calls[1]).toMatchObject({model: 'pinned-light', reasoning: analysisReasoningEffort ? 'enabled' : 'provider_default',
+        ...(analysisReasoningEffort ? {reasoningEffort: analysisReasoningEffort} : {}), outcome: 'ok',
+        output: {bodyChars, sidecarChars: rejected.length - bodyChars, declarationAuthoringStatus: 'not_observed'}});
       expect(calls[2].output?.bodyChars).toBe(inspectCandidateProtocol(declared()).canonicalBody.length);
+      expect(recorder.seal().policyObservations).toEqual([
+        ...(analysisReasoningEffort ? [expect.objectContaining({purpose: 'answer_turn', reason: 'authored_precedence',
+          authored: {mode: 'enabled', effort: analysisReasoningEffort}, mapped: 'unchanged', wireObservation: 'not_observed'})] : []),
+        expect.objectContaining({purpose: 'declaration_repair',
+        selection: 'minimum_legal_candidate', outcome: 'not_applied_unknown', wireObservation: 'not_observed'})]);
     });
+  });
+});
+
+describe('explicit OpenAI analysis reasoning', () => {
+  async function serialize(protocol: 'chat_completions' | 'responses', modelId: string, settings: ModelSettings) {
+    const create = jest.fn(async (_body: unknown) => protocol === 'chat_completions' ? {
+      id: 'chat-analysis-controls', object: 'chat.completion', created: 1, model: modelId,
+      choices: [{index: 0, finish_reason: 'stop', message: {role: 'assistant', content: 'ok'}}],
+    } : {
+      id: 'resp-analysis-controls', object: 'response', created_at: 1, model: modelId, status: 'completed',
+      output: [{type: 'message', id: 'msg-controls', status: 'completed', role: 'assistant',
+        content: [{type: 'output_text', text: 'ok', annotations: []}]}],
+    });
+    const client = {chat: {completions: {create}}, responses: {create}} as any;
+    const model = protocol === 'chat_completions' ? new OpenAIChatCompletionsModel(client, modelId)
+      : new OpenAIResponsesModel(client, modelId);
+    await withTrace('analysis reasoning serializer contract', () => model.getResponse({
+      input: [{role: 'user', content: 'hi'}], systemInstructions: 'answer briefly', modelSettings: settings,
+      tools: [], handoffs: [], outputType: 'text', tracing: false,
+    } as any));
+    return JSON.parse(JSON.stringify(create.mock.calls[0][0])) as Record<string, any>;
+  }
+
+  it.each([
+    ['chat_completions', 'https://api.openai.com/v1', 'gpt-5.6-sol'],
+    ['chat_completions', 'https://gateway.example/v1', 'unknown-model'],
+    ['chat_completions', 'https://api.deepseek.com/v1', 'deepseek-flash'],
+    ['chat_completions', 'https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash'],
+    ['responses', 'https://api.openai.com/v1', 'gpt-5.6-sol'],
+    ['responses', 'https://gateway.example/v1', 'unknown-model'],
+    ['responses', 'https://api.deepseek.com/v1', 'deepseek-flash'],
+  ] as const)('uses native low on %s %s %s without injecting vendor thinking', async (protocol, baseURL, model) => {
+    const config = createOpenAiConfigForTest({protocol, baseURL, model, analysisReasoningEffort: 'low'});
+    const settings = __testing.buildOpenAIModelSettings(config, model);
+    const body = await serialize(protocol, model, settings);
+    expect(body.model).toBe(model);
+    expect(body).not.toHaveProperty('thinking');
+    if (protocol === 'chat_completions') {
+      expect(body.reasoning_effort).toBe('low');
+      expect(body).not.toHaveProperty('reasoning');
+    } else {
+      expect(body.reasoning).toEqual({effort: 'low'});
+      expect(body).not.toHaveProperty('reasoning_effort');
+    }
+  });
+
+  it.each([
+    ['chat_completions', 'https://api.deepseek.com/v1', 'deepseek-flash', {thinking: {type: 'disabled'}}],
+    ['chat_completions', 'https://gateway.example/v1', 'deepseek-flash', {reasoning_effort: 'none'}],
+    ['responses', 'https://api.deepseek.com/v1', 'deepseek-flash', {reasoning: {effort: 'none'}}],
+  ] as const)('maps explicit none only on its actual %s %s contract', async (protocol, baseURL, model, expected) => {
+    const config = createOpenAiConfigForTest({protocol, baseURL, model, analysisReasoningEffort: 'none'});
+    const body = await serialize(protocol, model, __testing.buildOpenAIModelSettings(config, model));
+    expect(body).toMatchObject(expected);
+    if ('thinking' in expected) expect(body).not.toHaveProperty('reasoning_effort');
+    else expect(body).not.toHaveProperty('thinking');
+  });
+
+  it.each([
+    ['https://api.deepseek.com/v1', 'deepseek-flash'],
+    ['https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash'],
+  ] as const)('expresses documented chat max through tested providerData: %s', async (baseURL, model) => {
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL, model, analysisReasoningEffort: 'max'});
+    const body = await serialize(config.protocol, model, __testing.buildOpenAIModelSettings(config, model));
+    expect(body.reasoning_effort).toBe('max');
+    expect(body).not.toHaveProperty('thinking');
+  });
+
+  it.each([
+    ['chat_completions', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', 'none'],
+    ['chat_completions', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', 'medium'],
+    ['chat_completions', 'https://gateway.example/v1', 'deepseek-flash', 'max'],
+    ['responses', 'https://api.deepseek.com/v1', 'deepseek-flash', 'max'],
+  ] as const)('rejects an unsupported selected path before analysis dispatch: %s %s %s %s',
+    (protocol, baseURL, model, analysisReasoningEffort) => {
+      const config = createOpenAiConfigForTest({protocol, baseURL, model, analysisReasoningEffort});
+      expect(() => __testing.buildOpenAIModelSettings(config, model)).toThrow('openai_text_policy_invalid_configuration');
+    });
+
+  it('validates the selected light model without borrowing the unused primary capability', () => {
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+      model: 'glm-5.3-flash', lightModel: 'unknown-light', analysisReasoningEffort: 'none'});
+    expect(__testing.buildOpenAIModelSettings(config, config.lightModel).reasoning).toEqual({effort: 'none'});
+    expect(() => __testing.buildOpenAIModelSettings(config, config.model)).toThrow('openai_text_policy_invalid_configuration');
+  });
+
+  it('never dispatches selected GLM analysis with none even after classification', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      protocol: 'chat_completions', baseURL: 'https://open.bigmodel.cn/api/paas/v4',
+      model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash', analysisReasoningEffort: 'none'}));
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const run = mockRun();
+    const result = await runtime.analyze('query', 'illegal-analysis-effort', 'trace', {providerId: null});
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.completion.status).toBe('failed');
+  });
+
+  it('removes native and SDK-mutated analysis settings before declaration repair', async () => {
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL: 'https://gateway.example/v1',
+      model: 'gpt-5.6-sol', lightModel: 'gpt-5.6-sol', analysisReasoningEffort: 'low'});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(config);
+    const valid = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+      evidenceChain: [], claims: [], uncertainties: [], nextSteps: []};
+    const rejected = `${renderConclusionContractSidecar({...valid, clusters: undefined} as any)}\nBounded answer.`;
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const fetchMock = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(chatCompletionResponse('analysis', {role: 'assistant', content: rejected}, 'stop'))
+      .mockResolvedValueOnce(chatCompletionResponse('repair', {role: 'assistant', content: JSON.stringify(valid)}, 'stop'));
+    const result = await runtime.analyze('query', 'analysis-effort-repair-isolation', 'trace', {providerId: null});
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [main, repair] = fetchMock.mock.calls.map(call => JSON.parse(String(call[1]?.body)));
+    expect(main.reasoning_effort).toBe('low');
+    expect(repair).not.toHaveProperty('reasoning_effort');
+    expect(repair).not.toHaveProperty('reasoning');
+    expect(repair.max_completion_tokens).toBe(config.maxOutputTokens);
+    expect(repair.tool_choice).toBe('none');
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
+    const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
   });
 });
 
 describe('OpenAI output-only delivery provider controls', () => {
   it.each([
-    ['https://api.deepseek.com/v1', 'chat_completions', {thinking: {type: 'disabled'}}],
-    ['https://api.deepseek.com/v1', 'responses', {reasoning: {effort: 'none'}}],
-    ['https://open.bigmodel.cn/api/paas/v4', 'chat_completions', {thinking: {type: 'disabled'}}],
-    ['https://gateway.example/v1', 'chat_completions', undefined],
-    ['', 'chat_completions', undefined],
-  ] as const)('maps %s %s to provider-aware delivery controls', (baseURL, protocol, expected) => {
+    ['https://api.deepseek.com/v1', 'chat_completions', 'deepseek-flash', {thinking: {type: 'disabled'}}],
+    ['https://api.deepseek.com/v1', 'responses', 'deepseek-flash', {reasoning: {effort: 'none'}}],
+    ['https://open.bigmodel.cn/api/paas/v4', 'chat_completions', 'glm-5.3-flash', {thinking: {type: 'enabled'}, reasoning_effort: 'low'}],
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'chat_completions', 'unknown-light', undefined],
+    ['https://api.deepseek.com/v1', 'chat_completions', 'unknown-light', undefined],
+    ['https://gateway.example/v1', 'chat_completions', 'deepseek-flash', undefined],
+    ['', 'chat_completions', 'deepseek-flash', undefined],
+  ] as const)('maps %s %s %s to model-aware delivery controls', (baseURL, protocol, model, expected) => {
     for (const purpose of ['declaration_repair', 'continuation'] as const) {
-      expect(__testing.outputOnlyProviderData({baseURL, protocol}, purpose)).toEqual(expected);
+      expect(__testing.outputOnlyProviderData({baseURL, protocol}, purpose, model)).toEqual(expected);
     }
+  });
+
+  it('does not borrow the primary model policy for an unknown selected light model', () => {
+    const config = createOpenAiConfigForTest({baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4',
+      protocol: 'chat_completions', model: 'glm-5.3-flash', lightModel: 'unknown-light'});
+    expect(__testing.outputOnlyProviderData(config, 'declaration_repair', config.model))
+      .toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+    expect(__testing.outputOnlyProviderData(config, 'declaration_repair', config.lightModel)).toBeUndefined();
+  });
+});
+
+describe('OpenAI admission-bound work budget', () => {
+  it('holds the session guard while a real preparation preflight drains after expiry', async () => {
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    classify({...decision, taskKind: 'investigation', recommendedComplexity: 'full'});
+    const entered = createDeferred<void>();
+    const release = createDeferred<void>();
+    const focus = jest.spyOn(focusDetector, 'detectFocusApps').mockImplementation(async () => {
+      entered.resolve(); await release.promise; return {apps: [], method: 'none'};
+    });
+    const runtime = createOpenAiRuntimeForTest();
+    const architecture = jest.spyOn(runtime, 'detectArchitecture');
+    const run = mockRun();
+    let settled = false;
+    const pending = runtime.analyze('query', 'preflight-drain-owner', 'trace', {providerId: null, taskTimeoutMs: 60_000})
+      .finally(() => {settled = true;});
+    try {
+      await entered.promise;
+      clock.mockReturnValue(now + 60_001);
+      await expect(runtime.analyze('successor', 'preflight-drain-owner', 'trace', {providerId: null})).rejects.toThrow();
+      expect(settled).toBe(false);
+      expect(architecture).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      release.resolve();
+      expect((await pending).completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(focus).toHaveBeenCalledTimes(1);
+      expect(architecture).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+    } finally {release.resolve(); await pending; clock.mockRestore();}
+  });
+
+  it.each(['default', 'explicit'] as const)('dispatches no classifier or model after an issued %s budget is consumed', async kind => {
+    const sessionId = `admission-expired-${kind}`;
+    const scope = createRuntimeAdmissionScope({runId: sessionId, admittedAt: Date.now() - 130_000,
+      ...(kind === 'explicit' ? {taskTimeoutMs: 60_000} : {}), assertCurrent() {}});
+    try {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const run = mockRun();
+      const result = await runtime.analyze('query', sessionId, 'trace', scope.bind({providerId: null, runId: sessionId}, sessionId));
+      expect(intentTransport.runOpenAiIntentTransport).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(result.terminationReason).toBe('timeout');
+    } finally {scope.dispose();}
+  });
+
+  it.each(['default', 'explicit'] as const)('does not restart the %s budget after preparation has drained', async kind => {
+    const now = Date.now();
+    const runtime = createOpenAiRuntimeForTest();
+    const original = prepareStub(runtime).getMockImplementation()!;
+    jest.spyOn(runtime, 'prepareAnalysisContext').mockImplementation(async (...args: any[]) => {
+      const context = await original(...args);
+      jest.spyOn(Date, 'now').mockReturnValue(now + 130_000);
+      return context;
+    });
+    const run = mockRun();
+    const result = await runtime.analyze('query', `prep-expired-${kind}`, 'trace', {providerId: null,
+      ...(kind === 'explicit' ? {taskTimeoutMs: 60_000} : {})});
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+    expect(run).not.toHaveBeenCalled();
+    expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+  });
+
+  it('charges classification and preparation to the same deadline passed to finalization', async () => {
+    let now = 100_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const runtime = createOpenAiRuntimeForTest();
+    jest.mocked(intentTransport.runOpenAiIntentTransport).mockImplementation(async () => {
+      now += 20_000;
+      return {status: 'ok', text: JSON.stringify(decision), actualModel: 'pinned-light', finishReason: 'stop'};
+    });
+    const original = prepareStub(runtime).getMockImplementation()!;
+    jest.spyOn(runtime, 'prepareAnalysisContext').mockImplementation(async (...args: any[]) => {
+      const context = await original(...args); now += 15_000; return context;
+    });
+    const body = 'The marker is present.';
+    const contract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [{rank: 1, statement: body}], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []} as ConclusionContract;
+    const run = mockRun(sdkStream(`${body}\n${renderConclusionContractSidecar(contract)}`));
+    const result = await runtime.analyze('query', 'one-task-budget', 'trace', {providerId: null, taskTimeoutMs: 60_000});
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.completion).toMatchObject({status: 'completed'});
+    const context = finalization.takeFinalizationContext(result)!;
+    finalizationContexts.push(context);
+    expect(context.deadlineMs).toBeGreaterThan(now);
+    expect(context.deadlineMs).toBeLessThanOrEqual(160_000);
+  });
+});
+
+describe('OpenAI observed declaration encoding', () => {
+  it.each([
+    {status: 'expanded', syntax: 'authoring_v1', version: 'conclusion_authoring@1'},
+    {status: 'expanded', syntax: 'authoring_v2', version: 'conclusion_authoring@2'},
+    {status: 'invalid', syntax: 'authoring_v1', version: undefined},
+    {status: 'not_observed', syntax: 'authoring_v1', version: undefined},
+  ] as const)('records $status/$version from the actual parser, independently of requested syntax', async ({status, syntax, version}) => {
+    const contract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []} as ConclusionContract;
+    const frame = status === 'not_observed' ? renderConclusionContractSidecar(contract)
+      : wrapConclusionAuthoringPayload(JSON.stringify(status === 'invalid' ? {authoringVersion: 'unsupported'}
+        : {authoringVersion: version, referenceDictionary: [], contract: syntax === 'authoring_v2'
+          ? {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', claims: [], uncertainties: [{text: 'The boundary remains unknown.'}]}
+          : contract}), syntax);
+    const recorder = createRuntimePerformanceRecorder();
+    const sessionId = `observed-authoring-${status}-${syntax}`;
+    const scope = createRuntimePerformanceScope({recorder,
+      identity: {runId: sessionId, sessionId, scope: {tenantId: 't', workspaceId: 'w'}}, assertCurrent() {}});
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const run = mockRun(sdkStream(`The marker is present.\n${frame}`));
+    try {
+      await scope.run(() => runtime.analyze('query', sessionId, 'trace', {providerId: null, runId: sessionId}));
+      expect(run).toHaveBeenCalledTimes(1);
+      const output = recorder.seal().modelCalls?.find(call => call.purpose === 'answer_turn')?.output;
+      expect(output).toMatchObject({declarationAuthoringStatus: status});
+      if (version) expect(output).toHaveProperty('declarationAuthoringVersion', version);
+      else expect(output).not.toHaveProperty('declarationAuthoringVersion');
+    } finally {scope.dispose();}
   });
 });
 
@@ -2076,15 +3063,15 @@ describe('OpenAI durable learning across the run lifecycle', () => {
   it('learns only from the successor when a superseded run completes late', async () => {
     const {runtime, save} = setup();
     const entered = createDeferred<void>(); const late = createDeferred<void>();
-    mockRun(sdkStream(LEARNABLE_ANSWER)).mockResolvedValueOnce({currentTurn: 1, finalOutput: LEARNABLE_ANSWER,
-      history: [], state: {}, completed: Promise.resolve(), async *[Symbol.asyncIterator]() {
+    mockRun(sdkStream(LEARNABLE_ANSWER)).mockResolvedValueOnce({...sdkStream(LEARNABLE_ANSWER), history: [], _getStreamLoopPromise: () => late.promise, async *[Symbol.asyncIterator]() {
         entered.resolve(); await late.promise; yield responseDone(LEARNABLE_ANSWER);
       }});
     const superseded = runtime.analyze('query', 'learning-superseded', 'trace', grant('run-superseded'));
     const rejected = expect(superseded).rejects.toThrow();
-    await entered.promise; runtime.abortSession('learning-superseded'); await rejected;
+    await entered.promise; runtime.abortSession('learning-superseded');
+    await expect(runtime.analyze('blocked follow-up', 'learning-superseded', 'trace', grant('run-blocked'))).rejects.toThrow('already in progress');
+    late.resolve(); await rejected;
     const successor = await runtime.analyze('follow-up', 'learning-superseded', 'trace', grant('run-successor'));
-    late.resolve();
     expect(successor.partial).toBeUndefined();
     expect((await learned(save)).map(entry => entry.learningAdmission?.runId)).toEqual(['run-successor']);
   });
@@ -2207,7 +3194,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
   it('projects a failed stream candidate and its error without upgrading native failure', async () => {
     const sessionId = 'projection-failed'; privacySessions.push(sessionId); registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    mockRun({currentTurn: 1, completed: Promise.resolve(), async *[Symbol.asyncIterator]() {
+    mockRun({...sdkStream(''), async *[Symbol.asyncIterator]() {
       yield {type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: 'Before PRIVATE_CANARY after'}};
       throw new Error('PRIVATE_CANARY provider failure');
     }});
@@ -2261,7 +3248,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     const sessionId = 'projection-cancelled'; privacySessions.push(sessionId); registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const entered = createDeferred<void>(); const release = createDeferred<void>();
     const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime);
-    mockRun({currentTurn: 1, completed: Promise.resolve(), async *[Symbol.asyncIterator]() {
+    mockRun({...sdkStream(''), async *[Symbol.asyncIterator]() {
       yield {type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: 'Before PRIVATE_CANARY after'}};
       entered.resolve(); await release.promise;
     }});
@@ -2702,5 +3689,187 @@ describe('OpenAI parallel tool call identity', () => {
       .toMatchObject({taskId: 'call-unseen', toolName: 'read_codebase_file'});
     expect(runtime.sessionPlans.get('unseen-dispatch')?.current?.toolCallLog.map((record: any) => record.toolCallId))
       .toEqual(['call-unseen']);
+  });
+});
+
+describe('OpenAI selected foundation preflight', () => {
+  it.each(['ready', 'focus_failed'] as const)('retains the real selected core before a %s preflight', async preflight => {
+    installSelectedNativeSignerMocks();
+    const sessionId = 'selected-core-before-focus', runId = 'run-selected-core-before-focus', traceId = 'trace';
+    const fixture = await createSelectedFoundationFixture({traceId, runId, registerExecutor: false});
+    const resolveIntent = turnIntentRuntime.createAnalysisTurnIntentResolver;
+    jest.spyOn(turnIntentRuntime, 'createAnalysisTurnIntentResolver').mockImplementation(input =>
+      resolveIntent({...input, strategyRegistry: fixture.input.strategyRegistry}));
+    jest.spyOn(effectiveSkillRegistry, 'resolveEffectiveSkillRegistryForRuntime').mockReturnValue(fixture.input.skillRegistry);
+    const actualCreateExecutor = skillExecutors.createSkillExecutor;
+    const createExecutor = jest.spyOn(skillExecutors, 'createSkillExecutor')
+      .mockImplementation(actualCreateExecutor).mockReturnValueOnce(fixture.executor);
+    const registerSkills = jest.spyOn(fixture.executor, 'registerSkills');
+    const registerFragments = jest.spyOn(fixture.executor, 'setFragmentRegistry');
+    classify({...decision, taskKind: 'investigation', targetUse: 'current_selection'});
+    const order: string[] = [];
+    const originalQuery = fixture.query.getMockImplementation()!;
+    fixture.query.mockImplementation(async (...args) => {order.push('metric'); return originalQuery(...args);});
+    const runtime = createOpenAiRuntimeForTest(fixture.input.traceProcessorService);
+    jest.spyOn(focusDetector, 'detectFocusApps').mockImplementation(async () => {
+      order.push('focus');
+      beginRawSqlNativeQuery(fixture.native.provenance, 'INCLUDE PERFETTO MODULE android.oom_adjuster;');
+      if (preflight === 'focus_failed') throw new Error('focus fixture failed after selected evidence committed');
+      return {apps: [], method: 'none'};
+    });
+    jest.spyOn(runtime, 'detectArchitecture').mockResolvedValue(undefined);
+    jest.spyOn(runtime, 'detectCompleteness').mockResolvedValue(undefined);
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const legacy = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+    const reset = jest.spyOn(runtime, 'resetAnalysisSessionState');
+    const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
+    const prompt = jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
+    const run = mockRun(sdkStream(renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: []}) + '\nA bounded answer.'));
+    const result = await runtime.analyze('Explain this selected interval.', sessionId, traceId,
+      {providerId: null, runId, analysisMode: 'full', selectionContext: fixture.input.selectionContext});
+    expect(order).toEqual(['metric', 'focus']);
+    expect(selected).toHaveBeenCalledTimes(1); expect(legacy).not.toHaveBeenCalled();
+    expect(createExecutor.mock.results.filter(call => call.type === 'return' && call.value === fixture.executor)).toHaveLength(1);
+    expect(registerSkills).toHaveBeenCalledTimes(1);
+    expect(registerFragments).toHaveBeenCalledTimes(1);
+    const store = selected.mock.calls[0][0].artifactStore;
+    expect(runtime.artifactStores.get(sessionId)).toBe(store);
+    const selectedResult = await selected.mock.results[0].value as
+      Awaited<ReturnType<typeof sceneEntryEvidence.collectSelectedEvidenceForPrompt>>;
+    if (!selectedResult.handled) throw new Error('Expected a handled selected acquisition');
+    const evidence = selectedResult.data;
+    expect(evidence).toMatchObject({kind: 'selected_foundation', native: {status: 'captured'}, metric: {status: 'committed'}});
+    if (preflight === 'ready') {
+      attachedDeliveryContext(result);
+      expect(reset).toHaveBeenCalledTimes(1); expect(reset.mock.calls[0][3]).toBe(store);
+      expect(mcp.mock.calls[0][0].artifactStore).toBe(store);
+      expect(mcp.mock.calls[0][0].skillExecutor).toBe(fixture.executor);
+      expect(prompt.mock.calls[0][0].sceneEvidence).toBe(evidence);
+    } else {
+      expect(result).toMatchObject({success: false, partial: true, terminationReason: 'execution_error',
+        completion: {status: 'failed', reason: 'provider_error'}});
+      expect(finalization.takeFinalizationContext(result)).toBeUndefined();
+      expect(reset).not.toHaveBeenCalled(); expect(mcp).not.toHaveBeenCalled();
+      expect(prompt).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    }
+    if (!evidence || !('kind' in evidence) || evidence.native.status !== 'captured') throw new Error('Expected a captured selected row');
+    const view = store.createEvidenceReadView({ownerKey: 'owner', currentRunId: runId,
+      allowedTraces: [{traceId, traceSide: 'current'}]});
+    expect(view.investigationEvidence!().records).toEqual([expect.objectContaining({status: 'observed',
+      upid: 42, utid: 43, window: {start: 10, end: 110}, value: 80})]);
+    expect(await view.resolveReferences([{key: 'native', requiredColumns: ['dur'],
+      reference: {evidenceRefId: evidence.native.evidenceRefId, rowIndex: 0, column: 'dur'}}]))
+      .toMatchObject([{status: 'resolved', row: {dur: 100}, record: {fields: {dur: {unit: 'ns'}}}}]);
+    expect(readRawSqlNativeProvenanceSnapshot(fixture.native.provenance).status).toBe('tainted');
+  });
+
+  function heldNativeLookup(sessionId: string) {
+    classify({...decision, taskKind: 'investigation', targetUse: 'current_selection'});
+    const first = createDeferred<'native' | 'focus'>(), release = createDeferred<void>();
+    const order: string[] = [];
+    const queryBounded = jest.fn(async () => {
+      order.push('native'); first.resolve('native');
+      await release.promise;
+      // Deliberately unsealed: this case exercises an unavailable native result,
+      // not a fabricated successful capture or metric.
+      return {columns: ['id', 'ts', 'dur', 'track_id'], rows: [[7, 10, 100, 9]], durationMs: 1};
+    });
+    const runtime = createOpenAiRuntimeForTest({queryBounded,
+      query: jest.fn(async () => ({columns: [], rows: [], durationMs: 0})), getTrace: jest.fn(),
+    } as unknown as TraceProcessorService);
+    const focus = jest.spyOn(focusDetector, 'detectFocusApps').mockImplementation(async () => {
+      order.push('focus'); first.resolve('focus'); return {apps: [], method: 'none'};
+    });
+    jest.spyOn(runtime, 'detectArchitecture').mockResolvedValue(undefined);
+    jest.spyOn(runtime, 'detectCompleteness').mockResolvedValue(undefined);
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const legacy = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+    const reset = jest.spyOn(runtime, 'resetAnalysisSessionState');
+    const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
+    const prompt = jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
+    const body = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: []}) + '\nA bounded answer.';
+    const run = mockRun(sdkStream(body));
+    const options: AnalysisOptions = {providerId: null, runId: `run-${sessionId}`, analysisMode: 'full',
+      selectionContext: {kind: 'track_event', source: 'track_event_selection', nativeTable: 'slice',
+        eventId: 7, ts: 10, dur: 100}};
+    return {runtime, first, release, order, queryBounded, focus, selected, legacy, reset, mcp, prompt, run, options};
+  }
+
+  it('does not acquire an ambiguous pane selection when pair metadata exists without a reference id', async () => {
+    const h = heldNativeLookup('selected-unknown-pane');
+    h.options.tracePairContext = {schemaVersion: 1, layout: 'horizontal', primarySide: 'left', referenceSide: 'right',
+      activeSide: 'right', panes: [{side: 'left', traceSide: 'current', traceId: 'trace'},
+        {side: 'right', traceSide: 'reference', traceId: 'reference', active: true}]};
+    const pending: ReturnType<OpenAIRuntime['analyze']> =
+      h.runtime.analyze('Why is the selected event slow?', 'selected-unknown-pane', 'trace', h.options);
+    try {
+      expect(await Promise.race([h.first.promise, pending.then(() => 'settled', () => 'settled')])).toBe('focus');
+      h.release.resolve(); attachedDeliveryContext(await pending);
+      expect(h.queryBounded).not.toHaveBeenCalled(); expect(h.selected).not.toHaveBeenCalled();
+    } finally {h.release.resolve(); await pending.catch(() => undefined);}
+  });
+
+  it('uses the frozen run selection when caller-owned options change during registry initialization', async () => {
+    const h = heldNativeLookup('selected-frozen-scope');
+    const entered = createDeferred<void>(), releaseRegistry = createDeferred<void>();
+    const ensureRegistry = skillLoading.ensureSkillRegistryInitialized;
+    jest.spyOn(skillLoading, 'ensureSkillRegistryInitialized').mockImplementation(ensureRegistry)
+      .mockImplementationOnce(async () => {entered.resolve(); await releaseRegistry.promise; await ensureRegistry();});
+    const selection = h.options.selectionContext;
+    if (selection?.kind !== 'track_event') throw new Error('Expected the fixture event');
+    const pending: ReturnType<OpenAIRuntime['analyze']> =
+      h.runtime.analyze('Why is the selected event slow?', 'selected-frozen-scope', 'trace', h.options);
+    try {
+      expect(await Promise.race([entered.promise.then(() => 'registry'), pending.then(() => 'settled', () => 'settled')]))
+        .toBe('registry');
+      selection.eventId = 8;
+      releaseRegistry.resolve();
+      expect(await Promise.race([h.first.promise, pending.then(() => 'settled', () => 'settled')])).toBe('native');
+      expect((h.queryBounded.mock.calls[0] as unknown as [string, string])[1]).toContain('WHERE id = 7');
+      h.release.resolve(); attachedDeliveryContext(await pending);
+      expect(h.prompt.mock.calls[0][0].selectionContext).toMatchObject({eventId: 7});
+      expect(h.selected.mock.calls[0][0].selectionContext).not.toBe(selection);
+    } finally {releaseRegistry.resolve(); h.release.resolve(); await pending.catch(() => undefined);}
+  });
+
+  it('awaits the actual selected lookup before focus and handles unavailable authority only once', async () => {
+    const h = heldNativeLookup('selected-before-focus');
+    const pending: ReturnType<OpenAIRuntime['analyze']> =
+      h.runtime.analyze('Why is the selected event slow?', 'selected-before-focus', 'trace', h.options);
+    try {
+      expect(await Promise.race([h.first.promise, pending.then(() => 'settled', () => 'settled')])).toBe('native');
+      expect(h.focus).not.toHaveBeenCalled(); expect(h.mcp).not.toHaveBeenCalled(); expect(h.run).not.toHaveBeenCalled();
+      h.release.resolve();
+      const result = await pending; attachedDeliveryContext(result);
+      expect(h.order).toEqual(['native', 'focus']);
+      expect(h.queryBounded).toHaveBeenCalledTimes(1); expect(h.selected).toHaveBeenCalledTimes(1);
+      expect(h.legacy).not.toHaveBeenCalled(); expect(h.reset).toHaveBeenCalledTimes(1);
+      const earlyStore = h.selected.mock.calls[0][0].artifactStore;
+      expect(h.reset.mock.calls[0][3]).toBe(earlyStore);
+      expect(h.mcp.mock.calls[0][0].artifactStore).toBe(earlyStore);
+      expect(h.prompt.mock.calls[0][0].sceneEvidence).toMatchObject({kind: 'selected_foundation',
+        native: {status: 'failed'}, metric: {status: 'not_run'}});
+    } finally {h.release.resolve(); await pending.catch(() => undefined);}
+  });
+
+  it('keeps focus and model work closed until the cancelled selected API work has actually settled', async () => {
+    const h = heldNativeLookup('selected-cancel-drain');
+    let settled = false;
+    const pending: ReturnType<OpenAIRuntime['analyze']> = h.runtime.analyze('Why is the selected event slow?', 'selected-cancel-drain', 'trace', h.options)
+      .finally(() => {settled = true;});
+    const outcome = pending.then(value => ({value}), error => ({error}));
+    try {
+      expect(await Promise.race([h.first.promise, outcome.then(() => 'settled')])).toBe('native');
+      await h.runtime.abortSession('selected-cancel-drain');
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(h.focus).not.toHaveBeenCalled(); expect(h.mcp).not.toHaveBeenCalled(); expect(h.run).not.toHaveBeenCalled();
+      h.release.resolve();
+      expect(await outcome).toHaveProperty('error');
+      expect(h.focus).not.toHaveBeenCalled(); expect(h.selected).toHaveBeenCalledTimes(1);
+      expect(h.queryBounded).toHaveBeenCalledTimes(1); expect(h.legacy).not.toHaveBeenCalled();
+    } finally {h.release.resolve(); await outcome;}
   });
 });

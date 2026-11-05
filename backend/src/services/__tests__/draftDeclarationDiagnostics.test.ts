@@ -3,10 +3,11 @@
 
 import {describe, expect, it, jest} from '@jest/globals';
 import {ArtifactStore} from '../../agentv3/artifactStore';
-import {captureEvidenceTable} from '../evidence/evidenceCapture';
+import {captureEvidenceTable, type CapturedFieldSemantics} from '../evidence/evidenceCapture';
 import {buildTraceProcessorQueryProvenance} from '../traceProcessorConnectionModel';
 import {diagnoseConclusionDraft, draftDiagnosticOwnerKey, DRAFT_DECLARATION_MAX_BYTES} from '../draftDeclarationDiagnostics';
-import {MAX_CLAIM_DIAGNOSTICS} from '../../agent/core/conclusionContract';
+import {MAX_CLAIM_DIAGNOSTICS, parseConclusionContractDeclaration} from '../../agent/core/conclusionContract';
+import * as presentationAssessment from '../numericPresentationAssessment';
 
 function fixture(options: {unit?: boolean; unitToken?: string; trace?: string; budget?: number; viewRun?: string; viewSession?: string} = {}) {
   const store = new ArtifactStore();
@@ -34,7 +35,140 @@ function fixture(options: {unit?: boolean; unitToken?: string; trace?: string; b
   return {store, contract, input: {body: 'Elapsed 7.1 ms.', declarationJson: JSON.stringify(contract), runId, sessionId, readView}};
 }
 
+function claimKindFixture(kind: string) {
+  const f = fixture();
+  const claim = f.contract.claims[0];
+  const semantics = claim.semantics;
+  claim.kind = kind;
+  const origin = {kind: 'skill_literal' as const, definitionFingerprint: 'kind-fixture', skillId: 'kind-fixture', stepId: 'table'};
+  const capture = (data: {columns: string[]; rows: unknown[][]}, fields: Record<string, CapturedFieldSemantics>, side: 'current' | 'reference' = 'current') => {
+    const traceId = side === 'current' ? 'trace' : 'reference-trace';
+    const id = f.store.store({skillId: 'kind-fixture', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId, traceSide: side}),
+      scopeProvenance: {version: 'process_scope_evidence@1', entries: [{role: 'target',
+        scope: {mode: 'unscoped', traceId, traceSide: side}, fields: data.columns, availability: 'available'}]}});
+    f.store.registerEvidenceCapture(id, captureEvidenceTable(data, fields), {evidenceRefId: `kind:${id}`});
+    return id;
+  };
+  let expected = 'numeric_operator_proved';
+  if (kind !== 'numeric') delete semantics.numeric;
+  if (kind === 'categorical' || kind === 'identity') {
+    const column = kind === 'identity' ? 'process_name' : 'state';
+    const value = kind === 'identity' ? 'sample.app' : 'Ready';
+    const id = capture({columns: [column], rows: [[value]]}, {[column]: {origin}});
+    const ref = {artifactId: id, rowIndex: 0, column, value};
+    claim.text = `The captured ${column} is ${value}.`;
+    claim.references = [ref]; semantics.scope.subjectRefs = [ref]; semantics.predicate = 'captured.cell';
+    expected = 'captured_cell_value_proved';
+  } else if (kind === 'time_range') {
+    const id = capture({columns: ['ts', 'dur'], rows: [['100', '20'], ['110', '20']]}, {
+      ts: {origin, unit: 'ns', clock: 'trace_monotonic', timeRole: 'start'},
+      dur: {origin, unit: 'ns', clock: 'trace_monotonic', timeRole: 'duration'},
+    });
+    const subject = {artifactId: id, rowIndex: 0}, object = {artifactId: id, rowIndex: 1};
+    claim.text = 'The captured half-open intervals overlap.';
+    claim.references = [subject, object]; semantics.predicate = 'interval.overlap';
+    semantics.scope.subjectRefs = [subject]; semantics.scope.objectRefs = [object];
+    expected = 'half_open_interval_overlap_proved';
+  } else if (kind === 'comparison') {
+    const fields = {duration: {origin, unit: 'ms', metricId: 'duration', aggregation: 'sum', populationKey: 'sample'}};
+    const current = capture({columns: ['duration'], rows: [[10]]}, fields);
+    const reference = capture({columns: ['duration'], rows: [[8]]}, fields, 'reference');
+    const subject = {artifactId: current, rowIndex: 0, column: 'duration', value: 10};
+    const object = {artifactId: reference, rowIndex: 0, column: 'duration', value: 8};
+    claim.text = 'Current minus reference duration is 2 ms.';
+    claim.references = [subject, object]; semantics.predicate = 'comparison.delta';
+    semantics.scope.subjectRefs = [subject]; semantics.scope.objectRefs = [object];
+    semantics.numeric = {operator: 'eq', value: 2, unit: 'ms'};
+    expected = 'cited_metric_delta_proved';
+  } else if (kind === 'causal' || kind === 'inference' || kind === 'recommendation') {
+    semantics.predicate = `${kind}.unconfigured`;
+    semantics.modality = 'possible';
+    semantics.conditions = ['Additional execution evidence is required.'];
+    claim.text = kind === 'causal' ? 'Blocking might explain the duration.'
+      : kind === 'inference' ? 'The sampled duration may reflect contention.' : 'Inspect contention before changing worker count.';
+    expected = 'unsupported_predicate';
+  }
+  const readView = f.store.createEvidenceReadView({currentRunId: 'run', ownerKey: draftDiagnosticOwnerKey('run', 'session'),
+    allowedTraces: [{traceId: 'trace', traceSide: 'current'}, {traceId: 'reference-trace', traceSide: 'reference'}]});
+  return {...f, expected, input: {...f.input, readView}};
+}
+
 describe('draft declaration diagnostics', () => {
+  it.each([undefined, '', 'Wrong quotation: 999 ms.'])('claims_only never checks presentation, supplied body=%j', async body => {
+    const f = fixture();
+    const check = jest.spyOn(presentationAssessment, 'assessNumericPresentations');
+    try {
+      const result = await diagnoseConclusionDraft({...f.input, diagnosticMode: 'claims_only', body});
+      expect(result).toMatchObject({state: 'diagnosed', coverageNotChecked: true, finalCertification: false,
+        presentation: {status: 'not_checked', reason: 'claims_only'},
+        diagnostics: [{finiteReason: 'numeric_operator_proved'}]});
+      expect(check).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toMatch(/presentationReason|quoteOccurrences/);
+    } finally {check.mockRestore();}
+  });
+
+  it('keeps legacy and explicit presentation checks identical', async () => {
+    const f = fixture();
+    expect(await diagnoseConclusionDraft({...f.input, diagnosticMode: 'presentation'}))
+      .toEqual(await diagnoseConclusionDraft(f.input));
+    expect(await diagnoseConclusionDraft({...f.input, diagnosticMode: 'presentation', body: undefined}))
+      .toMatchObject({state: 'invalid_input', reason: 'input_type_invalid'});
+  });
+
+  it.each(['numeric', 'categorical', 'time_range', 'identity', 'causal', 'comparison', 'inference', 'recommendation'])(
+    'preserves legal %s full/compact finite diagnostics over the same issued facts', async kind => {
+      const f = claimKindFixture(kind);
+      const full = JSON.parse(JSON.stringify(f.contract));
+      expect(parseConclusionContractDeclaration(full).issues).toEqual([]);
+      const dictionary = full.claims[0].references;
+      const compact = JSON.parse(JSON.stringify(full));
+      compact.claims[0].references = dictionary.map((_ref: unknown, index: number) => ({$ref: index}));
+      compact.claims[0].semantics.scope.subjectRefs = [{$ref: 0}];
+      if (compact.claims[0].semantics.scope.objectRefs) compact.claims[0].semantics.scope.objectRefs = [{$ref: 1}];
+      const input = {...f.input, body: undefined, diagnosticMode: 'claims_only'};
+      const result = await diagnoseConclusionDraft({...input, declarationJson: JSON.stringify({
+        authoringVersion: 'conclusion_authoring@1', referenceDictionary: dictionary, contract: compact})});
+      expect(result).toEqual(await diagnoseConclusionDraft({...input, declarationJson: JSON.stringify(full)}));
+      expect(result).toMatchObject({state: 'diagnosed', schemaDiagnostics: [], diagnostics: [{finiteReason: f.expected}],
+        presentation: {status: 'not_checked', reason: 'claims_only'}, finalCertification: false});
+    });
+
+  it('does not let compact inputs bypass the draft expanded-byte budget or read evidence', async () => {
+    const f = fixture();
+    const ref = {...f.contract.claims[0].references[0], column: 'x'.repeat(33000)};
+    f.contract.claims[0].references = [{$ref: 0}];
+    f.contract.claims[0].semantics.scope.subjectRefs = [{$ref: 0}];
+    const declarationJson = JSON.stringify({authoringVersion: 'conclusion_authoring@1', referenceDictionary: [ref], contract: f.contract});
+    expect(Buffer.byteLength(declarationJson)).toBeLessThan(DRAFT_DECLARATION_MAX_BYTES);
+    const read = jest.fn(f.input.readView.resolveReferences);
+    const result = await diagnoseConclusionDraft({...f.input, diagnosticMode: 'claims_only', body: undefined, declarationJson,
+      readView: {...f.input.readView, resolveReferences: read}});
+    expect(result).toMatchObject({state: 'invalid_input', reason: 'expanded_budget_exhausted',
+      inputBudget: {declarationBytes: Buffer.byteLength(declarationJson), maxBytes: DRAFT_DECLARATION_MAX_BYTES}});
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('reports invalid authoring resource/envelope failures without private input echo', async () => {
+    const f = fixture();
+    const result = await diagnoseConclusionDraft({...f.input, diagnosticMode: 'claims_only', body: undefined,
+      declarationJson: JSON.stringify({authoringVersion: 'PRIVATE_VERSION', contract: f.contract, referenceDictionary: []})});
+    expect(result).toMatchObject({state: 'invalid_input', reason: 'invalid_authoring', authoringCode: 'unsupported_version'});
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_VERSION');
+  });
+
+  it('checks supplied claims_only body type and UTF-8 size before evidence reads', async () => {
+    const f = fixture();
+    const read = jest.fn(f.input.readView.resolveReferences);
+    for (const body of [null, 3, {}, '汉'.repeat(Math.floor(DRAFT_DECLARATION_MAX_BYTES / 3) + 1)]) {
+      const result = await diagnoseConclusionDraft({...f.input, diagnosticMode: 'claims_only', body,
+        readView: {...f.input.readView, resolveReferences: read}});
+      expect(result).toMatchObject({state: 'invalid_input', presentation: {status: 'not_checked', reason: 'claims_only'}});
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(await diagnoseConclusionDraft({...f.input, diagnosticMode: 'PRIVATE_UNKNOWN_MODE'}))
+      .toMatchObject({reason: 'diagnostic_mode_invalid'});
+  });
   it('checks issued quantities without storing changes, private values or final certification', async () => {
     const f = fixture();
     const before = JSON.stringify(f.store.serialize());

@@ -675,7 +675,7 @@ function createProviderE2eHarness(providerKind) {
     const credentialKind = profile.credentialKeys.find(key => concreteCredential(env[key]));
     const providerApiKey = credentialKind ? concreteCredential(env[credentialKind]) : undefined;
     if (runtimeKind === 'pi-agent-core' && profile.slug === 'deepseek' && providerApiKey) {
-      try {readPiCatalogModel(selected.model);} catch (error) {
+      try {readPiCatalogModel(selected.model, env);} catch (error) {
         return {available: false, reason: error.code === 'E2E_PI_MODEL_NOT_INSTALLED'
           ? 'UNSUPPORTED_INSTALLED_MODEL_METADATA' : 'PI_MODEL_METADATA_UNAVAILABLE'};
       }
@@ -743,12 +743,12 @@ function createProviderE2eHarness(providerKind) {
     return {available: false, reason: 'UNSUPPORTED_RUNTIME'};
   }
 
-  function buildSemanticChildEnv(runtimeKind, availability, isolatedRoot) {
+  function buildSemanticChildEnv(runtimeKind, availability, isolatedRoot, env = configuredEnv()) {
     if (runtimeKind !== 'claude-agent-sdk' || profile.slug === 'deepseek') {
-      return buildChildEnv(availability.apiKey, runtimeKind, isolatedRoot);
+      return buildChildEnv(availability.apiKey, runtimeKind, isolatedRoot, env);
     }
     return {
-      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== 'QODER_PERSONAL_ACCESS_TOKEN')),
+      ...Object.fromEntries(Object.entries(env).filter(([key]) => key !== 'QODER_PERSONAL_ACCESS_TOKEN')),
       SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
       DOTENV_CONFIG_QUIET: 'true',
       SMARTPERFETTO_BACKEND_DATA_DIR: path.join(isolatedRoot, 'data'),
@@ -759,6 +759,23 @@ function createProviderE2eHarness(providerKind) {
         'tests/e2e/context-fixtures/app',
       ),
     };
+  }
+
+  /** Synchronous preparation for a maintained controller; never selects from global run state. */
+  function prepareProviderChild(input, env = process.env) {
+    const capturedEnv = {...env,
+      [`${profile.envPrefix}_BASE_URL`]: input.baseUrl ?? profile.baseUrl,
+      [`${profile.envPrefix}_MODEL`]: input.model ?? profile.model,
+      [`${profile.envPrefix}_LIGHT_MODEL`]: input.lightModel ?? profile.lightModel};
+    const selected = configuration(capturedEnv, input.provider ?? profile.id);
+    // The legacy GLM CLI's Claude branch intentionally uses independent native
+    // credentials. It cannot supply this controller's provider-bound pin.
+    const availability = profile.slug === 'glm' && input.runtimeKind === 'claude-agent-sdk'
+      ? {available: false, reason: 'PROVIDER_BOUND_PREPARATION_UNAVAILABLE'}
+      : realProviderAvailability(input.runtimeKind, capturedEnv);
+    return {configuration: selected, availability,
+      ...(availability.available ? {env: buildSemanticChildEnv(input.runtimeKind, availability,
+        input.isolatedRoot, capturedEnv)} : {})};
   }
 
   function semanticDeltaQueries() {
@@ -1672,16 +1689,16 @@ function createProviderE2eHarness(providerKind) {
       !/^(?:GLM_|ZAI_|DEEPSEEK_|ANTHROPIC_|CLAUDE_CODE_|AWS_|AZURE_OPENAI_|GEMINI_|GOOGLE_API_KEY$|OPENAI_API_KEY$|OPENAI_BASE_URL$|OPENAI_MODEL$|OPENAI_LIGHT_MODEL$|OPENAI_AGENTS_PROTOCOL$|QODER_PERSONAL_ACCESS_TOKEN$|QODER_BYOK_|SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON$|SMARTPERFETTO_OPENCODE_MODEL_JSON$)/.test(key)));
   }
 
-  function buildChildEnv(apiKey, runtimeKind, isolatedRoot) {
-    const configuredOutputTokens = process.env.OPENAI_MAX_OUTPUT_TOKENS;
+  function buildChildEnv(apiKey, runtimeKind, isolatedRoot, env = configuredEnv()) {
+    const configuredOutputTokens = env.OPENAI_MAX_OUTPUT_TOKENS;
     const outputTokens = configuredOutputTokens === undefined ? undefined : Number(configuredOutputTokens.trim());
     if (configuredOutputTokens !== undefined &&
         (!/^\d+$/.test(configuredOutputTokens.trim()) || !Number.isSafeInteger(outputTokens) || outputTokens <= 0)) {
       throw new Error('OPENAI_MAX_OUTPUT_TOKENS must be a positive safe integer');
     }
-    const {baseUrl, model, lightModel} = configuration();
+    const {baseUrl, model, lightModel} = configuration(env);
     const baseEnv = {
-      ...isolatedProviderEnv(process.env),
+      ...isolatedProviderEnv(env),
       [profile.credentialKeys[0]]: apiKey,
       ...(profile.slug === 'glm' ? {ZAI_CODING_CN_API_KEY: apiKey} : {}),
       OPENAI_API_KEY: apiKey,
@@ -1712,8 +1729,8 @@ function createProviderE2eHarness(providerKind) {
         SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON:
           createPiAgentCoreProviderModelJson({
             model, baseUrl,
-            override: process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON,
-          }),
+            override: env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON,
+          }, env),
       };
     }
 
@@ -1722,7 +1739,7 @@ function createProviderE2eHarness(providerKind) {
         ...baseEnv,
         SMARTPERFETTO_AGENT_RUNTIME: 'opencode',
         SMARTPERFETTO_OPENCODE_MODEL_JSON:
-          assertPinnedModelJson(process.env.SMARTPERFETTO_OPENCODE_MODEL_JSON, JSON.stringify({
+          assertPinnedModelJson(env.SMARTPERFETTO_OPENCODE_MODEL_JSON, JSON.stringify({
             providerID: profile.id,
             modelID: model,
             baseURL: baseUrl,
@@ -1736,8 +1753,8 @@ function createProviderE2eHarness(providerKind) {
       return {
         ...baseEnv,
         SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
-        ...(process.env.QODER_PERSONAL_ACCESS_TOKEN !== undefined
-          ? {QODER_PERSONAL_ACCESS_TOKEN: process.env.QODER_PERSONAL_ACCESS_TOKEN} : {}),
+        ...(env.QODER_PERSONAL_ACCESS_TOKEN !== undefined
+          ? {QODER_PERSONAL_ACCESS_TOKEN: env.QODER_PERSONAL_ACCESS_TOKEN} : {}),
         QODER_MODEL: model,
         QODER_LIGHT_MODEL: lightModel,
         QODER_BYOK_API_KEY: apiKey,
@@ -1755,7 +1772,7 @@ function createProviderE2eHarness(providerKind) {
     throw new Error(`Unsupported runtime: ${runtimeKind}`);
   }
 
-  function readPiCatalogModel(model) {
+  function readPiCatalogModel(model, env = configuredEnv()) {
     // The SDK public provider entrypoint is import-only. An offline ESM child
     // preserves this synchronous CLI without reading SDK-private JSON layouts or
     // inventing model capabilities. getModels does not refresh or contact a provider.
@@ -1767,6 +1784,7 @@ function createProviderE2eHarness(providerKind) {
       else process.stdout.write(JSON.stringify({model, supportedThinkingLevels: getSupportedThinkingLevels(model)}));
     `, '--', model], {
       cwd: backendRoot,
+      env,
       encoding: 'utf8',
       timeout: 10_000,
       maxBuffer: 256 * 1024,
@@ -1789,8 +1807,8 @@ function createProviderE2eHarness(providerKind) {
     return {catalogModel, supportedThinkingLevels};
   }
 
-  function createPiAgentCoreProviderModelJson({model, baseUrl, override}) {
-    const {catalogModel, supportedThinkingLevels} = readPiCatalogModel(model);
+  function createPiAgentCoreProviderModelJson({model, baseUrl, override}, env = configuredEnv()) {
+    const {catalogModel, supportedThinkingLevels} = readPiCatalogModel(model, env);
     return assertPinnedModelJson(override, JSON.stringify({...catalogModel, baseUrl, apiKeyEnv: profile.credentialKeys[0]}), 'Pi', supportedThinkingLevels);
   }
 
@@ -1805,6 +1823,7 @@ function createProviderE2eHarness(providerKind) {
     buildChildEnv,
     providerConfiguration: configuration,
     buildSemanticChildEnv,
+    prepareProviderChild,
     FLAGSHIP_EXPECTATIONS,
     FLAGSHIP_FINGERPRINT_KEYS,
     buildFlagshipSummary,
@@ -1817,6 +1836,12 @@ function createProviderE2eHarness(providerKind) {
     glmCodingConfiguration,
     suites,
     evaluateSemanticConditionReport,
+    // Fixed benchmark-only oracle inputs; callers must never accept a report-authored root.
+    sourceFacetInputs: () => ({query: SEMANTIC_DELTA_QUERIES[0],
+      expectation: sourceFactExpectation(SEMANTIC_DELTA_QUERIES[0]),
+      sourceRoot: path.resolve(backendRoot, SEMANTIC_DELTA_SOURCE_ROOT),
+      tracePath: path.resolve(backendRoot, SEMANTIC_DELTA_TRACE),
+      groundTruthPath: path.resolve(backendRoot, '../Trace/constructed/source-analysis-semantic/analysis/expected.json')}),
     parseArgs,
     realProviderAvailability,
     semanticConditionArgs,

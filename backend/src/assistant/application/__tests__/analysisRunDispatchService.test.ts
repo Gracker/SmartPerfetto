@@ -2,6 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {dispatchAnalysisRun, type AnalysisDispatchSession, type AnalysisRunDispatchDependencies,
   type AnalysisRunDispatchInput} from '../analysisRunDispatchService';
 import {AssistantApplicationService} from '../assistantApplicationService';
@@ -17,6 +20,10 @@ import {SessionPersistenceService} from '../../../services/sessionPersistenceSer
 import {assertAiFeatureEnabled} from '../../../services/aiCapabilityPolicy';
 import type {SessionLogger} from '../../../services/sessionLogger';
 import {resolveAnalysisPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {readRuntimeAdmission} from '../../../agentRuntime/runtimeTaskDeadline';
+import * as traceUploadPaths from '../../../services/traceUploadPaths';
+import * as enterpriseMigration from '../../../services/enterpriseMigration';
+import {TraceProcessorFactory, type WorkingTraceProcessor} from '../../../services/workingTraceProcessor';
 
 type Deps = AnalysisRunDispatchDependencies<AnalysisDispatchSession>;
 
@@ -24,6 +31,7 @@ const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
 const context = {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user', authType: 'dev' as const,
   roles: ['analyst'], scopes: ['agent:run'], requestId: 'request'};
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const readRealTraceMetadataForContext = metadata.readTraceMetadataForContext;
 function deferred() {
   let resolve!: () => void;
   let reject!: (error: Error) => void;
@@ -85,6 +93,28 @@ function fixture(entry: AnalysisRunDispatchInput['entry'] = 'analysis') {
   return {input, deps, session, prepare, leases, admit, runner, smart, sceneHook, releaseScene};
 }
 
+async function coldTraceFixture(ids: string[]) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-admission-cold-'));
+  for (const id of ids) {
+    const tracePath = path.join(directory, `${id}.trace`);
+    await fs.writeFile(tracePath, Buffer.from([0x0a, 0x00]));
+    await fs.writeFile(path.join(directory, `${id}.json`), JSON.stringify({id, filename: `${id}.trace`,
+      size: 2, uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath,
+      tenantId: context.tenantId, workspaceId: context.workspaceId, userId: context.userId}));
+  }
+  jest.spyOn(traceUploadPaths, 'getTracesDir').mockReturnValue(directory);
+  jest.spyOn(enterpriseMigration, 'enterpriseDbReadAuthorityEnabled').mockReturnValue(false);
+  // Exercise real ownership metadata, disk loading and format detection. Only
+  // the physical processor factory below is replaced to avoid a native process.
+  jest.mocked(metadata.readTraceMetadataForContext).mockImplementation(readRealTraceMetadataForContext);
+  const service = new processor.TraceProcessorService(directory);
+  jest.mocked(processor.getTraceProcessorService).mockReturnValue(service);
+  const diskLoad = jest.spyOn(service, 'loadTraceFromDisk');
+  const makeProcessor = (id: string) => ({id: `fake-${id}`, traceId: id, status: 'ready', activeQueries: 0,
+    query: jest.fn(), queryRaw: jest.fn(), destroy: jest.fn()}) as unknown as WorkingTraceProcessor;
+  return {directory, service, diskLoad, makeProcessor};
+}
+
 beforeEach(() => {
   process.env.SMARTPERFETTO_AI_ENABLED = 'true';
   jest.spyOn(rbac, 'hasRbacPermission').mockReturnValue(true);
@@ -107,6 +137,140 @@ afterEach(() => {
 });
 
 describe('shared analysis run dispatch', () => {
+  it.each(['current', 'reference'] as const)('counts real %s cold loading and drains it before rejecting an expired task', async side => {
+    const f = fixture();
+    const ids = ['cold-current', 'cold-reference'];
+    const cold = await coldTraceFixture(ids);
+    let now = 1000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    f.input.body.traceId = ids[0];
+    if (side === 'reference') f.input.body.referenceTraceId = ids[1];
+    f.input.body.options = {taskTimeoutMs: 100};
+    const entered = deferred();
+    const loading = deferred();
+    const blockedId = side === 'current' ? ids[0] : ids[1];
+    const factory = jest.spyOn(TraceProcessorFactory, 'create').mockImplementation(async id => {
+      if (id === blockedId) {entered.resolve(); await loading.promise;}
+      else now += 25;
+      return cold.makeProcessor(id);
+    });
+    let settled = false;
+    const dispatch = dispatchAnalysisRun(f.input, f.deps).then(value => {settled = true; return value;});
+    try {
+      expect(await Promise.race([entered.promise.then(() => true), dispatch.then(() => false)])).toBe(true);
+      now = 1200;
+      await tick();
+      expect(settled).toBe(false);
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.deps.startSessionRun).not.toHaveBeenCalled();
+      expect(f.leases.release).not.toHaveBeenCalled();
+      loading.resolve();
+      expect((await dispatch).body.success).toBe(false);
+      expect(cold.diskLoad).toHaveBeenCalledWith(blockedId);
+      expect(factory).toHaveBeenCalledTimes(side === 'current' ? 1 : 2);
+      expect(f.prepare).not.toHaveBeenCalled();
+      expect(f.runner).not.toHaveBeenCalled();
+      expect(f.deps.startSessionRun).not.toHaveBeenCalled();
+      expect(f.deps.markSessionRunStatus).not.toHaveBeenCalled();
+    } finally {
+      loading.resolve();
+      await dispatch;
+      await fs.rm(cold.directory, {recursive: true, force: true});
+    }
+  });
+
+  it.each([undefined, 60_000])('inherits authorized cold-load time when run registration happens later (timeout=%s)', async taskTimeoutMs => {
+    const f = fixture();
+    const cold = await coldTraceFixture(['cold-current']);
+    let now = 1000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    f.input.body.traceId = 'cold-current';
+    f.input.body.options = {taskTimeoutMs};
+    jest.spyOn(TraceProcessorFactory, 'create').mockImplementation(async id => {now = 36_000; return cold.makeProcessor(id);});
+    let workStartedAt: number | undefined;
+    let registeredAt: number | undefined;
+    let deadlineAt: number | undefined;
+    f.runner.mockImplementation(async (_session, _query, _trace, options) => {
+      const admission = readRuntimeAdmission(options, {runId: 'run', sessionId: 'session'});
+      workStartedAt = admission?.facts.admittedAt;
+      deadlineAt = admission?.task?.facts.hardDeadlineAt;
+      registeredAt = options.runContext.startedAt;
+    });
+    try {
+      expect((await dispatchAnalysisRun(f.input, f.deps)).body.success).toBe(true);
+      await tick();
+      expect(cold.diskLoad).toHaveBeenCalledWith('cold-current');
+      expect(workStartedAt).toBe(1000);
+      expect(registeredAt).toBe(36_000);
+      expect(deadlineAt).toBe(taskTimeoutMs === undefined ? undefined : 61_000);
+    } finally {await fs.rm(cold.directory, {recursive: true, force: true});}
+  });
+
+  it.each([undefined, 60_000])('keeps admission through processor preparation and disposes after settle (timeout=%s)', async taskTimeoutMs => {
+    const f = fixture();
+    let now = 1000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    f.input.body.options = {taskTimeoutMs};
+    f.admit.mockImplementation(async () => {now = 36_000; return f.leases;});
+    const running = deferred();
+    let options: Parameters<Deps['runAgentDrivenAnalysis']>[3] | undefined;
+    f.runner.mockImplementation(async (_session, _query, _trace, input) => {options = input; await running.promise;});
+    expect((await dispatchAnalysisRun(f.input, f.deps)).status).toBe(200);
+    const admission = readRuntimeAdmission(options!, {runId: 'run', sessionId: 'session'});
+    expect(admission?.facts.admittedAt).toBe(1000);
+    expect(admission?.task?.facts.hardDeadlineAt).toBe(taskTimeoutMs === undefined ? undefined : 61_000);
+    expect(f.leases.release).not.toHaveBeenCalled();
+    running.resolve();
+    await tick();
+    expect(f.leases.release).toHaveBeenCalledTimes(1);
+    expect(() => readRuntimeAdmission(options!, {runId: 'run', sessionId: 'session'})).toThrow('disposed');
+  });
+
+  it('does not abort lease ownership or dispatch after a task expires while preparation drains', async () => {
+    jest.useFakeTimers({now: 1000, doNotFake: ['setImmediate', 'nextTick']});
+    try {
+      const f = fixture();
+      f.input.body.options = {taskTimeoutMs: 10};
+      const preparing = deferred();
+      const admitted = deferred();
+      let ownerSignal: AbortSignal | undefined;
+      f.admit.mockImplementation(async input => {
+        ownerSignal = input.signal;
+        admitted.resolve();
+        await preparing.promise;
+        return f.leases;
+      });
+      const dispatch = dispatchAnalysisRun(f.input, f.deps);
+      await admitted.promise;
+      jest.advanceTimersByTime(11);
+      expect(ownerSignal?.aborted).toBe(false);
+      expect(f.leases.release).not.toHaveBeenCalled();
+      expect(f.deps.settleSessionRunExecution).not.toHaveBeenCalled();
+      preparing.resolve();
+      expect((await dispatch).body.success).toBe(false);
+      expect(f.runner).not.toHaveBeenCalled();
+      expect(f.leases.release).toHaveBeenCalledTimes(1);
+      expect(f.deps.abortHttpFinalizationRuns).not.toHaveBeenCalled();
+    } finally {jest.useRealTimers();}
+  });
+
+  it.each([undefined, 60_000])('passes original admission into smart deep-dive dispatch (timeout=%s)', async taskTimeoutMs => {
+    const f = fixture();
+    jest.spyOn(Date, 'now').mockReturnValue(1000);
+    f.input.body.options = {taskTimeoutMs, preset: 'smart', smartAction: 'analyze'};
+    let deadline: number | undefined;
+    let admittedAt: number | undefined;
+    f.smart.mockImplementation(async (_session, _query, _trace, options) => {
+      deadline = readRuntimeAdmission(options, {runId: 'run', sessionId: 'session'})?.task?.facts.hardDeadlineAt;
+      admittedAt = readRuntimeAdmission(options, {runId: 'run', sessionId: 'session'})?.facts.admittedAt;
+    });
+    expect((await dispatchAnalysisRun(f.input, f.deps)).status).toBe(200);
+    await tick();
+    expect(admittedAt).toBe(1000);
+    expect(deadline).toBe(taskTimeoutMs === undefined ? undefined : 61_000);
+    expect(f.runner).not.toHaveBeenCalled();
+  });
+
   it.each(['analysis', 'scene_reconstruction'] as const)('%s cannot bypass RBAC', async entry => {
     const f = fixture(entry);
     jest.mocked(rbac.hasRbacPermission).mockReturnValue(false);

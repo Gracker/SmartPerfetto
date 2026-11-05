@@ -31,6 +31,25 @@ function recordEmptyRegistry(builder: RunManifestBuilder): void {
   builder.recordSkillRegistry({registryFingerprint: 'registry-a', skills: []});
 }
 
+describe('run-bound declaration syntax attribution', () => {
+  it.each(['authoring_v1', 'authoring_v2'] as const)('records the prompt owner\'s %s once without guessing a value for old runs', syntax => {
+    const legacy = createBuilder(); recordEmptyRegistry(legacy);
+    expect(legacy.seal()).not.toHaveProperty('conclusionDeclarationSyntax');
+    const builder = createBuilder(); recordEmptyRegistry(builder);
+    const identity = {runtime: 'qoder-agent-sdk' as const, providerId: 'provider-a'};
+    builder.recordRuntime({...identity, conclusionDeclarationSyntax: syntax});
+    builder.recordRuntime({...identity, model: 'resolved-model', conclusionDeclarationSyntax: undefined});
+    expect(() => builder.recordRuntime({...identity, conclusionDeclarationSyntax: 'canonical_v1'}))
+      .toThrow('run_manifest_declaration_syntax_changed');
+    expect(() => builder.recordRuntime({...identity, conclusionDeclarationSyntax: syntax === 'authoring_v1' ? 'authoring_v2' : 'authoring_v1'}))
+      .toThrow('run_manifest_declaration_syntax_changed');
+    expect(() => builder.recordRuntime({...identity, conclusionDeclarationSyntax: 'PRIVATE_CANARY' as any}))
+      .toThrow('run_manifest_declaration_syntax_invalid');
+    expect(builder.seal()).toMatchObject({conclusionDeclarationSyntax: syntax, model: 'resolved-model'});
+    expect(JSON.stringify(builder.seal())).not.toContain('PRIVATE_CANARY');
+  });
+});
+
 function capabilityAttribution(
   outcome: 'hit' | 'miss' | 'bypass',
   overrides: Record<string, unknown> = {},

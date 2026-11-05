@@ -16,6 +16,10 @@ import {
   runtimeModelCallInputBytesBucket,
   runtimeProviderOrigin,
   startRuntimeModelCall,
+  projectRuntimeModelPolicyReceipt,
+  recordRuntimeModelExecutionPolicy,
+  RUNTIME_DECLARATION_AUTHORING_STATUSES,
+  RUNTIME_DECLARATION_AUTHORING_VERSIONS,
 } from '../runtimePerformance';
 import {createRuntimePerformanceScope, resolveRuntimePerformanceRecorder, bindRuntimePerformanceContext, withRuntimePerformanceSuppressed} from '../runtimePerformanceContext';
 import {parseRuntimeActivitySnapshot} from '../runtimeActivity';
@@ -29,6 +33,105 @@ function expectedRuntimeHash(value: string, salt = ''): string {
     .digest('hex')
     .slice(0, 32)}`;
 }
+
+function policyReceipt() {
+  return {schemaVersion: 'model_execution_policy@1', purpose: 'classification', selection: 'preserve',
+    executionFingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: `sha256:${'a'.repeat(64)}`},
+    authored: 'absent', mapped: 'unchanged', sdkEffective: 'unknown', outcome: 'preserved',
+    reason: 'preserve_requested', wireObservation: 'not_observed'};
+}
+
+describe('closed model execution policy observations', () => {
+  it('copies only closed settings and fingerprints, never model names or nested private fields', () => {
+    const canary = 'PRIVATE_POLICY_SOURCE_CANARY';
+    const input = {...policyReceipt(), modelId: canary, url: canary, headers: {Authorization: canary}, rawPayload: canary,
+      executionFingerprint: {...policyReceipt().executionFingerprint, secret: canary},
+      authored: {mode: 'enabled', effort: 'low', secret: canary},
+      mapped: {mode: 'disabled', raw: canary}, sdkEffective: {mode: 'enabled', effort: 'high', url: canary}};
+    const projected = projectRuntimeModelPolicyReceipt(input);
+    expect(projected).toEqual({...policyReceipt(), authored: {mode: 'enabled', effort: 'low'},
+      mapped: {mode: 'disabled'}, sdkEffective: {mode: 'enabled', effort: 'high'}});
+    expect(JSON.stringify(projected)).not.toContain(canary);
+    expect(input.authored.secret).toBe(canary);
+  });
+
+  it.each([
+    {schemaVersion: 'PRIVATE_VERSION'}, {purpose: 'PRIVATE_PURPOSE'}, {selection: 'PRIVATE_SELECTION'},
+    {outcome: 'PRIVATE_OUTCOME'}, {reason: 'PRIVATE_REASON'}, {wireObservation: 'observed'},
+    {executionFingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: 'private-url?token=SECRET'}},
+    {executionFingerprint: {schemaVersion: 'wrong', value: `sha256:${'a'.repeat(64)}`}},
+    {authored: {mode: 'disabled', effort: 'low'}}, {authored: {mode: 'enabled', effort: 'PRIVATE_EFFORT'}},
+    {authored: null}, {mapped: 'absent'}, {sdkEffective: 'unchanged'},
+  ])('rejects invalid known policy values without echoing them: %j', mutation => {
+    const recorder = createRuntimePerformanceRecorder();
+    const input = {...policyReceipt(), ...mutation};
+    expect(projectRuntimeModelPolicyReceipt(input)).toBeUndefined();
+    expect(() => recordRuntimeModelExecutionPolicy({runtimePerformanceRecorder: recorder}, input)).not.toThrow();
+    expect(recorder.seal().policyObservations).toBeUndefined();
+  });
+
+  it('caps observations independently, preserving their meaning as policy rather than dispatch', () => {
+    let now = 100;
+    const recorder = createRuntimePerformanceRecorder({now: () => now, maxPolicyObservations: 2});
+    for (let index = 0; index < 3; index++) {
+      now += 10;
+      recordRuntimeModelExecutionPolicy({runtimePerformanceRecorder: recorder}, policyReceipt());
+    }
+    const receipt = recorder.seal();
+    expect(receipt.policyObservations).toEqual([1, 2].map(index => ({...policyReceipt(), observationOrdinal: index, observedOffsetMs: index * 10})));
+    expect(receipt.truncated?.policyObservations).toBe(1);
+    expect(receipt.modelCalls).toBeUndefined();
+    expect(receipt.modelRequests).toBeUndefined();
+    expect(Object.isFrozen(receipt.policyObservations![0].executionFingerprint)).toBe(true);
+    expect(() => recordRuntimeModelExecutionPolicy({runtimePerformanceRecorder: recorder}, policyReceipt())).not.toThrow();
+    expect(recorder.seal()).toBe(receipt);
+  });
+
+  it('records only the active matching owner and suppresses detached, disposed and conflicting observations', () => {
+    const identity = {runId: 'policy-run', sessionId: 'policy-session', scope: {tenantId: 't', workspaceId: 'w'}};
+    const recorder = createRuntimePerformanceRecorder();
+    const source = {identity, runtimePerformanceRecorder: recorder};
+    expect(() => recordRuntimeModelExecutionPolicy(undefined, policyReceipt())).not.toThrow();
+    const scope = createRuntimePerformanceScope({identity, recorder, assertCurrent() {}});
+    const callback = scope.run(() => bindRuntimePerformanceContext(() => recordRuntimeModelExecutionPolicy(source, policyReceipt())));
+    scope.run(callback);
+    scope.dispose();
+    callback();
+    expect(recorder.seal().policyObservations).toHaveLength(1);
+
+    const active = createRuntimePerformanceRecorder();
+    const foreign = createRuntimePerformanceRecorder();
+    const activeScope = createRuntimePerformanceScope({identity, recorder: active, assertCurrent() {}});
+    activeScope.run(() => recordRuntimeModelExecutionPolicy({identity: {...identity, runId: 'foreign'}, runtimePerformanceRecorder: foreign}, policyReceipt()));
+    expect(active.seal().policyObservations).toBeUndefined();
+    expect(foreign.seal().policyObservations).toBeUndefined();
+    activeScope.dispose();
+  });
+
+  it('rejects an expired current owner before disposal, including an explicit recorder outside async scope', () => {
+    const identity = {runId: 'expired-run', sessionId: 'session', scope: {tenantId: 't', workspaceId: 'w'}};
+    const recorder = createRuntimePerformanceRecorder();
+    const source = {identity, runtimePerformanceRecorder: recorder};
+    let current = true;
+    const scope = createRuntimePerformanceScope({identity, recorder,
+      assertCurrent() { if (!current) throw new Error('OWNER_EXPIRED_PRIVATE_DETAIL'); }});
+    const callback = scope.run(() => bindRuntimePerformanceContext(() => recordRuntimeModelExecutionPolicy(source, policyReceipt())));
+    current = false;
+    expect(callback).not.toThrow();
+    expect(() => recordRuntimeModelExecutionPolicy(source, policyReceipt())).not.toThrow();
+    expect(recorder.hasRecordedData).toBe(false);
+    expect(recorder.seal().policyObservations).toBeUndefined();
+    scope.dispose();
+  });
+
+  it('does not add policy fields to old receipts and cannot throw an observer failure into a transport', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recorder.seal()).not.toHaveProperty('policyObservations');
+    const faulty = createRuntimePerformanceRecorder();
+    jest.spyOn(faulty, 'recordModelExecutionPolicy').mockImplementation(() => {throw new Error('SECRET_OBSERVER_ERROR');});
+    expect(() => recordRuntimeModelExecutionPolicy({runtimePerformanceRecorder: faulty}, policyReceipt())).not.toThrow();
+  });
+});
 
 describe('runtime performance receipt', () => {
   it('records overlapping phases as separate bounded immutable spans', () => {
@@ -440,6 +543,48 @@ describe('runtime performance receipt', () => {
     expect(normalizeModelCallUsage('usage')).toBeUndefined();
   });
 
+  it.each(RUNTIME_DECLARATION_AUTHORING_STATUSES)('records the observed declaration codec result %s without implying verification', status => {
+    const recorder = createRuntimePerformanceRecorder();
+    recorder.startModelCall({purpose: 'answer_turn'}).end({
+      output: {bodyChars: 12, sidecarChars: 300, declarationAuthoringStatus: status},
+    });
+    expect(recorder.seal().modelCalls?.[0].output).toEqual({bodyChars: 12, sidecarChars: 300,
+      declarationAuthoringStatus: status});
+    expect(recorder.seal()).not.toHaveProperty('declaration');
+  });
+
+  it.each(RUNTIME_DECLARATION_AUTHORING_VERSIONS)('records actual %s only for an expanded declaration', version => {
+    const recorder = createRuntimePerformanceRecorder();
+    for (const status of RUNTIME_DECLARATION_AUTHORING_STATUSES) {
+      recorder.startModelCall({purpose: 'answer_turn'}).end({output: {bodyChars: 12, sidecarChars: 300,
+        declarationAuthoringStatus: status, declarationAuthoringVersion: version}});
+    }
+    expect(recorder.seal().modelCalls?.map(call => call.output)).toEqual(RUNTIME_DECLARATION_AUTHORING_STATUSES.map(status => ({
+      bodyChars: 12, sidecarChars: 300, declarationAuthoringStatus: status,
+      ...(status === 'expanded' ? {declarationAuthoringVersion: version} : {}),
+    })));
+  });
+
+  it('drops unknown observed grammar versions without exporting arbitrary content', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    recorder.startModelCall({purpose: 'answer_turn'}).end({output: {bodyChars: 1, sidecarChars: 20,
+      declarationAuthoringStatus: 'expanded', declarationAuthoringVersion: 'PRIVATE_VERSION_CANARY'} as any});
+    expect(recorder.seal().modelCalls?.[0].output).toEqual({bodyChars: 1, sidecarChars: 20, declarationAuthoringStatus: 'expanded'});
+    expect(JSON.stringify(recorder.seal())).not.toContain('PRIVATE_VERSION_CANARY');
+  });
+
+  it.each(['canonical', 'PRIVATE_AUTHORING_STATUS_CANARY'])('drops unknown authoring status %s and does not backfill older output records', canary => {
+    const recorder = createRuntimePerformanceRecorder();
+    recorder.startModelCall({purpose: 'answer_turn'}).end({output: {bodyChars: 12, sidecarChars: 300,
+      declarationAuthoringStatus: canary} as any});
+    recorder.startModelCall({purpose: 'answer_turn'}).end({output: {bodyChars: 12, sidecarChars: 300}});
+    const receipt = recorder.seal();
+    expect(receipt.modelCalls?.map(call => call.output)).toEqual([
+      {bodyChars: 12, sidecarChars: 300}, {bodyChars: 12, sidecarChars: 300},
+    ]);
+    expect(JSON.stringify(receipt)).not.toContain(canary);
+  });
+
   it('records the first final review decision once and never throws once sealed', () => {
     const recorder = createRuntimePerformanceRecorder();
     recordRuntimeFinalReview(recorder, {necessity: 'not_required',
@@ -468,6 +613,25 @@ describe('runtime performance receipt', () => {
     expect(recorder.seal().modelCalls).toEqual([expect.objectContaining({purpose: 'review', model: 'light-reported',
       reasoning: 'disabled', outcome: 'ok', firstOutputMs: expect.any(Number), usage: {inputTokens: 4, outputTokens: 2}})]);
   });
+  it('distinguishes enabled effort from disabled reasoning and never records arbitrary controls', async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const input = {prompt: 'p', systemPrompt: '', deadlineMs: Date.now() + 1_000, outputByteLimit: 10};
+    await dispatchWithModelCallRecord(recorder, {purpose: 'review'}, input, async request => {
+      request.observer?.reasoning?.('enabled', 'low');
+      return {status: 'ok', text: '{}'};
+    });
+    startRuntimeModelCall(recorder, {purpose: 'classification', reasoning: 'PRIVATE_CANARY' as any,
+      reasoningEffort: 'PRIVATE_CANARY' as any}).end();
+    startRuntimeModelCall(recorder, {purpose: 'classification', reasoning: 'disabled', reasoningEffort: 'high'}).end();
+    const calls = recorder.seal().modelCalls!;
+    expect(calls[0]).toMatchObject({reasoning: 'enabled', reasoningEffort: 'low'});
+    expect(calls[1]).not.toHaveProperty('reasoning');
+    expect(calls[1]).not.toHaveProperty('reasoningEffort');
+    expect(calls[2]).toMatchObject({reasoning: 'disabled'});
+    expect(calls[2]).not.toHaveProperty('reasoningEffort');
+    expect(JSON.stringify(calls)).not.toContain('PRIVATE_CANARY');
+  });
+
   it('keeps only a closed provider origin and input-size bucket on a model call receipt', async () => {
     expect(runtimeProviderOrigin('https://user:secret@api.deepseek.com/v1?key=x')).toBe('https://api.deepseek.com');
     expect(runtimeProviderOrigin('file:///etc/passwd')).toBeUndefined();

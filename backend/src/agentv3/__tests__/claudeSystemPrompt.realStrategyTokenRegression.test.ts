@@ -16,9 +16,11 @@ import {
   stripTemplateComments,
   MAX_PROMPT_TOKENS,
 } from '../claudeSystemPrompt';
-import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes, loadPromptTemplate} from '../strategyLoader';
+import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes, loadPromptTemplate, renderTemplate} from '../strategyLoader';
 import {resolveAnalysisInvestigationRequirements} from '../../agentRuntime/analysisInvestigationRequirements';
-import {CONCLUSION_CONTRACT_SIDECAR_MARKER, parseConclusionContractSidecar} from '../../agent/core/conclusionContract';
+import {CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE, CONCLUSION_AUTHORING_FENCE_V2, parseConclusionContractSidecar,
+  conclusionDeclarationValidationPayload} from '../../agent/core/conclusionContract';
+import {CONCLUSION_AUTHORING_LIMITS} from '../../agent/core/conclusionAuthoring';
 import {runDeterministicClaimVerifier, SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../../services/verifier/deterministicClaimVerifier';
 import {bindCapturedAnchorFacts, captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import type {EvidenceAnchorV1} from '../../types/evidenceContract';
@@ -30,8 +32,36 @@ import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 import {MAX_KNOWLEDGE_SOURCE_IDS_PER_ANALYSIS} from '../../services/codebase/codeAwareFeature';
 
 describe('typed prompt with real strategy assets', () => {
-  it.each(['startup', 'scrolling'] as const)('fits real typed %s comparison reports without trimming evidence obligations', sceneType => {
-    const parts = buildSystemPromptParts(makeWorstCaseContext(sceneType));
+  it.each(['zh-CN', 'en'] as const)('connects metric obligations to permission-bounded discovery without increasing the shared asset budget: %s', outputLanguage => {
+    const template = loadPromptTemplate('prompt-investigation-findings')!;
+    // Frozen pre-discovery asset: new guidance must not evict existing context.
+    expect(Buffer.byteLength(template)).toBeLessThanOrEqual(5133);
+    for (const evidenceAccess of ['read_new', 'existing_only'] as const) {
+      const base = makeWorstCaseContext('startup');
+      const context = {...base, outputLanguage, turnIntent: {...base.turnIntent!, evidenceAccess}};
+      const parts = buildSystemPromptParts(context);
+      const findings = parts.segments.find(segment => segment.label === 'investigation_findings')!.content;
+      expect(findings).toContain('`list_skills(metricId=...)`');
+      expect(findings).toContain('Under `read_new`');
+      expect(findings).toContain('`invoke_skill` only if exposed');
+      expect(findings).toContain('`existing_only` permits discovery, never new collection');
+      expect(findings).toContain('including optional');
+      expect(findings).toContain('column aliases cannot confer registered');
+      const requirements = resolveAnalysisInvestigationRequirements({intent: context.turnIntent, strategyRegistry: context.strategyRegistry});
+      const projected = JSON.parse(parts.segments.find(segment => segment.label === 'investigation_requirements')!.content).data;
+      expect(projected).toEqual({...requirements,
+        requirements: requirements.requirements.map(({entryAcquisition: _entry, ...requirement}) => requirement)});
+      expect(requirements.requirements.some(requirement => requirement.entryAcquisition)).toBe(true);
+      expect(projected.requirements.every((requirement: Record<string, unknown>) => !('entryAcquisition' in requirement))).toBe(true);
+      expect(parts.droppedLabels.filter(label => label !== 'scene_default_detail')).toEqual([]);
+      expect(parts.truncatedLabels).toEqual([]);
+    }
+  });
+
+  it.each((['startup', 'scrolling'] as const).flatMap(sceneType =>
+    (['canonical_v1', 'authoring_v1', 'authoring_v2'] as const).map(declarationSyntax => ({sceneType, declarationSyntax}))))
+  ('fits real typed $sceneType $declarationSyntax comparison reports without trimming evidence obligations', ({sceneType, declarationSyntax}) => {
+    const parts = buildSystemPromptParts({...makeWorstCaseContext(sceneType), declarationSyntax});
     expect(MAX_PROMPT_TOKENS).toBe(16_000);
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
     // The default detail body is the most expendable segment; its title stays listed.
@@ -43,7 +73,7 @@ describe('typed prompt with real strategy assets', () => {
         .toMatchObject({droppable: false, truncatable: false});
     }
     expect(parts.fullPrompt).toContain('prefer a compact Markdown table');
-    console.info('[TypedPromptTokenGate]', JSON.stringify({sceneType, budget: MAX_PROMPT_TOKENS,
+    console.info('[TypedPromptTokenGate]', JSON.stringify({sceneType, declarationSyntax, budget: MAX_PROMPT_TOKENS,
       tokens: estimatePromptTokens(parts.fullPrompt), droppedLabels: parts.droppedLabels,
       truncatedLabels: parts.truncatedLabels}));
   });
@@ -119,6 +149,35 @@ describe('typed prompt with real strategy assets', () => {
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
     expect(JSON.parse(json).data.cells.key.length).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_CELLS);
     expect(segment.content).toContain('fetch_artifact');
+  });
+
+  it('fits selected dual states and uses only their template without evicting other context', () => {
+    const base = makeWorstCaseContext('startup');
+    const context: ClaudeAnalysisContext = {...base, sceneType: 'general', comparison: undefined,
+      turnIntent: {...base.turnIntent!, sceneId: 'general', scope: 'bounded_question', deliverable: 'answer', targetUse: 'current_selection'},
+      sceneEvidence: {kind: 'selected_foundation',
+        native: {status: 'captured', evidenceRefId: 'data:selected:native', sourceToolCallId: 'selected-native:run',
+          captureId: 'capture-native', rowIndex: 0, row: {id: 7, ts: 10, dur: 100, track_id: 9}, columnUnits: {dur: 'ns'}},
+        identity: {upid: 42, utid: 43, startNs: 10, endNs: 110},
+        metric: {status: 'partial', metricId: 'fixture.work', skillId: 'selected_fixture', artifactCount: 1, captureCount: 1},
+        artifacts: [{artifactId: 'art-1', evidenceRefId: 'data:selected:metric', stepId: 'root', rowCount: 1,
+          captureRows: 'available', metricBinding: 'present'}],
+        cells: {fields: ['artifactId', 'rowIndex', 'column', 'value', 'unit'], selected: [
+          ['art-1', 0, 'value_ns', 80, 'ns'], ['art-1', 0, 'status', 'partial', null],
+          ['art-1', 0, 'coverage', 80, 'ns'], ['art-1', 0, 'denominator', 100, 'ns']]},
+        omittedArtifactCount: 0, omittedCellCount: 0}};
+    const parts = buildSystemPromptParts(context);
+    const withoutEvidence = buildSystemPromptParts({...context, sceneEvidence: undefined});
+    expect(parts.droppedLabels).toEqual(withoutEvidence.droppedLabels);
+    expect(parts.truncatedLabels).toEqual(withoutEvidence.truncatedLabels);
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    const segment = parts.segments.find(item => item.label === 'scene_evidence')!;
+    expect(segment).toMatchObject({tier: 2, droppable: false});
+    expect(segment.content).toContain('## Selected interval evidence');
+    expect(segment.content).not.toContain('## Scene entry evidence');
+    expect(segment.content).toContain('not proof');
+    expect(segment.content).toContain('"status":"partial"');
+    expect(Buffer.byteLength(JSON.stringify(context.sceneEvidence))).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
   });
 
   it('renders the default detail body of a resolved investigation when the budget allows', () => {
@@ -232,7 +291,7 @@ describe('typed prompt with real strategy assets', () => {
     expect(proof.claimResults[0].deterministicProof.status).not.toBe('proved');
   });
 
-  it('binds both actual declaration examples only to issued captured facts and rejects changed or wrongly typed values', () => {
+  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'] as const)('binds both actual %s examples only to issued captured facts and rejects changed values', syntax => {
     const template = stripTemplateComments(loadPromptTemplate('prompt-conclusion-contract-schema')!);
     expect(template).toContain('References retain exact raw cell values and native row IDs');
     expect(template).toContain('an explicitly marked fixed-decimal approximation');
@@ -245,16 +304,20 @@ describe('typed prompt with real strategy assets', () => {
     expect(template).toContain('Every `evidenceChain` item requires string `conclusionId` and `text`');
     expect(template).toContain('require that same claim to own the Trace reference');
     expect(template).toContain('For successful empty results, cite only their emitted IDs; omit rowIndex/rowSelector/column/value (no row 0).');
-    const examples = [...template.matchAll(/^```json\n([\s\S]*?)\n```$/gm)]
-      .filter(match => !match[1].includes('{{'))
-      .map(match => JSON.parse(match[1]));
-    const example = examples.find(value => value.schemaVersion === 'conclusion_contract_v1');
+    const framing = stripTemplateComments(loadPromptTemplate(syntax === 'authoring_v2'
+      ? 'prompt-conclusion-authoring-v2-framing' : syntax === 'authoring_v1'
+        ? 'prompt-conclusion-authoring-framing' : 'prompt-conclusion-full-framing')!);
+    const rendered = renderTemplate(framing, {sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
+      authoringOpeningFence: syntax === 'authoring_v2' ? CONCLUSION_AUTHORING_FENCE_V2 : CONCLUSION_AUTHORING_FENCE,
+      authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes), authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
+      authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth)});
+    const parsed = parseConclusionContractSidecar(rendered);
+    const example = conclusionDeclarationValidationPayload(parsed) as {claims: Array<{semantics: {numeric: unknown}}>};
     const numeric = example.claims[0].semantics.numeric;
     expect(numeric).toMatchObject({operator: 'eq', value: 7.123456, unit: 'ms', presentation: {
       decimalPlaces: 1, rounding: 'half_away_from_zero', quotes: [{text: '7.1 ms'}]}});
     // Verify the complete rendered example; the harness must not supply missing
     // numeric/scope/reference fields the model would also have to guess.
-    const parsed = parseConclusionContractSidecar(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\n${JSON.stringify(example)}\n\`\`\`\n-->`);
     expect(parsed.status).toBe('valid');
     expect(parsed.bindingEligibility).toBe('eligible');
     const claims = parsed.contract!.claims!;
@@ -318,9 +381,9 @@ describe('typed prompt with real strategy assets', () => {
           conversationSummary: 'Unverified prior context. '.repeat(20000),
           knowledgeBaseContext: 'Optional table reference. '.repeat(20000)}, budget);
         const requirementSegment = parts.segments.find(segment => segment.label === 'investigation_requirements')!;
-        expect(JSON.parse(requirementSegment.content).data).toEqual(resolveAnalysisInvestigationRequirements({
-          intent: context.turnIntent, strategyRegistry: registry,
-        }));
+        const requirements = resolveAnalysisInvestigationRequirements({intent: context.turnIntent, strategyRegistry: registry});
+        expect(JSON.parse(requirementSegment.content).data).toEqual({...requirements,
+          requirements: requirements.requirements.map(({entryAcquisition: _entry, ...requirement}) => requirement)});
         expect(requirementSegment).toMatchObject({droppable: false, truncatable: false});
         expect(parts.segments.find(segment => segment.label === 'source_use')).toBeUndefined();
         expect(JSON.parse(parts.segments.find(segment => segment.label === 'source_authorization')!.content).data)

@@ -20,6 +20,10 @@
  */
 
 import { jest, describe, it, expect } from '@jest/globals';
+import * as draftDiagnostics from '../../services/draftDeclarationDiagnostics';
+import * as producerCatalog from '../../services/skillEngine/investigationProducerCatalog';
+import {createOpenAIToolsFromMcpDefinitions} from '../../agentRuntime/engines/openai/openAiToolAdapter';
+import {createPiAgentCoreToolFromSharedSpec} from '../../agentRuntime/engines/pi/piAgentCoreRuntime';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -817,10 +821,10 @@ describe('createClaudeMcpServer', () => {
       expect(definition.evidenceEffect).toBe('read_existing');
       expect(definition.shared.description.length).toBeLessThanOrEqual(1000);
       expect(definition.shared.description).toBe(requireToolDescription('prompt-draft-declaration-diagnostics-tool-description'));
-      expect(definition.shared.description).toContain('Full body+JSON string claim batches');
+      expect(definition.shared.description).toContain('diagnosticMode="claims_only"');
       expect(definition.shared.description).not.toContain('Report labels');
       expect(definition.shared.description).toContain('coverageNotChecked');
-      expect(definition.shared.description).toContain('never final verification');
+      expect(definition.shared.description).toContain('never a prerequisite');
       const before = JSON.stringify(artifactStore.serialize());
       const result = await definition.shared.handler({body: 'Draft', declarationJson: '{}'}, {});
       expect(JSON.parse((result.content[0] as {text: string}).text)).toMatchObject({diagnosticOnly: true, coverageNotChecked: true,
@@ -845,11 +849,52 @@ describe('createClaudeMcpServer', () => {
         diagnosticGuidance: requireToolDescription('prompt-draft-declaration-diagnostics-feedback')});
       expect(feedback.diagnosticGuidance.length).toBeLessThanOrEqual(1000);
       expect(feedback.diagnosticGuidance).toContain('declarationJson is JSON text, not a nested object');
-      expect(feedback.diagnosticGuidance).toContain('retaining every claim in the final declaration');
+      expect(feedback.diagnosticGuidance).toContain('retain every claim in the final declaration');
       expect(feedback.diagnosticGuidance).not.toContain('No finding established.');
       expect(server.mockTpService.query).not.toHaveBeenCalled();
       expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
       expect(server.emittedUpdates).toEqual([]);
+    });
+    it('allows targeted draft claims without body and never certifies presentation', async () => {
+      const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
+      const server = createTestServer({runId: 'diagnostic-run', sessionId: 'diagnostic-session',
+        allowNewEvidence: false, artifactStore: new RealArtifactStore()});
+      const definition = server.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
+      const declarationJson = JSON.stringify({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []});
+      const result = await definition.shared.handler({diagnosticMode: 'claims_only', declarationJson}, {});
+      expect(JSON.parse((result.content[0] as {text: string}).text)).toMatchObject({state: 'diagnosed',
+        presentation: {status: 'not_checked', reason: 'claims_only'}, coverageNotChecked: true, finalCertification: false});
+      expect(server.mockTpService.query).not.toHaveBeenCalled();
+      expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+    it.each(['openai', 'pi'] as const)('preserves literal draft body strings through the shared %s adapter', async adapter => {
+      const {ArtifactStore: RealArtifactStore} = jest.requireActual('../artifactStore') as typeof import('../artifactStore');
+      const server = createTestServer({runId: 'diagnostic-run', sessionId: 'diagnostic-session',
+        allowNewEvidence: false, artifactStore: new RealArtifactStore()});
+      const definition = server.toolDefinitions.find(item => item.name === 'check_conclusion_draft')!;
+      const openai = createOpenAIToolsFromMcpDefinitions([definition])[0] as any;
+      const pi = createPiAgentCoreToolFromSharedSpec(definition.shared, {allowedToolNames: new Set([definition.name])});
+      const diagnostic = jest.spyOn(draftDiagnostics, 'diagnoseConclusionDraft');
+      const declarationJson = JSON.stringify({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []});
+      const invoke = async (args: Record<string, unknown>) => {
+        if (adapter === 'openai') await openai.invoke({}, JSON.stringify(args));
+        else await pi.execute('literal-body-test', args, new AbortController().signal, undefined);
+        return await diagnostic.mock.results[diagnostic.mock.results.length - 1].value;
+      };
+      try {
+        for (const diagnosticMode of [null, 'presentation', 'claims_only']) for (const body of ['None', 'null', 'undefined']) {
+          const result = await invoke({diagnosticMode, body, declarationJson, planPhaseId: null});
+          expect(diagnostic.mock.calls[diagnostic.mock.calls.length - 1][0].body).toBe(body);
+          expect(result).toMatchObject({state: 'diagnosed', finalCertification: false});
+        }
+        for (const body of [null, undefined]) {
+          expect(await invoke({diagnosticMode: 'claims_only', body, declarationJson, planPhaseId: null}))
+            .toMatchObject({state: 'diagnosed', presentation: {status: 'not_checked', reason: 'claims_only'}});
+          expect(diagnostic.mock.calls[diagnostic.mock.calls.length - 1][0].body).toBeUndefined();
+        }
+      } finally {diagnostic.mockRestore();}
     });
     it.each([
       {artifactStore: null, reason: 'evidence_store_missing'},
@@ -1230,6 +1275,91 @@ describe('createClaudeMcpServer', () => {
       for (const name of expected) {
         expect(tools.has(name)).toBe(true);
       }
+    });
+
+    describe('exact investigation producer discovery', () => {
+      const metricId = 'workspace.fixture.duration';
+      function producerServer(count = 7, options: Parameters<typeof createTestServer>[0] = {}) {
+        const definitions: SkillDefinition[] = Array.from({length: count}, (_, index) => ({
+          name: `workspace_producer_${index}`, version: '1', type: 'atomic',
+          meta: {display_name: 'Workspace producer', description: 'PRIVATE_LONG_DESCRIPTION'},
+          sql: 'SELECT PRIVATE_SQL_BODY', process_scope: {role: 'global_context'},
+          inputs: [{name: 'range_begin', type: 'timestamp', required: true}, {name: 'thread_id', type: 'integer', required: false}],
+          investigation_evidence: {window: {start: 'begin', end: 'end'},
+            metrics: [{metric_id: metricId, domain: 'fixture', value: 'duration', unit: 'ns', status: 'status'}]},
+        }));
+        const pinned = {registryFingerprint: `producers-${count}`, overlayGeneration: 'discovery',
+          getAllSkills: () => definitions, getFragmentCache: () => new Map(), getSkill: (id: string) => definitions.find(s => s.name === id)};
+        jest.mocked(createSkillAnalysisAdapter).mockReturnValueOnce({adaptSkillResult: (value: unknown) => value,
+          setSkillRegistry: jest.fn(), listSkills: async () => definitions.map((s, index) => ({id: s.name,
+            displayName: s.name, description: s.meta.description, type: s.type, keywords: [index === 0 ? 'selected' : 'other']})),
+        } as unknown as ReturnType<typeof createSkillAnalysisAdapter>);
+        const server = withEffectiveRuntimeRegistrySnapshot({scope: {tenantId: 'catalog', workspaceId: 'workspace'},
+          baseSkillRegistryFingerprint: 'base', baseStrategyRegistryFingerprint: 'strategy', overlayGeneration: 'discovery',
+          skillRegistry: pinned, strategyRegistry: {} as never} as never, () => createTestServer(options));
+        return server;
+      }
+
+      it.each([false, true])('pages all exact matches from the pinned registry without executing them (lightweight=%s)', async lightweight => {
+        const server = producerServer(7, {lightweight});
+        const first = await callTool(server.tools, 'list_skills', {metricId});
+        const second = await callTool(server.tools, 'list_skills', {metricId, offset: first.nextOffset});
+        expect(first).toMatchObject({metricId, total: 7, offset: 0, hasMore: true, nextOffset: 5,
+          invocation: {tool: 'invoke_skill', exposed: true}});
+        expect(second).toMatchObject({total: 7, offset: 5, hasMore: false});
+        expect(second).not.toHaveProperty('nextOffset');
+        expect([...first.producers, ...second.producers].map(card => card.skillId))
+          .toEqual(Array.from({length: 7}, (_, index) => `workspace_producer_${index}`));
+        expect(first.producers[0]).toMatchObject({requiredWithoutDefault: ['range_begin'], availability: 'not_checked',
+          inputs: [{name: 'range_begin', required: true}, {name: 'thread_id', required: false}], exactProcessScope: {supported: true}});
+        expect(JSON.stringify(first)).not.toMatch(/PRIVATE_SQL_BODY|PRIVATE_LONG_DESCRIPTION/);
+        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
+        expect(server.mockTpService.query).not.toHaveBeenCalled();
+        const narrowed = await callTool(server.tools, 'list_skills', {metricId, category: 'selected'});
+        expect(narrowed.total).toBe(1);
+        const emptyWorkspace = producerServer(0);
+        expect((await callTool(emptyWorkspace.tools, 'list_skills', {metricId})).total).toBe(0);
+      });
+
+      it.each([{allowNewEvidence: false}, {conversationTraceAttached: false}])('does not advertise acquisition outside the exposed tool set: %j', async options => {
+        const server = producerServer(1, options);
+        const result = await callTool(server.tools, 'list_skills', {metricId});
+        expect(result).toMatchObject({total: 1, invocation: {exposed: false}});
+        expect(server.allowedTools).not.toContain(MCP_NAME_PREFIX + 'invoke_skill');
+        expect(server.mockSkillExecutor.execute).not.toHaveBeenCalled();
+      });
+
+      it.each(['', 'None', 'null', 'undefined', 'unknown.metric'])('keeps an exact miss distinct from a broad catalog: %j', async metricId => {
+        const server = producerServer(1);
+        expect(await callTool(server.tools, 'list_skills', {metricId}))
+          .toMatchObject({metricId, total: 0, producers: [], hasMore: false});
+      });
+
+      it.each(['openai', 'pi'] as const)('preserves exact metric strings through the actual shared %s adapter', async adapter => {
+        const server = producerServer(1);
+        const definition = server.toolDefinitions.find(item => item.name === 'list_skills')!;
+        const openai = createOpenAIToolsFromMcpDefinitions([definition])[0] as any;
+        const pi = createPiAgentCoreToolFromSharedSpec(definition.shared, {allowedToolNames: new Set([definition.name])});
+        const project = jest.spyOn(producerCatalog, 'investigationProducerCatalog');
+        try {
+          for (const metricId of ['', 'None', 'null', 'undefined']) {
+            const args = {metricId, category: null, offset: null};
+            project.mockClear();
+            if (adapter === 'openai') await openai.invoke({}, JSON.stringify(args));
+            else await pi.execute('exact-metric', args, new AbortController().signal, undefined);
+            expect(project).toHaveBeenCalledWith(expect.any(Array), metricId);
+            expect(project.mock.results[0].value).toEqual([]);
+          }
+        } finally {project.mockRestore();}
+      });
+
+      it.each([{}, {metricId, offset: -1}, {metricId, offset: 0.5}, {metricId, offset: Infinity},
+        {metricId, offset: Number.MAX_SAFE_INTEGER + 1}])('rejects offsets that cannot name a producer page: %j', async input => {
+        const server = producerServer(1);
+        const params = Object.keys(input).length ? input : {offset: 0};
+        expect(await callTool(server.tools, 'list_skills', params))
+          .toMatchObject({success: false, reason: 'invalid_producer_offset'});
+      });
     });
 
     it('binds workspace skill registry for list_skills and invoke_skill', async () => {
@@ -1766,25 +1896,30 @@ describe('createClaudeMcpServer', () => {
         expect(description).toContain('Qualify JOIN columns');
         expect(description).toContain('schema lookup when needed');
         expect(description).not.toContain('schema lookup first');
-        expect(description).toContain('Prefer Skills; SQL for gaps');
+        expect(description).toContain('Prefer Skills; SQL=gaps');
         expect(description).toContain('Show gaps');
         expect(description).toContain('FrameTimeline: upid');
         expect(description).toContain('is_main_thread');
         expect(description).toContain('Frames=count logical IDs/process');
         expect(description).toContain('MIN(ts+dur,end)-MAX(ts,start)');
-        expect(description).toContain('Handle negative/unfinished dur first');
-        expect(description).toContain('Per-thread state sum<=window');
+        expect(description).toContain('Negative/unfinished dur first');
+        expect(description).toContain('Thread-state sum<=window');
         expect(description).toContain('ts<end AND ts+dur>start');
-        expect(description).toContain('Sched has idle; busy=is_idle=0, NULL=unknown');
+        expect(description).toContain('Sched has idle; busy=is_idle=0; NULL=unknown');
         expect(description).toContain('Zero dur!=zero count');
         expect(description).toContain('parallel CPU!=wall');
         expect(description).toContain('Counters=time-weighted holds+predecessor');
-        expect(description).toContain('numerator/denominator+unrounded REAL ratio');
-        expect(description).toContain('CAST/ROUND only display extras');
-        expect(description).toContain('aliases/formats grant no unit/investigation authority');
+        expect(description).toContain('Numerator/denominator+unrounded REAL ratio');
+        expect(description).toContain('CAST/ROUND=display');
+        expect(description).toContain('aliases/formats!=authority');
+        expect(description).toContain('columnUnits=issued; unlisted=unknown');
+        expect(description).toContain('modelEvidence=availability, not proof');
+        expect(description).toContain('empty/unknown!=zero/absence');
+        expect(description).toContain('list_skills');
+        expect(description.length).toBeLessThan(1000);
         expect(description).not.toMatch(/COUNT\(\*\)|AVG\(value\)|ts BETWEEN|SUM\(dur\)/);
       }
-      expect(descriptionByName.get('execute_sql')).toContain('Skill steps and art-* ids are not tables');
+      expect(descriptionByName.get('execute_sql')).toContain('steps/art-*!=tables');
       expect(descriptionByName.get('execute_sql')).toContain('fetch_artifact, not VALUES');
       expect(descriptionByName.get('execute_sql')).toContain('Current trace');
       expect(descriptionByName.get('execute_sql_on')).toContain('trace=current/reference');
@@ -1796,7 +1931,7 @@ describe('createClaudeMcpServer', () => {
       expect(descriptionByName.get('invoke_skill')).toContain('Missing means unknown');
       // What raw SQL is for, and when a Skill comes first (B.2).
       expect(descriptionByName.get('execute_sql')).toContain('For what Skills and scene_evidence do not cover');
-      expect(descriptionByName.get('invoke_skill')).toContain('Use it first for scene-level measurements');
+      expect(descriptionByName.get('invoke_skill')).toContain('Use it first for registered metric measurements');
       expect(descriptionByName.get('invoke_skill')).toBe(requireToolDescription('prompt-invoke-skill-tool-description'));
       expect(descriptionByName.get('invoke_skill')).toContain('required detail Skills');
       expect(descriptionByName.get('invoke_skill')).toContain('columnUnits');
@@ -3226,6 +3361,53 @@ describe('createClaudeMcpServer', () => {
       expect(mockTpService.query).toHaveBeenCalledTimes(2);
     });
 
+    it('reports evidence availability without promoting raw aliases or changing SQL success', async () => {
+      const {tools, mockTpService} = createTestServer({artifactStore: null});
+      const rows = [[33, 'R']];
+      const raw = {columns: ['duration_ms', 'state'], rows, durationMs: 1,
+        columnUnits: {duration_ms: 'ms'}, modelEvidence: {captureRows: 'available', columnUnits: 'available', registeredMetricBinding: 'present'}};
+      mockTpService.query.mockResolvedValue(raw);
+      const result = await callTool(tools, 'execute_sql', {sql: 'SELECT 33 AS duration_ms, \'R\' AS state'});
+      expect(result).toMatchObject({success: true, rows, modelEvidence: {
+        captureRows: 'available', columnUnits: 'unknown', registeredMetricBinding: 'absent'}});
+      expect(result).not.toHaveProperty('columnUnits');
+      expect(mockTpService.query).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([0, 201])('reports actual raw capture availability without changing empty/truncated result semantics: rows=%s', async rowCount => {
+      const {tools, mockTpService} = createTestServer({artifactStore: null});
+      const rows = Array.from({length: rowCount}, (_, i) => [i]);
+      mockTpService.query.mockResolvedValue({columns: ['value'], rows, durationMs: 1});
+      const result = await callTool(tools, 'execute_sql', {sql: 'SELECT value FROM fixture'});
+      expect(result).toMatchObject({success: true, totalRows: rowCount, truncated: rowCount > 200,
+        modelEvidence: {captureRows: rowCount ? 'available' : 'empty', columnUnits: 'unknown', registeredMetricBinding: 'absent'}});
+      expect(result.rows).toEqual(rows.slice(0, 200));
+    });
+
+    it('contains metadata failure without swallowing query or authorization failures', async () => {
+      const evidence = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>(
+        '../../services/evidence/evidenceCapture');
+      const projection = jest.spyOn(evidence, 'projectEvidenceCaptureMetadataForModel')
+        .mockImplementation(() => {throw new Error('PRIVATE_METADATA_ERROR');});
+      const {tools, mockTpService} = createTestServer({artifactStore: null});
+      try {
+        mockTpService.query.mockResolvedValue({columns: ['value'], rows: [[1]], durationMs: 1});
+        const result = await callTool(tools, 'execute_sql', {sql: 'SELECT 1 AS value'});
+        expect(result).toMatchObject({success: true, rows: [[1]], modelEvidence: {
+          captureRows: 'unavailable', columnUnits: 'unknown', registeredMetricBinding: 'unknown'}});
+        expect(JSON.stringify(result)).not.toContain('PRIVATE_METADATA_ERROR');
+        mockTpService.query.mockRejectedValue(new Error('query_failed_fixture'));
+        const failed = await callTool(tools, 'execute_sql', {sql: 'SELECT broken'});
+        expect(failed.success).toBe(false);
+        expect(failed).not.toHaveProperty('modelEvidence');
+        const revoked = createTestServer({runAuthorization: {enforced: true,
+          assertCurrentInTurn: () => {throw new Error('authorization_revoked');}, settled: async () => {}}});
+        await expect(revoked.toolDefinitions.find(item => item.name === 'execute_sql')!.shared.handler(
+          {sql: 'SELECT 1'}, {})).rejects.toThrow('authorization_revoked');
+        expect(revoked.mockTpService.query).not.toHaveBeenCalled();
+      } finally {projection.mockRestore();}
+    });
+
     it.each([
       ['execute_sql', 'current', false], ['execute_sql', 'current', true],
       ['execute_sql_on', 'current', false], ['execute_sql_on', 'current', true],
@@ -3254,6 +3436,7 @@ describe('createClaudeMcpServer', () => {
           traceId: trace === 'reference' ? 'reference-unit-trace' : 'test-trace-123', traceSide: trace,
         });
         expect(payload.columnUnits).toEqual({dur: 'ns'});
+        expect(payload.modelEvidence).toEqual({captureRows: 'available', columnUnits: 'available', registeredMetricBinding: 'absent'});
         expect(payload.totalRows).toBe(rows.length);
         if (!summary) expect(payload.rows).toEqual(rows);
         expect(result.rows).toEqual(rows);
@@ -3284,6 +3467,9 @@ describe('createClaudeMcpServer', () => {
                 ...(toolName === 'execute_sql_on' ? {trace: 'reference'} : {})});
               expect(payload.success).toBe(true);
               expect(payload).not.toHaveProperty('columnUnits');
+              expect(payload.modelEvidence).toEqual(kind === 'no_native_capture'
+                ? {captureRows: 'available', columnUnits: 'unknown', registeredMetricBinding: 'absent'}
+                : {captureRows: 'unavailable', columnUnits: 'unknown', registeredMetricBinding: 'unknown'});
             }
           }
         } finally { capture.mockRestore(); }
@@ -3847,14 +4033,47 @@ describe('createClaudeMcpServer', () => {
     it('lookup_sql_schema marks metric-created entities with RUN_METRIC setup', async () => {
       const { tools } = createTestServer();
       const result = await callTool(tools, 'lookup_sql_schema', { keyword: 'weighted_missed_frames' });
-      const frameMetricEntry = result.entries.find(
+      const catalogEntry = result.entries.find(
         (entry: any) => entry.name === 'android_frame_timeline_metric_per_process'
       );
-
+      expect(catalogEntry.detail).toBe('catalog');
+      const full = await callTool(tools, 'lookup_sql_schema', {detail: 'full', locator: catalogEntry.locator});
+      const frameMetricEntry = full.entries[0];
       expect(frameMetricEntry.requiredMetric).toBe('android/android_frame_timeline_metric.sql');
       expect(frameMetricEntry.setupSql).toBe("SELECT RUN_METRIC('android/android_frame_timeline_metric.sql');");
       expect(frameMetricEntry.dependencies).toContain('metric:android/android_frame_timeline_metric.sql');
       expect(frameMetricEntry.columns.map((column: any) => column.name)).toContain('weighted_missed_frames');
+    });
+
+    it('keeps exact definitions in one call and pages the entire schema catalog with exact full restoration', async () => {
+      const {tools} = createTestServer();
+      const first = await callTool(tools, 'lookup_sql_schema', {keyword: 'thread_state'});
+      const exact = first.entries.find((entry: any) => entry.name === 'thread_state');
+      expect(exact).toMatchObject({detail: 'full', columns: expect.any(Array)});
+      const restored = await callTool(tools, 'lookup_sql_schema', {detail: 'full', locator: exact.locator});
+      expect(restored.entries[0]).toEqual(exact);
+      const catalog = first.entries.find((entry: any) => entry.detail === 'catalog');
+      expect(catalog).toBeDefined();
+      expect(catalog).not.toHaveProperty('columns');
+      const detail = await callTool(tools, 'lookup_sql_schema', {detail: 'full', locator: catalog.locator});
+      expect(detail.entries[0]).toMatchObject({name: catalog.name, locator: catalog.locator, detail: 'full'});
+      const locators: string[] = [];
+      let page = await callTool(tools, 'lookup_sql_schema', {keyword: 'thread', limit: 7});
+      const total = page.totalMatches;
+      expect(total).toBeGreaterThan(30);
+      for (;;) {
+        locators.push(...page.entries.map((entry: any) => JSON.stringify(entry.locator)));
+        if (!page.hasMore) break;
+        expect(page.nextOffset).toBe(locators.length);
+        page = await callTool(tools, 'lookup_sql_schema', {keyword: 'thread', limit: 7, offset: page.nextOffset});
+        expect(page.totalMatches).toBe(total);
+      }
+      expect(locators).toHaveLength(total);
+      expect(new Set(locators).size).toBe(total);
+      expect(await callTool(tools, 'lookup_sql_schema', {detail: 'full', locator: {...exact.locator, module: 'wrong.module'}}))
+        .toMatchObject({success: false, reason: 'schema_definition_unavailable'});
+      expect(await callTool(tools, 'lookup_sql_schema', {keyword: 'zzqvnonexistententity983721'}))
+        .toMatchObject({totalMatches: 0, returned: 0, hasMore: false, entries: []});
     });
   });
 

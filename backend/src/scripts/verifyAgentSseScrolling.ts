@@ -5,7 +5,7 @@
 
 import 'dotenv/config';
 import { installEpipeGuard } from '../utils/epipeGuard';
-import {backendLogPath} from '../runtimePaths';
+import {backendDataPath, backendLogPath} from '../runtimePaths';
 installEpipeGuard();
 
 import cors from 'cors';
@@ -62,7 +62,21 @@ import {createSceneSseObservation, recordSceneSseEvent, evaluateSceneSseVerifica
 import {rowObject} from '../utils/traceProcessorRowUtils';
 import {stableStringify} from '../utils/stableJson';
 import {readAgentE2eMetrics} from './agentE2eMetrics';
+import {buildLlmExecutionQuality} from './llmExecutionBenchmark';
 import {countedUnitDimension, declaredUnitAcceptsProducerDimension} from '../services/verifier/claimUnits';
+
+// Maintainer-only local lifecycle contract; never accepted by product HTTP routes.
+const benchmarkLifecycle = require('../../scripts/llm-execution-lifecycle.cjs') as {
+  TARGET_ENV: string;
+  parseTargetRequest(value: string): {port: number};
+  observeExecutionTarget(input: {request: {port: number}; repositoryRoot: string; dataRoot: string; port: number}):
+    Record<string, unknown> & {status: 'matched' | 'mismatch'};
+  createSourceFacetSettlement(input: {repositoryRoot: string; reportPath: string; request: unknown}): {
+    issue(report: unknown): object | undefined;
+    settle(token: object, operations: {cleanup(): void; flush(): Promise<void>; exitCode(): typeof process.exitCode}): Promise<number>;
+  };
+};
+type PendingSourceCompletion = {token: object; settlement: ReturnType<typeof benchmarkLifecycle.createSourceFacetSettlement>};
 
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
 type SmartAction = 'preview' | 'analyze';
@@ -316,7 +330,10 @@ export interface AgentSseExpectedFact {
 
 export interface AgentSseExpectation {
   schemaVersion: 1;
-  intent: Partial<Pick<AnalysisTurnIntent, 'sceneId' | 'taskKind' | 'scope' | 'deliverable' | 'evidenceAccess'>>;
+  intent: Partial<Pick<AnalysisTurnIntent, 'sceneId' | 'taskKind' | 'scope' | 'deliverable' | 'evidenceAccess'>> & {
+    /** Suite-owned alternative labels for the same task; mutually exclusive with sceneId. */
+    allowedSceneIds?: string[];
+  };
   facts: AgentSseExpectedFact[];
   investigation?: AgentSseInvestigationExpectation;
   /** Explicitly unmeasured facets, such as source recommendation wording. */
@@ -658,7 +675,7 @@ export async function resolveVerificationSliceSelection(input: {
     throw new VerificationSliceSelectionError('SLICE_SELECTION_INVALID_IDENTITY');
   }
   return {status: 'resolved', purpose: 'input_scope_not_verified_evidence', selector,
-    selectionContext: {kind: 'track_event', source: 'track_event_selection', eventId, ts,
+    selectionContext: {kind: 'track_event', source: 'track_event_selection', nativeTable: 'slice', eventId, ts,
       ...(duration >= 0 ? {dur: duration} : {})},
     identity: {traceId: input.traceId, table: 'slice', eventId, ts, trackId, utid, upid}};
 }
@@ -736,12 +753,17 @@ export function parseAgentSseExpectation(value: unknown): AgentSseExpectation {
   const scalar = (v: unknown) => typeof v === 'string' || typeof v === 'boolean' || typeof v === 'number' && Number.isFinite(v);
   const fail = (): never => {throw new Error('Invalid --expectation-json: expected agent SSE expectation schemaVersion 1');};
   if (!object(value) || !keys(value, ['schemaVersion', 'intent', 'facts', 'investigation', 'uncoveredFacets']) || value.schemaVersion !== 1 ||
-      !object(value.intent) || !keys(value.intent, ['sceneId', 'taskKind', 'scope', 'deliverable', 'evidenceAccess']) ||
+      !object(value.intent) || !keys(value.intent, ['sceneId', 'allowedSceneIds', 'taskKind', 'scope', 'deliverable', 'evidenceAccess']) ||
       !Object.keys(value.intent).length || !Array.isArray(value.facts) || !value.facts.length ||
       (value.uncoveredFacets !== undefined && !strings(value.uncoveredFacets))) return fail();
   const intentValues: Record<string, string[]> = {taskKind: ['acknowledgement', 'fact', 'investigation', 'comparison'],
     scope: ['bounded_question', 'scene_wide'], deliverable: ['answer', 'report'], evidenceAccess: ['existing_only', 'read_new']};
   for (const [key, item] of Object.entries(value.intent)) {
+    if (key === 'allowedSceneIds') {
+      if (value.intent.sceneId !== undefined || !strings(item) || new Set(item).size !== item.length ||
+        item.some(scene => scene !== scene.trim())) return fail();
+      continue;
+    }
     if (typeof item !== 'string' || !item.trim() || (intentValues[key] && !intentValues[key].includes(item))) return fail();
   }
   const ids = new Set<string>();
@@ -976,6 +998,10 @@ export function evaluateAgentSseExpectation(input: {
     deliveryReportPassed: delivery.deliveryReportPassed ?? (assurance?.report === 'passed' || assurance?.report === 'not_applicable'),
   };
   for (const [key, expected] of Object.entries(expectation.intent)) {
+    if (key === 'allowedSceneIds') {
+      value['intent:sceneId'] = expectation.intent.allowedSceneIds!.includes(terminal?.turnIntent?.sceneId ?? '');
+      continue;
+    }
     value[`intent:${key}`] = terminal?.turnIntent?.[key as keyof AnalysisTurnIntent] === expected;
   }
   if (expectation.investigation) Object.assign(value, evaluateAgentSseInvestigationExpectation({
@@ -2662,6 +2688,7 @@ export async function recordVerificationFailureAndCancel(input: {
   error: unknown;
   selectionResolution?: ResolvedVerificationSliceSelection;
   metrics?: () => ReturnType<typeof readAgentE2eMetrics>;
+  executionTarget?: Record<string, unknown>;
 }, request: typeof fetch = fetch): Promise<Record<string, unknown>> {
   const failure: Record<string, unknown> = {
     schemaVersion: 'agent_sse_verification_failure@1',
@@ -2676,6 +2703,7 @@ export async function recordVerificationFailureAndCancel(input: {
       : input.error instanceof VerificationSliceSelectionError ? input.error.code : 'VERIFICATION_FAILED',
     ...preserveVerificationSessionLog(input.outputPath, input.sessionId ?? ''),
     ...(input.selectionResolution ? {selectionResolution: input.selectionResolution} : {}),
+    ...(input.executionTarget ? {executionTarget: {...input.executionTarget, sessionId: input.sessionId, runId: input.runId}} : {}),
     cancellation: input.sessionId && input.runId ? 'pending' : 'not_owned',
     passed: false,
     observedChecksPassed: false,
@@ -3387,7 +3415,7 @@ export async function startVerificationServer(app: express.Express, port = 0): P
   return server;
 }
 
-async function main(): Promise<void> {
+async function main(): Promise<PendingSourceCompletion | void> {
   const options = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(options.tracePath)) {
     throw new Error(`Trace file not found: ${options.tracePath}`);
@@ -3417,6 +3445,8 @@ async function main(): Promise<void> {
   let sceneBounds: {startNs: string; endNs: string} | undefined;
   let sceneOracles: SceneOracleObservation[] = [];
   let selectionResolution: ResolvedVerificationSliceSelection | undefined;
+  let executionTarget: Record<string, unknown> | undefined;
+  let pendingSource = false;
   const startedAt = Date.now();
   const outputPath = options.outputPath ?? path.resolve(process.cwd(), `test-output/verify-agent-sse-scrolling-${startedAt}.json`);
   const diagnostics = installVerificationDiagnostics({phase: () => phase});
@@ -3429,10 +3459,18 @@ async function main(): Promise<void> {
 
   try {
     const app = createVerificationApp();
-    server = await startVerificationServer(app);
+    const targetInput = process.env[benchmarkLifecycle.TARGET_ENV];
+    const targetRequest = targetInput === undefined ? undefined : benchmarkLifecycle.parseTargetRequest(targetInput);
+    server = await startVerificationServer(app, targetRequest?.port);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Failed to bind local verification server');
     baseUrl = `http://127.0.0.1:${address.port}`;
+    if (targetRequest) {
+      const observed = benchmarkLifecycle.observeExecutionTarget({request: targetRequest,
+        repositoryRoot: path.resolve(__dirname, '../../..'), dataRoot: backendDataPath(), port: address.port});
+      executionTarget = observed;
+      if (observed.status !== 'matched') throw new Error('benchmark_target_mismatch');
+    }
     const setup = await setupAnalysisContext(baseUrl, options);
     phase = 'trace_load';
     await loadVerificationTracePair({service: traceProcessorService, tracePath: options.tracePath,
@@ -3878,6 +3916,7 @@ async function main(): Promise<void> {
       completeAcceptance: acceptance.completeAcceptance,
       uncoveredFacets: acceptance.uncoveredFacets,
       runIdentity,
+      ...(executionTarget ? {executionTarget: {...executionTarget, sessionId, runId: ownedRunId}} : {}),
       executionMetrics: readAgentE2eMetrics({
         scope: {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID}, sessionId, runId: ownedRunId,
       }),
@@ -3889,49 +3928,57 @@ async function main(): Promise<void> {
     };
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    fs.writeFileSync(outputPath, `${JSON.stringify(output, null, 2)}\n`);
+    const recordedOutput = {...output, executionQuality: buildLlmExecutionQuality(output)};
+    fs.writeFileSync(outputPath, `${JSON.stringify(recordedOutput, null, 2)}\n`);
 
     console.log(JSON.stringify(output, null, 2));
     console.log(`Report written to: ${outputPath}`);
 
     if (!passed) {
+      const settlement = benchmarkLifecycle.createSourceFacetSettlement({repositoryRoot: path.resolve(__dirname, '../../..'),
+        reportPath: outputPath, request: targetRequest});
+      const token = settlement.issue(recordedOutput);
+      if (token) {
+        pendingSource = true;
+        return {token, settlement};
+      }
       process.exitCode = 1;
     }
   } catch (error) {
     // Failure cancellation is cleanup too: preserve observations before it waits.
     persistDiagnostics();
     const failure = await recordVerificationFailureAndCancel({baseUrl, outputPath, phase,
-      startedAt, timeoutMs: options.timeoutMs, sessionId, runId: ownedRunId, error, selectionResolution,
+      startedAt, timeoutMs: options.timeoutMs, sessionId, runId: ownedRunId, error, selectionResolution, executionTarget,
       metrics: () => readAgentE2eMetrics({scope: {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID},
         sessionId, runId: ownedRunId})});
     throw new Error(`Verification failed during ${phase}: ${failure.errorCode}; failure artifact recorded`);
   } finally {
+    let cleanupFailed = false;
     persistDiagnostics();
     try {preserveVerificationSessionLog(outputPath, sessionId);} catch { /* Preserve the primary outcome if diagnostic copying fails. */ }
     if (sessionId !== '' && !options.keepSession) {
       try {
-        await fetch(`${baseUrl}/api/agent/v1/${sessionId}`, { method: 'DELETE' });
-      } catch {
-      }
+        const response = await fetch(`${baseUrl}/api/agent/v1/${sessionId}`, { method: 'DELETE' });
+        if (!response.ok) cleanupFailed = true;
+      } catch { cleanupFailed = true; }
     }
 
     if (traceId !== '' && !options.keepTrace) {
       try {
         await traceProcessorService.deleteTrace(traceId);
-      } catch {
-      }
+      } catch { cleanupFailed = true; }
     }
 
     if (referenceTraceId !== '' && !options.keepTrace) {
       try {
         await traceProcessorService.deleteTrace(referenceTraceId);
-      } catch {
-      }
+      } catch { cleanupFailed = true; }
     }
 
-    if (server) await new Promise<void>((resolve) => {
-      server!.close(() => resolve());
+    if (server) await new Promise<void>((resolve, reject) => {
+      server!.close(error => error ? reject(error) : resolve());
     });
+    if (pendingSource && cleanupFailed) throw new Error('benchmark_source_facet_cleanup_failed');
   }
 }
 
@@ -3944,13 +3991,19 @@ if (require.main === module) {
     console.error('verification_unsettled: the event loop drained before a verdict was written');
     process.exit(1);
   });
-  main().then(() => {
-    settled = true;
+  main().then(async completion => {
     // The verdict and artifacts are written; trace processors, SDK children and keep-alive
     // sockets would otherwise hold the loop open, so batch callers needed an external watchdog.
-    TraceProcessorFactory.cleanup();
-    process.stdout.write('', () => process.exit(process.exitCode ?? 0));
-  }, (error) => {
+    const operations = {cleanup: () => TraceProcessorFactory.cleanup(),
+      flush: () => new Promise<void>((resolve, reject) => {
+        process.stdout.write('', error => error ? reject(error) : resolve());
+      }), exitCode: () => process.exitCode};
+    let code;
+    if (completion) code = await completion.settlement.settle(completion.token, operations);
+    else {await operations.cleanup(); await operations.flush(); code = process.exitCode ?? 0;}
+    settled = true;
+    process.exit(code);
+  }).catch((error) => {
     settled = true;
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);

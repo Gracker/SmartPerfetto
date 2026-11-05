@@ -329,6 +329,8 @@ OPENAI_LIGHT_MODEL=gpt-5.4-mini
 
 Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path. Neither protocol resumes an earlier provider response: every question starts from fresh model context plus SmartPerfetto's bounded typed history.
 
+Optionally set `OPENAI_ANALYSIS_REASONING_EFFORT=low` for main analysis; omitting it preserves provider defaults. Accepted configuration values are `none/minimal/low/medium/high/xhigh/max`; legal combinations depend on the selected model, API and current SDK. GLM 5.3 Flash requires thinking and rejects `none`; recognized DeepSeek Chat maps `none` to disabled thinking. This adapter currently supports explicit `max` only on recognized supported Chat interfaces; `max` on unknown gateways or Responses is not yet supported by this adapter. The variable applies only to main analysis and ordinary continuation, leaving classification, declaration repair, timeout closeout and semantic review purpose policies intact. Start a new session after changing it; active Provider Manager isolation takes precedence over ambient env. Lower effort may change accuracy and needs workload validation; a Flash model name does not establish latency.
+
 Ollama or OpenAI-compatible gateways:
 
 ```bash

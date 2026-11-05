@@ -3,8 +3,10 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+import {ensureRuntimeAdmission} from '../../runtimeTaskDeadline';
 
-import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
+import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt} from '../../sceneEntryEvidence';
+import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFoundation';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
@@ -72,6 +74,8 @@ import type { RuntimeSelection } from '../../runtimeSelection';
 import type { RuntimeFactoryInput } from '../../runtimeRegistry';
 import {
   createRuntimePerformanceRun,
+  recordRuntimeModelExecutionPolicy,
+  type RuntimeModelCallPurpose,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
@@ -86,6 +90,7 @@ import {
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  isNativeDeclarationRecoveryBlocked,
   candidateHasAnswerBody,
   nativeBodyCompletionNeeded,
 } from '../../runtimeConclusionProtocol';
@@ -363,6 +368,13 @@ interface QoderActiveSession {
   artifactStore?: ArtifactStore;
   delivery?: {result: AnalysisResult} & ReturnType<typeof bindQoderDelivery>;
   dispatchText?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
+  readonly workSignal: AbortSignal;
+  readonly quickBudget: ReturnType<typeof resolveQuickTurnBudget>;
+  acceptedCheckpoint?: () => AnalysisResult;
+  nativeCloseStatus?: 'pending' | 'succeeded' | 'failed';
+  closeNative(retryFailed?: boolean): Promise<boolean>;
+  trackPreparation<T>(work: Promise<T>): Promise<T>;
+  assertWork(): void;
   armMainBudget(timeoutMs: number): void;
 }
 
@@ -402,36 +414,95 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options?: AnalysisOptions,
   ): Promise<AnalysisResult> {
-    const normalizedOptions = options ?? {};
+    let normalizedOptions = options ?? {};
     const executionLease = this.executionGuard.begin({
       runtime: QODER_AGENT_RUNTIME_KIND,
       sessionId,
       referenceTraceId: normalizedOptions.referenceTraceId,
       runId: normalizedOptions.runId ?? randomUUID(),
     });
-    const runtimePerformance = createRuntimePerformanceRun(
-      normalizedOptions.runManifestAttributionSink,
-    );
+    let admission: ReturnType<typeof ensureRuntimeAdmission<AnalysisOptions>>;
+    try {
+      admission = ensureRuntimeAdmission(normalizedOptions, {runId: executionLease.key.runId!, sessionId,
+        admittedAt: Date.now(), ownerSignal: executionLease.signal, assertCurrent: () => executionLease.throwIfAborted()});
+      normalizedOptions = admission.options;
+    } catch (error) {executionLease.settle(); throw error;}
+    const runtimePerformance = createRuntimePerformanceRun(normalizedOptions.runManifestAttributionSink);
     const analysisStartedAt = Date.now();
+    const admittedAt = admission.admission.facts.admittedAt;
+    const task = admission.admission.task;
+    const quickBudget = resolveQuickTurnBudget({env: this.env, hardCapTurns: this.config.quickMaxTurns,
+      targetEnvKeys: ['AGENT_QUICK_TARGET_TURNS'], hardCapEnvKeys: ['AGENT_QUICK_MAX_TURNS', 'QODER_QUICK_MAX_TURNS'],
+      enforcement: 'turn_cap'});
     let mainBudgetTimer: ReturnType<typeof setTimeout> | undefined;
+    let rejectDeadline!: (reason: Error) => void;
+    const deadlineExpired = new Promise<never>((_, reject) => {rejectDeadline = reject;});
+    void deadlineExpired.catch(() => undefined);
+    const abortController = new AbortController();
+    const workSignal = AbortSignal.any([executionLease.signal, abortController.signal]);
+    let pendingPreparation = 0;
+    let analysisSettled = false;
+    let outerFinished = false;
+    let nativeClose: Promise<boolean> | undefined;
+    const releaseIfDrained = () => {
+      if (!outerFinished || !analysisSettled || pendingPreparation > 0 ||
+          (sessionState.sdkQuery && sessionState.nativeCloseStatus !== 'succeeded')) return;
+      if (this.activeSessions.get(sessionId) === sessionState) this.activeSessions.delete(sessionId);
+      executionLease.settle();
+    };
+    const expireRequest = () => {
+      if (sessionState.timedOut || executionLease.signal.aborted) return;
+      const reason = new Error('Qoder SDK analysis timed out');
+      sessionState.timedOut = true;
+      sessionState.aborted = true;
+      abortController.abort(reason);
+      void sessionState.sdkQuery?.interrupt().catch(() => undefined);
+      rejectDeadline(reason);
+    };
     const sessionState: QoderActiveSession = {
-      abortController: new AbortController(),
-      aborted: false,
-      assistantText: '',
-      toolCallCount: 0,
+      abortController, workSignal, quickBudget,
+      aborted: false, assistantText: '', toolCallCount: 0,
+      trackPreparation: work => {
+        pendingPreparation++;
+        return work.finally(() => {pendingPreparation--; releaseIfDrained();});
+      },
+      assertWork: () => {
+        executionLease.throwIfAborted();
+        if (Date.now() >= sessionState.deadlineMs!) expireRequest();
+        if (workSignal.aborted) throw workSignal.reason ?? new Error('Qoder work stopped');
+      },
+      closeNative: (retryFailed = false) => {
+        if (sessionState.nativeCloseStatus === 'succeeded' || !sessionState.sdkQuery) return Promise.resolve(true);
+        if (nativeClose && !(retryFailed && sessionState.nativeCloseStatus === 'failed')) return nativeClose;
+        const query = sessionState.sdkQuery;
+        sessionState.nativeCloseStatus = 'pending';
+        nativeClose = Promise.resolve().then(() => query.close()).then(() => {
+          sessionState.nativeCloseStatus = 'succeeded';
+          sessionState.sdkQuery = undefined;
+          releaseIfDrained();
+          return true;
+        }, () => {
+          // A rejected close is not native termination evidence. Keep the exact handle/guard.
+          sessionState.nativeCloseStatus = 'failed';
+          return false;
+        });
+        return nativeClose;
+      },
       armMainBudget: timeoutMs => {
-        sessionState.timeoutMs = timeoutMs;
-        sessionState.deadlineMs = Date.now() + timeoutMs;
-        mainBudgetTimer = setTimeout(() => {
-          sessionState.timedOut = true;
-          sessionState.aborted = true;
-          sessionState.abortController.abort();
-          void this.executionGuard.abortSession(sessionId, new Error('Qoder SDK analysis timed out')).catch(() => undefined);
-          void sessionState.sdkQuery?.interrupt().catch(() => undefined);
-        }, timeoutMs);
+        clearTimeout(mainBudgetTimer);
+        sessionState.deadlineMs = Math.min(sessionState.deadlineMs ?? Infinity, admittedAt + timeoutMs,
+          task?.facts.hardDeadlineAt ?? Infinity);
+        sessionState.timeoutMs = Math.max(0, sessionState.deadlineMs - admittedAt);
+        mainBudgetTimer = setTimeout(expireRequest, Math.max(0, sessionState.deadlineMs - Date.now()));
         mainBudgetTimer.unref?.();
       },
     };
+    // Before mode resolution, classification already shares the greatest configured native cap.
+    // The selected quick/full budget may only tighten this absolute boundary.
+    sessionState.armMainBudget(Math.max(quickBudget.hardCapTurns * this.config.quickPerTurnMs,
+      this.config.maxTurns * this.config.fullPerTurnMs));
+    task?.deadlineSignal.addEventListener('abort', expireRequest, {once: true});
+    if (task?.deadlineSignal.aborted) expireRequest();
     this.activeSessions.set(sessionId, sessionState);
     let runtimePerformanceOutcome: RuntimePerformanceOutcome = 'ok';
     let result: AnalysisResult | undefined;
@@ -442,8 +513,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     });
     const analysis = this.analyzeGuarded(query, sessionId, traceId, normalizedOptions,
       executionLease, runtimePerformance, sessionState);
+    void analysis.then(() => {analysisSettled = true; releaseIfDrained();},
+      () => {analysisSettled = true; releaseIfDrained();});
     try {
-      result = await Promise.race([analysis, aborted]);
+      result = await Promise.race([analysis, aborted, deadlineExpired]);
       runtimePerformanceOutcome = executionLease.signal.aborted
         ? 'cancelled'
         : result.success === false ? 'error' : 'ok';
@@ -453,9 +526,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         error,
         executionLease.signal,
       );
-      if (runtimePerformanceOutcome === 'cancelled') {
+      if (executionLease.signal.aborted || sessionState.timedOut) {
         await settleQoderWork(analysis);
         throwIfRunAuthorizationRevoked(executionLease.signal);
+        if (sessionState.timedOut && !executionLease.signal.aborted && sessionState.acceptedCheckpoint) {
+          result = sessionState.acceptedCheckpoint();
+          runtimePerformanceOutcome = 'error';
+          return result;
+        }
         result = buildQoderCancelledResult(
           sessionId,
           analysisStartedAt,
@@ -491,6 +569,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       return result;
     } finally {
       clearTimeout(mainBudgetTimer);
+      task?.deadlineSignal.removeEventListener('abort', expireRequest);
+      admission.disposeOwned();
       if (onExecutionAbort) executionLease.signal.removeEventListener('abort', onExecutionAbort);
       const finalizationPhase = runtimePerformance.startPhase('finalization');
       try {
@@ -529,10 +609,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         }
       } finally {
         try {
-          if (this.activeSessions.get(sessionId) === sessionState) {
-            this.activeSessions.delete(sessionId);
-          }
-          executionLease.settle();
+          outerFinished = true;
+          releaseIfDrained();
         } finally {
           finalizationPhase.end(runtimePerformanceOutcome);
           runtimePerformance.finalize(runtimePerformanceOutcome);
@@ -550,7 +628,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     runtimePerformance: RuntimePerformanceRun,
     sessionState: QoderActiveSession,
   ): Promise<AnalysisResult> {
-    executionLease.throwIfAborted();
+    sessionState.assertWork();
     const startTime = Date.now();
     const traceProcessorService = options.traceProcessorService ?? this.input.traceProcessorService;
 
@@ -572,7 +650,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         return sessionState.sdkQuery?.interrupt();
       },
     });
-    const beforeDispatch = () => authorization.assertCurrent();
+    const beforeDispatch = () => {authorization.assertCurrent(); sessionState.assertWork();};
     const analysisHistoryReader = createRuntimeAnalysisHistoryReader({
       options, sessionId, traceId, getTurns: () => sessionContext.getAnalysisHistory(),
       assertActive: assertAuthorized,
@@ -583,6 +661,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     let sdkModulePromise: Promise<QoderSdkModule> | undefined;
     const startSdkModuleLoad = (): Promise<QoderSdkModule> => {
       if (sdkModulePromise) return sdkModulePromise;
+      sessionState.assertWork();
       const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
       let sdkStartPhaseEnded = false;
       const finishSdkStartPhase = (outcome: RuntimePerformanceOutcome) => {
@@ -594,7 +673,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       executionLease.signal.addEventListener('abort', onSdkLoadAbort, {once: true});
       let sdkModuleLoad: Promise<QoderSdkModule>;
       try {
-        sdkModuleLoad = loadQoderSdkModule(this.env) as Promise<QoderSdkModule>;
+        sdkModuleLoad = sessionState.trackPreparation(loadQoderSdkModule(this.env) as Promise<QoderSdkModule>);
       } catch (error) {
         finishSdkStartPhase(runtimeOutcomeFromError(error, executionLease.signal));
         sdkModuleLoad = Promise.reject(error);
@@ -615,11 +694,18 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       return sdkModulePromise;
     };
     let authPromise: Promise<unknown> | undefined;
-    const resolveRunAuth = (sdk: QoderSdkModule): Promise<unknown> =>
-      authPromise ??= Promise.resolve().then(() => this.resolveAuth(sdk));
+    const resolveRunAuth = (sdk: QoderSdkModule): Promise<unknown> => {
+      if (authPromise) return authPromise;
+      sessionState.assertWork();
+      return authPromise = sessionState.trackPreparation(Promise.resolve().then(() => {
+        sessionState.assertWork();
+        return this.resolveAuth(sdk);
+      }));
+    };
     const scopedSdkEnv = buildQoderSdkEnv(this.env);
     const dispatchQoderText = (
       input: IntentTransportInput,
+      purpose: RuntimeModelCallPurpose,
       config: QoderRuntimeConfig,
       loadSdk: () => Promise<QoderSdkModule>,
       resolveAuth: (sdk: QoderSdkModule) => Promise<unknown>,
@@ -629,7 +715,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       scope.onCleanup(() => rm(directory, {recursive: true, force: true}));
       scope.throwIfInactive();
       return runQoderIntentTransport({
-        ...input, signal: scope.signal, loadSdk, beforeQuery,
+        ...input, purpose, signal: scope.signal, loadSdk, beforeQuery,
+        onExecutionPolicy: receipt => recordRuntimeModelExecutionPolicy(options.runManifestAttributionSink, receipt),
         resolveAuth: sdk => resolveAuth(sdk as QoderSdkModule),
         config, scopedEnv: scopedSdkEnv, isolatedClassifierDirectory: directory,
       });
@@ -642,22 +729,19 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         history: analysisHistoryReader.getTurns(),
         requestedMode: options.analysisMode,
       }),
-      signal: executionLease.signal,
-      deadlineMs: Date.now() + (numericEnv(this.env.AGENT_CLASSIFIER_TIMEOUT_MS) ?? 30_000),
-      dispatch: input => dispatchQoderText(input, this.config, startSdkModuleLoad, resolveRunAuth, beforeDispatch),
+      modelCallAttribution: {model: this.config.lightModel ?? this.config.model, providerOrigin: this.config.byok.baseUrl},
+      signal: sessionState.workSignal,
+      deadlineMs: Math.min(sessionState.deadlineMs!, Date.now() + (numericEnv(this.env.AGENT_CLASSIFIER_TIMEOUT_MS) ?? 30_000)),
+      dispatch: input => dispatchQoderText(input, 'classification', this.config, startSdkModuleLoad, resolveRunAuth, beforeDispatch),
     });
     sessionState.strategyRegistry = intentResolver.strategyRegistry;
     const turnIntent = await intentResolver.resolve();
+    sessionState.assertWork();
     sessionState.turnIntent = turnIntent;
     const policy = resolveRunTurnPolicy(turnIntent, options);
     const sceneType = turnIntent.sceneId;
     const isQuickMode = policy.budgetMode === 'quick';
-    const quickBudget = resolveQuickTurnBudget({
-      env: this.env, hardCapTurns: this.config.quickMaxTurns,
-      targetEnvKeys: ['AGENT_QUICK_TARGET_TURNS'],
-      hardCapEnvKeys: ['AGENT_QUICK_MAX_TURNS', 'QODER_QUICK_MAX_TURNS'],
-      enforcement: 'turn_cap',
-    });
+    const quickBudget = sessionState.quickBudget;
     const maxTurns = isQuickMode ? quickBudget.hardCapTurns : this.config.maxTurns;
     const turnBudget = resolveRuntimeTurnBudget(maxTurns);
     const closeoutTape = createRuntimeTurnCloseoutTape();
@@ -666,77 +750,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     sessionState.armMainBudget(maxTurns * (isQuickMode ? this.config.quickPerTurnMs : this.config.fullPerTurnMs));
     const skipTracePreflightDetection = policy.preflight === 'none';
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
-    executionLease.throwIfAborted();
+    sessionState.assertWork();
 
-    // Focus app detection precedes architecture detection: the effective
-    // package (user > confident inference > none) scopes both. Qoder alone
-    // accepts an explicit `timeRange` option; it overrides the selection.
-    const focusResult = await detectRunFocusApps({
-      traceProcessorService, traceId, preflight: policy.preflight,
-      selectionContext: options?.selectionContext,
-      timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined,
-      measure: async detect => {
-        const focusPhase = runtimePerformance.startPhase('focus');
-        try {
-          const result = await detect();
-          executionLease.throwIfAborted();
-          focusPhase.end('ok');
-          return result;
-        } catch (error) {
-          focusPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-          executionLease.throwIfAborted();
-          return undefined; // Non-fatal
-        }
-      },
-    });
-    executionLease.throwIfAborted();
-    const focusTarget = resolveFocusAppTarget({userPackageName: packageName, focusResult});
-    const effectivePackageName = focusTarget.packageName;
-
-    // Architecture detection
-    let architecture = skipTracePreflightDetection ? undefined : getLruCacheEntry(this.architectureCache, traceId);
-    if (!architecture && !skipTracePreflightDetection) {
-      const architecturePhase = runtimePerformance.startPhase('architecture');
-      try {
-        const detector = createArchitectureDetector();
-        const detectedArchitecture = await detector.detect({
-          traceId,
-          traceProcessorService,
-          packageName: effectivePackageName,
-        });
-        executionLease.throwIfAborted();
-        architecture = detectedArchitecture;
-        setLruCacheEntry(this.architectureCache, traceId, architecture);
-        architecturePhase.end('ok');
-      } catch (error) {
-        architecturePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        executionLease.throwIfAborted();
-        // Non-fatal — architecture detection is optional
-      }
-    }
-    executionLease.throwIfAborted();
-
-    // Probe trace completeness
-    let traceCompleteness: Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
-    if (!skipTracePreflightDetection) {
-      const completenessPhase = runtimePerformance.startPhase('completeness');
-      try {
-        const detectedTraceCompleteness = await probeTraceCompleteness(
-          traceProcessorService,
-          traceId,
-          architecture?.type,
-        );
-        executionLease.throwIfAborted();
-        traceCompleteness = detectedTraceCompleteness;
-        completenessPhase.end('ok');
-      } catch (error) {
-        completenessPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        executionLease.throwIfAborted();
-        // Non-fatal
-      }
-    }
-    executionLease.throwIfAborted();
-
+    const isRunDeliverable = () => this.activeSessions.get(sessionId) === sessionState
+      && !sessionState.aborted
+      && !sessionState.abortController.signal.aborted
+      && !executionLease.signal.aborted;
+    const canInvokeTool = () => acquisitionOpen && isRunDeliverable() && Date.now() < sessionState.deadlineMs!;
     const analysisRunSpec = createAnalysisRunSpec({
       query,
       sessionId,
@@ -759,6 +779,126 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       },
     });
     sessionState.analysisRunSelection = analysisRunSpec.selection;
+    const selectionContext = analysisRunSpec.selection.present ? analysisRunSpec.selection.context : undefined;
+    const selectedInput = {turnIntent, policy, strategyRegistry: intentResolver.strategyRegistry,
+      selectionContext, referenceTraceId: options.referenceTraceId,
+      tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options)};
+    const initializeSkills = async () => {
+      const skillRegistryPhase = runtimePerformance.startPhase('skill_registry');
+      try {
+        await ensureSkillRegistryInitialized();
+        sessionState.assertWork();
+        skillRegistryPhase.end('ok');
+      } catch (error) {
+        skillRegistryPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+      sessionState.assertWork();
+
+      // Build MCP tools
+      const skillExecutor = createSkillExecutor(traceProcessorService);
+      const effectiveSkillRegistry =
+        resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+      const sceneCoverageRegistry = resolveSceneProductScope(normalizedOptions, {sessionId, traceId, runId: normalizedOptions.runId ?? ''})
+        ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, intentResolver.strategyRegistry, turnIntent.sceneId) : undefined;
+      skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
+      skillExecutor.setFragmentRegistry(
+        sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
+      );
+      return {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry};
+    };
+    const initializeStore = () => {
+      const artifactStore = resolveRuntimeEvidenceStore(normalizedOptions, {sessionId, traceId},
+        () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
+      this.artifactStores.set(sessionId, artifactStore);
+      sessionState.artifactStore = artifactStore;
+      return artifactStore;
+    };
+    let earlySkills: Awaited<ReturnType<typeof initializeSkills>> | undefined;
+    let earlyStore: ArtifactStore | undefined;
+    let selected: Awaited<ReturnType<typeof collectSelectedEvidenceForPrompt>> = {handled: false};
+    if (shouldCollectSelectedEvidenceFoundation(selectedInput)) {
+      earlySkills = await initializeSkills();
+      earlyStore = initializeStore();
+      selected = await collectSelectedEvidenceForPrompt({...selectedInput, runId: executionLease.key.runId!, traceId,
+        skillRegistry: earlySkills.effectiveSkillRegistry, skillExecutor: earlySkills.skillExecutor,
+        traceProcessorService, artifactStore: earlyStore, userPackageName: options.packageName,
+        outputLanguage, canInvokeTool, executionLease: {signal: AbortSignal.any([executionLease.signal, sessionState.workSignal])},
+        runAuthorization: authorization, deadlineMs: sessionState.deadlineMs, runtimePerformance});
+      sessionState.assertWork();
+    }
+
+    // Focus app detection precedes architecture detection: the effective
+    // package (user > confident inference > none) scopes both. Qoder alone
+    // accepts an explicit `timeRange` option; it overrides the selection.
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService, traceId, preflight: policy.preflight,
+      selectionContext,
+      timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined,
+      measure: async detect => {
+        const focusPhase = runtimePerformance.startPhase('focus');
+        try {
+          const result = await detect();
+          sessionState.assertWork();
+          focusPhase.end('ok');
+          return result;
+        } catch (error) {
+          focusPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+          sessionState.assertWork();
+          return undefined; // Non-fatal
+        }
+      },
+    });
+    sessionState.assertWork();
+    const focusTarget = resolveFocusAppTarget({userPackageName: packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
+
+    // Architecture detection
+    let architecture = skipTracePreflightDetection ? undefined : getLruCacheEntry(this.architectureCache, traceId);
+    if (!architecture && !skipTracePreflightDetection) {
+      const architecturePhase = runtimePerformance.startPhase('architecture');
+      try {
+        const detector = createArchitectureDetector();
+        const detectedArchitecture = await detector.detect({
+          traceId,
+          traceProcessorService,
+          packageName: effectivePackageName,
+          signal: sessionState.workSignal,
+        });
+        sessionState.assertWork();
+        architecture = detectedArchitecture;
+        setLruCacheEntry(this.architectureCache, traceId, architecture);
+        architecturePhase.end('ok');
+      } catch (error) {
+        architecturePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        sessionState.assertWork();
+        // Non-fatal — architecture detection is optional
+      }
+    }
+    sessionState.assertWork();
+
+    // Probe trace completeness
+    let traceCompleteness: Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
+    if (!skipTracePreflightDetection) {
+      const completenessPhase = runtimePerformance.startPhase('completeness');
+      try {
+        const detectedTraceCompleteness = await probeTraceCompleteness(
+          traceProcessorService,
+          traceId,
+          architecture?.type,
+        );
+        sessionState.assertWork();
+        traceCompleteness = detectedTraceCompleteness;
+        completenessPhase.end('ok');
+      } catch (error) {
+        completenessPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        sessionState.assertWork();
+        // Non-fatal
+      }
+    }
+    sessionState.assertWork();
+
+
 
     // Build comparison context before assembling the shared system prompt so
     // both the model and the MCP tools receive the same dual-trace contract.
@@ -775,16 +915,16 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           referenceTraceId,
           tracePairContext: options?.tracePairContext,
         });
-        executionLease.throwIfAborted();
+        sessionState.assertWork();
         comparisonContext = detectedComparisonContext ?? comparisonContext;
         comparisonPhase.end('ok');
       } catch (error) {
         comparisonPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        executionLease.throwIfAborted();
+        sessionState.assertWork();
         // Non-fatal — comparison context is best-effort
       }
     }
-    executionLease.throwIfAborted();
+    sessionState.assertWork();
 
     // Build system prompt
     // Shared mutable notes reference (used by both system prompt and MCP tools).
@@ -797,34 +937,11 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       this.sessionNotes.set(sessionId, notes);
     }
 
-    const artifactStore = resolveRuntimeEvidenceStore(normalizedOptions, {sessionId, traceId},
-      () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
-    this.artifactStores.set(sessionId, artifactStore);
-    sessionState.artifactStore = artifactStore;
+    const artifactStore = earlyStore ?? initializeStore();
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
 
-    const skillRegistryPhase = runtimePerformance.startPhase('skill_registry');
-    try {
-      await ensureSkillRegistryInitialized();
-      executionLease.throwIfAborted();
-      skillRegistryPhase.end('ok');
-    } catch (error) {
-      skillRegistryPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-      throw error;
-    }
-    executionLease.throwIfAborted();
-
-    // Build MCP tools
-    const skillExecutor = createSkillExecutor(traceProcessorService);
-    const effectiveSkillRegistry =
-      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
-    const sceneCoverageRegistry = resolveSceneProductScope(normalizedOptions, {sessionId, traceId, runId: normalizedOptions.runId ?? ''})
-      ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, intentResolver.strategyRegistry, turnIntent.sceneId) : undefined;
-    skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(
-      sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
-    );
+    const {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry} = earlySkills ?? await initializeSkills();
 
     const skillNotesBudget = createRuntimeSkillNotesBudget(isQuickMode);
     const recentSqlErrors = policy.allowMemoryPrefetch
@@ -850,6 +967,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       this.sessionHypotheses.set(sessionId, hypotheses);
     }
     hypotheses.splice(0);
+    const runHypotheses = hypotheses;
 
     let uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId);
     if (!uncertaintyFlags) {
@@ -859,10 +977,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     const watchdogWarning: { current: string | null } = { current: null };
-    const isRunDeliverable = () => this.activeSessions.get(sessionId) === sessionState
-      && !sessionState.aborted
-      && !sessionState.abortController.signal.aborted
-      && !executionLease.signal.aborted;
     const emitToolUpdate = (update: StreamingUpdate) => {
       if (isRunDeliverable()) this.emitUpdate(update);
     };
@@ -947,18 +1061,18 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       });
     };
 
-    const canInvokeTool = () => acquisitionOpen && isRunDeliverable();
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
-    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
-      referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options ?? {}),
+    const sceneEvidence = selected.handled ? selected.data : await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId, tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options ?? {}),
       policy, strategyRegistry: intentResolver.strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService, artifactStore, focusTarget, userPackageName: options?.packageName,
-      selectionContext: options?.selectionContext, outputLanguage, canInvokeTool, executionLease,
+      selectionContext, outputLanguage, canInvokeTool, executionLease,
       runAuthorization: authorization, deadlineMs: sessionState.deadlineMs, runtimePerformance});
-    executionLease.throwIfAborted();
+    sessionState.assertWork();
     const sceneRunContext = await activateSceneRuntime(normalizedOptions, {sessionId, traceId,
       runId: executionLease.key.runId!, deadlineMs: sessionState.deadlineMs ?? 0,
-      traceProcessorService, artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
+      traceProcessorService, artifactStore, sceneCoverageRegistry, signal: sessionState.workSignal, canInvokeTool});
+    sessionState.assertWork();
     const mcp = createClaudeMcpServer({
       sceneRunContext,
       runId: executionLease.key.runId!,
@@ -1021,7 +1135,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       ...(sceneEvidence ? {sceneEvidence} : {}),
       sceneType,
       architecture,
-      selectionContext: options?.selectionContext,
+      selectionContext,
       outputLanguage,
       traceCompleteness,
       ...buildRuntimeMemoryContext({
@@ -1034,7 +1148,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       sourceAuthorization: mcp?.sourceAuthorization,
     };
 
-    const systemPrompt = buildSystemPrompt(analysisContext);
+    const systemPrompt = buildSystemPrompt({...analysisContext, declarationSyntax: analysisRunSpec.declarationSyntax});
 
     // Merge with optional env system prompt
     const finalSystemPrompt = this.config.systemPrompt
@@ -1060,18 +1174,18 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       const resolveModel = this.createModelPolicy(turnIntent.status === 'resolved');
 
       const sdk = await startSdkModuleLoad();
-      executionLease.throwIfAborted();
+      sessionState.assertWork();
 
       // Resolve auth
       const auth = await resolveRunAuth(sdk);
-      executionLease.throwIfAborted();
+      sessionState.assertWork();
       // Final review reuses this run's established SDK/auth and primary model.
       // It never consults the settled run lease or resumes its SDK conversation.
       // Qoder exposes no supported output-token setting; the native transport
       // enforces one SDK turn plus the caller's byte, terminal and time limits.
       if (this.config.model) {
         const finalizationConfig = {...this.config, lightModel: undefined};
-        sessionState.dispatchText = input => dispatchQoderText(input, finalizationConfig,
+        sessionState.dispatchText = input => dispatchQoderText(input, 'review', finalizationConfig,
           async () => sdk, async () => auth);
       }
 
@@ -1109,7 +1223,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       // query creation because this is the first provider-owned operation.
       const providerPhase = runtimePerformance.startPhase('provider');
       commitEvaluationSdkHandoffIfActive();
-      assertAuthorized();
+      beforeDispatch();
       try {
         q = sdk.query({ prompt: fullPrompt, options: sdkOptions });
       } catch (error) {
@@ -1118,12 +1232,16 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       }
       sessionState.sdkQuery = q;
       const sdkQuery = q;
-      executionLease.throwIfAborted();
+      sessionState.assertWork();
 
       let assistantText = '';
       let observedTurns = 0;
       let sdkFinalResultText = '';
       let sdkFinalBodySupplied = false;
+      let closeoutAccepted = false;
+      let acceptedAttemptId = 'main';
+      let acceptedFinishReason: string | undefined;
+      let originalAnswer = '';
       let sdkResultMeta: {
         success: boolean; subtype?: string; errors?: string; numTurns?: number;
         status: AnalysisCompletion['status']; reason?: AnalysisCompletion['reason']; stopReason?: string;
@@ -1135,10 +1253,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       };
       const processStream = async () => {
         for await (const message of sdkQuery) {
-          if (sessionState.aborted) {
-            executionLease.throwIfAborted();
-            return;
-          }
+          if (sessionState.workSignal.aborted) throw sessionState.workSignal.reason;
           executionLease.throwIfAborted();
           // Each streamed message is a boundary the SDK has already passed; a
           // revoke seen here interrupts the query before its next request.
@@ -1194,8 +1309,11 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             sessionState.rounds = Math.max(sessionState.rounds ?? 0, observedTurns, sdkResultMeta.numTurns ?? 0);
             sessionState.assistantText = sdkFinalBodySupplied &&
               (reason !== 'turn_limit' || sdkFinalResultText.trim()) ? sdkFinalResultText : assistantText;
-            // This receipt terminates the current attempt. A later stale message
-            // cannot replace its body, session identity or completion facts.
+            originalAnswer = sdkFinalBodySupplied && sdkFinalResultText.trim() ? sdkFinalResultText : assistantText;
+            acceptedFinishReason = sdkResultMeta.stopReason;
+            // Preserve the actual terminal before for-await waits for iterator.return().
+            // Resource retirement may outlive the completed candidate.
+            checkpointAccepted();
             return;
           }
         }
@@ -1204,13 +1322,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       let onExecutionAbort: (() => void) | undefined;
       const abortPromise = new Promise<never>((_, reject) => {
         onExecutionAbort = () => {
-          const reason = executionLease.signal.reason;
+          const reason = sessionState.workSignal.reason;
           reject(reason instanceof Error ? reason : new Error('Qoder SDK analysis aborted'));
         };
-        if (executionLease.signal.aborted) {
+        if (sessionState.workSignal.aborted) {
           onExecutionAbort();
         } else {
-          executionLease.signal.addEventListener('abort', onExecutionAbort, { once: true });
+          sessionState.workSignal.addEventListener('abort', onExecutionAbort, { once: true });
         }
       });
       void abortPromise.catch(() => undefined);
@@ -1225,27 +1343,26 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         throw error;
       } finally {
         if (onExecutionAbort) {
-          executionLease.signal.removeEventListener('abort', onExecutionAbort);
+          sessionState.workSignal.removeEventListener('abort', onExecutionAbort);
         }
       }
       executionLease.throwIfAborted();
+      if (sessionState.workSignal.aborted) throw sessionState.workSignal.reason;
 
       acquisitionOpen = false;
       sessionState.rounds = Math.max(sdkResultMeta.numTurns ?? 0, observedTurns);
-      let closeoutAccepted = false;
       // Every no-tool delivery call runs after acquisition is retired.
       const retireAcquisition = async () => {
-        await settleQoderWork(Promise.resolve().then(() => sdkQuery.close()));
-        sessionState.sdkQuery = undefined;
-        q = undefined;
-        executionLease.throwIfAborted();
+        if (!await sessionState.closeNative()) throw new Error('Qoder acquisition cleanup failed');
+        sessionState.assertWork();
       };
-      let acceptedAttemptId = 'main';
-      let acceptedFinishReason = sdkResultMeta.stopReason;
-      const originalAnswer = sdkFinalBodySupplied && sdkFinalResultText.trim()
+      acceptedFinishReason = sdkResultMeta.stopReason;
+      originalAnswer = sdkFinalBodySupplied && sdkFinalResultText.trim()
         ? sdkFinalResultText : assistantText;
       sessionState.assistantText = originalAnswer;
+      checkpointAccepted();
       if (sdkResultMeta.reason === 'turn_limit' && turnBudget.deliveryTurns > 0 &&
+          !isNativeDeclarationRecoveryBlocked(originalAnswer) &&
           sessionState.rounds < turnBudget.totalTurns && sessionState.deadlineMs !== undefined &&
           Date.now() < sessionState.deadlineMs) {
         // Retire acquisition before the isolated summary can use the returned tape.
@@ -1256,19 +1373,21 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           sessionState.rounds += 1;
           try {
             const summary = await dispatchQoderText({
-              prompt, systemPrompt: finalSystemPrompt, signal: executionLease.signal,
+              prompt, systemPrompt: finalSystemPrompt, signal: sessionState.workSignal,
               deadlineMs: sessionState.deadlineMs, outputByteLimit: 128 * 1024,
-            }, {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
+            }, 'continuation', {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
             assertAuthorized();
+            if (sessionState.workSignal.aborted) throw sessionState.workSignal.reason;
             if (summary.status === 'ok' && summary.text.trim()) {
               sdkFinalBodySupplied = true;
               sdkFinalResultText = summary.text.trim();
               closeoutAccepted = true;
               acceptedAttemptId = 'turn-closeout:1';
               acceptedFinishReason = summary.finishReason;
+              checkpointAccepted();
             }
           } catch {
-            executionLease.throwIfAborted();
+            sessionState.assertWork();
             // Failed delivery retains the original answer and the cap receipt.
           }
         }
@@ -1280,6 +1399,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       const remainingDeliveryTurns = () => sdkResultMeta.reason !== 'turn_limit' && !deliveryCallSpent &&
         (sessionState.rounds ?? 0) < turnBudget.totalTurns ? turnBudget.deliveryTurns : 0;
       const continuationPrompt = sessionState.deadlineMs !== undefined && Date.now() < sessionState.deadlineMs &&
+        !isNativeDeclarationRecoveryBlocked(originalAnswer) &&
         nativeBodyCompletionNeeded({intent: turnIntent, completion: {status: sdkResultMeta.status},
           candidate: originalAnswer, remainingDeliveryTurns: remainingDeliveryTurns()})
         ? closeoutTape.buildEmptyBodyPrompt({query, outputLanguage,
@@ -1299,20 +1419,22 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         try {
           const continued = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options?.runManifestAttributionSink),
             {purpose: 'continuation', trigger: 'empty_body', ...deliveryCall},
-            {prompt: continuationPrompt, systemPrompt: finalSystemPrompt, signal: executionLease.signal,
+            {prompt: continuationPrompt, systemPrompt: finalSystemPrompt, signal: sessionState.workSignal,
               deadlineMs: sessionState.deadlineMs, outputByteLimit: 128 * 1024},
-            input => dispatchQoderText(input, {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
+            input => dispatchQoderText(input, 'continuation', {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
               beforeDispatch));
           assertAuthorized();
+          if (sessionState.workSignal.aborted) throw sessionState.workSignal.reason;
           if (continued.status === 'ok' && candidateHasAnswerBody(continued.text)) {
             sdkFinalBodySupplied = true;
             sdkFinalResultText = continued.text.trim();
             closeoutAccepted = true;
             acceptedAttemptId = 'empty-body-continuation:1';
             acceptedFinishReason = continued.finishReason;
+            checkpointAccepted();
           }
         } catch {
-          executionLease.throwIfAborted();
+          sessionState.assertWork();
           // A failed continuation retains the original candidate.
         }
       }
@@ -1321,6 +1443,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         intent: turnIntent,
         completion: {status: sdkResultMeta.status},
         candidate: originalAnswer,
+        declarationSyntax: analysisRunSpec.declarationSyntax,
         remainingDeliveryTurns: remainingDeliveryTurns(),
         repairInvalid: true,
       });
@@ -1335,11 +1458,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           const repaired = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options?.runManifestAttributionSink),
             {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
             {prompt: declarationPrompt,
-              systemPrompt: finalSystemPrompt, signal: executionLease.signal,
+              systemPrompt: finalSystemPrompt, signal: sessionState.workSignal,
               deadlineMs: sessionState.deadlineMs, outputByteLimit: declarationOutputLimit},
-            input => dispatchQoderText(input, {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
+            input => dispatchQoderText(input, 'declaration_repair', {...this.config, lightModel: undefined}, async () => sdk, async () => auth,
               beforeDispatch));
           assertAuthorized();
+          if (sessionState.workSignal.aborted) throw sessionState.workSignal.reason;
           // The accepted candidate is the original body with the completion's declaration.
           const accepted = repaired.status === 'ok' && acceptNativeDeclarationCompletion({
             request: declarationRequest, completion: {status: 'completed'}, candidate: repaired.text,
@@ -1351,89 +1475,116 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             closeoutAccepted = true;
             acceptedAttemptId = 'declaration-completion:1';
             acceptedFinishReason = repaired.finishReason;
+            checkpointAccepted();
           }
         } catch {
-          executionLease.throwIfAborted();
+          sessionState.assertWork();
           // A failed declaration completion cannot replace the original candidate.
         }
       }
-      // Native completion and authorship are established before any privacy
-      // transformation. Only the issued projection chain may transfer them.
-      const originalBody = sdkResultMeta.reason === 'turn_limit' && !closeoutAccepted
-        ? originalAnswer : sdkFinalBodySupplied ? sdkFinalResultText : assistantText;
-      const nativeCompleted = sdkResultMeta.success && sdkFinalBodySupplied && !!sdkFinalResultText.trim();
-      const sdkErrorText = sdkResultMeta.errors || 'Qoder SDK did not supply a final answer';
-      const usesErrorFallback = !originalBody && !sdkResultMeta.success;
-      const outputOrigin: AnalysisOutputOrigin = usesErrorFallback ? 'runtime_fallback'
-        : closeoutAccepted || (sdkFinalBodySupplied &&
-          (sdkResultMeta.reason !== 'turn_limit' || sdkFinalResultText.trim())) ? 'sdk_final'
-          : assistantText ? 'assistant_stream' : 'runtime_fallback';
-      const findings = extractFindingsFromText(originalBody);
-      const terminationReason: AnalysisResult['terminationReason'] = sdkResultMeta.reason === 'turn_limit'
-        ? 'max_turns' : nativeCompleted ? undefined : 'execution_error';
-      const result: AnalysisResult = {
-        sessionId, success: nativeCompleted, findings,
-        hypotheses: hypotheses.map(hypothesis => toProtocolHypothesis(hypothesis, QODER_AGENT_RUNTIME_KIND)),
-        conclusion: usesErrorFallback ? sdkErrorText : originalBody,
-        confidence: nativeCompleted ? estimateAnalysisConfidence({findings}) : 0,
-        rounds: sessionState.rounds,
-        totalDurationMs: Date.now() - startTime,
-        partial: !nativeCompleted,
-        terminationReason,
-        terminationMessage: sdkResultMeta.reason === 'turn_limit'
-          ? buildMaxTurnsTerminationMessage({mode: isQuickMode ? 'fast' : 'full',
-              turns: sessionState.rounds, maxTurns, outputLanguage})
-          : nativeCompleted ? undefined : sdkErrorText,
-      };
-      const {context: deliveryContext, protocolProjection} = bindQoderDelivery(result, executionLease, turnIntent, outputOrigin,
-        sdkResultMeta.status === 'completed' && !nativeCompleted ? 'unknown' : sdkResultMeta.status,
-        sdkResultMeta.reason, acceptedFinishReason,
-        {sourceUse, attemptId: acceptedAttemptId});
-      sessionState.assistantText = result.conclusion;
-      sessionState.delivery = {result, context: deliveryContext, protocolProjection};
-      if (isQuickMode) result.quickRun = buildQuickRunReceipt({
-        requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
-        actualTurns: result.rounds, elapsedMs: result.totalDurationMs,
-        stopReason: quickStopReasonFromTermination({partial: result.partial,
-          terminationReason: result.terminationReason, actualTurns: result.rounds,
-          targetTurns: quickBudget.targetTurns, hardCapTurns: quickBudget.hardCapTurns}),
-      });
-      executionLease.throwIfAborted();
-      sessionContext.addTurn(
-        query,
-        {
-          primaryGoal: query,
-          aspects: [],
-          expectedOutputType: 'diagnosis',
-          complexity: isQuickMode ? 'simple' : 'complex',
-          followUpType: previousTurns.length > 0 ? 'extend' : 'initial',
-        },
-        {
-          agentId: QODER_AGENT_RUNTIME_KIND,
-          success: result.success,
-          findings: result.findings,
-          confidence: result.confidence,
-          message: result.conclusion,
-          partial: result.partial,
-          completion: result.completion,
-          conclusionContract: result.conclusionContract,
-          sourceDerived: privateAnalysisContext || undefined,
-          analysisContextFingerprint: options.analysisContextFingerprint,
-          terminationReason: result.terminationReason,
-          terminationMessage: result.terminationMessage,
-        },
-        result.findings,
-      );
+      return sessionState.acceptedCheckpoint!();
 
-      // Update session state
-      executionLease.throwIfAborted();
-      emitProjectionTail = result.success && !privateAnalysisContext;
+      function checkpointAccepted(): void {
+        executionLease.throwIfAborted();
+        authorization.assertCurrent();
+        if (sessionState.workSignal.aborted) throw sessionState.workSignal.reason;
+        const candidate = {meta: {...sdkResultMeta}, bodySupplied: sdkFinalBodySupplied,
+          finalText: sdkFinalResultText, fromCloseout: closeoutAccepted,
+          finishReason: acceptedFinishReason, attemptId: acceptedAttemptId};
+        let projected: AnalysisResult | undefined;
+        sessionState.acceptedCheckpoint = () => {
+          executionLease.throwIfAborted();
+          authorization.assertCurrent();
+          return projected ??= buildAcceptedResult(candidate);
+        };
+      }
 
-      return result;
+      function buildAcceptedResult({meta, bodySupplied, finalText, fromCloseout, finishReason, attemptId}: {
+        meta: typeof sdkResultMeta; bodySupplied: boolean; finalText: string; fromCloseout: boolean;
+        finishReason: string | undefined; attemptId: string;
+      }): AnalysisResult {
+        // Native completion and authorship are established before any privacy
+        // transformation. Only the issued projection chain may transfer them.
+        const originalBody = meta.reason === 'turn_limit' && !fromCloseout
+          ? originalAnswer : bodySupplied ? finalText : assistantText;
+        const nativeCompleted = meta.success && bodySupplied && !!finalText.trim();
+        const sdkErrorText = meta.errors || 'Qoder SDK did not supply a final answer';
+        const usesErrorFallback = !originalBody && !meta.success;
+        const outputOrigin: AnalysisOutputOrigin = usesErrorFallback ? 'runtime_fallback'
+          : fromCloseout || (bodySupplied &&
+            (meta.reason !== 'turn_limit' || finalText.trim())) ? 'sdk_final'
+            : assistantText ? 'assistant_stream' : 'runtime_fallback';
+        const findings = extractFindingsFromText(originalBody);
+        const terminationReason: AnalysisResult['terminationReason'] = meta.reason === 'turn_limit'
+          ? 'max_turns' : nativeCompleted ? undefined : 'execution_error';
+        const actualRounds = sessionState.rounds ?? 0;
+        const result: AnalysisResult = {
+          sessionId, success: nativeCompleted, findings,
+          hypotheses: runHypotheses.map(hypothesis => toProtocolHypothesis(hypothesis, QODER_AGENT_RUNTIME_KIND)),
+          conclusion: usesErrorFallback ? sdkErrorText : originalBody,
+          confidence: nativeCompleted ? estimateAnalysisConfidence({findings}) : 0,
+          rounds: actualRounds,
+          totalDurationMs: Date.now() - startTime,
+          partial: !nativeCompleted,
+          terminationReason,
+          terminationMessage: meta.reason === 'turn_limit'
+            ? buildMaxTurnsTerminationMessage({mode: isQuickMode ? 'fast' : 'full',
+                turns: actualRounds, maxTurns, outputLanguage})
+            : nativeCompleted ? undefined : sdkErrorText,
+        };
+        const {context: deliveryContext, protocolProjection} = bindQoderDelivery(result, executionLease, turnIntent, outputOrigin,
+          meta.status === 'completed' && !nativeCompleted ? 'unknown' : meta.status,
+          meta.reason, finishReason,
+          {sourceUse, attemptId});
+        sessionState.assistantText = result.conclusion;
+        sessionState.delivery = {result, context: deliveryContext, protocolProjection};
+        if (isQuickMode) result.quickRun = buildQuickRunReceipt({
+          requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
+          actualTurns: result.rounds, elapsedMs: result.totalDurationMs,
+          stopReason: quickStopReasonFromTermination({partial: result.partial,
+            terminationReason: result.terminationReason, actualTurns: result.rounds,
+            targetTurns: quickBudget.targetTurns, hardCapTurns: quickBudget.hardCapTurns}),
+        });
+        executionLease.throwIfAborted();
+        sessionContext.addTurn(
+          query,
+          {
+            primaryGoal: query,
+            aspects: [],
+            expectedOutputType: 'diagnosis',
+            complexity: isQuickMode ? 'simple' : 'complex',
+            followUpType: previousTurns.length > 0 ? 'extend' : 'initial',
+          },
+          {
+            agentId: QODER_AGENT_RUNTIME_KIND,
+            success: result.success,
+            findings: result.findings,
+            confidence: result.confidence,
+            message: result.conclusion,
+            partial: result.partial,
+            completion: result.completion,
+            conclusionContract: result.conclusionContract,
+            sourceDerived: privateAnalysisContext || undefined,
+            analysisContextFingerprint: options.analysisContextFingerprint,
+            terminationReason: result.terminationReason,
+            terminationMessage: result.terminationMessage,
+          },
+          result.findings,
+        );
+
+        // Update session state
+        executionLease.throwIfAborted();
+        emitProjectionTail = result.success && !privateAnalysisContext;
+
+        return result;
+      }
     } catch (error) {
       // The outer run owns cancellation/timeout finalization. A late attempt
       // must not publish another result.
-      if (executionLease.signal.aborted) throw error;
+      if (executionLease.signal.aborted || sessionState.timedOut) throw error;
+      if (sessionState.nativeCloseStatus === 'failed' && sessionState.acceptedCheckpoint) {
+        return sessionState.acceptedCheckpoint();
+      }
       const totalDurationMs = Date.now() - startTime;
       const errorMessage = describeQoderSdkError(error);
       const safeErrorMessage = sanitizeOwnerCodeAwareText(sessionId, errorMessage);
@@ -1476,15 +1627,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       return result;
     } finally {
       acquisitionOpen = false;
-      sessionState.sdkQuery = undefined;
-      if (q) await settleQoderWork(Promise.resolve().then(() => q!.close()));
+      if (q) await settleQoderWork(sessionState.closeNative());
       let projectedTail = '';
       try {
         projectedTail = answerProjection?.flush() ?? '';
       } catch {
         // Projection cleanup is fail-closed and must not replace the analysis result.
       }
-      if (emitProjectionTail && projectedTail && !executionLease.signal.aborted) {
+      if (emitProjectionTail && projectedTail && !sessionState.workSignal.aborted) {
         runtimePerformance.recordFirstOutput();
         this.emitUpdate({
           type: 'answer_token',
@@ -1549,8 +1699,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       session.aborted = true;
       session.abortController.abort();
       session.sdkQuery?.interrupt().catch(() => undefined);
+      if (session.nativeCloseStatus === 'failed') void session.closeNative(true);
     }
-    this.activeSessions.clear();
+    // Pending/failed native retirement keeps its exact handle until the drain callback releases it.
     this.sessionNotes.clear();
     this.sessionPlans.clear();
     this.sessionHypotheses.clear();
@@ -1570,6 +1721,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
   cleanupSession(sessionId: string): void {
     void this.abortSession(sessionId);
+    // Explicit cleanup may retry a failed resource close, never a model request.
+    const active = this.activeSessions.get(sessionId);
+    if (active?.nativeCloseStatus === 'failed') void active.closeNative(true);
     this.sessionNotes.delete(sessionId);
     this.sessionPlans.delete(sessionId);
     this.sessionHypotheses.delete(sessionId);

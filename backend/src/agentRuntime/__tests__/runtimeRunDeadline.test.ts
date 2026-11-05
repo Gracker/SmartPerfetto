@@ -137,6 +137,54 @@ describe('progress-aware run deadline', () => {
     deadline.recordProgress(1990 * S);
     expect(deadline.current()).toBe(2000 * S);
   });
+
+  it('subtracts preparation already spent from a short admission cap instead of raising it to base', () => {
+    const deadline = createProgressAwareRunDeadline({...budget, now: 35 * S, hardDeadlineAt: 60 * S});
+    expect(deadline.hardDeadlineAt).toBe(60 * S);
+    expect(deadline.snapshot(35 * S).maxRunMs).toBe(25 * S);
+    expect(deadline.deliveryReserveMs).toBe(4166);
+    expect(deadline.finalizationReserveMs).toBe(277);
+    deadline.recordProgress(58 * S);
+    deadline.recordOutput(58 * S);
+    expect(deadline.current()).toBe(60 * S - 4166);
+    expect(deadline.extendIfStreaming(60 * S)).toBe(false);
+    expect(deadline.completedOutputRepairDeadlineAt(59 * S)).toBe(60 * S - 277);
+    expect(deadline.finalizationDeadlineAt(59 * S, undefined, {useRemainingBudget: true})).toBe(60 * S);
+    expect(deadline.deliveryWindowMs(60 * S)).toBe(0);
+  });
+
+  it('does not restart an admission cap that expired during preparation', () => {
+    const deadline = createProgressAwareRunDeadline({...budget, now: 70 * S, hardDeadlineAt: 60 * S});
+    expect(deadline.current()).toBe(60 * S);
+    expect(deadline.snapshot(70 * S).maxRunMs).toBe(0);
+    expect(deadline.deliveryReserveMs).toBe(0);
+    expect(deadline.finalizationReserveMs).toBe(0);
+    expect(deadline.deliveryWindowMs(70 * S)).toBe(0);
+    expect(deadline.completedOutputRepairDeadlineAt(70 * S)).toBe(60 * S);
+    expect(deadline.finalizationDeadlineAt(70 * S)).toBe(60 * S);
+    deadline.recordProgress(70 * S);
+    expect(deadline.current()).toBe(60 * S);
+  });
+
+  it('keeps legacy budgets unchanged under a later task cap and adds no reserve to a fixed native budget', () => {
+    const original = createProgressAwareRunDeadline(budget);
+    const laterCap = createProgressAwareRunDeadline({...budget, hardDeadlineAt: 7200 * S});
+    for (const deadline of [original, laterCap]) {
+      deadline.recordProgress(2500 * S);
+      deadline.recordOutput(2600 * S);
+    }
+    expect(laterCap.snapshot(2600 * S)).toEqual(original.snapshot(2600 * S));
+    expect(laterCap.finalizationReserveMs).toBe(original.finalizationReserveMs);
+    const fixed = createProgressAwareRunDeadline({...budget, maxRunMs: budget.baseBudgetMs, hardDeadlineAt: 5 * S});
+    expect(fixed.current()).toBe(5 * S);
+    expect(fixed.deliveryReserveMs).toBe(0);
+    expect(fixed.finalizationReserveMs).toBe(0);
+  });
+
+  it('rejects invalid internal task caps instead of removing the constraint', () => {
+    expect(() => createProgressAwareRunDeadline({...budget, hardDeadlineAt: Number.NaN})).toThrow('runtime_task_deadline_invalid');
+    expect(() => createProgressAwareRunDeadline({...budget, hardDeadlineAt: Number.POSITIVE_INFINITY})).toThrow('runtime_task_deadline_invalid');
+  });
 });
 
 describe('deadline runtime timeout', () => {

@@ -47,6 +47,7 @@ import {
   ReviewStopController,
 } from '../services/reviewStopHandle';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
+import {assertRuntimeTaskWorkRemaining, ensureRuntimeAdmission, forwardRuntimeAdmission} from '../agentRuntime/runtimeTaskDeadline';
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
 import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
@@ -3468,6 +3469,7 @@ async function runSmartAnalysis(
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
     sourceDepth?: RequestedSourceDepth;
+    taskTimeoutMs?: number;
     runManifestAttributionSink: RunManifestAttributionSink;
   },
 ): Promise<void> {
@@ -3636,7 +3638,8 @@ async function runSmartAnalysis(
     );
 
     dispatchedToAgentDeepDive = true;
-    await runAgentDrivenAnalysis(sessionId, dispatch.query, traceId, buildSmartDeepDiveRunOptions({
+    await runAgentDrivenAnalysis(sessionId, dispatch.query, traceId, forwardRuntimeAdmission(options, {
+      ...buildSmartDeepDiveRunOptions({
       traceProcessorService: options.traceProcessorService,
       runContext: options.runContext,
       blockedStrategyIds: options.blockedStrategyIds,
@@ -3651,6 +3654,8 @@ async function runSmartAnalysis(
       knowledgeSourceIds: options.knowledgeSourceIds,
       sourceDepth: options.sourceDepth,
       runManifestAttributionSink: options.runManifestAttributionSink,
+      }),
+      taskTimeoutMs: options.taskTimeoutMs,
     }));
   } catch (error: any) {
     if (isSessionRunCancelled(session, runId) || isStaleRun(session, runId)) {
@@ -4553,8 +4558,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   const finalizationRun = createHttpFinalizationRun(session, runIdForAnalysis,
     authorizationSelection, knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const startedAt = session.activeRun!.startedAt;
-  const startupDeadlineMs = Number.isFinite(options.taskTimeoutMs) && options.taskTimeoutMs > 0
-    ? startedAt + options.taskTimeoutMs : Number.POSITIVE_INFINITY;
+  let startupDeadlineMs = Number.POSITIVE_INFINITY;
+  let taskAdmission: ReturnType<typeof ensureRuntimeAdmission> | undefined;
   let runtimeDeadlineMs = startupDeadlineMs;
   let allowMemoryPrefetch = false;
   let finalizationContext: RuntimeFinalizationContext | undefined;
@@ -4730,6 +4735,12 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
 
   try {
   finalizationRun.assertCurrent();
+  taskAdmission = ensureRuntimeAdmission(options, {runId: runIdForAnalysis, sessionId, admittedAt: startedAt,
+    ownerSignal: finalizationRun.controller.signal, assertCurrent: () => finalizationRun.assertCurrent()});
+  options = taskAdmission.options;
+  startupDeadlineMs = taskAdmission.admission.task?.facts.hardDeadlineAt ?? Number.POSITIVE_INFINITY;
+  runtimeDeadlineMs = startupDeadlineMs;
+  assertRuntimeTaskWorkRemaining(taskAdmission.admission.task);
   const traceContextEnvelopes = appendTraceContextDataEnvelopes(session, decoratedTraceContext, traceId);
   rawDataEnvelopes.push(...traceContextEnvelopes);
   if (traceContextEnvelopes.length > 0) {
@@ -4776,11 +4787,14 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
             runManifestAttributionSink: options.runManifestAttributionSink,
           };
         // The run may learn across sessions only under its own marker, fixed at admission.
+        const scopedAnalyzeOptions = forwardRuntimeAdmission(options, baseAnalyzeOptions);
         const analyzeOptions = withDurableLearningPermission(
-          options.sceneRunBinding ? options.sceneRunBinding.bindOptions(baseAnalyzeOptions) : baseAnalyzeOptions,
+          options.sceneRunBinding ? options.sceneRunBinding.bindOptions(scopedAnalyzeOptions) : scopedAnalyzeOptions,
           sessionRunPrivateContext(session, runIdForAnalysis),
         );
-        const analyze = () => session.orchestrator.analyze(query, sessionId, traceId, analyzeOptions).then(nativeResult => {
+        const analyze = () => {
+          assertRuntimeTaskWorkRemaining(taskAdmission?.admission.task);
+          return session.orchestrator.analyze(query, sessionId, traceId, analyzeOptions).then(nativeResult => {
             sceneSeal = options.sceneRunBinding?.seal();
             finalizationContext = takeFinalizationContext(nativeResult);
             answerDraftRelay?.settle();
@@ -4795,6 +4809,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
               resolveRuntimeTurnPolicy(finalizationContext.turnIntent, options.analysisMode).allowMemoryPrefetch;
             return nativeResult;
           });
+        };
         return runWithTraceProcessorLease(analyze);
       });
     finalizationRun.assertCurrent();
@@ -5065,6 +5080,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     throw error;
   } finally {
     acceptingUpdates = false;
+    taskAdmission?.disposeOwned();
     answerDraftRelay?.dispose();
     if (!contextTransferred) finalizationContext?.dispose();
     finalizationRun.release();

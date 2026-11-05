@@ -805,8 +805,16 @@ test('local GLM Coding Plan E2E owns the source and RAG context matrix', () => {
     existsSync(join(root, '.github/workflows/agent-deepseek-e2e.yml')),
     false,
   );
-  const runner = readFileSync(
+  const wrapper = readFileSync(
     join(root, 'backend/scripts/run-glm-agent-e2e.cjs'),
+    'utf8',
+  );
+  assert.match(wrapper, /require\('\.\/agent-e2e-harness\.cjs'\)/);
+  assert.match(wrapper, /createProviderE2eHarness\('glm'\)/);
+  assert.match(wrapper, /module\.exports = harness/);
+  assert.match(wrapper, /if \(require\.main === module\) harness\.main\(\)/);
+  const runner = readFileSync(
+    join(root, 'backend/scripts/agent-e2e-harness.cjs'),
     'utf8',
   );
   assert.match(

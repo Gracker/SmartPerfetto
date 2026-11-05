@@ -33,6 +33,31 @@ describe('Claude intent transport', () => {
     jest.restoreAllMocks();
   });
 
+  it('keeps unknown-provider CLI policy native while recording actual selected model without secrets', async () => {
+    const {input, sdk} = fixture();
+    input.purpose = 'review'; input.config.lightModel = 'selected-primary';
+    const receipts: unknown[] = []; const reasoning = jest.fn();
+    input.onExecutionPolicy = receipt => {receipts.push(receipt);}; input.observer = {reasoning};
+    expect(await runClaudeIntentTransport(input)).toMatchObject({status: 'ok'});
+    const options = sdk.query.mock.calls[0][0].options;
+    expect(options).toMatchObject({model: 'selected-primary', effort: 'low'});
+    expect(options).not.toHaveProperty('thinking'); expect(options).not.toHaveProperty('reasoning_effort');
+    expect(receipts).toEqual([expect.objectContaining({purpose: 'review', modelId: 'selected-primary',
+      sdkEffective: {mode: 'enabled', effort: 'low'}, wireObservation: 'not_observed'})]);
+    expect(JSON.stringify(receipts)).not.toContain('SECRET_AUTH_CANARY');
+    expect(reasoning).toHaveBeenCalledWith('enabled', 'low');
+  });
+
+  it('honors explicit authored effort before classification and rejects unrepresentable overrides', async () => {
+    const first = fixture(); first.input.purpose = 'classification';
+    first.input.authoredReasoning = {mode: 'enabled', effort: 'high'};
+    expect(await runClaudeIntentTransport(first.input)).toMatchObject({status: 'ok'});
+    expect(first.sdk.query.mock.calls[0][0].options.effort).toBe('high');
+    const invalid = fixture(); invalid.input.authoredReasoning = {mode: 'disabled'};
+    expect(await runClaudeIntentTransport(invalid.input)).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+    expect(invalid.sdk.query).not.toHaveBeenCalled(); expect(invalid.loadSdk).not.toHaveBeenCalled();
+  });
+
   it('passes pinned environment and binary to one isolated tool-free SDK query', async () => {
     const {input, stream, sdk} = fixture();
     await expect(runClaudeIntentTransport(input)).resolves.toEqual({
@@ -47,7 +72,8 @@ describe('Claude intent transport', () => {
       tools: [], allowedTools: [], mcpServers: {}, strictMcpConfig: true,
       settingSources: [], skills: [], plugins: [], persistSession: false, permissionMode: 'dontAsk',
     });
-    expect(sent.options.env).toBe(input.sdkEnv);
+    expect(sent.options.env).toEqual(input.sdkEnv);
+    expect(sent.options.env).not.toBe(input.sdkEnv);
     // Effort is the caller's choice; the transport adds none of its own.
     for (const key of ['resume', 'sessionId', 'allowDangerouslySkipPermissions', 'effort']) {
       expect(sent.options).not.toHaveProperty(key);

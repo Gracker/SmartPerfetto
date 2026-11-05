@@ -2,7 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {PiAgentCoreProviderRuntime} from './piAgentCoreProvider';
+import type {AssistantMessage} from '@earendil-works/pi-ai';
+import {PiModelExecutionConfigurationError, type PiAgentCoreProviderRuntime, type PiStreamPurposePolicy} from './piAgentCoreProvider';
 import {intentTransportTextResult, runIntentTransport, type IntentTransportInput} from '../../intentTransport';
 import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 
@@ -10,6 +11,8 @@ export interface PiIntentTransportInput extends IntentTransportInput {
   providerRuntime: Pick<PiAgentCoreProviderRuntime, 'model' | 'streamFn' | 'streamFnForPurpose'>;
   purpose?: RuntimeModelCallPurpose;
   maxOutputTokens?: number;
+  sdkIdentity?: PiStreamPurposePolicy['sdkIdentity'];
+  onExecutionPolicy?: PiStreamPurposePolicy['onExecutionPolicy'];
 }
 
 /**
@@ -33,23 +36,39 @@ export function runPiIntentTransport(input: PiIntentTransportInput) {
     }
     let streamFn: PiAgentCoreProviderRuntime['streamFn'];
     try {
-      streamFn = input.providerRuntime.streamFnForPurpose?.(input.purpose ?? 'review')
+      streamFn = input.providerRuntime.streamFnForPurpose?.(input.purpose ?? 'review', {
+        ...(input.purpose === 'continuation' ? {outputOnly: true} : {}), sdkIdentity: input.sdkIdentity,
+        onExecutionPolicy: receipt => {
+          try {input.onExecutionPolicy?.(receipt);} catch { /* Observers never change a call. */ }
+          const setting = receipt.sdkEffective === 'unknown' ? undefined : receipt.sdkEffective;
+          try {
+            if (setting?.mode === 'disabled') input.observer?.reasoning?.('disabled');
+            else if (setting?.mode === 'enabled') input.observer?.reasoning?.('enabled', setting.effort);
+          } catch { /* Observers never change a call. */ }
+        },
+      })
         ?? input.providerRuntime.streamFn;
     } catch {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
-    const result = await streamFn(model, {
-      systemPrompt: input.systemPrompt,
-      messages: [{role: 'user', content: input.prompt, timestamp: Date.now()}],
-      tools: [],
-    }, {
-      signal: scope.signal,
-      timeoutMs: scope.remainingMs(),
-      maxRetries: 0,
-      maxTokens: input.maxOutputTokens !== undefined ? Math.min(input.maxOutputTokens, model.maxTokens)
-        : piOutputTokensForByteLimit(input.outputByteLimit, model.maxTokens),
-      cacheRetention: 'none',
-    }).result();
+    let result: AssistantMessage;
+    try {
+      result = await streamFn(model, {
+        systemPrompt: input.systemPrompt,
+        messages: [{role: 'user', content: input.prompt, timestamp: Date.now()}],
+        tools: [],
+      }, {
+        signal: scope.signal,
+        timeoutMs: scope.remainingMs(),
+        maxRetries: 0,
+        maxTokens: input.maxOutputTokens !== undefined ? Math.min(input.maxOutputTokens, model.maxTokens)
+          : piOutputTokensForByteLimit(input.outputByteLimit, model.maxTokens),
+        cacheRetention: 'none',
+      }).result();
+    } catch (error) {
+      if (error instanceof PiModelExecutionConfigurationError) return {status: 'unavailable', reason: 'invalid_configuration'};
+      throw error;
+    }
     scope.throwIfInactive();
     if (result.content.some(part => part.type === 'toolCall') || result.stopReason === 'toolUse') {
       return {status: 'unavailable', reason: 'tool_use'};

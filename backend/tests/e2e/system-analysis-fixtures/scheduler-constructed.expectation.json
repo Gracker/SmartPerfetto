@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "intent": {
-    "sceneId": "general",
+    "allowedSceneIds": ["general", "linux"],
     "taskKind": "investigation",
     "scope": "bounded_question",
     "deliverable": "answer"

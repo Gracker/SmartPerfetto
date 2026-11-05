@@ -6,6 +6,7 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {runOpenAiIntentTransport, type OpenAiIntentTransportInput} from '../engines/openai/openAiIntentTransport';
 import {createRuntimePerformanceRecorder} from '../runtimePerformance';
 import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
+import type {ModelExecutionPolicyReceipt} from '../modelExecutionPolicy';
 
 interface ResponseMessageFixture {
   type: 'message';
@@ -50,7 +51,7 @@ describe('OpenAI native intent transport', () => {
     const {input, response} = fixture('chat_completions');
     input.fetchImpl = undefined;
     input.purpose = 'final_semantic';
-    input.config.baseURL = 'https://api.deepseek.com/v1';
+    input.config.baseURL = 'https://api.deepseek.com/v1'; input.config.lightModel = 'deepseek-flash';
     const recorder = createRuntimePerformanceRecorder();
     const scope = createRuntimePerformanceScope({recorder,
       identity: {runId: 'review', sessionId: 'session', scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
@@ -89,7 +90,7 @@ describe('OpenAI native intent transport', () => {
   it.each(['responses', 'chat_completions'] as const)('requests official DeepSeek JSON mode only for %s final semantics', async protocol => {
     const {input, fetchImpl} = fixture(protocol);
     input.config.baseURL = 'https://api.deepseek.com/v1';
-    input.config.lightModel = 'arbitrary-provider-model';
+    input.config.lightModel = 'deepseek-flash';
     input.purpose = 'final_semantic';
     expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -124,7 +125,7 @@ describe('OpenAI native intent transport', () => {
       }
     });
 
-  it('disables official GLM thinking for every chat delivery purpose and adds nothing to Responses', async () => {
+  it('uses legal GLM enabled low for candidate chat delivery and adds nothing to Responses', async () => {
     for (const baseURL of ['https://open.bigmodel.cn/api/paas/v4', 'https://api.z.ai/api/paas/v4']) {
       for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
         for (const protocol of ['chat_completions', 'responses'] as const) {
@@ -132,12 +133,64 @@ describe('OpenAI native intent transport', () => {
           input.config.baseURL = baseURL; input.config.lightModel = 'glm-5.3'; input.purpose = purpose;
           expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
           const body = JSON.parse(fetchImpl.mock.calls[0][1]!.body as string);
-          if (protocol === 'chat_completions') expect(body.thinking).toEqual({type: 'disabled'});
+          if (protocol === 'chat_completions') {expect(body.thinking).toEqual({type: 'enabled'}); expect(body.reasoning_effort).toBe('low');}
           else expect(body).not.toHaveProperty('thinking');
           expect(body).not.toHaveProperty('response_format');
         }
       }
     }
+  });
+
+  it('records selected-primary review controls and a secret-free request-side policy', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    input.config.baseURL = 'https://open.bigmodel.cn/api/coding/paas/v4';
+    input.config.lightModel = 'glm-5.3-flash'; input.purpose = 'final_semantic';
+    const reasoning = jest.fn(); const receipts: ModelExecutionPolicyReceipt[] = [];
+    input.observer = {reasoning}; input.onExecutionPolicy = receipt => {receipts.push(receipt);};
+    expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toMatchObject({model: 'glm-5.3-flash',
+      thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+    expect(reasoning).toHaveBeenCalledWith('enabled', 'low');
+    expect(receipts).toEqual([expect.objectContaining({purpose: 'review', modelId: 'glm-5.3-flash', wireObservation: 'not_observed'})]);
+    expect(JSON.stringify(receipts)).not.toContain('SECRET_API_CANARY');
+  });
+
+  it('rejects an unsupported authored setting before dispatch and outside the provider retry loop', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    input.deadlineMs = Date.now() + 60_000; input.purpose = 'classification';
+    input.config.baseURL = 'https://open.bigmodel.cn/api/coding/paas/v4'; input.config.lightModel = 'glm-5.3-flash';
+    input.authoredReasoning = {mode: 'disabled'};
+    expect(await runOpenAiIntentTransport(input)).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fingerprints the final input-priority output cap rather than an unused config cap', async () => {
+    const fingerprints: string[] = [];
+    for (const [configCap, inputCap] of [[512, 32], [1024, 32], [1024, 33]]) {
+      const {input, fetchImpl} = fixture('chat_completions');
+      input.config.maxOutputTokens = configCap; input.maxOutputTokens = inputCap; input.purpose = 'classification';
+      input.onExecutionPolicy = receipt => {fingerprints.push(receipt.executionFingerprint.value);};
+      expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+      expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body)).max_completion_tokens).toBe(inputCap);
+    }
+    expect(fingerprints[0]).toBe(fingerprints[1]); expect(fingerprints[1]).not.toBe(fingerprints[2]);
+  });
+
+  it('keeps the captured model, cap and candidate policy stable across provider retry', async () => {
+    const {input, fetchImpl, response} = fixture('chat_completions');
+    input.deadlineMs = Date.now() + 60_000; input.purpose = 'classification';
+    input.config.baseURL = 'https://open.bigmodel.cn/api/coding/paas/v4'; input.config.lightModel = 'glm-5.3-flash';
+    const receipts: ModelExecutionPolicyReceipt[] = []; input.onExecutionPolicy = receipt => {receipts.push(receipt);};
+    fetchImpl.mockImplementationOnce(async () => {
+      input.config.lightModel = 'mutated-model'; input.maxOutputTokens = 99; input.purpose = 'declaration_repair';
+      return {...response, ok: false, status: 503} as unknown as Response;
+    });
+    const pending = runOpenAiIntentTransport(input);
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(await pending).toMatchObject({status: 'ok', attempts: 2});
+    for (const [, request] of fetchImpl.mock.calls) expect(JSON.parse(String(request?.body))).toMatchObject({
+      model: 'glm-5.3-flash', max_tokens: 2048, thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+    expect(receipts).toHaveLength(2); expect(receipts[1]).toEqual(receipts[0]);
   });
 
   it('reports a thrown headers timeout as a timeout and does not retry it', async () => {
@@ -176,7 +229,7 @@ describe('OpenAI native intent transport', () => {
 
   it('keeps a truncated official classification unavailable without increasing the cap or retrying', async () => {
     const {input, chatChoice, fetchImpl} = fixture('chat_completions');
-    input.config.baseURL = 'https://api.deepseek.com/v1'; input.config.lightModel = 'deepseek-v4-flash'; input.purpose = 'classification';
+    input.config.baseURL = 'https://api.deepseek.com/v1'; input.config.lightModel = 'deepseek-flash'; input.config.lightModel = 'deepseek-v4-flash'; input.purpose = 'classification';
     chatChoice.finish_reason = 'length';
     expect(await runOpenAiIntentTransport(input)).toEqual({status: 'unavailable', reason: 'incomplete_output'});
     expect(fetchImpl).toHaveBeenCalledTimes(1);

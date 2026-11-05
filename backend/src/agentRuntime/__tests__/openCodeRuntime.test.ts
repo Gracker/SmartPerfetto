@@ -43,6 +43,9 @@ import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
 import * as sceneEntryEvidence from '../sceneEntryEvidence';
+import {createSelectedFoundationFixture, installSelectedNativeSignerMocks, installSelectedRuntimeFixture} from '../../../tests/helpers/selectedEvidenceFoundationFixture';
+import * as selectedSkillLoader from '../../services/skillEngine/skillLoader';
+import * as selectedArchitecture from '../../agent/detectors/architectureDetector';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
@@ -68,9 +71,13 @@ import {
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from './sourceFinalizationFixture';
 import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import {createRuntimeAdmissionScope, RuntimeTaskDeadlineExceededError} from '../runtimeTaskDeadline';
+import * as runAuthorization from '../runAuthorizationFence';
+import {buildEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
+import {withEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import * as evaluationRuntimeHooks from '../../services/selfEvolution/evaluationRuntimeHooks';
-import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../tests/helpers/conclusionDeclarationFixture';
@@ -359,6 +366,7 @@ function createOpenCodeReportModuleLoader(
 }
 
 function createNativeIntentHarness(input: {
+  traceProcessor?: ReturnType<typeof createFakeTraceProcessorService>;
   decision?: Record<string, unknown>;
   classifierResponse?: unknown;
   answer?: string;
@@ -374,18 +382,21 @@ function createNativeIntentHarness(input: {
     status: () => Promise<unknown>;
   };
   beforeClassifierReply?: () => Promise<void>;
+  beforeClassifierCreate?: () => Promise<void>;
+  classifierCleanup?: {abort(): Promise<unknown>; delete(): Promise<unknown>};
   beforeAnswerReply?: () => Promise<void>;
   beforeCloseoutReply?: () => void;
   /** Runs when the main session is created: after its prompt (and history) is rendered, before the prompt is sent. */
   onMainSessionCreate?: () => void;
   env?: Record<string, string>;
   selection?: RuntimeFactoryInput['selection'];
+  realBridge?: boolean;
 } = {}) {
   const native = jest.requireActual('../engines/opencode/openCodeIntentTransport') as {
     runOpenCodeIntentTransport: typeof runOpenCodeIntentTransport;
   };
   mockOpenCodeIntentTransport.mockImplementation(native.runOpenCodeIntentTransport);
-  const traceProcessor = createFakeTraceProcessorService();
+  const traceProcessor = input.traceProcessor ?? createFakeTraceProcessorService();
   const configs: any[] = [];
   const prompts: any[] = [];
   const directories: string[] = [];
@@ -398,7 +409,7 @@ function createNativeIntentHarness(input: {
       const index = configs.length;
       configs.push(options.config);
       const close = jest.fn<() => void>();
-      const abort = jest.fn(async () => ({}));
+      const abort = jest.fn(async () => index === 0 && input.classifierCleanup ? input.classifierCleanup.abort() : {});
       serverCloses.push(close);
       aborts.push(abort);
       let noToolReply: any;
@@ -406,11 +417,13 @@ function createNativeIntentHarness(input: {
         server: {url: 'http://127.0.0.1:4106', close},
         client: {session: {
           create: async request => {
+            if (index === 0) await input.beforeClassifierCreate?.();
             directories.push(request.query?.directory ?? '');
             if (index === 1) input.onMainSessionCreate?.();
             return {data: {id: `native-${index}`}};
           },
           abort,
+          ...(index === 0 && input.classifierCleanup ? {delete: () => input.classifierCleanup!.delete()} : {}),
           ...(index === 1 && (input.mainMessages || input.mainSession) ? {
             promptAsync: async (request: unknown) => {prompts.push(request); await input.beforeAnswerReply?.(); return {};},
             messages: input.mainSession?.messages ?? (async (request: {query?: {limit?: number}}) => {
@@ -423,13 +436,15 @@ function createNativeIntentHarness(input: {
           // A no-tool session holds the user message and the one reply its prompt returned.
           ...(index !== 1 ? {messages: async () => ({data: [{info: {role: 'user'}}, noToolReply?.data]})} : {}),
           prompt: async request => {
+            if (!request.body) throw new Error('Native intent fixture requires a prompt body');
+            const promptBody = request.body;
             prompts.push(request);
             if (index === 0) {
               expect(traceProcessor.query).not.toHaveBeenCalled();
               await input.beforeClassifierReply?.();
               return noToolReply = input.classifierResponse ?? {data: {
                 info: {id: 'intent-message', role: 'assistant', finish: 'stop',
-                  time: {completed: Date.now()}, modelID: 'light-model'},
+                  time: {completed: Date.now()}, modelID: promptBody.model?.modelID ?? 'light-model'},
                 parts: [{type: 'text', text: JSON.stringify(input.decision ?? BOUNDED_INTENT)}],
               }};
             }
@@ -437,14 +452,14 @@ function createNativeIntentHarness(input: {
               input.beforeCloseoutReply?.();
               if (input.closeoutError) throw new Error('closeout provider failure');
               return noToolReply = {data: {info: {id: 'closeout-message', role: 'assistant', finish: input.closeoutFinish ?? 'stop',
-                time: {completed: Date.now()}, modelID: 'main-model'},
+                time: {completed: Date.now()}, modelID: promptBody.model?.modelID ?? 'main-model'},
                 parts: [{type: 'text', text: input.closeoutAnswer ?? 'The cause remains unknown; ask about the main-thread interval.'}]}};
             }
             await input.beforeAnswerReply?.();
             return {data: {
               info: {id: 'current-message', role: 'assistant', finish: input.finish ?? 'stop',
                 ...(input.nativeError ? {error: {name: 'ProviderError'}} : {}),
-                time: {completed: Date.now()}, modelID: 'main-model'},
+                time: {completed: Date.now()}, modelID: promptBody.model?.modelID ?? 'main-model'},
               parts: [{type: 'text', text: input.answer ?? '已有证据仅支持这个局部结论'}],
             }};
           },
@@ -453,6 +468,7 @@ function createNativeIntentHarness(input: {
     },
   }));
   const bridgeClose = jest.fn(async () => undefined);
+  let realBridge: Awaited<ReturnType<typeof openCodeTesting.startOpenCodeMcpBridge>> | undefined;
   const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
     selection: input.selection ?? {kind: OPENCODE_RUNTIME_KIND, source: 'env'}, traceProcessorService: traceProcessor,
   }), {
@@ -463,14 +479,19 @@ function createNativeIntentHarness(input: {
       ...input.env,
     },
     moduleLoader,
-    bridgeStarter: (async (definitions: any[]) => {
+    bridgeStarter: (async (definitions: any[], emitUpdate: any, options: any) => {
       tools = definitions;
+      if (input.realBridge) {
+        realBridge = await openCodeTesting.startOpenCodeMcpBridge(definitions, emitUpdate, options);
+        const handle = realBridge;
+        return {...handle, close: async () => {await bridgeClose(); await handle.close();}};
+      }
       return {port: 4107, token: 'fixture-token', requestTimeoutMs: 5000, close: bridgeClose,
         getDiagnostics: () => ({connectionCount: 0, requestCount: 0})};
     }) as any,
   });
   return {runtime, traceProcessor, configs, prompts, directories, serverCloses, aborts,
-    moduleLoader, bridgeClose, messageReadLimits, getTools: () => tools};
+    moduleLoader, bridgeClose, messageReadLimits, getTools: () => tools, getBridge: () => realBridge};
 }
 
 describe('OpenCode authorization at every dispatch and observation', () => {
@@ -523,9 +544,225 @@ describe('OpenCode authorization at every dispatch and observation', () => {
       expect(harness.prompts).toHaveLength(1);
     } finally {authorization.mockRestore();}
   }), 15_000);
+
+  it('settles tool-triggered authorization stop before outer handler drain without another model request', async () => withBackendDataDir(async () => {
+    let revoked = false;
+    let inTool = false;
+    let awaitedStop = false;
+    let fence: ReturnType<typeof runAuthorization.createRuntimeRunAuthorization>['fence'] | undefined;
+    const createAuthorization = runAuthorization.createRuntimeRunAuthorization;
+    const captureAuthorization = jest.spyOn(runAuthorization, 'createRuntimeRunAuthorization').mockImplementation(input => {
+      const result = createAuthorization(input); fence = result.fence; return result;
+    });
+    let socket: net.Socket | undefined;
+    const harness = createNativeIntentHarness({realBridge: true, beforeAnswerReply: async () => {
+      const bridge = harness.getBridge()!;
+      inTool = true;
+      await new Promise<void>((resolve, reject) => {
+        socket = net.createConnection({host: '127.0.0.1', port: bridge.port});
+        socket.once('error', reject);
+        socket.once('close', () => resolve());
+        socket.resume();
+        socket.once('connect', () => socket!.write(`${JSON.stringify({token: bridge.token,
+          request: {jsonrpc: '2.0', id: 'revoke-in-tool', method: 'tools/call',
+            params: {name: 'execute_sql', arguments: {sql: 'SELECT 1 AS value'}}}})}\n`));
+      });
+    }});
+    const query = harness.traceProcessor.query.getMockImplementation()!;
+    harness.traceProcessor.query.mockImplementation(async (...args: any[]) => {
+      const result = await (query as any)(...args);
+      if (inTool) {
+        revoked = true;
+        try {fence!.revoke();} catch (error) {
+          await fence!.settled();
+          awaitedStop = true;
+          throw error;
+        }
+      }
+      return result;
+    });
+    const authorization = revokeWhen(() => revoked);
+    try {
+      await expect(harness.runtime.analyze('Why?', 'opencode-tool-revoke', 'trace-opencode',
+        admitted({analysisMode: 'full', ...PRIVATE}))).rejects.toThrow('analysis_context_changed_restart_required');
+      expect(revoked).toBe(true);
+      expect(awaitedStop).toBe(true);
+      expect(harness.prompts).toHaveLength(2);
+      expect(harness.serverCloses[1]).toHaveBeenCalledTimes(1);
+    } finally {
+      authorization.mockRestore();
+      captureAuthorization.mockRestore();
+      socket?.destroy();
+      await harness.getBridge()?.close();
+      await harness.getBridge()?.drain?.();
+    }
+  }), 15_000);
 });
 
 describe('OpenCode native turn intent and delivery', () => {
+  it.each([['full', 120_000], ['fast', 90_000]] as const)(
+    'consumes earlier admission through classifier and preparation without restarting the %s budget', async (analysisMode, duration) => withBackendDataDir(async () => {
+      const base = Date.now();
+      let now = base;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      const owner = new AbortController();
+      const scope = createRuntimeAdmissionScope({runId: 'earlier-admission', admittedAt: base - 20_000,
+        assertCurrent() {}, ownerSignal: owner.signal});
+      let context: ReturnType<typeof finalizationContext.takeFinalizationContext>;
+      try {
+        const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: '120000'},
+          beforeClassifierReply: async () => {now += 10_000;}});
+        const original = (harness.runtime as any).prepareAnalysis.bind(harness.runtime);
+        jest.spyOn(harness.runtime as any, 'prepareAnalysis').mockImplementation(async (...args: unknown[]) => {
+          now += 15_000; return original(...args);
+        });
+        const result = await harness.runtime.analyze('same scope', 'earlier-session', 'trace-opencode',
+          scope.bind({analysisMode}, 'earlier-session'));
+        context = finalizationContext.takeFinalizationContext(result);
+        expect(scope.task).toBeUndefined();
+        // Classification retains its own stage window while the total native ceiling stays at admission.
+        expect(mockOpenCodeIntentTransport.mock.calls[0][0].deadlineMs).toBe(base + 30_000);
+        expect(context?.deadlineMs).toBe(base - 20_000 + duration);
+        expect(owner.signal.aborted).toBe(false);
+      } finally {context?.dispose(); scope.dispose(); clock.mockRestore();}
+    }));
+
+  it('rejects an expired issued task before any classifier request and never replaces it with the raw timeout', async () => withBackendDataDir(async () => {
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'expired-task', admittedAt: Date.now() - 100,
+      taskTimeoutMs: 1, assertCurrent() {}, ownerSignal: owner.signal});
+    const harness = createNativeIntentHarness();
+    try {
+      await expect(harness.runtime.analyze('same scope', 'expired-session', 'trace-opencode',
+        scope.bind({analysisMode: 'full' as const, taskTimeoutMs: 100_000}, 'expired-session')))
+        .rejects.toBeInstanceOf(RuntimeTaskDeadlineExceededError);
+      expect(harness.configs).toHaveLength(0);
+      expect(harness.prompts).toHaveLength(0);
+      expect(owner.signal.aborted).toBe(false);
+    } finally {scope.dispose();}
+  }));
+
+  it('drains uninterruptible preparation after task expiry before releasing the run guard', async () => withBackendDataDir(async () => {
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'prep-task', admittedAt: Date.now(), taskTimeoutMs: 100,
+      assertCurrent() {}, ownerSignal: owner.signal});
+    const harness = createNativeIntentHarness();
+    const started = createDeferred<void>();
+    const release = createDeferred<void>();
+    const original = (harness.runtime as any).prepareAnalysis.bind(harness.runtime);
+    jest.spyOn(harness.runtime as any, 'prepareAnalysis').mockImplementation(async (...args: unknown[]) => {
+      started.resolve(); await release.promise; return original(...args);
+    });
+    const analysis = harness.runtime.analyze('same scope', 'prep-task-session', 'trace-opencode', scope.bind({analysisMode: 'full' as const}, 'prep-task-session'));
+    let settled = false;
+    void analysis.then(() => {settled = true;}, () => {settled = true;});
+    try {
+      await started.promise;
+      await new Promise<void>(resolve => scope.task!.deadlineSignal.aborted ? resolve()
+        : scope.task!.deadlineSignal.addEventListener('abort', () => resolve(), {once: true}));
+      expect(settled).toBe(false);
+      expect(owner.signal.aborted).toBe(false);
+      await expect(harness.runtime.analyze('successor', 'prep-task-session', 'trace-opencode')).rejects.toThrow('already in progress');
+      release.resolve();
+      await expect(analysis).rejects.toBeInstanceOf(RuntimeTaskDeadlineExceededError);
+      expect(harness.prompts).toHaveLength(1);
+      expect(harness.configs).toHaveLength(1);
+    } finally {release.resolve(); await analysis.catch(() => undefined); scope.dispose();}
+  }));
+
+  it('preserves the completed native candidate when its declaration repair exhausts the explicit cap', async () => withBackendDataDir(async () => {
+    const base = Date.now();
+    let now = base;
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'repair-task', admittedAt: base, taskTimeoutMs: 1000,
+      assertCurrent() {}, ownerSignal: owner.signal});
+    const answer = 'The original native body remains accepted.';
+    const harness = createNativeIntentHarness({answer, closeoutAnswer: 'Must not replace the accepted body.',
+      beforeCloseoutReply: () => {now = base + 1001;}});
+    let context: ReturnType<typeof finalizationContext.takeFinalizationContext>;
+    try {
+      const result = await harness.runtime.analyze('same scope', 'repair-task-session', 'trace-opencode',
+        scope.bind({analysisMode: 'full' as const}, 'repair-task-session'));
+      expect(result.conclusion).toBe(answer);
+      expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop'});
+      expect(harness.prompts).toHaveLength(3);
+      expect(owner.signal.aborted).toBe(false);
+      context = finalizationContext.takeFinalizationContext(result);
+      expect(context?.deadlineMs).toBe(base + 1000);
+      expect(await context!.dispatchText({prompt: 'Review', systemPrompt: '', signal: owner.signal,
+        deadlineMs: base + 90000, outputByteLimit: 1024})).toEqual({status: 'unavailable', reason: 'timeout'});
+      expect(harness.prompts).toHaveLength(3);
+    } finally {context?.dispose(); scope.dispose(); clock.mockRestore();}
+  }));
+
+  it('stops only the captured native attempt on task expiry and drains it without aborting its owner', async () => withBackendDataDir(async () => {
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'active-task', admittedAt: Date.now(), taskTimeoutMs: 200,
+      assertCurrent() {}, ownerSignal: owner.signal});
+    const started = createDeferred<void>();
+    const release = createDeferred<void>();
+    const harness = createNativeIntentHarness({beforeAnswerReply: async () => {started.resolve(); await release.promise;}});
+    const analysis = harness.runtime.analyze('same scope', 'active-task-session', 'trace-opencode',
+      scope.bind({analysisMode: 'full' as const}, 'active-task-session'));
+    let settled = false;
+    void analysis.then(() => {settled = true;}, () => {settled = true;});
+    try {
+      await started.promise;
+      await new Promise<void>(resolve => scope.task!.deadlineSignal.aborted ? resolve()
+        : scope.task!.deadlineSignal.addEventListener('abort', () => resolve(), {once: true}));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(owner.signal.aborted).toBe(false);
+      expect(settled).toBe(false);
+      expect(harness.serverCloses[1]).toHaveBeenCalledTimes(1);
+      await expect(harness.runtime.analyze('successor', 'active-task-session', 'trace-opencode')).rejects.toThrow('already in progress');
+      release.resolve();
+      await expect(analysis).rejects.toBeInstanceOf(RuntimeTaskDeadlineExceededError);
+      expect(harness.prompts).toHaveLength(2);
+    } finally {release.resolve(); await analysis.catch(() => undefined); scope.dispose();}
+  }));
+
+  it('keeps the guard until late classifier creation and its newly registered abort and delete have all settled', async () => withBackendDataDir(async () => {
+    const created = createDeferred<void>();
+    const releaseCreate = createDeferred<void>();
+    const aborted = createDeferred<void>();
+    const releaseAbort = createDeferred<void>();
+    const deleted = createDeferred<void>();
+    const releaseDelete = createDeferred<void>();
+    const owner = new AbortController();
+    const scope = createRuntimeAdmissionScope({runId: 'late-create-task', admittedAt: Date.now(), taskTimeoutMs: 100,
+      assertCurrent() {}, ownerSignal: owner.signal});
+    const harness = createNativeIntentHarness({beforeClassifierCreate: async () => {created.resolve(); await releaseCreate.promise;},
+      classifierCleanup: {abort: async () => {aborted.resolve(); await releaseAbort.promise;},
+        delete: async () => {deleted.resolve(); await releaseDelete.promise;}}});
+    const analysis = harness.runtime.analyze('same scope', 'late-create-session', 'trace-opencode',
+      scope.bind({analysisMode: 'full' as const}, 'late-create-session'));
+    let settled = false;
+    void analysis.then(() => {settled = true;}, () => {settled = true;});
+    try {
+      await created.promise;
+      await new Promise<void>(resolve => scope.task!.deadlineSignal.aborted ? resolve()
+        : scope.task!.deadlineSignal.addEventListener('abort', () => resolve(), {once: true}));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(harness.serverCloses[0]).toHaveBeenCalledTimes(1);
+      releaseCreate.resolve();
+      await Promise.all([aborted.promise, deleted.promise]);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      await expect(harness.runtime.analyze('successor', 'late-create-session', 'trace-opencode')).rejects.toThrow('already in progress');
+      releaseAbort.resolve();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      releaseDelete.resolve();
+      await expect(analysis).rejects.toBeInstanceOf(RuntimeTaskDeadlineExceededError);
+      expect(harness.prompts).toHaveLength(0);
+      expect(owner.signal.aborted).toBe(false);
+    } finally {
+      releaseCreate.resolve(); releaseAbort.resolve(); releaseDelete.resolve();
+      await analysis.catch(() => undefined); scope.dispose();
+    }
+  }));
+
   it.each([
     ['full', '3600000', 3600000],
     ['full', undefined, 1200000],
@@ -795,7 +1032,7 @@ describe('OpenCode native turn intent and delivery', () => {
       const context = finalizationContext.takeFinalizationContext(result)!;
       try {
         expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
-        const call = mockOpenCodeIntentTransport.mock.calls.find(([input]) => input.purpose === undefined)!;
+        const call = mockOpenCodeIntentTransport.mock.calls.find(([input]) => input.purpose === 'continuation')!;
         expect(call[0].deadlineMs).toBe(context.deadlineMs);
       } finally {context.dispose();}
       expect(harness.serverCloses.every(close => close.mock.calls.length === 1)).toBe(true);
@@ -865,6 +1102,20 @@ describe('OpenCode native turn intent and delivery', () => {
       purpose: 'declaration_repair', failOpen: false, inputBytes: expect.any(Number)}));
     expect(jest.mocked(runtimeCallStats.admitDeliveryCall).mock.results[0]?.value).toBe(false);
     finalizationContext.takeFinalizationContext(result)?.dispose();
+  }));
+
+  it('does not spend another OpenCode turn on an undecodable authoring frame', async () => withBackendDataDir(async () => {
+    const native = `Body remains.\n${wrapConclusionAuthoringPayload('{"authoringVersion":"unsupported"}')}`;
+    const harness = createNativeIntentHarness({answer: native, closeoutAnswer: 'Must not run.'});
+    const result = await harness.runtime.analyze('same scope', 'opencode-authoring-unrecoverable', 'trace-opencode', {
+      analysisMode: 'full', runId: 'opencode-authoring-unrecoverable',
+    });
+    expect(harness.prompts).toHaveLength(2);
+    expect(result.completion).toMatchObject({status: 'completed'});
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
+    const context = finalizationContext.takeFinalizationContext(result)!;
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+    finally {context.dispose();}
   }));
 
   it('uses the reserved no-tools delivery turn for an unchanged full declaration candidate', async () => withBackendDataDir(async () => {
@@ -978,10 +1229,14 @@ describe('OpenCode native turn intent and delivery', () => {
         expect(config.provider.smartperfetto).toMatchObject({
           npm: '@ai-sdk/openai-compatible', name: 'Pinned provider',
           options: {baseURL: 'http://127.0.0.1:9999/v1', apiKey: 'fixture-api-key'},
-          models: {'main-model': {id: 'main-model', tool_call: true, reasoning: false,
-            temperature: true, modalities: {input: ['text'], output: ['text']}}},
+          models: {'main-model': {id: 'main-model',
+            modalities: {input: ['text'], output: ['text']}}},
         });
         expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('limit');
+        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('reasoning');
+        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('tool_call');
+        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('cost');
+        expect(config.provider.smartperfetto.models['main-model']).not.toHaveProperty('temperature');
       }
       expect(harness.prompts[2].body.model).toEqual({providerID: 'smartperfetto', modelID: 'main-model'});
       expect(Object.values(harness.prompts[2].body.tools).every(enabled => enabled === false)).toBe(true);
@@ -1129,10 +1384,13 @@ describe('OpenCode native turn intent and delivery', () => {
       harness.runtime.on('update', update => updates.push(update));
       const operation = harness.runtime.analyze('same scope', sessionId, 'trace-opencode');
       const rejected = expect(operation).rejects.toThrow();
+      let settled = false;
+      void operation.then(() => {settled = true;}, () => {settled = true;});
       await entered.promise;
       await harness.runtime.abortSession(sessionId);
-      await rejected;
+      expect(settled).toBe(false);
       pending.resolve();
+      await rejected;
       expect(projection).not.toHaveBeenCalled();
       expect(updates.length).toBeGreaterThan(0);
       expect(updates.some(update => update.type === 'conclusion')).toBe(false);
@@ -1164,19 +1422,60 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(fs.existsSync(path.dirname(harness.directories[0]))).toBe(false);
   }));
 
-  it('disables GLM default thinking on the classifier and declaration-repair hosts, not the answer host', async () => withBackendDataDir(async () => {
-    // glm-5.3-flash spent its whole 30 s classifier budget reasoning in the E2E matrix.
+  it('records actual classifier and repair identities while keeping a custom host control mapping unknown', async () => withBackendDataDir(async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const sink = createNoopAttributionSink(recorder);
+    const registry = await buildEffectiveRuntimeRegistrySnapshot({scope: sink.identity.scope});
     const harness = createNativeIntentHarness({env: {SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
-      providerID: 'smartperfetto', modelID: 'main-model', smallModel: 'light-model',
+      providerID: 'smartperfetto', modelID: 'glm-5.3', smallModel: 'glm-5.3-flash',
       baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKey: 'fixture-api-key'})}});
-    await harness.runtime.analyze('same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'full'});
-    expect(harness.configs[0].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
-    expect(harness.configs[0].provider.smartperfetto.models['light-model'].options).toBeUndefined();
+    const result = await withEffectiveRuntimeRegistrySnapshot(registry, () => harness.runtime.analyze(
+      'same scope', 'intent-glm', 'trace-opencode', {analysisMode: 'full', runManifestAttributionSink: sink}));
+    expect(harness.configs[0].agent.smartperfetto.options).toBeUndefined();
+    expect(harness.configs[0].provider.smartperfetto.models['glm-5.3-flash']).toMatchObject({reasoning: true,
+      tool_call: true, interleaved: {field: 'reasoning_content'}});
+    expect(harness.configs[0].provider.smartperfetto.models['glm-5.3-flash'].options).toBeUndefined();
     expect(harness.configs).toHaveLength(3);
     // The answer host keeps the provider default; the no-tool declaration repair is a delivery purpose.
     expect(harness.configs[1].agent.smartperfetto.options).toBeUndefined();
-    expect(harness.configs[2].agent.smartperfetto.options).toEqual({thinking: {type: 'disabled'}});
+    expect(harness.configs[2].agent.smartperfetto.options).toBeUndefined();
+    finalizationContext.takeFinalizationContext(result)?.dispose();
+    const observed = recorder.seal();
+    expect(observed.policyObservations).toEqual(expect.arrayContaining([
+      expect.objectContaining({purpose: 'classification', selection: 'minimum_legal_candidate', mapped: 'unknown'}),
+      expect.objectContaining({purpose: 'declaration_repair', selection: 'minimum_legal_candidate', mapped: 'unknown'}),
+    ]));
+    expect(observed.modelCalls).toEqual(expect.arrayContaining([expect.objectContaining({purpose: 'classification',
+      model: 'glm-5.3-flash', providerOrigin: 'https://open.bigmodel.cn', reasoning: 'provider_default'})]));
   }));
+
+  it('preserves existing light metadata and derives a new light model from its own facts', () => {
+    const config = openCodeTesting.resolveOpenCodeModelConfig({SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({
+      modelID: 'glm-5.3-flash', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', smallModel: 'unknown-light'})},
+    {source: 'env', runtimeKind: 'opencode'} as any);
+    const registered = openCodeTesting.registerOpenCodeLightModel(config);
+    const models = (registered.providerConfig!.smartperfetto as any).models;
+    expect(models['glm-5.3-flash'].reasoning).toBe(true);
+    expect(models['unknown-light']).not.toHaveProperty('reasoning');
+    expect(models['unknown-light']).not.toHaveProperty('tool_call');
+    expect(models['unknown-light']).not.toHaveProperty('cost');
+    expect(models['unknown-light']).not.toHaveProperty('temperature');
+    models['unknown-light'] = {id: 'unknown-light', reasoning: false, tool_call: false, cost: {input: 2, output: 3}};
+    expect((openCodeTesting.registerOpenCodeLightModel(registered).providerConfig!.smartperfetto as any).models['unknown-light'])
+      .toBe(models['unknown-light']);
+    expect(openCodeTesting.openCodePurposeAgentOptions({...registered, model: {providerID: 'smartperfetto', modelID: 'unknown-light'}}, 'classification', true))
+      .toBeUndefined();
+    expect(openCodeTesting.openCodePurposeAgentOptions(registered, 'classification', true))
+      .toEqual({thinking: {type: 'enabled'}, reasoningEffort: 'low'});
+    expect(openCodeTesting.openCodePurposeAgentOptions(registered, 'classification', false)).toBeUndefined();
+    expect(openCodeTesting.openCodeSdkIdentity(false)).toMatchObject({packageName: 'opencode-custom-host', version: 'unknown'});
+    expect(openCodeTesting.openCodeSdkIdentity(true).version).toMatch(/^\d+\.\d+\.\d+/);
+    models['glm-5.3-flash'].options = {thinking: {type: 'disabled'}};
+    expect(() => openCodeTesting.openCodePurposeAgentOptions(registered, 'classification', true)).toThrow('openai_text_policy_invalid_configuration');
+    models['glm-5.3-flash'].options = {thinking: {type: 'enabled'}, reasoningEffort: 'high'};
+    expect(openCodeTesting.openCodePurposeAgentOptions(registered, 'classification', true))
+      .toEqual({thinking: {type: 'enabled'}, reasoningEffort: 'high'});
+  });
 
   it('registers the native classifier model and keeps fast comparison tools', async () => withBackendDataDir(async () => {
     const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'comparison'}});
@@ -1271,6 +1570,74 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(full.mock.calls[0][0]).toMatchObject({sceneEvidence: evidence});
       expect(wide.prompts[1].body.system).toContain('"context":"scene_evidence"');
     } finally { scene.mockRestore(); mcp.mockRestore(); full.mockRestore(); }
+  }));
+
+  it('selected foundation: real native and metric precede focus and share the MCP store', async () => withBackendDataDir(async () => {
+    const restoreSigner = installSelectedNativeSignerMocks();
+    const fixture = await createSelectedFoundationFixture({traceId: 'trace-opencode', runId: 'selected-opencode', registerExecutor: false});
+    const wired = installSelectedRuntimeFixture(fixture);
+    const requestSelection = {...fixture.input.selectionContext!};
+    const registryReady = jest.spyOn(selectedSkillLoader, 'ensureSkillRegistryInitialized').mockImplementationOnce(async () => {
+      await Promise.resolve();
+      Object.assign(requestSelection, {eventId: 999, ts: 999, dur: 999});
+    });
+    const order: string[] = [];
+    const query = fixture.query.getMockImplementation()!;
+    fixture.query.mockImplementation(async (...args) => {order.push('metric'); return query(...args);});
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockImplementation(async () => {order.push('focus'); return {apps: [], method: 'none'};});
+    const architecture = jest.spyOn(selectedArchitecture, 'createArchitectureDetector').mockReturnValue({detect: async () => undefined} as any);
+    const completeness = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness').mockResolvedValue(undefined as any);
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const legacy = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    const prompt = jest.spyOn(systemPromptModule, 'buildQuickSystemPrompt');
+    try {
+      const h = createNativeIntentHarness({traceProcessor: fixture.input.traceProcessorService as any,
+        decision: {...BOUNDED_INTENT, taskKind: 'investigation', targetUse: 'current_selection'}});
+      await h.runtime.analyze('Explain selected work', 'selected-opencode', 'trace-opencode',
+        {analysisMode: 'full', runId: 'selected-opencode', selectionContext: requestSelection});
+      expect(order).toEqual(['metric', 'focus']);
+      expect(fixture.queryBounded.mock.calls[0][1]).toBe('SELECT id, ts, dur, track_id FROM slice WHERE id = 7');
+      expect(requestSelection).toMatchObject({eventId: 999});
+      expect(selected).toHaveBeenCalledTimes(1); expect(legacy).not.toHaveBeenCalled();
+      expect(wired.createExecutor.mock.results.filter(call => call.type === 'return' && call.value === fixture.executor)).toHaveLength(1);
+      expect(wired.registerSkills).toHaveBeenCalledTimes(1); expect(wired.registerFragments).toHaveBeenCalledTimes(1);
+      const store = selected.mock.calls[0][0].artifactStore;
+      expect(mcp.mock.calls[0][0]).toMatchObject({artifactStore: store, skillExecutor: fixture.executor});
+      expect(prompt.mock.calls[0][0].sceneEvidence).toMatchObject({kind: 'selected_foundation', native: {status: 'captured'}, metric: {status: 'committed'}});
+      expect(store.createEvidenceReadView({ownerKey: 'owner', currentRunId: 'selected-opencode', allowedTraces: [{traceId: 'trace-opencode', traceSide: 'current'}]})
+        .investigationEvidence!().records).toEqual([expect.objectContaining({upid: 42, utid: 43, value: 80})]);
+    } finally {registryReady.mockRestore(); wired.restore(); restoreSigner(); focus.mockRestore(); architecture.mockRestore(); completeness.mockRestore(); selected.mockRestore(); legacy.mockRestore(); mcp.mockRestore(); prompt.mockRestore();}
+  }));
+
+  it('selected foundation: holds the run guard while cancelled native work drains', async () => withBackendDataDir(async () => {
+    const restoreSigner = installSelectedNativeSignerMocks();
+    const sessionId = 'selected-opencode-drain';
+    const fixture = await createSelectedFoundationFixture({traceId: 'trace-opencode', runId: sessionId, registerExecutor: false});
+    const wired = installSelectedRuntimeFixture(fixture);
+
+
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => {enter = resolve;}), held = new Promise<void>(resolve => {release = resolve;});
+    fixture.queryBounded.mockImplementationOnce(async () => {enter(); await held; return fixture.nativeResponse;});
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps');
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const runtime = createNativeIntentHarness({traceProcessor: fixture.input.traceProcessorService as any, decision: {...BOUNDED_INTENT, taskKind: 'investigation', targetUse: 'current_selection'}}).runtime;
+    const operation = runtime.analyze('Explain selected work', sessionId, 'trace-opencode',
+      {analysisMode: 'full', runId: sessionId, selectionContext: fixture.input.selectionContext});
+    const settled = operation.then(value => ({value}), error => ({error}));
+    try {
+      await Promise.race([entered, settled.then(() => {throw new Error('analysis settled before selected native lookup');})]);
+      expect(focus).not.toHaveBeenCalled();
+      void runtime.abortSession(sessionId);
+      await Promise.resolve();
+      await expect(runtime.analyze('successor', sessionId, 'trace-opencode')).rejects.toThrow(/already in progress/);
+      expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+      release(); await settled;
+      expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+      expect(selected).toHaveBeenCalledTimes(1);
+      expect(selected.mock.calls[0][0].artifactStore.size).toBe(0);
+    } finally {release(); await settled; wired.restore(); restoreSigner(); focus.mockRestore(); selected.mockRestore();}
   }));
 
   it.each(['full', 'fast'] as const)(
@@ -1458,14 +1825,19 @@ describe('OpenCode native turn intent and delivery', () => {
       entered.resolve(); await pending.promise;
     }});
     const operation = harness.runtime.analyze('same scope', 'intent-cancel', 'trace-opencode');
-    await entered.promise;
-    await harness.runtime.abortSession('intent-cancel');
-    await expect(operation).rejects.toThrow();
-    pending.resolve();
-    expect(harness.prompts).toHaveLength(1);
-    expect(harness.configs).toHaveLength(1);
-    expect(harness.traceProcessor.query).not.toHaveBeenCalled();
-    expect(harness.serverCloses[0]).toHaveBeenCalledTimes(1);
+    let settled = false;
+    void operation.then(() => {settled = true;}, () => {settled = true;});
+    try {
+      await entered.promise;
+      await harness.runtime.abortSession('intent-cancel');
+      expect(settled).toBe(false);
+      pending.resolve();
+      await expect(operation).rejects.toThrow();
+      expect(harness.prompts).toHaveLength(1);
+      expect(harness.configs).toHaveLength(1);
+      expect(harness.traceProcessor.query).not.toHaveBeenCalled();
+      expect(harness.serverCloses[0]).toHaveBeenCalledTimes(1);
+    } finally {pending.resolve(); await operation.catch(() => undefined);}
   }));
 });
 
@@ -4323,7 +4695,8 @@ describe('experimental OpenCode runtime contract', () => {
   it('closes the OpenCode provider and bridge when an SDK endpoint hangs past the prompt deadline', async () => {
     await withBackendDataDir(async () => {
       const hungPrompt = createDeferred<unknown>();
-      const closeServer = jest.fn(() => undefined);
+      const stopped = createDeferred<void>();
+      const closeServer = jest.fn(() => {stopped.resolve();});
       const closeBridge = jest.fn(async () => undefined);
       const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
         selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
@@ -4363,13 +4736,20 @@ describe('experimental OpenCode runtime contract', () => {
         'trace-opencode',
         {analysisMode: 'full'},
       );
+      let settled = false;
+      void analysis.then(() => {settled = true;}, () => {settled = true;});
       try {
         await expect(Promise.race([
-          analysis,
+          stopped.promise,
           new Promise((_, reject) => setTimeout(() => reject(new Error('outer-test-timeout')), 500)),
-        ])).rejects.toMatchObject({name: 'TimeoutError', code: 'OPENCODE_PROMPT_TIMEOUT'});
+        ])).resolves.toBeUndefined();
+        expect(settled).toBe(false);
+        await expect(runtime.analyze('successor', 'session-opencode-provider-timeout', 'trace-opencode'))
+          .rejects.toThrow('already in progress');
         expect(closeServer).toHaveBeenCalledTimes(1);
         expect(closeBridge).toHaveBeenCalledTimes(1);
+        hungPrompt.reject(new Error('late provider rejection'));
+        await expect(analysis).rejects.toMatchObject({name: 'TimeoutError', code: 'OPENCODE_PROMPT_TIMEOUT'});
       } finally {
         hungPrompt.reject(new Error('late provider rejection'));
         await analysis.catch(() => undefined);

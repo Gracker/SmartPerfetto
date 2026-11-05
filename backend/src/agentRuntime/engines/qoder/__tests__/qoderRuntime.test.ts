@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it, jest, beforeEach } from '@jest/globals';
+import { describe, expect, it, jest, beforeEach, afterEach } from '@jest/globals';
 import type {CodeAwareTextProjectionReceipt} from '../../../../services/security/codeAwareOutputRegistry';
 import {expectRuntimeVendorHintParity} from '../../../__tests__/vendorHintParityFixture';
 
@@ -189,6 +189,7 @@ jest.mock('../../../runtimePromptContext', () => ({
 }));
 
 import { QoderRuntime } from '../qoderRuntime';
+import {createSelectedFoundationFixture, installSelectedNativeSignerMocks, installSelectedRuntimeFixture} from '../../../../../tests/helpers/selectedEvidenceFoundationFixture';
 import { createSkillExecutor } from '../../../../services/skillEngine/skillExecutor';
 import { sessionContextManager } from '../../../../agent/context/enhancedSessionContext';
 import { createArchitectureDetector } from '../../../../agent/detectors/architectureDetector';
@@ -220,7 +221,7 @@ import type {ClaudeSdkToolLike} from '../../../runtimeToolSpec';
 import type {RuntimeToolInvocationEvent, RuntimeToolObserver} from '../../../runtimeToolObserver';
 import {createRuntimeToolResult} from '../../../runtimeToolResult';
 import {projectCodeAwareStreamingUpdate} from '../../../../services/security/codeAwareStreamingUpdateProjection';
-import {renderConclusionContractSidecar, type ConclusionContract} from '../../../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload, type ConclusionContract} from '../../../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../../../tests/helpers/conclusionDeclarationFixture';
@@ -233,6 +234,7 @@ import * as contextAuthorization from '../../../../services/resolvedAnalysisCont
 import * as analysisHistory from '../../../analysisHistory';
 import * as sceneEntryEvidence from '../../../sceneEntryEvidence';
 import {admitted} from '../../../../../tests/helpers/admittedAnalysisOptions';
+import {createRuntimeAdmissionScope} from '../../../runtimeTaskDeadline';
 
 function createRuntime(
   env: Record<string, string | undefined> = {},
@@ -281,6 +283,7 @@ function createNoopAttributionSink(
 }
 
 describe('QoderRuntime', () => {
+  afterEach(() => {jest.useRealTimers();});
   beforeEach(() => {
     jest.clearAllMocks();
     mockEnsureSkillRegistryInitialized.mockResolvedValue(undefined);
@@ -331,6 +334,191 @@ describe('QoderRuntime', () => {
       expect(late.structuredContent?.accepted).not.toBe(true);
     } finally {runtime.cleanupSession(f.scope.sessionId); f.binding.release();}
     expect((runtime as any).artifactStores.has(f.scope.sessionId)).toBe(false);
+  });
+
+  describe('admission deadlines', () => {
+    const completedStream = (body = 'The captured value is 17.') => createMockSdkStream([
+      {type: 'result', subtype: 'success', is_error: false, num_turns: 1,
+        result: candidateWithPopulation(body, 'cited_rows')},
+    ]);
+
+    it.each([undefined, 45_000])('deducts product preparation from native/default classification budget (%s)', async taskTimeoutMs => {
+      jest.useFakeTimers({now: 36_000, doNotFake: ['nextTick', 'setImmediate']});
+      const sessionId = `qoder-admission-${taskTimeoutMs ?? 'default'}`;
+      const owner = new AbortController();
+      const scope = createRuntimeAdmissionScope({runId: `${sessionId}-run`, admittedAt: 1000, taskTimeoutMs,
+        ownerSignal: owner.signal, assertCurrent() {}});
+      mockQuery.mockReturnValue(completedStream());
+      const runtime = createRuntime({QODER_MODEL: 'pinned-main', QODER_MAX_TURNS: '1', QODER_FULL_PER_TURN_MS: '60000',
+        QODER_QUICK_MAX_TURNS: '1', QODER_QUICK_PER_TURN_MS: '60000'});
+      try {
+        const result = await runtime.analyze('question', sessionId, 'trace-1', scope.bind({analysisMode: 'full' as const}, sessionId));
+        const context = takeFinalizationContext(result)!;
+        try {
+          const cap = taskTimeoutMs === undefined ? 61_000 : 46_000;
+          expect(context.deadlineMs).toBe(cap);
+          expect(mockIntentTransport.mock.calls[0][0]).toMatchObject({purpose: 'classification', deadlineMs: cap});
+          expect(owner.signal.aborted).toBe(false);
+        } finally {context.dispose();}
+      } finally {scope.dispose(); runtime.cleanupSession(sessionId); sessionContextManager.remove(sessionId);}
+    });
+
+    it('caps classification before mode resolution by the greatest configured native duration', async () => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
+      const classifier = createDeferred<any>();
+      mockIntentTransport.mockImplementationOnce(async input => {
+        expect(input.deadlineMs).toBe(1020); entered.resolve(); return classifier.promise;
+      });
+      const runtime = createRuntime({AGENT_CLASSIFIER_TIMEOUT_MS: '30000', QODER_MAX_TURNS: '1', QODER_FULL_PER_TURN_MS: '20',
+        QODER_QUICK_MAX_TURNS: '1', QODER_QUICK_PER_TURN_MS: '10'});
+      const pending = runtime.analyze('question', 'qoder-classify-expiry', 'trace-1');
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(1020);
+      const result = await pending;
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(mockQuery).not.toHaveBeenCalled();
+      classifier.resolve({status: 'ok', text: JSON.stringify(defaultIntentDecision)});
+      await jest.advanceTimersByTimeAsync(0);
+      expect(mockQuery).not.toHaveBeenCalled();
+      runtime.cleanupSession('qoder-classify-expiry');
+    });
+
+    it('drains focus preparation after expiry and blocks later probe/scene/native work', async () => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
+      const focus = createDeferred<any>();
+      (detectFocusApps as jest.Mock<(...args: any[]) => any>).mockImplementationOnce(async () => {
+        entered.resolve(); return focus.promise;
+      });
+      const scene = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+      const runtime = createRuntime();
+      const sessionId = 'qoder-focus-expiry';
+      try {
+        const pending = runtime.analyze('question', sessionId, 'trace-1', {taskTimeoutMs: 50});
+        await entered.promise;
+        await jest.advanceTimersByTimeAsync(1050);
+        expect((await pending).completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+        await expect(runtime.analyze('next', sessionId, 'trace-1')).rejects.toThrow(/already in progress/);
+        focus.resolve({apps: [], method: 'none'});
+        await jest.advanceTimersByTimeAsync(0);
+        expect(createArchitectureDetector).not.toHaveBeenCalled();
+        expect(probeTraceCompleteness).not.toHaveBeenCalled();
+        expect(scene).not.toHaveBeenCalled();
+        expect(mockQuery).not.toHaveBeenCalled();
+        mockQuery.mockReturnValue(completedStream());
+        const next = await runtime.analyze('next', sessionId, 'trace-1');
+        expect(next.success).toBe(true);
+        takeFinalizationContext(next)?.dispose();
+      } finally {focus.resolve({apps: [], method: 'none'}); scene.mockRestore(); runtime.cleanupSession(sessionId);}
+    });
+
+    it.each(['pending', 'failed', 'reset_after_failure'] as const)('retains the same-session guard through native close %s', async closeState => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
+      const closed = createDeferred<void>();
+      const nativeClose = jest.fn<() => Promise<void>>().mockImplementationOnce(() => closeState === 'pending'
+        ? closed.promise : Promise.reject(new Error('native close failed'))).mockResolvedValue(undefined);
+      mockQuery.mockImplementationOnce(() => {entered.resolve(); return {
+        [Symbol.asyncIterator]() {return {next: () => new Promise(() => undefined)};},
+        interrupt: mockInterrupt, close: nativeClose,
+      };});
+      const runtime = createRuntime();
+      const sessionId = `qoder-close-${closeState}`;
+      const pending = runtime.analyze('question', sessionId, 'trace-1', {taskTimeoutMs: 50});
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(1050);
+      expect((await pending).completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(nativeClose).toHaveBeenCalledTimes(1);
+      await expect(runtime.analyze('next', sessionId, 'trace-1')).rejects.toThrow(/already in progress/);
+      if (closeState === 'pending') closed.resolve();
+      else if (closeState === 'reset_after_failure') runtime.reset();
+      else runtime.cleanupSession(sessionId); // Explicit resource cleanup may retry; no model retry.
+      await jest.advanceTimersByTimeAsync(0);
+      expect(nativeClose).toHaveBeenCalledTimes(closeState === 'pending' ? 1 : 2);
+      mockQuery.mockReturnValue(completedStream());
+      const next = await runtime.analyze('next', sessionId, 'trace-1');
+      expect(next.success).toBe(true);
+      takeFinalizationContext(next)?.dispose();
+      runtime.cleanupSession(sessionId);
+    });
+
+    it('checkpoints a completed native result before waiting for iterator return cleanup', async () => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const retiring = createDeferred<void>();
+      const returned = createDeferred<IteratorResult<unknown>>();
+      const closed = createDeferred<void>();
+      const body = 'The native result has completed before iterator retirement.';
+      const nativeClose = jest.fn<() => Promise<void>>().mockImplementation(() => closed.promise);
+      mockQuery.mockReturnValueOnce({
+        [Symbol.asyncIterator]() {return {
+          next: async () => ({done: false, value: {type: 'result', subtype: 'success', is_error: false,
+            result: body, num_turns: 1}}),
+          return: () => {retiring.resolve(); return returned.promise;},
+        };}, interrupt: mockInterrupt, close: nativeClose,
+      });
+      const runtime = createRuntime();
+      const sessionId = 'qoder-terminal-retirement';
+      try {
+        const pending = runtime.analyze('question', sessionId, 'trace-1', {taskTimeoutMs: 50});
+        await retiring.promise;
+        await jest.advanceTimersByTimeAsync(1050);
+        const result = await pending;
+        expect(result).toMatchObject({success: true, conclusion: body,
+          completion: {status: 'completed', attemptId: 'main'}});
+        expect(nativeClose).toHaveBeenCalledTimes(1);
+        await expect(runtime.analyze('next', sessionId, 'trace-1')).rejects.toThrow(/already in progress/);
+        closed.resolve();
+        await jest.advanceTimersByTimeAsync(0);
+        mockQuery.mockReturnValue(completedStream());
+        const next = await runtime.analyze('next', sessionId, 'trace-1');
+        expect(next.success).toBe(true);
+        takeFinalizationContext(next)?.dispose();
+        returned.resolve({done: true, value: undefined});
+        await jest.advanceTimersByTimeAsync(0);
+        expect(result.conclusion).toBe(body);
+        expect(sessionContextManager.getOrCreate(sessionId, 'trace-1').getAllTurns()).toHaveLength(2);
+        takeFinalizationContext(result)?.dispose();
+      } finally {
+        closed.resolve(); returned.resolve({done: true, value: undefined});
+        await jest.advanceTimersByTimeAsync(0);
+        runtime.cleanupSession(sessionId); sessionContextManager.remove(sessionId);
+      }
+    });
+
+    it('retains completed native body and completion when the original task expires during declaration repair', async () => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
+      const repair = createDeferred<any>();
+      const owner = new AbortController();
+      const sessionId = 'qoder-repair-expiry';
+      const scope = createRuntimeAdmissionScope({runId: 'qoder-repair-expiry-run', admittedAt: 1000, taskTimeoutMs: 120_000,
+        ownerSignal: owner.signal, assertCurrent() {}});
+      const body = 'The captured marker exists; causality is not established.';
+      mockQuery.mockReturnValue(createMockSdkStream([{type: 'result', subtype: 'success', is_error: false,
+        result: body, num_turns: 1}]));
+      mockIntentTransport.mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)})
+        .mockImplementationOnce(async input => {expect(input.purpose).toBe('declaration_repair'); entered.resolve(); return repair.promise;});
+      const runtime = createRuntime({QODER_MODEL: 'pinned-main'});
+      try {
+        const pending = runtime.analyze('question', sessionId, 'trace-1', scope.bind({}, sessionId));
+        await entered.promise;
+        await jest.advanceTimersByTimeAsync(121_000);
+        const result = await pending;
+        expect(result).toMatchObject({success: true, conclusion: body, completion: {status: 'completed', attemptId: 'main'}});
+        expect(owner.signal.aborted).toBe(false);
+        const context = takeFinalizationContext(result)!;
+        try {
+          expect(context.deadlineMs).toBe(121_000);
+          await expect(context.dispatchText({prompt: 'review', systemPrompt: '', deadlineMs: 250_000,
+            outputByteLimit: 8192, signal: owner.signal})).resolves.toMatchObject({status: 'unavailable', reason: 'timeout'});
+        } finally {context.dispose();}
+        repair.resolve({status: 'ok', text: 'LATE_REPAIR_MUST_NOT_REPLACE_BODY'});
+        await jest.advanceTimersByTimeAsync(0);
+        expect(result.conclusion).toBe(body);
+        expect(sessionContextManager.getOrCreate(sessionId, 'trace-1').getAllTurns()).toHaveLength(1);
+      } finally {repair.resolve({status: 'unavailable', reason: 'timeout'}); scope.dispose(); runtime.cleanupSession(sessionId);}
+    });
   });
 
   describe('shared tool observation', () => {
@@ -1482,6 +1670,70 @@ describe('QoderRuntime', () => {
       } finally { scene.mockRestore(); }
     });
 
+    it('selected foundation: real native and metric precede focus and share the MCP store', async () => {
+      const restoreSigner = installSelectedNativeSignerMocks();
+      const fixture = await createSelectedFoundationFixture({traceId: 'trace-1', runId: 'selected-qoder', registerExecutor: false});
+      const wired = installSelectedRuntimeFixture(fixture);
+    const requestSelection = {...fixture.input.selectionContext!};
+      mockEnsureSkillRegistryInitialized.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      Object.assign(requestSelection, {eventId: 999, ts: 999, dur: 999});
+    });
+      respondWithIntent({scope: 'bounded_question', targetUse: 'current_selection'});
+      const order: string[] = [];
+      const query = fixture.query.getMockImplementation()!;
+      fixture.query.mockImplementation(async (...args) => {order.push('metric'); return query(...args);});
+      jest.mocked(detectFocusApps).mockImplementationOnce(async () => {order.push('focus'); return {apps: [], method: 'none'};});
+      const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+      const legacy = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+      mockQuery.mockReturnValue(createMockSdkStream([{type: 'result', subtype: 'success', is_error: false, result: 'done'}]));
+      try {
+        await createRuntime({}, fixture.input.traceProcessorService).analyze('Explain selected work', 'selected-qoder', 'trace-1',
+          {analysisMode: 'full', runId: 'selected-qoder', selectionContext: requestSelection});
+        expect(order).toEqual(['metric', 'focus']);
+      expect(fixture.queryBounded.mock.calls[0][1]).toBe('SELECT id, ts, dur, track_id FROM slice WHERE id = 7');
+      expect(requestSelection).toMatchObject({eventId: 999});
+        expect(selected).toHaveBeenCalledTimes(1); expect(legacy).not.toHaveBeenCalled();
+        expect(wired.registerSkills).toHaveBeenCalledTimes(1); expect(wired.registerFragments).toHaveBeenCalledTimes(1);
+        const store = selected.mock.calls[0][0].artifactStore;
+        expect(mockCreateClaudeMcpServer.mock.calls[0][0]).toMatchObject({artifactStore: store, skillExecutor: fixture.executor});
+        expect(readPromptContext((mockQuery.mock.calls[0][0] as any).options.systemPrompt, 'scene_evidence'))
+          .toMatchObject({kind: 'selected_foundation', native: {status: 'captured'}, metric: {status: 'committed'}});
+        expect(store.createEvidenceReadView({ownerKey: 'owner', currentRunId: 'selected-qoder', allowedTraces: [{traceId: 'trace-1', traceSide: 'current'}]})
+          .investigationEvidence!().records).toEqual([expect.objectContaining({upid: 42, utid: 43, value: 80})]);
+      } finally {wired.restore(); restoreSigner(); selected.mockRestore(); legacy.mockRestore();}
+    });
+
+    it('selected foundation: holds the run guard while cancelled native work drains', async () => {
+      const restoreSigner = installSelectedNativeSignerMocks();
+      const sessionId = 'selected-qoder-drain';
+      const fixture = await createSelectedFoundationFixture({traceId: 'trace-1', runId: sessionId, registerExecutor: false});
+      const wired = installSelectedRuntimeFixture(fixture);
+      respondWithIntent({scope: 'bounded_question', targetUse: 'current_selection'});
+      mockQuery.mockReturnValue(createMockSdkStream([{type: 'result', subtype: 'success', is_error: false, result: 'done'}]));
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>(resolve => {enter = resolve;}), held = new Promise<void>(resolve => {release = resolve;});
+      fixture.queryBounded.mockImplementationOnce(async () => {enter(); await held; return fixture.nativeResponse;});
+      const focus = jest.mocked(detectFocusApps);
+      const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+      const runtime = createRuntime({}, fixture.input.traceProcessorService);
+      const operation = runtime.analyze('Explain selected work', sessionId, 'trace-1',
+        {analysisMode: 'full', runId: sessionId, selectionContext: fixture.input.selectionContext});
+      const settled = operation.then(value => ({value}), error => ({error}));
+      try {
+        await Promise.race([entered, settled.then(() => {throw new Error('analysis settled before selected native lookup');})]);
+        expect(focus).not.toHaveBeenCalled();
+        void runtime.abortSession(sessionId);
+        await Promise.resolve();
+        await expect(runtime.analyze('successor', sessionId, 'trace-1')).rejects.toThrow(/already in progress/);
+        expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+        release(); await settled;
+        expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+        expect(selected).toHaveBeenCalledTimes(1);
+        expect(selected.mock.calls[0][0].artifactStore.size).toBe(0);
+      } finally {release(); await settled; wired.restore(); restoreSigner();  selected.mockRestore();}
+    });
+
     it('passes full context in full mode', async () => {
       mockBuildComparisonContext.mockResolvedValueOnce({
         referenceTraceId: 'ref-trace',
@@ -1696,6 +1948,23 @@ describe('QoderRuntime', () => {
       });
     });
 
+    it('does not spend another Qoder turn on an undecodable authoring frame', async () => {
+      const native = `Body remains.\n${wrapConclusionAuthoringPayload('{"authoringVersion":"unsupported"}')}`;
+      mockIntentTransport.mockResolvedValueOnce({status: 'ok', text: JSON.stringify(defaultIntentDecision)});
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: native, num_turns: 1},
+      ]));
+      const result = await createRuntime().analyze('test', 'qoder-authoring-unrecoverable', 'trace-1', {
+        runId: 'qoder-authoring-unrecoverable',
+      });
+      expect(mockIntentTransport).toHaveBeenCalledTimes(1);
+      expect(result.completion).toMatchObject({status: 'completed'});
+      expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
+      const context = takeFinalizationContext(result)!;
+      try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+      finally {context.dispose();}
+    });
+
     it('uses one no-tools delivery turn for an unchanged full native declaration candidate', async () => {
       const body = `${'启动正文保持完整。'.repeat(850)}\n${'Native body remains unchanged. '.repeat(170)}`.trimEnd();
       expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(8 * 1024);
@@ -1886,6 +2155,8 @@ describe('QoderRuntime', () => {
     });
 
     it('preserves the real MCP source decision on timeout', async () => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
       const actualMcp = jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>(
         '../../../../agentv3/claudeMcpServer',
       );
@@ -1896,15 +2167,15 @@ describe('QoderRuntime', () => {
       try {
         const {decision} = await fixture.executeProviderSourceLookup();
         mockCreateClaudeMcpServer.mockReturnValue(fixture.mcp);
-        mockQuery.mockReturnValue({
+        mockQuery.mockImplementation(() => {entered.resolve(); return {
           [Symbol.asyncIterator]() {
             return {next: () => new Promise(() => undefined)};
           },
           interrupt: mockInterrupt,
           close: mockClose,
-        });
+        };});
 
-        const result = await createRuntime({
+        const pending = createRuntime({
           QODER_MAX_TURNS: '1',
           QODER_FULL_PER_TURN_MS: '1',
         }).analyze(
@@ -1918,6 +2189,9 @@ describe('QoderRuntime', () => {
           }),
         );
 
+        await entered.promise;
+        await jest.advanceTimersByTimeAsync(1);
+        const result = await pending;
         expect(result).toMatchObject({
           success: false,
           terminationReason: 'timeout',
@@ -2025,14 +2299,16 @@ describe('QoderRuntime', () => {
     });
 
     it('closes once and returns the timeout result shape on deadline', async () => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
       mockProjectionFlush.mockReturnValue('must-not-be-emitted');
-      mockQuery.mockReturnValue({
+      mockQuery.mockImplementation(() => {entered.resolve(); return {
         [Symbol.asyncIterator]() {
           return { next: () => new Promise(() => undefined) };
         },
         interrupt: mockInterrupt,
         close: mockClose,
-      });
+      };});
       const updates: any[] = [];
       const runtime = createRuntime({
         QODER_MAX_TURNS: '1',
@@ -2040,13 +2316,16 @@ describe('QoderRuntime', () => {
       });
       runtime.on('update', update => updates.push(update));
 
-      const result = await runtime.analyze(
+      const pending = runtime.analyze(
         'test',
         'session-qoder-timeout-cleanup',
         'trace-1',
         { analysisMode: 'full' },
       );
 
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(1);
+      const result = await pending;
       expect(result).toMatchObject({
         success: false,
         partial: true,
@@ -2071,6 +2350,8 @@ describe('QoderRuntime', () => {
       },
       {label: 'provider error', lateMessage: new Error('Late provider failure')},
     ])('fences late $label from a timed-out iterator after same-session reuse', async ({ lateMessage }) => {
+      jest.useFakeTimers({now: 1000, doNotFake: ['nextTick', 'setImmediate']});
+      const entered = createDeferred<void>();
       const releaseLateIterator = createDeferred<void>();
       const oldClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
       const newClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -2079,6 +2360,7 @@ describe('QoderRuntime', () => {
       mockQuery
         .mockReturnValueOnce({
           async *[Symbol.asyncIterator]() {
+            entered.resolve();
             yield {type: 'system', subtype: 'init', session_id: 'old-timeout-opaque'};
             await releaseLateIterator.promise;
             if (lateMessage instanceof Error) throw lateMessage;
@@ -2105,12 +2387,15 @@ describe('QoderRuntime', () => {
       });
       runtime.on('update', update => updates.push(update));
 
-      await expect(runtime.analyze(
+      const first = runtime.analyze(
         'first',
         'session-qoder-timeout-late-iterator',
         'trace-1',
         { analysisMode: 'full' },
-      )).resolves.toMatchObject({
+      );
+      await entered.promise;
+      await jest.advanceTimersByTimeAsync(1);
+      await expect(first).resolves.toMatchObject({
         success: false,
         terminationReason: 'timeout',
       });
@@ -2123,8 +2408,7 @@ describe('QoderRuntime', () => {
 
       expect((mockQuery.mock.calls[1][0] as any).options.resume).toBeUndefined();
       releaseLateIterator.resolve();
-      await new Promise(resolve => setTimeout(resolve, 0));
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await jest.advanceTimersByTimeAsync(0);
 
       expect(oldInterrupt).toHaveBeenCalledTimes(1);
       expect(oldClose).toHaveBeenCalledTimes(1);

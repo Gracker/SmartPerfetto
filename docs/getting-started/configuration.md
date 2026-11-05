@@ -285,6 +285,8 @@ OPENAI_LIGHT_MODEL=gpt-5.4-mini
 
 官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径。两种协议都不会续接之前的 provider response：每个问题都从新的模型上下文加 SmartPerfetto 有界的 typed history 开始。
 
+主分析可选 `OPENAI_ANALYSIS_REASONING_EFFORT=low`；省略时保留服务商默认。可配置 `none/minimal/low/medium/high/xhigh/max`，实际合法组合由所选模型、接口和当前 SDK 决定。GLM 5.3 Flash 强制思考，不能设置 `none`；已识别的 DeepSeek Chat 将 `none` 映射为关闭思考。当前 adapter 仅在已识别且支持的 Chat 接口支持显式 `max`，未知网关和 Responses 的 `max` 暂不支持。此变量只作用于主分析和普通续写，不覆盖分类、声明修复、超时收尾或语义审核。切换后新建会话；active Provider Manager 的隔离配置优先于 ambient env。较低强度可能改变准确性，应按实际任务验证，不能凭 Flash 型号推断时延。
+
 Ollama 或 OpenAI-compatible gateway 走 Chat Completions 协议：
 
 ```bash

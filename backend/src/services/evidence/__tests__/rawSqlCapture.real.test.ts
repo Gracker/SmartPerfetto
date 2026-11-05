@@ -23,13 +23,16 @@ import {detectFocusApps} from '../../../agentv3/focusAppDetector';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../../config';
 import traceRoutes from '../../../routes/simpleTraceRoutes';
 import type {SkillExecutor} from '../../skillEngine/skillExecutor';
+import {createSkillExecutor} from '../../skillEngine/skillExecutor';
+import {ensureSkillRegistryInitialized, skillRegistry} from '../../skillEngine/skillLoader';
+import {acquireSelectedEvidenceFoundation} from '../../../agentRuntime/selectedEvidenceFoundation';
 import type {DataEnvelope} from '../../../types/dataContract';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
 import {createClaudeMcpServer} from '../../../agentv3/claudeMcpServer';
 import {parseConclusionContractDeclaration, renderConclusionContractSidecar, type ConclusionContract} from '../../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
 import {attachFinalizationContext, takeFinalizationContext} from '../../../agentRuntime/analysisFinalizationContext';
-import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/strategyLoader';
+import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../../agentv3/strategyLoader';
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
 import {defaultDeliveryCallEstimateMs} from '../../runtimeCallStats';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../../codebase/sourceClaimVerifier';
@@ -288,7 +291,8 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
       const shared = TraceProcessorFactory.get(traceId);
       const scope = {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID, userId: DEFAULT_DEV_USER_ID};
       const controller = new AbortController();
-      leases = await prepareAnalysisRunTraceProcessorLeases({service, scope, runId: randomUUID(), sessionId: randomUUID(),
+      const runId = randomUUID();
+      leases = await prepareAnalysisRunTraceProcessorLeases({service, scope, runId, sessionId: randomUUID(),
         currentTraceId: traceId, signal: controller.signal, assertCurrent: () => controller.signal.throwIfAborted()});
       expect(leases.entries).toHaveLength(1);
       const entry = leases.entries[0];
@@ -327,6 +331,31 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
         expect(ambiguous.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('execution_capture_missing');
         expect(privateProcessor.getNativeProvenanceSnapshot().status).toBe('trusted');
 
+        // Actual current-run collector, on this same trusted private lease. No
+        // synthetic signer, alternative processor or reconstructed native witness.
+        await ensureSkillRegistryInitialized();
+        const executor = createSkillExecutor(service!);
+        executor.registerSkills(skillRegistry.getAllSkills()); executor.setFragmentRegistry(skillRegistry.getFragmentCache());
+        const strategyRegistry = buildStrategyRegistrySnapshotFromDefinitions({definitions: getRegisteredScenes(), overlayGeneration: 'real-selected'});
+        const [nativeSelection] = (await service!.query(traceId, `SELECT id, ts, dur, track_id FROM slice ${filter}`)).rows;
+        const selectedStore = new ArtifactStore();
+        const input = {runId, traceId, strategyRegistry, skillRegistry, skillExecutor: executor,
+          traceProcessorService: service!, artifactStore: selectedStore,
+          turnIntent: {...boundedIntent, registryFingerprint: strategyRegistry.registryFingerprint, targetUse: 'current_selection' as const},
+          policy: {allowNewEvidence: true}, selectionContext: {kind: 'track_event' as const, source: 'track_event_selection' as const,
+            nativeTable: 'slice' as const, eventId: Number(nativeSelection[0]), ts: Number(nativeSelection[1]), dur: Number(nativeSelection[2])},
+          outputLanguage: 'en' as const, executionLease: controller, canInvokeTool: () => !controller.signal.aborted,
+          runAuthorization: {assertCurrentInTurn: () => controller.signal.throwIfAborted(), settled: async () => {}},
+          deadlineMs: Date.now() + 20_000, timeoutMs: 20_000};
+        const foundation = await acquireSelectedEvidenceFoundation(input);
+        expect(foundation).toMatchObject({native: {status: 'captured'}, metric: {status: 'committed'}});
+        if (foundation.native.status !== 'captured') throw new Error('actual selected native capture missing');
+        const nativeCapture = foundation.native;
+        const selectedView = selectedStore.createEvidenceReadView({ownerKey: 'real-selected', currentRunId: runId,
+          allowedTraces: [{traceId, traceSide: 'current'}]});
+        expect(selectedView.investigationEvidence!().records).toEqual(expect.arrayContaining([expect.objectContaining({
+          metricId: 'system.thread.state.duration', upid: foundation.identity!.upid, utid: foundation.identity!.utid})]));
+
         // Actual full-scene preparation starts with focus detection, whose
         // ordinary stdlib INCLUDE cannot preserve native-only provenance.
         expect(resolveRuntimeTurnPolicy({...boundedIntent, scope: 'scene_wide'}, 'full').allowMemoryPrefetch).toBe(true);
@@ -335,6 +364,24 @@ describe('pinned native raw SQL -> MCP capture -> numeric proof', () => {
         await probeTraceCompleteness(service!, traceId);
         const afterPrefetch = await execute(`SELECT dur FROM slice ${filter}`, 'dur', 42_000_000);
         expect(afterPrefetch.claimVerificationResult.claimResults[0].deterministicProof?.reason).toBe('unit_authority_unknown');
+        const ref = {evidenceRefId: nativeCapture.evidenceRefId, sourceToolCallId: nativeCapture.sourceToolCallId,
+          rowIndex: 0, column: 'dur', value: 42_000_000};
+        const contract = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+          conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: [{id: 'selected_duration',
+            text: 'The selected native duration is 42000000 ns.', kind: 'numeric', references: [ref],
+            semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed', discourse: 'asserted',
+              quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows', subjectRefs: [ref]},
+              numeric: {operator: 'eq', value: 42_000_000, unit: 'ns'}}}]}).contract!;
+        const prepared = await prepareClaimEvidence({conclusionContract: contract, evidenceReadView: selectedView, bindingEligibility: 'eligible'});
+        const retained = runClaimVerification({conclusionContract: contract, dataEnvelopes: [], preparedEvidence: prepared, bindingEligibility: 'eligible'});
+        expect(retained.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved',
+          nativeRows: [{id: nativeCapture.row.id, relation: 'slice', traceId, traceSide: 'current'}]});
+        // Reversing the order must fail honestly, with no new store registration.
+        const afterStore = new ArtifactStore();
+        const register = jest.spyOn(afterStore, 'registerStandaloneEvidenceCapture');
+        expect(await acquireSelectedEvidenceFoundation({...input, artifactStore: afterStore, deadlineMs: Date.now() + 20_000}))
+          .toMatchObject({native: {status: 'failed', reason: 'native_unavailable'}, metric: {status: 'not_run'}});
+        expect(register).not.toHaveBeenCalled(); expect(afterStore.size).toBe(0);
       });
       const portReleased = once(getPortPool(), 'released', {signal: AbortSignal.timeout(5000)});
       leases.release();

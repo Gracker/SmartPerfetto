@@ -7,7 +7,7 @@ import {
   parseConversationResponse,
   parseConversationResponseWithProjection,
 } from '../conversationContract';
-import {renderConclusionContractSidecar} from '../../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload} from '../../../agent/core/conclusionContract';
 
 describe('conversation contract', () => {
   it.each([
@@ -162,6 +162,20 @@ describe('conversation contract', () => {
     const sidecar = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
       conclusions: [{rank: 1, statement: control}], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: []});
     expect(parseConversationResponseWithProjection(sidecar, 'Fallback')).toMatchObject({status: 'absent', narrative: sidecar});
+    const authoring = wrapConclusionAuthoringPayload(control); // Invalid JSON still has explicit machine bounds.
+    expect(parseConversationResponseWithProjection(authoring, 'Fallback')).toMatchObject({status: 'absent', narrative: authoring});
+  });
+
+  it('admits an external terminal control around the new authoring machine segment', () => {
+    const declaration = wrapConclusionAuthoringPayload(JSON.stringify({authoringVersion: 'conclusion_authoring@1',
+      referenceDictionary: [], contract: {schemaVersion: 'conclusion_contract_v1', mode: 'need_input',
+        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []}}));
+    const control = '<!-- smartperfetto:conversation-control {"kind":"needs_user_input","question":"Which trace?"} -->';
+    for (const raw of [`Body\n${control}\n${declaration}`, `Body\n${declaration}\n${control}`]) {
+      const parsed = parseConversationResponseWithProjection(raw, 'Fallback');
+      expect(parsed.status).toBe('valid');
+      expect(parsed.machineSegments).toEqual([{start: raw.indexOf(control), end: raw.indexOf(control) + control.length}]);
+    }
   });
 
   it('rejects multiple controls in the terminal machine cluster without choosing a winner', () => {

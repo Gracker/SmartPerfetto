@@ -64,8 +64,10 @@ describe('ConversationSessionService', () => {
       }),
       cancel: jest.fn(async () => undefined),
     });
-    await service.startTurn({query: 'Discuss the requirement'}).completion;
+    const started = service.startTurn({query: 'Discuss the requirement'});
+    await started.completion;
     expect(inputs[0].privateContext).toEqual({codebase: false, knowledge: false});
+    expect(inputs[0].admittedAt).toBe(service.getSession(started.sessionId)?.runs[0].startedAt);
   });
 
   it('requires a new session when a trace is attached after a no-Trace turn', async () => {

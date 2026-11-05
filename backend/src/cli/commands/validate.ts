@@ -55,7 +55,7 @@ import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
 import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
 import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
 import {parseEntrySkill, parseInvestigationContract, parseInvestigationProfiles, REMOVED_STRATEGY_FRONTMATTER_KEYS, type InvestigationProfiles} from '../../agentv3/strategyLoader';
-import {entrySkillExecutabilityErrors} from '../../agentv3/entrySkillPolicy';
+import {entrySkillExecutabilityErrors, admitInvestigationEntryProducer} from '../../agentv3/entrySkillPolicy';
 
 // ANSI color codes (fallback for chalk ESM issues)
 const colors = {
@@ -123,6 +123,8 @@ export interface StrategyFrontmatterValidationContext {
   knownScenes?: Set<string>;
   /** Skill definitions by id; when present, an `entry_skill` must be executable against it. */
   skillDefinitions?: ReadonlyMap<string, SkillDefinition>;
+  /** The same registry's fragment bodies; selected entry admission never falls back to global fragments. */
+  skillFragments?: ReadonlyMap<string, string>;
   seenVerifierMisdiagnosisIds?: Map<string, string>;
   investigationProfiles?: InvestigationProfiles;
   requireInvestigationContract?: boolean;
@@ -1046,6 +1048,18 @@ export function validateStrategyFrontmatter(
   try {
     const contract = parseInvestigationContract(parsed.frontmatter.investigation_contract, context.investigationProfiles ?? new Map());
     if (!contract && context.requireInvestigationContract) investigationErrors.push(`${file}: investigation_contract is required`);
+    for (const requirement of contract?.requirements ?? []) {
+      if (!requirement.entryAcquisition) continue;
+      if (parsed.frontmatter.strategy_kind === 'contract_only') {
+        investigationErrors.push(`${file}: entry_acquisition is not allowed on a contract_only strategy`);
+      } else if (context.skillDefinitions) {
+        if (!context.skillFragments) investigationErrors.push(`${file}: entry_acquisition requires the pinned fragment cache`);
+        else {
+          const admission = admitInvestigationEntryProducer(requirement.entryAcquisition, context.skillDefinitions, context.skillFragments);
+          if (admission.status === 'not_admitted') investigationErrors.push(...admission.errors.map(error => `${file}: ${error}`));
+        }
+      }
+    }
     const legacy = parsed.frontmatter.investigation_requirements;
     if (legacy !== undefined && (!Array.isArray(legacy) || !legacy.length || !legacy.every(isNonEmptyString))) {
       investigationErrors.push(`${file}: invalid legacy investigation_requirements`);
@@ -1132,6 +1146,7 @@ function validateStrategySkillReferences(): number {
   const frontmatterValidationContext: StrategyFrontmatterValidationContext = {
     knownScenes,
     skillDefinitions: loadSkillDefinitionsById(),
+    skillFragments: loadSkillFragmentCache(),
     seenVerifierMisdiagnosisIds: new Map(),
     investigationProfiles: parseInvestigationProfiles(yaml.load(fs.readFileSync(
       path.join(STRATEGIES_DIR, 'investigation-profiles.yaml'), 'utf8',

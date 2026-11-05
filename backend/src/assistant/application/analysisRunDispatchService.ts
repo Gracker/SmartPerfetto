@@ -25,6 +25,8 @@ import {projectAnalysisFailure} from '../../services/analysisFailureProjection';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import {withRunManifestLifecycle, type RunManifestLifecycle} from '../../services/selfEvolution/runManifestLifecycle';
 import {recordRuntimeCallStatsFromManifest} from '../../services/runtimeCallStats';
+import {assertRuntimeTaskWorkRemaining, createRuntimeAdmissionScope, runtimeTaskHardDeadlineAt,
+  RuntimeTaskDeadlineExceededError, type RuntimeAdmissionScope} from '../../agentRuntime/runtimeTaskDeadline';
 import type {RequestContext} from '../../middleware/auth';
 import type {AnalyzeManagedSession, AnalyzeSessionRunContext} from './agentAnalyzeSessionService';
 import type {AssistantApplicationService} from './assistantApplicationService';
@@ -154,6 +156,7 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
     sourceDepth?: NormalizedAnalyzeOptions['sourceDepth'];
+    taskTimeoutMs?: number;
     runManifestAttributionSink: RunManifestAttributionSink;
   }): Promise<void>;
   smartSelectionReportId(selection?: SceneAnalysisSelection): string | undefined;
@@ -238,6 +241,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     let runTraceProcessorLeases: AnalysisRunTraceProcessorLeases | undefined;
     let releaseLeaseOwner = () => {};
     let sceneRunBinding: SceneRunDispatchBinding | undefined;
+    let runAdmission: RuntimeAdmissionScope | undefined;
     let executionSettled = false;
     // Attempt every cleanup even if a binding's release or manifest persistence fails.
     const finishExecution = async (): Promise<void> => {
@@ -263,6 +267,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         try { await binding.release(); } catch (error) { logCleanupFailure('release scene runtime', error); }
       }
       cleanup('release run leases', releaseLeaseOwner);
+      cleanup('dispose run admission', () => runAdmission?.dispose());
       if (session && runId) cleanup('settle run execution', () => settleSessionRunExecution(session, runId));
       if (session && runId && session.sceneExecutionInFlightRunId === runId) {
         session.sceneExecutionInFlightRunId = undefined;
@@ -447,7 +452,20 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       if (!(await ensureTraceAccessible(traceId))) {
         return;
       }
+      // Cold getOrLoadTrace can create a processor before session/run registration.
+      // Count that authorized work without issuing a fake run or moving access checks.
+      const authorizedWorkStartedAt = Date.now();
+      const requestedTaskTimeoutMs = options.taskTimeoutMs;
+      const preparationDeadlineAt = runtimeTaskHardDeadlineAt(authorizedWorkStartedAt, requestedTaskTimeoutMs);
+      const assertPreparationBudget = () => {
+        if (preparationDeadlineAt !== undefined && Date.now() >= preparationDeadlineAt) {
+          throw new RuntimeTaskDeadlineExceededError();
+        }
+      };
+      assertPreparationBudget();
       const trace = await traceProcessorService.getOrLoadTrace(traceId);
+      // Started loads drain before failure; no ownership/processor is released by a task timer.
+      assertPreparationBudget();
       if (!trace) {
         respond(404, {
           success: false,
@@ -481,7 +499,9 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         ))) {
           return null;
         }
+        assertPreparationBudget();
         const refTrace = await traceProcessorService.getOrLoadTrace(candidateReferenceTraceId);
+        assertPreparationBudget();
         if (!refTrace) {
           respond(404, {
             success: false,
@@ -615,6 +635,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       }
 
       if (sendRunStartConflictIfNeeded(sessionForRun)) return;
+      assertPreparationBudget();
       const runContext = startSessionRun(sessionForRun, query, requestId);
       if (!runContext) {
         sendRunStartConflictIfNeeded(sessionForRun);
@@ -622,6 +643,19 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       }
       executionSession = sessionForRun;
       executionRunId = runContext.runId;
+      const leaseController = new AbortController();
+      runAdmission = createRuntimeAdmissionScope({runId: runContext.runId,
+        // runContext.startedAt is registration time; native budgets must inherit
+        // the earlier authorized-work origin from this single issued envelope.
+        admittedAt: authorizedWorkStartedAt, taskTimeoutMs: requestedTaskTimeoutMs, ownerSignal: leaseController.signal,
+        assertCurrent: () => {
+          if (assistantAppService.getSession(sessionId) !== sessionForRun ||
+            isSessionRunCancelled(sessionForRun, runContext.runId) || isStaleRun(sessionForRun, runContext.runId)) {
+            throw new DOMException('Analysis run is no longer current', 'AbortError');
+          }
+        }});
+      options = runAdmission.bind(options, sessionId);
+      assertRuntimeTaskWorkRemaining(runAdmission.task);
       if (input.entry === 'scene_reconstruction') sessionForRun.sceneExecutionInFlightRunId = runContext.runId;
       sessionForRun.logger.setMetadata({
         requestId: runContext.requestId,
@@ -640,7 +674,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       // Durable runs feed the delivery-call duration estimates (runtimeCallStats.ts).
       runManifestLifecycle.builder.addSealObserver(manifest => recordRuntimeCallStatsFromManifest(manifest));
 
-      const leaseController = new AbortController();
       const leaseControllers = httpAnalysisRunLeaseControllers.get(sessionForRun) ?? new Map<string, AbortController>();
       httpAnalysisRunLeaseControllers.set(sessionForRun, leaseControllers);
       leaseControllers.set(runContext.runId, leaseController);
@@ -653,6 +686,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         }
       };
       try {
+        assertRuntimeTaskWorkRemaining(runAdmission.task);
         runTraceProcessorLeases = await prepareAnalysisRunTraceProcessorLeases({
           service: traceProcessorService, scope: leaseScopeFromRequestContext(requestContext),
           runId: runContext.runId, sessionId, currentTraceId: traceId, referenceTraceId: effectiveReferenceTraceId,
@@ -671,6 +705,9 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
             })} : {}),
         });
         runTraceProcessorLeases.assertCurrent();
+        // A work timeout must not abort the lease-owner signal: it releases
+        // holders immediately. Let an already-started preparation drain first.
+        assertRuntimeTaskWorkRemaining(runAdmission.task);
         if (!resolveFeatureConfig().enterprise) {
           const admittedRuns = admittedLocalAnalysisRuns.get(sessionForRun) ?? new Set<string>();
           admittedRuns.add(runContext.runId);
@@ -704,6 +741,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           assertCurrent: () => leases.assertCurrent()});
         leases.assertCurrent();
       }
+      assertRuntimeTaskWorkRemaining(runAdmission.task);
       // Keep legacy enterprise response metadata; personal private processor identities stay internal.
       const currentLeaseEntry = enterpriseLeasesEnabled() ? leases.entries.find(entry => entry.side === 'current') : undefined;
       const referenceLeaseEntry = enterpriseLeasesEnabled() ? leases.entries.find(entry => entry.side === 'reference') : undefined;
@@ -733,26 +771,20 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       };
 
       if (options.preset === 'smart') {
+        const smartOptions = {
+          runContext, traceProcessorService, smartAction: options.smartAction ?? 'preview' as const,
+          smartSelection: options.smartSelection, forceRefresh: options.forceRefresh === true,
+          providerId: sessionForRun.providerId, analysisContextFingerprint: sessionForRun.analysisContextFingerprint,
+          analysisMode: options.analysisMode, blockedStrategyIds, owner: ownerFieldsFromContext(requestContext),
+          knowledgeScope: knowledgeScopeFromRequestContext(requestContext), codeAwareMode: options.codeAwareMode,
+          codebaseIds: options.codebaseIds, knowledgeSourceIds: options.knowledgeSourceIds,
+          sourceDepth: options.sourceDepth, taskTimeoutMs: options.taskTimeoutMs,
+          runManifestAttributionSink: runManifestLifecycle.builder,
+        };
         const smartAnalysisPromise = withRunManifestLifecycle(
           runManifestLifecycle,
-          () => leases.run(() => runSmartAnalysis(sessionId, query, traceId, {
-            runContext,
-            traceProcessorService,
-            smartAction: options.smartAction ?? 'preview',
-            smartSelection: options.smartSelection,
-            forceRefresh: options.forceRefresh === true,
-            providerId: sessionForRun.providerId,
-            analysisContextFingerprint: sessionForRun.analysisContextFingerprint,
-            analysisMode: options.analysisMode,
-            blockedStrategyIds,
-            owner: ownerFieldsFromContext(requestContext),
-            knowledgeScope: knowledgeScopeFromRequestContext(requestContext),
-            codeAwareMode: options.codeAwareMode,
-            codebaseIds: options.codebaseIds,
-            knowledgeSourceIds: options.knowledgeSourceIds,
-            sourceDepth: options.sourceDepth,
-            runManifestAttributionSink: runManifestLifecycle.builder,
-          })),
+          () => leases.run(() => runSmartAnalysis(sessionId, query, traceId,
+            runAdmission!.bind(smartOptions, sessionId))),
         )
           .then(() => {
             sealCompletedHttpRunManifest(

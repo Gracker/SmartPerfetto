@@ -53,6 +53,8 @@ import {ArtifactStore} from '../artifactStore';
 import * as claudeMcpServer from '../claudeMcpServer';
 import * as claudeSystemPrompt from '../claudeSystemPrompt';
 import * as sceneEntryEvidence from '../../agentRuntime/sceneEntryEvidence';
+import {createSelectedFoundationFixture, installSelectedNativeSignerMocks, installSelectedRuntimeFixture} from '../../../tests/helpers/selectedEvidenceFoundationFixture';
+import * as selectedSkillLoader from '../../services/skillEngine/skillLoader';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as analysisPatternMemory from '../analysisPatternMemory';
 import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
@@ -63,7 +65,7 @@ import {
 } from '../../agentRuntime/__tests__/sourceFinalizationFixture';
 import {resolveFocusPackageCell} from '../../agentRuntime/__tests__/focusEvidenceFixture';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
-import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, wrapConclusionAuthoringPayload} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
@@ -72,6 +74,7 @@ import {admitLearnedEntry, withDurableLearningPermission} from '../../services/s
 import {analysisContextMemoryPartitionKey} from '../../services/resolvedAnalysisContext';
 import {StoreUnreadableError} from '../../utils/storedData';
 import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
+import {createRuntimeAdmissionScope} from '../../agentRuntime/runtimeTaskDeadline';
 
 function declaredCandidate(body: string): string {
   return `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -814,6 +817,74 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     }
   });
 
+  it('selected foundation: real native and metric precede outer focus and share the MCP store', async () => {
+    const restoreSigner = installSelectedNativeSignerMocks();
+    const fixture = await createSelectedFoundationFixture({traceId: 'trace', runId: 'selected-claude', registerExecutor: false});
+    const wired = installSelectedRuntimeFixture(fixture);
+    const requestSelection = {...fixture.input.selectionContext!};
+    const registryReady = jest.spyOn(selectedSkillLoader, 'ensureSkillRegistryInitialized').mockImplementationOnce(async () => {
+      await Promise.resolve();
+      Object.assign(requestSelection, {eventId: 999, ts: 999, dur: 999});
+    });
+    intentDecision = {...defaultIntent, sceneId: 'general', scope: 'bounded_question', deliverable: 'answer', targetUse: 'current_selection'};
+    const order: string[] = [];
+    const query = fixture.query.getMockImplementation()!;
+    fixture.query.mockImplementation(async (...args) => {order.push('metric'); return query(...args);});
+    const focus = jest.spyOn(focusAppDetector, 'detectFocusApps').mockImplementation(async () => {order.push('focus'); return {apps: [], method: 'none'};});
+    const architecture = jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({detect: async () => undefined} as any);
+    const completeness = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness').mockResolvedValue(undefined as any);
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const legacy = jest.spyOn(sceneEntryEvidence, 'collectSceneEvidenceForPrompt');
+    const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
+    const prompt = jest.spyOn(claudeSystemPrompt, 'buildSystemPromptParts');
+    claudeSdkMock.__setQueryImplementation(async function* () {yield {type: 'result', subtype: 'success', num_turns: 1, result: declaredCandidate('Selected answer')};});
+    try {
+      await new ClaudeRuntime(fixture.input.traceProcessorService, {enableSubAgents: false}).analyze('Explain selected work', 'selected-claude', 'trace',
+        {analysisMode: 'full', runId: 'selected-claude', selectionContext: requestSelection});
+      expect(order).toEqual(['metric', 'focus']);
+      expect(fixture.queryBounded.mock.calls[0][1]).toBe('SELECT id, ts, dur, track_id FROM slice WHERE id = 7');
+      expect(requestSelection).toMatchObject({eventId: 999});
+      expect(selected).toHaveBeenCalledTimes(1); expect(legacy).not.toHaveBeenCalled();
+      expect(wired.createExecutor.mock.results.filter(call => call.type === 'return' && call.value === fixture.executor)).toHaveLength(1);
+      expect(wired.registerSkills).toHaveBeenCalledTimes(1); expect(wired.registerFragments).toHaveBeenCalledTimes(1);
+      const store = selected.mock.calls[0][0].artifactStore;
+      expect(mcp.mock.calls[0][0]).toMatchObject({artifactStore: store, skillExecutor: fixture.executor});
+      expect(prompt.mock.calls.some(([context]) => (context as any).sceneEvidence?.kind === 'selected_foundation')).toBe(true);
+      expect(store.createEvidenceReadView({ownerKey: 'owner', currentRunId: 'selected-claude', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]})
+        .investigationEvidence!().records).toEqual([expect.objectContaining({upid: 42, utid: 43, value: 80})]);
+    } finally {registryReady.mockRestore(); wired.restore(); restoreSigner(); focus.mockRestore(); architecture.mockRestore(); completeness.mockRestore(); selected.mockRestore(); legacy.mockRestore(); mcp.mockRestore(); prompt.mockRestore();}
+  });
+
+  it('selected foundation: holds the run guard while cancelled native work drains', async () => {
+    const restoreSigner = installSelectedNativeSignerMocks();
+    const sessionId = 'selected-claude-drain';
+    const fixture = await createSelectedFoundationFixture({traceId: 'trace', runId: sessionId, registerExecutor: false});
+    const wired = installSelectedRuntimeFixture(fixture);
+    intentDecision = {...defaultIntent, sceneId: 'general', scope: 'bounded_question', deliverable: 'answer', targetUse: 'current_selection'};
+    claudeSdkMock.__setQueryImplementation(async function* () {yield {type: 'result', subtype: 'success', num_turns: 1, result: declaredCandidate('selected')};});
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => {enter = resolve;}), held = new Promise<void>(resolve => {release = resolve;});
+    fixture.queryBounded.mockImplementationOnce(async () => {enter(); await held; return fixture.nativeResponse;});
+    const focus = jest.spyOn(focusAppDetector, 'detectFocusApps');
+    const selected = jest.spyOn(sceneEntryEvidence, 'collectSelectedEvidenceForPrompt');
+    const runtime = new ClaudeRuntime(fixture.input.traceProcessorService, {enableSubAgents: false});
+    const operation = runtime.analyze('Explain selected work', sessionId, 'trace',
+      {analysisMode: 'full', runId: sessionId, selectionContext: fixture.input.selectionContext});
+    const settled = operation.then(value => ({value}), error => ({error}));
+    try {
+      await Promise.race([entered, settled.then(() => {throw new Error('analysis settled before selected native lookup');})]);
+      expect(focus).not.toHaveBeenCalled();
+      void runtime.abortSession(sessionId);
+      await Promise.resolve();
+      await expect(runtime.analyze('successor', sessionId, 'trace')).rejects.toThrow(/already in progress/);
+      expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+      release(); await settled;
+      expect(focus).not.toHaveBeenCalled(); expect(fixture.query).not.toHaveBeenCalled();
+      expect(selected).toHaveBeenCalledTimes(1);
+      expect(selected.mock.calls[0][0].artifactStore.size).toBe(0);
+    } finally {release(); await settled; wired.restore(); restoreSigner(); focus.mockRestore(); selected.mockRestore();}
+  });
+
   // A failed classifier is the turn that knows least about the trace, so it
   // keeps the trace-fact preflight; what it loses is the scene, and with it
   // the scene-wide memory tier.
@@ -906,6 +977,39 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(takeFinalizationContext(result)).toBeUndefined();
     expect(takeRunDeliveryRecord(result)).toEqual({runId: 'claude-knowledge-failure-run',
       sessionId: 'claude-knowledge-failure', knowledgeUse});
+  });
+
+  it.each(['default', 'explicit'] as const)('sends no Claude classifier or main request after an issued %s budget expires', async kind => {
+    const sessionId = `claude-admission-${kind}`;
+    const scope = createRuntimeAdmissionScope({runId: sessionId, admittedAt: Date.now() - 2 * 60 * 60_000,
+      ...(kind === 'explicit' ? {taskTimeoutMs: 60_000} : {}), assertCurrent() {}});
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    try {
+      const result = await runtime.analyze('Question', sessionId, 'trace', scope.bind({runId: sessionId}, sessionId));
+      expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(0);
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(result.terminationReason).toBe('timeout');
+    } finally {scope.dispose(); sessionContextManager.remove(sessionId);}
+  });
+
+  it('preserves the explicit admission cap after preparation drains', async () => {
+    intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
+    const now = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    const prepare = (runtime as any).prepareAnalysisContext.bind(runtime);
+    jest.spyOn(runtime as any, 'prepareAnalysisContext').mockImplementation(async (...args: unknown[]) => {
+      const context = await prepare(...args); clock.mockReturnValue(now + 60_001); return context;
+    });
+    try {
+      const result = await runtime.analyze('Question', 'claude-explicit-prep', 'trace', {taskTimeoutMs: 60_000});
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(0);
+      expect(rawClaudeSdkMock.__getQueryCalls()).toHaveLength(1);
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
+      expect(takeFinalizationContext(result)).toBeUndefined();
+    } finally {clock.mockRestore(); sessionContextManager.remove('claude-explicit-prep');}
   });
 
   it('reports the chosen quick budget when preparation consumes the original deadline before SDK dispatch', async () => {
@@ -3022,6 +3126,28 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       jest.useRealTimers();
       sessionContextManager.remove(sessionId);
     }
+  });
+
+  it('does not use a Claude whole-answer correction for undecodable authoring input', async () => {
+    const native = `Body remains.\n${wrapConclusionAuthoringPayload('{"authoringVersion":"unsupported"}')}`;
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'})} as any,
+    {enableSubAgents: false, maxTurns: 4, maxBudgetUsd: 1});
+    (runtime as any).architectureCache.set('trace-authoring-unrecoverable', {type: 'STANDARD', confidence: 0.9, evidence: []});
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: true, heuristicIssues: [], llmIssues: [], durationMs: 1});
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', session_id: 'sdk-authoring-unrecoverable', num_turns: 1,
+        total_cost_usd: 0.1, result: native};
+    });
+    const result = await runtime.analyze('分析当前证据', 'session-authoring-unrecoverable', 'trace-authoring-unrecoverable', {
+      analysisMode: 'full', runId: 'claude-authoring-unrecoverable', packageName: 'com.example.app',
+    });
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+    expect(result.completion).toMatchObject({status: 'completed'});
+    expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
+    const context = takeFinalizationContext(result)!;
+    try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(native);}
+    finally {context.dispose();}
   });
 
   it('uses the same delivery turn to repair a rejected declaration, keeping the body and every claim', async () => {

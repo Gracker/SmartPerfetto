@@ -3,7 +3,8 @@
 
 import {MAX_CLAIM_DIAGNOSTICS, MAX_CONCLUSION_STRUCTURE_DETAILS, copyConclusionClaimDiagnostic,
   isConclusionClaimDiagnostic, isConclusionContractStructureDetail, isConclusionRelationProposalDiagnostic,
-  isConclusionRootParseIssue, parseConclusionContractDeclaration,
+  isConclusionRootParseIssue, parseConclusionDeclarationPayload, conclusionDeclarationAuthoring,
+  conclusionDeclarationValidationPayload,
   type ConclusionContractClaimReference} from '../agent/core/conclusionContract';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
 import {claimUnitFor} from '../utils/claimUnits';
@@ -15,8 +16,8 @@ import {assessNumericPresentations} from './numericPresentationAssessment';
 import {runClaimVerification} from './verifier/claimVerificationRunner';
 
 export const DRAFT_DECLARATION_MAX_BYTES = 65_536;
-const boundary = {diagnosticOnly: true, coverageNotChecked: true, finalCertification: false} as const;
-type DiagnosticInput = {body: unknown; declarationJson: unknown; runId?: string; sessionId?: string;
+const diagnosticBoundary = {diagnosticOnly: true, coverageNotChecked: true, finalCertification: false} as const;
+type DiagnosticInput = {diagnosticMode?: unknown; body?: unknown; declarationJson: unknown; runId?: string; sessionId?: string;
   readView?: EvidenceReadView; signal?: AbortSignal; assertCurrent?: () => void};
 export const draftDiagnosticOwnerKey = (runId: string, sessionId: string) =>
   `draft-declaration:${analysisDeliveryFingerprint({runId, sessionId})}`;
@@ -41,6 +42,9 @@ const identifierFields = (fields: readonly string[] | undefined) => Array.isArra
 
 /** Only local diagnostics: no semantic call, acquisition, completion, persistence or candidate admission. */
 export async function diagnoseConclusionDraft(input: DiagnosticInput) {
+  const claimsOnly = input.diagnosticMode === 'claims_only';
+  const boundary = {...diagnosticBoundary, ...(claimsOnly
+    ? {presentation: {status: 'not_checked', reason: 'claims_only'} as const} : {})};
   const unavailable = (reason: string) => ({...boundary, state: 'unavailable' as const, reason});
   if (!input.runId?.trim() || !input.sessionId?.trim()) return unavailable('run_context_missing');
   if (!input.readView) return unavailable('evidence_store_missing');
@@ -51,12 +55,14 @@ export async function diagnoseConclusionDraft(input: DiagnosticInput) {
   if (!isIssuedInvestigationEvidenceSnapshot(scope) || scope.currentRunId !== input.runId ||
       scope.ownerKey !== draftDiagnosticOwnerKey(input.runId, input.sessionId)) return unavailable('read_context_mismatch');
   const {body, declarationJson} = input;
-  if (typeof body !== 'string' || typeof declarationJson !== 'string')
+  if (input.diagnosticMode !== undefined && !claimsOnly && input.diagnosticMode !== 'presentation')
+    return {...boundary, state: 'invalid_input' as const, reason: 'diagnostic_mode_invalid'};
+  if (((!claimsOnly || body !== undefined) && typeof body !== 'string') || typeof declarationJson !== 'string')
     return {...boundary, state: 'invalid_input' as const, reason: 'input_type_invalid'};
-  const inputBudget = {bodyBytes: Buffer.byteLength(body, 'utf8'),
+  const inputBudget = {bodyBytes: typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0,
     declarationBytes: Buffer.byteLength(declarationJson, 'utf8'), maxBytes: DRAFT_DECLARATION_MAX_BYTES,
-    emptyBody: !body.trim()};
-  if (inputBudget.emptyBody || inputBudget.bodyBytes > inputBudget.maxBytes || inputBudget.declarationBytes > inputBudget.maxBytes)
+    emptyBody: typeof body !== 'string' || !body.trim()};
+  if ((!claimsOnly && inputBudget.emptyBody) || inputBudget.bodyBytes > inputBudget.maxBytes || inputBudget.declarationBytes > inputBudget.maxBytes)
     return {...boundary, state: 'invalid_input' as const, reason: 'input_budget_or_body_invalid', inputBudget};
   let raw: unknown;
   try {raw = JSON.parse(declarationJson);} catch (error) {
@@ -71,7 +77,17 @@ export async function diagnoseConclusionDraft(input: DiagnosticInput) {
   if (raw && typeof raw === 'object' && Array.isArray((raw as {claims?: unknown}).claims) &&
       (raw as {claims: unknown[]}).claims.length > MAX_EVIDENCE_READ_REFERENCES)
     return {...boundary, state: 'invalid_input' as const, reason: 'claim_budget_exhausted'};
-  const parsed = parseConclusionContractDeclaration(raw);
+  const parsed = parseConclusionDeclarationPayload(raw);
+  const authoring = conclusionDeclarationAuthoring(parsed);
+  if (authoring?.status === 'invalid') return {...boundary, state: 'invalid_input' as const,
+    reason: 'invalid_authoring', authoringCode: authoring.code};
+  if (authoring?.status === 'expanded') {
+    if (authoring.material.utf8Bytes > DRAFT_DECLARATION_MAX_BYTES) return {...boundary, state: 'invalid_input' as const,
+      reason: 'expanded_budget_exhausted', inputBudget: {...inputBudget, expandedBytes: authoring.material.utf8Bytes}};
+    const expanded = conclusionDeclarationValidationPayload(parsed) as {claims?: unknown} | undefined;
+    if (Array.isArray(expanded?.claims) && expanded.claims.length > MAX_EVIDENCE_READ_REFERENCES)
+      return {...boundary, state: 'invalid_input' as const, reason: 'claim_budget_exhausted'};
+  }
   const schemaDiagnostics = parsed.issues.slice(0, MAX_CLAIM_DIAGNOSTICS).map(issue => ({
     code: issue.code, path: issue.path,
     ...(issue.code === 'invalid_contract' && issue.details ? {details: issue.details
@@ -89,8 +105,8 @@ export async function diagnoseConclusionDraft(input: DiagnosticInput) {
   if (input.signal?.aborted) return unavailable('cancelled');
   input.assertCurrent?.();
   const finite = runClaimVerification({conclusionContract: contract, preparedEvidence, bindingEligibility: 'eligible'});
-  const presentations = assessNumericPresentations({contract, claims: finite.claimVerificationResult.claimResults,
-    support: finite.claimSupport, body, candidate: {runId: input.runId,
+  const presentations = claimsOnly ? undefined : assessNumericPresentations({contract, claims: finite.claimVerificationResult.claimResults,
+    support: finite.claimSupport, body: body as string, candidate: {runId: input.runId,
       attemptId: 'draft-diagnostic', candidateRef: 'draft-diagnostic', conclusionFingerprint: analysisDeliveryFingerprint(body)}});
   const diagnostics = finite.claimVerificationResult.claimResults.map((claim, index) => {
     const declaration = contract.claims?.[index];
@@ -106,11 +122,11 @@ export async function diagnoseConclusionDraft(input: DiagnosticInput) {
       return field?.origin.definitionFingerprint && ['skill_literal', 'native_producer'].includes(field.origin.kind) &&
         claimUnitFor(field.unit) ? [field.unit!] : [];
     }))];
-    const presentation = presentations.get(claim.claimId);
-    const quoteOccurrences = (declaration?.semantics?.numeric?.presentation?.quotes ?? []).map((quote, quoteIndex) => {
+    const presentation = presentations?.get(claim.claimId);
+    const quoteOccurrences = (claimsOnly ? [] : declaration?.semantics?.numeric?.presentation?.quotes ?? []).map((quote, quoteIndex) => {
       let exactSubstringOccurrences = 0;
-      for (let offset = body.indexOf(quote.text); offset >= 0 && exactSubstringOccurrences < 17;
-        offset = body.indexOf(quote.text, offset + quote.text.length)) exactSubstringOccurrences++;
+      for (let offset = (body as string).indexOf(quote.text); offset >= 0 && exactSubstringOccurrences < 17;
+        offset = (body as string).indexOf(quote.text, offset + quote.text.length)) exactSubstringOccurrences++;
       return {quoteIndex, exactSubstringOccurrences, ...(exactSubstringOccurrences === 17 ? {truncated: true} : {})};
     });
     const referenceReasons = [...new Set((claim.referenceResults ?? []).filter(reference => reference.status !== 'matched')

@@ -11,6 +11,8 @@ import {immutableCanonicalSnapshot} from '../services/selfEvolution/canonicalJso
 import {isPlainObject} from '../utils/llmJson';
 import type {RuntimeToolConcurrencyFallbackReason} from './runtimeToolConcurrency';
 import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
+import type {ModelExecutionPolicyReceipt} from './modelExecutionPolicy';
+import type {ReasoningSetting} from '../services/providerManager/modelExecutionProfile';
 
 export type RuntimePhaseName =
   | 'classification'
@@ -79,7 +81,61 @@ export type RuntimeFinalReviewTrigger = typeof RUNTIME_FINAL_REVIEW_TRIGGERS[num
 export const RUNTIME_FINAL_REVIEW_NECESSITIES = ['required', 'not_required', 'declaration_ineligible'] as const;
 
 /** Request-side reasoning setting; `provider_default` sends no reasoning control. */
-export type RuntimeModelCallReasoning = 'provider_default' | 'disabled';
+export type RuntimeModelCallReasoning = 'provider_default' | 'disabled' | 'enabled';
+export const RUNTIME_MODEL_REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type RuntimeModelReasoningEffort = typeof RUNTIME_MODEL_REASONING_EFFORTS[number];
+
+export type RuntimeModelPolicyReceipt = Pick<ModelExecutionPolicyReceipt, 'schemaVersion' | 'purpose' |
+  'executionFingerprint' | 'selection' | 'outcome' | 'reason' | 'authored' | 'mapped' | 'sdkEffective' | 'wireObservation'>;
+
+/** Policy selection only: never a dispatch receipt, server behavior or stage completion. */
+export interface RuntimeModelPolicyObservation extends RuntimeModelPolicyReceipt {
+  observationOrdinal: number;
+  observedOffsetMs: number;
+}
+
+const POLICY_SELECTIONS: Record<ModelExecutionPolicyReceipt['selection'], true> = {preserve: true, minimum_legal_candidate: true};
+const POLICY_OUTCOMES: Record<ModelExecutionPolicyReceipt['outcome'], true> = {
+  preserved: true, candidate_applied: true, not_applied_unknown: true, not_applied_unsupported: true, rejected: true,
+};
+const POLICY_REASONS: Record<ModelExecutionPolicyReceipt['reason'], true> = {
+  unsupported_authored_mode: true, unsupported_authored_effort: true, candidate_stage_not_allowed: true,
+  adapter_surface_mismatch: true, preserve_requested: true, authored_precedence: true,
+  candidate_minimum_legal: true, server_capability_unknown: true, sdk_capability_unknown: true, no_common_control: true,
+};
+function policyMember<T extends string>(value: unknown, entries: Record<T, true>): value is T {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(entries, value);
+}
+function policySetting(value: unknown): ReasoningSetting | undefined {
+  if (!isPlainObject(value)) return undefined;
+  if (value.mode === 'disabled') return value.effort === undefined ? {mode: 'disabled'} : undefined;
+  if (value.mode !== 'enabled') return undefined;
+  if (value.effort === undefined) return {mode: 'enabled'};
+  return typeof value.effort === 'string' && RUNTIME_MODEL_REASONING_EFFORTS.includes(value.effort as RuntimeModelReasoningEffort)
+    ? {mode: 'enabled', effort: value.effort as RuntimeModelReasoningEffort} : undefined;
+}
+
+/** The same closed projection is applied at collection and stored-metrics export.
+ * Unknown fields (including modelId) never leave this boundary. No raw error text. */
+export function projectRuntimeModelPolicyReceipt(value: unknown): RuntimeModelPolicyReceipt | undefined {
+  try {
+    if (!isPlainObject(value) || value.schemaVersion !== 'model_execution_policy@1' ||
+        typeof value.purpose !== 'string' || !RUNTIME_MODEL_CALL_PURPOSES.includes(value.purpose as RuntimeModelCallPurpose) ||
+        !policyMember(value.selection, POLICY_SELECTIONS) || !policyMember(value.outcome, POLICY_OUTCOMES) ||
+        !policyMember(value.reason, POLICY_REASONS) || value.wireObservation !== 'not_observed') return undefined;
+    const fingerprint = value.executionFingerprint;
+    if (!isPlainObject(fingerprint) || fingerprint.schemaVersion !== 'model_execution_fingerprint@1' ||
+        typeof fingerprint.value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(fingerprint.value)) return undefined;
+    const authored = value.authored === 'absent' ? 'absent' : policySetting(value.authored);
+    const mapped = value.mapped === 'unknown' || value.mapped === 'unchanged' ? value.mapped : policySetting(value.mapped);
+    const sdkEffective = value.sdkEffective === 'unknown' ? 'unknown' : policySetting(value.sdkEffective);
+    if (authored === undefined || mapped === undefined || sdkEffective === undefined) return undefined;
+    return {schemaVersion: 'model_execution_policy@1', purpose: value.purpose as RuntimeModelCallPurpose,
+      executionFingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: fingerprint.value},
+      selection: value.selection, outcome: value.outcome, reason: value.reason,
+      authored, mapped, sdkEffective, wireObservation: 'not_observed'};
+  } catch { return undefined; }
+}
 
 /** Provider-reported token counts, copied only when the provider returns them. */
 export interface RuntimeModelCallUsageV1 {
@@ -107,6 +163,18 @@ export function runtimeProviderOrigin(baseUrl: unknown): string | undefined {
   } catch { return undefined; }
 }
 
+export const RUNTIME_DECLARATION_AUTHORING_STATUSES = ['expanded', 'invalid', 'not_observed'] as const;
+export const RUNTIME_DECLARATION_AUTHORING_VERSIONS = ['conclusion_authoring@1', 'conclusion_authoring@2'] as const;
+
+interface RuntimeModelCallOutput {
+  bodyChars: number;
+  sidecarChars: number;
+  /** Observed input-codec result only; absence/not_observed does not identify canonical syntax or establish proof. */
+  declarationAuthoringStatus?: typeof RUNTIME_DECLARATION_AUTHORING_STATUSES[number];
+  /** Actual successfully decoded grammar, never copied from the requested run setting. */
+  declarationAuthoringVersion?: typeof RUNTIME_DECLARATION_AUTHORING_VERSIONS[number];
+}
+
 export interface RuntimePerformanceModelCallReceiptV1 {
   purpose: RuntimeModelCallPurpose;
   trigger?: RuntimeModelCallTrigger;
@@ -116,13 +184,15 @@ export interface RuntimePerformanceModelCallReceiptV1 {
   providerOrigin?: string;
   inputBytesBucket?: RuntimeModelCallInputBytesBucket;
   reasoning?: RuntimeModelCallReasoning;
+  /** Explicit request-side effort, not proof of the server's internal reasoning behavior. */
+  reasoningEffort?: RuntimeModelReasoningEffort;
   startOffsetMs: number;
   durationMs: number;
   /** Time from this call's dispatch to its first provider output, when the stream exposes it. */
   firstOutputMs?: number;
   outcome: RuntimePerformanceOutcome;
   /** Visible body vs machine declaration characters of the text this call produced. */
-  output?: {bodyChars: number; sidecarChars: number};
+  output?: RuntimeModelCallOutput;
   usage?: RuntimeModelCallUsageV1;
 }
 
@@ -203,6 +273,7 @@ export interface RuntimePerformanceReceiptV1 {
   /** Absent in receipts recorded before per-call records existed. */
   modelCalls?: RuntimePerformanceModelCallReceiptV1[];
   modelRequests?: RuntimeModelRequestReceiptV1[];
+  policyObservations?: RuntimeModelPolicyObservation[];
   finalReview?: RuntimePerformanceFinalReviewReceiptV1;
   declaration?: RuntimePerformanceDeclarationReceiptV1;
   deliveryBudgets?: RuntimePerformanceDeliveryBudgetReceiptV1[];
@@ -214,6 +285,7 @@ export interface RuntimePerformanceReceiptV1 {
     sql: number;
     modelCalls?: number;
     modelRequests?: number;
+    policyObservations?: number;
   };
 }
 
@@ -228,6 +300,7 @@ export interface RuntimeModelCallStart {
   trigger?: RuntimeModelCallTrigger;
   model?: string;
   reasoning?: RuntimeModelCallReasoning;
+  reasoningEffort?: RuntimeModelReasoningEffort;
   providerOrigin?: string;
   inputBytesBucket?: RuntimeModelCallInputBytesBucket;
 }
@@ -238,7 +311,8 @@ export interface RuntimeModelCallEnd {
   model?: string;
   /** Request-side reasoning control, when only the transport knows it. */
   reasoning?: RuntimeModelCallReasoning;
-  output?: {bodyChars: number; sidecarChars: number};
+  reasoningEffort?: RuntimeModelReasoningEffort;
+  output?: RuntimeModelCallOutput;
   usage?: unknown;
 }
 
@@ -258,6 +332,7 @@ export interface RuntimePerformanceRecorderOptions {
   maxSql?: number;
   maxModelCalls?: number;
   maxModelRequests?: number;
+  maxPolicyObservations?: number;
   maxHashInputBytes?: number;
   onActivity?(snapshot: RuntimeActivitySnapshot): void;
 }
@@ -346,6 +421,7 @@ export class RuntimePerformanceRecorder {
   private readonly maxSql: number;
   private readonly maxModelCalls: number;
   private readonly maxModelRequests: number;
+  private readonly maxPolicyObservations: number;
   private readonly maxHashInputBytes: number;
   private readonly startedAt: number;
   private lastOffsetMs = 0;
@@ -355,6 +431,7 @@ export class RuntimePerformanceRecorder {
   private readonly sql: RuntimePerformanceSqlReceiptV1[] = [];
   private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
   private readonly modelRequests: RuntimeModelRequestReceiptV1[] = [];
+  private readonly policyObservations: RuntimeModelPolicyObservation[] = [];
   private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
   private declaration: RuntimePerformanceDeclarationReceiptV1 | undefined;
   // Independent of capped timing arrays. Absence from those arrays cannot
@@ -369,6 +446,7 @@ export class RuntimePerformanceRecorder {
     sql: 0,
     modelCalls: 0,
     modelRequests: 0,
+    policyObservations: 0,
   };
   private sealedReceipt: RuntimePerformanceReceiptV1 | undefined;
   private activityLifetime?: () => boolean;
@@ -383,6 +461,8 @@ export class RuntimePerformanceRecorder {
     this.maxSql = positiveCap(options.maxSql, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxModelCalls = positiveCap(options.maxModelCalls, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxModelRequests = positiveCap(options.maxModelRequests, DEFAULT_MAX_RECEIPT_ITEMS);
+    this.maxPolicyObservations = Math.min(DEFAULT_MAX_RECEIPT_ITEMS,
+      positiveCap(options.maxPolicyObservations, DEFAULT_MAX_RECEIPT_ITEMS));
     this.maxHashInputBytes = positiveCap(
       options.maxHashInputBytes,
       DEFAULT_MAX_HASH_INPUT_BYTES,
@@ -430,6 +510,7 @@ export class RuntimePerformanceRecorder {
       || this.sql.length > 0
       || this.modelCalls.length > 0
       || this.modelRequests.length > 0
+      || this.policyObservations.length > 0
       || this.finalReview !== undefined
       || this.declaration !== undefined
       || this.deliveryBudgets.length > 0
@@ -439,6 +520,7 @@ export class RuntimePerformanceRecorder {
       || this.truncated.sql > 0
       || this.truncated.modelCalls > 0
       || this.truncated.modelRequests > 0
+      || this.truncated.policyObservations > 0
     );
   }
 
@@ -547,6 +629,18 @@ export class RuntimePerformanceRecorder {
     });
   }
 
+  recordModelExecutionPolicy(input: unknown): void {
+    this.assertCollecting('record_model_execution_policy');
+    const receipt = projectRuntimeModelPolicyReceipt(input);
+    if (!receipt) return;
+    if (this.policyObservations.length >= this.maxPolicyObservations) {
+      this.truncated.policyObservations++;
+      return;
+    }
+    this.policyObservations.push({...receipt, observationOrdinal: this.policyObservations.length + 1,
+      observedOffsetMs: this.offsetMs()});
+  }
+
   startModelRequest(input: {purpose?: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger;
     body: ModelRequestBodyMetrics}): RuntimeModelRequestSpan | undefined {
     this.assertCollecting('start_model_request');
@@ -619,9 +713,21 @@ export class RuntimePerformanceRecorder {
         }
         const model = boundedModelName(end.model) ?? boundedModelName(input.model);
         const usage = normalizeModelCallUsage(end.usage ?? doneUsage);
+        const requestedReasoning = end.reasoning ?? input.reasoning;
+        const reasoning = requestedReasoning && ['provider_default', 'disabled', 'enabled'].includes(requestedReasoning)
+          ? requestedReasoning : undefined;
+        const requestedEffort = end.reasoningEffort ?? input.reasoningEffort;
+        const reasoningEffort = reasoning === 'enabled' && requestedEffort && RUNTIME_MODEL_REASONING_EFFORTS.includes(requestedEffort)
+          ? requestedEffort : undefined;
+        const authoringStatus = end.output?.declarationAuthoringStatus;
+        const authoringVersion = end.output?.declarationAuthoringVersion;
         const output = end.output && Number.isSafeInteger(end.output.bodyChars) && end.output.bodyChars >= 0 &&
           Number.isSafeInteger(end.output.sidecarChars) && end.output.sidecarChars >= 0
-          ? {bodyChars: end.output.bodyChars, sidecarChars: end.output.sidecarChars} : undefined;
+          ? {bodyChars: end.output.bodyChars, sidecarChars: end.output.sidecarChars,
+            ...(authoringStatus && RUNTIME_DECLARATION_AUTHORING_STATUSES.includes(authoringStatus)
+              ? {declarationAuthoringStatus: authoringStatus} : {}),
+            ...(authoringStatus === 'expanded' && authoringVersion && RUNTIME_DECLARATION_AUTHORING_VERSIONS.includes(authoringVersion)
+              ? {declarationAuthoringVersion: authoringVersion} : {})} : undefined;
         this.pushCapped('modelCalls', this.maxModelCalls, this.modelCalls, {
           purpose: input.purpose,
           ...(input.trigger ? {trigger: input.trigger} : {}),
@@ -629,7 +735,7 @@ export class RuntimePerformanceRecorder {
           ...(runtimeProviderOrigin(input.providerOrigin) ? {providerOrigin: runtimeProviderOrigin(input.providerOrigin)} : {}),
           ...(input.inputBytesBucket && RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS.includes(input.inputBytesBucket)
             ? {inputBytesBucket: input.inputBytesBucket} : {}),
-          ...(end.reasoning ?? input.reasoning ? {reasoning: end.reasoning ?? input.reasoning} : {}),
+          ...(reasoning ? {reasoning} : {}), ...(reasoningEffort ? {reasoningEffort} : {}),
           startOffsetMs,
           durationMs: boundedMs((doneOffsetMs ?? this.offsetMs()) - startOffsetMs, 'model_call_duration'),
           ...(firstOutputMs !== undefined ? {firstOutputMs: boundedMs(firstOutputMs, 'model_call_first_output')} : {}),
@@ -729,6 +835,7 @@ export class RuntimePerformanceRecorder {
       sql: [...this.sql],
       ...(this.modelCalls.length > 0 ? {modelCalls: [...this.modelCalls]} : {}),
       ...(this.modelRequests.length > 0 ? {modelRequests: [...this.modelRequests]} : {}),
+      ...(this.policyObservations.length > 0 ? {policyObservations: [...this.policyObservations]} : {}),
       ...(this.finalReview ? {finalReview: this.finalReview} : {}),
       ...(this.declaration ? {declaration: this.declaration} : {}),
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
@@ -738,12 +845,14 @@ export class RuntimePerformanceRecorder {
         || this.truncated.sql > 0
         || this.truncated.modelCalls > 0
         || this.truncated.modelRequests > 0
+        || this.truncated.policyObservations > 0
         ? {truncated: {
           phases: this.truncated.phases,
           tools: this.truncated.tools,
           sql: this.truncated.sql,
           ...(this.truncated.modelCalls > 0 ? {modelCalls: this.truncated.modelCalls} : {}),
           ...(this.truncated.modelRequests > 0 ? {modelRequests: this.truncated.modelRequests} : {}),
+          ...(this.truncated.policyObservations > 0 ? {policyObservations: this.truncated.policyObservations} : {}),
         }}
         : {}),
     };
@@ -870,6 +979,13 @@ export function startRuntimeModelCall(
     markDone: usage => guard(() => span.markDone(usage)),
     end: input => guard(() => span.end(input)),
   };
+}
+
+/** Safe transport callback target. Explicit sources retain current-run identity;
+ * absent sources use only the active scope, never a last-request/global recorder. */
+export function recordRuntimeModelExecutionPolicy(source: RuntimePerformanceSource | undefined, receipt: unknown): void {
+  try { resolveRuntimePerformanceRecorder(source)?.recordModelExecutionPolicy(receipt); }
+  catch { /* A policy observation cannot change provider execution. */ }
 }
 
 /** Record the finalizer's review decision on an optional recorder; never throws. */

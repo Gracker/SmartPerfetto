@@ -320,7 +320,7 @@ export interface AreaSelectionContext {
   trackCount?: number;
 }
 
-/** Single slice selection — user clicked a slice in the timeline. */
+/** A selected track event; only an explicit nativeTable hint identifies the requested table. */
 export interface TrackEventSelectionContext {
   kind: 'track_event';
   source?: 'track_event_selection';
@@ -328,9 +328,11 @@ export interface TrackEventSelectionContext {
   eventId: number;
   ts: number;
   dur?: number;
+  /** Locator hint only. The backend must re-read and verify the native row in the current trace. */
+  nativeTable?: 'slice';
 }
 
-/** Discriminated union: either an area or a single-slice selection from Perfetto UI. */
+/** Discriminated union: an area or a track event selected in Perfetto UI. */
 export type SelectionContext = AreaSelectionContext | TrackEventSelectionContext;
 
 /** Stable Perfetto track identity supplied by the UI. */

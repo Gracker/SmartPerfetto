@@ -254,6 +254,14 @@ export function searchPerfettoSqlDocs(
   query: string,
   options: { limit?: number; includePrivate?: boolean; type?: string; module?: string } = {},
 ): PerfettoSqlDocSearchResult[] {
+  return searchAllPerfettoSqlDocs(query, options).slice(0, options.limit ?? 30);
+}
+
+/** Ranked matches before pagination; callers must page their model-facing view. */
+export function searchAllPerfettoSqlDocs(
+  query: string,
+  options: {includePrivate?: boolean; type?: string; module?: string} = {},
+): PerfettoSqlDocSearchResult[] {
   const asset = loadPerfettoSqlDocsAsset();
   if (!asset || !query.trim()) return [];
 
@@ -277,7 +285,13 @@ export function searchPerfettoSqlDocs(
     || a.entry.name.localeCompare(b.entry.name)
     || a.entry.module.localeCompare(b.entry.module)
   );
-  return results.slice(0, options.limit ?? 30);
+  return results;
+}
+
+/** Exact public definition lookup. Multiple matches remain ambiguous, never first-match wins. */
+export function findPerfettoSqlDocDefinitions(locator: {name: string; module: string; type: string}): PerfettoSqlDocEntry[] {
+  return (loadPerfettoSqlDocsAsset()?.entries ?? []).filter(entry => entry.visibility !== 'private'
+    && !entry.name.startsWith('_') && entry.name === locator.name && entry.module === locator.module && entry.type === locator.type);
 }
 
 export function getPerfettoSqlModuleDoc(moduleName: string): PerfettoSqlModuleDoc | undefined {

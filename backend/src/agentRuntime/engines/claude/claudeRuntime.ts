@@ -4,7 +4,8 @@
 
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 
-import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
+import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt} from '../../sceneEntryEvidence';
+import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFoundation';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
@@ -19,6 +20,7 @@ import {
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  isNativeDeclarationRecoveryBlocked,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
@@ -39,6 +41,7 @@ import {SYSTEM_PROMPT_DYNAMIC_BOUNDARY, type HookCallback, type Options as Claud
 import {AnalysisContextAuthorizationChangedError} from '../../../services/resolvedAnalysisContext';
 import {claudeSdkQuery as sdkQuery} from './claudeSdkQuery';
 import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
+import {ensureRuntimeAdmission, assertRuntimeTaskWorkRemaining, RuntimeTaskDeadlineExceededError} from '../../runtimeTaskDeadline';
 import {
   commitEvaluationExposureSince,
   currentEvaluationInjectionContract,
@@ -200,6 +203,7 @@ import {
 import type { RuntimeSelection } from '../../runtimeSelection';
 import {
   createRuntimePerformanceRun,
+  recordRuntimeModelExecutionPolicy,
   runtimeModelCallInputBytesBucket,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
@@ -537,6 +541,16 @@ function sdkQueryWithRetry(
   };
 }
 
+/** Run-local resources prepared before stateful focus detection. */
+interface ClaudeSelectedFoundation {
+  skillExecutor: ReturnType<typeof createSkillExecutor>;
+  effectiveSkillRegistry: ReturnType<typeof resolveEffectiveSkillRegistryForRuntime>;
+  sceneCoverageRegistry: ReturnType<typeof snapshotSceneCoverageRegistry> | undefined;
+  artifactStore: ArtifactStore;
+  selected: Awaited<ReturnType<typeof collectSelectedEvidenceForPrompt>>;
+  canInvokeTool: () => boolean;
+}
+
 /**
  * Claude Agent SDK runtime for SmartPerfetto.
  * Claude SDK orchestrator implementation behind the shared IOrchestrator contract.
@@ -596,11 +610,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions = {},
   ): Promise<AnalysisResult> {
+    const admittedAt = Date.now();
+    const runId = options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID();
     const executionLease = this.executionGuard.begin({
       runtime: CLAUDE_AGENT_RUNTIME_KIND,
       sessionId,
       referenceTraceId: options.referenceTraceId,
-      runId: options.runId,
+      runId,
     });
     const runtimePerformance = createRuntimePerformanceRun(
       options.runManifestAttributionSink,
@@ -612,7 +628,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const allFindings: Finding[][] = [];
     let conclusionText = '';
     let rounds = 0;
-    const runId = options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID();
     let turnIntent: AnalysisTurnIntent | undefined;
     let attemptNumber = 0;
     let answerDraft: AnswerDraftStream | undefined;
@@ -709,9 +724,24 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       dispose: () => void;
       getPlan: () => AnalysisPlanV3 | null;
     } | undefined;
+    let admission: ReturnType<typeof ensureRuntimeAdmission<AnalysisOptions>> | undefined;
 
     try {
       executionLease.throwIfAborted();
+      admission = ensureRuntimeAdmission(options, {runId, sessionId, admittedAt,
+        assertCurrent: () => executionLease.throwIfAborted(), ownerSignal: executionLease.signal});
+      options = admission.options;
+      const task = admission.admission.task;
+      const budgetStartedAt = admission.admission.facts.admittedAt;
+      let workDeadlineAt = task?.facts.hardDeadlineAt ?? Infinity;
+      const workSignal = task ? AbortSignal.any([executionLease.signal, task.deadlineSignal]) : executionLease.signal;
+      const assertWorkRemaining = () => {
+        executionLease.throwIfAborted();
+        assertRuntimeTaskWorkRemaining(task);
+        if (Date.now() >= workDeadlineAt) throw new RuntimeTaskDeadlineExceededError();
+      };
+      assertWorkRemaining();
+      const observePolicy = (receipt: unknown) => recordRuntimeModelExecutionPolicy(options.runManifestAttributionSink, receipt);
       const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
       const previousTurns = sessionContext.getAllTurns?.() || [];
       // Checked before every SDK dispatch, by the CLI's own hooks before the
@@ -722,8 +752,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Every SDK options object this run dispatches with: classifier, main, correction, closeout and review.
       const withAuthorizationHooks = (sdkOptions: ClaudeSdkOptions | undefined): ClaudeSdkOptions =>
         ({...sdkOptions, hooks: mergeClaudeHooks(sdkOptions?.hooks, authorizationHooks)});
-      const authorizedSdk = async () => ({query: (input: Parameters<typeof sdkQuery>[0]) =>
-        sdkQuery({...input, options: withAuthorizationHooks(input.options)})});
+      const authorizedSdk = async () => ({query: (input: Parameters<typeof sdkQuery>[0]) => {
+        assertAuthorized();
+        assertWorkRemaining();
+        return sdkQuery({...input, options: withAuthorizationHooks(input.options)});
+      }});
       const analysisHistoryReader = createRuntimeAnalysisHistoryReader({
         options, sessionId, traceId,
         getTurns: () => sessionContext.getAnalysisHistory(),
@@ -734,6 +767,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const resolvedConfig = options.outputLanguage ? {...configured, outputLanguage: options.outputLanguage} : configured;
       outputLanguage = resolvedConfig.outputLanguage;
       const sdkEnv = createSdkEnv(options.providerId, providerScope);
+      const quickBudgetConfig = createQuickConfig(resolvedConfig, sdkEnv);
+      const sceneProduct = resolveSceneProductScope(options, {runId, sessionId, traceId});
+      workDeadlineAt = Math.min(workDeadlineAt, budgetStartedAt + Math.max(
+        quickBudgetConfig.quickPathPerTurnMs * quickBudgetConfig.maxTurns,
+        resolveFullRequestTimeoutMs(resolvedConfig.fullPathPerTurnMs, resolvedConfig.maxTurns, resolvedConfig.fullRequestTimeoutMs),
+        sceneProduct ? resolvedConfig.maxRunTimeoutMs : 0));
+      assertWorkRemaining();
       const intentResolver = createAnalysisTurnIntentResolver({
         productRun: {options, runId, sessionId, traceId},
         context: buildComplexityClassifierInput({
@@ -742,19 +782,20 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           history: analysisHistoryReader.getTurns(),
           requestedMode: options.analysisMode ?? 'auto',
         }),
-        signal: executionLease.signal,
-        deadlineMs: Date.now() + resolvedConfig.classifierTimeoutMs,
+        signal: workSignal,
+        deadlineMs: Math.min(workDeadlineAt, Date.now() + resolvedConfig.classifierTimeoutMs),
+        modelCallAttribution: {model: resolvedConfig.lightModel, providerOrigin: sdkEnv.ANTHROPIC_BASE_URL},
         // Classification needs no deliberation (claudeEffortForPurpose).
         dispatch: input => runClaudeIntentTransport({
           ...input, config: resolvedConfig, sdkEnv,
           sdkBinaryOptions: getSdkBinaryOption(sdkEnv),
           loadSdk: authorizedSdk, purpose: 'classification',
+          onExecutionPolicy: observePolicy,
         }),
       });
       turnIntent = await intentResolver.resolve();
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       const turnPolicy = resolveRunTurnPolicy(turnIntent, options);
-      const quickBudgetConfig = createQuickConfig(resolvedConfig, sdkEnv);
       // A failed light-model classifier must not send the main answer back to
       // that same unavailable model. Provider identity remains pinned.
       const runtimeConfig = turnPolicy.budgetMode === 'quick' ? {
@@ -792,7 +833,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const requestBudgetMs = quickBudgetMode ? requestPerTurnMs * runtimeConfig.maxTurns
         : resolveFullRequestTimeoutMs(requestPerTurnMs, runtimeConfig.maxTurns, runtimeConfig.fullRequestTimeoutMs);
       const deadline = runDeadline = createProgressAwareRunDeadline({baseBudgetMs: requestBudgetMs, perTurnMs: requestPerTurnMs,
-        maxRunMs: resolveSceneProductScope(options, {runId, sessionId, traceId}) ? runtimeConfig.maxRunTimeoutMs : requestBudgetMs});
+        maxRunMs: sceneProduct ? runtimeConfig.maxRunTimeoutMs : requestBudgetMs,
+        now: budgetStartedAt, hardDeadlineAt: task?.facts.hardDeadlineAt});
+      workDeadlineAt = deadline.hardDeadlineAt;
+      assertWorkRemaining();
       const extensible = deadline.hardDeadlineAt > deadline.startedAt + deadline.baseBudgetMs;
       // Latest end of any model call, keeping the finalization reserve after it.
       const requestDeadline = deadline.hardDeadlineAt - deadline.finalizationReserveMs;
@@ -815,16 +859,49 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             try {
               return await runClaudeIntentTransport({...input,
                 config: {lightModel: finalizationModel, cwd: directory}, sdkEnv: finalizationEnv,
-                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk, purpose: 'review'});
+                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk, purpose: 'review',
+                onExecutionPolicy: observePolicy});
             } finally {
               await fs.promises.rm(directory, {recursive: true, force: true});
             }
           },
         },
       };
+      const selectionContext = analysisRunSpec.selection.present ? analysisRunSpec.selection.context : undefined;
+      let selectedFoundation: ClaudeSelectedFoundation | undefined;
+      const selectedInput = {turnIntent, policy: turnPolicy, strategyRegistry: intentResolver.strategyRegistry,
+        selectionContext, referenceTraceId: options.referenceTraceId,
+        tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options)};
+      if (shouldCollectSelectedEvidenceFoundation(selectedInput)) {
+        assertWorkRemaining();
+        const phase = runtimePerformance.startPhase('skill_registry');
+        try {
+          await ensureSkillRegistryInitialized();
+          assertWorkRemaining();
+          phase.end('ok');
+        } catch (error) {phase.end(runtimeOutcomeFromError(error, executionLease.signal)); throw error;}
+        const skillExecutor = createSkillExecutor(this.traceProcessorService);
+        const effectiveSkillRegistry = resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+        const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
+          ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, intentResolver.strategyRegistry, turnIntent.sceneId) : undefined;
+        skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
+        skillExecutor.setFragmentRegistry(sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache());
+        const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
+          () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
+        this.artifactStores.set(sessionId, artifactStore);
+        const canInvokeTool = () => acquisition.open && runActivity.active && !executionLease.signal.aborted &&
+          !workSignal.aborted && Date.now() < deadline.hardDeadlineAt;
+        const selected = await collectSelectedEvidenceForPrompt({...selectedInput, runId, traceId,
+          skillRegistry: effectiveSkillRegistry, skillExecutor, traceProcessorService: this.traceProcessorService,
+          artifactStore, userPackageName: options.packageName, outputLanguage: runtimeConfig.outputLanguage,
+          canInvokeTool, executionLease: {signal: AbortSignal.any([executionLease.signal, workSignal])},
+          runAuthorization: authorization, deadlineMs: deadline.hardDeadlineAt, runtimePerformance});
+        assertWorkRemaining();
+        selectedFoundation = {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry, artifactStore, selected, canInvokeTool};
+      }
       const focusResult = await detectRunFocusApps({
         traceProcessorService: this.traceProcessorService, traceId, preflight: turnPolicy.preflight,
-        selectionContext: options.selectionContext,
+        selectionContext,
         measure: async detect => {
           const phase = runtimePerformance.startPhase('focus');
           try {
@@ -837,11 +914,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           }
         },
       });
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
 
       const ctx = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
         runId,
-        focusResult,
+        focusResult, selectedFoundation,
         sessionContext,
         previousTurns,
         sceneType,
@@ -854,11 +931,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if (event.phase === 'completed') deadline.recordProgress();
           return closeoutTape.observe(event);
         },
-        analysisHistoryReader, acquisition, runAuthorization: authorization,
+        analysisHistoryReader, acquisition, runAuthorization: authorization, assertWorkRemaining, workSignal,
         sceneDeadlineMs: deadline.hardDeadlineAt, scenePacing: deadline,
       });
       sourceUse = ctx.sourceUse;
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       const privateAnalysisContext = analysisHasPrivateContext(options);
 
       // Display-only draft: the bridge revokes it at each main-agent
@@ -960,6 +1037,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
 
         assertAuthorized();
+        assertWorkRemaining();
         if (Date.now() >= requestDeadline) {
           acceptedTerminal = {status: 'incomplete', reason: 'timeout'};
           throw new Error('Claude request budget expired before SDK dispatch');
@@ -990,11 +1068,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             emitUpdate: (update) => this.emitUpdate(update),
             outputLanguage: outputLanguage,
           runtimePerformance,
-          signal: executionLease.signal,
+          signal: workSignal,
           recordSdkStartPhase: true,
           runtimeReceiptState: sdkRuntimeReceiptState,
           onAttempt: () => {
             assertAuthorized();
+            assertWorkRemaining();
             // The previous attempt's unfinished text is not this attempt's answer.
             discardPendingAnswer();
             attemptStreamOffset = getAccumulatedAnswer().length;
@@ -1534,6 +1613,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         message: now => `Analysis safety timeout after ${Math.round((now - deadline.startedAt) / 1000)}s`,
         onTimeout: onRequestTimeout,
       });
+      task?.deadlineSignal.addEventListener('abort', onRequestTimeout, {once: true});
+      if (task?.deadlineSignal.aborted) onRequestTimeout();
 
       let onAbort: (() => void) | undefined;
       const abortPromise = new Promise<never>((_, reject) => {
@@ -1564,6 +1645,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       } finally {
         if (onAbort) executionLease.signal.removeEventListener('abort', onAbort);
         requestTimeout.clear();
+        task?.deadlineSignal.removeEventListener('abort', onRequestTimeout);
         providerIdleTimeout.clear();
         for (const timer of activeSubAgentTimers.values()) clearTimeout(timer);
         activeSubAgentTimers.clear();
@@ -1612,6 +1694,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const remainingBudgetUsd = runtimeConfig.maxBudgetUsd === undefined ? undefined
         : mainCostUsd === undefined ? 0 : runtimeConfig.maxBudgetUsd - mainCostUsd;
       if (acceptedTerminal.reason === 'turn_limit' && turnBudget.deliveryTurns > 0 &&
+          !isNativeDeclarationRecoveryBlocked(conclusionText) &&
           (remainingBudgetUsd === undefined || remainingBudgetUsd > 0) &&
           observedRunTurns() < turnBudget.totalTurns && Date.now() < requestDeadline) {
         const prompt = closeoutTape.buildPrompt({query, outputLanguage,
@@ -1626,12 +1709,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             assertAuthorized();
             closeoutDeadlineAt = deadline.deliveryReserveMs > 0 ? Date.now() + deadline.deliveryWindowMs() : undefined;
             const summary = await runClaudeIntentTransport({
-              prompt, systemPrompt: ctx.systemPrompt, signal: executionLease.signal,
+              prompt, systemPrompt: ctx.systemPrompt, signal: workSignal,
               deadlineMs: closeoutDeadlineAt ?? requestDeadline, outputByteLimit: 128 * 1024,
               config: {lightModel: runtimeConfig.model, cwd: directory},
+              purpose: 'continuation', onExecutionPolicy: observePolicy,
               sdkEnv: finalizationEnv, sdkBinaryOptions: finalizationBinaryOptions,
               loadSdk: async () => ({query: input => {
                 assertAuthorized();
+                assertWorkRemaining();
                 return sdkQuery({...input, options: withAuthorizationHooks({
                   ...input.options, ...(remainingBudgetUsd === undefined ? {} : {maxBudgetUsd: remainingBudgetUsd}),
                 })});
@@ -1707,6 +1792,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           intent: turnIntent,
           completion: projectedCandidate.deliveryContext.completion ?? {status: 'unknown'},
           candidate: nativeCandidate,
+          declarationSyntax: analysisRunSpec.declarationSyntax,
           remainingDeliveryTurns: remainingTurns > 0 ? turnBudget.deliveryTurns : 0,
           repairInvalid: true,
         });
@@ -1721,7 +1807,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             `fits=${nativeDeclarationBodyCanFitOutput(declarationNeed?.originalBody ?? nativeCandidate, 128 * 1024)} ` +
             `budget=${remainingBudgetUsd === undefined ? 'unbounded' : remainingBudgetUsd > 0 ? 'available' : 'exhausted'}`);
         }
-        const recovery = chooseRuntimeDraftRecovery({
+        const recovery = isNativeDeclarationRecoveryBlocked(nativeCandidate) ? undefined : chooseRuntimeDraftRecovery({
           declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues,
         });
         const correctionPrompt = recovery && (recovery.kind === 'declaration'
@@ -1758,7 +1844,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               effort: recovery.kind === 'declaration' ? claudeEffortForPurpose('declaration_repair') : ctx.effectiveEffort,
               env: sdkEnv,
             }),
-          }, {maxRetries: 0, signal: executionLease.signal, runtimePerformance});
+          }, {maxRetries: 0, signal: workSignal, runtimePerformance});
           const unregister = this.registerAbortHandle(sessionId, {abort: close});
           const turnsBeforeCorrection = observedRunTurns();
           let correctionWorkObserved = false;
@@ -1928,6 +2014,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         executionLease.signal,
       );
       throwIfRunAuthorizationRevoked(executionLease.signal);
+      const deadlineExceeded = error instanceof RuntimeTaskDeadlineExceededError ||
+        admission?.admission.task?.deadlineSignal.aborted === true;
       const rawErrorMessage = (error as Error).message || 'Unknown error';
       const errMsg = explainClaudeRuntimeError(
         rawErrorMessage,
@@ -1942,6 +2030,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       if (acceptedRawBody === undefined) acceptedOrigin = body ? 'assistant_stream' : 'runtime_fallback';
       acceptedTerminal = executionLease.signal.aborted
         ? {status: 'cancelled', reason: 'cancelled'}
+        : deadlineExceeded ? (acceptedTerminal.status === 'completed' ? acceptedTerminal : {status: 'incomplete', reason: 'timeout'})
         : acceptedTerminal.status === 'incomplete' ? acceptedTerminal
           : {status: 'failed', reason: quotaExceeded ? 'budget_limit' : 'provider_error'};
       const safeErrorMessage = sanitizeOwnerCodeAwareStructuredTextWithReceipt(sessionId, errMsg).text;
@@ -1962,6 +2051,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const finalizationPhase = runtimePerformance.startPhase('finalization');
       runActivity.active = false;
       try {
+        admission?.disposeOwned();
         interruptionRecoveryState?.dispose();
         this.activeAnalyses.delete(sessionId);
         runSnapshots.release(sessionId);
@@ -2199,6 +2289,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     options: AnalysisOptions,
     precomputed: {
       runId?: string;
+      selectedFoundation?: ClaudeSelectedFoundation;
       turnIntent: AnalysisTurnIntent;
       turnPolicy: RuntimeTurnPolicy;
       strategyRegistry: ReadonlyStrategyRegistrySnapshot;
@@ -2216,11 +2307,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       analysisHistoryReader?: ReturnType<typeof createRuntimeAnalysisHistoryReader>;
       acquisition?: {open: boolean};
       runAuthorization?: RunAuthorizationCheck;
+      assertWorkRemaining?: () => void;
+      workSignal?: AbortSignal;
       sceneDeadlineMs?: number;
       scenePacing?: ScenePacingInputs;
     },
   ) {
     const {turnIntent, turnPolicy, strategyRegistry} = precomputed;
+    const selectionContext = precomputed.analysisRunSpec
+      ? precomputed.analysisRunSpec.selection.present ? precomputed.analysisRunSpec.selection.context : undefined
+      : options.selectionContext;
     const providerScope = precomputed?.analysisRunSpec?.scopes.provider
       ?? providerScopeFromAnalysisOptions(options);
     const knowledgeScope = precomputed?.analysisRunSpec?.scopes.knowledge
@@ -2255,9 +2351,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       await Promise.allSettled(startedPreflights);
     };
     const throwIfPreflightAborted = async (): Promise<void> => {
-      if (!executionLease?.signal.aborted) return;
-      await settleStartedPreflights();
-      executionLease.throwIfAborted();
+      try {
+        executionLease?.throwIfAborted();
+        precomputed.assertWorkRemaining?.();
+      } catch (error) {
+        await settleStartedPreflights();
+        executionLease?.throwIfAborted();
+        throw error;
+      }
     };
     const runPreflightPhase = <T>(
       phaseName: Parameters<RuntimePerformanceRun['startPhase']>[0],
@@ -2267,7 +2368,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       return schedulePreflight(async () => {
         try {
           executionLease?.throwIfAborted();
+          precomputed.assertWorkRemaining?.();
           const value = await work();
+          precomputed.assertWorkRemaining?.();
           phase?.end(executionLease?.signal.aborted ? 'cancelled' : 'ok');
           return value;
         } catch (err) {
@@ -2276,7 +2379,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
       });
     };
-    const skillRegistryReady = runPreflightPhase('skill_registry', async () => {
+    const skillRegistryReady = precomputed.selectedFoundation ? Promise.resolve() : runPreflightPhase('skill_registry', async () => {
       await ensureSkillRegistryInitialized();
     });
     const knowledgeBaseContextPromise = turnPolicy.allowMemoryPrefetch ? runPreflightPhase('knowledge', async () => {
@@ -2315,7 +2418,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     // Phase 1: Skill executor setup
-    const skillExecutor = createSkillExecutor(this.traceProcessorService);
+    const skillExecutor = precomputed.selectedFoundation?.skillExecutor ?? createSkillExecutor(this.traceProcessorService);
 
     // Phase 2.8: Comparison context (dual-trace mode)
     const referenceTraceId = options.referenceTraceId;
@@ -2417,8 +2520,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       ]);
       await skillRegistryReady;
     } catch (error) {
+      // All started work must settle before the run's guard can be released,
+      // including an admission deadline without owner cancellation.
+      await settleStartedPreflights();
       if (executionLease?.signal.aborted) {
-        await settleStartedPreflights();
         executionLease.throwIfAborted();
       }
       throw error;
@@ -2445,9 +2550,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     });
 
     // Phase 6: Session-scoped artifact store + analysis notes
-    const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
+    const artifactStore = precomputed.selectedFoundation?.artifactStore ?? resolveRuntimeEvidenceStore(options, {sessionId, traceId},
       () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
-    this.artifactStores.set(sessionId, artifactStore);
+    if (!precomputed.selectedFoundation) this.artifactStores.set(sessionId, artifactStore);
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
     // Notes restored from SessionStateSnapshot on resume — no separate disk I/O.
@@ -2504,29 +2609,34 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 8: MCP server with all session-scoped state
     // P2-G1: Destructure to get both server and auto-derived allowedTools
     await skillRegistryReady;
-    const effectiveSkillRegistry =
+    const effectiveSkillRegistry = precomputed.selectedFoundation?.effectiveSkillRegistry ??
       resolveEffectiveSkillRegistryForRuntime(skillRegistry);
-    const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
-      ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, strategyRegistry, turnIntent.sceneId) : undefined;
-    skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(
-      sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
-    );
+    const sceneCoverageRegistry = precomputed.selectedFoundation ? precomputed.selectedFoundation.sceneCoverageRegistry :
+      resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
+        ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, strategyRegistry, turnIntent.sceneId) : undefined;
+    if (!precomputed.selectedFoundation) {
+      skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
+      skillExecutor.setFragmentRegistry(
+        sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
+      );
+    }
     const notesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
-    const canInvokeTool = () => precomputed.acquisition?.open !== false &&
-      precomputed.runActivity?.active !== false && !executionLease?.signal.aborted;
+    const canInvokeTool = precomputed.selectedFoundation?.canInvokeTool ?? (() => precomputed.acquisition?.open !== false &&
+      precomputed.runActivity?.active !== false && !executionLease?.signal.aborted && !precomputed.workSignal?.aborted &&
+      (precomputed.sceneDeadlineMs === undefined || Date.now() < precomputed.sceneDeadlineMs));
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
-    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: precomputed.runId, traceId, turnIntent,
-      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+    const selected = precomputed.selectedFoundation?.selected;
+    const sceneEvidence = selected?.handled ? selected.data : await collectSceneEvidenceForPrompt({runId: precomputed.runId, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options),
       policy: turnPolicy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
-      selectionContext: options.selectionContext, outputLanguage: runtimeConfig.outputLanguage, canInvokeTool,
+      selectionContext, outputLanguage: runtimeConfig.outputLanguage, canInvokeTool,
       executionLease, runAuthorization: precomputed.runAuthorization, deadlineMs: precomputed.sceneDeadlineMs,
       runtimePerformance});
     executionLease?.throwIfAborted();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
-      artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
+      artifactStore, sceneCoverageRegistry, signal: precomputed.workSignal ?? executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
     const { server: mcpServer, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId: precomputed.runId,
@@ -2607,7 +2717,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     // Phase 13: System prompt assembly
     const traceInfo = this.traceProcessorService.getTrace?.(traceId);
-    const analysisContextForRebuild: ClaudeAnalysisContext = {
+    const analysisContextForRebuild: ClaudeAnalysisContext & {declarationSyntax?: AnalysisRunSpec['declarationSyntax']} = {
+      declarationSyntax: precomputed?.analysisRunSpec?.declarationSyntax,
       query, turnIntent, strategyRegistry, onDemandContext: turnPolicy.onDemandContext,
       // The run's own preflight, not one recomputed from the intent: a
       // conversation turn with no attached trace read no trace facts and the
@@ -2624,7 +2735,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       patternContext,
       negativePatternContext,
       caseBackgroundContext,
-      selectionContext: options.selectionContext,
+      selectionContext,
       comparison: comparisonContext,
       traceCompleteness,
       traceOs: traceInfo?.traceOs,

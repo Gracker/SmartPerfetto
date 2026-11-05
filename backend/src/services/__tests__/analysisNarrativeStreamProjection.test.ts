@@ -6,6 +6,7 @@ import {
   ConclusionSidecarFramingScanner,
   parseConclusionContractSidecar,
   renderConclusionContractSidecar,
+  wrapConclusionAuthoringPayload,
   type ConclusionContract,
 } from '../../agent/core/conclusionContract';
 import type {StreamingUpdate} from '../../agent/types';
@@ -16,6 +17,11 @@ const contract: ConclusionContract = {
   conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
 };
 const marker = renderConclusionContractSidecar(contract);
+const authoringMarker = wrapConclusionAuthoringPayload(JSON.stringify({authoringVersion: 'conclusion_authoring@1',
+  referenceDictionary: [{evidenceRefId: 'PRIVATE_STREAM_AUTHORING'}], contract}));
+const authoringV2Marker = wrapConclusionAuthoringPayload(JSON.stringify({authoringVersion: 'conclusion_authoring@2',
+  referenceDictionary: [{evidenceRefId: 'PRIVATE_STREAM_AUTHORING_V2'}],
+  contract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', uncertainties: [{text: 'Unknown.'}]}}), 'authoring_v2');
 const prefix = '<!-- smartperfetto:conclusion-contract@';
 const malformedComment = (payload: string) => `<!-- smartperfetto:conclusion_contract@1\n${payload}\n-->`;
 
@@ -33,6 +39,34 @@ function project(chunks: string[]): string {
   const projection = new AnalysisNarrativeStreamProjection();
   return chunks.map(chunk => text(projection.project(update({token: chunk})))).join('') + text(projection.finish());
 }
+
+describe('authoring native narrative projection', () => {
+  it.each([authoringMarker, authoringV2Marker])('uses the final scanner for every transport split and withholds dictionary material (%#)', frame => {
+    const raw = `Before.\n${frame}\nAfter🙂.`;
+    const expected = parseConclusionContractSidecar(raw).narrative;
+    for (let split = 0; split <= raw.length; split++) expect(project([raw.slice(0, split), raw.slice(split)])).toBe(expected);
+    expect(expected).not.toContain('PRIVATE_STREAM_AUTHORING');
+  });
+
+  it.each([authoringMarker, authoringV2Marker])('withholds interrupted material and cancellation never creates completion (%#)', frame => {
+    const projection = new AnalysisNarrativeStreamProjection();
+    const first = projection.project(update({token: `Before.\n${frame.slice(0, -3)}`}));
+    expect(text(first)).toBe('Before.\n');
+    expect(projection.finish()).toBeUndefined();
+    projection.reset();
+    expect(text(projection.project(update({token: 'Fresh run.'})))).toBe('Fresh run.');
+    expect(text(projection.finish())).not.toContain('PRIVATE_STREAM_AUTHORING');
+  });
+
+  it('keeps a normal JSON fence visible and replaces a draft with the complete narrative', () => {
+    const ordinary = '```json\n{"authoringVersion":"conclusion_authoring@1"}\n```';
+    expect(project([ordinary])).toBe(ordinary);
+    const projection = new AnalysisNarrativeStreamProjection();
+    projection.project(update({token: `Before.\n${authoringMarker.slice(0, 21)}`}));
+    const finished = projection.project(update({conclusion: `Before.\n${authoringMarker}\nAfter.`}, 'conclusion'));
+    expect(text(finished)).toBe('Before.\n\nAfter.');
+  });
+});
 
 describe('sidecar narrative framing', () => {
   const ordinaryExamples = [

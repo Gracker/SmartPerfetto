@@ -5,6 +5,8 @@ import {ArtifactStore} from '../../../agentv3/artifactStore';
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
+import {jest} from '@jest/globals';
+import * as capture from '../evidenceCapture';
 import {McpToolRegistry} from '../../../agentv3/mcpToolRegistry';
 import {SkillExecutor} from '../../skillEngine/skillExecutor';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
@@ -12,6 +14,7 @@ import {captureEvidenceTable, evidenceTableFor} from '../evidenceCapture';
 import {isIssuedInvestigationEvidenceSnapshot, investigationEvidenceFingerprint, compactInvestigationEvidence,
   compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets,
   investigationCaptureFields, validateInvestigationEvidenceDeclarations, LEDGER_PER_METRIC_BUDGET,
+  investigationMetricBindingForModel, attachInvestigationEvidence,
   type InvestigationEvidenceDeclaration, type InvestigationEvidenceSnapshot} from '../investigationEvidenceLedger';
 import type {RuntimeToolInvocationEvent} from '../../../agentRuntime/runtimeToolObserver';
 import {runWithinRuntimeToolInvocation} from '../../../agentRuntime/runtimeToolInvocationContext';
@@ -61,6 +64,37 @@ async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; 
 }
 
 describe('trusted investigation evidence ledger', () => {
+  it('reads metric binding only from a live private producer binding, including empty and partial producers', async () => {
+    for (const rows of [[], [row], [[...row.slice(0, 5), 'partial', 50, 100]]]) {
+      const {display} = await executeFixture(rows);
+      const witness = evidenceTableFor(display)!;
+      expect(investigationMetricBindingForModel(witness)).toBe('present');
+      expect(investigationMetricBindingForModel(JSON.parse(JSON.stringify(witness)))).toBe('unknown');
+      expect(investigationMetricBindingForModel(captureEvidenceTable(display.data))).toBe('absent');
+    }
+    expect(investigationMetricBindingForModel()).toBe('unknown');
+    expect(investigationMetricBindingForModel(captureEvidenceTable(undefined, {}, 'unavailable'))).toBe('unknown');
+  });
+
+  it.each([false, true])('keeps scan-only bindings distinct from mixed metric bindings: metrics=%s', withMetrics => {
+    const witness = captureEvidenceTable({columns: ['start', 'end'], rows: [[0, 10]]});
+    attachInvestigationEvidence(witness, {skillId: 'fixture', stepId: 'root', traceId: 'trace',
+      definitionFingerprint: 'fixture-definition', selectedSqlHash: 'fixture-sql',
+      declaration: {...declaration, metrics: withMetrics ? declaration.metrics : [],
+        scan: {domain: 'fixture', resultStepId: 'result', totalRowsColumn: 'total',
+          outputTruncatedColumn: 'truncated', cursorClosedColumn: 'closed', parseFailuresColumn: 'failures'}}});
+    expect(investigationMetricBindingForModel(witness)).toBe(withMetrics ? 'present' : 'absent');
+  });
+
+  it('does not project a producer binding from a different raw capture trace', () => {
+    const witness = captureEvidenceTable({columns: ['start', 'end'], rows: [[0, 10]]});
+    attachInvestigationEvidence(witness, {declaration, skillId: 'fixture', stepId: 'root', traceId: 'trace',
+      definitionFingerprint: 'fixture-definition', selectedSqlHash: 'fixture-sql'});
+    const context = jest.spyOn(capture, 'capturedRawSqlContext').mockReturnValue({traceId: 'other-trace', traceSide: 'current'});
+    try {expect(investigationMetricBindingForModel(witness)).toBe('unknown');}
+    finally {context.mockRestore();}
+  });
+
   it('accepts a producer-owned window without inventing metric records', async () => {
     const windowOnly = {window: {start: 'start', end: 'end'}, metrics: []};
     expect(() => validateInvestigationEvidenceDeclarations({investigation_evidence: windowOnly})).not.toThrow();

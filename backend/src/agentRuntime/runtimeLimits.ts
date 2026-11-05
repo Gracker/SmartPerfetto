@@ -129,6 +129,8 @@ export function createProgressAwareRunDeadline(input: {
   perTurnMs: number;
   /** Maximum run time including extensions; values below the base budget use the base budget. */
   maxRunMs: number;
+  /** Optional earlier admission deadline. Unlike maxRunMs, a short task cap is never raised to base. */
+  hardDeadlineAt?: number;
   now?: number;
 }): ProgressAwareRunDeadline {
   const positive = (value: number, fallback: number) =>
@@ -136,10 +138,20 @@ export function createProgressAwareRunDeadline(input: {
   const startedAt = input.now ?? Date.now();
   const perTurnMs = positive(input.perTurnMs, 1);
   const baseBudgetMs = positive(input.baseBudgetMs, perTurnMs);
-  const maxRunMs = Math.max(baseBudgetMs, positive(input.maxRunMs, baseBudgetMs));
-  const hardDeadlineAt = startedAt + maxRunMs;
-  const deliveryReserveMs = Math.min(Math.max(perTurnMs, Math.floor(maxRunMs / 6)), maxRunMs - baseBudgetMs);
-  const finalizationReserveMs = Math.min(perTurnMs, Math.floor(deliveryReserveMs / 4));
+  const nativeMaxRunMs = Math.max(baseBudgetMs, positive(input.maxRunMs, baseBudgetMs));
+  if (input.hardDeadlineAt !== undefined && !Number.isFinite(input.hardDeadlineAt)) {
+    throw new Error('runtime_task_deadline_invalid');
+  }
+  const constrained = input.hardDeadlineAt !== undefined && input.hardDeadlineAt < startedAt + nativeMaxRunMs;
+  const hardDeadlineAt = constrained ? input.hardDeadlineAt! : startedAt + nativeMaxRunMs;
+  const maxRunMs = constrained ? Math.max(0, hardDeadlineAt - startedAt) : nativeMaxRunMs;
+  const nativeDeliveryReserveMs = Math.min(Math.max(perTurnMs, Math.floor(nativeMaxRunMs / 6)), nativeMaxRunMs - baseBudgetMs);
+  const nativeFinalizationReserveMs = Math.min(perTurnMs, Math.floor(nativeDeliveryReserveMs / 4));
+  // Scale only existing reserves when an explicit cap leaves less time. Zero
+  // reserve stays zero, and an expired admission never obtains a new window.
+  const reserveScale = Math.min(1, maxRunMs / nativeMaxRunMs);
+  const deliveryReserveMs = Math.floor(nativeDeliveryReserveMs * reserveScale);
+  const finalizationReserveMs = Math.floor(nativeFinalizationReserveMs * reserveScale);
   const investigationLimitAt = hardDeadlineAt - deliveryReserveMs;
   let deadlineAt = startedAt + baseBudgetMs;
   let lastProgressAt = startedAt;

@@ -29,8 +29,9 @@ import {
 } from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import type {RunManifestScope} from '../types/selfEvolution';
-import {INVESTIGATION_CONDITION_OPERATORS, type AnalysisInvestigationContract,
-  type AnalysisInvestigationRequirement} from '../types/analysisInvestigation';
+import {INVESTIGATION_CONDITION_OPERATORS, INVESTIGATION_ENTRY_BINDINGS, type AnalysisInvestigationContract,
+  type AnalysisInvestigationRequirement, type AnalysisInvestigationEntryAcquisition,
+  type InvestigationEntryBinding} from '../types/analysisInvestigation';
 import {ENTRY_SKILL_BINDINGS, ENTRY_SKILL_END_BINDINGS, ENTRY_SKILL_PROCESS_BINDINGS, ENTRY_SKILL_START_BINDINGS,
   type EntrySkillBinding, type StrategyEntrySkill} from '../types/sceneEntryEvidence';
 
@@ -362,7 +363,7 @@ function withRequirementTag<T>(run: () => T, raw: unknown): T {
 }
 
 function parseInvestigationRequirement(value: unknown): AnalysisInvestigationRequirement {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'domain', 'description', 'required', 'condition', 'evidence_metrics'])
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'domain', 'description', 'required', 'condition', 'evidence_metrics', 'entry_acquisition'])
     || !nonEmptyString(value.id) || !/^[a-z][a-z0-9_]*$/.test(value.id)
     || !nonEmptyString(value.domain) || !nonEmptyString(value.description)
     || (value.required !== undefined && typeof value.required !== 'boolean')) {
@@ -403,9 +404,30 @@ function parseInvestigationRequirement(value: unknown): AnalysisInvestigationReq
     evidenceMetrics = value.evidence_metrics.map(metric => metric.trim());
     if (new Set(evidenceMetrics).size !== evidenceMetrics.length) throw new Error('strategy_duplicate_investigation_metric');
   }
+  const entryAcquisition = parseInvestigationEntryAcquisition(value.entry_acquisition, evidenceMetrics);
   return {id: value.id, domain: value.domain.trim(), description: value.description.trim(),
     required: value.required !== false, ...(condition ? {condition} : {}),
-    ...(evidenceMetrics ? {evidenceMetrics} : {})};
+    ...(evidenceMetrics ? {evidenceMetrics} : {}), ...(entryAcquisition ? {entryAcquisition} : {})};
+}
+
+function parseInvestigationEntryAcquisition(value: unknown, evidenceMetrics?: readonly string[]):
+  AnalysisInvestigationEntryAcquisition | undefined {
+  if (value === undefined) return undefined;
+  const invalid = () => new Error('strategy_invalid_entry_acquisition');
+  if (!isRecord(value) || !hasOnlyKeys(value, ['schema_version', 'metric_id', 'subject_binding', 'params']) ||
+      value.schema_version !== 1 || !nonEmptyString(value.metric_id) ||
+      !evidenceMetrics?.includes(value.metric_id.trim()) || value.subject_binding !== 'selected_thread_interval' ||
+      !isRecord(value.params)) throw invalid();
+  const params: Record<string, InvestigationEntryBinding> = {};
+  for (const [name, binding] of Object.entries(value.params)) {
+    if (!ENTRY_SKILL_NAME_RE.test(name) || name.trim() !== name || typeof binding !== 'string' ||
+        !(INVESTIGATION_ENTRY_BINDINGS as readonly string[]).includes(binding)) throw invalid();
+    params[name] = binding as InvestigationEntryBinding;
+  }
+  const bindings = Object.values(params);
+  if (bindings.length !== INVESTIGATION_ENTRY_BINDINGS.length ||
+      INVESTIGATION_ENTRY_BINDINGS.some(binding => bindings.filter(value => value === binding).length !== 1)) throw invalid();
+  return {schemaVersion: 1, metricId: value.metric_id.trim(), subjectBinding: 'selected_thread_interval', params};
 }
 
 /** Strict configuration parser shared by runtime loading and strategy validation. */
@@ -425,6 +447,9 @@ export function parseInvestigationProfiles(value: unknown): InvestigationProfile
       withRequirementTag(() => parseInvestigationRequirement(requirement), requirement));
     if (new Set(requirements.map(requirement => requirement.id)).size !== requirements.length) {
       throw new Error('strategy_duplicate_investigation_requirement');
+    }
+    if (requirements.filter(requirement => requirement.entryAcquisition).length > 1) {
+      throw new Error('strategy_multiple_entry_acquisitions');
     }
     profiles.set(id, {version: entry.version as number, requirements});
   }
@@ -472,6 +497,9 @@ export function parseInvestigationContract(value: unknown, profiles: Investigati
   }
   localRequirements.forEach(append);
   if (!requirements.size) throw new Error('strategy_empty_investigation_contract');
+  if ([...requirements.values()].filter(requirement => requirement.entryAcquisition).length > 1) {
+    throw new Error('strategy_multiple_entry_acquisitions');
+  }
   return {schemaVersion: 1, profileRefs, requirements: [...requirements.values()]};
 }
 
@@ -614,6 +642,8 @@ function cloneStrategyDefinition(definition: StrategyDefinition): StrategyDefini
         ...requirement,
         ...(requirement.condition ? {condition: {...requirement.condition}} : {}),
         ...(requirement.evidenceMetrics ? {evidenceMetrics: [...requirement.evidenceMetrics]} : {}),
+        ...(requirement.entryAcquisition ? {entryAcquisition: {...requirement.entryAcquisition,
+          params: {...requirement.entryAcquisition.params}}} : {}),
       })),
     }} : {}),
     ...(definition.entrySkill

@@ -12,7 +12,9 @@ import {
 } from '../services/canonicalAnalysisResult';
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER, MAX_CLAIM_DIAGNOSTICS, isConclusionRootParseIssue, parseConclusionContractDeclaration,
   parseDeclaredConclusionClaims, parseDeclaredRelationProposals, relationProposalFailure,
-  wrapConclusionContractSidecarPayload,
+  wrapConclusionContractSidecarPayload, wrapConclusionAuthoringPayload,
+  conclusionDeclarationValidationPayload, conclusionDeclarationAuthoring,
+  type ConclusionDeclarationSyntax, type ConclusionContractSidecarParseResult,
   type ConclusionContractClaimItem} from '../agent/core/conclusionContract';
 import {analysisDeliveryFingerprint} from '../types/analysisDelivery';
 import type {AnalysisCompletion} from '../types/analysisDelivery';
@@ -20,6 +22,7 @@ import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {VerificationIssue} from '../agentv3/types';
 import {currentRuntimePerformanceRecorder} from '../services/selfEvolution/runManifestLifecycle';
 import {recordRuntimeDeclarationRepair} from './runtimePerformance';
+import {CONCLUSION_AUTHORING_LIMITS, CONCLUSION_AUTHORING_VERSION, CONCLUSION_AUTHORING_VERSION_V2} from '../agent/core/conclusionAuthoring';
 
 export const MISSING_NATIVE_DECLARATION = 'missing_declaration' as const;
 export const INVALID_NATIVE_DECLARATION = 'invalid_declaration' as const;
@@ -150,6 +153,8 @@ export interface NativeDeclarationCompletionRequest {
   readonly declaredRelationIds?: readonly string[];
   /** The original declaration failed at its root (framing/JSON/root schema), not per item. */
   readonly originalRootInvalid?: boolean;
+  /** Frozen repair syntax; legacy requests without this field retain full-v1 transport. */
+  readonly declarationSyntax?: ConclusionDeclarationSyntax;
   readonly diagnostic: CandidateProtocolDiagnostic;
 }
 
@@ -188,6 +193,23 @@ export function recoverNativeDeclarationPayload(candidate: string): unknown {
   if (!segment || others.length || inspected.sidecar.issues.some(issue => issue.code === 'duplicate_marker') ||
       !inspected.sidecar.issues.some(issue => issue.code === 'invalid_framing')) return undefined;
   return recoverClosedDeclarationPayload(candidate.slice(segment.start, segment.end));
+}
+
+/** Explicit validation view: unlike rawPayload, authoring references have been expanded here. */
+export function recoverNativeDeclarationValidationPayload(candidate: string,
+  parsed = inspectCandidateProtocol(candidate).sidecar): unknown {
+  if (conclusionDeclarationAuthoring(parsed)) return conclusionDeclarationValidationPayload(parsed);
+  return conclusionDeclarationValidationPayload(parsed) ?? recoverNativeDeclarationPayload(candidate);
+}
+
+/** An undecodable authoring input supplies no preservation baseline for either repair path. */
+export function isNativeDeclarationRecoveryBlocked(candidate: string | ConclusionContractSidecarParseResult |
+  Pick<ReturnType<typeof inspectCandidateProtocol>, 'sidecar' | 'typedJson'>): boolean {
+  const parsed = typeof candidate === 'string' ? inspectCandidateProtocol(candidate) : candidate;
+  return 'sidecar' in parsed
+    ? conclusionDeclarationAuthoring(parsed.sidecar)?.status === 'invalid' ||
+      conclusionDeclarationAuthoring(parsed.typedJson)?.status === 'invalid'
+    : conclusionDeclarationAuthoring(parsed)?.status === 'invalid';
 }
 
 /** Parse issue codes, a closed vocabulary. */
@@ -259,17 +281,21 @@ export function requestNativeDeclarationCompletion(input: {
   candidate: string;
   remainingDeliveryTurns: number;
   repairInvalid?: boolean;
+  declarationSyntax?: ConclusionDeclarationSyntax;
 }): NativeDeclarationCompletionRequest | undefined {
   if (input.intent.taskKind === 'acknowledgement' || input.completion.status !== 'completed' ||
       !Number.isSafeInteger(input.remainingDeliveryTurns) || input.remainingDeliveryTurns <= 0) return undefined;
   const inspected = inspectCandidateProtocol(input.candidate);
+  const authoring = conclusionDeclarationAuthoring(inspected.sidecar);
+  if (authoring?.status === 'invalid') return undefined;
   if (!inspected.canonicalBody.trim()) return undefined;
   let diagnostic = Object.freeze(buildCandidateProtocolDiagnostic(inspected, 'native', 1));
   if (inspected.status === 'absent') {
-    return Object.freeze({reason: MISSING_NATIVE_DECLARATION, originalBody: input.candidate, diagnostic});
+    return Object.freeze({reason: MISSING_NATIVE_DECLARATION, originalBody: input.candidate, diagnostic,
+      ...(input.declarationSyntax ? {declarationSyntax: input.declarationSyntax} : {})});
   }
   const [segment, ...others] = inspected.sidecar.machineSegments;
-  const originalRawClaims = payloadClaims(inspected.sidecar.rawPayload);
+  const originalRawClaims = payloadClaims(conclusionDeclarationValidationPayload(inspected.sidecar));
   // A partially_valid declaration is eligible as delivered; repairing it must be
   // able to fix at least one claim a repair can name, so the call can pay for itself.
   const repairableClaims = inspected.sidecar.status === 'partially_valid'
@@ -293,7 +319,7 @@ export function requestNativeDeclarationCompletion(input: {
   }
   const rejectedDeclaration = input.candidate.slice(segment.start, segment.end);
   const framingRejected = inspected.sidecar.issues.some(issue => issue.code === 'invalid_framing');
-  const recoveredPayload = recoverNativeDeclarationPayload(input.candidate);
+  const recoveredPayload = recoverNativeDeclarationValidationPayload(input.candidate);
   if (framingRejected && (!recoveredPayload || typeof recoveredPayload !== 'object' || Array.isArray(recoveredPayload))) {
     return undefined; // Interrupted or ambiguous framing keeps the existing full-answer path.
   }
@@ -334,7 +360,9 @@ export function requestNativeDeclarationCompletion(input: {
   return Object.freeze({reason: INVALID_NATIVE_DECLARATION, originalBody: inspected.canonicalBody.trim(),
     rejectedDeclaration, declaredClaimIds: Object.freeze(declaredClaimIds),
     declaredRelationCount: relations.length, declaredRelationIds: Object.freeze(declaredRelationIds),
-    originalRootInvalid: inspected.sidecar.status === 'invalid', diagnostic: promptDiagnostic});
+    originalRootInvalid: inspected.sidecar.status === 'invalid', diagnostic: promptDiagnostic,
+    ...(authoring ? {declarationSyntax: authoring.authoringVersion === CONCLUSION_AUTHORING_VERSION_V2
+      ? 'authoring_v2' as const : 'authoring_v1' as const} : {})});
 }
 
 function recordPayload(value: unknown): value is Record<string, unknown> {
@@ -423,6 +451,13 @@ export function buildNativeDeclarationCompletionPrompt(input: {
     input.outputLanguage,
     {
       completion_reason: input.request.reason,
+      declaration_transport_instruction: renderRequiredLocalizedStrategyTemplate(input.request.declarationSyntax === 'authoring_v2'
+        ? 'prompt-native-declaration-transport-authoring-v2' : input.request.declarationSyntax === 'authoring_v1'
+          ? 'prompt-native-declaration-transport-authoring' : 'prompt-native-declaration-transport-full', input.outputLanguage, {
+        authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
+        authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
+        authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
+      }),
       turn_intent: JSON.stringify(projectTurnIntentForDeclarationCompletion(input.intent)),
       original_candidate_json: JSON.stringify({
         schemaVersion: 1,
@@ -495,16 +530,18 @@ export function acceptNativeDeclarationCompletion(input: {
   const original = inspectCandidateProtocol(input.request.originalBody);
   if (original.status !== 'absent') return reject('original_not_absent', {original: original.status});
   let candidate = input.candidate;
+  const declarationSyntax = input.request.declarationSyntax ?? 'canonical_v1';
   // This reserved no-tool response transports the declaration as one complete
   // JSON object. The server owns its sidecar frame; no substring extraction or
   // completion of unfinished JSON is allowed. Older sidecars retain their path.
   try {
     const payload: unknown = JSON.parse(candidate.trim());
-    if (recordPayload(payload)) candidate = wrapConclusionContractSidecarPayload(JSON.stringify(payload));
+    if (recordPayload(payload)) candidate = declarationSyntax !== 'canonical_v1'
+      ? wrapConclusionAuthoringPayload(JSON.stringify(payload), declarationSyntax) : wrapConclusionContractSidecarPayload(JSON.stringify(payload));
   } catch { /* A legacy sidecar must still pass the scanner and strict parser below. */ }
   if (!nativeDeclarationCandidateFitsOutput(candidate, input.outputByteLimit)) return reject('output_limit');
   let repaired = inspectCandidateProtocol(candidate);
-  if (repaired.sidecar.issues.some(issue => issue.code === 'invalid_framing')) {
+  if (!conclusionDeclarationAuthoring(repaired.sidecar) && repaired.sidecar.issues.some(issue => issue.code === 'invalid_framing')) {
     const payload = recoverNativeDeclarationPayload(candidate);
     const [framedSegment] = repaired.sidecar.machineSegments;
     if (recordPayload(payload) && framedSegment) {
@@ -516,6 +553,11 @@ export function acceptNativeDeclarationCompletion(input: {
       if (!nativeDeclarationCandidateFitsOutput(candidate, input.outputByteLimit)) return reject('output_limit');
       repaired = inspectCandidateProtocol(candidate);
     }
+  }
+  const repairedAuthoring = conclusionDeclarationAuthoring(repaired.sidecar);
+  if ((declarationSyntax !== 'canonical_v1') !== Boolean(repairedAuthoring) || repairedAuthoring?.status === 'expanded' &&
+      repairedAuthoring.authoringVersion !== (declarationSyntax === 'authoring_v2' ? CONCLUSION_AUTHORING_VERSION_V2 : CONCLUSION_AUTHORING_VERSION)) {
+    return reject('declaration_syntax_changed');
   }
   const [segment, ...others] = repaired.sidecar.machineSegments;
   if (!segment || others.length || repaired.sidecar.status === 'absent' || repaired.sidecar.status === 'invalid') {
@@ -543,7 +585,9 @@ export function acceptNativeDeclarationCompletion(input: {
     const inspected = inspectCandidateProtocol(text);
     return inspected.canonicalBody.trim() === originalBody && inspected.status === repaired.status &&
       inspected.sidecar.machineSegments.length === 1 &&
-      analysisDeliveryFingerprint(inspected.sidecar.rawPayload) === analysisDeliveryFingerprint(repaired.sidecar.rawPayload);
+      analysisDeliveryFingerprint(inspected.sidecar.rawPayload) === analysisDeliveryFingerprint(repaired.sidecar.rawPayload) &&
+      analysisDeliveryFingerprint(conclusionDeclarationValidationPayload(inspected.sidecar)) ===
+        analysisDeliveryFingerprint(conclusionDeclarationValidationPayload(repaired.sidecar));
   };
   if (preservesDeclaration(joined)) return accept(joined);
   // An unclosed comment or fence in the original body can swallow an appended
@@ -557,7 +601,9 @@ export function acceptNativeDeclarationCompletion(input: {
 function evaluateDeclarationRepair(request: NativeDeclarationCompletionRequest,
   repaired: ReturnType<typeof inspectCandidateProtocol>,
   reject: (reason: string, facts?: Record<string, string | number | boolean>) => undefined): true | undefined {
-  const originalPayload = recoverClosedDeclarationPayload(request.rejectedDeclaration ?? '');
+  const originalProtocol = inspectCandidateProtocol(request.rejectedDeclaration ?? '');
+  if (isNativeDeclarationRecoveryBlocked(originalProtocol)) return reject('authoring_not_recoverable');
+  const originalPayload = recoverNativeDeclarationValidationPayload(request.rejectedDeclaration ?? '', originalProtocol.sidecar);
   if (!recordPayload(originalPayload)) {
     // A root framing/JSON failure can leave no recoverable payload, so no
     // baseline exists for the matrix: keep the pre-matrix guarantee that no
@@ -578,7 +624,8 @@ function evaluateDeclarationRepair(request: NativeDeclarationCompletionRequest,
     }
     return true;
   }
-  const repairedPayload = recordPayload(repaired.sidecar.rawPayload) ? repaired.sidecar.rawPayload : undefined;
+  const expandedRepair = conclusionDeclarationValidationPayload(repaired.sidecar);
+  const repairedPayload = recordPayload(expandedRepair) ? expandedRepair : undefined;
   if (!repairedPayload) return reject('repaired_payload_unrecoverable');
   const repairedRootInvalid = repaired.sidecar.issues.some(isConclusionRootParseIssue) ||
     parseConclusionContractDeclaration(repairedPayload).issues.some(isConclusionRootParseIssue);
@@ -598,6 +645,11 @@ function evaluateDeclarationRepair(request: NativeDeclarationCompletionRequest,
   const added = [...repairedIds].filter(id => !originalIds.has(id)).length;
   const dropped = [...originalIds].filter(id => !repairedIds.has(id)).length;
   if (added || dropped) return reject('claim_ids_changed', {added, dropped});
+  // IDs alone cannot preserve id-less entries or multiplicity. Repair keeps
+  // every raw position, including entries that have not passed item parsing.
+  if (originalClaims.length !== (repairedClaims?.length ?? 0)) {
+    return reject('claim_positions_changed', {original: originalClaims.length, repaired: repairedClaims?.length ?? 0});
+  }
   // 3. Every originally-valid claim keeps its normalized fingerprint at its position.
   let originalInvalid = 0;
   let repairedInvalid = 0;
@@ -608,13 +660,13 @@ function evaluateDeclarationRepair(request: NativeDeclarationCompletionRequest,
   if (repairedClaims) {
     for (const [index, item] of repairedClaims.entries()) {
       const facts = claimItemFacts(item);
+      const originalFacts = claimItemFacts(originalClaims[index]);
+      if (originalFacts.valid && (!facts.valid || originalFacts.fingerprint !== facts.fingerprint)) {
+        return reject('valid_claim_changed', {ordinal: index + 1});
+      }
       if (!facts.valid) {repairedInvalid += 1; continue;}
       if (facts.duplicateKey !== undefined) {
         repairedFingerprints.set(facts.duplicateKey, (repairedFingerprints.get(facts.duplicateKey) ?? 0) + 1);
-      }
-      const originalFacts = claimItemFacts(originalClaims[index]);
-      if (originalFacts.valid && originalFacts.fingerprint !== facts.fingerprint) {
-        return reject('valid_claim_changed', {ordinal: index + 1});
       }
     }
   }

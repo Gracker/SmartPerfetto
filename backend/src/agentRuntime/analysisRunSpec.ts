@@ -41,6 +41,8 @@ import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
 import {buildAdaptiveRoutingForTurnIntent} from './adaptiveRoutingProjection';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import type {AnalysisHistoryTurn} from './analysisHistory';
+import {CONCLUSION_AUTHORING_ENV, resolveConclusionDeclarationSyntax} from '../agent/core/conclusionAuthoring';
+import type {ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
 
 export interface RuntimeBudgetInputs {
   model?: string;
@@ -67,6 +69,8 @@ export type AnalysisRunSelection =
     };
 
 export interface AnalysisRunSpec {
+  /** Internal configuration captured once for prompt and missing-declaration delivery in this run. */
+  readonly declarationSyntax: ConclusionDeclarationSyntax;
   /** Resolved by this run, not accepted from client options or prior snapshots. */
   turnIntent?: AnalysisTurnIntent;
   identity: {
@@ -184,13 +188,14 @@ function canonicalString(value: unknown, maxLength: number, required: boolean): 
 }
 
 function canonicalSelectionContext(value: SelectionContext): SelectionContext {
-  const raw = dataRecord(value, ['kind', 'source', 'trackUri', 'eventId', 'ts', 'dur',
+  const raw = dataRecord(value, ['kind', 'source', 'trackUri', 'eventId', 'ts', 'dur', 'nativeTable',
     'startNs', 'endNs', 'durationNs', 'tracks', 'trackCount']);
   if (raw.kind === 'track_event') {
-    if (!exactKeys(raw, ['kind', 'source', 'trackUri', 'eventId', 'ts', 'dur']) ||
+    if (!exactKeys(raw, ['kind', 'source', 'trackUri', 'eventId', 'ts', 'dur', 'nativeTable']) ||
       !safeNonNegativeInteger(raw.eventId) || !safeInteger(raw.ts) ||
       (owns(raw, 'dur') && raw.dur !== undefined && !safeNonNegativeInteger(raw.dur)) ||
       (safeNonNegativeInteger(raw.dur) && !Number.isSafeInteger(raw.ts + raw.dur)) ||
+      (raw.nativeTable !== undefined && raw.nativeTable !== 'slice') ||
       (owns(raw, 'source') && raw.source !== undefined && raw.source !== 'track_event_selection')) {
       throw new Error('analysis_run_selection_invalid');
     }
@@ -202,6 +207,7 @@ function canonicalSelectionContext(value: SelectionContext): SelectionContext {
       ts: raw.ts,
       ...(raw.dur !== undefined ? {dur: raw.dur as number} : {}),
       ...(trackUri ? {trackUri} : {}),
+      ...(raw.nativeTable === 'slice' ? {nativeTable: 'slice' as const} : {}),
     };
   }
   if (raw.kind !== 'area' || !exactKeys(raw,
@@ -369,6 +375,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   const actualModel = input.resolvedModel ?? (input.resolvedMode === 'quick'
     ? input.budget?.lightModel ?? input.budget?.model
     : input.budget?.model);
+  const declarationSyntax = resolveConclusionDeclarationSyntax(process.env[CONCLUSION_AUTHORING_ENV]);
   const sink = resolveRunManifestAttributionSink(
     options.runManifestAttributionSink,
     currentRunManifestAttributionSink(),
@@ -379,6 +386,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
     providerId: options.providerId ?? null,
     ...(actualModel ? {model: actualModel} : {}),
     outputLanguage: input.outputLanguage,
+    conclusionDeclarationSyntax: declarationSyntax,
   });
   sink?.recordMode({
     requested: options.analysisMode ?? 'auto',
@@ -407,6 +415,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   }
 
   return {
+    declarationSyntax,
     ...(input.turnIntent ? {turnIntent: input.turnIntent} : {}),
     identity: {
       sessionId: input.sessionId,

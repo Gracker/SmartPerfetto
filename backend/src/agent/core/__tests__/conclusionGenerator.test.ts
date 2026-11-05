@@ -10,10 +10,24 @@ import {deriveConclusionContract} from '../conclusionGenerator';
 import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseConclusionContractDeclaration,
   parseDeclaredRelationProposals, renderConclusionContractSidecar, conclusionParseIssueTriageCodes,
   CONCLUSION_PARSE_ISSUE_CODES, type ConclusionContract, type ClaimSemanticsV1,
+  wrapConclusionAuthoringPayload,
 } from '../conclusionContract';
 
 describe('complete generated conclusion collections', () => {
   const collection = (prefix: string, count: number) => Array.from({length: count}, (_, index) => `${prefix} ${index + 1}`);
+
+  it('uses shared authoring decode before legacy extraction and never falls back after decode failure', () => {
+    const reference = {evidenceRefId: 'data:one', rowIndex: 0, column: 'value', value: 1};
+    const full: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [{rank: 1, statement: 'The value is one.'}], clusters: [], evidenceChain: [],
+      claims: [{id: 'one', kind: 'numeric', text: 'The value is one.', references: [reference]}], uncertainties: [], nextSteps: []};
+    const compact = {authoringVersion: 'conclusion_authoring@1', referenceDictionary: [reference],
+      contract: {...full, claims: [{...full.claims![0], references: [{$ref: 0}]}]}};
+    expect(deriveConclusionContract(`Body\n${wrapConclusionAuthoringPayload(JSON.stringify(compact))}`))
+      .toEqual(deriveConclusionContract(`Body\n${renderConclusionContractSidecar(full)}`));
+    expect(deriveConclusionContract(`## Conclusion\n1. Must not become a replacement declaration.\n${
+      wrapConclusionAuthoringPayload(JSON.stringify({...compact, referenceDictionary: {}}))}`)).toBeNull();
+  });
 
   it('keeps every legacy JSON conclusion, cluster, evidence item, uncertainty and next step', () => {
     const raw = JSON.stringify({schema_version: 'conclusion_contract_v1',

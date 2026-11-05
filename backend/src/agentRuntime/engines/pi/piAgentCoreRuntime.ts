@@ -3,9 +3,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+import {ensureRuntimeAdmission} from '../../runtimeTaskDeadline';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
-import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
+import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
+import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFoundation';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import { createHash, randomUUID } from 'crypto';
@@ -27,7 +29,8 @@ import {
   buildNativeOutputCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
-  recoverNativeDeclarationPayload,
+  recoverNativeDeclarationValidationPayload,
+  isNativeDeclarationRecoveryBlocked,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
@@ -134,6 +137,7 @@ import {
 } from '../../runtimeCommon';
 import {
   createRuntimePerformanceRun,
+  recordRuntimeModelExecutionPolicy,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
@@ -892,11 +896,13 @@ async function runPiProviderPromptWithSupervision(input: {
   prompt: string;
   providerIdle: ReturnType<typeof createPiProviderIdleSupervisor>;
   executionLease: RuntimeExecutionLease;
+  workSignal?: AbortSignal;
   abortJoinTimeoutMs: number;
 }): Promise<void> {
   input.providerIdle.start();
   const promptPromise = input.agent.prompt(input.prompt);
-  const abort = createPiAbortPromise(input.executionLease.signal);
+  const workSignal = input.workSignal ?? input.executionLease.signal;
+  const abort = createPiAbortPromise(workSignal);
   void abort.promise.catch(() => undefined);
   try {
     await Promise.race([promptPromise, input.providerIdle.promise, abort.promise]);
@@ -904,13 +910,20 @@ async function runPiProviderPromptWithSupervision(input: {
   } catch (error) {
     input.agent.abort();
     input.providerIdle.pause();
-    if (input.executionLease.signal.aborted) {
+    if (workSignal.aborted) {
       await promptPromise.catch(() => undefined);
     }
     throw error;
   } finally {
     abort.clear();
   }
+}
+
+interface PiRunWorkControl {
+  readonly signal: AbortSignal;
+  assertActive(): void;
+  setAgent(agent: PiAgentCoreAgent): void;
+  checkpoint(factory: () => AnalysisResult): void;
 }
 
 function normalizeStringArray(value: unknown): string[] | undefined {
@@ -1142,7 +1155,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       referenceTraceId: options.referenceTraceId,
       runId: options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID(),
     });
-    const startedAt = Date.now();
+    let admission: ReturnType<typeof ensureRuntimeAdmission<AnalysisOptions>>;
+    try {
+      admission = ensureRuntimeAdmission(options, {runId: executionLease.key.runId!, sessionId,
+        admittedAt: Date.now(), ownerSignal: executionLease.signal, assertCurrent: () => executionLease.throwIfAborted()});
+      options = admission.options;
+    } catch (error) {executionLease.settle(); throw error;}
+    const startedAt = admission.admission.facts.admittedAt;
     const runtimePerformance = createRuntimePerformanceRun(
       options.runManifestAttributionSink,
     );
@@ -1160,6 +1179,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let leaseSettled = false;
     let timedOut: {kind: RuntimeTimeoutKind; timeoutMs: number} | undefined;
     let requestTimer: ReturnType<typeof setTimeout> | undefined;
+    const workController = new AbortController();
+    const workSignal = AbortSignal.any([executionLease.signal, workController.signal]);
+    let runAgent: PiAgentCoreAgent | undefined;
+    let acceptedCheckpoint: (() => AnalysisResult) | undefined;
+    const getRunDeadlineMs = () => Math.min(startedAt + requestTimeoutMs,
+      admission.admission.task?.facts.hardDeadlineAt ?? Number.POSITIVE_INFINITY);
     const settleLease = () => {
       if (leaseSettled) return;
       leaseSettled = true;
@@ -1170,23 +1195,40 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     };
     let rejectRequestTimeout: (reason: Error) => void = () => undefined;
     const requestTimeout = new Promise<never>((_, reject) => { rejectRequestTimeout = reject; });
+    const expireRequest = () => {
+      if (workController.signal.aborted || executionLease.signal.aborted) return;
+      const budgetMs = Math.max(0, getRunDeadlineMs() - startedAt);
+      markTimeout('request', budgetMs);
+      const reason = new Error(`Pi Agent Core request timeout after ${budgetMs}ms`);
+      workController.abort(reason);
+      runAgent?.abort();
+      rejectRequestTimeout(reason);
+    };
+    const work: PiRunWorkControl = {
+      signal: workSignal,
+      assertActive: () => {
+        executionLease.throwIfAborted();
+        if (Date.now() >= getRunDeadlineMs()) expireRequest();
+        workSignal.throwIfAborted();
+      },
+      setAgent: agent => {runAgent = agent; if (workSignal.aborted) agent.abort();},
+      // Recording a terminal already returned by the SDK is not a new dispatch.
+      // Once work abort won, however, its late response cannot replace a candidate.
+      checkpoint: factory => {executionLease.throwIfAborted(); workSignal.throwIfAborted(); acceptedCheckpoint = factory;},
+    };
     const armRequestTimeout = (limitMs: number) => {
       if (requestTimer) clearTimeout(requestTimer);
       requestTimeoutMs = Math.min(timeouts.requestTimeoutMs, limitMs);
-      requestTimer = setTimeout(() => {
-        markTimeout('request', requestTimeoutMs);
-        const reason = new Error(`Pi Agent Core request timeout after ${requestTimeoutMs}ms`);
-        void this.executionGuard.abortSession(sessionId, reason).catch(() => undefined);
-        this.activeAgents.get(sessionId)?.abort();
-        rejectRequestTimeout(reason);
-      }, Math.max(0, startedAt + requestTimeoutMs - Date.now()));
+      requestTimer = setTimeout(expireRequest, Math.max(0, getRunDeadlineMs() - Date.now()));
     };
     armRequestTimeout(requestTimeoutMs);
     void requestTimeout.catch(() => undefined);
+    admission.admission.task?.deadlineSignal.addEventListener('abort', expireRequest, {once: true});
+    if (admission.admission.task?.deadlineSignal.aborted) expireRequest();
     const executionAbort = createPiAbortPromise(executionLease.signal);
     void executionAbort.promise.catch(() => undefined);
     try {
-      executionLease.throwIfAborted();
+      work.assertActive();
       const fakeStream = parseFlagValue(this.env[PI_AGENT_CORE_FAKE_STREAM_ENV]) === true;
       analysis = fakeStream
         ? this.analyzeFakeStream(
@@ -1198,6 +1240,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           timeouts.streamIdleTimeoutMs,
           timeouts.abortJoinTimeoutMs,
           markTimeout,
+          work,
         )
         : this.analyzeWithSmartPerfettoTools(
           query,
@@ -1222,7 +1265,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               armRequestTimeout(budget.hardCapTurns * positiveIntegerEnv(this.env, ['AGENT_QUICK_PER_TURN_MS'], 40_000));
             }
           },
-          () => startedAt + requestTimeoutMs,
+          getRunDeadlineMs,
+          work,
         );
       void analysis.catch(() => undefined);
       result = await Promise.race([analysis, requestTimeout, executionAbort.promise]);
@@ -1239,12 +1283,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         error,
         executionLease.signal,
       );
-      if (executionLease.signal.aborted) {
+      if (executionLease.signal.aborted || workController.signal.aborted) {
         if (analysis) {
           const analysisCleanedUp = await joinPiPromptCleanup(analysis, timeouts.abortJoinTimeoutMs);
           deferLeaseSettleToAnalysisCleanup = !analysisCleanedUp;
         }
         throwIfRunAuthorizationRevoked(executionLease.signal);
+        if (!executionLease.signal.aborted && acceptedCheckpoint) {
+          result = acceptedCheckpoint();
+          return result;
+        }
         const timeout = timedOut ?? {kind: 'request' as const, timeoutMs: timeouts.requestTimeoutMs};
         const interrupted = buildPiTimeoutResult({
           sessionId,
@@ -1269,7 +1317,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         });
         if (turnIntent && strategyRegistry && projected.deliveryContext) {
           attachFinalizationContext(projected.result, {
-            runId: executionLease.key.runId!, sessionId, deadlineMs: startedAt + requestTimeoutMs,
+            runId: executionLease.key.runId!, sessionId, deadlineMs: getRunDeadlineMs(),
             turnIntent, strategyRegistry,
             selection: analysisRunSelection,
             traceIdentity: runTraceIdentity(traceId, options),
@@ -1286,6 +1334,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       throw error;
     } finally {
       executionAbort.clear();
+      admission.admission.task?.deadlineSignal.removeEventListener('abort', expireRequest);
+      admission.disposeOwned();
       if (requestTimer) clearTimeout(requestTimer);
       const finalizationPhase = runtimePerformance.startPhase('finalization');
       try {
@@ -1342,12 +1392,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     streamIdleTimeoutMs: number,
     abortJoinTimeoutMs: number,
     markTimeout: (kind: RuntimeTimeoutKind, timeoutMs: number) => void,
+    work: PiRunWorkControl,
   ): Promise<AnalysisResult> {
-    executionLease.throwIfAborted();
+    work.assertActive();
     const startedAt = Date.now();
     const modelConfig = resolvePiAgentCoreModel(this.env, true);
     const { Agent } = await this.getPiAgentCoreModule();
-    executionLease.throwIfAborted();
+    work.assertActive();
     const systemPrompt = this.env[PI_AGENT_CORE_SYSTEM_PROMPT_ENV] ?? '';
     const streamFn = createFakePiStream(
       this.selection.kind === PI_AGENT_CORE_RUNTIME_KIND
@@ -1370,6 +1421,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }),
     });
     this.activeAgents.set(sessionId, agent);
+    work.setAgent(agent);
     const messageBoundary = agent.state.messages?.length ?? 0;
 
     const providerIdle = createPiProviderIdleSupervisor({
@@ -1386,7 +1438,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     void providerIdle.promise.catch(() => undefined);
     let acceptingProviderEvents = true;
     const unsubscribe = agent.subscribe((event) => {
-      if (!acceptingProviderEvents || executionLease.signal.aborted) return;
+      if (!acceptingProviderEvents || work.signal.aborted) return;
       providerIdle.onEvent(event);
       if (event.type === 'done') {
         recordEvaluationTokenDeltaIfPresent(event.message);
@@ -1424,6 +1476,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           prompt: query,
           providerIdle,
           executionLease,
+          workSignal: work.signal,
           abortJoinTimeoutMs,
         });
         providerPhase.end('ok');
@@ -1488,8 +1541,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       selection: AnalysisRunSpec['selection']}) => void,
     onPolicyReady: (intent: AnalysisTurnIntent, policy: RuntimeTurnPolicy, registry: ReadonlyStrategyRegistrySnapshot) => void,
     getRunDeadlineMs: () => number,
+    work: PiRunWorkControl,
   ): Promise<AnalysisResult> {
-    executionLease.throwIfAborted();
+    work.assertActive();
     const startedAt = Date.now();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -1514,6 +1568,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       purpose: RuntimeModelCallPurpose = 'answer_turn'): PiAgentCoreProviderRuntime['streamFn'] =>
       (model, context, streamOptions) => {
         authorization.assertCurrent();
+        work.assertActive();
         // Only installed HTTP adapters whose native SDK accepts fetch injection.
         // WebSocket and other APIs retain their original transport untouched.
         const observableHttp = ['openai-completions', 'openai-responses', 'anthropic-messages'].includes(model.api)
@@ -1523,11 +1578,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             source: options.runManifestAttributionSink, purpose: () => ({purpose}),
           })} : streamOptions);
       };
+    const onExecutionPolicy = (receipt: Parameters<typeof recordRuntimeModelExecutionPolicy>[1]) =>
+      recordRuntimeModelExecutionPolicy(options.runManifestAttributionSink, receipt);
     const providerPromise = this.getProviderRuntime(modelConfig).then(runtime => ({
       ...runtime,
-      streamFn: fencedStream(runtime.streamFn),
+      streamFn: fencedStream(runtime.streamFnForPurpose?.('answer_turn', {onExecutionPolicy}) ?? runtime.streamFn),
       ...(runtime.streamFnForPurpose ? {streamFnForPurpose: (...args: Parameters<NonNullable<PiAgentCoreProviderRuntime['streamFnForPurpose']>>) =>
-        fencedStream(runtime.streamFnForPurpose!(...args), args[0])} : {}),
+        fencedStream(runtime.streamFnForPurpose!(args[0], {...args[1], onExecutionPolicy: receipt => {
+          onExecutionPolicy(receipt);
+          try {args[1]?.onExecutionPolicy?.(receipt);} catch { /* Observation only. */ }
+        }}), args[0])} : {}),
     }));
     const classifierTimeoutMs = positiveIntegerEnv(this.env, ['AGENT_CLASSIFIER_TIMEOUT_MS'], 30_000);
     const intentResolver = createAnalysisTurnIntentResolver({
@@ -1537,15 +1597,19 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         hasReferenceTrace: Boolean(options.referenceTraceId), previousTurns: [], history: analysisHistoryReader.getTurns(),
         requestedMode: options.analysisMode ?? 'auto',
       }),
-      signal: executionLease.signal,
-      deadlineMs: Date.now() + classifierTimeoutMs,
+      modelCallAttribution: {
+        ...(typeof modelConfig.model.id === 'string' ? {model: modelConfig.model.id} : {}),
+        ...(typeof modelConfig.model.baseUrl === 'string' ? {providerOrigin: modelConfig.model.baseUrl} : {}),
+      },
+      signal: work.signal,
+      deadlineMs: Math.min(getRunDeadlineMs(), Date.now() + classifierTimeoutMs),
       dispatch: input => runIntentTransport(input, async scope => runPiIntentTransport({
         ...input, signal: scope.signal, providerRuntime: await providerPromise, maxOutputTokens: 1024,
         purpose: 'classification',
       })),
     });
     const turnIntent = await intentResolver.resolve();
-    executionLease.throwIfAborted();
+    work.assertActive();
     const policy = resolveRunTurnPolicy(turnIntent, options);
     onPolicyReady(turnIntent, policy, intentResolver.strategyRegistry);
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
@@ -1560,17 +1624,17 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
       throw error;
     }
-    executionLease.throwIfAborted();
+    work.assertActive();
     const closeoutTape = createRuntimeTurnCloseoutTape();
     let toolAdmissionsOpen = true;
     const prep = await this.prepareAnalysis(
       query, sessionId, traceId, options, providerRuntime.model.id,
-      executionLease, turnIntent, policy, intentResolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
-      () => toolAdmissionsOpen && !executionLease.signal.aborted, getRunDeadlineMs(), authorization,
+      executionLease, turnIntent, policy, intentResolver.strategyRegistry, analysisHistoryReader, work, closeoutTape.observe,
+      () => toolAdmissionsOpen && !work.signal.aborted && Date.now() < getRunDeadlineMs(), getRunDeadlineMs(), authorization,
     );
     onPreparationReady({sourceUse: prep.sourceUse, artifactStore: prep.artifactStore,
       selection: prep.analysisRunSpec.selection});
-    executionLease.throwIfAborted();
+    work.assertActive();
 
     const quickBudget = resolveQuickTurnBudget({env: this.env, enforcement: 'turn_cap'});
     const maxTurns = prep.quickMode ? quickBudget.hardCapTurns : resolveAgentRuntimeBudgetConfig(this.env).maxTurns;
@@ -1585,6 +1649,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let acceptedTurnLimitReached = false;
     let acceptedText = '';
     let closeoutAccepted = false;
+    let checkpoint: (() => AnalysisResult) | undefined;
+    const emitUpdate = (update: StreamingUpdate) => this.emit('update', update);
     const agent = new Agent({
       initialState: {
         systemPrompt: prep.systemPrompt,
@@ -1620,7 +1686,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         return true;
       },
       beforeToolCall: async ({toolCall}: {toolCall?: {name?: string}}) => {
-        executionLease.throwIfAborted();
+        work.assertActive();
         if (!toolAdmissionsOpen || turnLimitReached || !toolCall?.name || !prep.allowedToolNames.has(toolCall.name)) {
           return {block: true, reason: 'Tool is not in the SmartPerfetto request-scoped allowlist.'};
         }
@@ -1629,6 +1695,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     });
     runAgent = agent;
     this.activeAgents.set(sessionId, agent);
+    work.setAgent(agent);
     const providerIdle = createPiProviderIdleSupervisor({
       sessionId, timeoutMs: streamIdleTimeoutMs, markTimeout,
       abort: () => {
@@ -1639,19 +1706,20 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     });
     void providerIdle.promise.catch(() => undefined);
     const runProviderPrompt = async (prompt: string, turnLimit = turnBudget.acquisitionTurns) => {
-      executionLease.throwIfAborted();
+      work.assertActive();
       if (rounds >= turnLimit) { turnLimitReached = true; return undefined; }
       providerTurnLimit = turnLimit;
       const boundary = agent.state.messages?.length ?? 0;
       const attemptId = `${++attempt}`;
       const beforeRounds = rounds;
       try {
-        await runPiProviderPromptWithSupervision({agent, prompt, providerIdle, executionLease, abortJoinTimeoutMs});
+        await runPiProviderPromptWithSupervision({agent, prompt, providerIdle, executionLease, workSignal: work.signal, abortJoinTimeoutMs});
       } finally {
         // An attempted provider turn consumes budget even if it fails.
         if (rounds === beforeRounds) rounds++;
       }
       executionLease.throwIfAborted();
+      work.signal.throwIfAborted();
       const assistant = latestAssistantMessage((agent.state.messages ?? []).slice(boundary));
       return {assistant, attemptId, text: extractAssistantText(assistant).trim(), turnLimitReached};
     };
@@ -1666,7 +1734,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let acceptingProviderEvents = true;
     let declarationCompletionInProgress = false;
     const unsubscribe = agent.subscribe(event => {
-      if (!acceptingProviderEvents || executionLease.signal.aborted) return;
+      if (!acceptingProviderEvents || work.signal.aborted) return;
       providerIdle.onEvent(event);
       if (event.type === 'turn_end') rounds++;
       if (event.type === 'done') recordEvaluationTokenDeltaIfPresent(event.message);
@@ -1725,6 +1793,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           acceptedText = candidate.text;
           acceptedAttemptId = candidate.attemptId;
           acceptedTurnLimitReached = candidate.turnLimitReached;
+          checkpointAccepted();
         }
         providerPhase.end('ok');
       } catch (error) {
@@ -1733,6 +1802,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }
       toolAdmissionsOpen = false;
       if (acceptedTurnLimitReached && turnBudget.deliveryTurns > 0
+        && !isNativeDeclarationRecoveryBlocked(acceptedText)
         && rounds < turnBudget.totalTurns && Date.now() < getRunDeadlineMs()) {
         const closeoutPrompt = closeoutTape.buildPrompt({query, priorConclusion: acceptedText, outputLanguage});
         if (closeoutPrompt) {
@@ -1744,17 +1814,19 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             const closeout = await runPiIntentTransport({
               purpose: 'continuation',
               prompt: closeoutPrompt, systemPrompt: prep.systemPrompt,
-              signal: executionLease.signal, deadlineMs: getRunDeadlineMs(),
+              signal: work.signal, deadlineMs: getRunDeadlineMs(),
               outputByteLimit: 64 * 1024, providerRuntime,
             });
             executionLease.throwIfAborted();
             authorization.assertCurrent();
             if (closeout.status === 'ok') {
+              work.assertActive();
               acceptedText = closeout.text;
               acceptedAttemptId = closeoutAttemptId;
               acceptedAssistant = {role: 'assistant', stopReason: closeout.finishReason ?? 'stop',
                 content: [{type: 'text', text: closeout.text}]};
               closeoutAccepted = true;
+              checkpointAccepted();
             }
           } catch {
             executionLease.throwIfAborted();
@@ -1766,12 +1838,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const acceptedCompletion = completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached);
       const declarationNeed = requestNativeDeclarationCompletion({
         intent: turnIntent, completion: acceptedCompletion, candidate: acceptedText,
+        declarationSyntax: prep.analysisRunSpec.declarationSyntax,
         remainingDeliveryTurns: rounds < turnBudget.totalTurns ? turnBudget.deliveryTurns : 0,
         repairInvalid: true,
       });
       const declarationRequest = declarationNeed && nativeDeclarationBodyCanFitOutput(declarationNeed.originalBody, 64 * 1024)
         ? declarationNeed : undefined;
-      const recovery = chooseRuntimeDraftRecovery({declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues});
+      const recovery = isNativeDeclarationRecoveryBlocked(acceptedText) ? undefined
+        : chooseRuntimeDraftRecovery({declarationNeed, declarationRequest, recoverableIssues: draft.recoverableIssues});
       const outputLimitDelivery = acceptedCompletion.status === 'incomplete' && acceptedCompletion.reason === 'output_limit' &&
         acceptedAssistant?.deferred === undefined && !acceptedAssistant?.errorMessage &&
         !(Array.isArray(acceptedAssistant?.content) && acceptedAssistant.content.some(part => part?.type === 'toolCall'));
@@ -1818,7 +1892,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               candidate: candidate.text,
               outputByteLimit: 64 * 1024,
             }) : undefined;
-            const originalPayload = recoverNativeDeclarationPayload(acceptedText) as {claims?: unknown; relationProposals?: unknown} | undefined;
+            const originalPayload = recoverNativeDeclarationValidationPayload(acceptedText, originalProtocol.sidecar) as
+              {claims?: unknown; relationProposals?: unknown} | undefined;
             const retained = [
               {original: originalPayload?.claims, corrected: correctedProtocol.sidecar.contract?.claims ?? [],
                 validId: (id: string) => Boolean(id.trim())},
@@ -1830,17 +1905,20 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               return corrected.length >= original.length && original.every(item => !item || typeof item !== 'object' ||
                 typeof item.id !== 'string' || !validId(item.id) || ids.has(item.id));
             });
-            const ordinaryCorrectionAccepted = !declarationRequest && retained && correctedProtocol.canonicalBody.trim() &&
+            const ordinaryCorrectionAccepted = !declarationRequest && !isNativeDeclarationRecoveryBlocked(originalProtocol) &&
+              retained && correctedProtocol.canonicalBody.trim() &&
               correctedProtocol.status !== 'invalid' &&
               (!outputLimitDelivery || turnIntent.taskKind === 'acknowledgement' || correctedProtocol.sidecar.status === 'valid') &&
               !(originalProtocol.status !== 'absent' && correctedProtocol.status === 'absent') &&
               checked.deliveryErrors.length === 0 && checked.recoverableIssues.length === 0;
             if (acceptedDeclaration || ordinaryCorrectionAccepted) {
+              work.assertActive();
               acceptedAssistant = candidate.assistant;
               // A declaration completion delivers the original body with its new declaration.
               acceptedText = acceptedDeclaration ?? candidate.text;
               acceptedAttemptId = candidate.attemptId;
               acceptedTurnLimitReached = candidate.turnLimitReached;
+              checkpointAccepted();
             }
           }
         } catch {
@@ -1866,75 +1944,97 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       if (this.activeAgents.get(sessionId) === agent) this.activeAgents.delete(sessionId);
     }
     executionLease.throwIfAborted();
-    const conclusion = acceptedText;
-    const completion = completionFor(acceptedAssistant, conclusion, acceptedAttemptId, acceptedTurnLimitReached);
-    // Native facts only: draft diagnostics chose a repair above and never set
-    // the terminal state, which the shared finalizer assesses.
-    const partial = completion.status !== 'completed' || !conclusion;
-    const terminationReason: AnalysisResult['terminationReason'] = completion.reason === 'turn_limit' ? 'max_turns'
-      : completion.status === 'failed' ? 'execution_error'
-      : completion.status === 'cancelled' ? 'timeout' : undefined;
-    const findings = extractFindingsFromText(conclusion);
-    const nativeResult: AnalysisResult = {
-      sessionId, success: completion.status !== 'failed' && completion.status !== 'cancelled', findings,
-      hypotheses: prep.hypotheses.map(h => toRuntimeProtocolHypothesis(h, 'pi-agent-core')),
-      conclusion, turnIntent, completion,
-      outputOrigin: closeoutAccepted || completion.status === 'completed' ? 'sdk_final' : 'assistant_stream',
-      confidence: estimateAnalysisConfidence({findings, partial}),
-      rounds, totalDurationMs: Date.now() - startedAt,
-      partial: partial || undefined, terminationReason,
-      ...(prep.quickMode ? {quickRun: buildQuickRunReceipt({
-        requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
-        actualTurns: rounds, elapsedMs: Date.now() - startedAt,
-        stopReason: quickStopReasonFromTermination({partial, terminationReason, actualTurns: rounds,
-          targetTurns: quickBudget.targetTurns, hardCapTurns: quickBudget.hardCapTurns}),
-        evidence: {frontendPrequeryInjected: prep.analysisRunSpec.traceContext.datasetCount},
-        contextInjected: {conversationTurns: countCompletedQuickConversationTurns(prep.previousTurns),
-          ...prep.quickMemoryContextCounts},
-      })} : {}),
-    };
-    const projected = projectPiAnalysisResult(nativeResult, prep.sourceUse, {
-      entry: 'runtime_draft', acceptedCandidate: completion, completion,
-      outputOrigin: nativeResult.outputOrigin, turnIntent,
-    });
-    const result = projected.result;
-    this.emit('update', {type: 'progress', content: {phase: 'candidate_protocol',
-      candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(result.conclusion), 'runtime_projected',
-        acceptedAttemptId === '1' ? 1 : 2, projected.conclusionProjection.disposition)}, timestamp: Date.now()});
-    executionLease.throwIfAborted();
-    prep.sessionContext.addTurn(query, {
-      primaryGoal: query, aspects: [], expectedOutputType: 'diagnosis',
-      complexity: prep.quickMode ? 'simple' : 'complex',
-      followUpType: prep.previousTurns.length > 0 ? 'extend' : 'initial',
-    }, {
-      agentId: 'pi-agent-core', success: result.success, findings: result.findings,
-      confidence: result.confidence, message: result.conclusion, partial: result.partial,
-      terminationReason: result.terminationReason, terminationMessage: result.terminationMessage,
-      completion: result.completion, conclusionContract: result.conclusionContract,
-      sourceDerived: privateAnalysisContext || undefined,
-      analysisContextFingerprint: options.analysisContextFingerprint,
-    }, result.findings);
-    const deadlineMs = getRunDeadlineMs();
-    if (projected.deliveryContext) {
-      attachFinalizationContext(result, {
-        runId, sessionId, deadlineMs, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
-        selection: prep.analysisRunSpec.selection,
-        traceIdentity: runTraceIdentity(traceId, options),
-        deliveryContext: projected.deliveryContext, protocolProjection: projected.protocolProjection,
-        ...sourceUseFinalizationFields(prep.sourceUse),
-        evidenceReadView: createPiEvidenceReadView(prep.artifactStore, runId, sessionId, traceId, options),
-        ...(result.completion?.status === 'completed' && result.success && result.conclusion
-          && result.outputOrigin !== 'runtime_fallback' ? {
-            providerQuery: {text: prep.analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
-            dispatchText: (input: IntentTransportInput) => runPiIntentTransport({
-              ...input, deadlineMs: Math.min(deadlineMs, input.deadlineMs), providerRuntime,
-              purpose: 'review',
-            }),
-            deliveryCall: {providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id},
-          } : {}),
-      });
+    if (checkpoint) return checkpoint();
+    return buildAcceptedResult(acceptedText,
+      completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached), acceptedAttemptId, closeoutAccepted);
+
+    function checkpointAccepted(): void {
+      const text = acceptedText;
+      const completion = Object.freeze(completionFor(acceptedAssistant, text, acceptedAttemptId, acceptedTurnLimitReached));
+      const attemptId = acceptedAttemptId;
+      const fromCloseout = closeoutAccepted;
+      let cached: AnalysisResult | undefined;
+      const factory = () => {
+        executionLease.throwIfAborted();
+        authorization.assertCurrent();
+        return cached ??= buildAcceptedResult(text, completion, attemptId, fromCloseout);
+      };
+      work.checkpoint(factory);
+      checkpoint = factory;
     }
-    return result;
+
+    function buildAcceptedResult(conclusion: string, acceptedCompletion: AnalysisCompletion,
+      candidateAttemptId: string, fromCloseout: boolean): AnalysisResult {
+      const completion = {...acceptedCompletion};
+      const actualRounds = Math.max(rounds, attempt);
+      // Native facts only: draft diagnostics chose a repair above and never set
+      // the terminal state, which the shared finalizer assesses.
+      const partial = completion.status !== 'completed' || !conclusion;
+      const terminationReason: AnalysisResult['terminationReason'] = completion.reason === 'turn_limit' ? 'max_turns'
+        : completion.status === 'failed' ? 'execution_error'
+        : completion.status === 'cancelled' ? 'timeout' : undefined;
+      const findings = extractFindingsFromText(conclusion);
+      const nativeResult: AnalysisResult = {
+        sessionId, success: completion.status !== 'failed' && completion.status !== 'cancelled', findings,
+        hypotheses: prep.hypotheses.map(h => toRuntimeProtocolHypothesis(h, 'pi-agent-core')),
+        conclusion, turnIntent, completion,
+        outputOrigin: fromCloseout || completion.status === 'completed' ? 'sdk_final' : 'assistant_stream',
+        confidence: estimateAnalysisConfidence({findings, partial}),
+        rounds: actualRounds, totalDurationMs: Date.now() - startedAt,
+        partial: partial || undefined, terminationReason,
+        ...(prep.quickMode ? {quickRun: buildQuickRunReceipt({
+          requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
+          actualTurns: actualRounds, elapsedMs: Date.now() - startedAt,
+          stopReason: quickStopReasonFromTermination({partial, terminationReason, actualTurns: actualRounds,
+            targetTurns: quickBudget.targetTurns, hardCapTurns: quickBudget.hardCapTurns}),
+          evidence: {frontendPrequeryInjected: prep.analysisRunSpec.traceContext.datasetCount},
+          contextInjected: {conversationTurns: countCompletedQuickConversationTurns(prep.previousTurns),
+            ...prep.quickMemoryContextCounts},
+        })} : {}),
+      };
+      const projected = projectPiAnalysisResult(nativeResult, prep.sourceUse, {
+        entry: 'runtime_draft', acceptedCandidate: completion, completion,
+        outputOrigin: nativeResult.outputOrigin, turnIntent,
+      });
+      const result = projected.result;
+      emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
+        candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(result.conclusion), 'runtime_projected',
+          candidateAttemptId === '1' ? 1 : 2, projected.conclusionProjection.disposition)}, timestamp: Date.now()});
+      executionLease.throwIfAborted();
+      prep.sessionContext.addTurn(query, {
+        primaryGoal: query, aspects: [], expectedOutputType: 'diagnosis',
+        complexity: prep.quickMode ? 'simple' : 'complex',
+        followUpType: prep.previousTurns.length > 0 ? 'extend' : 'initial',
+      }, {
+        agentId: 'pi-agent-core', success: result.success, findings: result.findings,
+        confidence: result.confidence, message: result.conclusion, partial: result.partial,
+        terminationReason: result.terminationReason, terminationMessage: result.terminationMessage,
+        completion: result.completion, conclusionContract: result.conclusionContract,
+        sourceDerived: privateAnalysisContext || undefined,
+        analysisContextFingerprint: options.analysisContextFingerprint,
+      }, result.findings);
+      const deadlineMs = getRunDeadlineMs();
+      if (projected.deliveryContext) {
+        attachFinalizationContext(result, {
+          runId, sessionId, deadlineMs, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
+          selection: prep.analysisRunSpec.selection,
+          traceIdentity: runTraceIdentity(traceId, options),
+          deliveryContext: projected.deliveryContext, protocolProjection: projected.protocolProjection,
+          ...sourceUseFinalizationFields(prep.sourceUse),
+          evidenceReadView: createPiEvidenceReadView(prep.artifactStore, runId, sessionId, traceId, options),
+          ...(result.completion?.status === 'completed' && result.success && result.conclusion
+            && result.outputOrigin !== 'runtime_fallback' ? {
+              providerQuery: {text: prep.analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
+              dispatchText: (input: IntentTransportInput) => runPiIntentTransport({
+                ...input, deadlineMs: Math.min(deadlineMs, input.deadlineMs), providerRuntime,
+                purpose: 'review',
+              }),
+              deliveryCall: {providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id},
+            } : {}),
+        });
+      }
+      return result;
+    }
   }
 
   private async prepareAnalysis(
@@ -1948,25 +2048,19 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     policy: RuntimeTurnPolicy,
     strategyRegistry: ReadonlyStrategyRegistrySnapshot,
     analysisHistoryReader: AnalysisHistoryReader,
+    work: PiRunWorkControl,
     toolObserver?: RuntimeToolObserver,
     canInvokeTool?: () => boolean,
     sceneDeadlineMs?: number,
     runAuthorization?: RunAuthorizationCheck,
   ): Promise<PiAnalysisPreparation> {
-    executionLease.throwIfAborted();
+    work.assertActive();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const sceneType = turnIntent.sceneId;
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
     const quickMode = policy.budgetMode === 'quick';
-    const focusResult = await detectRunFocusApps({
-      traceProcessorService: this.traceProcessorService, traceId, preflight: policy.preflight,
-      selectionContext: options.selectionContext,
-    });
-    executionLease.throwIfAborted();
-    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
-    const effectivePackageName = focusTarget.packageName;
     const analysisRunSpec = createAnalysisRunSpec({
       history: analysisHistoryReader.getTurns(),
       query,
@@ -1989,18 +2083,53 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       turnIntent,
     });
+    const selectionContext = analysisRunSpec.selection.present ? analysisRunSpec.selection.context : undefined;
+    const selectedInput = {turnIntent, policy, strategyRegistry, selectionContext,
+      referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext,
+      conversationTraceAttached: conversationTraceAttachedOption(options)};
+    const initializeSkills = async () => {
+      await ensureSkillRegistryInitialized();
+      work.assertActive();
+      const skillExecutor = createSkillExecutor(this.traceProcessorService);
+      const effectiveSkillRegistry =
+        resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+      const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
+        ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, strategyRegistry, turnIntent.sceneId) : undefined;
+      skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
+      skillExecutor.setFragmentRegistry(
+        sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
+      );
+      return {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry};
+    };
+    const initializeStore = () => {
+      const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
+        () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
+      this.artifactStores.set(sessionId, artifactStore);
+      return artifactStore;
+    };
+    let earlySkills: Awaited<ReturnType<typeof initializeSkills>> | undefined;
+    let earlyStore: ArtifactStore | undefined;
+    let selected: Awaited<ReturnType<typeof collectSelectedEvidenceForPrompt>> = {handled: false};
+    if (shouldCollectSelectedEvidenceFoundation(selectedInput)) {
+      earlySkills = await initializeSkills();
+      earlyStore = initializeStore();
+      selected = await collectSelectedEvidenceForPrompt({...selectedInput, runId: executionLease.key.runId!, traceId,
+        skillRegistry: earlySkills.effectiveSkillRegistry, skillExecutor: earlySkills.skillExecutor,
+        traceProcessorService: this.traceProcessorService, artifactStore: earlyStore, userPackageName: options.packageName,
+        outputLanguage, canInvokeTool, executionLease: {signal: AbortSignal.any([executionLease.signal, work.signal])}, runAuthorization,
+        deadlineMs: sceneDeadlineMs, runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
+      work.assertActive();
+    }
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService: this.traceProcessorService, traceId, preflight: policy.preflight,
+      selectionContext,
+    });
+    work.assertActive();
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
 
-    await ensureSkillRegistryInitialized();
-    executionLease.throwIfAborted();
-    const skillExecutor = createSkillExecutor(this.traceProcessorService);
-    const effectiveSkillRegistry =
-      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
-    const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
-      ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, strategyRegistry, turnIntent.sceneId) : undefined;
-    skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(
-      sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
-    );
+
+    const {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry} = earlySkills ?? await initializeSkills();
 
     let architecture = getLruCacheEntry(this.architectureCache, traceId);
     if (!architecture && policy.preflight !== 'none') {
@@ -2009,16 +2138,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           traceId,
           traceProcessorService: this.traceProcessorService,
           packageName: effectivePackageName,
-          signal: executionLease.signal,
+          signal: work.signal,
         });
-        executionLease.throwIfAborted();
+        work.assertActive();
         if (architecture) setLruCacheEntry(this.architectureCache, traceId, architecture);
       } catch (err) {
-        executionLease.throwIfAborted();
+        work.assertActive();
         console.warn('[PiAgentCoreRuntime] Architecture detection failed:', (err as Error).message);
       }
     }
-    executionLease.throwIfAborted();
+    work.assertActive();
     if (architecture) {
       this.emit('update', {
         type: 'architecture_detected',
@@ -2035,9 +2164,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           traceId,
           architecture?.type,
         );
-        executionLease.throwIfAborted();
+        work.assertActive();
       } catch (err) {
-        executionLease.throwIfAborted();
+        work.assertActive();
         console.warn('[PiAgentCoreRuntime] Trace completeness probe failed:', (err as Error).message);
       }
     }
@@ -2057,23 +2186,21 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const comparisonContext = policy.allowMemoryPrefetch
       ? await buildRuntimeTracePairComparisonContext(pairInput)
       : buildRuntimeTracePairIdentityContext(pairInput);
-    executionLease.throwIfAborted();
+    work.assertActive();
     let knowledgeBaseContext: string | undefined;
     if (policy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
-        executionLease.throwIfAborted();
+        work.assertActive();
         knowledgeBaseContext = kb.getContextForAI(query, 8);
       } catch {
-        executionLease.throwIfAborted();
+        work.assertActive();
         // Non-fatal. Pi can still use lookup_sql_schema/knowledge tools.
       }
     }
-    executionLease.throwIfAborted();
+    work.assertActive();
 
-    const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
-      () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
-    this.artifactStores.set(sessionId, artifactStore);
+    const artifactStore = earlyStore ?? initializeStore();
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
 
@@ -2107,16 +2234,17 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
-    const sceneEvidence = await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
-      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+    const sceneEvidence = selected.handled ? selected.data : await collectSceneEvidenceForPrompt({runId: executionLease.key.runId!, traceId, turnIntent,
+      referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options),
       policy, strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.traceProcessorService, artifactStore, focusTarget, userPackageName: options.packageName,
-      selectionContext: options.selectionContext, outputLanguage, canInvokeTool, executionLease, runAuthorization,
+      selectionContext, outputLanguage, canInvokeTool, executionLease, runAuthorization,
       deadlineMs: sceneDeadlineMs, runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
-    executionLease.throwIfAborted();
+    work.assertActive();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
-      artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
+      artifactStore, sceneCoverageRegistry, signal: work.signal, canInvokeTool});
+    work.assertActive();
     const { toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId: executionLease.key.runId!,
@@ -2201,7 +2329,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           fixedSql: entry.fixedSql,
         })),
       ...memoryContext,
-      selectionContext: options.selectionContext,
+      selectionContext,
       traceCompleteness,
       traceOs: traceInfo?.traceOs,
       traceFormat: traceInfo?.traceFormat,
@@ -2211,7 +2339,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       sourceAuthorization,
       ...(comparisonContext ? { comparison: comparisonContext } : {}),
     };
-    const sharedSystemPrompt = buildSystemPrompt(analysisContext);
+    const sharedSystemPrompt = buildSystemPrompt({...analysisContext, declarationSyntax: analysisRunSpec.declarationSyntax});
     return {
       systemPrompt: systemPromptEnv
         ? `${sharedSystemPrompt}\n\n${systemPromptEnv}`

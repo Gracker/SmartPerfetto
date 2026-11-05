@@ -4,14 +4,24 @@
 
 import {
   buildOpenAIChatCompletionsTokenLimit,
-  buildOpenAITextRequestPurposeOptions,
+  resolveOpenAITextRequestPurpose,
+  type OpenAITextRequestPurposeInput,
   isOpenAIChatCompletionsOutputTruncated,
   isOfficialGlmOrigin,
   readOpenAIChatCompletionsOutput,
 } from '../openAiChatCompletionsCompat';
 
+function purposeInput(input: Pick<OpenAITextRequestPurposeInput, 'requestUrl' | 'protocol'> &
+  Partial<OpenAITextRequestPurposeInput>): OpenAITextRequestPurposeInput {
+  return {model: 'deepseek-flash', runtimeKind: 'openai-agents-sdk',
+    sdkCapabilities: {surface: input.protocol === 'responses' ? 'openai_responses' : 'openai_chat',
+      thinking: 'optional', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      reasoningRoundtrip: 'unknown', source: 'contract_test'}, ...input};
+}
+const buildOpenAITextRequestPurposeOptions = (input: Parameters<typeof purposeInput>[0]) => resolveOpenAITextRequestPurpose(purposeInput(input)).options;
+
 describe('official DeepSeek delivery protocol options', () => {
-  it.each(['https://api.deepseek.com/v1/chat/completions', 'https://API.DEEPSEEK.COM:443/responses'])(
+  it.each(['https://api.deepseek.com/v1', 'https://API.DEEPSEEK.COM:443/v1'])(
     'uses only the parsed official origin for %s', url => {
       const requestUrl = new URL(url);
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose: 'classification'}))
@@ -23,9 +33,9 @@ describe('official DeepSeek delivery protocol options', () => {
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose: 'final_semantic'}))
         .toEqual({reasoning: {effort: 'none'}, text: {format: {type: 'json_object'}}});
       for (const purpose of ['declaration_repair', 'continuation'] as const) {
-        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose}))
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose, outputOnly: true}))
           .toEqual({thinking: {type: 'disabled'}});
-        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose}))
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose, outputOnly: true}))
           .toEqual({reasoning: {effort: 'none'}});
       }
       expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions'})).toEqual({});
@@ -60,20 +70,49 @@ describe('official GLM origin boundary', () => {
 
 describe('official GLM delivery protocol options', () => {
   it.each(['https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', 'https://api.z.ai/api/paas/v4/chat/completions'])(
-    'disables default thinking for every delivery purpose on chat completions only on %s', url => {
+    'selects legal enabled low for the candidate delivery purposes on chat completions only on %s', url => {
       const requestUrl = new URL(url);
       for (const purpose of ['classification', 'final_semantic', 'declaration_repair', 'continuation'] as const) {
-        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions', purpose}))
-          .toEqual({thinking: {type: 'disabled'}});
-        expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'responses', purpose})).toEqual({});
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, model: 'glm-5.3-flash', protocol: 'chat_completions', purpose, outputOnly: true}))
+          .toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+        expect(buildOpenAITextRequestPurposeOptions({requestUrl, model: 'glm-5.3-flash', protocol: 'responses', purpose, outputOnly: true})).toEqual({});
       }
-      expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions'})).toEqual({});
+      expect(buildOpenAITextRequestPurposeOptions({requestUrl, model: 'glm-5.3-flash', protocol: 'chat_completions'})).toEqual({});
     },
   );
   it.each(['https://open.bigmodel.cn.evil.test/v1/chat/completions', 'http://open.bigmodel.cn/api/paas/v4/chat/completions',
     'https://gateway.example/open.bigmodel.cn/chat/completions'])('leaves look-alike endpoints unchanged: %s', url => {
     expect(buildOpenAITextRequestPurposeOptions({requestUrl: new URL(url), protocol: 'chat_completions',
       purpose: 'classification'})).toEqual({});
+  });
+});
+
+describe('model-bound purpose policy metadata', () => {
+  const requestUrl = new URL('https://open.bigmodel.cn/api/coding/paas/v4');
+  it('uses the selected model, not the origin or the primary/light role name', () => {
+    const known = resolveOpenAITextRequestPurpose(purposeInput({requestUrl, protocol: 'chat_completions',
+      model: 'glm-5.3-flash', purpose: 'final_semantic'}));
+    expect(known.options).toEqual({thinking: {type: 'enabled'}, reasoning_effort: 'low'});
+    expect(known.policy).toMatchObject({purpose: 'review', modelId: 'glm-5.3-flash',
+      selection: 'minimum_legal_candidate', wireObservation: 'not_observed'});
+    expect(known.options).not.toHaveProperty('profile');
+    expect(known.options).not.toHaveProperty('policy');
+    expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions',
+      model: 'unknown-model', purpose: 'classification'})).toEqual({});
+  });
+  it('preserves an ordinary continuation and requires explicit output-only for its candidate', () => {
+    expect(buildOpenAITextRequestPurposeOptions({requestUrl, protocol: 'chat_completions',
+      model: 'glm-5.3-flash', purpose: 'continuation'})).toEqual({});
+  });
+  it('preserves legal authored controls and rejects unsupported ones rather than returning empty options', () => {
+    const input = purposeInput({requestUrl, protocol: 'chat_completions', model: 'glm-5.3-flash', purpose: 'classification',
+      effective: {authoredReasoning: {mode: 'enabled', effort: 'high'}}});
+    expect(resolveOpenAITextRequestPurpose(input)).toMatchObject({options: {thinking: {type: 'enabled'}, reasoning_effort: 'high'},
+      policy: {reason: 'authored_precedence'}});
+    expect(() => resolveOpenAITextRequestPurpose({...input, effective: {authoredReasoning: {mode: 'disabled'}}}))
+      .toThrow('openai_text_policy_invalid_configuration');
+    expect(() => resolveOpenAITextRequestPurpose({...input, sdkCapabilities: {...input.sdkCapabilities, surface: 'pi_stream'}}))
+      .toThrow('openai_text_policy_invalid_configuration');
   });
 });
 

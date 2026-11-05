@@ -4,7 +4,8 @@
 
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
 
-import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
+import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
+import {shouldCollectSelectedEvidenceFoundation} from '../../selectedEvidenceFoundation';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
@@ -80,6 +81,7 @@ import {
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
+  isNativeDeclarationRecoveryBlocked,
   candidateHasAnswerBody,
   nativeBodyCompletionNeeded,
 } from '../../runtimeConclusionProtocol';
@@ -97,6 +99,7 @@ import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
 import {
   createRuntimePerformanceRun,
+  recordRuntimeModelExecutionPolicy,
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
@@ -148,7 +151,11 @@ import {analysisHasPrivateContext} from '../../../services/security/analysisPriv
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 import {parseFlagValue} from '../../../utils/envFlag';
-import {buildOpenAITextRequestPurposeOptions, type OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {resolveOpenAITextRequestPurpose, OpenAITextPolicyConfigurationError, type OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {resolveModelExecutionProfile, type ReasoningEffort, type ReasoningSetting} from '../../../services/providerManager/modelExecutionProfile';
+import type {ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
+import {ensureRuntimeAdmission, assertRuntimeTaskWorkRemaining, RuntimeTaskDeadlineExceededError,
+  type RuntimeAdmission} from '../../runtimeTaskDeadline';
 import {buildChatCompletionsUrl} from '../openai/openAiComplexityClassifier';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
@@ -238,13 +245,15 @@ interface OpenCodeClient {
   };
   session: {
     create(input: {
+      signal?: AbortSignal;
       body?: { title?: string };
       query?: { directory?: string };
     }): Promise<OpenCodeSdkResponse<OpenCodeSession> | OpenCodeSession>;
     prompt(input: OpenCodePromptInput): Promise<unknown>;
     promptAsync?(input: OpenCodePromptInput): Promise<unknown>;
-    status?(input?: { query?: { directory?: string } }): Promise<unknown>;
+    status?(input?: { query?: { directory?: string }; signal?: AbortSignal }): Promise<unknown>;
     messages?(input: {
+      signal?: AbortSignal;
       path: { id: string };
       query?: { directory?: string; limit?: number; order?: 'asc' | 'desc' };
     }): Promise<unknown>;
@@ -253,6 +262,7 @@ interface OpenCodeClient {
 }
 
 interface OpenCodePromptInput {
+  signal?: AbortSignal;
   path: { id: string };
   query?: { directory?: string };
   body?: {
@@ -713,6 +723,11 @@ async function assertOpenCodeMcpReady(
 
 /** @internal Test seam. */
 export const __testing = {
+  resolveOpenCodeModelConfig,
+  registerOpenCodeLightModel,
+  openCodePurposeAgentOptions,
+  openCodeSdkIdentity,
+  createEphemeralOpenCodeSessionDirs,
   allocateCandidateOpenCodePort,
   assertOpenCodeMcpReady,
   createIsolatedOpenCodeProcessEnv,
@@ -981,6 +996,8 @@ interface OpenCodeMcpBridgeHandle {
   requestTimeoutMs: number;
   getDiagnostics(): OpenCodeMcpBridgeDiagnostics;
   close(): Promise<void>;
+  /** Outer cleanup only; transport stop must not await the handler that may be requesting it. */
+  drain?(): Promise<void>;
 }
 
 interface OpenCodeMcpBridgeDiagnostics {
@@ -1003,6 +1020,7 @@ function startOpenCodeMcpBridge(
   };
   const sockets = new Set<net.Socket>();
   const activeRequestControllers = new Set<AbortController>();
+  const activeRequests = new Set<Promise<void>>();
   let closePromise: Promise<void> | undefined;
   const server = net.createServer((socket) => {
     diagnostics.connectionCount += 1;
@@ -1031,7 +1049,7 @@ function startOpenCodeMcpBridge(
       socket.setTimeout(0);
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
-      void (async () => {
+      const requestWork = (async () => {
         try {
           const envelope = JSON.parse(line) as { token?: string; request?: JsonRpcRequest };
           if (envelope.token !== token || !envelope.request) {
@@ -1098,6 +1116,8 @@ function startOpenCodeMcpBridge(
           socket.end();
         }
       })();
+      activeRequests.add(requestWork);
+      void requestWork.finally(() => activeRequests.delete(requestWork)).catch(() => undefined);
     });
   });
 
@@ -1116,6 +1136,7 @@ function startOpenCodeMcpBridge(
         token,
         requestTimeoutMs,
         getDiagnostics: () => ({...diagnostics}),
+        drain: async () => {await Promise.allSettled([...activeRequests]);},
         close: () => {
           if (!closePromise) {
             for (const controller of activeRequestControllers) controller.abort();
@@ -1541,19 +1562,33 @@ function createOpenCodeProviderConfig(
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
       },
       models: {
-        [modelID]: {
-          id: modelID,
-          name: modelID,
-          tool_call: true,
-          reasoning: false,
-          temperature: true,
-          cost: { input: 0, output: 0 },
-          modalities: { input: ['text'], output: ['text'] },
-          status: 'active',
-        },
+        [modelID]: createOpenCodeModelMetadata(modelID, options.baseURL),
       },
     },
   };
+}
+
+function openCodeSdkIdentity(localCli: boolean) {
+  const identity = {packageName: localCli ? 'opencode-ai' : 'opencode-custom-host', version: 'unknown',
+    adapterContractVersion: 'opencode-compatible-options@2'};
+  if (!localCli) return identity;
+  try {
+    const installed = JSON.parse(fs.readFileSync(require.resolve('opencode-ai/package.json'), 'utf8'));
+    if (typeof installed.version === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(installed.version)) identity.version = installed.version;
+  } catch { /* Missing installed identity stays unknown. */ }
+  return identity;
+}
+
+function createOpenCodeModelMetadata(modelID: string, baseURL: string | undefined): Record<string, unknown> {
+  const profile = resolveModelExecutionProfile({runtimeKind: 'opencode', protocol: 'chat_completions',
+    modelId: modelID, baseUrl: baseURL, sdk: {packageName: 'opencode-model-metadata', version: 'unknown', adapterContractVersion: 'model-metadata@1'},
+    sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'installed_sdk'}, effective: {}});
+  return {id: modelID, name: modelID,
+    ...(profile.server.thinking.status === 'supported' ? {reasoning: profile.server.thinking.value !== 'none'} : {}),
+    // This separate documented tool-context fact, not thinking support alone, establishes the tool wire contract.
+    ...(profile.server.toolReasoning.status === 'supported'
+      ? {tool_call: true, interleaved: {field: 'reasoning_content'}} : {}),
+    modalities: {input: ['text'], output: ['text']}, status: 'active'};
 }
 
 function resolveOpenCodeModelConfig(
@@ -1655,11 +1690,7 @@ export function validateOpenCodeModelConfiguration(
   }
 }
 
-/**
- * Per-call provider controls (GLM and DeepSeek disable default thinking for
- * classification) for one no-tool host. OpenCode forwards an agent's `options`
- * into the provider request body; a model entry's `options` never reach it.
- */
+/** The endpoint comes from the selected provider's captured config. */
 function openCodeProviderBaseUrl(config: OpenCodeModelConfig): string | undefined {
   const provider = config.providerConfig?.[config.model.providerID];
   const providerOptions = isRecord(provider) && isRecord(provider.options) ? provider.options : undefined;
@@ -1669,15 +1700,56 @@ function openCodeProviderBaseUrl(config: OpenCodeModelConfig): string | undefine
 function openCodePurposeAgentOptions(
   config: OpenCodeModelConfig,
   purpose: OpenAITextRequestPurpose | undefined,
+  localCli: boolean,
 ): Record<string, unknown> | undefined {
-  if (!purpose) return undefined;
+  return resolveOpenCodePurposePolicy(config, purpose, localCli).options;
+}
+
+function resolveOpenCodePurposePolicy(
+  config: OpenCodeModelConfig,
+  purpose: OpenAITextRequestPurpose | undefined,
+  localCli: boolean,
+): {options?: Record<string, unknown>; receipt?: ModelExecutionPolicyReceipt} {
+  if (!purpose) return {};
   const baseURL = openCodeProviderBaseUrl(config);
-  if (!baseURL) return undefined;
+  if (!baseURL) return {};
   try {
-    const options = buildOpenAITextRequestPurposeOptions({requestUrl: buildChatCompletionsUrl(baseURL),
-      protocol: 'chat_completions', purpose});
-    return Object.keys(options).length ? options : undefined;
-  } catch { return undefined; }
+    const provider = config.providerConfig?.[config.model.providerID];
+    const models = isRecord(provider) && isRecord(provider.models) ? provider.models : undefined;
+    const metadata = models?.[config.model.modelID];
+    const authoredOptions = isRecord(metadata) && isRecord(metadata.options) ? metadata.options : undefined;
+    let authoredReasoning: ReasoningSetting | undefined;
+    if (authoredOptions?.thinking !== undefined || authoredOptions?.reasoningEffort !== undefined || authoredOptions?.reasoning_effort !== undefined) {
+      const thinking = authoredOptions.thinking;
+      const effort = authoredOptions.reasoningEffort ?? authoredOptions.reasoning_effort;
+      const invalidThinking = thinking !== undefined &&
+        (!isRecord(thinking) || typeof thinking.type !== 'string' || !['enabled', 'disabled'].includes(thinking.type));
+      const invalidEffort = effort !== undefined &&
+        (typeof effort !== 'string' || !['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort));
+      const disabledWithEffort = isRecord(thinking) && thinking.type === 'disabled' && effort !== undefined;
+      const conflictingEffort = authoredOptions.reasoningEffort !== undefined && authoredOptions.reasoning_effort !== undefined &&
+        authoredOptions.reasoningEffort !== authoredOptions.reasoning_effort;
+      if (invalidThinking || invalidEffort || disabledWithEffort || conflictingEffort) {
+        throw new OpenAITextPolicyConfigurationError();
+      }
+      authoredReasoning = isRecord(thinking) && thinking.type === 'disabled' ? {mode: 'disabled'}
+        : {mode: 'enabled', ...(effort !== undefined ? {effort: effort as ReasoningEffort} : {})};
+    }
+    const knownAdapter = localCli && isRecord(provider) && provider.npm === '@ai-sdk/openai-compatible';
+    const {options, policy} = resolveOpenAITextRequestPurpose({requestUrl: buildChatCompletionsUrl(baseURL),
+      model: config.model.modelID, runtimeKind: 'opencode', protocol: 'chat_completions', purpose,
+      ...(purpose === 'continuation' ? {outputOnly: true} : {}), sdkIdentity: openCodeSdkIdentity(localCli),
+      sdkCapabilities: {surface: knownAdapter ? 'opencode_agent_options' : 'none',
+        thinking: knownAdapter ? 'optional' : 'unknown',
+        ...(knownAdapter ? {efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const} : {}),
+        reasoningRoundtrip: 'unknown', source: 'contract_test'},
+      effective: {authoredReasoning, maxTurns: OPENCODE_NO_TOOLS_HOST_STEPS}});
+    // OpenCode's installed AI SDK adapter maps camel-case reasoningEffort to wire reasoning_effort.
+    // Passing the wire spelling directly is overwritten by the SDK's undefined parsed effort.
+    const {reasoning_effort, ...nativeOptions} = options;
+    return {receipt: policy, options: reasoning_effort !== undefined
+      ? {...nativeOptions, reasoningEffort: reasoning_effort} : Object.keys(nativeOptions).length ? nativeOptions : undefined};
+  } catch { throw new OpenAITextPolicyConfigurationError(); }
 }
 
 /**
@@ -1692,31 +1764,77 @@ function createOpenCodeNoToolsHostFactory(input: {
   loadSdk: () => Promise<OpenCodeSdkModule>;
   env: EnvLike;
   modelConfig: OpenCodeModelConfig;
+  onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
+  trackLifetime?: (lifetime: Promise<unknown>) => void;
 }): OpenCodeIntentTransportInput['createClassifierHost'] {
-  return async ({signal, deadlineMs, model, purpose}) => {
+  return ({signal, deadlineMs, model, purpose, observer}) => {
+    let settled!: () => void;
+    const lifetime = new Promise<void>(resolve => {settled = resolve;});
+    input.trackLifetime?.(lifetime);
+    return (async () => {
+    const modelConfig = {...input.modelConfig, model, smallModel: undefined};
     const sdk = await input.loadSdk();
     signal.throwIfAborted();
+    if (Date.now() >= deadlineMs) throw openCodePromptTimeoutError(0);
+    // Only this branch launches our installed native CLI. A custom explicit-env host has unknown adapter/version facts.
+    const execution = resolveOpenCodePurposePolicy(modelConfig, purpose, typeof sdk.createOpencodeClient === 'function');
+    const purposeOptions = execution.options;
     const dirs = createEphemeralOpenCodeSessionDirs();
     let instance: OpenCodeInstance | undefined;
     try {
       const classifierEnv = {...input.env, [OPENCODE_ENABLE_STANDALONE_MCP_ENV]: '0'};
-      const modelConfig = {...input.modelConfig, model, smallModel: undefined};
       const config = createOpenCodeHardenedConfig([], classifierEnv, undefined, modelConfig,
-        OPENCODE_NO_TOOLS_HOST_STEPS, openCodePurposeAgentOptions(modelConfig, purpose));
+        OPENCODE_NO_TOOLS_HOST_STEPS, purposeOptions);
       instance = await createOpenCodeInstanceWithExplicitEnv(sdk, dirs, classifierEnv, {
-        hostname: '127.0.0.1', timeout: Math.max(1, deadlineMs - Date.now()), config,
+        hostname: '127.0.0.1', timeout: deadlineMs - Date.now(), config,
       });
       // The transport owns late resources too: return the host even if its
       // deadline elapsed while the native server was being created.
       const host = instance;
+      const client = host.client as OpenCodeClassifierHost['client'];
+      const pending = new Set<Promise<unknown>>();
+      let closing = false;
+      const track = <T>(operation: () => Promise<T>, acquisition = false): Promise<T> => {
+        const promise = Promise.resolve().then(() => {
+          if (acquisition && closing) throw openCodePromptAbortError();
+          return operation();
+        });
+        pending.add(promise);
+        void promise.then(() => pending.delete(promise), () => pending.delete(promise));
+        return promise;
+      };
+      try {if (execution.receipt) input.onExecutionPolicy?.(execution.receipt);} catch { /* Observation only. */ }
+      try {
+        const thinking = purposeOptions?.thinking;
+        if (isRecord(thinking) && thinking.type === 'disabled') observer?.reasoning?.('disabled');
+        else if (isRecord(thinking) && thinking.type === 'enabled') observer?.reasoning?.('enabled', purposeOptions?.reasoningEffort as ReasoningEffort | undefined);
+        else observer?.reasoning?.('provider_default');
+      } catch { /* Request-side observation cannot change the call. */ }
       return {
-        client: host.client as OpenCodeClassifierHost['client'],
+        client: {session: {
+          create: (request: Parameters<typeof client.session.create>[0]) => track(() => client.session.create(request), true),
+          prompt: (request: Parameters<typeof client.session.prompt>[0]) => track(() => client.session.prompt(request), true),
+          messages: (request: Parameters<typeof client.session.messages>[0]) => track(() => client.session.messages(request), true),
+          abort: (request: Parameters<typeof client.session.abort>[0]) => track(() => client.session.abort(request)),
+          ...(client.session.delete ? {delete: (request: Parameters<NonNullable<typeof client.session.delete>>[0]) =>
+            track(() => client.session.delete!(request))} : {}),
+        }},
         projectDir: dirs.projectDir,
         agentName: 'smartperfetto',
         disabledTools: createOpenCodeToolAllowlist([]),
         close: async () => {
+          closing = true;
           try { await host.server.close(); }
-          finally { fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true}); }
+          finally {
+            // A late create may register abort/delete cleanup after this close began.
+            // Drain their actual work too; closing forbids new acquisition operations.
+            do {
+              await Promise.allSettled([...pending]);
+              await Promise.resolve();
+            } while (pending.size > 0);
+            try {fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true});}
+            finally {settled();}
+          }
         },
       };
     } catch (error) {
@@ -1724,6 +1842,7 @@ function createOpenCodeNoToolsHostFactory(input: {
       finally { fs.rmSync(dirs.ephemeralRoot, {recursive: true, force: true}); }
       throw error;
     }
+    })().catch(error => {settled(); throw error;});
   };
 }
 
@@ -1743,7 +1862,7 @@ function registerOpenCodeLightModel(config: OpenCodeModelConfig): OpenCodeModelC
   return {
     ...config, smallModel: `${prefix}${lightId}`,
     providerConfig: {...config.providerConfig, [config.model.providerID]: {
-      ...provider, models: {...models, [lightId]: {...primary, id: lightId, name: lightId}},
+      ...provider, models: {...models, [lightId]: models[lightId] ?? createOpenCodeModelMetadata(lightId, openCodeProviderBaseUrl(config))},
     }},
   };
 }
@@ -2016,6 +2135,7 @@ function throwIfOpenCodePromptStopped(options: {
   timeoutMs: number;
 }): void {
   if (options.signal?.aborted || options.isAborted?.()) {
+    if (options.signal?.reason instanceof RuntimeTaskDeadlineExceededError) throw options.signal.reason;
     throw openCodePromptAbortError();
   }
   if (Date.now() >= options.deadlineAt) {
@@ -2030,11 +2150,13 @@ function awaitOpenCodePromptOperation<T>(
     isAborted?: () => boolean;
     deadlineAt: number;
     timeoutMs: number;
+    trackOperation?: (operation: Promise<unknown>) => void;
   },
 ): Promise<T> {
   throwIfOpenCodePromptStopped(options);
   const remainingMs = Math.max(1, options.deadlineAt - Date.now());
   const operationPromise = Promise.resolve().then(operation);
+  options.trackOperation?.(operationPromise);
   return new Promise<T>((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
@@ -2044,7 +2166,8 @@ function awaitOpenCodePromptOperation<T>(
       options.signal?.removeEventListener('abort', onAbort);
       callback();
     };
-    const onAbort = () => finish(() => reject(openCodePromptAbortError()));
+    const onAbort = () => finish(() => reject(options.signal?.reason instanceof RuntimeTaskDeadlineExceededError
+      ? options.signal.reason : openCodePromptAbortError()));
     const timer = setTimeout(() => {
       finish(() => reject(openCodePromptTimeoutError(options.timeoutMs)));
     }, remainingMs);
@@ -2117,6 +2240,9 @@ export async function runOpenCodePrompt(
     sessionId: string;
     projectDir: string;
     timeoutMs: number;
+    /** Product-owned absolute ceiling; a native attempt must not restart it. */
+    deadlineAt?: number;
+    trackOperation?: (operation: Promise<unknown>) => void;
     isAborted?: () => boolean;
     signal?: AbortSignal;
     onFirstAssistantMessage?: () => void;
@@ -2144,8 +2270,8 @@ export async function runOpenCodePrompt(
     pollDelay = delay,
     adaptiveObservation = isRuntimeCandidateAdmitted('task8'),
   } = options;
-  const deadlineAt = Date.now() + timeoutMs;
-  const waitOptions = {signal, isAborted, deadlineAt, timeoutMs};
+  const deadlineAt = options.deadlineAt ?? Date.now() + timeoutMs;
+  const waitOptions = {signal, isAborted, deadlineAt, timeoutMs, trackOperation: options.trackOperation};
   const awaitOperation = <T>(operation: () => Promise<T> | T): Promise<T> =>
     awaitOpenCodePromptOperation(operation, waitOptions);
   const throwIfStopped = (): void => throwIfOpenCodePromptStopped(waitOptions);
@@ -2160,6 +2286,7 @@ export async function runOpenCodePrompt(
     normalizeMessageWindow(unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
       path: {id: sessionId},
       query: {directory: projectDir, limit, order: 'desc'},
+      signal,
     })), context));
   const recordFirstAssistantMessage = (): void => {
     try {
@@ -2206,7 +2333,7 @@ export async function runOpenCodePrompt(
     commitEvaluationSdkHandoffIfActive();
     options.assertAuthorized?.();
     assertSdkSuccess(
-      await awaitOperation(() => opencode.client.session.promptAsync!(promptInput)),
+      await awaitOperation(() => opencode.client.session.promptAsync!({...promptInput, signal})),
       'OpenCode async prompt',
     );
     let messagesResponse: unknown;
@@ -2216,13 +2343,22 @@ export async function runOpenCodePrompt(
       : PROMPT_POLL_MAX_INTERVAL_MS;
     while (true) {
       throwIfStopped();
-      const readMessages = () => opencode.client.session.messages!({
+      const readMessages = () => {
+        const pending = opencode.client.session.messages!({
           path: {id: sessionId},
           query: {directory: projectDir, limit: OPENCODE_MESSAGE_WINDOW_INITIAL_LIMIT, order: 'desc'},
+          signal,
         });
-      const readStatus = () => opencode.client.session.status
-          ? opencode.client.session.status({query: {directory: projectDir}})
+        options.trackOperation?.(pending);
+        return pending;
+      };
+      const readStatus = () => {
+        const pending = opencode.client.session.status
+          ? opencode.client.session.status({query: {directory: projectDir}, signal})
           : Promise.resolve(undefined);
+        options.trackOperation?.(pending);
+        return pending;
+      };
       let rawMessagesResponse: unknown;
       let statusResponse: unknown;
       if (adaptiveObservation) {
@@ -2311,7 +2447,7 @@ export async function runOpenCodePrompt(
   commitEvaluationSdkHandoffIfActive();
   options.assertAuthorized?.();
   const promptResponse = unwrapSdkData(
-    await awaitOperation(() => opencode.client.session.prompt(promptInput)),
+    await awaitOperation(() => opencode.client.session.prompt({...promptInput, signal})),
     'OpenCode prompt',
   );
   throwIfStopped();
@@ -2387,18 +2523,21 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sdk: OpenCodeSdkModule,
     dirs: OpenCodeSessionDirs,
     options: Record<string, unknown>,
+    env: EnvLike = this.env,
   ): Promise<OpenCodeInstance> {
-    return createOpenCodeInstanceWithExplicitEnv(sdk, dirs, this.env, options);
+    return createOpenCodeInstanceWithExplicitEnv(sdk, dirs, env, options);
   }
 
   private async createOpenCodeSession(
     client: OpenCodeClient,
     sessionId: string,
     projectDir: string,
+    signal?: AbortSignal,
   ): Promise<string> {
     const created = unwrapSdkData(await client.session.create({
       query: { directory: projectDir },
       body: { title: `SmartPerfetto ${sessionId}` },
+      signal,
     }), 'OpenCode session create');
     return created.id;
   }
@@ -2409,8 +2548,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options?: AnalysisOptions,
   ): Promise<AnalysisResult> {
+    const admittedAt = Date.now();
     options = {
       ...(options ?? {}),
+      runId: options?.runId ?? crypto.randomUUID(),
       analysisMode: options?.analysisMode ?? 'auto',
     };
     const executionLease = this.executionGuard.begin({
@@ -2424,8 +2565,18 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     );
     let runtimePerformanceOutcome: RuntimePerformanceOutcome = 'ok';
     let result: AnalysisResult | undefined;
+    let admission: ReturnType<typeof ensureRuntimeAdmission<AnalysisOptions>> | undefined;
+    const nativeLifetimes = new Set<Promise<unknown>>();
+    const trackLifetime = (lifetime: Promise<unknown>) => {
+      nativeLifetimes.add(lifetime);
+      void lifetime.then(() => nativeLifetimes.delete(lifetime), () => nativeLifetimes.delete(lifetime));
+    };
     try {
       executionLease.throwIfAborted();
+      admission = ensureRuntimeAdmission(options, {runId: options.runId!, sessionId, admittedAt,
+        assertCurrent: () => executionLease.throwIfAborted(), ownerSignal: executionLease.signal});
+      options = admission.options;
+      assertRuntimeTaskWorkRemaining(admission.admission.task);
       if (
         this.selection.kind === OPENCODE_RUNTIME_KIND ||
         parseFlagValue(this.env[OPENCODE_REAL_ANALYSIS_ENV]) === true
@@ -2437,6 +2588,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           options ?? {},
           executionLease,
           runtimePerformance,
+          admission.admission,
+          trackLifetime,
         );
         executionLease.throwIfAborted();
         runtimePerformanceOutcome = executionLease.signal.aborted
@@ -2444,22 +2597,27 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           : result.success === false ? 'error' : 'ok';
         return result;
       }
-      result = await this.analyzeHiddenSmoke(query, sessionId, traceId, options ?? {}, executionLease, runtimePerformance);
+      result = await this.analyzeHiddenSmoke(query, sessionId, traceId, options, executionLease, runtimePerformance, admission.admission);
       executionLease.throwIfAborted();
       runtimePerformanceOutcome = executionLease.signal.aborted
         ? 'cancelled'
         : result.success === false ? 'error' : 'ok';
       return result;
     } catch (error) {
+      const effectiveError = !executionLease.signal.aborted && admission?.admission.task?.deadlineSignal.aborted
+        ? admission.admission.task.deadlineSignal.reason : error;
       runtimePerformanceOutcome = runtimeOutcomeFromError(
-        error,
+        effectiveError,
         executionLease.signal,
       );
       throwIfRunAuthorizationRevoked(executionLease.signal);
-      throw error;
+      executionLease.throwIfAborted();
+      throw effectiveError;
     } finally {
       const finalizationPhase = runtimePerformance.startPhase('finalization');
       try {
+        await Promise.allSettled([...nativeLifetimes]);
+        admission?.disposeOwned();
         executionLease.settle();
       } finally {
         finalizationPhase.end(runtimePerformanceOutcome);
@@ -2475,9 +2633,12 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     options: AnalysisOptions,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
+    admission: RuntimeAdmission,
   ): Promise<AnalysisResult> {
     const startedAt = Date.now();
-    executionLease.throwIfAborted();
+    const assertWorkRemaining = () => {executionLease.throwIfAborted(); assertRuntimeTaskWorkRemaining(admission.task);};
+    const workSignal = admission.task ? AbortSignal.any([executionLease.signal, admission.task.deadlineSignal]) : executionLease.signal;
+    assertWorkRemaining();
     this.emitUpdate({
       type: 'progress',
       content: 'Starting experimental OpenCode hidden runtime smoke',
@@ -2493,25 +2654,31 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
       throw error;
     }
-    executionLease.throwIfAborted();
+    assertWorkRemaining();
     const privateKnowledge = analysisHasPrivateContext(options ?? {});
     const {dirs, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
     );
     const port = numericEnv(this.env[OPENCODE_SERVER_PORT_ENV]);
-    const timeout = numericEnv(this.env[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS;
+    const timeout = Math.min(numericEnv(this.env[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS,
+      (admission.task?.facts.hardDeadlineAt ?? Infinity) - Date.now());
 
     let activeSession: OpenCodeActiveSession | undefined;
     const abortController = new AbortController();
+    const onTaskExpired = () => {
+      abortController.abort(admission.task!.deadlineSignal.reason);
+      if (activeSession) void this.closeSessionResources(activeSession).catch(() => undefined);
+    };
+    admission.task?.deadlineSignal.addEventListener('abort', onTaskExpired, {once: true});
     try {
+      assertWorkRemaining();
       const opencode = await this.createOpenCodeInstance(sdk, dirs, {
         hostname: '127.0.0.1',
         ...(port ? { port } : {}),
         timeout,
         config: createOpenCodeHardenedConfig([], this.env),
       });
-      executionLease.throwIfAborted();
       activeSession = {
         server: opencode.server,
         client: opencode.client,
@@ -2519,22 +2686,24 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         aborted: false,
       };
       this.activeSessions.set(sessionId, activeSession);
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       this.currentServer = opencode.server;
       const openCodeSessionId = await this.createOpenCodeSession(
         opencode.client,
         sessionId,
         dirs.projectDir,
+        workSignal,
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       runtimePerformance.finishClassification('ok');
       const providerPhase = runtimePerformance.startPhase('provider');
       try {
         unwrapSdkData(await opencode.client.session.prompt({
         path: { id: openCodeSessionId },
         query: { directory: dirs.projectDir },
+        signal: workSignal,
         body: {
           noReply: true,
           system: 'SmartPerfetto OpenCode hidden runtime smoke. Do not run tools.',
@@ -2547,8 +2716,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
         throw error;
       }
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
     } finally {
+      admission.task?.deadlineSignal.removeEventListener('abort', onTaskExpired);
       await this.closeSessionHandle(sessionId, activeSession);
       if (ephemeralRoot) fs.rmSync(ephemeralRoot, {recursive: true, force: true});
     }
@@ -2588,12 +2758,29 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     options: AnalysisOptions,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
+    admission: RuntimeAdmission,
+    trackLifetime: (lifetime: Promise<unknown>) => void,
   ): Promise<AnalysisResult> {
     const startedAt = Date.now();
     executionLease.throwIfAborted();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const pinnedEnv = {...this.env};
+    const configuredPromptTimeout = numericEnv(pinnedEnv[OPENCODE_PROMPT_TIMEOUT_MS_ENV]) ?? DEFAULT_PROMPT_TIMEOUT_MS;
+    const serverTimeoutMs = numericEnv(pinnedEnv[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS;
+    const classifierTimeoutMs = numericEnv(pinnedEnv.OPENCODE_CLASSIFIER_TIMEOUT_MS) ?? 30_000;
+    const quickBudget = resolveQuickTurnBudget({env: pinnedEnv, enforcement: 'timeout_only'});
+    const runtimeBudget = resolveAgentRuntimeBudgetConfig(pinnedEnv);
+    const quickPerTurnMs = numericEnv(pinnedEnv.OPENCODE_QUICK_PER_TURN_MS) ?? 30_000;
+    const task = admission.task;
+    const workSignal = task ? AbortSignal.any([executionLease.signal, task.deadlineSignal]) : executionLease.signal;
+    let workDeadlineAt = Math.min(admission.facts.admittedAt + configuredPromptTimeout, task?.facts.hardDeadlineAt ?? Infinity);
+    const assertWorkRemaining = () => {
+      executionLease.throwIfAborted();
+      assertRuntimeTaskWorkRemaining(task);
+      if (Date.now() >= workDeadlineAt) throw openCodePromptTimeoutError(configuredPromptTimeout);
+    };
+    assertWorkRemaining();
     const modelConfig = registerOpenCodeLightModel(
       resolveOpenCodeModelConfig(pinnedEnv, this.selection, this.input.providerScope),
     );
@@ -2602,7 +2789,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           modelID: modelConfig.smallModel.slice(modelConfig.model.providerID.length + 1)}
       : modelConfig.model;
     let sdkPromise: Promise<OpenCodeSdkModule> | undefined;
-    const loadSdk = () => sdkPromise ??= this.moduleLoader(this.env);
+    const loadSdk = () => sdkPromise ??= this.moduleLoader(pinnedEnv);
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     // Checked right before every prompt is sent, at every observation of the
     // running session and around every tool call; a change aborts the session.
@@ -2610,21 +2797,23 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const {fence: authorization, assertActive} = createRuntimeRunAuthorization({
       options, executionLease, stopNative: () => this.interruptSession(sessionId),
     });
-    const beforeDispatch = () => authorization.assertCurrent();
+    const beforeDispatch = () => {authorization.assertCurrent(); assertWorkRemaining();};
     const analysisHistoryReader = createRuntimeAnalysisHistoryReader({options, sessionId, traceId,
       getTurns: () => sessionContext.getAnalysisHistory?.() ?? (sessionContext.getAllTurns?.() ?? [])
         .map(turn => toAnalysisHistoryTurn({...turn, traceId, sourceDerived: turn.result?.sourceDerived,
           analysisContextFingerprint: turn.result?.analysisContextFingerprint})), assertActive});
-    const createNoToolsHost = createOpenCodeNoToolsHostFactory({loadSdk, env: pinnedEnv, modelConfig});
+    const createNoToolsHost = createOpenCodeNoToolsHostFactory({loadSdk, env: pinnedEnv, modelConfig, trackLifetime,
+      onExecutionPolicy: receipt => recordRuntimeModelExecutionPolicy(options.runManifestAttributionSink, receipt)});
     const resolver = createAnalysisTurnIntentResolver({
       productRun: {options, runId: executionLease.key.runId!, sessionId, traceId},
+      modelCallAttribution: {model: classifierModel.modelID, providerOrigin: openCodeProviderBaseUrl(modelConfig)},
       context: buildComplexityClassifierInput({
         query, sceneType: 'general', selectionContext: options.selectionContext,
         hasReferenceTrace: Boolean(options.referenceTraceId), previousTurns: [], history: analysisHistoryReader.getTurns(),
         requestedMode: options.analysisMode ?? 'auto',
       }),
-      signal: executionLease.signal,
-      deadlineMs: Date.now() + (numericEnv(this.env.OPENCODE_CLASSIFIER_TIMEOUT_MS) ?? 30_000),
+      signal: workSignal,
+      deadlineMs: Math.min(Date.now() + classifierTimeoutMs, workDeadlineAt),
       dispatch: input => runOpenCodeIntentTransport({
         ...input,
         model: classifierModel,
@@ -2636,76 +2825,79 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const turnIntent = await resolver.resolve();
     const turnPolicy = resolveRunTurnPolicy(turnIntent, options);
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
-    executionLease.throwIfAborted();
+    assertWorkRemaining();
     // The classifier and answer share a fully configured provider/model. A
     // failed optional classifier never switches the answer to an invalid light ID.
     const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
     let sdk: OpenCodeSdkModule;
     try {
-      const timeoutMs = numericEnv(this.env[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS;
+      const timeoutMs = serverTimeoutMs;
       sdk = await awaitOpenCodePromptOperation(loadSdk, {
-        signal: executionLease.signal, deadlineAt: Date.now() + timeoutMs, timeoutMs,
+        signal: workSignal, deadlineAt: Math.min(Date.now() + timeoutMs, workDeadlineAt), timeoutMs,
       });
       sdkStartPhase.end('ok');
     } catch (error) {
       sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
       throw error;
     }
-    executionLease.throwIfAborted();
+    assertWorkRemaining();
     const closeoutTape = createRuntimeTurnCloseoutTape();
     let toolAdmissionsOpen = true;
-    const quickBudget = resolveQuickTurnBudget({env: this.env, enforcement: 'timeout_only'});
-    const maxSteps = turnPolicy.budgetMode === 'quick' ? quickBudget.hardCapTurns : resolveAgentRuntimeBudgetConfig(this.env).maxTurns;
+    const maxSteps = turnPolicy.budgetMode === 'quick' ? quickBudget.hardCapTurns : runtimeBudget.maxTurns;
     const turnBudget = resolveRuntimeTurnBudget(maxSteps);
-    const configuredPromptTimeout = numericEnv(this.env[OPENCODE_PROMPT_TIMEOUT_MS_ENV]) ?? DEFAULT_PROMPT_TIMEOUT_MS;
     const promptTimeout = turnPolicy.budgetMode === 'quick'
-      ? Math.min(configuredPromptTimeout, maxSteps * (numericEnv(this.env.OPENCODE_QUICK_PER_TURN_MS) ?? 30_000))
+      ? Math.min(configuredPromptTimeout, maxSteps * quickPerTurnMs)
       : configuredPromptTimeout;
-    const sceneDeadlineMs = resolveSceneProductScope(options, {runId: executionLease.key.runId!, sessionId, traceId})
-      ? Date.now() + promptTimeout : undefined;
+    workDeadlineAt = Math.min(workDeadlineAt, admission.facts.admittedAt + promptTimeout);
+    assertWorkRemaining();
+    const sceneDeadlineMs = workDeadlineAt;
     // The MCP server stamps tool captures with the run id finalization reads.
-    const runId = options.runId ?? crypto.randomUUID();
+    const runId = options.runId!;
     const prep = await this.prepareAnalysis(
       query, sessionId, traceId, options,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
       turnIntent, turnPolicy, resolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
-      () => toolAdmissionsOpen && !executionLease.signal.aborted, sceneDeadlineMs, executionLease.signal, runId,
-      authorization,
+      () => toolAdmissionsOpen && !workSignal.aborted && Date.now() < workDeadlineAt, sceneDeadlineMs, workSignal, runId,
+      authorization, assertWorkRemaining, runtimeBudget,
     );
-    executionLease.throwIfAborted();
+    assertWorkRemaining();
     const abortController = new AbortController();
-    const mcpTimeout = resolveOpenCodeMcpTimeoutMs(this.env[OPENCODE_MCP_TIMEOUT_MS_ENV]);
+    const nativeWorkSignal = AbortSignal.any([abortController.signal, workSignal]);
+    const mcpTimeout = resolveOpenCodeMcpTimeoutMs(pinnedEnv[OPENCODE_MCP_TIMEOUT_MS_ENV]);
     const bridge = await this.bridgeStarter(
       prep.toolDefinitions,
       update => this.emitUpdate(update),
       {
-        getSignal: () => abortController.signal,
+        getSignal: () => nativeWorkSignal,
         analysisPlan: prep.analysisPlan,
         timeoutMs: mcpTimeout,
       },
     );
     try {
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
     } catch (error) {
       await bridge.close().catch(() => undefined);
+      await bridge.drain?.();
       throw error;
     }
     const privateKnowledge = analysisHasPrivateContext(options);
-    const {dirs, ephemeralRoot} = this.resolveSessionDirs(
-      sessionId,
-      privateKnowledge,
-    );
+    let sessionDirs: ReturnType<OpenCodeRuntime['resolveSessionDirs']>;
+    try {sessionDirs = this.resolveSessionDirs(sessionId, privateKnowledge);}
+    catch (error) {await bridge.close(); await bridge.drain?.(); throw error;}
+    const {dirs, ephemeralRoot} = sessionDirs;
     try {
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
     } catch (error) {
       await bridge.close().catch(() => undefined);
+      await bridge.drain?.();
+      if (ephemeralRoot) fs.rmSync(ephemeralRoot, {recursive: true, force: true});
       throw error;
     }
-    const port = numericEnv(this.env[OPENCODE_SERVER_PORT_ENV]);
-    const timeout = numericEnv(this.env[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS;
+    const port = numericEnv(pinnedEnv[OPENCODE_SERVER_PORT_ENV]);
+    const timeout = Math.min(serverTimeoutMs, workDeadlineAt - Date.now());
     // SDK maxSteps forces a text-only iteration; it does not guarantee a total call cap.
     // The native answer and final semantic review share one absolute budget.
-    const deadlineMs = sceneDeadlineMs ?? Date.now() + promptTimeout;
+    const deadlineMs = workDeadlineAt;
     let attemptId = crypto.randomUUID();
     let turnLimitReached = false;
     let closeoutAccepted = false;
@@ -2718,23 +2910,45 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     let activeSession: OpenCodeActiveSession | undefined;
     let bridgeOwnedByActiveSession = false;
     let unownedOpenCodeInstance: OpenCodeInstance | undefined;
+    let unownedClose: Promise<void> | undefined;
+    const pendingNativeOperations = new Set<Promise<unknown>>();
+    const trackOperation = (operation: Promise<unknown>) => {
+      pendingNativeOperations.add(operation);
+      void operation.then(() => pendingNativeOperations.delete(operation), () => pendingNativeOperations.delete(operation));
+    };
+    const closeUnowned = () => unownedClose ??= Promise.resolve().then(() => unownedOpenCodeInstance?.server.close()).then(() => undefined, () => undefined);
+    const onTaskExpired = () => {
+      toolAdmissionsOpen = false;
+      abortController.abort(task!.deadlineSignal.reason);
+      // These are this attempt's captured handles. Never abort the owner lease or look up a successor by session id.
+      if (activeSession) {
+        const captured = activeSession;
+        if (captured.client?.session.abort && captured.openCodeSessionId) {
+          trackOperation(Promise.resolve().then(() => captured.client!.session.abort!({path: {id: captured.openCodeSessionId!}})));
+        }
+        void this.closeSessionResources(captured).catch(() => undefined);
+      } else if (unownedOpenCodeInstance) void closeUnowned();
+      void bridge.close().catch(() => undefined);
+    };
+    task?.deadlineSignal.addEventListener('abort', onTaskExpired, {once: true});
     try {
+      assertWorkRemaining();
       const opencode = await this.createOpenCodeInstance(sdk, dirs, {
         hostname: '127.0.0.1',
         ...(port ? { port } : {}),
         timeout,
         config: createOpenCodeHardenedConfig(
           Array.from(prep.allowedToolNames),
-          this.env,
+          pinnedEnv,
           bridge,
           turnIntent.status === 'unavailable' ? {...modelConfig, smallModel: undefined} : modelConfig,
           turnBudget.acquisitionTurns,
         ),
-      });
+      }, pinnedEnv);
       unownedOpenCodeInstance = opencode;
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       await assertOpenCodeMcpReady(opencode.client, dirs.projectDir, () => bridge.getDiagnostics());
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       activeSession = {
         server: opencode.server,
         client: opencode.client,
@@ -2745,16 +2959,17 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       bridgeOwnedByActiveSession = true;
       unownedOpenCodeInstance = undefined;
       this.activeSessions.set(sessionId, activeSession);
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       this.currentServer = opencode.server;
       const openCodeSessionId = await this.createOpenCodeSession(
         opencode.client,
         sessionId,
         dirs.projectDir,
+        nativeWorkSignal,
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
-      executionLease.throwIfAborted();
+      assertWorkRemaining();
       this.emitUpdate({
         type: 'progress',
         content: {
@@ -2773,7 +2988,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
       let resumedPromptSession = false;
       const runAnalysisPrompt = async (text: string) => {
-        if (Date.now() >= deadlineMs) throw openCodePromptTimeoutError(promptTimeout);
+        assertWorkRemaining();
         const promptResult = await runOpenCodePrompt(opencode, {
           path: {id: openCodeSessionId},
           query: {directory: dirs.projectDir},
@@ -2789,18 +3004,18 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         }, {
           sessionId: openCodeSessionId,
           projectDir: dirs.projectDir,
-          timeoutMs: Math.max(1, deadlineMs - Date.now()),
+          timeoutMs: deadlineMs - Date.now(), deadlineAt: deadlineMs, trackOperation,
           maxSteps: turnBudget.acquisitionTurns,
           onTurnLimit: () => {toolAdmissionsOpen = false;},
           resumedSession: resumedPromptSession,
-          signal: promptSession.abortController?.signal,
+          signal: nativeWorkSignal,
           isAborted: () => (
             this.activeSessions.get(sessionId) === promptSession &&
             promptSession.aborted
           ),
           onFirstAssistantMessage: () => runtimePerformance.recordFirstOutput(),
           assertAuthorized: beforeDispatch,
-          adaptiveObservation: isRuntimeCandidateAdmitted('task8', this.env),
+          adaptiveObservation: isRuntimeCandidateAdmitted('task8', pinnedEnv),
         });
         resumedPromptSession = true;
         return promptResult;
@@ -2826,17 +3041,23 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       conclusion = acceptedMessage ? extractTextParts(acceptedMessage).trim() : '';
     } finally {
       toolAdmissionsOpen = false;
+      task?.deadlineSignal.removeEventListener('abort', onTaskExpired);
+      abortController.abort();
       await this.closeSessionHandle(sessionId, activeSession);
       if (!activeSession && unownedOpenCodeInstance) {
-        await Promise.resolve(unownedOpenCodeInstance.server.close()).catch(() => undefined);
+        await closeUnowned();
       }
       if (!bridgeOwnedByActiveSession) {
         await bridge.close().catch(() => undefined);
       }
+      // Native transport stop may settle authorization; handler drain belongs only to this outer cleanup.
+      await Promise.allSettled([...pendingNativeOperations]);
+      await bridge.drain?.();
       if (ephemeralRoot) fs.rmSync(ephemeralRoot, {recursive: true, force: true});
     }
 
     if (turnLimitReached && turnBudget.deliveryTurns > 0
+      && !isNativeDeclarationRecoveryBlocked(conclusion)
       && actualTurns < turnBudget.totalTurns && Date.now() < deadlineMs) {
       const closeoutPrompt = closeoutTape.buildPrompt({query, priorConclusion: conclusion, outputLanguage});
       if (closeoutPrompt) {
@@ -2846,8 +3067,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           actualTurns++;
           const closeout = await runOpenCodeIntentTransport({
             prompt: closeoutPrompt, systemPrompt: prep.systemPrompt,
-            signal: executionLease.signal, deadlineMs, outputByteLimit: 64 * 1024,
-            model: modelConfig.model, createClassifierHost: createNoToolsHost, beforeDispatch,
+            signal: workSignal, deadlineMs, outputByteLimit: 64 * 1024,
+            model: modelConfig.model, purpose: 'continuation', createClassifierHost: createNoToolsHost, beforeDispatch,
           });
           assertActive();
           if (closeout.status === 'ok') {
@@ -2875,7 +3096,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       && nativeInfo?.finish === 'length' && nativeInfo.error == null && !conclusion.trim()
       && Array.isArray(acceptedMessage?.parts) && !acceptedMessage.parts.some(part =>
         isRecord(part) && part.type === 'tool') && remainingDeliveryTurns() > 0;
-    const continuationPrompt = Date.now() >= deadlineMs ? undefined : outputLimitDelivery
+    const continuationPrompt = Date.now() >= deadlineMs || isNativeDeclarationRecoveryBlocked(conclusion) ? undefined : outputLimitDelivery
       ? closeoutTape.buildOutputLimitPrompt({query, priorConclusion: conclusion, outputLanguage, intent: turnIntent})
       : nativeBodyCompletionNeeded({intent: turnIntent,
         completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
@@ -2895,9 +3116,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         actualTurns++;
         const continued = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
           {purpose: 'continuation', trigger: outputLimitDelivery ? 'output_limit' : 'empty_body', ...deliveryCall},
-          {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
+          {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: workSignal, deadlineMs,
             outputByteLimit: 64 * 1024},
-          input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
+          input => runOpenCodeIntentTransport({...input, model: modelConfig.model, purpose: 'continuation',
             createClassifierHost: createNoToolsHost, beforeDispatch}));
         assertActive();
         const completedOutputLimit = continued.status === 'ok' &&
@@ -2919,6 +3140,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       intent: turnIntent,
       completion: {status: openCodeMessageNativelyCompleted(acceptedMessage) ? 'completed' : 'unknown'},
       candidate: conclusion,
+      declarationSyntax: prep.analysisRunSpec.declarationSyntax,
       remainingDeliveryTurns: remainingDeliveryTurns(),
       repairInvalid: true,
     });
@@ -2933,7 +3155,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         const repaired = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
           {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
           {prompt: declarationPrompt,
-            systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
+            systemPrompt: prep.systemPrompt, signal: workSignal, deadlineMs,
             outputByteLimit: declarationOutputLimit},
           input => runOpenCodeIntentTransport({...input, model: modelConfig.model,
             purpose: openAiTextRequestPurposeFor('declaration_repair'),
@@ -3086,39 +3308,71 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sceneSignal?: AbortSignal,
     runId?: string,
     runAuthorization?: RunAuthorizationCheck,
+    assertWorkRemaining?: () => void,
+    capturedBudget = resolveAgentRuntimeBudgetConfig(this.env),
   ): Promise<OpenCodeAnalysisPreparation> {
+    assertWorkRemaining?.();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const sceneType = turnIntent.sceneId;
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() || [];
     const quickMode = turnPolicy.budgetMode === 'quick';
-    const focusResult = await detectRunFocusApps({
-      traceProcessorService: this.input.traceProcessorService, traceId, preflight: turnPolicy.preflight,
-      selectionContext: options.selectionContext,
-    });
-    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
-    const effectivePackageName = focusTarget.packageName;
     const analysisRunSpec = createAnalysisRunSpec({
       history: analysisHistoryReader.getTurns(),
       query, sessionId, traceId, options, turnIntent,
       runtimeSelection: this.selection,
       engineCapabilities: getOpenCodeEngineCapabilities(this.selection.kind),
       sceneType, outputLanguage, resolvedMode: quickMode ? 'quick' : 'full', resolvedModel: model,
-      budget: {model, maxTurns: quickMode ? resolveAgentRuntimeBudgetConfig(this.env).quickMaxTurns
-        : resolveAgentRuntimeBudgetConfig(this.env).maxTurns},
+      budget: {model, maxTurns: quickMode ? capturedBudget.quickMaxTurns : capturedBudget.maxTurns},
     });
+    const selectionContext = analysisRunSpec.selection.present ? analysisRunSpec.selection.context : undefined;
+    const selectedInput = {turnIntent, policy: turnPolicy, strategyRegistry, selectionContext,
+      referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext,
+      conversationTraceAttached: conversationTraceAttachedOption(options)};
+    const initializeSkills = async () => {
+      await ensureSkillRegistryInitialized();
+      assertWorkRemaining?.();
+      const skillExecutor = createSkillExecutor(this.input.traceProcessorService);
+      const effectiveSkillRegistry =
+        resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+      const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
+        ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, strategyRegistry, turnIntent.sceneId) : undefined;
+      skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
+      skillExecutor.setFragmentRegistry(
+        sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
+      );
+      return {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry};
+    };
+    const initializeStore = () => {
+      const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
+        () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
+      this.artifactStores.set(sessionId, artifactStore);
+      return artifactStore;
+    };
+    let earlySkills: Awaited<ReturnType<typeof initializeSkills>> | undefined;
+    let earlyStore: ArtifactStore | undefined;
+    let selected: Awaited<ReturnType<typeof collectSelectedEvidenceForPrompt>> = {handled: false};
+    if (shouldCollectSelectedEvidenceFoundation(selectedInput)) {
+      earlySkills = await initializeSkills();
+      earlyStore = initializeStore();
+      selected = await collectSelectedEvidenceForPrompt({...selectedInput, runId: runId, traceId,
+        skillRegistry: earlySkills.effectiveSkillRegistry, skillExecutor: earlySkills.skillExecutor,
+        traceProcessorService: this.input.traceProcessorService, artifactStore: earlyStore, userPackageName: options.packageName,
+        outputLanguage, canInvokeTool, ...(sceneSignal ? {executionLease: {signal: sceneSignal}} : {}), runAuthorization,
+        deadlineMs: sceneDeadlineMs, runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
+      assertWorkRemaining?.();
+    }
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService: this.input.traceProcessorService, traceId, preflight: turnPolicy.preflight,
+      selectionContext,
+    });
+    assertWorkRemaining?.();
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
 
-    await ensureSkillRegistryInitialized();
-    const skillExecutor = createSkillExecutor(this.input.traceProcessorService);
-    const effectiveSkillRegistry =
-      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
-    const sceneCoverageRegistry = resolveSceneProductScope(options, {sessionId, traceId, runId: options.runId ?? ''})
-      ? snapshotSceneCoverageRegistry(effectiveSkillRegistry, strategyRegistry, turnIntent.sceneId) : undefined;
-    skillExecutor.registerSkills(sceneCoverageRegistry ? [...sceneCoverageRegistry.skills] : effectiveSkillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(
-      sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
-    );
+
+    const {skillExecutor, effectiveSkillRegistry, sceneCoverageRegistry} = earlySkills ?? await initializeSkills();
 
     let architecture = getLruCacheEntry(this.architectureCache, traceId);
     if (!architecture && turnPolicy.preflight !== 'none') {
@@ -3127,12 +3381,15 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           traceId,
           traceProcessorService: this.input.traceProcessorService,
           packageName: effectivePackageName,
+          signal: sceneSignal,
         });
+        assertWorkRemaining?.();
         if (architecture) setLruCacheEntry(this.architectureCache, traceId, architecture);
       } catch (err) {
         console.warn('[OpenCodeRuntime] Architecture detection failed:', (err as Error).message);
       }
     }
+    assertWorkRemaining?.();
     if (architecture) {
       this.emitUpdate({
         type: 'architecture_detected',
@@ -3154,9 +3411,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
-      () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
-    this.artifactStores.set(sessionId, artifactStore);
+    assertWorkRemaining?.();
+
+    const artifactStore = earlyStore ?? initializeStore();
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
 
@@ -3194,22 +3451,25 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     }) : buildRuntimeTracePairIdentityContext({
       referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext});
+    assertWorkRemaining?.();
     const extraSystemPrompt = normalizeOptionalString(
       getProviderForSelection(this.selection, this.input.providerScope)?.connection.openCodeSystemPrompt,
     ) || normalizeOptionalString(this.env[OPENCODE_SYSTEM_PROMPT_ENV]);
     const withConfiguredSystemPrompt = (prompt: string): string => extraSystemPrompt
       ? `${prompt}\n\n${extraSystemPrompt}` : prompt;
     // Product-owned scene entry evidence settles before any acquisition-capable MCP server exists.
-    const sceneEvidence = await collectSceneEvidenceForPrompt({runId, traceId, turnIntent, policy: turnPolicy,
-      referenceTraceId: options.referenceTraceId, conversationTraceAttached: conversationTraceAttachedOption(options),
+    const sceneEvidence = selected.handled ? selected.data : await collectSceneEvidenceForPrompt({runId, traceId, turnIntent, policy: turnPolicy,
+      referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext, conversationTraceAttached: conversationTraceAttachedOption(options),
       strategyRegistry, skillRegistry: effectiveSkillRegistry, skillExecutor,
       traceProcessorService: this.input.traceProcessorService, artifactStore, focusTarget,
-      userPackageName: options.packageName, selectionContext: options.selectionContext, outputLanguage, canInvokeTool,
+      userPackageName: options.packageName, selectionContext, outputLanguage, canInvokeTool,
       ...(sceneSignal ? {executionLease: {signal: sceneSignal}} : {}), runAuthorization, deadlineMs: sceneDeadlineMs,
       runtimePerformance: scenePerformanceFromSink(options.runManifestAttributionSink)});
+    assertWorkRemaining?.();
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.input.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: sceneSignal, canInvokeTool});
+    assertWorkRemaining?.();
     const { toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId,
@@ -3263,11 +3523,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     if (turnPolicy.allowMemoryPrefetch) {
       try {
         const kb = await getExtendedKnowledgeBase();
+        assertWorkRemaining?.();
         knowledgeBaseContext = kb.getContextForAI(query, 8);
       } catch {
         // On-demand lookup tools remain available if automatic context fails.
       }
     }
+
+    assertWorkRemaining?.();
 
     const memoryContext = buildRuntimeMemoryContext({
       allowMemoryPrefetch: turnPolicy.allowMemoryPrefetch, sceneType, architectureType: architecture?.type,
@@ -3282,13 +3545,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       const quickMemoryContext = quickMemoryPayload.text;
       return {
         systemPrompt: withConfiguredSystemPrompt(buildQuickSystemPrompt({
+          declarationSyntax: analysisRunSpec.declarationSyntax,
           turnIntent, strategyRegistry, onDemandContext: turnPolicy.onDemandContext,
           ...(comparisonContext ? {comparison: comparisonContext} : {}),
           architecture,
           packageName: effectivePackageName,
           focusTarget: citedFocusTarget,
           ...(sceneEvidence ? {sceneEvidence} : {}),
-          selectionContext: options.selectionContext,
+          selectionContext,
           quickMemoryContext,
           knowledgeBaseContext,
           // The probe already ran for every `preflight !== 'none'` turn; the
@@ -3336,7 +3600,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           fixedSql: entry.fixedSql,
         })),
       ...memoryContext,
-      selectionContext: options.selectionContext,
+      selectionContext,
       traceCompleteness,
       traceOs: traceInfo?.traceOs,
       traceFormat: traceInfo?.traceFormat,
@@ -3346,7 +3610,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       sourceAuthorization,
       ...(comparisonContext ? { comparison: comparisonContext } : {}),
     };
-    const sharedSystemPrompt = buildSystemPrompt(analysisContext);
+    const sharedSystemPrompt = buildSystemPrompt({...analysisContext, declarationSyntax: analysisRunSpec.declarationSyntax});
     return {
       systemPrompt: withConfiguredSystemPrompt(sharedSystemPrompt),
       prompt,

@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
+import {OpenAITextPolicyConfigurationError, type OpenAITextRequestPurpose} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {
   intentTransportTextResult,
   runIntentTransport,
@@ -49,7 +49,7 @@ export interface OpenCodeClassifierHost {
 
 export interface OpenCodeIntentTransportInput extends IntentTransportInput {
   model: OpenCodeIntentModel;
-  /** Selects this call's provider controls; the closeout and empty-body continuation pass none. */
+  /** Selects this no-tool call's provider controls. Omitted purpose preserves native settings. */
   purpose?: OpenAITextRequestPurpose;
   /**
    * Reuse the runtime's explicit-env launcher and hardened config. The fresh
@@ -60,6 +60,7 @@ export interface OpenCodeIntentTransportInput extends IntentTransportInput {
     deadlineMs: number;
     model: OpenCodeIntentModel;
     purpose?: OpenAITextRequestPurpose;
+    observer?: IntentTransportInput['observer'];
   }): Promise<OpenCodeClassifierHost>;
   /** The run's authorization, checked after the host started, right before the prompt is sent. */
   beforeDispatch?: () => void;
@@ -93,9 +94,15 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
     if (!input.model.providerID?.trim() || !input.model.modelID?.trim()) {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
-    const host = await input.createClassifierHost({
-      signal: scope.signal, deadlineMs: input.deadlineMs, model: input.model, purpose: input.purpose,
-    });
+    let host: OpenCodeClassifierHost;
+    try {
+      host = await input.createClassifierHost({
+        signal: scope.signal, deadlineMs: input.deadlineMs, model: input.model, purpose: input.purpose, observer: input.observer,
+      });
+    } catch (error) {
+      if (error instanceof OpenAITextPolicyConfigurationError) return {status: 'unavailable', reason: 'invalid_configuration'};
+      throw error;
+    }
     let removeAbortListener: (() => void) | undefined;
     scope.onCleanup(async signal => {
       try { await host.close(signal); } finally { removeAbortListener?.(); }

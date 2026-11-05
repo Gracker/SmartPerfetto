@@ -29,8 +29,8 @@ import {currentRunManifestAttributionSink} from '../services/selfEvolution/runMa
 import {createDataEnvelope} from '../types/dataContract';
 import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
-  type ModelEvidenceProjectionUnavailableReason,
-  projectEvidenceColumnUnitsForModel} from '../services/evidence/evidenceCapture';
+  type ModelEvidenceProjectionUnavailableReason} from '../services/evidence/evidenceCapture';
+import {projectModelEvidenceMetadata, type ModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
 import {createEvidenceReadView, MAX_EVIDENCE_READ_REFERENCES, type EvidenceReadView, type EvidenceReadViewOptions,
   type EvidenceReadRecord} from '../services/evidence/evidenceReadView';
 import { scopeMetadata, type IdentityResolutionV1, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../types/identityContract';
@@ -94,6 +94,7 @@ export interface ArtifactSummary extends EvidenceScopeMetadata {
   executionError?: string;
   modelProjection?: ModelEvidenceProjectionStatus;
   columnUnits?: Readonly<Record<string, string>>;
+  modelEvidence?: ModelEvidenceMetadata['modelEvidence'];
 }
 
 export interface ArtifactQueryReviewRef {
@@ -282,6 +283,7 @@ export interface CompactArtifactSummary extends EvidenceScopeMetadata {
   executionError?: string;
   modelProjection?: ModelEvidenceProjectionStatus;
   columnUnits?: Readonly<Record<string, string>>;
+  modelEvidence?: ModelEvidenceMetadata['modelEvidence'];
 }
 
 // Origin belongs to the issued execution witness, not the latest artifact registration.
@@ -544,7 +546,7 @@ export class ArtifactStore {
     const data = artifact.data;
     const columns: string[] = data?.columns || [];
     const rows: any[][] = data?.rows || [];
-    const columnUnits = projectEvidenceColumnUnitsForModel(data, this.executionCaptures.get(id)?.witness);
+    const evidenceMetadata = projectModelEvidenceMetadata(data, this.executionCaptures.get(id)?.witness);
 
     return {
       id: artifact.id,
@@ -570,7 +572,7 @@ export class ArtifactStore {
       ...(artifact.executionMessage ? { executionMessage: artifact.executionMessage } : {}),
       ...(artifact.executionError ? { executionError: artifact.executionError } : {}),
       ...(artifact.modelProjection ? {modelProjection: artifact.modelProjection} : {}),
-      ...(columnUnits ? {columnUnits} : {}),
+      ...evidenceMetadata,
     };
   }
 
@@ -812,6 +814,7 @@ export class ArtifactStore {
       ...(artifact?.executionError ? { executionError: artifact.executionError } : {}),
       ...(artifact?.modelProjection ? {modelProjection: artifact.modelProjection} : {}),
       ...(full.columnUnits ? {columnUnits: full.columnUnits} : {}),
+      modelEvidence: full.modelEvidence,
     };
   }
 
@@ -828,7 +831,7 @@ export class ArtifactStore {
       case 'summary':
         return this.generateDetailedSummary(id);
       case 'rows': {
-        const columnUnits = projectEvidenceColumnUnitsForModel(artifact.data, this.executionCaptures.get(id)?.witness);
+        const evidenceMetadata = projectModelEvidenceMetadata(artifact.data, this.executionCaptures.get(id)?.witness);
         const allRows: any[][] = artifact.data?.rows || [];
         const totalRows = allRows.length;
         const effectiveOffset = offset ?? 0;
@@ -860,12 +863,12 @@ export class ArtifactStore {
           executionMessage: artifact.executionMessage,
           executionError: artifact.executionError,
           modelProjection: artifact.modelProjection,
-          ...(columnUnits ? {columnUnits} : {}),
+          ...evidenceMetadata,
           ...(artifact.queryReview ? {queryReview: queryReviewRefForArtifact(artifact.queryReview)} : {}),
         };
       }
       case 'full': {
-        const columnUnits = projectEvidenceColumnUnitsForModel(artifact.data, this.executionCaptures.get(id)?.witness);
+        const evidenceMetadata = projectModelEvidenceMetadata(artifact.data, this.executionCaptures.get(id)?.witness);
         // Cap rows at MAX_FULL_ROWS to prevent context window overflow.
         // Larger datasets should use detail="rows" with pagination.
         const fullRows: any[][] = artifact.data?.rows || [];
@@ -897,7 +900,7 @@ export class ArtifactStore {
           executionMessage: artifact.executionMessage,
           executionError: artifact.executionError,
           modelProjection: artifact.modelProjection,
-          ...(columnUnits ? {columnUnits} : {}),
+          ...evidenceMetadata,
           ...(truncatedFull ? { truncated: true, totalRows: fullRows.length, hint: 'Use detail="rows" with offset/limit for complete data' } : {}),
         };
       }
@@ -940,7 +943,8 @@ export class ArtifactStore {
   static fromSnapshot(artifacts: StoredArtifact[]): ArtifactStore {
     const store = new ArtifactStore();
     for (const art of artifacts) {
-      const { appliedProcessScope: _legacyScope, evidenceRole: _legacyRole, ...stored } = art;
+      const {appliedProcessScope: _legacyScope, evidenceRole: _legacyRole, modelEvidence: _untrustedFeedback, ...stored} =
+        art as StoredArtifact & {modelEvidence?: unknown};
       store.artifacts.set(art.id, { ...stored, ...scopeMetadata(art.scopeProvenance),
         modelProjection: sanitizeModelProjection(art.modelProjection) });
       const num = parseInt(art.id.replace('art-', ''), 10) || 0;

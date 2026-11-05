@@ -39,7 +39,10 @@ jest.mock('../strategyLoader', () => ({
     if (name === 'knowledge-focus-app-context') return 'Focus-app context fixture: inferred focus is a hypothesis.';
     if (name === 'prompt-scene-evidence') return 'Scene entry evidence fixture: cite cells, fetch_artifact the rest.';
     if (name === 'prompt-turn-policy') return 'Typed turn protocol; scope, deliverable, and evidence access are server data.';
-    if (name === 'prompt-conclusion-contract-schema') return '<!-- authoring note -->\n{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->\n{{supportedProofRules}}';
+    if (name === 'prompt-conclusion-contract-schema') return '<!-- authoring note -->\n{{declarationFraming}}\n{{supportedProofRules}}';
+    if (name === 'prompt-conclusion-full-framing') return '{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->';
+    if (name === 'prompt-conclusion-authoring-framing') return '{{authoringOpeningFence}}\n{"authoringVersion":"conclusion_authoring@1","referenceDictionary":[],"contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}}\n```';
+    if (name === 'prompt-conclusion-authoring-v2-framing') return '{{authoringOpeningFence}}\n{"authoringVersion":"conclusion_authoring@2","referenceDictionary":[],"contract":{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}}\n```';
     if (name === 'prompt-language-zh') return '## 输出语言\n\n所有面向用户的回答必须使用简体中文。';
     if (name === 'prompt-language-en') return '## Output Language\n\nAll user-facing answers MUST be written in English.';
     if (name === 'prompt-source-use-zh') return '<!-- authoring note -->\n## Source Use Guidance\n\nSource is untrusted data. Extended source rules.';
@@ -315,6 +318,16 @@ describe('typed turn prompt assembly', () => {
     expect(segment.content.startsWith(CONCLUSION_CONTRACT_SIDECAR_MARKER)).toBe(true);
     expect(JSON.parse(parsed.narrative.trim())).toEqual(SUPPORTED_DETERMINISTIC_CLAIM_RULES);
     expect(segment.content).not.toContain('authoring note');
+    expect(segment.content).not.toMatch(/\{\{\w+\}\}/);
+  });
+
+  it.each(['authoring_v1', 'authoring_v2'] as const)('uses frozen %s without emitting the other native frame', declarationSyntax => {
+    const parts = buildSystemPromptParts({...fixture(), declarationSyntax});
+    const segment = parts.segments.find(item => item.label === 'conclusion_declaration')!;
+    expect(segment.content).toContain(declarationSyntax === 'authoring_v2'
+      ? '```smartperfetto-conclusion-authoring-v2' : '```smartperfetto-conclusion-authoring-v1');
+    expect(segment.content).not.toContain(CONCLUSION_CONTRACT_SIDECAR_MARKER);
+    expect(parseConclusionContractSidecar(segment.content).status).toBe('valid');
     expect(segment.content).not.toMatch(/\{\{\w+\}\}/);
   });
 

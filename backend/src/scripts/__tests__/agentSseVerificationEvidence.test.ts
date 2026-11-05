@@ -50,6 +50,16 @@ import type {RunningNativeProcessorObservation, TraceInfo} from '../../services/
 import type {AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
 
 describe('transparent verification diagnostics', () => {
+  it('keeps the source action facet strictly incomplete even when every automatic check passes', () => {
+    const result = evaluateAgentSseAcceptance({strict: true,
+      task: {checkGroups: {value: {marker: true}, proof: {proved: true}, delivery: {delivered: true}}, facts: {},
+        uncoveredFacets: ['source recommendation action semantics']},
+      observedGroups: {}, ungroupedChecks: {}, hardChecks: {notPartial: true}, additionalGatesPassed: true});
+    expect(result).toMatchObject({passed: false, strict: true, completeAcceptance: false,
+      semanticAcceptance: 'INCONCLUSIVE', proofAcceptance: 'PASSED', observedChecksPassed: true,
+      uncoveredFacets: ['source recommendation action semantics']});
+  });
+
   const stops: Array<() => unknown> = [];
   afterEach(() => {stops.splice(0).forEach(stop => stop()); jest.restoreAllMocks();});
   function fixture() {
@@ -330,7 +340,7 @@ describe('current-trace slice selection resolution', () => {
     expect(sql).toContain('LIMIT 2');
     expect(sql).toContain('s.dur');
     expect(result.selectionContext).toEqual({kind: 'track_event', source: 'track_event_selection',
-      eventId: 7, ts: 40919952686988, dur: 42_000_000});
+      eventId: 7, ts: 40919952686988, dur: 42_000_000, nativeTable: 'slice'});
     expect(result.identity).toEqual({traceId: 'loaded-current-trace', table: 'slice',
       eventId: 7, ts: 40919952686988, trackId: 19, utid: 11, upid: 10});
     expect(result.purpose).toBe('input_scope_not_verified_evidence');
@@ -343,7 +353,7 @@ describe('current-trace slice selection resolution', () => {
     async (dur, ts, expected) => {
       const result = await resolveVerificationSliceSelection({service: {queryBounded: jest.fn(async () => match(dur, ts))},
         traceId: 'current', selector, timeoutMs: 1000});
-      expect(result.selectionContext).toEqual(expected);
+      expect(result.selectionContext).toEqual({...expected, nativeTable: 'slice'});
     });
 
   it.each([
@@ -1339,6 +1349,29 @@ describe('task fact oracle (deterministic composition, not a model semantic benc
     expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0], oracle: undefined}]})).toThrow();
     expect(() => parseAgentSseExpectation({...expectation, facts: [{...expectation.facts[0],
       oracle: {sql: 'SELECT 1; DROP TABLE process', column: 'total_frames'}}]})).toThrow();
+  });
+
+  it('checks explicit alternative scene labels without relaxing the task or proof requirements', () => {
+    const alternatives = parseAgentSseExpectation({...expectation,
+      intent: {...expectation.intent, allowedSceneIds: ['general', 'linux']}});
+    for (const sceneId of ['general', 'linux', 'scrolling'] as const) {
+      const terminal = terminalFixture();
+      terminal.turnIntent = {...terminal.turnIntent!, sceneId};
+      const result = evaluateAgentSseExpectation({terminal, expectation: alternatives, traceId: 'trace-current',
+        oracleRows: {frame_count: [{total_frames: 1912}]}});
+      expect(result.checks['intent:sceneId']).toBe(sceneId !== 'scrolling');
+      expect(result.checks['intent:taskKind']).toBe(true);
+      expect(result.checkGroups.proof['fact:frame_count:proved']).toBe(true);
+      terminal.turnIntent = {...terminal.turnIntent!, taskKind: 'investigation'};
+      expect(evaluateAgentSseExpectation({terminal, expectation: alternatives, traceId: 'trace-current'})
+        .checks['intent:taskKind']).toBe(false);
+    }
+    expect(agentSseExpectationHash(alternatives)).not.toBe(agentSseExpectationHash(expectation));
+    for (const intent of [
+      {sceneId: 'general', allowedSceneIds: ['general', 'linux']},
+      {allowedSceneIds: []}, {allowedSceneIds: ['general', 'general']},
+      {allowedSceneIds: ['general', 1]}, {allowedSceneIds: [' general']}, {allowedSceneIds: 'general'},
+    ]) expect(() => parseAgentSseExpectation({...expectation, intent})).toThrow('Invalid --expectation-json');
   });
 
   it('collects real oracle rows and fails closed on unavailable or missing metrics', async () => {

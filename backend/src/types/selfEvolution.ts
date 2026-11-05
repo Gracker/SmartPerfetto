@@ -248,6 +248,8 @@ export interface RunManifestV1 {
   /** Non-secret hash of the provider/runtime configuration pinned to this run. */
   providerSnapshotHash?: string;
   model?: string;
+  /** Captured by the run's prompt owner; absent in historical manifests. */
+  conclusionDeclarationSyntax?: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
   outputLanguage: string;
   toolAllowlistHash: string;
   featureFlagSnapshot: Record<string, string | number | boolean>;
@@ -1256,6 +1258,7 @@ export interface RunManifestRuntimeAttribution {
   providerId: string | null;
   providerSnapshotHash?: string;
   model?: string;
+  conclusionDeclarationSyntax?: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
   outputLanguage?: string;
 }
 

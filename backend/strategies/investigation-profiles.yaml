@@ -3,7 +3,7 @@
 schema_version: 1
 profiles:
   system_execution:
-    version: 1
+    version: 2
     requirements:
       - id: cpu_frequency
         domain: cpu_frequency
@@ -25,6 +25,15 @@ profiles:
       - id: thread_state
         domain: thread_state
         evidence_metrics: [system.thread.state.duration]
+        entry_acquisition:
+          schema_version: 1
+          metric_id: system.thread.state.duration
+          subject_binding: selected_thread_interval
+          params:
+            start_ts: selected_start
+            end_ts: selected_end
+            upid: selected_upid
+            utid: selected_utid
         description: >-
           Explain critical-task Running, R/R+ Runnable, S/I sleeping/idle and D/DK
           uninterruptible durations with a conserving window denominator and unknown

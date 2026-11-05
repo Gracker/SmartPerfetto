@@ -2,7 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {createHash} from 'node:crypto';
-import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CALL_TRIGGERS} from '../agentRuntime/runtimePerformance';
+import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CALL_TRIGGERS,
+  RUNTIME_MODEL_REASONING_EFFORTS, RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS,
+  projectRuntimeModelPolicyReceipt} from '../agentRuntime/runtimePerformance';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import type {RunManifestScope, RunManifestV1} from '../types/selfEvolution';
@@ -43,6 +45,19 @@ function optionalHash(value: unknown): string | undefined {
     ? createHash('sha256').update(value).digest('hex') : undefined;
 }
 
+function modelOutput(value: unknown) {
+  const source = record(value);
+  if (source.declarationAuthoringVersion !== undefined && source.declarationAuthoringStatus !== 'expanded') {
+    throw new Error('metrics_authoring_version_without_expansion');
+  }
+  return {...numbers(source, ['bodyChars', 'sidecarChars']),
+    ...(source.declarationAuthoringStatus === undefined ? {} : {
+      declarationAuthoringStatus: member(source.declarationAuthoringStatus, RUNTIME_DECLARATION_AUTHORING_STATUSES),
+    }), ...(source.declarationAuthoringVersion === undefined ? {} : {
+      declarationAuthoringVersion: member(source.declarationAuthoringVersion, RUNTIME_DECLARATION_AUTHORING_VERSIONS),
+    })};
+}
+
 /** Metrics-only projection: never export arbitrary manifest fields or nested native payloads. */
 export function projectAgentE2ePerformance(value: unknown) {
   const source = record(value);
@@ -67,8 +82,9 @@ export function projectAgentE2ePerformance(value: unknown) {
       ...(row.trigger === undefined ? {} : {trigger: member(row.trigger, RUNTIME_MODEL_CALL_TRIGGERS)}),
       modelHash: optionalHash(row.model), providerOriginHash: optionalHash(row.providerOrigin),
       ...numbers(row, ['startOffsetMs', 'durationMs', 'firstOutputMs']),
-      ...(row.reasoning === undefined ? {} : {reasoning: member(row.reasoning, ['provider_default', 'disabled'])}),
-      ...(row.output === undefined ? {} : {output: numbers(row.output, ['bodyChars', 'sidecarChars'])}),
+      ...(row.reasoning === undefined ? {} : {reasoning: member(row.reasoning, ['provider_default', 'disabled', 'enabled'])}),
+      ...(row.reasoningEffort === undefined ? {} : {reasoningEffort: member(row.reasoningEffort, RUNTIME_MODEL_REASONING_EFFORTS)}),
+      ...(row.output === undefined ? {} : {output: modelOutput(row.output)}),
       ...(row.usage === undefined ? {} : {usage: numbers(row.usage,
         ['inputTokens', 'outputTokens', 'reasoningTokens', 'cachedInputTokens'])}),
     }))}),
@@ -92,8 +108,15 @@ export function projectAgentE2ePerformance(value: unknown) {
         },
       };
     })}),
+    ...(source.policyObservations === undefined ? {} : {policyObservations: rows(source.policyObservations, row => {
+      const receipt = projectRuntimeModelPolicyReceipt(row);
+      if (!receipt || !Number.isSafeInteger(row.observationOrdinal) || (row.observationOrdinal as number) < 1
+          || (row.observationOrdinal as number) > MAX_ITEMS) throw new Error('metrics_policy_observation_invalid');
+      return {...receipt, observationOrdinal: row.observationOrdinal as number,
+        observedOffsetMs: number(row.observedOffsetMs)};
+    })}),
     ...(source.truncated === undefined ? {} : {truncated: numbers(source.truncated,
-      ['phases', 'tools', 'sql', 'modelCalls', 'modelRequests'])}),
+      ['phases', 'tools', 'sql', 'modelCalls', 'modelRequests', 'policyObservations'])}),
   };
 }
 
@@ -113,6 +136,9 @@ export function readAgentE2eMetrics(input: {scope: RunManifestScope; sessionId: 
     return {schemaVersion, status: 'sealed' as const, runId: input.runId, sessionId: input.sessionId,
       sealedAt: number(manifest.sealedAt), wallclockMs: number(manifest.wallclockMs),
       runtime: member(manifest.runtime, PRODUCTION_RUNTIME_KINDS), modelHash: optionalHash(manifest.model),
+      ...(manifest.conclusionDeclarationSyntax === undefined ? {} : {
+        conclusionDeclarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
+      }),
       providerSnapshotHash: typeof manifest.providerSnapshotHash === 'string' &&
         /^(?:sha256:)?[a-f0-9]{64}$/.test(manifest.providerSnapshotHash) ? manifest.providerSnapshotHash : undefined,
       performance: projectAgentE2ePerformance(manifest.performance)};

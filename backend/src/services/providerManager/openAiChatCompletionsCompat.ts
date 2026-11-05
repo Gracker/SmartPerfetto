@@ -2,6 +2,10 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveModelExecutionProfile, type ModelEffectiveSettings, type ReasoningEffort,
+  type ResolveModelExecutionProfileInput, type ResolvedModelExecutionProfile, type SdkModelCapabilities} from './modelExecutionProfile';
+import {resolveModelExecutionPolicy, type ModelExecutionPolicyReceipt} from '../../agentRuntime/modelExecutionPolicy';
+
 export type OpenAIChatCompletionsTokenLimit =
   | { max_tokens: number }
   | { max_completion_tokens: number };
@@ -17,18 +21,14 @@ export function isOpenAITextRequestPurpose(value: unknown): value is OpenAITextR
 }
 
 export type OpenAITextRequestPurposeOptions = {
-  thinking?: {type: 'disabled'};
-  reasoning?: {effort: 'none'};
+  thinking?: {type: 'enabled' | 'disabled'};
+  reasoning_effort?: ReasoningEffort;
+  reasoning?: {effort: 'none' | ReasoningEffort};
   response_format?: {type: 'json_object'};
   text?: {format: {type: 'json_object'}};
 };
 
-/** Official Zhipu GLM origins (mainland and international). Their chat
- * completions think by default; a classification prompt then spent ~1.5k
- * reasoning tokens and 28-30 s on glm-5.3-flash, at the 30 s classifier
- * budget, versus ~4.5 s with thinking disabled.
- * https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode
- */
+/** Exact official origins for protocol compatibility; model capabilities live in modelExecutionProfile. */
 const GLM_ORIGINS = new Set(['https://open.bigmodel.cn', 'https://api.z.ai']);
 
 /** Parsed origins only: model names and gateway URL substrings do not grant GLM protocol semantics. */
@@ -39,32 +39,63 @@ export function isOfficialGlmOrigin(url: URL | string): boolean {
   } catch {return false;}
 }
 
-/** Apply purpose-specific controls only to the exact official origin.
- * Every no-tool delivery purpose (classification, final semantic review,
- * declaration repair, continuation) disables default thinking: a GLM or
- * DeepSeek review that reasoned first took minutes (median ~400 s) and often
- * outlasted its budget. Final semantic review also requests JSON syntax.
- * Gateways own their protocol semantics.
- * https://api-docs.deepseek.com/guides/thinking_mode/
- * https://api-docs.deepseek.com/guides/json_mode/
- */
-export function buildOpenAITextRequestPurposeOptions(input: {
+export interface OpenAITextRequestPurposeInput {
   requestUrl: URL;
   protocol: 'chat_completions' | 'responses';
+  model: string | undefined;
+  runtimeKind: 'openai-agents-sdk' | 'opencode';
+  sdkCapabilities: SdkModelCapabilities;
+  sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
+  effective?: ModelEffectiveSettings;
   purpose?: OpenAITextRequestPurpose;
-}): OpenAITextRequestPurposeOptions {
-  if (!isOpenAITextRequestPurpose(input.purpose)) return {};
-  if (isOfficialGlmOrigin(input.requestUrl)) {
-    // GLM serves chat completions only; its JSON mode is not relied on here.
-    return input.protocol === 'chat_completions' ? {thinking: {type: 'disabled'}} : {};
-  }
-  if (input.requestUrl.origin !== 'https://api.deepseek.com') return {};
-  const reasoning: OpenAITextRequestPurposeOptions = input.protocol === 'responses'
-    ? {reasoning: {effort: 'none'}} : {thinking: {type: 'disabled'}};
-  if (input.purpose !== 'final_semantic') return reasoning;
-  return input.protocol === 'responses'
-    ? {...reasoning, text: {format: {type: 'json_object'}}}
-    : {...reasoning, response_format: {type: 'json_object'}};
+  outputOnly?: true;
+}
+
+/** Fixed failure: unsupported policy is configuration failure, never a retryable provider error. */
+export class OpenAITextPolicyConfigurationError extends Error {
+  constructor() {super('openai_text_policy_invalid_configuration');}
+}
+
+/** Metadata is separate from body options so callers cannot spread a fingerprint into the provider request. */
+export function resolveOpenAITextRequestPurpose(input: OpenAITextRequestPurposeInput): {
+  options: OpenAITextRequestPurposeOptions;
+  profile: ResolvedModelExecutionProfile;
+  policy?: ModelExecutionPolicyReceipt;
+} {
+  try {
+    if (input.purpose !== undefined && !isOpenAITextRequestPurpose(input.purpose)) throw new OpenAITextPolicyConfigurationError();
+    const profile = resolveModelExecutionProfile({runtimeKind: input.runtimeKind, protocol: input.protocol,
+      modelId: input.model, baseUrl: input.requestUrl.toString(), sdkCapabilities: input.sdkCapabilities,
+      sdk: input.sdkIdentity ?? {packageName: input.runtimeKind, version: 'unknown', adapterContractVersion: 'openai-purpose@1'},
+      effective: input.effective ?? {}});
+    const purpose = input.purpose === 'final_semantic' ? 'review' : input.purpose ?? 'answer_turn';
+    const candidate = purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ||
+      purpose === 'continuation' && input.outputOnly === true;
+    const selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: input.outputOnly,
+      selection: candidate ? 'minimum_legal_candidate' : 'preserve'});
+    if (selected.status === 'unsupported') throw new OpenAITextPolicyConfigurationError();
+    const options: OpenAITextRequestPurposeOptions = {};
+    const authored = profile.effective.authoredReasoning;
+    // Authored settings are the caller's existing request configuration, not a guessed stage default.
+    const setting = authored ?? (selected.receipt.mapped === 'unchanged' || selected.receipt.mapped === 'unknown'
+      ? undefined : selected.receipt.mapped);
+    if (setting) {
+      const surface = profile.adapter.surface;
+      if (profile.adapter.thinking === 'unknown' || surface === 'none') throw new OpenAITextPolicyConfigurationError();
+      if (input.protocol === 'chat_completions') {
+        options.thinking = {type: setting.mode};
+        if (setting.mode === 'enabled' && setting.effort !== undefined) options.reasoning_effort = setting.effort;
+      } else if (setting.mode === 'disabled') options.reasoning = {effort: 'none'};
+      else if (setting.effort !== undefined) options.reasoning = {effort: setting.effort};
+      else throw new OpenAITextPolicyConfigurationError();
+    }
+    // Retain the existing DeepSeek review JSON syntax contract only for a recognized model/API.
+    if (input.purpose === 'final_semantic' && profile.endpoint.family === 'deepseek' && profile.server.thinking.status === 'supported') {
+      if (input.protocol === 'responses') options.text = {format: {type: 'json_object'}};
+      else options.response_format = {type: 'json_object'};
+    }
+    return {options, profile, ...(input.purpose !== undefined ? {policy: selected.receipt} : {})};
+  } catch {throw new OpenAITextPolicyConfigurationError();}
 }
 
 const MAX_COMPLETION_TOKENS_MODEL_PATTERNS = [

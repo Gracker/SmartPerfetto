@@ -9,6 +9,7 @@ import {createRuntimePerformanceRecorder, createRuntimePerformanceRun, startRunt
 import {resolveAnalysisHistoryReader, createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, type AnalysisHistoryReader, toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
 import {setImmediate as nextImmediate} from 'node:timers/promises';
 import {beforeEach, describe, expect, it, jest} from '@jest/globals';
+import {readRuntimeAdmission} from '../../../agentRuntime/runtimeTaskDeadline';
 import type {FinalizeAnalysisResultInput, FinalizedAnalysisResult} from '../../../services/finalizeAnalysisResult';
 import {canonicalizeAnalysisResult} from '../../../services/canonicalAnalysisResult';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -23,6 +24,7 @@ import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {listProductionRuntimeKinds} from '../../../agentRuntime/runtimeKinds';
 import type {AnalysisOptions, AnalysisResult, IOrchestrator} from '../../../agent/core/orchestratorTypes';
 import {OrchestratorConversationRuntimeAdapter} from '../orchestratorConversationRuntimeAdapter';
+import {conversationRuntimeSessionId} from '../../application/conversationSessionService';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
 import {createClaudeMcpServer} from '../../../agentv3/claudeMcpServer';
 import {SkillExecutor} from '../../../services/skillEngine/skillExecutor';
@@ -747,15 +749,35 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     expect(received.map(options => options.sourceDepth)).toEqual(['locate', 'mechanism']);
   });
 
-  it('preserves the total runtime budget', async () => {
+  it.each([undefined, 25_000])('preserves product admission for the runtime budget (timeout=%s)', async taskTimeoutMs => {
     let receivedOptions: AnalysisOptions | undefined;
+    let hardDeadlineAt: number | undefined;
+    let receivedAdmission: number | undefined;
     const orchestrator = createOrchestrator(async options => {
       receivedOptions = options;
+      hardDeadlineAt = readRuntimeAdmission(options, {runId: 'run',
+        sessionId: conversationRuntimeSessionId('conversation', 'run')})?.task?.facts.hardDeadlineAt;
+      receivedAdmission = readRuntimeAdmission(options, {runId: 'run',
+        sessionId: conversationRuntimeSessionId('conversation', 'run')})?.facts.admittedAt;
       return result('answer');
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {taskTimeoutMs: 25_000}});
-    await adapter.run({sessionId: 'conversation', runId: 'run', query: '继续', history: [], traceContext: {kind: 'none'}});
-    expect(receivedOptions?.taskTimeoutMs).toBe(25_000);
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {taskTimeoutMs}});
+    const admittedAt = Date.now() - 5000;
+    await adapter.run({sessionId: 'conversation', runId: 'run', admittedAt,
+      query: '继续', history: [], traceContext: {kind: 'none'}});
+    expect(receivedOptions?.taskTimeoutMs).toBe(taskTimeoutMs);
+    expect(receivedAdmission).toBe(admittedAt);
+    expect(hardDeadlineAt).toBe(taskTimeoutMs === undefined ? undefined : admittedAt + taskTimeoutMs);
+    expect(() => readRuntimeAdmission(receivedOptions!, {runId: 'run',
+      sessionId: conversationRuntimeSessionId('conversation', 'run')})?.task).toThrow('disposed');
+  });
+
+  it('does not dispatch native work for an already-expired conversation admission', async () => {
+    const orchestrator = createOrchestrator(async () => result('answer'));
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {taskTimeoutMs: 10}});
+    await expect(adapter.run({sessionId: 'conversation', runId: 'run', admittedAt: Date.now() - 100,
+      query: '继续', history: [], traceContext: {kind: 'none'}})).rejects.toThrow('Runtime task deadline exceeded');
+    expect(orchestrator.analyze).not.toHaveBeenCalled();
   });
 
   it.each(['provider_send', 'metadata_only', 'off', undefined] as const)(

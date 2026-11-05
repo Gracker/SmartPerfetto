@@ -576,6 +576,37 @@ export function createJsonSchemaFromZodRawShape(
   return sanitizeToolJsonSchema(jsonSchema) as Record<string, unknown>;
 }
 
+/** SDK strict conversion copies optional-field descriptions onto both the
+ * nullable wrapper and its child. Keep the wrapper's identical annotation once.
+ * Only JSON-schema positions are visited; instance data is never interpreted. */
+export function deduplicateNullableSchemaDescriptions<T>(schema: T): T {
+  const schemaMaps = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']);
+  const schemaArrays = new Set(['anyOf', 'oneOf', 'allOf', 'prefixItems']);
+  const schemaSingles = new Set(['additionalProperties', 'additionalItems', 'unevaluatedProperties',
+    'unevaluatedItems', 'contains', 'propertyNames', 'not', 'if', 'then', 'else']);
+  const walk = (value: unknown, redundantDescription?: string): unknown => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    const nullable = Array.isArray(record.anyOf) && record.anyOf.some(branch =>
+      branch && typeof branch === 'object' && (branch as {type?: unknown}).type === 'null');
+    return Object.fromEntries(Object.entries(record).flatMap(([key, child]) => {
+      if (key === 'description' && child === redundantDescription) return [];
+      if (schemaMaps.has(key) && child && typeof child === 'object' && !Array.isArray(child)) {
+        return [[key, Object.fromEntries(Object.entries(child).map(([name, nested]) => [name, walk(nested)]))]];
+      }
+      if (schemaArrays.has(key) && Array.isArray(child)) return [[key, child.map(nested =>
+        walk(nested, key === 'anyOf' && nullable && typeof record.description === 'string' ? record.description : undefined))]];
+      if (key === 'items') return [[key, Array.isArray(child) ? child.map(nested => walk(nested)) : walk(child)]];
+      if (key === 'dependencies' && child && typeof child === 'object' && !Array.isArray(child)) {
+        return [[key, Object.fromEntries(Object.entries(child).map(([name, nested]) =>
+          [name, Array.isArray(nested) ? nested : walk(nested)]))]];
+      }
+      return [[key, schemaSingles.has(key) ? walk(child) : child]];
+    }));
+  };
+  return walk(schema) as T;
+}
+
 function parseJsonContainerString(value: string): unknown {
   const trimmed = value.trim();
   if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
@@ -594,6 +625,15 @@ function parseJsonContainerString(value: string): unknown {
  * input shape, top-level optional fields holding one are dropped before the
  * handler sees them; required fields and nested values are left to the handler.
  */
+const literalRuntimeStringFields = new WeakSet<object>();
+
+/** Opt a text-data field out of selector placeholder coercion. Apply after
+ * optional()/describe(); the marker stays private and never enters JSON schema. */
+export function preserveRuntimeLiteralStrings<T extends z.ZodType>(field: T): T {
+  literalRuntimeStringFields.add(field);
+  return field;
+}
+
 function dropOptionalPlaceholders(
   args: Record<string, unknown>,
   inputSchema: z.ZodRawShape,
@@ -601,6 +641,7 @@ function dropOptionalPlaceholders(
   return Object.fromEntries(Object.entries(args).filter(([key, value]) => {
     const field = inputSchema[key];
     if (!field || (value !== null && !isPlaceholderToolString(value))) return true;
+    if (typeof value === 'string' && literalRuntimeStringFields.has(field)) return true;
     return !z.safeParse(field, undefined).success;
   }));
 }

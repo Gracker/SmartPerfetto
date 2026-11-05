@@ -1528,6 +1528,9 @@ strategies:
   backend/strategies/prompt-scene-evidence.template.md:
     disposition: product-only
     reason: SmartPerfetto product-owned scene entry evidence prompt segment
+  backend/strategies/prompt-selected-evidence.template.md:
+    disposition: product-only
+    reason: SmartPerfetto product-owned selected interval capture and metric prompt segment
   backend/strategies/prompt-analysis-correction-en.template.md:
     disposition: product-only
     reason: SmartPerfetto structured candidate recovery protocol
@@ -1543,6 +1546,18 @@ strategies:
   backend/strategies/prompt-conclusion-contract-schema.template.md:
     disposition: product-only
     reason: SmartPerfetto conclusion declarations and captured evidence identifiers
+  backend/strategies/prompt-conclusion-authoring-framing.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private declaration authoring transport and captured evidence references
+  backend/strategies/prompt-conclusion-authoring-v2-framing.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private declaration authoring compiler and transport
+  backend/strategies/prompt-conclusion-full-framing.template.md:
+    disposition: product-only
+    reason: SmartPerfetto canonical conclusion declaration transport
+  backend/strategies/prompt-lookup-sql-schema-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto SQL schema discovery tool response and pagination contract
   backend/strategies/prompt-conversation-evidence-context.template.md:
     disposition: product-only
     reason: SmartPerfetto conversation artifact retention and authorization
@@ -1802,6 +1817,24 @@ strategies:
   backend/strategies/prompt-native-declaration-completion-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto native conclusion declaration delivery orchestration
+  backend/strategies/prompt-native-declaration-transport-full-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto canonical native declaration recovery transport
+  backend/strategies/prompt-native-declaration-transport-full-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto canonical native declaration recovery transport
+  backend/strategies/prompt-native-declaration-transport-authoring-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private authoring declaration recovery transport
+  backend/strategies/prompt-native-declaration-transport-authoring-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private authoring declaration recovery transport
+  backend/strategies/prompt-native-declaration-transport-authoring-v2-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private authoring-v2 declaration recovery transport
+  backend/strategies/prompt-native-declaration-transport-authoring-v2-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto private authoring-v2 declaration recovery transport
   backend/strategies/prompt-native-output-completion-en.template.md:
     disposition: product-only
     reason: SmartPerfetto native output-limit delivery recovery orchestration

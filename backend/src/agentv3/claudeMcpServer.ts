@@ -29,6 +29,7 @@ import {
 import {awaitTraceVendorHint} from '../services/traceVendor/traceVendorResolver';
 import {selectVendorOverride} from '../services/skillEngine/vendorOverrideSelection';
 import { skillRegistry } from '../services/skillEngine/skillLoader';
+import {investigationProducerCatalog} from '../services/skillEngine/investigationProducerCatalog';
 import { getWorkspaceSkillRegistry } from '../services/skillPacks/workspaceSkillRegistryProvider';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
@@ -105,6 +106,8 @@ import {
 import {
   listPerfettoSqlModuleDocs,
   searchPerfettoSqlDocs,
+  searchAllPerfettoSqlDocs,
+  findPerfettoSqlDocDefinitions,
   type PerfettoSqlDocEntry,
 } from '../services/perfettoSqlDocs';
 import {
@@ -119,8 +122,8 @@ import {hasProcessIdentitySelector} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {exactProcessScopeSupportCatalog} from '../services/skillEngine/processScopeSql';
 import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
-  projectEvidenceColumnUnitsForModel,
   type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceScalar, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
+import {projectModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
 import {scopeMetadata, identityForScopeEvidence} from '../types/identityContract';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import {
@@ -345,7 +348,7 @@ import {
   readAnalysisContextRegistrations,
   type AnalysisContextRegistrations,
 } from '../services/resolvedAnalysisContext';
-import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
+import {preserveRuntimeLiteralStrings, type RuntimeToolExtra} from '../agentRuntime/runtimeToolSpec';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
@@ -1234,6 +1237,15 @@ function compactLegacySqlSchemaEntry(entry: SqlSchemaEntry): Record<string, unkn
   if (entry.params?.length) out.params = entry.params;
   if (entry.returnType) out.returnType = entry.returnType;
   return out;
+}
+
+type SqlSchemaSource = 'stdlib_docs' | 'legacy_index';
+function sqlSchemaEntryView(entry: Record<string, unknown>, source: SqlSchemaSource, full: boolean): Record<string, unknown> {
+  const locator = {source, name: entry.name, module: typeof entry.module === 'string' ? entry.module : '',
+    type: typeof entry.type === 'string' ? entry.type : ''};
+  return {...(full ? entry : {name: entry.name, type: entry.type, module: entry.module,
+    description: entry.description, include: entry.include, requiredMetric: entry.requiredMetric}),
+    source, locator, detail: full ? 'full' : 'catalog', detailAvailable: true};
 }
 
 function previewFromColumnarData(data: any): Record<string, any> | undefined {
@@ -2518,7 +2530,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const processIdentityWarning = rawSqlProcessIdentityWarning(normalizedSql);
         const success = !result.error;
         const executionWitness = success ? captureRawSqlEvidence(result, {traceId, traceSide: 'current'}) : undefined;
-        const columnUnits = projectEvidenceColumnUnitsForModel(
+        const evidenceMetadata = projectModelEvidenceMetadata(
           {columns: result.columns, rows: result.rows}, executionWitness);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
@@ -2640,7 +2652,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
             ...summaryResult,
-            ...(columnUnits ? {columnUnits} : {}),
+            ...evidenceMetadata,
             ...(sqlArtifact ? {
               artifactId: sqlArtifact.artifactId,
               artifact: sqlArtifact.artifactSummary,
@@ -2693,7 +2705,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           success,
           columns: result.columns,
           rows,
-          ...(columnUnits ? {columnUnits} : {}),
+          ...evidenceMetadata,
           totalRows: result.rows.length,
           truncated,
           durationMs: result.durationMs,
@@ -3213,14 +3225,23 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'list_skills',
     'List all available SmartPerfetto analysis skills. ' +
     'Use this to discover which skills exist before invoking one. ' +
-    'Filter by category to narrow results (e.g. "scrolling", "startup", "cpu", "memory").',
+    'Filter by category to narrow results, or use exact metricId for paged registry-declared evidence producers and their inputs.',
     {
       category: z.string().optional().describe(
         'Optional filter: only return skills whose keywords or tags match this category'
       ),
+      metricId: preserveRuntimeLiteralStrings(z.string().optional().describe(
+        'Exact investigation requirement evidenceMetrics ID. Returns only declared producers; an unknown or empty string returns no matches.'
+      )),
+      offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional().describe(
+        'Producer page offset from nextOffset; only valid with metricId. Default 0.'
+      ),
     },
-    async ({ category }) => {
+    async ({ category, metricId, offset }) => {
       try {
+        if (offset !== undefined && (metricId === undefined || !Number.isSafeInteger(offset) || offset < 0)) {
+          return createRuntimeToolResult({success: false, reason: 'invalid_producer_offset'}, {isError: true});
+        }
         const capabilityRegistry = await bindSkillRuntimeRegistry();
         const definitions = new Map(capabilityRegistry.getAllSkills().map(skill => [skill.name, skill]));
         const fragments = capabilityRegistry.getFragmentCache?.() || new Map<string, string>();
@@ -3237,6 +3258,25 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               s.id.toLowerCase().includes(category.toLowerCase())
             )
           : allSkills;
+        if (metricId !== undefined) {
+          const categoryIds = category ? new Set(filtered.map(skill => skill.id)) : undefined;
+          const producers = investigationProducerCatalog([...definitions.values()], metricId)
+            .filter(card => !categoryIds || categoryIds.has(card.skillId));
+          const start = offset ?? 0;
+          const page = producers.slice(start, start + 5);
+          const nextOffset = start + page.length;
+          const hasMore = nextOffset < producers.length;
+          return createRuntimeToolResult({
+            metricId, total: producers.length, offset: start, hasMore,
+            ...(hasMore ? {nextOffset} : {}),
+            invocation: {tool: 'invoke_skill', exposed: registry.listForRequest(toolRequestScope)
+              .some(definition => definition.name === 'invoke_skill')},
+            producers: page.map(card => ({...card, exactProcessScope: scopeCapability(card.skillId)})),
+            notice: localize(outputLanguage,
+              '仅为注册生产者元数据，未执行或验证。保留请求的精确目标与时间范围；条件步骤或缺失前置数据可能不产出记录。进程选择器不代表线程范围，工具暴露也不绕过权限或身份检查。',
+              'Registry metadata only; nothing executed or verified. Retain the exact requested target and window; guarded steps or missing prerequisites may yield no records. Process selectors do not establish thread scope; tool exposure does not bypass authorization or identity checks.'),
+          });
+        }
         if (options.lightweight) {
           // Full descriptions for the leading matches, bare ids for the rest:
           // the catalog stays affordable in a few-turn run without any match
@@ -3643,23 +3683,41 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const lookupSqlSchema = tool(
     'lookup_sql_schema',
-    'Search the Perfetto SQL stdlib index for table, view, and function definitions matching a keyword. ' +
-    'Use this to discover available SQL entities before writing raw SQL queries.\n\n' +
-    'Use when: you need to find table/view/function names before writing SQL, or verifying column names exist.\n' +
-    'Don\'t use when: you already know the exact table name, or need the full stdlib module list (use list_stdlib_modules).\n\n' +
-    'Examples:\n' +
-    '1. Find frame-related tables: keyword="frame_timeline"\n' +
-    '2. Find binder tables: keyword="binder"\n' +
-    '3. Find thread state columns: keyword="thread_state"',
+    requireToolDescription('prompt-lookup-sql-schema-tool-description'),
     {
-      keyword: z.string().describe(
-        'Search keyword (e.g. "jank", "slice", "thread_state", "android_frames")'
+      keyword: z.string().optional().describe(
+        'Search keyword or exact SQL entity name. Required for auto search.'
       ),
+      detail: z.enum(['auto', 'full']).optional().describe('auto returns exact-name definitions and a catalog of other matches; full reads the exact locator.'),
+      locator: z.object({source: z.enum(['stdlib_docs', 'legacy_index']), name: z.string(), module: z.string(), type: z.string()})
+        .optional().describe('Copy a returned locator for full detail, including its source and empty module/type strings.'),
+      offset: z.number().int().min(0).optional().describe('Search page offset; default 0.'),
+      limit: z.number().int().min(1).max(30).optional().describe('Search page size; default 30. Use hasMore and nextOffset.'),
     },
-    async ({ keyword }) => {
+    async ({keyword, detail, locator, offset, limit}) => {
       const schema = loadSqlSchema();
-      const lower = keyword.toLowerCase();
-      const docResults = searchPerfettoSqlDocs(keyword, { limit: 30 });
+      if (detail === 'full') {
+        if (!locator || !['stdlib_docs', 'legacy_index'].includes(locator.source)
+            || ![locator.name, locator.module, locator.type].every(value => typeof value === 'string')) {
+          return createRuntimeToolResult({success: false, reason: 'schema_locator_required'}, {isError: true});
+        }
+        const entries = locator.source === 'stdlib_docs'
+          ? findPerfettoSqlDocDefinitions(locator).map(compactSqlDocEntry)
+          : schema.templates.filter(entry => entry.name === locator.name && (entry.module ?? '') === locator.module
+            && (entry.type ?? '') === locator.type).map(compactLegacySqlSchemaEntry);
+        if (entries.length !== 1) return createRuntimeToolResult({success: false,
+          reason: entries.length > 1 ? 'schema_locator_ambiguous' : 'schema_definition_unavailable'}, {isError: true});
+        return createRuntimeToolResult({success: true, totalMatches: 1, returned: 1, hasMore: false,
+          entries: [sqlSchemaEntryView(entries[0], locator.source, true)]});
+      }
+      const pageOffset = offset ?? 0, pageLimit = limit ?? 30;
+      if ((detail !== undefined && detail !== 'auto') || typeof keyword !== 'string' || !keyword.trim()
+          || !Number.isSafeInteger(pageOffset) || pageOffset < 0
+          || !Number.isSafeInteger(pageLimit) || pageLimit < 1 || pageLimit > 30) {
+        return createRuntimeToolResult({success: false, reason: 'schema_search_arguments_invalid'}, {isError: true});
+      }
+      const lower = keyword.trim().toLowerCase();
+      const docResults = searchAllPerfettoSqlDocs(keyword);
 
       // P2-G8: Token-based fuzzy matching — split keyword into tokens and match independently
       const tokens = lower.split(/[\s_]+/).filter(t => t.length >= 2);
@@ -3719,17 +3777,22 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
       }
 
-      const entries = Array.from(merged.values())
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 30)
-        .map(item => ({ ...item.entry, source: item.source }));
+      const matches = Array.from(merged.values()).sort((a, b) => b.score - a.score);
+      const entries = matches.slice(pageOffset, pageOffset + pageLimit)
+        .map(item => sqlSchemaEntryView(item.entry, item.source, String(item.entry.name).toLowerCase() === lower));
+      const nextOffset = pageOffset + entries.length;
 
       return {
         _meta: runtimeToolReceiptMetadata({success: true}),
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
-            totalMatches: entries.length,
+            totalMatches: matches.length,
+            returned: entries.length,
+            offset: pageOffset,
+            limit: pageLimit,
+            hasMore: nextOffset < matches.length,
+            ...(nextOffset < matches.length ? {nextOffset} : {}),
             sources: {
               stdlibDocs: docResults.length,
               legacyIndex: scored.length,
@@ -6873,7 +6936,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const processIdentityWarning = rawSqlProcessIdentityWarning(normalizedSql);
         const success = !result.error;
         const executionWitness = success ? captureRawSqlEvidence(result, {traceId: targetTraceId, traceSide: trace}) : undefined;
-        const columnUnits = projectEvidenceColumnUnitsForModel(
+        const evidenceMetadata = projectModelEvidenceMetadata(
           {columns: result.columns, rows: result.rows}, executionWitness);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
@@ -6925,7 +6988,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
             summary: summaryResult,
-            ...(columnUnits ? {columnUnits} : {}),
+            ...evidenceMetadata,
             totalRows: result.rows.length,
             ...(sqlArtifact ? {
               artifactId: sqlArtifact.artifactId,
@@ -6982,7 +7045,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           traceProvenance,
           columns: result.columns,
           rows,
-          ...(columnUnits ? {columnUnits} : {}),
+          ...evidenceMetadata,
           totalRows: result.rows.length,
           truncated,
           durationMs,
@@ -7676,8 +7739,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
   const checkConclusionDraft = tool(
     'check_conclusion_draft', requireToolDescription('prompt-draft-declaration-diagnostics-tool-description'),
-    {body: z.string().max(DRAFT_DECLARATION_MAX_BYTES), declarationJson: z.string().max(DRAFT_DECLARATION_MAX_BYTES)},
-    async ({body, declarationJson}, extra) => {
+    {
+      diagnosticMode: z.enum(['claims_only', 'presentation']).optional().describe(
+        'claims_only checks selected claims without body or presentation. presentation (or omitted mode) requires the complete body.'),
+      body: preserveRuntimeLiteralStrings(z.string().max(DRAFT_DECLARATION_MAX_BYTES).optional().describe(
+        'Complete body for presentation checks; omit in claims_only. Character guard is separate from the 65536-byte UTF-8 input budget.')),
+      declarationJson: z.string().max(DRAFT_DECLARATION_MAX_BYTES).describe(
+        'JSON text for the targeted declaration, not the whole final report. UTF-8 input budget: 65536 bytes; character maxLength alone does not guarantee it fits.'),
+    },
+    async ({diagnosticMode, body, declarationJson}, extra) => {
       const refusal = (reason: string) => createRuntimeToolResult({diagnosticOnly: true, coverageNotChecked: true,
         finalCertification: false, state: 'unavailable', reason, success: false}, {isError: true});
       if (options.conversationTraceAttached === false) return refusal('trace_not_attached');
@@ -7689,7 +7759,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         allowedTraces: [{traceId, traceSide: 'current'}, ...(options.referenceTraceId
           ? [{traceId: options.referenceTraceId, traceSide: 'reference' as const}] : [])],
       }) : undefined;
-      const diagnostic = await diagnoseConclusionDraft({body, declarationJson, runId, sessionId, readView,
+      const diagnostic = await diagnoseConclusionDraft({diagnosticMode, body, declarationJson, runId, sessionId, readView,
         signal: (extra as {signal?: AbortSignal} | undefined)?.signal,
         assertCurrent: () => {
           options.runAuthorization?.assertCurrentInTurn();

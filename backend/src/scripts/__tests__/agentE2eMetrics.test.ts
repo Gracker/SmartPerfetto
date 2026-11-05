@@ -4,6 +4,7 @@
 import {createHash} from 'node:crypto';
 import {projectAgentE2ePerformance, readAgentE2eMetrics} from '../agentE2eMetrics';
 import {measureModelRequestBody} from '../../agentRuntime/modelRequestMetrics';
+import {RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS} from '../../agentRuntime/runtimePerformance';
 import type {RunManifestV1} from '../../types/selfEvolution';
 
 const performance = {
@@ -19,7 +20,87 @@ const identity = {runId: 'run-a', sessionId: 'session-a', scope: {tenantId: 'ten
 const manifest = {...identity, schemaVersion: 1, sealedAt: 60, wallclockMs: 60, runtime: 'openai-agents-sdk',
   model: 'deepseek-flash', providerSnapshotHash: 'a'.repeat(64), performance} as unknown as RunManifestV1;
 
+const policyObservation = {schemaVersion: 'model_execution_policy@1', purpose: 'review', selection: 'minimum_legal_candidate',
+  executionFingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: `sha256:${'b'.repeat(64)}`},
+  authored: 'absent', sdkEffective: 'unknown', mapped: {mode: 'disabled'}, outcome: 'candidate_applied',
+  reason: 'candidate_minimum_legal', wireObservation: 'not_observed', observationOrdinal: 1, observedOffsetMs: 12};
+
 describe('same-process E2E metrics artifact', () => {
+  it.each(['canonical_v1', 'authoring_v1', 'authoring_v2'] as const)('preserves requested syntax %s without inventing observed codec state', syntax => {
+    const result = readAgentE2eMetrics(identity, () => ({...manifest, conclusionDeclarationSyntax: syntax} as RunManifestV1));
+    expect(result).toMatchObject({status: 'sealed', conclusionDeclarationSyntax: syntax});
+    expect(JSON.stringify(result)).not.toContain('declarationAuthoringVersion');
+    expect(readAgentE2eMetrics(identity, () => manifest as RunManifestV1)).not.toHaveProperty('conclusionDeclarationSyntax');
+  });
+
+  it.each(RUNTIME_DECLARATION_AUTHORING_VERSIONS)('exports actual %s only with a successful codec observation', version => {
+    const output = {...performance.modelCalls[0].output, declarationAuthoringStatus: 'expanded', declarationAuthoringVersion: version};
+    expect(projectAgentE2ePerformance({...performance, modelCalls: [{...performance.modelCalls[0], output}]}).modelCalls?.[0])
+      .toMatchObject({output});
+    for (const status of ['invalid', 'not_observed', undefined]) {
+      const stored = {...manifest, performance: {...performance, modelCalls: [{...performance.modelCalls[0],
+        output: {...output, declarationAuthoringStatus: status}}]}};
+      expect(readAgentE2eMetrics(identity, () => stored as unknown as RunManifestV1)).toEqual({
+        schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+    }
+  });
+
+  it('rejects unknown stored syntax and observed version without echoing the values', () => {
+    expect(readAgentE2eMetrics(identity, () => ({...manifest, conclusionDeclarationSyntax: 'PRIVATE_VERSION_CANARY'} as unknown as RunManifestV1)))
+      .toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+    const stored = {...manifest, performance: {...performance, modelCalls: [{...performance.modelCalls[0], output: {
+      ...performance.modelCalls[0].output, declarationAuthoringStatus: 'expanded', declarationAuthoringVersion: 'PRIVATE_VERSION_CANARY',
+    }}]}};
+    expect(readAgentE2eMetrics(identity, () => stored as unknown as RunManifestV1)).toEqual({
+      schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+  });
+
+  it.each(RUNTIME_DECLARATION_AUTHORING_STATUSES)('preserves the observed authoring status %s as a distinct optional output field', status => {
+    const output = {...performance.modelCalls[0].output, declarationAuthoringStatus: status};
+    expect(projectAgentE2ePerformance({...performance, modelCalls: [{...performance.modelCalls[0], output}]})
+      .modelCalls?.[0]).toMatchObject({output});
+    expect(projectAgentE2ePerformance(performance).modelCalls?.[0]).toMatchObject({output: performance.modelCalls[0].output});
+    expect((projectAgentE2ePerformance(performance).modelCalls?.[0] as any).output).not.toHaveProperty('declarationAuthoringStatus');
+  });
+
+  it.each(['canonical', 'PRIVATE_CODEC_STATUS_CANARY'])('rejects forged stored authoring status %s without echoing it', status => {
+    const output = {...performance.modelCalls[0].output, declarationAuthoringStatus: status};
+    const stored = {...manifest, performance: {...performance, modelCalls: [{...performance.modelCalls[0], output}]}};
+    expect(readAgentE2eMetrics(identity, () => stored as unknown as RunManifestV1)).toEqual({
+      schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+  });
+
+  it('exports bounded policy observations independently and strips nested native content', () => {
+    const canary = 'PRIVATE_POLICY_CANARY';
+    const result = projectAgentE2ePerformance({...performance, modelCalls: [], modelRequests: [],
+      policyObservations: [{...policyObservation, modelId: canary, url: canary, rawPayload: canary,
+        executionFingerprint: {...policyObservation.executionFingerprint, headers: canary},
+        mapped: {mode: 'disabled', secret: canary}}], truncated: {policyObservations: 3}});
+    expect(result.policyObservations).toEqual([policyObservation]);
+    expect(result.modelCalls).toEqual([]);
+    expect(result.modelRequests).toEqual([]);
+    expect(result.truncated).toEqual({policyObservations: 3});
+    expect(JSON.stringify(result)).not.toContain(canary);
+    expect(projectAgentE2ePerformance(performance)).not.toHaveProperty('policyObservations');
+  });
+
+  it.each([
+    {observationOrdinal: 0}, {observationOrdinal: 1.5}, {observationOrdinal: 513}, {observationOrdinal: Number.MAX_SAFE_INTEGER + 1},
+    {observedOffsetMs: -1}, {observedOffsetMs: NaN}, {observedOffsetMs: Infinity},
+    {wireObservation: 'observed'}, {purpose: 'PRIVATE_PURPOSE'}, {reason: 'PRIVATE_REASON'},
+    {executionFingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: 'PRIVATE_FINGERPRINT'}},
+    {mapped: {mode: 'disabled', effort: 'low'}}, {sdkEffective: {mode: 'enabled', effort: 'PRIVATE_EFFORT'}},
+  ])('rejects invalid known policy values in stored metrics without quoting them: %j', mutation => {
+    const stored = {...manifest, performance: {...performance, policyObservations: [{...policyObservation, ...mutation}]}};
+    expect(readAgentE2eMetrics(identity, () => stored as unknown as RunManifestV1))
+      .toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+  });
+
+  it('rejects an oversized stored policy array instead of silently dropping observations', () => {
+    expect(readAgentE2eMetrics(identity, () => ({...manifest, performance: {...performance,
+      policyObservations: Array.from({length: 513}, () => policyObservation)}} as unknown as RunManifestV1)))
+      .toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
+  });
   it('reads the exact sealed run, preserving timings and unknown usage without exporting native content', () => {
     const read = jest.fn(() => manifest);
     const result = readAgentE2eMetrics(identity, read);
@@ -38,12 +119,14 @@ describe('same-process E2E metrics artifact', () => {
   it('projects nested whitelists even if stored data contains private fields', () => {
     const canary = 'PRIVATE_SOURCE_AND_REASONING_CANARY';
     const projected = projectAgentE2ePerformance({...performance, prompt: canary, activity: {raw: canary},
-      modelCalls: [{...performance.modelCalls[0], reasoning_content: canary, headers: {Authorization: canary},
+      modelCalls: [{...performance.modelCalls[0], reasoning: 'enabled', reasoningEffort: 'low',
+        reasoning_content: canary, headers: {Authorization: canary},
         usage: {inputTokens: 12, outputTokens: 4, source: canary}, output: {bodyChars: 12, text: canary}}],
       modelRequests: [{...performance.modelRequests[0], url: canary,
         body: {...performance.modelRequests[0].body, text: canary}}]});
     expect(JSON.stringify(projected)).not.toContain(canary);
-    expect(projected.modelCalls?.[0]).toMatchObject({usage: {inputTokens: 12, outputTokens: 4}, output: {bodyChars: 12}});
+    expect(projected.modelCalls?.[0]).toMatchObject({reasoning: 'enabled', reasoningEffort: 'low',
+      usage: {inputTokens: 12, outputTokens: 4}, output: {bodyChars: 12}});
   });
 
   it.each([

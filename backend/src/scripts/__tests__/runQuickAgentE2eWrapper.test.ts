@@ -210,6 +210,105 @@ describe('source binding acceptance', () => {
     return {...target, oracle, mapped, oracleProof, mappedProof};
   }
 
+  function pendingFixture() {
+    const lifecycle = require(path.join(backendRoot, 'scripts/llm-execution-lifecycle.cjs'));
+    const context = lifecycle.sourceFacetContext(path.dirname(backendRoot));
+    const report = nativeFixture().report;
+    const request = {schemaVersion: 'llm_execution_target_request@1', nonce: 'a'.repeat(32), side: 'base',
+      pairId: 'source-01', cellId: 'source', repetition: 1, port: 19881,
+      expectedSourceFingerprint: 'b'.repeat(64), observerFingerprint: 'c'.repeat(64),
+      configFingerprint: 'd'.repeat(64), dataRootHash: 'e'.repeat(64), sourceFacet: context.contract};
+    report.executionTarget = {status: 'matched', ...request,
+      origin: 'http://127.0.0.1:19881', processId: 123, sourceFingerprint: request.expectedSourceFingerprint,
+      declaredObserverFingerprint: request.observerFingerprint, declaredConfigFingerprint: request.configFingerprint,
+      runId: 'run', sessionId: 'session'};
+    report.executionTarget.schemaVersion = 'llm_execution_target@1';
+    Object.assign(report, {strict: true, passed: false, completeAcceptance: false, semanticAcceptance: 'INCONCLUSIVE',
+      proofAcceptance: 'PASSED', observedChecksPassed: true, hardGatesPassed: true,
+      checks: {oracle: true}, ungroupedChecks: {},
+      checkGroups: {value: {oracle: true}, proof: {proved: true}, delivery: {native: true}},
+      uncoveredFacets: [lifecycle.SOURCE_FACET.facetId], query: context.inputs.query.text, sessionId: 'session',
+      runIdentity: {runtime: 'openai-agents-sdk', query: context.inputs.query.text, expectationHash: context.contract.expectationHash,
+        traceSha256: context.contract.traceSha256},
+      executionMetrics: {schemaVersion: 'llm_execution_metrics_artifact@1', status: 'sealed',
+        runId: 'run', sessionId: 'session', runtime: 'openai-agents-sdk', sealedAt: 100, wallclockMs: 100}});
+    report.analysisContext.codeAwareMode = 'provider_send';
+    report.taskVerification.uncoveredFacets = [...report.uncoveredFacets];
+    Object.assign(report.summary.terminalAnalysis, {conclusion: 'Synthetic source mechanism and action.',
+      completion: {schemaVersion: 1, status: 'completed', runId: 'run', runtimeKind: 'openai-agents-sdk'}});
+    return {report, request, lifecycle, evaluate: () => lifecycle.evaluateSourceFacetPending(report, request, path.dirname(backendRoot))};
+  }
+
+  it('retains strict source incompleteness while admitting only the closed automatic A2 pending protocol', () => {
+    const target = pendingFixture(), before = structuredClone(target.report);
+    expect(target.evaluate()).toMatchObject({facetId: 'source recommendation action semantics',
+      disposition: 'collected_pending_independent_review', exitCode: 3});
+    expect(target.report).toEqual(before);
+  });
+
+  it.each(['noProtocol', 'extraFacet', 'value', 'unitProof', 'partial', 'wrongTrace', 'wrongWindow', 'wrongSource',
+    'indexed', 'permission', 'canaryLeak', 'noCanaryCoverage', 'extraGate', 'wrongExpectation',
+    'completionRun', 'completionRuntime', 'completionSchema', 'completionLimit', 'metricRuntime'])(
+    'cannot issue a pending source token with %s', change => {
+      const target = pendingFixture(), report = target.report;
+      if (change === 'noProtocol') delete target.request.sourceFacet;
+      if (change === 'extraFacet') report.uncoveredFacets.push('another unknown facet');
+      if (change === 'value') report.taskVerification.facts.source_marker_duration.matched = false;
+      if (change === 'unitProof') report.checkGroups.proof.proved = false;
+      if (change === 'partial') report.summary.analysisCompletedPartial = true;
+      if (change === 'wrongTrace') report.summary.terminalAnalysis.claimSupport[0].anchors[0].context.traceId = 'foreign';
+      if (change === 'wrongWindow') report.summary.terminalAnalysis.claimVerificationResult.claimResults[1].deterministicProof.nativeRows[0].id = 99;
+      if (change === 'wrongSource') report.summary.analysisCompletedSourceUseDecision.references[0].filePath = 'Other.kt';
+      if (change === 'indexed') report.analysisContext.setup.codebases[0].activeIndexState = 'active';
+      if (change === 'permission') report.analysisContext.codeAwareMode = 'off';
+      if (change === 'canaryLeak') report.summary.terminalAnalysis.conclusion += 'SEMANTIC_DELTA_PRIVATE_SOURCE_CANARY_NEVER_EMIT';
+      if (change === 'noCanaryCoverage') report.summary.analysisCompletedSourceUseDecision.references[0].lineRange.start = canaryLine + 1;
+      if (change === 'extraGate') report.ungroupedChecks.additional = false;
+      if (change === 'wrongExpectation') report.runIdentity.expectationHash = 'f'.repeat(64);
+      if (change === 'completionRun') report.summary.terminalAnalysis.completion.runId = 'foreign-run';
+      if (change === 'completionRuntime') report.summary.terminalAnalysis.completion.runtimeKind = 'opencode';
+      if (change === 'completionSchema') delete report.summary.terminalAnalysis.completion.schemaVersion;
+      if (change === 'completionLimit') report.summary.terminalAnalysis.completion.reason = 'turn_limit';
+      if (change === 'metricRuntime') report.runIdentity.runtime = 'opencode';
+      expect(target.evaluate()).toBeUndefined();
+    });
+
+  it.each(['normal', 'cleanupError', 'flushError', 'finallyError', 'nonzero', 'forgedToken', 'changedReport', 'existingReceipt'])(
+    'settles the source receipt only after normal main/finally/cleanup/flush: %s', async change => {
+      const target = pendingFixture(), directory = fs.mkdtempSync(path.join(os.tmpdir(), 'source-settlement-'));
+      const reportPath = path.join(directory, 'report.json');
+      const before = JSON.stringify(target.report);
+      fs.writeFileSync(reportPath, before);
+      const receiptPath = path.join(directory, target.lifecycle.SOURCE_FACET.receiptFile);
+      const settlement = target.lifecycle.createSourceFacetSettlement({repositoryRoot: path.dirname(backendRoot),
+        reportPath, request: target.request});
+      const token = settlement.issue(target.report);
+      const order: string[] = [];
+      if (change === 'changedReport') fs.appendFileSync(reportPath, ' ');
+      if (change === 'existingReceipt') fs.writeFileSync(receiptPath, 'do not overwrite');
+      const finish = async () => {
+        // A rejection from finally never reaches settlement.
+        if (change === 'finallyError') throw new Error('finally');
+        return settlement.settle(change === 'forgedToken' ? {} : token, {
+          cleanup: () => {order.push('cleanup'); if (change === 'cleanupError') throw new Error('cleanup');},
+          flush: async () => {order.push('flush'); if (change === 'flushError') throw new Error('flush');},
+          exitCode: () => change === 'nonzero' ? 1 : undefined});
+      };
+      try {
+        if (change === 'normal') {
+          expect(await finish()).toBe(3);
+          expect(order).toEqual(['cleanup', 'flush']);
+          expect(JSON.parse(fs.readFileSync(receiptPath, 'utf8'))).toMatchObject({exitCode: 3,
+            rawReportSha256: target.lifecycle.hash(before)});
+          expect(fs.readFileSync(reportPath, 'utf8')).toBe(before);
+        } else {
+          await expect(finish()).rejects.toThrow();
+          expect(fs.existsSync(receiptPath)).toBe(change === 'existingReceipt');
+          if (change === 'existingReceipt') expect(fs.readFileSync(receiptPath, 'utf8')).toBe('do not overwrite');
+        }
+      } finally {fs.rmSync(directory, {recursive: true, force: true});}
+    });
+
   it('joins two current finite proofs by native row identity without changing the source claim status', () => {
     const target = nativeFixture();
     const before = structuredClone(target.report);
@@ -1214,6 +1313,92 @@ describe('DeepSeek Flash provider-bound E2E harness', () => {
     });
     expect(spawn).not.toHaveBeenCalled();
     expect(fs.readFileSync(paired, 'utf8')).toBe('prior-paired-summary');
+  });
+
+
+  it('prepares an explicitly pinned child from one captured environment without global or instance mutation', () => {
+    Object.assign(process.env, {OPENAI_MAX_OUTPUT_TOKENS: '8192', QODER_PERSONAL_ACCESS_TOKEN: 'global-qoder-token',
+      SMARTPERFETTO_OPENCODE_MODEL_JSON: 'global-override-must-not-be-read'});
+    const before = {...process.env};
+    const captured = Object.freeze({DEEPSEEK_API_KEY: 'captured-deepseek-key', GLM_API_KEY: 'captured-glm-key',
+      OPENAI_MAX_OUTPUT_TOKENS: '1234', OPENAI_FULL_PER_TURN_MS: '2345',
+      QODER_PERSONAL_ACCESS_TOKEN: 'captured-qoder-token', OPENAI_BASE_URL: 'https://wrong.example/v1'});
+    for (const [harness, provider, model, origin] of [
+      [wrapper, 'deepseek', 'deepseek-flash', 'https://api.deepseek.com/v1'],
+      [require(glmPath), 'zai-coding-cn', 'glm-5.3-flash', 'https://open.bigmodel.cn/api/coding/paas/v4'],
+    ] as const) {
+      for (const runtimeKind of ['openai-agents-sdk', 'opencode', 'qoder-agent-sdk']) {
+        const prepared = harness.prepareProviderChild({runtimeKind, isolatedRoot: directory,
+          provider, model, lightModel: model}, captured);
+        expect(prepared.configuration).toEqual({provider, model, lightModel: model, baseUrl: origin});
+        expect(prepared.availability.available).toBe(true);
+        expect(prepared.env).toMatchObject({OPENAI_BASE_URL: origin, OPENAI_MODEL: model, OPENAI_LIGHT_MODEL: model,
+          OPENAI_API_KEY: provider === 'deepseek' ? 'captured-deepseek-key' : 'captured-glm-key',
+          OPENAI_MAX_OUTPUT_TOKENS: '1234', OPENAI_FULL_PER_TURN_MS: '2345'});
+        expect(prepared.env.QODER_PERSONAL_ACCESS_TOKEN).toBe(runtimeKind === 'qoder-agent-sdk' ? 'captured-qoder-token' : undefined);
+      }
+    }
+    expect(process.env).toEqual(before);
+    expect(captured.OPENAI_BASE_URL).toBe('https://wrong.example/v1');
+    expect(require(glmPath).providerConfiguration().model).toBe('glm-5.3');
+  });
+
+  it('does not prepare an authenticated child from a global key missing in the captured environment', () => {
+    const prepared = wrapper.prepareProviderChild({runtimeKind: 'openai-agents-sdk', isolatedRoot: directory,
+      provider: 'deepseek', model: 'deepseek-flash', lightModel: 'deepseek-flash'}, {OPENAI_API_KEY: 'unrelated-key'});
+    expect(prepared.availability).toEqual({available: false, reason: 'DEEPSEEK_API_KEY_MISSING'});
+    expect(prepared.env).toBeUndefined();
+  });
+
+  it('applies the same route/model and native override validation to controller preparation', () => {
+    const input = {runtimeKind: 'opencode', isolatedRoot: directory,
+      provider: 'deepseek', model: 'deepseek-flash', lightModel: 'deepseek-flash'};
+    const captured = {DEEPSEEK_API_KEY: 'captured-key'};
+    expect(() => wrapper.prepareProviderChild({...input, provider: 'zai-coding-cn'}, captured)).toThrow('requires --provider deepseek');
+    expect(() => wrapper.prepareProviderChild({...input, baseUrl: 'https://other.example/v1'}, captured)).toThrow('other endpoints');
+    expect(() => wrapper.prepareProviderChild({...input, model: 'deepseek-v4-pro'}, captured)).toThrow('requires --model deepseek-flash');
+    expect(() => wrapper.prepareProviderChild(input, {...captured,
+      SMARTPERFETTO_OPENCODE_MODEL_JSON: JSON.stringify({providerID: 'other'})})).toThrow('OpenCode model JSON must match');
+  });
+
+  it('keeps legacy unpinned Claude outside controller preparation while preserving its explicit environment API', () => {
+    process.env.ANTHROPIC_AUTH_TOKEN = 'global-anthropic-key';
+    const glm = require(glmPath);
+    const captured = Object.freeze({ANTHROPIC_AUTH_TOKEN: 'captured-anthropic-key', CLAUDE_MODEL: 'configured-native-model',
+      QODER_PERSONAL_ACCESS_TOKEN: 'never-pass-to-claude'});
+    const prepared = glm.prepareProviderChild({runtimeKind: 'claude-agent-sdk', isolatedRoot: directory,
+      provider: 'zai-coding-cn', model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash'}, captured);
+    expect(prepared.availability).toEqual({available: false, reason: 'PROVIDER_BOUND_PREPARATION_UNAVAILABLE'});
+    expect(prepared.env).toBeUndefined();
+    const legacy = glm.buildSemanticChildEnv('claude-agent-sdk', {available: true}, directory, captured);
+    expect(legacy.ANTHROPIC_AUTH_TOKEN).toBe('captured-anthropic-key');
+    expect(legacy.CLAUDE_MODEL).toBe('configured-native-model');
+    expect(legacy.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+    const deepseek = wrapper.prepareProviderChild({runtimeKind: 'claude-agent-sdk', isolatedRoot: directory,
+      provider: 'deepseek', model: 'deepseek-flash', lightModel: 'deepseek-flash'}, {DEEPSEEK_API_KEY: 'captured-deepseek-key'});
+    expect(deepseek.env).toMatchObject({ANTHROPIC_AUTH_TOKEN: 'captured-deepseek-key',
+      ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic', CLAUDE_MODEL: 'deepseek-flash'});
+  });
+
+  it('prepares Pi from the captured environment and installed metadata without reading a global override', () => {
+    process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON = 'global-override-must-not-be-read';
+    const spawn = jest.fn((_command: string, args: string[], options: any) => {
+      expect(args[0]).toBe('--input-type=module');
+      expect(options.env.GLM_API_KEY).toBe('captured-glm-key');
+      expect(options.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON).toBeUndefined();
+      return {status: 0, stdout: JSON.stringify({model: {id: 'glm-5.3-flash', provider: 'zai-coding-cn',
+        contextWindow: 1000000, maxTokens: 128000}, supportedThinkingLevels: ['low', 'high']})};
+    });
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const isolated = require(glmPath);
+      const prepared = isolated.prepareProviderChild({runtimeKind: 'pi-agent-core', isolatedRoot: directory,
+        provider: 'zai-coding-cn', model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash'}, {GLM_API_KEY: 'captured-glm-key'});
+      expect(prepared.availability.available).toBe(true);
+      expect(JSON.parse(prepared.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON)).toMatchObject({id: 'glm-5.3-flash',
+        baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', apiKeyEnv: 'GLM_API_KEY'});
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 
 });

@@ -47,6 +47,50 @@ describe('provider runtime snapshot hash', () => {
     },
   };
 
+  it('binds only explicit valid analysis effort and preserves the absent env snapshot', () => {
+    const keys = ['SMARTPERFETTO_AGENT_RUNTIME', 'OPENAI_ANALYSIS_REASONING_EFFORT'] as const;
+    const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    try {
+      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+      delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
+      const absent = resolveProviderRuntimeSnapshot(svc, null);
+      expect(absent.snapshot.environment).not.toHaveProperty('OPENAI_ANALYSIS_REASONING_EFFORT');
+      process.env.OPENAI_ANALYSIS_REASONING_EFFORT = 'low';
+      const low = resolveProviderRuntimeSnapshot(svc, null);
+      expect(low.snapshot.environment.OPENAI_ANALYSIS_REASONING_EFFORT).toBe('low');
+      expect(low.snapshotHash).not.toBe(absent.snapshotHash);
+      process.env.OPENAI_ANALYSIS_REASONING_EFFORT = 'high';
+      expect(resolveProviderRuntimeSnapshot(svc, null).snapshotHash).not.toBe(low.snapshotHash);
+      expect(low.snapshot.environment.OPENAI_ANALYSIS_REASONING_EFFORT).toBe('low');
+      for (const value of ['', ' low', 'PRIVATE_SNAPSHOT_CANARY']) {
+        process.env.OPENAI_ANALYSIS_REASONING_EFFORT = value;
+        expect(() => resolveProviderRuntimeSnapshot(svc, null))
+          .toThrow(/^invalid_configuration:openai_analysis_reasoning_effort$/);
+      }
+      delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
+      expect(resolveProviderRuntimeSnapshot(svc, null).snapshotHash).toBe(absent.snapshotHash);
+    } finally {
+      for (const key of keys) {
+        if (original[key] === undefined) delete process.env[key]; else process.env[key] = original[key];
+      }
+    }
+  });
+
+  it('does not inherit ambient analysis effort into another provider pin', () => {
+    const previous = process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
+    try {
+      const provider = svc.create(openAIProvider);
+      const before = resolveProviderRuntimeSnapshot(svc, provider.id);
+      process.env.OPENAI_ANALYSIS_REASONING_EFFORT = 'PRIVATE_AMBIENT_EFFORT';
+      const after = resolveProviderRuntimeSnapshot(svc, provider.id);
+      expect(after.snapshotHash).toBe(before.snapshotHash);
+      expect(after.snapshot.environment).not.toHaveProperty('OPENAI_ANALYSIS_REASONING_EFFORT');
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
+      else process.env.OPENAI_ANALYSIS_REASONING_EFFORT = previous;
+    }
+  });
+
   it('is stable across activation-only metadata changes', () => {
     const provider = svc.create(openAIProvider);
     const before = resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash;

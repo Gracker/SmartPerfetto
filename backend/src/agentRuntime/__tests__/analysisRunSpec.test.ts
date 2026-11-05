@@ -14,6 +14,7 @@ import {
 } from '../runtimeCommon';
 import { createAnalysisRunSpec, validateAnalysisRunSelection } from '../analysisRunSpec';
 import {listProductionRuntimeKinds} from '../runtimeKinds';
+import {CONCLUSION_AUTHORING_ENV} from '../../agent/core/conclusionAuthoring';
 
 const claudeSelection: RuntimeSelection = {
   kind: 'claude-agent-sdk',
@@ -29,6 +30,28 @@ const openAiSelection: RuntimeSelection = {
 };
 
 describe('AnalysisRunSpec shadow mode', () => {
+  it.each(['authoring_v1', 'authoring_v2'] as const)('captures %s once and records that value without accepting client fields', syntax => {
+    const previous = process.env[CONCLUSION_AUTHORING_ENV];
+    const recordRuntime = jest.fn();
+    const sink = {identity: {runId: 'syntax-run', sessionId: 'syntax-session', scope: {tenantId: 't', workspaceId: 'w'}},
+      recordScene: jest.fn(), recordMode: jest.fn(), recordRuntime} as unknown as RunManifestAttributionSink;
+    try {
+      process.env[CONCLUSION_AUTHORING_ENV] = syntax;
+      const spec = createAnalysisRunSpec({query: 'Analyze', sessionId: 'syntax-session', traceId: 'trace',
+        runtimeSelection: openAiSelection, sceneType: 'general', outputLanguage: 'en',
+        options: {runManifestAttributionSink: sink, declarationSyntax: 'canonical_v1'} as AnalysisOptions});
+      process.env[CONCLUSION_AUTHORING_ENV] = 'canonical_v1';
+      expect(spec.declarationSyntax).toBe(syntax);
+      expect(recordRuntime).toHaveBeenCalledWith(expect.objectContaining({conclusionDeclarationSyntax: syntax}));
+      process.env[CONCLUSION_AUTHORING_ENV] = 'PRIVATE_INVALID_VALUE';
+      expect(() => createAnalysisRunSpec({query: 'Analyze', sessionId: 'syntax-session', traceId: 'trace',
+        runtimeSelection: openAiSelection, sceneType: 'general', outputLanguage: 'en'}))
+        .toThrow('invalid_configuration:conclusion_authoring');
+    } finally {
+      if (previous === undefined) delete process.env[CONCLUSION_AUTHORING_ENV];
+      else process.env[CONCLUSION_AUTHORING_ENV] = previous;
+    }
+  });
   it('captures shared identity, scope, trace, selection, and tool inputs without owning execution', () => {
     const options: AnalysisOptions = {
       providerId: 'provider-claude',
@@ -129,6 +152,25 @@ describe('AnalysisRunSpec shadow mode', () => {
     expect(create('trace-reference', pair)).toMatchObject({present: true, sideResolution: {status: 'unknown'}});
     expect(create(undefined, pair)).toMatchObject({present: true, sideResolution: {status: 'unknown'}});
     expect(create('trace-reference')).toMatchObject({present: true, sideResolution: {status: 'unknown'}});
+  });
+
+  it('retains only the optional slice locator hint without granting paired trace authority', () => {
+    const create = (nativeTable?: unknown, referenceTraceId?: string) => createAnalysisRunSpec({
+      query: 'selected event', sessionId: 'session', traceId: 'trace-current',
+      options: {selectionContext: {kind: 'track_event', eventId: 7, ts: 42,
+        ...(nativeTable === undefined ? {} : {nativeTable})} as any, referenceTraceId},
+      runtimeSelection: openAiSelection, sceneType: 'general', outputLanguage: 'en'}).selection;
+    const selected = create('slice');
+    expect(selected).toMatchObject({present: true, context: {nativeTable: 'slice'}});
+    expect(validateAnalysisRunSelection(selected)).toEqual(selected);
+    expect(Object.isFrozen(selected.present && selected.context)).toBe(true);
+    expect(create('slice', 'reference')).toMatchObject({sideResolution: {status: 'unknown'}});
+    const legacy = create();
+    expect(legacy).toMatchObject({present: true});
+    expect(legacy.present && legacy.context).not.toHaveProperty('nativeTable');
+    for (const value of ['thread_state', 'Slice', '', null, true, {}]) {
+      expect(() => create(value)).toThrow('analysis_run_selection_invalid');
+    }
   });
 
   it('rejects invalid bypass inputs and noncanonical attached selections instead of erasing them', () => {
@@ -294,6 +336,7 @@ describe('AnalysisRunSpec shadow mode', () => {
         providerId: `provider-${runtimeKind}`,
         model: `model-${runtimeKind}`,
         outputLanguage: 'en',
+        conclusionDeclarationSyntax: spec.declarationSyntax,
       });
     },
   );

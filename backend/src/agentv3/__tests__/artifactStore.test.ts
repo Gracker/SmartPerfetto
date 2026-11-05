@@ -9,6 +9,7 @@ import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorC
 import {sanitizeQueryReview} from '../../types/queryReviewContract';
 import {ArtifactStore, EVIDENCE_RETENTION_CELLS_ENV, RETAINED_EVIDENCE_CAPTURE_CEILING} from '../artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
+import {attachInvestigationEvidence} from '../../services/evidence/investigationEvidenceLedger';
 import {MAX_EVIDENCE_READ_REFERENCES} from '../../services/evidence/evidenceReadView';
 import type {EvidenceScopeProvenanceV1} from '../../types/identityContract';
 
@@ -26,6 +27,20 @@ describe('ArtifactStore evidence retention', () => {
   };
   const readView = (store: ArtifactStore) => store.createEvidenceReadView({
     ownerKey: 'owner', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]});
+
+  it('reports evidence availability from the backing capture rather than an empty page or restored flags', () => {
+    const store = new ArtifactStore();
+    const id = storeCaptured(store, 1, 2);
+    const available = {captureRows: 'available', columnUnits: 'unknown', registeredMetricBinding: 'absent'};
+    expect(store.fetch(id, 'rows', 20, 5)).toMatchObject({rows: [], totalRows: 2, hasMore: false, modelEvidence: available});
+    const snapshot = JSON.parse(JSON.stringify(store.serialize()));
+    snapshot[0].modelEvidence = {captureRows: 'available', columnUnits: 'available', registeredMetricBinding: 'present'};
+    const restored = ArtifactStore.fromSnapshot(snapshot);
+    expect(restored.fetch(id, 'summary')).toMatchObject({modelEvidence: {
+      captureRows: 'unavailable', columnUnits: 'unknown', registeredMetricBinding: 'unknown'}});
+    expect(JSON.stringify(store.serialize())).not.toContain('modelEvidence');
+    expect(JSON.stringify(restored.serialize())).not.toContain('modelEvidence');
+  });
 
   it('answers a citation to the first evidence of a long run', async () => {
     // A real run produced 55 artifacts against a 50-entry payload cache; its
@@ -139,6 +154,8 @@ describe('ArtifactStore evidence retention', () => {
       }), {evidenceRefId: 'second'});
 
       expect(store.fetch(first, 'summary')).not.toHaveProperty('columnUnits');
+      expect(store.fetch(first, 'summary')).toMatchObject({modelEvidence: {
+        captureRows: 'unavailable', columnUnits: 'unknown', registeredMetricBinding: 'unknown'}});
       expect(store.fetch(second, 'summary')).toMatchObject({columnUnits: {busy_pct: '%'}});
     } finally {
       delete process.env[EVIDENCE_RETENTION_CELLS_ENV];
@@ -147,6 +164,42 @@ describe('ArtifactStore evidence retention', () => {
 });
 
 describe('ArtifactStore', () => {
+  it.each([0, 3])('keeps private binding and empty/partial capture facts identical across artifact surfaces: rows=%s', rowCount => {
+    const store = new ArtifactStore();
+    const data = {columns: ['start', 'end', 'duration', 'status'],
+      rows: Array.from({length: rowCount}, (_, index) => [index, index + 1, 1, 'partial'])};
+    const witness = captureEvidenceTable(data, {duration: {unit: 'ns',
+      origin: {kind: 'skill_literal', definitionFingerprint: 'private-definition'}}});
+    attachInvestigationEvidence(witness, {skillId: 'custom_producer', stepId: 'root', traceId: 'trace',
+      definitionFingerprint: 'private-definition', selectedSqlHash: 'private-sql',
+      declaration: {window: {start: 'start', end: 'end'}, metrics: [{domain: 'fixture', metric_id: 'custom.metric',
+        value: 'duration', unit: 'ns', status: 'status'}]}});
+    // The public skill label cannot confer or erase the witness's actual binding.
+    const id = store.store({skillId: 'execute_sql', data, executionStatus: rowCount ? 'observed' : 'empty',
+      traceProvenance: {traceId: 'trace', traceSide: 'current'} as never});
+    store.registerEvidenceCapture(id, witness, {evidenceRefId: 'evidence-custom'});
+    const expected = {captureRows: rowCount ? 'available' : 'empty', columnUnits: 'available', registeredMetricBinding: 'present'};
+    for (const result of [store.generateSummary(id), store.generateCompactSummary(id),
+      store.fetch(id, 'summary'), store.fetch(id, 'rows', 100, 1), store.fetch(id, 'full')]) {
+      expect(result).toMatchObject({modelEvidence: expected});
+      expect(JSON.stringify(result)).not.toMatch(/private-definition|private-sql|proofEligible|verified/);
+    }
+    expect(store.fetch(id, 'rows', 100, 1)).toMatchObject({rows: [], totalRows: rowCount});
+    const otherStore = ArtifactStore.fromSnapshot(JSON.parse(JSON.stringify(store.serialize())));
+    expect(otherStore.fetch(id, 'rows')).toMatchObject({modelEvidence: {
+      captureRows: 'unavailable', columnUnits: 'unknown', registeredMetricBinding: 'unknown'}});
+  });
+
+  it('does not treat a capped full fetch as a complete or empty capture', () => {
+    const store = new ArtifactStore();
+    const data = {columns: ['value'], rows: Array.from({length: ArtifactStore.MAX_FULL_ROWS + 1}, (_, i) => [i])};
+    const id = store.store({skillId: 'raw', data});
+    store.registerEvidenceCapture(id, captureEvidenceTable(data), {evidenceRefId: 'large'});
+    expect(store.fetch(id, 'full')).toMatchObject({truncated: true, totalRows: data.rows.length,
+      modelEvidence: {captureRows: 'available', columnUnits: 'unknown', registeredMetricBinding: 'absent'}});
+    expect(store.fetch(id, 'full').data.rows).toHaveLength(ArtifactStore.MAX_FULL_ROWS);
+  });
+
   it('projects live producer units on every fetch surface without persisting them', () => {
     const store = new ArtifactStore();
     const origin = {kind: 'skill_literal' as const, definitionFingerprint: 'artifact-v1', skillId: 'fixture'};
@@ -159,11 +212,13 @@ describe('ArtifactStore', () => {
 
     for (const projection of [store.generateSummary(id), store.generateCompactSummary(id),
       store.fetch(id, 'summary'), store.fetch(id, 'rows'), store.fetch(id, 'full')]) {
-      expect(projection).toMatchObject({columnUnits: {ttid_ms: 'ms', busy_pct: '%'}});
+      expect(projection).toMatchObject({columnUnits: {ttid_ms: 'ms', busy_pct: '%'}, modelEvidence: {
+        captureRows: 'available', columnUnits: 'available', registeredMetricBinding: 'absent'}});
       expect(projection.columnUnits).not.toHaveProperty('ambiguous_pct');
     }
     const snapshot = JSON.parse(JSON.stringify(store.serialize()));
     expect(JSON.stringify(snapshot)).not.toContain('columnUnits');
+    expect(JSON.stringify(snapshot)).not.toContain('modelEvidence');
     const restored = ArtifactStore.fromSnapshot(snapshot);
     for (const projection of [restored.generateSummary(id), restored.generateCompactSummary(id),
       restored.fetch(id, 'summary'), restored.fetch(id, 'rows'), restored.fetch(id, 'full')]) {

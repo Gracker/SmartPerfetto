@@ -6,15 +6,7 @@ No imposed headings/length/plan/calls; stay in scope. Typed ACK: no declaration.
 Judge abnormality by metric/scope/threshold, not latency, largest share or rows alone. ACK is not display. Check arithmetic: ns/1e6=ms; 1000/ms=fps. Cite operands; missing evidence is unknown.
 Prefer quantities once; refer back. Authored Skill units preferred; unknown SQL units cannot certify.
 
-Compose body+declaration for every fact/table cell. One top-level HTML comment outside fences/quotes/examples. Declare facts, inference, advice, negation, uncertainty, qualifiers, quotations and causality. Unused arrays: `[]`.
-
-{{sidecarOpeningMarker}}
-```json
-{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[{"rank":1,"statement":"Elapsed 7.1 ms."}],"clusters":[{"cluster":"Elapsed"}],"evidenceChain":[{"conclusionId":"C1","text":"Elapsed value"}],"claims":[{"id":"elapsed","text":"Elapsed 7.1 ms.","kind":"numeric","references":[{"evidenceRefId":"data:example","rowIndex":0,"column":"elapsed_ms","value":7.123456}],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"numeric.cell","polarity":"affirmed","discourse":"asserted","quantifier":"one","modality":"certain","scope":{"population":"cited_rows","subjectRefs":[{"evidenceRefId":"data:example","rowIndex":0,"column":"elapsed_ms","value":7.123456}]},"numeric":{"operator":"eq","value":7.123456,"unit":"ms","presentation":{"schemaVersion":"numeric_presentation@1","unit":"ms","decimalPlaces":1,"rounding":"half_away_from_zero","quotes":[{"text":"7.1 ms"}]}}}},{"id":"state","text":"State is ready.","kind":"categorical","references":[{"evidenceRefId":"data:example","rowIndex":0,"column":"state","value":"ready"}],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"captured.cell","polarity":"affirmed","discourse":"asserted","quantifier":"one","modality":"certain","scope":{"population":"cited_rows","subjectRefs":[{"evidenceRefId":"data:example","rowIndex":0,"column":"state","value":"ready"}]}}}],"relationProposals":[],"uncertainties":["Uncertainty"],"nextSteps":["Next step"]}
-```
--->
-
-Fence JSON only. Keep its HTML comment outside prose/fences; never print an old declaration as answer.
+{{declarationFraming}}
 
 `mode`: `initial_report|focused_answer|need_input`. Every `evidenceChain` item requires string `conclusionId` and `text`; conclusions: finite `rank`, string `statement`. Never author status, `parseIssues`, `bindingEligibility`, `verified`, completion receipts or `raw*` fields.
 

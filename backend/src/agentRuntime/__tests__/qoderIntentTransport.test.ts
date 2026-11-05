@@ -52,6 +52,28 @@ describe('Qoder intent transport', () => {
   beforeEach(() => {jest.useFakeTimers({now: 1000});});
   afterEach(() => {jest.useRealTimers();});
 
+  it('records the selected review model without inventing generic Qoder reasoning controls', async () => {
+    const {input, sdk} = fixture(); input.purpose = 'review';
+    const receipts: unknown[] = []; input.onExecutionPolicy = receipt => {receipts.push(receipt);};
+    expect(await runQoderIntentTransport(input)).toMatchObject({status: 'ok'});
+    const options = sdk.query.mock.calls[0][0].options;
+    expect(options).not.toHaveProperty('thinking'); expect(options).not.toHaveProperty('reasoning_effort');
+    expect(receipts).toEqual([expect.objectContaining({modelId: 'same-light', purpose: 'review',
+      sdkEffective: 'unknown', wireObservation: 'not_observed'})]);
+    expect(JSON.stringify(receipts)).not.toContain('SECRET_BYOK_CANARY');
+  });
+
+  it('preserves host-login model absence and rejects an unsupported required reasoning override', async () => {
+    const host = fixture(); host.input.config = {byok: {}}; host.input.purpose = 'classification';
+    const receipts: unknown[] = []; host.input.onExecutionPolicy = receipt => {receipts.push(receipt);};
+    expect(await runQoderIntentTransport(host.input)).toMatchObject({status: 'ok'});
+    expect(host.sdk.query.mock.calls[0][0].options).not.toHaveProperty('model');
+    expect(receipts[0]).not.toHaveProperty('modelId');
+    const invalid = fixture(); invalid.input.authoredReasoning = {mode: 'enabled', effort: 'high'};
+    expect(await runQoderIntentTransport(invalid.input)).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+    expect(invalid.sdk.query).not.toHaveBeenCalled(); expect(invalid.resolveAuth).not.toHaveBeenCalled();
+  });
+
   it('checks the run authorization at the query boundary, after auth resolved', async () => {
     const {input, sdk, resolveAuth} = fixture();
     let releaseAuth!: (auth: unknown) => void;

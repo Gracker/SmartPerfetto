@@ -6,6 +6,7 @@ import { tool, type Tool } from '@openai/agents';
 import type { McpToolDefinition } from '../../../agentv3/mcpToolRegistry';
 import {
   createJsonSchemaFromZodRawShape,
+  deduplicateNullableSchemaDescriptions,
   normalizeRuntimeToolArgs,
   normalizeRuntimeToolExtra,
   sharedToolSpecFromClaudeSdkTool,
@@ -58,7 +59,7 @@ export function createOpenAIToolsFromMcpDefinitions(
 ): Tool[] {
   return definitions.map((definition) => {
     const shared = getSharedToolSpec(definition);
-    return tool({
+    const adapted = tool({
       name: definition.name,
       description: shared.description,
       parameters: createJsonSchemaFromZodRawShape(shared.inputSchema) as any,
@@ -87,5 +88,8 @@ export function createOpenAIToolsFromMcpDefinitions(
         });
       },
     });
+    // SDK has now produced its strict schema. Preserve its parser/handler and
+    // the shared source schema; only the provider-facing annotations differ.
+    return {...adapted, parameters: deduplicateNullableSchemaDescriptions(adapted.parameters)};
   });
 }

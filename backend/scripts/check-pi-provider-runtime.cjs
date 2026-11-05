@@ -43,6 +43,10 @@ import {
   fauxToolCall,
 } from '@earendil-works/pi-ai';
 import {createPiAgentCoreProviderRuntime} from './src/agentRuntime/engines/pi/piAgentCoreProvider.ts';
+import {runPiIntentTransport} from './src/agentRuntime/engines/pi/piIntentTransport.ts';
+import {zaiCodingCnProvider} from '@earendil-works/pi-ai/providers/zai-coding-cn';
+import {deepseekProvider} from '@earendil-works/pi-ai/providers/deepseek';
+import {googleProvider} from '@earendil-works/pi-ai/providers/google';
 import {takeFinalizationContext} from './src/agentRuntime/analysisFinalizationContext.ts';
 import {
   PI_AGENT_CORE_MODEL_JSON_ENV,
@@ -133,85 +137,141 @@ const model = {
   maxTokens: 1024,
 };
 
-// Keep official model URLs while intercepting fetch: loopback URLs would
-// bypass the SDK's GLM compatibility branch and hide its default-off request.
-async function reasoningRequest(config, options = {}, purpose = 'answer_turn', policy) {
-  const runtime = await createPiAgentCoreProviderRuntime({
-    apiKey: 'isolated-wire-key', ...config,
-    model: {...model, id: 'wire-model', provider: 'openai', reasoning: true,
-      baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4', ...config.model},
-  }, {});
+// Resolve the actual installed model capabilities; never substitute model names or a second catalog.
+const nativeGlm = zaiCodingCnProvider().getModels().find(value => value.id === 'glm-5.3-flash');
+const nativeDeepSeek = deepseekProvider().getModels().find(value => value.id === 'deepseek-v4-flash');
+assert.ok(nativeGlm); assert.ok(nativeDeepSeek);
+function wireReply(modelId) {
+  return new Response('data: ' + JSON.stringify({id: 'wire', model: modelId,
+    choices: [{index: 0, delta: {role: 'assistant', content: 'ok'}, finish_reason: 'stop'}],
+    usage: {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2},
+  }) + '\n\ndata: [DONE]\n\n', {headers: {'Content-Type': 'text/event-stream'}});
+}
+async function reasoningRequest(config = {}, options = {}, purpose = 'answer_turn', policy) {
+  const runtime = await createPiAgentCoreProviderRuntime({apiKey: 'isolated-wire-key', ...config,
+    model: {...nativeGlm, ...config.model}}, {});
   let payload;
-  const stream = runtime.streamFnForPurpose(purpose, policy);
-  const reply = await stream(runtime.model, {messages: [], tools: []}, {
-    ...options, maxRetries: 0,
-    fetch: async (_url, init) => {
-      payload = JSON.parse(init.body);
-      return new Response('data: ' + JSON.stringify({id: 'wire', model: 'wire-model',
-        choices: [{index: 0, delta: {role: 'assistant', content: 'ok'}, finish_reason: 'stop'}],
-        usage: {prompt_tokens: 1, completion_tokens: 1, total_tokens: 2},
-      }) + '\n\ndata: [DONE]\n\n', {headers: {'Content-Type': 'text/event-stream'}});
+  const reply = await runtime.streamFnForPurpose(purpose, policy)(runtime.model, {messages: [], tools: []}, {
+    ...options, maxRetries: 0, fetch: async (_url, init) => {
+      payload = JSON.parse(init.body); return wireReply(runtime.model.id);
     },
   }).result();
-  assert.equal(reply.stopReason, 'stop');
-  assert.ok(payload);
-  return payload;
+  assert.equal(reply.stopReason, 'stop'); assert.ok(payload); return payload;
 }
-
-const defaultGlmRequest = await reasoningRequest({});
+const defaultGlmRequest = await reasoningRequest();
 assert.equal(defaultGlmRequest.thinking, undefined);
 assert.equal(defaultGlmRequest.reasoning_effort, undefined);
 assert.equal((await reasoningRequest({}, {}, 'continuation')).thinking, undefined);
-for (const purpose of ['declaration_repair', 'review']) {
-  assert.deepEqual((await reasoningRequest({}, {}, purpose)).thinking, {type: 'disabled'});
-  const low = await reasoningRequest({model: {compat: {supportsReasoningEffort: true}}}, {}, purpose);
-  assert.equal(low.reasoning_effort, 'low');
-  assert.equal(low.thinking.type, 'enabled');
+for (const purpose of ['classification', 'declaration_repair', 'review']) {
+  const request = await reasoningRequest({}, {}, purpose);
+  assert.equal(request.model, 'glm-5.3-flash');
+  assert.equal(request.thinking.type, 'enabled'); assert.equal(request.reasoning_effort, 'low');
+  const deepseek = await reasoningRequest({model: nativeDeepSeek}, {}, purpose);
+  assert.equal(deepseek.model, 'deepseek-v4-flash');
+  assert.deepEqual(deepseek.thinking, {type: 'disabled'}); assert.equal(deepseek.reasoning_effort, undefined);
 }
-assert.deepEqual((await reasoningRequest({thinkingLevel: 'off'})).thinking, {type: 'disabled'});
-assert.deepEqual((await reasoningRequest({}, {}, 'classification')).thinking, {type: 'disabled'});
 const authoredReasoning = {thinkingLevel: 'high', model: {
-  compat: {supportsReasoningEffort: true}, thinkingLevelMap: {high: 'max', low: 'low'},
+  thinkingLevelMap: {...nativeGlm.thinkingLevelMap, high: 'max'},
 }};
-for (const purpose of ['answer_turn', 'declaration_repair', 'continuation', 'review']) {
-  const request = await reasoningRequest(authoredReasoning, {}, purpose);
-  assert.equal(request.thinking.type, 'enabled');
-  assert.equal(request.reasoning_effort, 'max');
+for (const purpose of ['answer_turn', 'classification', 'declaration_repair', 'continuation', 'review']) {
+  const receipts = [];
+  const request = await reasoningRequest(authoredReasoning, {}, purpose, {onExecutionPolicy: value => receipts.push(value)});
+  assert.equal(request.thinking.type, 'enabled'); assert.equal(request.reasoning_effort, 'max');
+  assert.deepEqual(receipts[0].authored, {mode: 'enabled', effort: 'high'});
+  assert.deepEqual(receipts[0].sdkEffective, {mode: 'enabled', effort: 'max'});
 }
 const outputDelivery = await reasoningRequest({}, {}, 'continuation', {outputOnly: true});
-assert.deepEqual(outputDelivery.thinking, {type: 'disabled'});
-const explicitDelivery = await reasoningRequest(authoredReasoning, {}, 'continuation', {outputOnly: true});
-assert.equal(explicitDelivery.reasoning_effort, 'max');
+assert.equal(outputDelivery.reasoning_effort, 'low');
+assert.equal((await reasoningRequest(authoredReasoning, {}, 'continuation', {outputOnly: true})).reasoning_effort, 'max');
 assert.equal((await reasoningRequest({}, {}, 'answer_turn', {outputOnly: true})).thinking, undefined);
-const lowDelivery = await reasoningRequest({model: {compat: {supportsReasoningEffort: true}}}, {}, 'continuation', {outputOnly: true});
-assert.equal(lowDelivery.reasoning_effort, 'low');
-const classifierRequest = await reasoningRequest(authoredReasoning, {}, 'classification');
-assert.equal(classifierRequest.thinking.type, 'enabled');
-assert.equal(classifierRequest.reasoning_effort, 'low');
-assert.equal((await reasoningRequest({model: {provider: 'zai',
-  baseUrl: 'https://api.z.ai/api/paas/v4'}})).thinking, undefined);
-assert.deepEqual((await reasoningRequest({model: {baseUrl: 'https://gateway.invalid/v1',
-  compat: {thinkingFormat: 'zai'}}})).thinking, {type: 'disabled'});
-assert.equal((await reasoningRequest({model: {baseUrl: 'https://ordinary.invalid/v1'}})).thinking, undefined);
-assert.deepEqual((await reasoningRequest({model: {baseUrl: 'https://open.bigmodel.cn.evil.invalid/v1'}})).thinking, {type: 'disabled'});
+for (const baseUrl of ['https://gateway.invalid/v1', 'https://open.bigmodel.cn.evil.invalid/v1']) {
+  const request = await reasoningRequest({model: {baseUrl}}, {}, 'classification');
+  // The existing native SDK default remains; the product adds no guessed stage effort.
+  assert.deepEqual(request.thinking, {type: 'disabled'}); assert.equal(request.reasoning_effort, undefined);
+}
+assert.equal((await reasoningRequest({model: {...model, reasoning: true, baseUrl: 'https://ordinary.invalid/v1',
+  compat: undefined, thinkingLevelMap: undefined}}, {}, 'classification')).thinking, undefined);
 let hookCalls = 0;
 const hookedRequest = await reasoningRequest({}, {onPayload: payload => {
-  hookCalls++;
-  assert.equal(payload.thinking, undefined);
-  payload.thinking = {type: 'disabled'};
+  hookCalls++; assert.equal(payload.thinking, undefined); payload.thinking = {type: 'enabled'}; return payload;
 }});
-assert.equal(hookCalls, 1);
-assert.deepEqual(hookedRequest.thinking, {type: 'disabled'});
+assert.equal(hookCalls, 1); assert.deepEqual(hookedRequest.thinking, {type: 'enabled'});
 const replacedRequest = await reasoningRequest({}, {onPayload: payload => ({...payload,
-  thinking: {type: 'enabled'}, reasoning_effort: 'low'})});
-assert.equal(replacedRequest.reasoning_effort, 'low');
-assert.equal(replacedRequest.thinking.type, 'enabled');
-await assert.rejects(reasoningRequest({thinkingLevel: 'off', model: {
-  thinkingLevelMap: {off: null},
-}}), /thinkingLevel is not supported/);
-await assert.rejects(reasoningRequest({model: {
-  compat: {supportsReasoningEffort: true}, thinkingLevelMap: {low: null, off: null},
-}}, {}, 'classification'), /thinkingLevel is not supported/);
+  thinking: {type: 'enabled'}, reasoning_effort: 'high'})});
+assert.equal(replacedRequest.reasoning_effort, 'high');
+await assert.rejects(reasoningRequest({thinkingLevel: 'off'}), /pi_model_execution_invalid_configuration/);
+await assert.rejects(reasoningRequest({thinkingLevel: 'low', model: {
+  thinkingLevelMap: {...nativeGlm.thinkingLevelMap, low: null},
+}}, {}, 'classification'), /pi_model_execution_invalid_configuration/);
+
+// A protocol without product stage mappings still honors the installed SDK's native levels.
+const nativeGoogle = googleProvider().getModels().find(value => value.id === 'gemini-2.5-flash');
+assert.ok(nativeGoogle);
+const originalFetch = globalThis.fetch;
+try {
+  const payloads = [];
+  globalThis.fetch = async (_url, init) => {
+    payloads.push(JSON.parse(init.body));
+    return new Response('data: ' + JSON.stringify({candidates: [{content: {role: 'model', parts: [{text: 'ok'}]},
+      finishReason: 'STOP'}], usageMetadata: {promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2}}) + '\n\n',
+    {headers: {'Content-Type': 'text/event-stream'}});
+  };
+  for (const thinkingLevel of [undefined, 'off']) {
+    const runtime = await createPiAgentCoreProviderRuntime({model: nativeGoogle, apiKey: 'isolated-google-key',
+      ...(thinkingLevel ? {thinkingLevel} : {})}, {});
+    for (const purpose of ['answer_turn', 'classification']) {
+      const receipts = [];
+      const reply = await runtime.streamFnForPurpose(purpose, {onExecutionPolicy: value => receipts.push(value)})(
+        runtime.model, {messages: [{role: 'user', content: 'hello', timestamp: 1}], tools: []}, {maxRetries: 0}).result();
+      assert.equal(reply.stopReason, 'stop');
+      assert.equal(receipts[0].mapped, thinkingLevel === undefined && purpose === 'classification' ? 'unknown' : 'unchanged');
+    }
+  }
+  assert.equal(payloads.length, 4);
+  for (const payload of payloads) {
+    assert.equal(payload.generationConfig.thinkingConfig.thinkingBudget, 0);
+    assert.equal(payload.thinking, undefined); assert.equal(payload.reasoning_effort, undefined);
+  }
+  await assert.rejects(createPiAgentCoreProviderRuntime({model: {...nativeGoogle,
+    thinkingLevelMap: {...nativeGoogle.thinkingLevelMap, low: null}}, apiKey: 'isolated-google-key', thinkingLevel: 'low'}, {}),
+  /pi_model_execution_invalid_configuration/);
+  assert.equal(payloads.length, 4);
+} finally {globalThis.fetch = originalFetch;}
+
+// A cached provider never authorizes another endpoint/API/model/compat definition, even with the same ID.
+const pinned = await createPiAgentCoreProviderRuntime({apiKey: 'isolated-wire-key', model: {...nativeGlm, maxTokens: 128}}, {});
+let wireCalls = 0;
+const observed = [];
+const fakeFetch = async (_url, init) => {wireCalls++; observed.push(JSON.parse(init.body)); return wireReply(pinned.model.id);};
+const nativePurpose = pinned.streamFnForPurpose;
+const wrappedProvider = {...pinned, streamFnForPurpose: (purpose, policy) => {
+  const stream = nativePurpose(purpose, policy);
+  return (sentModel, context, options) => stream(sentModel, context, {...options, fetch: fakeFetch});
+}};
+for (const changed of [
+  {...pinned.model, baseUrl: 'https://other.invalid/v1'}, {...pinned.model, api: 'openai-responses'},
+  {...pinned.model, id: 'another-model'}, {...pinned.model, compat: {...pinned.model.compat, supportsReasoningEffort: false}},
+]) {
+  assert.throws(() => nativePurpose('classification')(changed, {messages: []}, {fetch: fakeFetch}), /pi_model_execution_invalid_configuration/);
+}
+assert.equal(wireCalls, 0);
+const receipts = [];
+for (const maxOutputTokens of [undefined, 1024, 32]) {
+  const result = await runPiIntentTransport({providerRuntime: wrappedProvider, purpose: 'classification',
+    prompt: 'bounded classification', systemPrompt: 'return a bounded answer', deadlineMs: Date.now() + 30000,
+    outputByteLimit: 65536, maxOutputTokens, onExecutionPolicy: value => receipts.push(value)});
+  assert.equal(result.status, 'ok');
+}
+assert.deepEqual(observed.map(value => value.max_tokens), [128, 128, 32]);
+assert.equal(receipts[0].executionFingerprint.value, receipts[1].executionFingerprint.value);
+assert.notEqual(receipts[1].executionFingerprint.value, receipts[2].executionFingerprint.value);
+assert.equal(receipts.length, 3);
+assert.equal(receipts[0].wireObservation, 'not_observed');
+const firstRun = [], secondRun = [];
+await reasoningRequest({}, {}, 'classification', {onExecutionPolicy: value => firstRun.push(value)});
+await reasoningRequest({}, {}, 'review', {onExecutionPolicy: value => secondRun.push(value)});
+assert.equal(firstRun.length, 1); assert.equal(secondRun.length, 1);
+assert.equal(firstRun[0].purpose, 'classification'); assert.equal(secondRun[0].purpose, 'review');
 
 function createTraceProcessorService() {
   return {

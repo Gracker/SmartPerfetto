@@ -8,6 +8,26 @@ import {
 } from '../normalizeAnalyzeOptions';
 
 describe('normalizeAnalyzeOptions', () => {
+  it('retains only the exact native table hint and rejects other explicit table names', () => {
+    const selection = {kind: 'track_event', eventId: 42, ts: 100, dur: 20, nativeTable: 'slice'};
+    expect(normalizeAnalyzeOptions({selectionContext: selection}, {endpoint: '/analyze', hasReferenceTraceId: false}).selectionContext)
+      .toEqual(selection);
+    expect(() => normalizeAnalyzeOptions({selectionContext: {...selection, nativeTable: 'thread_state'}},
+      {endpoint: '/analyze', hasReferenceTraceId: false})).toThrow(expect.objectContaining({code: 'INVALID_SELECTION_CONTEXT'}));
+  });
+
+  it.each([null, '', 'Slice', 'thread_state', 1, {}, []])('rejects an invalid native table hint without silently dropping it: %j', nativeTable => {
+    expect(() => normalizeAnalyzeOptions({selectionContext: {kind: 'track_event', eventId: 1, ts: 2, dur: 3, nativeTable}},
+      {endpoint: '/analyze', hasReferenceTraceId: false})).toThrow(expect.objectContaining({code: 'INVALID_SELECTION_CONTEXT'}));
+  });
+
+  it('keeps old track events compatible and does not widen an area with a native table hint', () => {
+    const old = {kind: 'track_event', eventId: 1, ts: 2, dur: 3, trackUri: '/pretend/slice'};
+    expect(normalizeAnalyzeOptions({selectionContext: old}, {endpoint: '/analyze', hasReferenceTraceId: false}).selectionContext).toEqual(old);
+    expect(normalizeAnalyzeOptions({selectionContext: {kind: 'area', startNs: 1, endNs: 2, nativeTable: 'slice'}},
+      {endpoint: '/analyze', hasReferenceTraceId: false}).selectionContext).toEqual({kind: 'area', startNs: 1, endNs: 2});
+  });
+
   it.each([
     ['non-object options', 'bad', 'INVALID_ANALYZE_OPTIONS'],
     ['string codebaseIds', {codebaseIds: 'cb-1'}, 'INVALID_ANALYSIS_SOURCE_ALLOWLIST'],

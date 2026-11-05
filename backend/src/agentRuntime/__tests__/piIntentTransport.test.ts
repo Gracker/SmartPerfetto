@@ -4,7 +4,7 @@
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import type {AssistantMessage} from '@earendil-works/pi-ai';
-import type {PiAgentCoreProviderRuntime} from '../engines/pi/piAgentCoreProvider';
+import {PiModelExecutionConfigurationError, type PiAgentCoreProviderRuntime} from '../engines/pi/piAgentCoreProvider';
 import {piOutputTokensForByteLimit, runPiIntentTransport, type PiIntentTransportInput} from '../engines/pi/piIntentTransport';
 
 function fixture() {
@@ -79,7 +79,8 @@ describe('Pi intent transport', () => {
       const result = await runPiIntentTransport({...input, purpose,
         providerRuntime: {...input.providerRuntime, streamFnForPurpose}});
       expect(result.status).toBe('ok');
-      expect(streamFnForPurpose).toHaveBeenCalledWith(purpose);
+      expect(streamFnForPurpose).toHaveBeenCalledWith(purpose, expect.objectContaining({onExecutionPolicy: expect.any(Function),
+        ...(purpose === 'continuation' ? {outputOnly: true} : {})}));
       expect(streamFn.mock.calls[0][1].tools).toEqual([]);
       expect(streamFn.mock.calls[0][2]).toMatchObject({maxRetries: 0, maxTokens: 128, timeoutMs: 50});
     });
@@ -92,6 +93,14 @@ describe('Pi intent transport', () => {
       }}});
     expect(result).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
     expect(streamFn).not.toHaveBeenCalled();
+  });
+
+  it('classifies policy failure raised at real stream invocation as configuration failure', async () => {
+    const {input, result, streamFn} = fixture();
+    streamFn.mockImplementation(() => {throw new PiModelExecutionConfigurationError();});
+    expect(await runPiIntentTransport(input)).toEqual({status: 'unavailable', reason: 'invalid_configuration'});
+    expect(streamFn).toHaveBeenCalledTimes(1);
+    expect(result).not.toHaveBeenCalled();
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '8192', null])('rejects an explicitly invalid output-token limit %s before dispatch', async value => {

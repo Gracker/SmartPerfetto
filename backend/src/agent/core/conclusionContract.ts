@@ -6,6 +6,8 @@ import type {CaseKnowledgeRecommendation, CaseKnowledgeReportRecommendation} fro
 import {sanitizeSourceUseDecision, sanitizeSourceReferences, sanitizeSourceClaimBindings, isSourceClaimBindingsDeclaration,
   canonicalSourceClaimBindingDeclarations} from '../../services/codebase/sourceUseDecision';
 import type {EvidenceRelationCandidateV1} from '../../types/evidenceContract';
+import {CONCLUSION_AUTHORING_VERSION, CONCLUSION_AUTHORING_VERSION_V2,
+  decodeConclusionAuthoring, type ConclusionAuthoringResult} from './conclusionAuthoring';
 import type {
   SourceClaimBindingV1,
   SourceReferenceV1,
@@ -331,6 +333,53 @@ export interface ConclusionContractSidecarParseResult extends ConclusionContract
   machineSegments: Array<{start: number; end: number}>;
 }
 
+export type ConclusionDeclarationSyntax = 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
+interface DeclarationPayloadState {
+  validationPayload?: unknown;
+  authoring?: ConclusionAuthoringResult;
+}
+/** Parser diagnostics only, never evidence/authorization and never public serialized metadata. */
+const declarationPayloadStates = new WeakMap<object, DeclarationPayloadState>();
+
+export function conclusionDeclarationValidationPayload(parsed: {rawPayload?: unknown} | undefined): unknown {
+  if (!parsed) return undefined;
+  const state = declarationPayloadStates.get(parsed);
+  if (state) return state.validationPayload;
+  // Historical full parse results have no codec state. An authored envelope cannot use that fallback.
+  return record(parsed.rawPayload) && hasOwn(parsed.rawPayload, 'authoringVersion') ? undefined : parsed.rawPayload;
+}
+
+export function conclusionDeclarationAuthoring(parsed: object | undefined): ConclusionAuthoringResult | undefined {
+  return parsed ? declarationPayloadStates.get(parsed)?.authoring : undefined;
+}
+
+function retainDeclarationPayloadState<T extends object>(target: T, source: object): T {
+  const state = declarationPayloadStates.get(source);
+  if (state) declarationPayloadStates.set(target, state);
+  return target;
+}
+
+/** Shared raw-object ingress for native frames, the one repair transport and advisory draft checks. */
+export function parseConclusionDeclarationPayload(rawPayload: unknown, syntax?: ConclusionDeclarationSyntax): ConclusionContractDeclarationParseResult {
+  const hasAuthoringVersion = record(rawPayload) && hasOwn(rawPayload, 'authoringVersion');
+  const authored = syntax === 'authoring_v1' || syntax === 'authoring_v2' || syntax === undefined && hasAuthoringVersion;
+  // A full-v1 frame cannot launder an authoring wrapper into a root-repair exemption:
+  // its nested claims have no canonical preservation baseline in this transport.
+  const authoring: ConclusionAuthoringResult | undefined = syntax === 'canonical_v1' && hasAuthoringVersion
+    ? {status: 'invalid', rawPayload, code: 'syntax_mismatch', bindingEligibility: 'ineligible', canonicalRootRepairEligible: false}
+    : authored ? decodeConclusionAuthoring(rawPayload, syntax === 'authoring_v1' ? CONCLUSION_AUTHORING_VERSION
+      : syntax === 'authoring_v2' ? CONCLUSION_AUTHORING_VERSION_V2 : undefined) : undefined;
+  const validationPayload = authoring ? authoring.status === 'expanded' ? authoring.expandedPayload : undefined : rawPayload;
+  const projected = authoring?.status === 'invalid'
+    ? {issues: [{code: 'invalid_contract' as const, path: '$'}]}
+    : parseConclusionContractDeclaration(validationPayload);
+  const status = projected.issues.some(isConclusionRootParseIssue) ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
+  const parsed: ConclusionContractDeclarationParseResult = {raw: '', rawPayload, ...projected, status,
+    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible'};
+  declarationPayloadStates.set(parsed, {validationPayload, ...(authoring ? {authoring} : {})});
+  return parsed;
+}
+
 export interface ConclusionContractMetadata {
   confidencePercent?: number;
   rounds?: number;
@@ -379,6 +428,30 @@ export interface ConclusionContract {
 
 const SIDECAR_MARKER = '<!-- smartperfetto:conclusion-contract@1';
 const SIDECAR_PREFIX = '<!-- smartperfetto:conclusion-contract@';
+export const CONCLUSION_AUTHORING_FENCE = '```smartperfetto-conclusion-authoring-v1';
+export const CONCLUSION_AUTHORING_FENCE_V2 = '```smartperfetto-conclusion-authoring-v2';
+const AUTHORING_FENCE_PREFIX = '```smartperfetto-conclusion-authoring-';
+
+/** Closed format facts only. V8 errors can quote input, so never log their message. */
+function logAuthoringJsonFailure(payload: string, error: unknown): void {
+  const location = error instanceof SyntaxError ? /^(?:Expected (?:',' or '}' after property value|',' or ']' after array element|property name or '}'|double-quoted property name|':' after property name) in JSON|(?:Unterminated string|Bad escaped character|Bad control character in string literal|No number after minus sign|Unterminated fractional number|Exponent part is missing a number) in JSON|Unexpected non-whitespace character after JSON) at position ([0-9]+)(?: \(line [0-9]+ column [0-9]+\))?$/.exec(error.message) : null;
+  const position = location ? Number(location[1]) : undefined;
+  const utf16Offset = position !== undefined && Number.isSafeInteger(position) && position >= 0 && position <= payload.length
+    ? position : undefined;
+  const character = utf16Offset === undefined ? undefined : payload.charAt(utf16Offset);
+  const punctuation: Record<string, string> = {'{': 'open_object', '}': 'close_object', '[': 'open_array', ']': 'close_array',
+    ':': 'colon', ',': 'comma', '"': 'quote', '`': 'backtick'};
+  const characterClass = character === undefined ? 'unknown' : character === '' ? 'end'
+    : punctuation[character] ?? (/\s/.test(character) ? 'whitespace' : /[0-9]/.test(character) ? 'digit'
+      : /[A-Za-z]/.test(character) ? 'letter' : 'other');
+  const first = payload.trimStart();
+  const form = first.startsWith('```') ? 'markdown_fence' : first.startsWith('{') ? 'object_like'
+    : first.startsWith('[') ? 'array_like' : 'other';
+  console.warn('[ConclusionAuthoring] invalid_json', {form, utf16Length: payload.length,
+    utf16Offset: utf16Offset ?? 'unknown', characterClass});
+}
+
+const DECLARATION_PREFIXES = [SIDECAR_PREFIX, AUTHORING_FENCE_PREFIX] as const;
 const RESERVED_COMMENT_PREFIX = '<!-- smartperfetto:';
 // Temporary recognition bound only, matching the existing 64 KiB declaration
 // output budget. This neither changes runtime caps nor admits marker aliases.
@@ -797,11 +870,8 @@ export function parseTypedConclusionContractJson(raw: string): ConclusionContrac
   catch { return absent; }
   if (!record(rawPayload) || rawPayload.schemaVersion !== 'conclusion_contract_v1' ||
     !hasConclusionContractDeclarations(rawPayload)) return absent;
-  const projected = parseConclusionContractDeclaration(rawPayload);
-  const status: ConclusionContractDeclarationParseResult['status'] = projected.issues.some(isConclusionRootParseIssue)
-    ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
-  return {raw, rawPayload, ...projected, status,
-    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible'};
+  const parsed = parseConclusionDeclarationPayload(rawPayload, 'canonical_v1');
+  return retainDeclarationPayloadState({...parsed, raw}, parsed);
 }
 
 /** Sidecar JSON uses canonical v1 field names. Legacy aliases stay in the legacy parser. */
@@ -923,8 +993,8 @@ function reservedCommentDeclaration(text: string): unknown {
 
 function newSidecarLineState() {
   return {
-    length: 0, prefixIndex: 0, pendingPrefix: '', startText: '', commentTail: '',
-    hasCommentClose: false, equalsTerminator: true,
+    length: 0, prefixIndex: 0, prefixCandidates: [...DECLARATION_PREFIXES] as string[], pendingPrefix: '', startText: '', commentTail: '',
+    hasCommentClose: false, equalsTerminator: true, equalsAuthoringTerminator: true,
     fencePossible: true, fenceCharacter: '', fenceLength: 0, fenceTail: false,
     fenceTailWhitespace: true, fenceTailBacktick: false, fenceTailLineBreak: false,
   };
@@ -943,15 +1013,17 @@ export class ConclusionSidecarFramingScanner {
   private lineIndex = 0;
   private fence: {character: string; length: number} | undefined;
   private htmlComment = false;
-  private machineStart: {offset: number; line: number} | undefined;
+  private machineStart: {offset: number; line: number; authoring: boolean} | undefined;
   private pendingCr = false;
   private ended = false;
   private markers = 0;
+  private authoringMarkers = 0;
   private reservedComment: {text: string; bytes: number; start: number; startLine: number} | undefined;
 
   constructor(private readonly onMachineSegment?: (segment: ConclusionSidecarMachineSegment) => void) {}
 
   get markerCount(): number { return this.markers; }
+  get authoringMarkerCount(): number { return this.authoringMarkers; }
 
   /** Diagnostic of text awaiting disambiguation, independent of answer length. */
   get bufferedCharacterCount(): number {
@@ -998,7 +1070,7 @@ export class ConclusionSidecarFramingScanner {
 
   reset(): void {
     this.line = newSidecarLineState();
-    this.offset = this.lineStart = this.lineIndex = this.markers = 0;
+    this.offset = this.lineStart = this.lineIndex = this.markers = this.authoringMarkers = 0;
     this.fence = this.machineStart = undefined;
     this.reservedComment = undefined;
     this.htmlComment = this.pendingCr = this.ended = false;
@@ -1008,6 +1080,7 @@ export class ConclusionSidecarFramingScanner {
     const line = this.line;
     line.length++;
     line.equalsTerminator &&= character === '-->'[line.length - 1];
+    line.equalsAuthoringTerminator &&= character === '```'[line.length - 1];
     if (!this.machineStart) {
       if (line.startText.length < 7) line.startText += character;
       line.commentTail = (line.commentTail + character).slice(-3);
@@ -1021,11 +1094,15 @@ export class ConclusionSidecarFramingScanner {
     }
     if (this.fence || this.htmlComment) return character;
     if (line.prefixIndex >= 0) {
-      if (character === SIDECAR_PREFIX[line.prefixIndex]) {
+      line.prefixCandidates = line.prefixCandidates.filter(prefix => character === prefix[line.prefixIndex]);
+      if (line.prefixCandidates.length) {
         line.prefixIndex++;
-        if (line.prefixIndex === SIDECAR_PREFIX.length) {
+        const matched = line.prefixCandidates.find(prefix => line.prefixIndex === prefix.length);
+        if (matched) {
           this.markers++;
-          this.machineStart ??= {offset: this.lineStart, line: this.lineIndex};
+          if (matched === AUTHORING_FENCE_PREFIX) this.authoringMarkers++;
+          this.machineStart ??= {offset: this.lineStart, line: this.lineIndex,
+            authoring: matched === AUTHORING_FENCE_PREFIX};
           line.pendingPrefix = '';
           line.prefixIndex = -1;
         } else if (!this.machineStart) line.pendingPrefix += character;
@@ -1103,7 +1180,8 @@ export class ConclusionSidecarFramingScanner {
       // Only a complete line can establish that --> has no trailing prose.
       visible += line.hasCommentClose ? this.finishReservedComment() + newline : this.consumeReservedComment(newline);
     } else if (this.machineStart) {
-      if (line.length === 3 && line.equalsTerminator) {
+      if (line.length === 3 && (this.machineStart.authoring
+        ? line.equalsAuthoringTerminator : line.equalsTerminator)) {
         this.emitSegment(this.lineStart + line.length, this.lineIndex);
       }
     } else if (this.fence) {
@@ -1144,11 +1222,38 @@ export function parseConclusionContractSidecar(raw: string): ConclusionContractS
   const markerCount = scanner.markerCount;
   const base = {raw, narrative, machineSegments, issues: [] as ConclusionContractParseIssue[]};
   if (markerCount === 0) return {...base, status: 'absent', bindingEligibility: 'legacy_unchecked'};
-  if (markerCount !== 1) return {...base, status: 'invalid', bindingEligibility: 'ineligible',
-    issues: [{code: 'duplicate_marker', path: '$'}]};
+  if (markerCount !== 1) {
+    const parsed: ConclusionContractSidecarParseResult = {...base, status: 'invalid', bindingEligibility: 'ineligible',
+      issues: [{code: 'duplicate_marker', path: '$'}]};
+    if (scanner.authoringMarkerCount > 0) declarationPayloadStates.set(parsed, {authoring: {
+      status: 'invalid', rawPayload: undefined, code: 'invalid_envelope', bindingEligibility: 'ineligible',
+      canonicalRootRepairEligible: false,
+    }});
+    return parsed;
+  }
   const marker = markers[0];
   if (marker.quarantinedPayload !== undefined) return {...base, rawPayload: marker.quarantinedPayload,
     status: 'invalid', bindingEligibility: 'ineligible', issues: [{code: 'invalid_framing', path: '$'}]};
+  if (lines[marker.start]?.startsWith(AUTHORING_FENCE_PREFIX)) {
+    const reject = (code: 'invalid_framing' | 'invalid_json' | 'invalid_contract',
+      reason: Extract<ConclusionAuthoringResult, {status: 'invalid'}>['code'], rawPayload?: unknown): ConclusionContractSidecarParseResult => {
+      const parsed: ConclusionContractSidecarParseResult = {...base, ...(rawPayload !== undefined ? {rawPayload} : {}),
+        status: 'invalid', bindingEligibility: 'ineligible', issues: [{code, path: '$'}]};
+      declarationPayloadStates.set(parsed, {authoring: {status: 'invalid', rawPayload, code: reason,
+        bindingEligibility: 'ineligible', canonicalRootRepairEligible: false}});
+      return parsed;
+    };
+    if (marker.end < 0) return reject('invalid_framing', 'invalid_envelope');
+    let rawPayload: unknown;
+    const payload = lines.slice(marker.start + 1, marker.end).join('\n');
+    try {rawPayload = JSON.parse(payload);}
+    catch (error) {logAuthoringJsonFailure(payload, error); return reject('invalid_json', 'non_json_value');}
+    const syntax = lines[marker.start] === CONCLUSION_AUTHORING_FENCE ? 'authoring_v1'
+      : lines[marker.start] === CONCLUSION_AUTHORING_FENCE_V2 ? 'authoring_v2' : undefined;
+    if (!syntax) return reject('invalid_contract', 'unsupported_version', rawPayload);
+    const parsed = parseConclusionDeclarationPayload(rawPayload, syntax);
+    return retainDeclarationPayloadState({...base, ...parsed, raw}, parsed);
+  }
   if (marker.end < 0 || lines[marker.start] !== SIDECAR_MARKER || lines[marker.start + 1] !== '```json' ||
     lines[marker.end - 1] !== '```') return {...base, status: 'invalid', bindingEligibility: 'ineligible',
     issues: [{code: 'invalid_framing', path: '$'}]};
@@ -1158,12 +1263,14 @@ export function parseConclusionContractSidecar(raw: string): ConclusionContractS
   let rawPayload: unknown;
   try { rawPayload = JSON.parse(payload); }
   catch { return {...base, status: 'invalid', bindingEligibility: 'ineligible', issues: [{code: 'invalid_json', path: '$'}]}; }
-  const projected = parseConclusionContractDeclaration(rawPayload);
-  const status: ConclusionContractSidecarParseResult['status'] = projected.issues.some(isConclusionRootParseIssue)
-    ? 'invalid' : projected.issues.length ? 'partially_valid' : 'valid';
-  return {...base, rawPayload, ...projected, status,
-    bindingEligibility: status === 'invalid' ? 'ineligible' : 'eligible',
-  };
+  const parsed = parseConclusionDeclarationPayload(rawPayload, 'canonical_v1');
+  return retainDeclarationPayloadState({...base, ...parsed, raw}, parsed);
+}
+
+/** Frame only an already serialized explicit authoring object; never extract JSON from prose. */
+export function wrapConclusionAuthoringPayload(serializedJson: string,
+  syntax: 'authoring_v1' | 'authoring_v2' = 'authoring_v1'): string {
+  return `${syntax === 'authoring_v2' ? CONCLUSION_AUTHORING_FENCE_V2 : CONCLUSION_AUTHORING_FENCE}\n${serializedJson}\n\`\`\``;
 }
 
 /** Raw invalid declarations are serialized as declarations, then validated anew. */

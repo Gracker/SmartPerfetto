@@ -13,6 +13,8 @@ import {
 import type {RuntimeModelCallPurpose} from '../../runtimePerformance';
 import {isPlainObject} from '../../../utils/llmJson';
 import {claudeMessageHasToolUse} from './claudeSdkMessageGuards';
+import {resolveModelExecutionProfile, type ModelEffectiveSettings, type ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
+import {resolveModelExecutionPolicy, type ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
 
 interface ClaudeClassifierQuery extends AsyncIterable<unknown> {
   close(): void | Promise<void>;
@@ -31,15 +33,13 @@ export interface ClaudeIntentTransportInput extends IntentTransportInput {
   loadSdk(): Promise<ClaudeIntentSdk>;
   /** Selects the call's deliberation (`claudeEffortForPurpose`); omitted, the SDK default. */
   purpose?: RuntimeModelCallPurpose;
+  authoredReasoning?: ModelEffectiveSettings['authoredReasoning'];
+  effectiveSettings?: ModelEffectiveSettings;
+  sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
+  onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
 }
 
-/**
- * Classification, the final semantic review and a declaration repair need no
- * deliberation. The CLI drops `thinking: disabled`, and a thinking-by-default
- * gateway (GLM) then spent 30-40 s on a classification prompt and minutes on
- * a review; low effort is what the CLI forwards. Answer turns and closeout or
- * continuation calls keep the run's own effort.
- */
+/** Existing CLI effort policy. Unknown gateways retain it; no OpenAI controls are injected. */
 export function claudeEffortForPurpose(purpose: RuntimeModelCallPurpose | undefined): Options['effort'] | undefined {
   return purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ? 'low' : undefined;
 }
@@ -50,6 +50,29 @@ export function runClaudeIntentTransport(input: ClaudeIntentTransportInput) {
     if (!input.config.lightModel?.trim() || !input.config.cwd?.trim()) {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
+    const model = input.config.lightModel;
+    const cwd = input.config.cwd;
+    const sdkEnv = {...input.sdkEnv};
+    const purpose = input.purpose;
+    const authored = input.authoredReasoning;
+    let effort: Options['effort'];
+    let execution: ReturnType<typeof resolveModelExecutionPolicy>;
+    try {
+      if (authored?.mode === 'disabled' || authored?.mode === 'enabled' && !authored.effort) {
+        return {status: 'unavailable', reason: 'invalid_configuration'};
+      }
+      effort = authored?.mode === 'enabled' ? authored.effort as Options['effort'] : claudeEffortForPurpose(purpose);
+      const profile = resolveModelExecutionProfile({runtimeKind: 'claude-agent-sdk',
+        protocol: sdkEnv.ANTHROPIC_BASE_URL ? 'anthropic_messages' : 'native', modelId: model,
+        baseUrl: sdkEnv.ANTHROPIC_BASE_URL,
+        sdk: input.sdkIdentity ?? {packageName: '@anthropic-ai/claude-agent-sdk', version: 'unknown', adapterContractVersion: 'claude-text-query@1'},
+        sdkCapabilities: {surface: 'claude_effort', thinking: 'required', efforts: ['low', 'medium', 'high', 'max'],
+          reasoningRoundtrip: 'unknown', source: 'contract_test'},
+        effective: {...input.effectiveSettings, maxTurns: 1, maxOutputTokens: undefined, authoredReasoning: authored,
+          sdkEffectiveReasoning: effort ? {mode: 'enabled', effort} : undefined}});
+      execution = resolveModelExecutionPolicy({profile, purpose: purpose ?? 'answer_turn', selection: 'preserve'});
+      if (execution.status === 'unsupported') return {status: 'unavailable', reason: 'invalid_configuration'};
+    } catch {return {status: 'unavailable', reason: 'invalid_configuration'};}
     const sdk = await input.loadSdk();
     scope.throwIfInactive();
     const abortController = new AbortController();
@@ -60,14 +83,15 @@ export function runClaudeIntentTransport(input: ClaudeIntentTransportInput) {
       if (!queryHasClose) scope.signal.removeEventListener('abort', onAbort);
     });
     if (scope.signal.aborted) onAbort();
-    const effort = claudeEffortForPurpose(input.purpose);
+    try {if (purpose !== undefined) input.onExecutionPolicy?.(execution.receipt);} catch { /* Observation only. */ }
+    try {input.observer?.reasoning?.(effort ? 'enabled' : 'provider_default', effort);} catch { /* Observation only. */ }
     const query = sdk.query({
       prompt: input.prompt,
       options: {
         ...input.sdkBinaryOptions,
-        model: input.config.lightModel,
-        cwd: input.config.cwd,
-        env: input.sdkEnv,
+        model,
+        cwd,
+        env: sdkEnv,
         systemPrompt: input.systemPrompt,
         ...(effort ? {effort} : {}),
         maxTurns: 1,

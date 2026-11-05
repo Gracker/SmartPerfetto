@@ -12,6 +12,7 @@ import {parseConclusionContractSidecar, parseTypedConclusionContractJson,
   MAX_RELATION_PROPOSAL_DIAGNOSTICS, isConclusionRelationProposalDiagnostic, CONCLUSION_PARSE_ISSUE_CODES,
   MAX_CLAIM_DIAGNOSTICS, isConclusionClaimDiagnostic, copyConclusionClaimDiagnostic,
   CONCLUSION_CONTRACT_SIDECAR_MARKER,
+  conclusionDeclarationValidationPayload, conclusionDeclarationAuthoring,
   isConclusionRootParseIssue,
   type ConclusionContractStructureDetail, type ConclusionContractParseIssue,
   type ConclusionRelationProposalDiagnostic, type ConclusionClaimDiagnostic} from '../agent/core/conclusionContract';
@@ -131,6 +132,7 @@ function framingDiagnostic(sidecar: ConclusionContractSidecarParseResult): Candi
   if (!sidecar.issues.some(issue => issue.code === 'invalid_framing') || sidecar.machineSegments.length !== 1) return undefined;
   const segment = sidecar.machineSegments[0];
   const startLine = sidecar.raw.slice(0, segment.start).split(/\r?\n/).length;
+  if (conclusionDeclarationAuthoring(sidecar)) return {field: 'terminator', reason: 'missing', line: startLine};
   if (sidecar.rawPayload !== undefined) return {field: 'comment', reason: 'noncanonical', line: startLine};
   const lines = sidecar.raw.slice(segment.start, segment.end).split(/\r?\n/);
   if (lines[lines.length - 1] === '') lines.pop(); // A closed segment may include its line ending.
@@ -213,7 +215,8 @@ export function buildCandidateProtocolDiagnostic(
   const issues = [...inspected.sidecar.issues, ...(inspected.typedJson?.issues ?? [])];
   const parsed = inspected.sidecar.status !== 'absent' ? inspected.sidecar : inspected.typedJson;
   const framing = framingDiagnostic(inspected.sidecar);
-  const payload = parsed?.rawPayload as {claims?: unknown; sourceClaimBindings?: unknown} | undefined;
+  const payload = conclusionDeclarationValidationPayload(parsed) as
+    {claims?: unknown; sourceClaimBindings?: unknown; relationProposals?: unknown} | undefined;
   const claims = Array.isArray(payload?.claims) ? payload.claims : parsed?.contract?.claims ?? [];
   const sourceBindings = Array.isArray(payload?.sourceClaimBindings) ? payload.sourceClaimBindings
     : parsed?.contract?.sourceClaimBindings ?? [];
@@ -265,9 +268,7 @@ export function buildCandidateProtocolDiagnostic(
     const id = item && typeof item === 'object' ? (item as {id?: unknown}).id : undefined;
     if (!(typeof id === 'string' && id.trim())) unrepairableCount += 1;
   }
-  const rawProposals = parsed?.rawPayload !== undefined && record(parsed.rawPayload) &&
-    Array.isArray((parsed.rawPayload as {relationProposals?: unknown}).relationProposals)
-    ? (parsed.rawPayload as {relationProposals: unknown[]}).relationProposals : undefined;
+  const rawProposals = Array.isArray(payload?.relationProposals) ? payload.relationProposals : undefined;
   for (const ordinal of invalidProposalOrdinals) {
     const item = rawProposals?.[ordinal - 1];
     if (!record(item)) {unrepairableCount += 1; continue;}

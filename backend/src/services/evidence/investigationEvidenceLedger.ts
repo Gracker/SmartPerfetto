@@ -5,7 +5,7 @@ import {readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import type {RuntimeToolInvocationEvent} from '../../agentRuntime/runtimeToolObserver';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 import type {EvidenceReadRecord, EvidenceReadViewOptions} from './evidenceReadView';
-import {capturedEvidenceTable, evidenceCaptureHash, freezeEvidenceValue,
+import {capturedEvidenceTable, capturedRawSqlContext, evidenceCaptureHash, freezeEvidenceValue,
   type CapturedFieldSemantics, type EvidenceScalar, type EvidenceTableWitness} from './evidenceCapture';
 
 /** Producer-owned raw-column mappings. Neither display labels nor SQL aliases imply semantics. */
@@ -201,6 +201,18 @@ export function attachInvestigationEvidence(witness: EvidenceTableWitness, bindi
     investigationCaptureFields(binding.declaration, {kind: 'skill_literal', definitionFingerprint: binding.definitionFingerprint});
   } catch { return; }
   bindings.set(witness, freezeEvidenceValue(structuredClone(binding)));
+}
+
+/** Model context only. A binding does not establish observed metric records or claim support. */
+export function investigationMetricBindingForModel(witness?: EvidenceTableWitness): 'present' | 'absent' | 'unknown' {
+  if (!witness) return 'unknown';
+  const table = capturedEvidenceTable(witness);
+  if (!table || table.unavailableReason) return 'unknown';
+  const binding = bindings.get(witness);
+  if (!binding) return 'absent';
+  const rawContext = capturedRawSqlContext(witness);
+  if (rawContext && rawContext.traceId !== binding.traceId) return 'unknown';
+  return binding.declaration.metrics.length > 0 ? 'present' : 'absent';
 }
 
 /**

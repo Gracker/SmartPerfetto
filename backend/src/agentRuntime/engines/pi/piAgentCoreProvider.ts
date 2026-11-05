@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {access} from 'node:fs/promises';
+import {isDeepStrictEqual} from 'node:util';
+import {resolveModelExecutionProfile, type ReasoningEffort, type ReasoningSetting, type ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
+import {resolveModelExecutionPolicy, type ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
 import {resolve as resolvePath} from 'node:path';
 import type {
   Api,
@@ -62,11 +65,20 @@ type SupportedPiApi = keyof typeof PI_API_MODULES;
 
 export type PiAgentCoreProviderModels = Models;
 
+export interface PiStreamPurposePolicy {
+  outputOnly?: true;
+  sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
+  onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
+}
+export class PiModelExecutionConfigurationError extends Error {
+  constructor() {super('pi_model_execution_invalid_configuration');}
+}
+
 export interface PiAgentCoreProviderRuntime {
   model: Model<Api>;
   models: PiAgentCoreProviderModels;
   streamFn: StreamFunction;
-  streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: {outputOnly?: true}) => StreamFunction;
+  streamFnForPurpose?: (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy) => StreamFunction;
 }
 
 export type PiAgentCoreProviderRuntimeLoader = (
@@ -402,7 +414,7 @@ export async function createPiAgentCoreProviderRuntime(
   const supportedLevels = piAi.getSupportedThinkingLevels(model);
   const assertSupportedLevel = (level: ModelThinkingLevel | undefined) => {
     if (level !== undefined && !supportedLevels.includes(level)) {
-      throw new Error('Pi thinkingLevel is not supported by the configured model');
+      throw new PiModelExecutionConfigurationError();
     }
   };
   assertSupportedLevel(authoredLevel);
@@ -452,22 +464,60 @@ export async function createPiAgentCoreProviderRuntime(
 
   const nativeStream = models.streamSimple.bind(models);
   const officialGlm = isOfficialGlmModel(model);
-  const completionsCompat = model.api === 'openai-completions'
-    ? (model as Model<'openai-completions'>).compat : undefined;
-  const canClassifyWithLow = model.reasoning && supportedLevels.includes('low') &&
-    (model.api !== 'openai-completions' || completionsCompat?.supportsReasoningEffort === true);
-  const streamFnForPurpose = (purpose: RuntimeModelCallPurpose, policy?: {outputOnly?: true}): StreamFunction => {
-    // SDK-supported off does not prove server support. Preserve that explicit
-    // bounded classifier/declaration/review policy unless the wire API can express low.
-    // Main analysis and ordinary budget closeout keep authored/provider-default reasoning.
-    const boundedDefault = purpose === 'classification' || authoredLevel === undefined &&
-      (purpose === 'review' || purpose === 'declaration_repair' || purpose === 'continuation' && policy?.outputOnly === true);
-    const level = boundedDefault ? canClassifyWithLow ? 'low' : 'off' : authoredLevel;
-    assertSupportedLevel(level);
+  const identity = (value: Model<Api>) => ({id: value.id, api: value.api, provider: value.provider, baseUrl: value.baseUrl,
+    reasoning: value.reasoning, maxTokens: value.maxTokens, contextWindow: value.contextWindow,
+    thinkingLevelMap: value.thinkingLevelMap,
+    compat: value.api === 'openai-completions' ? (value as Model<'openai-completions'>).compat : undefined});
+  const capturedIdentity = structuredClone(identity(model));
+  const asSetting = (level: ModelThinkingLevel | undefined): ReasoningSetting | undefined => level === undefined
+    ? undefined : level === 'off' ? {mode: 'disabled'} : {mode: 'enabled', effort: level};
+  const streamFnForPurpose = (purpose: RuntimeModelCallPurpose, policy?: PiStreamPurposePolicy): StreamFunction => {
+    // Per-invocation selection: cached provider runtimes must never retain a run's observer or output cap.
     return (sentModel, context, options) => {
-      const requestedLevel = boundedDefault ? level
-        : (options as SimpleStreamOptions | undefined)?.reasoning ?? level;
-      assertSupportedLevel(requestedLevel);
+      let requestedLevel: ModelThinkingLevel | undefined;
+      let selected: ReturnType<typeof resolveModelExecutionPolicy>;
+      try {
+        if (!isDeepStrictEqual(identity(sentModel), capturedIdentity)) throw new PiModelExecutionConfigurationError();
+        const levels = piAi.getSupportedThinkingLevels(sentModel);
+        const compat = sentModel.api === 'openai-completions' ? (sentModel as Model<'openai-completions'>).compat : undefined;
+        const knownThinkingFormat = compat?.thinkingFormat === 'zai' || compat?.thinkingFormat === 'deepseek';
+        const protocol = sentModel.api === 'openai-completions' ? 'chat_completions'
+          : sentModel.api === 'openai-responses' || sentModel.api === 'azure-openai-responses' ? 'responses'
+          : sentModel.api === 'anthropic-messages' ? 'anthropic_messages' : 'unknown';
+        const stageCandidate = purpose === 'classification' || purpose === 'review' || purpose === 'declaration_repair' ||
+          purpose === 'continuation' && policy?.outputOnly === true;
+        const sdkLevel = (options as SimpleStreamOptions | undefined)?.reasoning ?? authoredLevel;
+        const profileInput: ResolveModelExecutionProfileInput = {runtimeKind: 'pi-agent-core', protocol, modelId: sentModel.id,
+          baseUrl: sentModel.baseUrl, sdk: policy?.sdkIdentity ?? {packageName: '@earendil-works/pi-ai',
+            version: 'unknown', adapterContractVersion: 'pi-native-purpose@1'},
+          sdkCapabilities: {surface: protocol === 'unknown' ? 'none' : 'pi_stream',
+            thinking: protocol === 'unknown' ? 'unknown' : !sentModel.reasoning ? 'none' : sentModel.api === 'openai-completions' && !knownThinkingFormat
+              ? 'unknown' : levels.includes('off') ? 'optional' : 'required',
+            ...(sentModel.api !== 'openai-completions' || compat?.supportsReasoningEffort === true
+              ? {efforts: levels.filter((level): level is ReasoningEffort => level !== 'off')} : {}),
+            reasoningRoundtrip: 'unknown', source: 'installed_sdk'},
+          effective: {authoredReasoning: asSetting(authoredLevel), sdkEffectiveReasoning: asSetting(sdkLevel),
+            maxOutputTokens: options?.maxTokens}};
+        const profile = resolveModelExecutionProfile(profileInput);
+        selected = resolveModelExecutionPolicy({profile, purpose, outputOnly: policy?.outputOnly,
+          selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
+        if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
+        requestedLevel = selected.controls.surface === 'pi_stream' ? selected.controls.reasoning
+          : stageCandidate && authoredLevel !== undefined ? authoredLevel : sdkLevel;
+        assertSupportedLevel(requestedLevel);
+        const nativeMapped = requestedLevel && sentModel.thinkingLevelMap?.[requestedLevel];
+        const sdkEffective = requestedLevel === undefined ? undefined : requestedLevel === 'off' ? asSetting('off')
+          : typeof nativeMapped === 'string'
+            ? ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(nativeMapped)
+              ? {mode: 'enabled' as const, effort: nativeMapped as ReasoningEffort} : undefined
+            : asSetting(requestedLevel);
+        // Bind the receipt to the SDK's final selected/mapped setting and the actual stream cap.
+        selected = resolveModelExecutionPolicy({profile: resolveModelExecutionProfile({...profileInput,
+          effective: {...profileInput.effective, sdkEffectiveReasoning: sdkEffective}}), purpose, outputOnly: policy?.outputOnly,
+          selection: stageCandidate ? 'minimum_legal_candidate' : 'preserve'});
+        if (selected.status === 'unsupported') throw new PiModelExecutionConfigurationError();
+      } catch {throw new PiModelExecutionConfigurationError();}
+      try {policy?.onExecutionPolicy?.(selected.receipt);} catch { /* Observers never change a stream. */ }
       const scopedOptions: SimpleStreamOptions = {...options};
       if (requestedLevel && requestedLevel !== 'off') scopedOptions.reasoning = requestedLevel;
       else delete scopedOptions.reasoning;

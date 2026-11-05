@@ -55,6 +55,7 @@ import { ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata } from '../../services/trac
 import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
 import {NO_PRIVATE_CONTEXT, resolveAnalysisPrivateContext} from '../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../services/security/durableLearning';
+import {createRuntimeAdmissionScope, readRuntimeAdmission} from '../../agentRuntime/runtimeTaskDeadline';
 import {createLoopbackServerFixture} from '../../../tests/helpers/loopbackServer';
 
 const loopbackServers = createLoopbackServerFixture();
@@ -1415,6 +1416,39 @@ describe('HTTP shared finalization ownership', () => {
     };
     return {session, native, runId, analyze, orchestrator, attach};
   }
+
+  it.each([undefined, 60_000])('forwards the issued admission through the real HTTP options whitelist (timeout=%s)', async taskTimeoutMs => {
+    const id = 'http-issued-task-deadline';
+    const f = fixture(id);
+    const admittedAt = Date.now() - 5000;
+    f.session.activeRun.startedAt = admittedAt;
+    const scope = createRuntimeAdmissionScope({runId: f.runId, admittedAt, taskTimeoutMs, assertCurrent() {}});
+    const expected = readRuntimeAdmission(scope.bind({}, id), {runId: f.runId, sessionId: id});
+    f.attach({deadlineMs: scope.task?.facts.hardDeadlineAt});
+    let received: ReturnType<typeof readRuntimeAdmission>;
+    f.analyze.mockImplementation(async (_query, _session, _trace, options) => {
+      received = readRuntimeAdmission(options!, {runId: f.runId, sessionId: id});
+      return f.native;
+    });
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      expect(input.owner.signal.aborted).toBe(false);
+      expect(input.result.conclusion).toBe('exact\r\nbody');
+      input.owner.assertAuthorized();
+      input.context?.dispose();
+      return {result: input.result};
+    });
+    try {
+      await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', scope.bind({
+        runContext: f.session.activeRun, generateTracks: false, taskTimeoutMs: 600_000,
+      }, id));
+      expect(received).toBe(expected);
+      expect(received?.facts.admittedAt).toBe(admittedAt);
+      expect(received?.task?.facts.hardDeadlineAt).toBe(taskTimeoutMs === undefined ? undefined : admittedAt + 60_000);
+      expect(f.orchestrator.abortSession).not.toHaveBeenCalled();
+      // The route borrows the application-owned scope; only its owner disposes it.
+      expect(readRuntimeAdmission(scope.bind({}, id), {runId: f.runId, sessionId: id})).toBe(expected);
+    } finally {scope.dispose(); agentRoutesCancellationTestSeam.deleteSession(id);}
+  });
 
   it.each(['existing_only', 'unavailable', 'missing_context', 'expired'] as const)(
     'takes the exact result once and skips all hidden acquisition for %s', async mode => {

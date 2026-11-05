@@ -5,7 +5,7 @@
 import type {OpenAIAgentConfig} from './openAiConfig';
 import {
   buildOpenAIChatCompletionsTokenLimit,
-  buildOpenAITextRequestPurposeOptions,
+  resolveOpenAITextRequestPurpose,
   isOpenAITextRequestPurpose,
   readOpenAIChatCompletionsOutput,
   type OpenAITextRequestPurpose,
@@ -21,9 +21,14 @@ import {
 import {readChatCompletionStream, readResponsesStream} from './openAiIntentStream';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 import {withModelRequestPurpose} from '../../runtimePerformanceContext';
+import type {ModelEffectiveSettings, ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
+import type {ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
 
 export interface OpenAiIntentTransportInput extends IntentTransportInput {
-  config: Pick<OpenAIAgentConfig, 'baseURL' | 'apiKey' | 'lightModel' | 'protocol'>;
+  config: Pick<OpenAIAgentConfig, 'baseURL' | 'apiKey' | 'lightModel' | 'protocol'> & Partial<OpenAIAgentConfig>;
+  authoredReasoning?: ModelEffectiveSettings['authoredReasoning'];
+  sdkIdentity?: ResolveModelExecutionProfileInput['sdk'];
+  onExecutionPolicy?: (receipt: ModelExecutionPolicyReceipt) => void;
   maxOutputTokens?: number;
   fetchImpl?: typeof fetch;
   purpose?: OpenAITextRequestPurpose;
@@ -131,6 +136,10 @@ type ValidatedIntentConfig = {
   apiKey?: string;
   lightModel: string;
   protocol: 'chat_completions' | 'responses';
+  purpose?: OpenAITextRequestPurpose;
+  maxOutputTokens?: number;
+  url: URL;
+  execution: ReturnType<typeof resolveOpenAITextRequestPurpose>;
 };
 
 /**
@@ -144,19 +153,34 @@ type ValidatedIntentConfig = {
 export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
   return runIntentTransport(input, async scope => {
     const {config} = input;
+    const maxOutputTokens = input.maxOutputTokens !== undefined ? input.maxOutputTokens : config.maxOutputTokens;
     if (!config.baseURL || !config.lightModel?.trim()
       || (input.purpose !== undefined && !isOpenAITextRequestPurpose(input.purpose))
-      || (input.maxOutputTokens !== undefined
-        && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens <= 0))
+      || (maxOutputTokens !== undefined
+        && (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens <= 0))
       || (config.protocol !== 'chat_completions' && config.protocol !== 'responses')) {
       return {status: 'unavailable', reason: 'invalid_configuration'};
     }
-    const validated: ValidatedIntentConfig = {
-      baseURL: config.baseURL,
-      apiKey: config.apiKey,
-      lightModel: config.lightModel,
-      protocol: config.protocol,
-    };
+    let validated: ValidatedIntentConfig;
+    try {
+      const purpose = input.purpose;
+      const url = new URL(config.protocol === 'responses' ? 'responses' : 'chat/completions', config.baseURL.replace(/\/?$/, '/'));
+      const execution = resolveOpenAITextRequestPurpose({requestUrl: url, protocol: config.protocol,
+        model: config.lightModel, runtimeKind: 'openai-agents-sdk', purpose,
+        ...(purpose === 'continuation' ? {outputOnly: true} : {}),
+        sdkIdentity: input.sdkIdentity ?? {packageName: 'node:fetch', version: process.versions.node, adapterContractVersion: 'openai-text-http@1'},
+        sdkCapabilities: {surface: config.protocol === 'responses' ? 'openai_responses' : 'openai_chat',
+          thinking: 'optional', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+          reasoningRoundtrip: 'unknown', source: 'contract_test'},
+        effective: {authoredReasoning: input.authoredReasoning, maxOutputTokens,
+          maxTurns: config.maxTurns, quickMaxTurns: config.quickMaxTurns, quickTargetTurns: config.quickTargetTurns,
+          fullPerTurnMs: config.fullPathPerTurnMs, quickPerTurnMs: config.quickPathPerTurnMs,
+          fullRequestTimeoutMs: config.fullRequestTimeoutMs, streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+          maxRunTimeoutMs: config.maxRunTimeoutMs, classifierTimeoutMs: config.classifierTimeoutMs,
+          maxHistoryBytes: config.maxHistoryBytes}});
+      validated = {baseURL: config.baseURL, apiKey: config.apiKey, lightModel: config.lightModel,
+        protocol: config.protocol, purpose, maxOutputTokens, url, execution};
+    } catch {return {status: 'unavailable', reason: 'invalid_configuration'};}
     for (let attempt = 1; ; attempt++) {
       // A thrown fetch error (connection reset, gateway drop) is as transient
       // as a 5xx; runIntentTransport's outer catch would otherwise swallow it
@@ -189,11 +213,17 @@ async function dispatchOneRequest(
   config: ValidatedIntentConfig,
   scope: IntentTransportScope,
 ): Promise<IntentTransportResult> {
-  const endpoint = config.protocol === 'responses' ? 'responses' : 'chat/completions';
-  const url = new URL(endpoint, config.baseURL.replace(/\/?$/, '/'));
-  const purposeOptions = buildOpenAITextRequestPurposeOptions({requestUrl: url, protocol: config.protocol, purpose: input.purpose});
+  const {url, execution} = config;
+  const purposeOptions = execution.options;
   try {
-    input.observer?.reasoning?.('thinking' in purposeOptions || 'reasoning' in purposeOptions ? 'disabled' : 'provider_default');
+    if (execution.policy) input.onExecutionPolicy?.(execution.policy);
+  } catch { /* Policy observation never changes the request. */ }
+  try {
+    if (purposeOptions.thinking?.type === 'disabled' || purposeOptions.reasoning?.effort === 'none') input.observer?.reasoning?.('disabled');
+    else if (purposeOptions.thinking?.type === 'enabled' || purposeOptions.reasoning?.effort !== undefined) {
+      const effort = purposeOptions.reasoning_effort ?? purposeOptions.reasoning?.effort;
+      input.observer?.reasoning?.('enabled', effort);
+    } else input.observer?.reasoning?.('provider_default');
   } catch { /* Observers never change the request. */ }
   const body = config.protocol === 'responses' ? {
     model: config.lightModel,
@@ -201,18 +231,18 @@ async function dispatchOneRequest(
     input: [{role: 'user', content: input.prompt}],
     tools: [], store: false, stream: true,
     ...purposeOptions,
-    ...(input.maxOutputTokens !== undefined ? {max_output_tokens: input.maxOutputTokens} : {}),
+    ...(config.maxOutputTokens !== undefined ? {max_output_tokens: config.maxOutputTokens} : {}),
   } : {
     model: config.lightModel,
     messages: [{role: 'system', content: input.systemPrompt}, {role: 'user', content: input.prompt}],
     temperature: 0, stream: true,
     ...purposeOptions,
-    ...(input.maxOutputTokens !== undefined
-      ? buildOpenAIChatCompletionsTokenLimit(config.lightModel, input.maxOutputTokens) : {}),
+    ...(config.maxOutputTokens !== undefined
+      ? buildOpenAIChatCompletionsTokenLimit(config.lightModel, config.maxOutputTokens) : {}),
   };
   // Injected fetch owns its observation (the runtime fences it after compat).
   // The standalone no-tool path uses the same final-body observer directly.
-  const response = await withModelRequestPurpose({purpose: input.purpose === 'final_semantic' ? 'review' : input.purpose},
+  const response = await withModelRequestPurpose({purpose: config.purpose === 'final_semantic' ? 'review' : config.purpose},
     () => (input.fetchImpl ?? createModelRequestMetricsFetch(fetch))(url, {
     method: 'POST', signal: scope.signal,
     headers: {

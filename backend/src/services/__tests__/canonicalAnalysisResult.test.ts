@@ -6,7 +6,7 @@ import {compactSemanticEvidenceSnapshot, expandSemanticEvidenceSnapshot} from '.
 import {compactSemanticSourceSnapshot, expandSemanticSourceSnapshot} from '../evidence/semanticSourceSnapshot';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {renderConclusionContractSidecar, wrapConclusionContractSidecarPayload, parseConclusionContractDeclaration, type ConclusionContract,
-  type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
+  type ConclusionContractClaimItem, wrapConclusionAuthoringPayload, conclusionDeclarationValidationPayload} from '../../agent/core/conclusionContract';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection, inspectCandidateProtocol,
   buildCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
@@ -18,7 +18,7 @@ import {captureEvidenceTable} from '../evidence/evidenceCapture';
 import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {claimConclusionProtocolProjection, readConclusionProtocolProjection, releaseConclusionProtocolProjection,
-  projectConclusionSemanticInput} from '../security/conclusionProtocolProjection';
+  projectConclusionSemanticInput, projectConclusionProtocol} from '../security/conclusionProtocolProjection';
 import {registerOnDemandSourceLookupForEcho, registerCodeAwareCanary, registerPrivateAnalysisQueryForEcho,
   revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards, withOwnerCodeAwareProjection} from '../security/codeAwareOutputRegistry';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot} from '../evidence/claimEvidencePreparation';
@@ -45,6 +45,69 @@ function contextFor(source: AnalysisResult, status: AnalysisCompletion['status']
       taskKind: 'fact', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
       deliverable, evidenceAccess: 'read_new'}};
 }
+
+describe('authoring wire and canonical privacy boundaries', () => {
+  const authoring = (invalidReference = false) => {
+    const full = declaration(33);
+    const reference = {...full.claims![0].references[0], ...(invalidReference ? {unrecognized: 'PRIVATE_AUTHORING_RAW'} : {})};
+    return {authoringVersion: 'conclusion_authoring@1', referenceDictionary: [reference],
+      contract: {...full, claims: [{...full.claims![0], references: [{$ref: 0}]}]}};
+  };
+
+  it('retains v2 raw syntax privately while projecting compiled canonical material with unchanged proof state', () => {
+    const raw = {authoringVersion: 'conclusion_authoring@2', referenceDictionary: [], contract: {
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', claims: declaration(33).claims,
+      uncertainties: [{text: '未证明因果。'}], nextSteps: [{text: '检查覆盖范围。'}]}};
+    const native = `Body remains.\n${wrapConclusionAuthoringPayload(JSON.stringify(raw), 'authoring_v2')}`;
+    const source = result(native);
+    const canonical = canonicalizeAnalysisResult(source, {context: contextFor(source)});
+    expect(canonical.protocolDiagnostics?.sidecar.rawPayload).toEqual(raw);
+    expect(conclusionDeclarationValidationPayload(canonical.protocolDiagnostics?.sidecar)).toEqual({
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', claims: declaration(33).claims,
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: ['未证明因果。'], nextSteps: ['检查覆盖范围。']});
+    expect(canonical.result.conclusionContract?.claims?.[0]).not.toHaveProperty('verified');
+    const projected = projectConclusionProtocol(undefined, native).text;
+    expect(projected).not.toContain('referenceDictionary');
+    expect(projected).not.toContain('conclusion_authoring@2');
+    expect(projected).toContain('Body remains.');
+  });
+
+  it.each([false, true])('retains original wire and expanded invalid data privately (invalid=%s)', invalid => {
+    const raw = authoring(invalid);
+    const native = `Body remains.\n${wrapConclusionAuthoringPayload(JSON.stringify(raw))}`;
+    const source = result(native);
+    const canonical = canonicalizeAnalysisResult(source, {context: contextFor(source)});
+    expect(canonical.protocolDiagnostics?.sidecar.rawPayload).toEqual(raw);
+    expect(conclusionDeclarationValidationPayload(canonical.protocolDiagnostics?.sidecar)).toMatchObject({
+      claims: [{references: [raw.referenceDictionary[0]]}],
+    });
+    expect(canonical.result.conclusion).toContain('Body remains.');
+    expect(JSON.stringify(canonical.result)).not.toContain('referenceDictionary');
+    expect(JSON.stringify(canonical.result)).not.toContain('PRIVATE_AUTHORING_RAW');
+    if (invalid) {
+      expect(canonical.validationContract?.claims?.[0].rawReferences).toEqual(raw.referenceDictionary);
+      expect(canonical.validationContract?.claims?.[0].valid).toBe(false);
+    } else {
+      expect(canonical.result.conclusionContract?.claims?.[0].references).toEqual(raw.referenceDictionary);
+    }
+    const projected = projectConclusionProtocol(undefined, native).text;
+    expect(projected).not.toContain('referenceDictionary');
+    expect(projected).not.toContain('PRIVATE_AUTHORING_RAW');
+    expect(projected).not.toContain('smartperfetto-conclusion-authoring');
+  });
+
+  it('keeps decode failure ineligible instead of deriving replacement claims from prose', () => {
+    const raw = {...authoring(), referenceDictionary: {bad: 'PRIVATE_AUTHORING_BAD_DICTIONARY'}};
+    const source = result(`Body remains.\n${wrapConclusionAuthoringPayload(JSON.stringify(raw))}`);
+    const canonical = canonicalizeAnalysisResult(source, {context: contextFor(source)});
+    expect(canonical.bindingEligibility).toBe('ineligible');
+    expect(canonical.validationContract).toBeUndefined();
+    expect(canonical.result.conclusionContract).toBeUndefined();
+    expect(canonical.protocolDiagnostics?.sidecar.rawPayload).toEqual(raw);
+    expect(conclusionDeclarationValidationPayload(canonical.protocolDiagnostics?.sidecar)).toBeUndefined();
+    expect(JSON.stringify(canonical.result)).not.toContain('PRIVATE_AUTHORING_BAD_DICTIONARY');
+  });
+});
 
 const control = '<!-- smartperfetto:conversation-control {"kind":"needs_user_input","question":"Which trace?"} -->';
 

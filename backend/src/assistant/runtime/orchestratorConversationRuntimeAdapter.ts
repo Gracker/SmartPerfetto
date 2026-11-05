@@ -4,6 +4,7 @@
 
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import {assertRuntimeTaskWorkRemaining, ensureRuntimeAdmission} from '../../agentRuntime/runtimeTaskDeadline';
 import {createRuntimePerformanceScope, resolveRuntimePerformanceRecorder, sameRuntimePerformanceIdentity} from '../../agentRuntime/runtimePerformanceContext';
 import {createAnalysisHistoryReader, withAnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
 import type {AnalysisOptions, AnalysisResult, IOrchestrator} from '../../agent/core/orchestratorTypes';
@@ -179,6 +180,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
   }
 
   async run(input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> {
+    const admittedAt = input.admittedAt ?? Date.now();
     const state = this.createExecution(input);
     const {runtimeSessionId} = state;
     const analysisOptions = this.options.analysisOptions ?? {};
@@ -244,13 +246,18 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       if (safeUpdate) input.onUpdate?.(safeUpdate);
     };
     this.orchestrator.on('update', onUpdate);
+    let taskAdmission: ReturnType<typeof ensureRuntimeAdmission> | undefined;
     try {
       this.assertActive(input, state);
       // History questions are registered by the runtime's history reader on every read.
       if (privateKnowledge) registerPrivateAnalysisQueryForEcho(runtimeSessionId, input.query);
-      const options: AnalysisOptions = {...analysisOptions, selectionContext: input.selectionContext, analysisMode: 'fast',
+      let options: AnalysisOptions = {...analysisOptions, selectionContext: input.selectionContext, analysisMode: 'fast',
         ...(input.sourceDepth ? {sourceDepth: input.sourceDepth} : {}),
         assistantSurface: 'conversation', conversationTraceAttached: input.traceContext.kind === 'attached', runId: input.runId};
+      taskAdmission = ensureRuntimeAdmission(options, {runId: input.runId, sessionId: runtimeSessionId,
+        admittedAt, ownerSignal: state.controller.signal, assertCurrent: () => this.assertActive(input, state)});
+      options = taskAdmission.options;
+      assertRuntimeTaskWorkRemaining(taskAdmission.admission.task);
       const scope = {logicalSessionId: input.sessionId, traceId, options};
       evidenceContext = this.evidenceContexts.get(input.sessionId);
       if (!evidenceContext?.matches(scope)) {
@@ -262,6 +269,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         signal: state.controller.signal, assertAuthorized: () => this.assertActive(input, state)});
       const artifacts = await evidenceBinding.describeArtifacts();
       this.assertActive(input, state);
+      assertRuntimeTaskWorkRemaining(taskAdmission.admission.task);
       let prompt = buildConversationPrompt({question: input.query, history: [], historyTurns: [],
         traceContext: input.traceContext, outputLanguage});
       if (artifacts.artifacts.length > 0) {
@@ -278,6 +286,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         withAnalysisHistoryReader(evidenceBinding.options, historyReader, {includeSourceDerived}),
         input.privateContext,
       );
+      assertRuntimeTaskWorkRemaining(taskAdmission.admission.task);
       const analysis = performanceScope.run(() => this.updateExecution.run(state, () => this.orchestrator.analyze(prompt,
         runtimeSessionId, traceId, runtimeOptions))
         .then(result => this.finalizeRuntimeResult(result, input, state, dataEnvelopes,
@@ -316,6 +325,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       // The conversation service projects the failure (`projectAnalysisFailure`) under this run's guard.
       throw error;
     } finally {
+      taskAdmission?.disposeOwned();
       const activity = performanceScope.dispose();
       // Cancellation may close an unfinished call. Publish its frozen facts only
       // to the same still-authorized product run, never to a successor.

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveRuntimePerformanceRecorder} from './runtimePerformanceContext';
+import type {RuntimeModelCallStart} from './runtimePerformance';
 import type {ComplexityClassifierInput, QueryComplexity} from '../agentv3/types';
 import {buildAnalysisTurnIntentPrompt} from '../agentv3/queryComplexityPrompt';
 import {
@@ -26,6 +27,7 @@ const SCOPES = ['bounded_question', 'scene_wide'] as const;
 const COMPLEXITIES = ['quick', 'full'] as const;
 const DELIVERABLES = ['answer', 'report'] as const;
 const EVIDENCE_ACCESS = ['existing_only', 'read_new'] as const;
+const TARGET_USES = ['current_selection', 'other_target', 'unknown'] as const;
 
 /** The model supplies a decision, never the authority or status of that decision. */
 export interface AnalysisTurnIntentDecision {
@@ -36,6 +38,8 @@ export interface AnalysisTurnIntentDecision {
   recommendedComplexity: QueryComplexity;
   deliverable: typeof DELIVERABLES[number];
   evidenceAccess: typeof EVIDENCE_ACCESS[number];
+  /** Semantic use of the current selection; absence stays unknown and grants no acquisition authority. */
+  targetUse?: typeof TARGET_USES[number];
   /** Asked only when the run has source selected; absent otherwise or when the model omitted it. */
   sourceNeed?: SourceNeed;
   reason?: string;
@@ -73,10 +77,11 @@ export function parseAnalysisTurnIntentDecision(
     value = parsed as Record<string, unknown>;
   } catch { return undefined; }
   const keys = ['schemaVersion', 'taskKind', 'sceneId', 'scope', 'recommendedComplexity', 'deliverable', 'evidenceAccess',
-    'reason', ...(options.sourceSelected ? ['sourceNeed'] : [])];
+    'reason', 'targetUse', ...(options.sourceSelected ? ['sourceNeed'] : [])];
   if (Object.keys(value).some(key => !keys.includes(key))) return undefined;
   // A missing source need leaves the rest of the decision valid; the depth then follows the budget.
   if (value.sourceNeed !== undefined && !member(value.sourceNeed, SOURCE_NEEDS)) return undefined;
+  if (value.targetUse !== undefined && !member(value.targetUse, TARGET_USES)) return undefined;
   const scene = typeof value.sceneId === 'string' ? registry.getStrategy(value.sceneId) : undefined;
   if (value.schemaVersion !== 1 || !scene || scene.strategyKind === 'contract_only'
     || !member(value.taskKind, TASK_KINDS) || !member(value.scope, SCOPES)
@@ -96,6 +101,7 @@ export function parseAnalysisTurnIntentDecision(
     recommendedComplexity: value.recommendedComplexity,
     deliverable: value.deliverable,
     evidenceAccess: value.evidenceAccess,
+    ...(value.targetUse === undefined ? {} : {targetUse: value.targetUse}),
     ...(value.sourceNeed === undefined ? {} : {sourceNeed: value.sourceNeed}),
     ...(value.reason === undefined ? {} : {reason: value.reason as string}),
   };
@@ -118,6 +124,8 @@ export interface AnalysisTurnIntentResolverInput {
   signal?: AbortSignal;
   deadlineMs: number;
   dispatch: (input: IntentTransportInput) => Promise<IntentTransportResult>;
+  /** Internal classifier configuration, for observation only; never selects a model or provider. */
+  modelCallAttribution?: Pick<RuntimeModelCallStart, 'model' | 'providerOrigin'>;
   /** Reuse this pin for all later strategy loads in the same run. */
   strategyRegistry?: ReadonlyStrategyRegistrySnapshot;
   template?: string;
@@ -133,6 +141,11 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
   resolve: () => Promise<AnalysisTurnIntent>;
 } {
   const {signal, deadlineMs, dispatch, evidenceAccessLimit} = input;
+  const {model, providerOrigin} = input.modelCallAttribution ?? {};
+  const modelCallAttribution = {
+    ...(typeof model === 'string' ? {model} : {}),
+    ...(typeof providerOrigin === 'string' ? {providerOrigin} : {}),
+  };
   const strategyRegistry = input.strategyRegistry ?? currentEffectiveRuntimeRegistrySnapshot()?.strategyRegistry
     ?? buildStrategyRegistrySnapshotFromDefinitions({definitions: getRegisteredScenes(), overlayGeneration: 'builtin'});
   const template = input.template ?? loadPromptTemplate('prompt-analysis-turn-intent');
@@ -155,7 +168,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     type: 'object',
     additionalProperties: false,
     required: Object.keys(requiredProperties),
-    properties: {...requiredProperties, reason: {type: 'string', maxLength: 800}},
+    properties: {...requiredProperties, targetUse: {type: 'string', enum: TARGET_USES}, reason: {type: 'string', maxLength: 800}},
     allOf: [{
       if: {properties: {taskKind: {const: 'acknowledgement'}}},
       then: {properties: {scope: {const: 'bounded_question'}, recommendedComplexity: {const: 'quick'},
@@ -200,7 +213,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     let result: IntentTransportResult;
     try {
       const recorder = resolveRuntimePerformanceRecorder(product?.options.runManifestAttributionSink, currentRunManifestAttributionSink());
-      result = await dispatchWithModelCallRecord(recorder, {purpose: 'classification'}, {prompt, systemPrompt: '', signal,
+      result = await dispatchWithModelCallRecord(recorder, {...modelCallAttribution, purpose: 'classification'}, {prompt, systemPrompt: '', signal,
         deadlineMs, outputByteLimit: OUTPUT_BYTE_LIMIT}, dispatch);
     } catch {
       throwIfCancelled();

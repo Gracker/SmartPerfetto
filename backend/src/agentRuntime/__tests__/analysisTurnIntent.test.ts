@@ -15,6 +15,8 @@ import {buildAnalysisTurnIntentPrompt} from '../../agentv3/queryComplexityPrompt
 import {buildStrategyRegistrySnapshotFromDefinitions, fingerprintStrategyDefinition, getRegisteredScenes, loadPromptTemplate} from '../../agentv3/strategyLoader';
 import type {IntentTransportInput, IntentTransportResult} from '../intentTransport';
 import {createAnalysisRunSpec} from '../analysisRunSpec';
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 
 const registry = buildStrategyRegistrySnapshotFromDefinitions({
   definitions: getRegisteredScenes(), overlayGeneration: 'intent-test',
@@ -35,6 +37,101 @@ const arrayValuedResponse = {
 };
 
 describe('analysis turn intent protocol', () => {
+  it('accepts optional current target-use without changing the remaining decision', () => {
+    expect(parseAnalysisTurnIntentDecision(JSON.stringify({...decision, targetUse: 'current_selection'}), registry))
+      .toEqual({...decision, targetUse: 'current_selection'});
+  });
+
+  it.each(['current_selection', 'other_target', 'unknown'] as const)('retains the optional closed target-use scalar: %s', targetUse => {
+    expect(parseAnalysisTurnIntentDecision(JSON.stringify({...decision, targetUse}), registry)).toEqual({...decision, targetUse});
+    expect(parseAnalysisTurnIntentDecision(JSON.stringify(decision), registry)).toEqual(decision);
+  });
+
+  it.each([null, true, [], {}, 'current', 'CURRENT_SELECTION'])('rejects invalid explicit target-use: %j', targetUse => {
+    expect(parseAnalysisTurnIntentDecision(JSON.stringify({...decision, targetUse}), registry)).toBeUndefined();
+  });
+
+  it.each([
+    ['不要分析当前选择，检查另一条线程。', 'other_target'],
+    ['他说“分析这个选区”，但我问的是另外一个进程。', 'other_target'],
+    ['继续解释之前那一项，不是现在选择的事件。', 'other_target'],
+    ['这个为什么这样？', 'unknown'],
+  ] as const)('does not reinterpret classifier target-use from selected context or reason text: %s', async (query, targetUse) => {
+    const dispatch = jest.fn(async () => response({...decision, targetUse, reason: 'current_selection mentioned as data'}));
+    const resolver = createAnalysisTurnIntentResolver({context: buildComplexityClassifierInput({query, sceneType: 'general',
+      hasReferenceTrace: false, previousTurns: [], selectionContext: {kind: 'track_event', nativeTable: 'slice', eventId: 1, ts: 10, dur: 20}}),
+      strategyRegistry: registry, deadlineMs: Date.now() + 10_000, dispatch});
+    expect(await resolver.resolve()).toMatchObject({status: 'resolved', targetUse, scope: 'bounded_question'});
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds targetUse to optional schema properties only and leaves fallback/old decisions absent', async () => {
+    let schema!: Record<string, any>;
+    const resolver = createAnalysisTurnIntentResolver({context, strategyRegistry: registry, template: '{{decisionSchema}}',
+      deadlineMs: Date.now() + 10_000, dispatch: async input => {schema = JSON.parse(input.prompt); return response(decision);}});
+    expect(await resolver.resolve()).not.toHaveProperty('targetUse');
+    expect(schema.required).not.toContain('targetUse');
+    expect(schema.properties.targetUse).toEqual({type: 'string', enum: ['current_selection', 'other_target', 'unknown']});
+    const validate = new Ajv().compile(schema);
+    expect(validate(decision)).toBe(true);
+    expect(validate({...decision, targetUse: 'other_target'})).toBe(true);
+    expect(validate({...decision, targetUse: ['current_selection']})).toBe(false);
+    expect(await createResolver(async () => ({status: 'unavailable', reason: 'provider_error'})).resolve()).not.toHaveProperty('targetUse');
+    const prompt = loadPromptTemplate('prompt-analysis-turn-intent')!;
+    expect(prompt).toContain('选择存在不等于用户采用它');
+    expect(prompt).toContain('仅引用旧问题、代词指向不清');
+  });
+
+  it('captures only classifier attribution fields without changing the dispatched request', async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, assertCurrent: () => {},
+      identity: {runId: 'intent-run', sessionId: 'intent-session', scope: {tenantId: 'tenant', workspaceId: 'workspace'}}});
+    const attribution = {model: 'classifier-model', providerOrigin: 'https://classifier.example/v1?private=not-for-receipt',
+      purpose: 'review', apiKey: 'ATTRIBUTION_SECRET_NOT_FOR_DISPATCH'};
+    const deadlineMs = Date.now() + 10_000;
+    const dispatch = jest.fn(async (_input: IntentTransportInput) => response(decision));
+    const resolver = createAnalysisTurnIntentResolver({context, strategyRegistry: registry, deadlineMs, dispatch,
+      modelCallAttribution: attribution});
+    attribution.model = 'changed-after-construction';
+    attribution.providerOrigin = 'https://other.example';
+    try {
+      const intent = await scope.run(() => resolver.resolve());
+      expect(intent.status).toBe('resolved');
+      expect(recorder.seal().modelCalls).toEqual([expect.objectContaining({purpose: 'classification',
+        model: 'classifier-model', providerOrigin: 'https://classifier.example', outcome: 'ok'})]);
+      const withoutAttribution = jest.fn(async (_input: IntentTransportInput) => response(decision));
+      await createAnalysisTurnIntentResolver({context, strategyRegistry: registry, deadlineMs,
+        dispatch: withoutAttribution}).resolve();
+      const {observer: _observer, ...transportRequest} = dispatch.mock.calls[0][0];
+      expect(transportRequest).toEqual(withoutAttribution.mock.calls[0][0]);
+      expect(JSON.stringify({intent, transportRequest, receipt: recorder.seal()}))
+        .not.toMatch(/ATTRIBUTION_SECRET_NOT_FOR_DISPATCH|not-for-receipt|changed-after-construction|other\.example/);
+    } finally {scope.dispose();}
+  });
+
+  it.each([
+    {attribution: undefined, actualModel: undefined, model: undefined, providerOrigin: undefined},
+    {attribution: undefined, actualModel: 'reported-model', model: 'reported-model', providerOrigin: undefined},
+    {attribution: {model: 'requested-model', providerOrigin: 'https://classifier.example/v1'},
+      actualModel: 'reported-model', model: 'reported-model', providerOrigin: 'https://classifier.example'},
+  ])('keeps unknown classifier attribution unknown and preserves reported-model override %#', async input => {
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, assertCurrent: () => {},
+      identity: {runId: 'intent-run', sessionId: 'intent-session', scope: {tenantId: 'tenant', workspaceId: 'workspace'}}});
+    try {
+      await scope.run(() => createAnalysisTurnIntentResolver({context, strategyRegistry: registry,
+        deadlineMs: Date.now() + 10_000, modelCallAttribution: input.attribution,
+        dispatch: async () => ({status: 'ok', text: JSON.stringify(decision), actualModel: input.actualModel}),
+      }).resolve());
+      const call = recorder.seal().modelCalls?.[0];
+      expect(call?.purpose).toBe('classification');
+      expect(call?.model).toBe(input.model);
+      expect(call?.providerOrigin).toBe(input.providerOrigin);
+      if (input.model === undefined) expect(call).not.toHaveProperty('model');
+      if (input.providerOrigin === undefined) expect(call).not.toHaveProperty('providerOrigin');
+    } finally {scope.dispose();}
+  });
+
   it('accepts a complete decision as JSON or one whole JSON fence', () => {
     for (const text of [JSON.stringify(decision), '```json\n' + JSON.stringify(decision) + '\n```']) {
       expect(parseAnalysisTurnIntentDecision(text, registry)).toEqual(decision);

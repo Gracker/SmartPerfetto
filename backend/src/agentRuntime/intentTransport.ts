@@ -8,6 +8,8 @@ import {
   startRuntimeModelCall,
   type RuntimeModelCallPurpose,
   type RuntimeModelCallStart,
+  type RuntimeModelCallReasoning,
+  type RuntimeModelReasoningEffort,
   type RuntimePerformanceRecorder,
 } from './runtimePerformance';
 import type {OpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
@@ -24,8 +26,8 @@ export interface IntentTransportInput {
 }
 
 export interface IntentTransportObserver {
-  /** Whether the request carried a reasoning control (`disabled`) or left the provider default. */
-  reasoning?(policy: 'provider_default' | 'disabled'): void;
+  /** Controls sent in this request, not a claim about the server's internal thinking. */
+  reasoning?(policy: RuntimeModelCallReasoning, effort?: RuntimeModelReasoningEffort): void;
   /** The first provider output of the reply (text, reasoning or tool call). */
   firstOutput?(): void;
   /** Provider-reported usage object, exactly as returned. */
@@ -246,21 +248,23 @@ export async function dispatchWithModelCallRecord(
   const span = startRuntimeModelCall(recorder, {
     inputBytesBucket: runtimeModelCallInputBytesBucket(intentTransportInputBytes(input)), ...call,
   });
-  let reasoning: 'provider_default' | 'disabled' | undefined;
+  let reasoning: RuntimeModelCallReasoning | undefined;
+  let reasoningEffort: RuntimeModelReasoningEffort | undefined;
   let usage: unknown;
   const observer: IntentTransportObserver = {
     firstOutput: () => span.recordFirstOutput(),
     usage: value => { usage = value; },
-    reasoning: policy => { reasoning = policy; },
+    reasoning: (policy, effort) => { reasoning = policy; reasoningEffort = effort; },
   };
   try {
     const result = await dispatch({...input, observer});
     span.end({outcome: result.status === 'ok' ? 'ok' : input.signal?.aborted ? 'cancelled' : 'error',
       ...(result.status === 'ok' && result.actualModel ? {model: result.actualModel} : {}),
-      ...(reasoning ? {reasoning} : {}), usage});
+      ...(reasoning ? {reasoning} : {}), ...(reasoningEffort ? {reasoningEffort} : {}), usage});
     return result;
   } catch (error) {
-    span.end({outcome: runtimeOutcomeFromError(error, input.signal), ...(reasoning ? {reasoning} : {}), usage});
+    span.end({outcome: runtimeOutcomeFromError(error, input.signal), ...(reasoning ? {reasoning} : {}),
+      ...(reasoningEffort ? {reasoningEffort} : {}), usage});
     throw error;
   }
 }

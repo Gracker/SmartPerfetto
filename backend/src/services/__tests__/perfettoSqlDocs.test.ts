@@ -9,6 +9,8 @@ import {
   moduleCoveredByPerfettoSqlLineage,
   perfettoRelationColumns,
   searchPerfettoSqlDocs,
+  searchAllPerfettoSqlDocs,
+  findPerfettoSqlDocDefinitions,
 } from '../perfettoSqlDocs';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -23,6 +25,22 @@ const pinnedRevision: string = parseRuntimeRevision(
 describe('perfettoSqlDocs', () => {
   beforeEach(() => {
     clearPerfettoSqlDocsCache();
+  });
+
+  it('exposes ranked matches before the legacy limit without changing existing search results', () => {
+    const all = searchAllPerfettoSqlDocs('thread');
+    expect(all.length).toBeGreaterThan(30);
+    expect(searchPerfettoSqlDocs('thread')).toEqual(all.slice(0, 30));
+    expect(searchPerfettoSqlDocs('thread', {limit: 5})).toEqual(all.slice(0, 5));
+    expect(all.every(item => item.entry.visibility !== 'private' && !item.entry.name.startsWith('_'))).toBe(true);
+  });
+
+  it('resolves public definitions by their exact locator without fuzzy fallback', () => {
+    const entry = searchPerfettoSqlDocs('android_frames').find(result => result.entry.name === 'android_frames')!.entry;
+    const locator = {name: entry.name, module: entry.module, type: entry.type};
+    expect(findPerfettoSqlDocDefinitions(locator)).toEqual([entry]);
+    expect(findPerfettoSqlDocDefinitions({...locator, module: 'different.module'})).toEqual([]);
+    expect(findPerfettoSqlDocDefinitions({...locator, name: entry.name.slice(0, -1)})).toEqual([]);
   });
 
   it('loads the upstream stdlib_docs-backed asset', () => {

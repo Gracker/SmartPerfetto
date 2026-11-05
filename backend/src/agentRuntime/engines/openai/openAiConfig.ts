@@ -7,6 +7,7 @@ import { getProviderService, type OpenAIProtocol, type ProviderScope } from '../
 import { mergeIsolatedProviderEnv } from '../../../services/providerManager/envIsolation';
 import { hasConcreteEnvValue, redactUrlForDiagnostics } from '../../envCredentialSources';
 import { resolveAgentRuntimeBudgetConfig } from '../../../config';
+import {parseOpenAIAnalysisReasoningEffort, type OpenAIAnalysisReasoningEffort} from '../../../services/providerManager/modelExecutionProfile';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_MAX_RUN_TIMEOUT_MS,
@@ -18,6 +19,8 @@ export interface OpenAIAgentConfig {
   model: string;
   lightModel: string;
   maxOutputTokens?: number;
+  /** Explicit main/ordinary-continuation setting; bounded purposes keep their own policy. */
+  analysisReasoningEffort?: OpenAIAnalysisReasoningEffort;
   maxTurns: number;
   quickMaxTurns: number;
   quickTargetTurns: number;
@@ -93,6 +96,7 @@ export function loadOpenAIConfig(providerId?: string | null, providerScope?: Pro
     model: env.OPENAI_MODEL || DEFAULT_MODEL,
     lightModel: env.OPENAI_LIGHT_MODEL || DEFAULT_LIGHT_MODEL,
     maxOutputTokens: optionalOutputTokenLimit(env.OPENAI_MAX_OUTPUT_TOKENS),
+    analysisReasoningEffort: parseOpenAIAnalysisReasoningEffort(env.OPENAI_ANALYSIS_REASONING_EFFORT),
     maxTurns: parsePositiveIntEnv(env, 'OPENAI_MAX_TURNS',
       parsePositiveIntEnv(env, 'CLAUDE_MAX_TURNS', budgetConfig.maxTurns)),
     quickMaxTurns: parsePositiveIntEnv(env, 'OPENAI_QUICK_MAX_TURNS',
@@ -169,6 +173,7 @@ export function getOpenAIRuntimeDiagnostics(providerId?: string | null, provider
     configured: hasOpenAICredentials(providerId, providerScope),
     credentialSources,
     maxOutputTokens: config.maxOutputTokens,
+    analysisReasoningEffort: config.analysisReasoningEffort,
     fullRequestTimeoutMs: config.fullRequestTimeoutMs,
     streamIdleTimeoutMs: config.streamIdleTimeoutMs,
     maxRunTimeoutMs: config.maxRunTimeoutMs,

@@ -6,7 +6,7 @@ scene: scroll_response
 investigation_contract:
   schema_version: 1
   profiles:
-    - {id: system_execution, version: 1}
+    - {id: system_execution, version: 2}
     - {id: causal_reasoning, version: 1}
   requirements:
     - id: scroll_response_critical_path

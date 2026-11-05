@@ -10,7 +10,9 @@ import {knowledgeUsePrompt} from '../services/knowledge/knowledgePrompt';
 import {DEFAULT_OUTPUT_LANGUAGE} from './outputLanguage';
 import {resolveRuntimeTurnPolicy, type RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
-import {CONCLUSION_CONTRACT_SIDECAR_MARKER} from '../agent/core/conclusionContract';
+import {CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE, CONCLUSION_AUTHORING_FENCE_V2,
+  type ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
+import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
 import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
 
@@ -103,6 +105,7 @@ export function stripTemplateComments(content: string): string {
 }
 
 type TypedTurnPromptContext = Partial<ClaudeAnalysisContext> & {
+  declarationSyntax?: ConclusionDeclarationSyntax;
   runtimeEvidenceContext?: string;
   quickMemoryContext?: string;
 };
@@ -188,8 +191,18 @@ function buildTypedTurnSystemPromptParts(
   push(1, 'turn_protocol', requiredAsset('prompt-turn-policy'));
   // Inject protocol syntax after authoring comments are removed. Applying the
   // comment stripper to the rendered asset would delete its sidecar example.
-  push(1, 'conclusion_declaration', renderTemplate(requiredAsset('prompt-conclusion-contract-schema'), {
+  const declarationSchema = requiredAsset('prompt-conclusion-contract-schema');
+  const declarationFraming = renderTemplate(requiredAsset(context.declarationSyntax === 'authoring_v2'
+    ? 'prompt-conclusion-authoring-v2-framing' : context.declarationSyntax === 'authoring_v1'
+      ? 'prompt-conclusion-authoring-framing' : 'prompt-conclusion-full-framing'), {
     sidecarOpeningMarker: CONCLUSION_CONTRACT_SIDECAR_MARKER,
+    authoringOpeningFence: context.declarationSyntax === 'authoring_v2' ? CONCLUSION_AUTHORING_FENCE_V2 : CONCLUSION_AUTHORING_FENCE,
+    authoringMaxBytes: String(CONCLUSION_AUTHORING_LIMITS.utf8Bytes),
+    authoringMaxNodes: String(CONCLUSION_AUTHORING_LIMITS.nodes),
+    authoringMaxDepth: String(CONCLUSION_AUTHORING_LIMITS.depth),
+  });
+  push(1, 'conclusion_declaration', renderTemplate(declarationSchema, {
+    declarationFraming,
     supportedProofRules: JSON.stringify(SUPPORTED_DETERMINISTIC_CLAIM_RULES),
   }));
   push(1, 'output_language', requiredAsset(language === 'en' ? 'prompt-language-en' : 'prompt-language-zh'));
@@ -219,9 +232,11 @@ function buildTypedTurnSystemPromptParts(
     });
   }
   if (intent.taskKind === 'investigation' || intent.taskKind === 'comparison') {
-    data(3, 'investigation_requirements', resolveAnalysisInvestigationRequirements({
-      intent, strategyRegistry: registry,
-    }));
+    const investigation = resolveAnalysisInvestigationRequirements({intent, strategyRegistry: registry});
+    data(3, 'investigation_requirements', {...investigation,
+      // Product execution bindings are not model instructions or evidence obligations.
+      requirements: investigation.requirements.map(({entryAcquisition: _entry, ...requirement}) => requirement),
+    });
     push(3, 'investigation_findings', requiredAsset('prompt-investigation-findings'));
     if (intent.status === 'resolved') {
       data(3, 'scene_strategy_details', (strategy?.detailSections ?? []).map(({ref, title}) =>
@@ -268,7 +283,9 @@ function buildTypedTurnSystemPromptParts(
   // Product-run evidence for this turn: never dropped whole, and bounded at its
   // source (buildSceneEvidencePromptData) so it cannot evict other context.
   if (context.sceneEvidence) {
-    push(2, 'scene_evidence', `${requiredAsset('prompt-scene-evidence')}\n\n${JSON.stringify({
+    const template = 'kind' in context.sceneEvidence && context.sceneEvidence.kind === 'selected_foundation'
+      ? 'prompt-selected-evidence' : 'prompt-scene-evidence';
+    push(2, 'scene_evidence', `${requiredAsset(template)}\n\n${JSON.stringify({
       context: 'scene_evidence', data: context.sceneEvidence})}`);
   }
   const focusApp = buildFocusAppPromptData(context.focusTarget);

@@ -45,6 +45,7 @@ import {
 } from '../../services/analysisRunStore';
 import {finalizeAnalysisResult, type ProvisionalAnalysisAnswer} from '../../services/finalizeAnalysisResult';
 import type {RuntimePerformanceReceiptV1} from '../../agentRuntime/runtimePerformance';
+import {assertRuntimeTaskWorkRemaining, createRuntimeAdmissionScope, type RuntimeAdmissionScope} from '../../agentRuntime/runtimeTaskDeadline';
 import type {RuntimeToolResultAuditReceiptV1} from '../../agentRuntime/runtimeToolResultAudit';
 import {resolveCapturedComparisonIdentity} from '../../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../../services/finalResultQualityGate';
@@ -174,6 +175,8 @@ function recordCliAnalysisRunState(
 }
 
 export interface RunTurnInput {
+  /** Optional total work deadline, measured from this service's run admission. */
+  taskTimeoutMs?: number;
   /** Cancels runtime execution and finalization until the turn is committed. */
   signal?: AbortSignal;
   /**
@@ -333,6 +336,7 @@ async function awaitCliFinalizationOperation<T>(operation: Promise<T>, signal: A
 interface CliAnalysisRunOwner {
   runId: string;
   controller: AbortController;
+  admission?: RuntimeAdmissionScope;
   sessionId?: string;
   abortRuntime?: () => void;
 }
@@ -447,6 +451,7 @@ export class CliAnalyzeService {
 
   async runTurn(input: RunTurnInput): Promise<RunTurnOutput> {
     if (this.shuttingDown) throw new DOMException('CLI service is shutting down', 'AbortError');
+    const admittedAt = Date.now();
     const run: CliAnalysisRunOwner = {runId: randomUUID(), controller: new AbortController()};
     this.activeRuns.add(run);
     const abort = () => run.controller.abort(input.signal?.reason);
@@ -455,12 +460,21 @@ export class CliAnalyzeService {
     run.controller.signal.addEventListener('abort', abortRuntime, {once: true});
     if (input.signal?.aborted) abort();
     const release = () => {
+      run.admission?.dispose();
       input.signal?.removeEventListener('abort', abort);
       run.controller.signal.removeEventListener('abort', abortRuntime);
       this.activeRuns.delete(run);
       if (run.sessionId && this.currentSessionRuns.get(run.sessionId) === run) this.currentSessionRuns.delete(run.sessionId);
     };
     try {
+      run.admission = createRuntimeAdmissionScope({runId: run.runId, admittedAt,
+        taskTimeoutMs: input.taskTimeoutMs, ownerSignal: run.controller.signal,
+        assertCurrent: () => {
+          run.controller.signal.throwIfAborted();
+          if (!this.activeRuns.has(run) || (run.sessionId && this.currentSessionRuns.get(run.sessionId) !== run)) {
+            throw new DOMException('CLI run is no longer current', 'AbortError');
+          }
+        }});
       return await this.runOwnedTurn(input, run);
     } finally {
       release();
@@ -469,6 +483,7 @@ export class CliAnalyzeService {
 
   private async runOwnedTurn(input: RunTurnInput, run: CliAnalysisRunOwner): Promise<RunTurnOutput> {
     run.controller.signal.throwIfAborted();
+    assertRuntimeTaskWorkRemaining(run.admission?.task);
     // Resolve traceId: either passed in (we assume caller already loaded), or load now.
     let traceId = input.traceId;
     if (!traceId) {
@@ -477,6 +492,7 @@ export class CliAnalyzeService {
       }
       traceId = await this.loadTrace(input.tracePath);
       run.controller.signal.throwIfAborted();
+      assertRuntimeTaskWorkRemaining(run.admission?.task);
     }
 
     const knowledgeScope = resolveCodebaseScope();
@@ -608,12 +624,16 @@ export class CliAnalyzeService {
     // only a run that was actually opened.
     let openRunScope: AnalysisRunPersistenceScope | undefined;
     try {
+      assertRuntimeTaskWorkRemaining(run.admission?.task);
       traceProcessorLeases = await prepareAnalysisRunTraceProcessorLeases({
         service: getTraceProcessorService(), scope: resolvedScope, runId: run.runId, sessionId,
         currentTraceId: traceId, referenceTraceId: effectiveReferenceTraceId,
         signal: run.controller.signal, assertCurrent: assertActive,
         onInvalidated: error => run.controller.abort(error),
       });
+      // Keep the lease-owner signal separate from task work expiry. Preparation
+      // must settle before the existing finally releases its holders.
+      assertRuntimeTaskWorkRemaining(run.admission?.task);
       const turnOutput = await traceProcessorLeases.run(() => withRunManifestLifecycle(runManifestLifecycle, async () => {
         // Surface sessionId to the caller now, before analyze() starts emitting
         // events. Without this, callers must buffer events until runTurn resolves,
@@ -658,6 +678,7 @@ export class CliAnalyzeService {
           let runtimeOptions: AnalysisOptions = withDurableLearningPermission({
             providerId: session.providerId,
             runId: run.runId,
+            taskTimeoutMs: input.taskTimeoutMs,
             referenceTraceId: effectiveReferenceTraceId,
             analysisMode: requestedAnalysisMode,
             codeAwareMode: effectiveCodeAwareMode,
@@ -668,6 +689,7 @@ export class CliAnalyzeService {
             runManifestAttributionSink: runManifestLifecycle.builder,
             ...knowledgeScope,
           }, privateContext);
+          if (run.admission) runtimeOptions = run.admission.bind(runtimeOptions, sessionId);
           if (input.history?.length) {
             // Current source activation controls both the preview and later tool reads.
             const history = input.history.filter(turn => !turn.sourceDerived ||
@@ -683,12 +705,14 @@ export class CliAnalyzeService {
             }});
             runtimeOptions = withAnalysisHistoryReader(runtimeOptions, reader);
           }
+          assertRuntimeTaskWorkRemaining(run.admission?.task);
           result = await orchestrator.analyze(input.query, sessionId, traceId, runtimeOptions);
           context = takeFinalizationContext(result);
           orchestrator.off('update', handler);
           assertActive();
           if (context && context.runId !== run.runId) throw new Error('finalization_run_identity_mismatch');
-          const runtimeDeadlineMs = context?.deadlineMs ?? 0;
+          const runtimeDeadlineMs = Math.min(context?.deadlineMs ?? 0,
+            run.admission?.task?.facts.hardDeadlineAt ?? Number.POSITIVE_INFINITY);
           const allowMemoryPrefetch = context
             ? resolveRuntimeTurnPolicy(context.turnIntent, requestedAnalysisMode).allowMemoryPrefetch : false;
           if (allowMemoryPrefetch && Date.now() < runtimeDeadlineMs) {

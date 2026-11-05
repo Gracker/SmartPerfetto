@@ -12,14 +12,53 @@ import {
   compactRuntimeToolDescription,
   createClaudeSdkToolFromSharedSpec,
   createJsonSchemaFromZodRawShape,
+  deduplicateNullableSchemaDescriptions,
   isClaudeSdkToolLike,
   normalizeRuntimeToolArgs,
+  preserveRuntimeLiteralStrings,
   sharedToolSpecFromClaudeSdkTool,
   stringifyRuntimeToolResult,
   withRuntimeToolConcurrency,
   withRuntimeToolTiming,
   type SharedToolSpec,
 } from '../runtimeToolSpec';
+
+describe('nullable schema annotation projection', () => {
+  it('preserves opted-in literal text without changing nullable omission or ordinary selector coercion', () => {
+    const literal = preserveRuntimeLiteralStrings(z.string().optional().describe('Literal body text'));
+    const shape = {literal, selector: z.string().optional()};
+    for (const text of ['None', 'null', 'undefined']) {
+      expect(normalizeRuntimeToolArgs({literal: text, selector: text}, shape)).toEqual({literal: text});
+    }
+    expect(normalizeRuntimeToolArgs({literal: null, selector: null}, shape)).toEqual({});
+    expect(normalizeRuntimeToolArgs({}, shape)).toEqual({});
+    expect(createJsonSchemaFromZodRawShape(shape)).toEqual(createJsonSchemaFromZodRawShape({
+      literal: z.string().optional().describe('Literal body text'), selector: z.string().optional(),
+    }));
+  });
+  it('deduplicates only identical annotations in schema positions without mutating instance data', () => {
+    const nullable = {description: '同一个字段', anyOf: [{type: 'string', description: '同一个字段'}, {type: 'null'}]};
+    const instance = {description: 'instance', anyOf: [{description: 'instance', type: 'string'}, {type: 'null'}]};
+    const schema = {type: 'object', properties: {value: nullable}, $defs: {value: nullable},
+      const: instance, enum: [instance], default: instance, examples: [instance],
+      unknownExtension: instance};
+    const before = JSON.stringify(schema);
+    const result = deduplicateNullableSchemaDescriptions(schema);
+    expect(result.properties.value).toEqual({description: '同一个字段', anyOf: [{type: 'string'}, {type: 'null'}]});
+    expect(result.$defs.value).toEqual(result.properties.value);
+    for (const key of ['const', 'enum', 'default', 'examples', 'unknownExtension'] as const) expect(result[key]).toBe(schema[key]);
+    expect(JSON.stringify(schema)).toBe(before);
+    expect(deduplicateNullableSchemaDescriptions(result)).toEqual(result);
+  });
+
+  it('preserves distinct branch descriptions, validation keywords and nonnullable unions', () => {
+    const schema = {type: 'object', required: ['value'], additionalProperties: false, properties: {
+      value: {description: 'whole field', anyOf: [{type: 'string', description: 'string constraint', pattern: '^x'}, {type: 'null'}]},
+      union: {description: 'same', anyOf: [{type: 'string', description: 'same'}, {type: 'number'}]},
+    }};
+    expect(deduplicateNullableSchemaDescriptions(schema)).toEqual(schema);
+  });
+});
 import {createRuntimeToolConcurrencyCoordinator} from '../runtimeToolConcurrency';
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';

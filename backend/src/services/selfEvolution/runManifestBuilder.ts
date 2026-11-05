@@ -172,6 +172,12 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
 
   recordRuntime(input: RunManifestRuntimeAttribution): void {
     this.assertCollecting('record_runtime');
+    const syntax = input.conclusionDeclarationSyntax;
+    if (syntax !== undefined && syntax !== 'canonical_v1' && syntax !== 'authoring_v1' && syntax !== 'authoring_v2') {
+      throw new Error('run_manifest_declaration_syntax_invalid');
+    }
+    if (this.runtime.conclusionDeclarationSyntax !== undefined && syntax !== undefined &&
+        this.runtime.conclusionDeclarationSyntax !== syntax) throw new Error('run_manifest_declaration_syntax_changed');
     if (input.runtime !== this.runtime.runtime) {
       throw new Error(
         `run_manifest_runtime_mismatch:${this.runtime.runtime}:${input.runtime}`,
@@ -181,6 +187,8 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       ...this.runtime,
       ...input,
       providerId: input.providerId,
+      ...(this.runtime.conclusionDeclarationSyntax !== undefined
+        ? {conclusionDeclarationSyntax: this.runtime.conclusionDeclarationSyntax} : {}),
     };
   }
 
@@ -490,6 +498,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         ? {providerSnapshotHash: this.runtime.providerSnapshotHash}
         : {}),
       ...(this.runtime.model ? {model: this.runtime.model} : {}),
+      ...(this.runtime.conclusionDeclarationSyntax ? {conclusionDeclarationSyntax: this.runtime.conclusionDeclarationSyntax} : {}),
       outputLanguage: this.runtime.outputLanguage ?? 'zh-CN',
       toolAllowlistHash: this.toolAllowlistHash,
       featureFlagSnapshot: this.featureFlagSnapshot,

@@ -26,6 +26,17 @@ export type AnalysisInvestigationCondition =
       value: number;
     };
 
+export const INVESTIGATION_ENTRY_BINDINGS = ['selected_start', 'selected_end', 'selected_upid', 'selected_utid'] as const;
+export type InvestigationEntryBinding = typeof INVESTIGATION_ENTRY_BINDINGS[number];
+
+/** Registry-authored minimum acquisition; values come only from verified native selection bindings. */
+export interface AnalysisInvestigationEntryAcquisition {
+  schemaVersion: 1;
+  metricId: string;
+  subjectBinding: 'selected_thread_interval';
+  params: Readonly<Record<string, InvestigationEntryBinding>>;
+}
+
 /** Strategy-owned evidence obligations, independent of report presentation. */
 export interface AnalysisInvestigationRequirement {
   id: string;
@@ -39,6 +50,7 @@ export interface AnalysisInvestigationRequirement {
    * Absent: content obligation uses existing claim verification, without a
    * separate acquisition verdict. */
   evidenceMetrics?: readonly string[];
+  entryAcquisition?: AnalysisInvestigationEntryAcquisition;
 }
 
 export interface AnalysisInvestigationContract {

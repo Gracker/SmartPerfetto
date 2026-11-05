@@ -14,6 +14,7 @@ const ORIGINAL_ENV = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_MAX_OUTPUT_TOKENS: process.env.OPENAI_MAX_OUTPUT_TOKENS,
+  OPENAI_ANALYSIS_REASONING_EFFORT: process.env.OPENAI_ANALYSIS_REASONING_EFFORT,
   OPENAI_MAX_TURNS: process.env.OPENAI_MAX_TURNS,
   OPENAI_QUICK_MAX_TURNS: process.env.OPENAI_QUICK_MAX_TURNS,
   OPENAI_FULL_REQUEST_TIMEOUT_MS: process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS,
@@ -45,6 +46,7 @@ describe('createOpenAIEnv', () => {
     dir = path.join(os.tmpdir(), `openai-config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await fsp.mkdir(dir, { recursive: true });
     process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
+    delete process.env.OPENAI_ANALYSIS_REASONING_EFFORT;
     resetProviderService();
   });
 
@@ -54,11 +56,29 @@ describe('createOpenAIEnv', () => {
     await fsp.rm(dir, { recursive: true, force: true });
   });
 
+  it.each(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])(
+    'captures explicit analysis effort %s without changing the selected models', effort => {
+      process.env.OPENAI_ANALYSIS_REASONING_EFFORT = effort;
+      expect(loadOpenAIConfig(null).analysisReasoningEffort).toBe(effort);
+      expect(getOpenAIRuntimeDiagnostics(null).analysisReasoningEffort).toBe(effort);
+    });
+
+  it('keeps analysis effort absent by default', () => {
+    expect(loadOpenAIConfig(null).analysisReasoningEffort).toBeUndefined();
+  });
+
+  it.each(['', ' low', 'low ', 'LOW', 'PRIVATE_EFFORT_CANARY', 'ultra'])(
+    'rejects invalid analysis effort without reflecting its value', effort => {
+      process.env.OPENAI_ANALYSIS_REASONING_EFFORT = effort;
+      expect(() => loadOpenAIConfig(null)).toThrow(/^invalid_configuration:openai_analysis_reasoning_effort$/);
+    });
+
   it('isolates active provider env from unrelated global LLM credentials', () => {
     process.env.OPENAI_API_KEY = 'sk-global-openai';
     process.env.OPENAI_BASE_URL = 'https://global-openai.example/v1';
     process.env.ANTHROPIC_API_KEY = 'sk-global-anthropic';
     process.env.CLAUDE_MODEL = 'global-claude-model';
+    process.env.OPENAI_ANALYSIS_REASONING_EFFORT = 'PRIVATE_EFFORT_CANARY';
 
     const svc = getProviderService();
     const p = svc.create({
@@ -80,6 +100,7 @@ describe('createOpenAIEnv', () => {
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.CLAUDE_MODEL).toBeUndefined();
+    expect(loadOpenAIConfig(p.id).analysisReasoningEffort).toBeUndefined();
   });
 
   it('ignores an active Claude provider when resolving OpenAI env without an explicit providerId', () => {

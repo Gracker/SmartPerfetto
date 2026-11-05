@@ -49,6 +49,8 @@ export type {
 export interface ConversationRuntimeInput {
   sessionId: string;
   runId: string;
+  /** Internal product admission time; never accepted from request JSON. */
+  admittedAt?: number;
   /**
    * The run's own private-context marker, fixed when the run starts: the value
    * its ConversationRun records. Absent, the run's context is unknown.
@@ -545,12 +547,14 @@ export class ConversationSessionService {
     session.lastActivityAt = this.now();
 
     const runId = this.createId('run');
+    const admittedAt = this.now();
     const stop = this.createRunStop(session, () => run);
     const privateContext = resolveAnalysisPrivateContext(session);
     const sourceDepth = input.runtimeOptions?.sourceDepth ?? session.sourceDepth;
     const runtimeInput: ConversationRuntimeInput = {
       sessionId: session.sessionId,
       runId,
+      admittedAt,
       privateContext,
       query,
       history: session.history.map((message) => ({...message})),
@@ -603,7 +607,7 @@ export class ConversationSessionService {
       turnIndex: Math.max(-1, ...session.historyTurns.map(turn => turn.turnIndex),
         ...session.runs.map(previous => previous.turnIndex)) + 1,
       status: 'running',
-      startedAt: this.now(),
+      startedAt: admittedAt,
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
       privateContext,
