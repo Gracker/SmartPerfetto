@@ -1408,6 +1408,51 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(providerRuntimeLoader).toHaveBeenCalledTimes(2);
   });
 
+  it('observes HTTP dispatches per run without capturing the recorder in the cached Pi provider', async () => {
+    const bodies: string[] = [];
+    const transport = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      bodies.push(init!.body as string);
+      return new Response('{}');
+    });
+    const providerRuntimeLoader = jest.fn(async (config: {model: Record<string, unknown>}) => {
+      const provider = await loadFakePiProviderRuntime(config);
+      const stream = ((model: unknown, context: unknown, streamOptions: any) => {
+        const result = provider.streamFn(model, context, streamOptions) as any;
+        return {result: async () => {
+          await streamOptions.fetch('https://provider.example/v1/chat/completions', {
+            method: 'POST', body: JSON.stringify({messages: [{role: 'user', content: 'PRIVATE_PI_WIRE_🙂'}]}),
+            signal: streamOptions.signal,
+          });
+          return result.result();
+        }};
+      }) as any;
+      return {...provider, streamFn: stream, streamFnForPurpose: () => stream};
+    });
+    FakePiAgent.promptHandler = async agent => {
+      const stream = agent.options!.streamFn as (...args: any[]) => any;
+      await stream(agent.state.model, {messages: []}, {}).result();
+      return undefined;
+    };
+    const runtime = new PiAgentCoreRuntime(createFakeTraceProcessorService(), {kind: 'pi-agent-core', source: 'env'}, {
+      env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON}, moduleLoader: async () => ({Agent: FakePiAgent}), providerRuntimeLoader,
+    });
+    try {
+      for (let run = 0; run < 2; run++) {
+        const recorder = createRuntimePerformanceRecorder();
+        const start = bodies.length;
+        await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(),
+          () => runtime.analyze('question', 'session-pi', 'trace-pi', {analysisMode: 'fast',
+            runManifestAttributionSink: createNoopAttributionSink(recorder)}));
+        const receipt = recorder.seal();
+        expect(receipt.modelRequests?.map(item => item.body.bodyBytes)).toEqual(bodies.slice(start).map(body => Buffer.byteLength(body)));
+        expect(receipt.modelRequests?.[0]).toMatchObject({dispatchOrdinal: 1, purpose: 'classification'});
+        expect(receipt.modelRequests?.some(item => item.purpose === 'answer_turn')).toBe(true);
+        expect(JSON.stringify(receipt)).not.toMatch(/PRIVATE_PI_WIRE|provider.example/);
+      }
+      expect(providerRuntimeLoader).toHaveBeenCalledTimes(1);
+    } finally {runtime.reset(); transport.mockRestore();}
+  });
+
   it('shares pending Pi SDK and provider loads for concurrent first use of the same model fingerprint', async () => {
     FakePiAgent.promptHandler = async (_agent, input) => [{
       role: 'assistant',

@@ -51,6 +51,57 @@ describe('reasoning_content compatibility', () => {
     })).toBe(false);
   });
 
+  it.each(['https://open.bigmodel.cn/api/coding/paas/v4', 'https://api.z.ai/api/paas/v4'])(
+    'enables official GLM only on chat completions: %s', baseURL => {
+      const config = {baseURL, model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash'};
+      expect(shouldUseMimoReasoningContentCompat({...config, protocol: 'chat_completions'})).toBe(true);
+      expect(shouldUseMimoReasoningContentCompat({...config, protocol: 'responses'})).toBe(false);
+    });
+
+  it.each(['https://gateway.example/v1', 'https://open.bigmodel.cn.evil.test/v4',
+    'https://evil.test/api.z.ai', 'http://open.bigmodel.cn/v4', 'https://api.z.ai:8443/v4', 'blob:https://api.z.ai/opaque', 'invalid'])(
+    'does not enable GLM compatibility from a model name or look-alike endpoint: %s', baseURL => {
+      expect(shouldUseMimoReasoningContentCompat({baseURL, protocol: 'chat_completions',
+        model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash'})).toBe(false);
+    });
+
+  it('logs only the HTTP status when an error response echoes private content', async () => {
+    const canary = 'PRIVATE_GLM_ERROR_ECHO_7612';
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = JSON.stringify({error: {message: canary}});
+    const baseFetch = jest.fn<typeof fetch>(async () => new Response(error, {
+      status: 400, statusText: canary, headers: {'content-type': 'application/json'},
+    }));
+    try {
+      const response = await createMimoReasoningContentFetch(baseFetch)(
+        'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions', {
+          method: 'POST', body: JSON.stringify({model: canary, messages: [{role: 'user', content: canary}]}),
+        });
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe(error); // Preserve the SDK's error handling; only the diagnostic is projected.
+      expect(warn.mock.calls).toEqual([['[ReasoningContentCompat] Chat completions request failed', {status: 400}]]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(canary);
+    } finally {warn.mockRestore();}
+  });
+
+  it('preserves GLM non-streamed reasoning as private native SDK content', async () => {
+    const reasoning = '私有推理完整原文：PRIVATE_GLM_REASONING_JSON；结束。';
+    const baseFetch = jest.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      id: 'glm-json', object: 'chat.completion', created: 1, model: 'glm-5.3-flash',
+      choices: [{index: 0, finish_reason: 'stop', message: {role: 'assistant', content: '公开回答', reasoning_content: reasoning}}],
+    }), {headers: {'content-type': 'application/json'}}));
+    const client = new OpenAI({apiKey: 'test-only', baseURL: 'https://api.z.ai/api/paas/v4',
+      fetch: createMimoReasoningContentFetch(baseFetch), maxRetries: 0});
+    const model = new OpenAIChatCompletionsModel(client, 'glm-5.3-flash');
+    const response = await withTrace('GLM private reasoning compatibility', () => model.getResponse({
+      input: [{role: 'user', content: '问题'}], systemInstructions: '', modelSettings: {},
+      tools: [], handoffs: [], outputType: 'text', tracing: false} as any));
+    expect(response.output.find(item => item.type === 'reasoning')).toMatchObject({content: [],
+      rawContent: [{type: 'reasoning_text', text: reasoning}]});
+    expect(response.output.flatMap(item => item.type === 'message' && item.role === 'assistant'
+      ? item.content.flatMap(part => part.type === 'output_text' ? [part.text] : []) : [])).toEqual(['公开回答']);
+  });
+
   it('converts SDK reasoning history back to MiMo reasoning_content', () => {
     const payload: any = {
       model: 'mimo-v2.5-pro',

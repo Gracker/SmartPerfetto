@@ -19,6 +19,8 @@ import {
   type IntentTransportScope,
 } from '../../intentTransport';
 import {readChatCompletionStream, readResponsesStream} from './openAiIntentStream';
+import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
+import {withModelRequestPurpose} from '../../runtimePerformanceContext';
 
 export interface OpenAiIntentTransportInput extends IntentTransportInput {
   config: Pick<OpenAIAgentConfig, 'baseURL' | 'apiKey' | 'lightModel' | 'protocol'>;
@@ -208,14 +210,17 @@ async function dispatchOneRequest(
     ...(input.maxOutputTokens !== undefined
       ? buildOpenAIChatCompletionsTokenLimit(config.lightModel, input.maxOutputTokens) : {}),
   };
-  const response = await (input.fetchImpl ?? fetch)(url, {
+  // Injected fetch owns its observation (the runtime fences it after compat).
+  // The standalone no-tool path uses the same final-body observer directly.
+  const response = await withModelRequestPurpose({purpose: input.purpose === 'final_semantic' ? 'review' : input.purpose},
+    () => (input.fetchImpl ?? createModelRequestMetricsFetch(fetch))(url, {
     method: 'POST', signal: scope.signal,
     headers: {
       'Content-Type': 'application/json',
       ...(config.apiKey ? {Authorization: `Bearer ${config.apiKey}`} : {}),
     },
     body: JSON.stringify(body),
-  });
+  }));
   scope.throwIfInactive();
   if (!response.ok) return {status: 'unavailable', reason: 'provider_error',
     // Only 4xx/5xx carry triage value; anything else stays codeless so exact

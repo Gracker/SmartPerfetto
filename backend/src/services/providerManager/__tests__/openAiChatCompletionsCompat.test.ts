@@ -6,6 +6,7 @@ import {
   buildOpenAIChatCompletionsTokenLimit,
   buildOpenAITextRequestPurposeOptions,
   isOpenAIChatCompletionsOutputTruncated,
+  isOfficialGlmOrigin,
   readOpenAIChatCompletionsOutput,
 } from '../openAiChatCompletionsCompat';
 
@@ -42,6 +43,19 @@ describe('official DeepSeek delivery protocol options', () => {
       }
     },
   );
+});
+
+describe('official GLM origin boundary', () => {
+  it.each(['https://open.bigmodel.cn/api/coding/paas/v4', 'https://api.z.ai/api/paas/v4',
+    'https://OPEN.BIGMODEL.CN:443/api/paas/v4', 'https://API.Z.AI:443/api/coding/paas/v4'])(
+    'recognizes the exact parsed official origin: %s', url => {
+      expect(isOfficialGlmOrigin(url)).toBe(true);
+      expect(isOfficialGlmOrigin(new URL(url))).toBe(true);
+    });
+  it.each(['', 'not a URL', 'http://open.bigmodel.cn/api/paas/v4', 'https://api.z.ai:8443/v4',
+    'https://open.bigmodel.cn.evil.test/v4', 'https://evil.test/api.z.ai', 'https://open.bigmodel.cn@evil.test/v4',
+    'https://gateway.example/v1?upstream=https://api.z.ai', 'https://api.openai.com/v1', 'blob:https://api.z.ai/opaque'])(
+    'rejects other or malformed origins: %s', url => expect(isOfficialGlmOrigin(url)).toBe(false));
 });
 
 describe('official GLM delivery protocol options', () => {

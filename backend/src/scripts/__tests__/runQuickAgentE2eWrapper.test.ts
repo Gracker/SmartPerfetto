@@ -643,12 +643,14 @@ describe('GLM Coding Plan canonical E2E provider boundary', () => {
     expect(env.DEEPSEEK_API_KEY).toBeUndefined();
     expect(env.DEEPSEEK_BASE_URL).toBeUndefined();
   });
-  it('stops legacy DeepSeek CLI names before starting a provider', () => {
-    const result = spawnSync(process.execPath, [path.join(backendRoot, 'scripts/run-deepseek-agent-e2e.cjs'), '--suite', 'startup'],
+  it('keeps the restored DeepSeek CLI independently discoverable without loading credentials', () => {
+    const result = spawnSync(process.execPath, [path.join(backendRoot, 'scripts/run-deepseek-agent-e2e.cjs'), '--help'],
       {cwd: backendRoot, encoding: 'utf8'});
-    expect(result.status).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('DeepSeek E2E is disabled');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('DeepSeek V4.1 Flash');
+    expect(result.stdout).toContain('--model deepseek-flash --light-model deepseek-flash');
+    expect(result.stdout).not.toContain('GLM_API_KEY');
+    expect(result.stderr).toBe('');
   });
 });
 
@@ -946,4 +948,272 @@ describe('GLM configured suite output isolation', () => {
       expect(calls[0].args).toContain('--query'); expect(calls[0].args).toContain('q');
     });
   });
+});
+
+describe('DeepSeek Flash provider-bound E2E harness', () => {
+  const deepseekPath = path.join(backendRoot, 'scripts/run-deepseek-agent-e2e.cjs');
+  const glmPath = path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs');
+  const wrapper = require(deepseekPath);
+  let directory: string;
+  let previousExitCode: typeof process.exitCode;
+
+  beforeEach(() => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-e2e-isolation-'));
+    previousExitCode = process.exitCode;
+    const env: NodeJS.ProcessEnv = {...process.env, DEEPSEEK_API_KEY: 'deepseek-fixture-key',
+      GLM_API_KEY: 'glm-fixture-key', GLM_MODEL: 'glm-5.3', GLM_LIGHT_MODEL: 'glm-5.3-flash'};
+    for (const key of ['DEEPSEEK_MODEL', 'DEEPSEEK_LIGHT_MODEL', 'DEEPSEEK_BASE_URL',
+      'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON', 'SMARTPERFETTO_OPENCODE_MODEL_JSON']) delete env[key];
+    jest.replaceProperty(process, 'env', env);
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    process.exitCode = previousExitCode;
+    jest.dontMock('child_process'); jest.restoreAllMocks();
+    fs.rmSync(directory, {recursive: true, force: true});
+  });
+
+  it('pins both models to the official Flash ID and keeps the same task/oracle suite', () => {
+    const parsed = wrapper.parseArgs(['--suite', 'system-analysis', '--runtime', 'all-deepseek',
+      '--system-scenario', 'scheduler-constructed', '--base-url', 'https://api.deepseek.com/']);
+    expect(parsed).toMatchObject({provider: 'deepseek', baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-flash', lightModel: 'deepseek-flash', timeoutMs: 20 * 60_000});
+    expect(wrapper.resolveRuntimeKinds(parsed.runtime)).toEqual(['openai-agents-sdk', 'pi-agent-core', 'opencode']);
+    const glm = require(glmPath);
+    expect(wrapper.FLAGSHIP_EXPECTATIONS).toEqual(glm.FLAGSHIP_EXPECTATIONS);
+    expect(wrapper.frameFactExpectation()).toEqual(glm.frameFactExpectation());
+    const selected = (harness: any) => harness.systemAnalysisScenarios().map((scenario: any) => ({
+      id: scenario.id, trace: scenario.args[scenario.args.indexOf('--trace') + 1],
+      query: scenario.args[scenario.args.indexOf('--query') + 1],
+      expectation: scenario.args[scenario.args.indexOf('--expectation-json') + 1],
+    }));
+    expect(selected(wrapper)).toEqual(selected(glm));
+    expect(wrapper.suites.startup.output).not.toBe(glm.suites.startup.output);
+    expect(wrapper.systemAnalysisScenarios()[0].output).not.toBe(glm.systemAnalysisScenarios()[0].output);
+  });
+
+  it.each(['http://api.deepseek.com/v1', 'https://api.deepseek.com:8443/v1',
+    'https://api.deepseek.com.evil.test/v1', 'https://api.deepseek.com/anthropic',
+    'https://user:secret@api.deepseek.com/v1', 'https://api.deepseek.com/v1?key=secret',
+    'https://open.bigmodel.cn/api/coding/paas/v4'])(
+    'refuses a non-pinned endpoint without echoing its credentials: %s', baseUrl => {
+      expect(() => wrapper.parseArgs(['--base-url', baseUrl])).toThrow('other endpoints and URL credentials are refused');
+      try {wrapper.parseArgs(['--base-url', baseUrl]);} catch (error) {
+        expect(String(error)).not.toContain('secret');
+      }
+    });
+
+  it('rejects another provider, runtime group, Pro or a legacy model alias', () => {
+    expect(() => wrapper.parseArgs(['--provider', 'zai-coding-cn'])).toThrow('requires --provider deepseek');
+    expect(() => wrapper.parseArgs(['--runtime', 'all-glm'])).toThrow('Invalid runtime');
+    for (const model of ['deepseek-v4-pro', 'deepseek-v4-flash', 'glm-5.3-flash']) {
+      expect(() => wrapper.parseArgs(['--model', model])).toThrow('requires --model deepseek-flash');
+      expect(() => wrapper.parseArgs(['--light-model', model])).toThrow('requires --model deepseek-flash');
+    }
+  });
+
+  it('never uses GLM, generic OpenAI or Anthropic credentials for DeepSeek', () => {
+    for (const runtime of ['openai-agents-sdk', 'pi-agent-core', 'opencode', 'claude-agent-sdk']) {
+      expect(wrapper.realProviderAvailability(runtime, {GLM_API_KEY: 'other-key',
+        OPENAI_API_KEY: 'other-key', ANTHROPIC_API_KEY: 'other-key'}))
+        .toEqual({available: false, reason: 'DEEPSEEK_API_KEY_MISSING'});
+    }
+    expect(wrapper.realProviderAvailability('openai-agents-sdk', {DEEPSEEK_API_KEY: 'own-key'}))
+      .toEqual({available: true, credentialKind: 'DEEPSEEK_API_KEY', apiKey: 'own-key'});
+    expect(wrapper.realProviderAvailability('qoder-agent-sdk', {DEEPSEEK_API_KEY: 'own-key'}))
+      .toEqual({available: false, reason: 'QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING'});
+  });
+
+  it('isolates child connection credentials while retaining explicit runtime budgets', () => {
+    Object.assign(process.env, {GLM_CODING_API_KEY: 'foreign-glm', ZAI_CODING_CN_API_KEY: 'foreign-zai',
+      ANTHROPIC_AUTH_TOKEN: 'foreign-anthropic', CLAUDE_CODE_OAUTH_TOKEN: 'foreign-oauth',
+      OPENAI_API_KEY: 'foreign-openai', OPENAI_BASE_URL: 'https://foreign.test/v1', OPENAI_MODEL: 'foreign-model',
+      QODER_BYOK_API_KEY: 'foreign-qoder', OPENAI_MAX_OUTPUT_TOKENS: '4096', OPENAI_FULL_PER_TURN_MS: '60000'});
+    for (const runtime of ['openai-agents-sdk', 'opencode', 'claude-agent-sdk', 'qoder-agent-sdk']) {
+      const child = wrapper.buildChildEnv('own-key', runtime, directory);
+      expect(child).toMatchObject({DEEPSEEK_API_KEY: 'own-key', OPENAI_API_KEY: 'own-key',
+        OPENAI_BASE_URL: 'https://api.deepseek.com/v1', OPENAI_MODEL: 'deepseek-flash', OPENAI_LIGHT_MODEL: 'deepseek-flash',
+        OPENAI_MAX_OUTPUT_TOKENS: '4096', OPENAI_FULL_PER_TURN_MS: '60000'});
+      expect(JSON.stringify(child)).not.toMatch(/foreign-(glm|zai|anthropic|oauth|openai|model|qoder)/);
+      expect(child.GLM_API_KEY).toBeUndefined();
+      expect(child.GLM_MODEL).toBeUndefined();
+      expect(child.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      if (runtime === 'claude-agent-sdk') expect(child).toMatchObject({ANTHROPIC_BASE_URL: 'https://api.deepseek.com/anthropic',
+        ANTHROPIC_AUTH_TOKEN: 'own-key', CLAUDE_MODEL: 'deepseek-flash', CLAUDE_LIGHT_MODEL: 'deepseek-flash'});
+      if (runtime === 'opencode') expect(JSON.parse(child.SMARTPERFETTO_OPENCODE_MODEL_JSON)).toEqual({
+        providerID: 'deepseek', modelID: 'deepseek-flash', baseURL: 'https://api.deepseek.com/v1',
+        apiKeyEnv: 'DEEPSEEK_API_KEY', smallModel: 'deepseek-flash'});
+      if (runtime === 'qoder-agent-sdk') expect(child).toMatchObject({QODER_BYOK_PROVIDER: 'deepseek',
+        QODER_BYOK_API_KEY: 'own-key', QODER_MODEL: 'deepseek-flash', QODER_LIGHT_MODEL: 'deepseek-flash'});
+      expect(wrapper.providerFingerprint(runtime, child)).toEqual({providerOrigin: 'https://api.deepseek.com', model: 'deepseek-flash'});
+    }
+  });
+
+  it('passes a Qoder PAT only to the selected Qoder runtime across both provider entries', () => {
+    process.env.QODER_PERSONAL_ACCESS_TOKEN = 'qoder-native-fixture-token';
+    for (const harness of [wrapper, require(glmPath)]) {
+      for (const runtime of ['openai-agents-sdk', 'opencode', 'claude-agent-sdk']) {
+        const child = harness.buildSemanticChildEnv(runtime, {apiKey: 'own-key'}, directory);
+        expect(Object.prototype.hasOwnProperty.call(child, 'QODER_PERSONAL_ACCESS_TOKEN')).toBe(false);
+      }
+      expect(harness.buildSemanticChildEnv('qoder-agent-sdk', {apiKey: 'own-key'}, directory)
+        .QODER_PERSONAL_ACCESS_TOKEN).toBe('qoder-native-fixture-token');
+    }
+  });
+
+  it('reports missing installed Pi model metadata without substituting an older Flash ID or dispatching', () => {
+    const spawn = jest.fn((_command: string, args: string[]) => {
+      expect(args[0]).toBe('--input-type=module');
+      expect(args[args.length - 1]).toBe('deepseek-flash');
+      return {status: 2};
+    });
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const isolated = require(deepseekPath);
+      expect(isolated.realProviderAvailability('pi-agent-core', {DEEPSEEK_API_KEY: 'own-key'}))
+        .toEqual({available: false, reason: 'UNSUPPORTED_INSTALLED_MODEL_METADATA'});
+      expect(() => isolated.buildChildEnv('own-key', 'pi-agent-core', directory)).toThrow('Unknown DeepSeek V4.1 Flash model');
+    });
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('dispatches both provider instances with their own explicit pins without changing process environment', () => {
+    const before = {...process.env};
+    const calls: Array<{args: string[]; env: NodeJS.ProcessEnv}> = [];
+    const spawn = jest.fn((_command: string, args: string[], options: any) => {
+      expect(args[1]).toBe(path.join(backendRoot, 'src/scripts/verifyAgentSseScrolling.ts'));
+      calls.push({args, env: options.env});
+      return {status: 0};
+    });
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const glm = require(glmPath), deepseek = require(deepseekPath);
+      glm.runConfiguredSuites(glm.parseArgs(['--suite', 'startup', '--model', 'glm-5.3-flash',
+        '--light-model', 'glm-5.3-flash', '--output-dir', directory]));
+      deepseek.runConfiguredSuites(deepseek.parseArgs(['--suite', 'startup', '--output-dir', directory]));
+      expect(glm.providerConfiguration().model).toBe('glm-5.3');
+    });
+    expect(process.env).toEqual(before);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].env).toMatchObject({OPENAI_API_KEY: 'glm-fixture-key', OPENAI_MODEL: 'glm-5.3-flash',
+      OPENAI_BASE_URL: 'https://open.bigmodel.cn/api/coding/paas/v4'});
+    expect(calls[0].env.DEEPSEEK_API_KEY).toBeUndefined();
+    expect(calls[1].env).toMatchObject({OPENAI_API_KEY: 'deepseek-fixture-key', OPENAI_MODEL: 'deepseek-flash',
+      OPENAI_BASE_URL: 'https://api.deepseek.com/v1'});
+    expect(calls[1].env.GLM_API_KEY).toBeUndefined();
+    expect(calls[0].env.SMARTPERFETTO_BACKEND_DATA_DIR).not.toBe(calls[1].env.SMARTPERFETTO_BACKEND_DATA_DIR);
+    expect(calls[0].args[calls[0].args.indexOf('--output') + 1]).not.toBe(calls[1].args[calls[1].args.indexOf('--output') + 1]);
+  });
+
+  it('refuses a reused explicit output before starting the verifier and preserves the prior report', () => {
+    const report = path.join(directory, path.basename(wrapper.suites.startup.output));
+    fs.writeFileSync(report, 'prior-report');
+    const spawn = jest.fn();
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const isolated = require(deepseekPath);
+      expect(() => isolated.runConfiguredSuites(isolated.parseArgs(['--suite', 'startup', '--output-dir', directory])))
+        .toThrow('select a fresh --output-dir');
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.readFileSync(report, 'utf8')).toBe('prior-report');
+  });
+
+  it('protects an explicit flagship summary before any model dispatch', () => {
+    const summary = path.join(directory, 'startup.json');
+    fs.writeFileSync(summary, 'prior-summary');
+    const spawn = jest.fn((command: string, args: string[]) => {
+      if (command === 'git') return {status: 0, stdout: args[0] === 'rev-parse' ? 'a'.repeat(40) : ''};
+      throw new Error('Verifier must not start');
+    });
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const isolated = require(deepseekPath);
+      expect(() => isolated.runConfiguredSuites(isolated.parseArgs(['--suite', 'flagship', '--output-dir', directory])))
+        .toThrow('select a fresh --output-dir');
+    });
+    expect(spawn.mock.calls.every(([command]) => command === 'git')).toBe(true);
+    expect(fs.readFileSync(summary, 'utf8')).toBe('prior-summary');
+  });
+
+  it('redacts a credential before diagnostic truncation can expose its prefix', () => {
+    const credential = process.env.DEEPSEEK_API_KEY!;
+    const spawn = jest.fn(() => ({status: 1, stderr: 'x'.repeat(990) + credential, stdout: ''}));
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const isolated = require(deepseekPath);
+      const result = isolated.runSemanticPreflight({runtime: 'openai-agents-sdk', queryId: 'quantitative-only',
+        condition: 'A0', outputDir: directory, timeoutMs: 1000});
+      expect(result.preflightPassed).toBe(false);
+      expect(result.record.diagnostic.length).toBeLessThanOrEqual(1000);
+      expect(result.record.diagnostic).not.toContain(credential.slice(0, 8));
+      expect(JSON.stringify(result)).not.toContain(credential);
+    });
+  });
+
+
+  it.each([
+    ['preflight report', true, 'openai-agents-sdk/preflight/quantitative-only/A0.json'],
+    ['preflight summary', true, 'openai-agents-sdk/preflight/quantitative-only/A0.preflight.json'],
+    ['preflight diagnostic', true, 'openai-agents-sdk/preflight/quantitative-only/A0.json.diagnostics.json'],
+    ['late repeated report', false, 'openai-agents-sdk/run-05/explicit-source-location/A3.json'],
+    ['late repeated diagnostic', false, 'openai-agents-sdk/run-05/explicit-source-location/A3.json.diagnostics.json'],
+    ['paired summary', false, 'openai-agents-sdk/paired-run-05.json'],
+    ['aggregate summary', false, 'aggregate.json'],
+  ] as const)('rejects existing source %s before any provider dispatch', (_label, preflight, relative) => {
+    const output = path.join(directory, relative);
+    fs.mkdirSync(path.dirname(output), {recursive: true});
+    fs.writeFileSync(output, 'prior-source-evidence');
+    const spawn = jest.fn(() => {throw new Error('Verifier must not start');});
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      for (const harnessPath of [glmPath, deepseekPath]) {
+        const isolated = require(harnessPath);
+        const args = ['--suite', 'code-aware-semantic-delta', '--runtime', 'openai', '--output-dir', directory,
+          ...(preflight ? ['--preflight', '--query-id', 'quantitative-only', '--condition', 'A0'] : ['--repeat', '5'])];
+        expect(() => isolated.runConfiguredSuites(isolated.parseArgs(args))).toThrow('select a fresh --output-dir');
+      }
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.readFileSync(output, 'utf8')).toBe('prior-source-evidence');
+  });
+
+  it('refuses cross-provider reuse of a source output directory without reading the old result as a new run', () => {
+    const spawn = jest.fn(() => ({status: 1, stderr: 'fixture failure', stdout: ''}));
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const glm = require(glmPath), deepseek = require(deepseekPath);
+      glm.runConfiguredSuites(glm.parseArgs(['--suite', 'code-aware-semantic-delta', '--runtime', 'openai',
+        '--preflight', '--query-id', 'quantitative-only', '--condition', 'A0', '--output-dir', directory]));
+      const output = path.join(directory, 'openai-agents-sdk/preflight/quantitative-only/A0.preflight.json');
+      const previous = fs.readFileSync(output, 'utf8');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(() => deepseek.runConfiguredSuites(deepseek.parseArgs(['--suite', 'code-aware-semantic-delta',
+        '--runtime', 'openai', '--preflight', '--query-id', 'quantitative-only', '--condition', 'A0',
+        '--output-dir', directory]))).toThrow('select a fresh --output-dir');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(fs.readFileSync(output, 'utf8')).toBe(previous);
+    });
+  });
+
+  it('protects direct source helpers against an existing attempt root or paired summary', () => {
+    const preflight = path.join(directory, 'openai-agents-sdk/preflight');
+    fs.mkdirSync(preflight, {recursive: true});
+    const paired = path.join(directory, 'openai-agents-sdk/paired-run-01.json');
+    fs.writeFileSync(paired, 'prior-paired-summary');
+    const spawn = jest.fn(() => {throw new Error('Verifier must not start');});
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => {
+      const isolated = require(deepseekPath);
+      expect(() => isolated.runSemanticPreflight({runtime: 'openai-agents-sdk', queryId: 'quantitative-only',
+        condition: 'A0', outputDir: directory, timeoutMs: 1000})).toThrow('select a fresh --output-dir');
+      expect(() => isolated.runSemanticPairedAttempt({runtimeKind: 'openai-agents-sdk', attempt: 1,
+        availability: {available: true, apiKey: 'own-key'}, outputDir: directory, timeoutMs: 1000}))
+        .toThrow('select a fresh --output-dir');
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.readFileSync(paired, 'utf8')).toBe('prior-paired-summary');
+  });
+
 });

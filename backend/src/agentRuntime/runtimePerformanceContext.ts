@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {AsyncLocalStorage} from 'node:async_hooks';
-import type {RuntimePerformanceRecorder} from './runtimePerformance';
+import type {RuntimePerformanceRecorder, RuntimeModelCallPurpose, RuntimeModelCallTrigger} from './runtimePerformance';
 import type {RuntimeActivitySnapshot} from './runtimeActivity';
 import type {RunManifestIdentity} from '../types/selfEvolution';
 
@@ -21,6 +21,17 @@ interface RuntimePerformanceContext {
 
 const context = new AsyncLocalStorage<RuntimePerformanceContext>();
 const suppression = new AsyncLocalStorage<true>();
+const requestPurpose = new AsyncLocalStorage<{purpose?: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger}>();
+
+/** Per-dispatch attribution only; this never selects provider policy. */
+export function withModelRequestPurpose<T>(purpose: {purpose?: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger},
+  execute: () => T): T {
+  return requestPurpose.run(purpose, execute);
+}
+
+export function currentModelRequestPurpose() {
+  return requestPurpose.getStore();
+}
 
 /** No recorder may be recovered downstream of an attribution conflict. */
 export function withRuntimePerformanceSuppressed<T>(execute: () => T): T {

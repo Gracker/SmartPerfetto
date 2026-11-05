@@ -4,6 +4,8 @@
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {runOpenAiIntentTransport, type OpenAiIntentTransportInput} from '../engines/openai/openAiIntentTransport';
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 
 interface ResponseMessageFixture {
   type: 'message';
@@ -43,6 +45,24 @@ function fixture(protocol: 'chat_completions' | 'responses') {
 describe('OpenAI native intent transport', () => {
   beforeEach(() => {jest.useFakeTimers({now: 1000});});
   afterEach(() => {jest.useRealTimers();});
+
+  it('observes the standalone no-tool fetch after provider options without changing request policy', async () => {
+    const {input, response} = fixture('chat_completions');
+    input.fetchImpl = undefined;
+    input.purpose = 'final_semantic';
+    input.config.baseURL = 'https://api.deepseek.com/v1';
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder,
+      identity: {runId: 'review', sessionId: 'session', scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(response as unknown as Response);
+    try {
+      expect(await scope.run(() => runOpenAiIntentTransport(input))).toMatchObject({status: 'ok'});
+      const body = fetchSpy.mock.calls[0][1]!.body as string;
+      expect(JSON.parse(body)).toMatchObject({thinking: {type: 'disabled'}, response_format: {type: 'json_object'}});
+      expect(recorder.seal().modelRequests).toEqual([expect.objectContaining({dispatchOrdinal: 1, purpose: 'review',
+        fetchOutcome: 'headers', body: expect.objectContaining({bodyBytes: Buffer.byteLength(body)})})]);
+    } finally {fetchSpy.mockRestore(); scope.dispose();}
+  });
 
   it.each(['responses', 'chat_completions'] as const)('disables official DeepSeek thinking only for explicit %s classification', async protocol => {
     for (const purpose of [undefined, 'classification'] as const) {

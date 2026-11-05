@@ -31,6 +31,14 @@ export type OpenAITextRequestPurposeOptions = {
  */
 const GLM_ORIGINS = new Set(['https://open.bigmodel.cn', 'https://api.z.ai']);
 
+/** Parsed origins only: model names and gateway URL substrings do not grant GLM protocol semantics. */
+export function isOfficialGlmOrigin(url: URL | string): boolean {
+  try {
+    const parsed = typeof url === 'string' ? new URL(url) : url;
+    return parsed.protocol === 'https:' && GLM_ORIGINS.has(parsed.origin);
+  } catch {return false;}
+}
+
 /** Apply purpose-specific controls only to the exact official origin.
  * Every no-tool delivery purpose (classification, final semantic review,
  * declaration repair, continuation) disables default thinking: a GLM or
@@ -46,7 +54,7 @@ export function buildOpenAITextRequestPurposeOptions(input: {
   purpose?: OpenAITextRequestPurpose;
 }): OpenAITextRequestPurposeOptions {
   if (!isOpenAITextRequestPurpose(input.purpose)) return {};
-  if (GLM_ORIGINS.has(input.requestUrl.origin)) {
+  if (isOfficialGlmOrigin(input.requestUrl)) {
     // GLM serves chat completions only; its JSON mode is not relied on here.
     return input.protocol === 'chat_completions' ? {thinking: {type: 'disabled'}} : {};
   }

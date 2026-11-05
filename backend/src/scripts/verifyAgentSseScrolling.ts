@@ -61,6 +61,7 @@ import {isTerminalSseEvent} from '../assistant/stream/sessionSseReplay';
 import {createSceneSseObservation, recordSceneSseEvent, evaluateSceneSseVerification, SCENE_RUN_TERMINAL_EVENTS, parseSceneOracleSpecs, collectSceneOracleRows, evaluateSceneOracleRows, type SceneOracleSpec, type SceneOracleObservation, type SceneSseObservation} from './sceneSseVerification';
 import {rowObject} from '../utils/traceProcessorRowUtils';
 import {stableStringify} from '../utils/stableJson';
+import {readAgentE2eMetrics} from './agentE2eMetrics';
 import {countedUnitDimension, declaredUnitAcceptsProducerDimension} from '../services/verifier/claimUnits';
 
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
@@ -2660,6 +2661,7 @@ export async function recordVerificationFailureAndCancel(input: {
   runId?: string;
   error: unknown;
   selectionResolution?: ResolvedVerificationSliceSelection;
+  metrics?: () => ReturnType<typeof readAgentE2eMetrics>;
 }, request: typeof fetch = fetch): Promise<Record<string, unknown>> {
   const failure: Record<string, unknown> = {
     schemaVersion: 'agent_sse_verification_failure@1',
@@ -2681,6 +2683,7 @@ export async function recordVerificationFailureAndCancel(input: {
     completeAcceptance: false,
   };
   const persist = () => {
+    if (input.metrics) failure.executionMetrics = input.metrics();
     fs.mkdirSync(path.dirname(input.outputPath), {recursive: true});
     fs.writeFileSync(input.outputPath, `${JSON.stringify(failure, null, 2)}\n`);
   };
@@ -3875,6 +3878,9 @@ async function main(): Promise<void> {
       completeAcceptance: acceptance.completeAcceptance,
       uncoveredFacets: acceptance.uncoveredFacets,
       runIdentity,
+      executionMetrics: readAgentE2eMetrics({
+        scope: {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID}, sessionId, runId: ownedRunId,
+      }),
       exactTextChecksPurpose: 'transport_or_canary_only_not_semantic_correctness',
       summary: sse,
       externalIssue: externalIssueVerification?.summary,
@@ -3895,7 +3901,9 @@ async function main(): Promise<void> {
     // Failure cancellation is cleanup too: preserve observations before it waits.
     persistDiagnostics();
     const failure = await recordVerificationFailureAndCancel({baseUrl, outputPath, phase,
-      startedAt, timeoutMs: options.timeoutMs, sessionId, runId: ownedRunId, error, selectionResolution});
+      startedAt, timeoutMs: options.timeoutMs, sessionId, runId: ownedRunId, error, selectionResolution,
+      metrics: () => readAgentE2eMetrics({scope: {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID},
+        sessionId, runId: ownedRunId})});
     throw new Error(`Verification failed during ${phase}: ${failure.errorCode}; failure artifact recorded`);
   } finally {
     persistDiagnostics();

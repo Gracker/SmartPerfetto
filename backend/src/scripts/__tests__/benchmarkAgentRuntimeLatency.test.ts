@@ -433,7 +433,11 @@ describe('agent runtime latency benchmark contracts', () => {
     // Per-call model records and the review decision are accepted, and dropped from scoring input.
     expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
       modelCalls: [{purpose: 'answer_turn', startOffsetMs: 0, durationMs: 10, outcome: 'ok'}],
+      modelRequests: [{dispatchOrdinal: 1, startOffsetMs: 0, fetchOutcome: 'headers', headersMs: 2,
+        httpStatus: 200, body: {status: 'observed', bodyBytes: 100}}],
       finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}}})).toEqual(cell());
+    expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, modelRequests: {}}}))
+      .toThrow('benchmark_runtime_performance_arrays_invalid');
     const activityRecorder = createRuntimePerformanceRecorder();
     activityRecorder.startToolActivity('tool', {}).end('returned', {success: true});
     activityRecorder.recordCaptureActivity({}, {rowSlots: 3, origin: 'unknown', unavailable: true});

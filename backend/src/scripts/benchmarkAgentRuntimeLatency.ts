@@ -770,7 +770,7 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
   const record = asRecord(value, 'benchmark_runtime_performance_invalid');
   // Per-call model records, the review decision and delivery budget decisions are diagnostic
   // receipt fields; the latency scorer does not read them, so they are accepted and dropped.
-  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'finalReview',
+  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'modelRequests', 'finalReview',
     'deliveryBudgets', 'sceneEvidence', 'declaration', 'activity', 'truncated'],
     'benchmark_runtime_performance_unknown_field');
   const sceneEvidence = parseSceneEvidenceReceipt(record.sceneEvidence);
@@ -778,6 +778,10 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
   // Invocation activity is diagnostic only; validate then exclude it from admission scoring.
   if (record.activity !== undefined) parseRuntimeActivitySnapshot(record.activity);
   if (record.modelCalls !== undefined && !Array.isArray(record.modelCalls)) {
+    throw new Error('benchmark_runtime_performance_arrays_invalid');
+  }
+  // HTTP dispatch observations do not alter task4..9's native-call/scoring contract.
+  if (record.modelRequests !== undefined && !Array.isArray(record.modelRequests)) {
     throw new Error('benchmark_runtime_performance_arrays_invalid');
   }
   if (record.schemaVersion !== 1) throw new Error('benchmark_runtime_performance_version_invalid');
@@ -840,7 +844,7 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
   let truncated: RuntimePerformanceReceiptV1['truncated'];
   if (record.truncated !== undefined) {
     const raw = asRecord(record.truncated, 'benchmark_runtime_truncated_invalid');
-    assertKnownFields(raw, ['phases', 'tools', 'sql', 'modelCalls'], 'benchmark_runtime_truncated_unknown_field');
+    assertKnownFields(raw, ['phases', 'tools', 'sql', 'modelCalls', 'modelRequests'], 'benchmark_runtime_truncated_unknown_field');
     truncated = {
       phases: nonnegativeInteger(raw.phases, 'benchmark_runtime_truncated_phases_invalid'),
       tools: nonnegativeInteger(raw.tools, 'benchmark_runtime_truncated_tools_invalid'),

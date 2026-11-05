@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
 import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
@@ -640,9 +641,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // continuation and retry that resends earlier tool results included), and
       // around every tool call. Aborting the lease aborts the SDK run.
       const {fence: authorization, assertActive} = createRuntimeRunAuthorization({options, executionLease});
+      let requestPurpose: {purpose: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger} = {purpose: 'answer_turn'};
+      // Below the reasoning-compat serializer, so SDK retries and later native
+      // turns are measured from the exact body sent to fetch. No response reader.
+      const measuredFetch = createModelRequestMetricsFetch(fetch, {
+        source: options.runManifestAttributionSink, purpose: () => requestPurpose,
+      });
       const authorizedFetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         authorization.assertCurrent();
-        return fetch(input, init);
+        return measuredFetch(input, init);
       }) as typeof fetch;
       const historyReader = createRuntimeAnalysisHistoryReader({options, sessionId, traceId,
         getTurns: () => sessionContext.getAnalysisHistory?.() ?? previousTurns.map(turn =>
@@ -779,6 +786,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         ({conclusion, attemptId, outputOrigin, finish, terminationMessage} = recoveryCandidate);
       };
       for (;;) {
+        requestPurpose = {purpose: attemptCall.purpose, trigger: attemptCall.trigger};
         analysisAbortScope.throwIfAborted();
         // A continuation or retry replaces what the previous attempt streamed.
         answerDraft.reset();

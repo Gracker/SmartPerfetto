@@ -4,18 +4,13 @@
 
 import { TextDecoder, TextEncoder } from 'util';
 import type { OpenAIAgentConfig } from './openAiConfig';
+import {isOfficialGlmOrigin} from '../../../services/providerManager/openAiChatCompletionsCompat';
 
 type JsonRecord = Record<string, any>;
 type FetchLike = typeof fetch;
 type FetchInput = Parameters<FetchLike>[0];
 type FetchInit = Parameters<FetchLike>[1];
 type FetchResult = Awaited<ReturnType<FetchLike>>;
-type RequestSummary = {
-  model?: unknown;
-  stream?: unknown;
-  messages?: Array<Record<string, unknown>>;
-  toolCount?: number;
-};
 
 const CHAT_COMPLETIONS_PATH = /\/chat\/completions(?:[?#]|$)/;
 const MIMO_BASE_URL_PATTERN = /xiaomimimo\.com/i;
@@ -75,40 +70,6 @@ function mergePreviousAssistantMessage(previous: JsonRecord, message: JsonRecord
   return merged || !hasContent(previous);
 }
 
-function summarizeContent(content: unknown): Record<string, unknown> {
-  if (typeof content === 'string') return { contentType: 'string', contentLength: content.length };
-  if (Array.isArray(content)) return { contentType: 'array', contentParts: content.length };
-  if (content === null) return { contentType: 'null' };
-  return { contentType: typeof content };
-}
-
-function summarizeMimoChatRequestPayload(payload: unknown): RequestSummary | undefined {
-  if (!isRecord(payload)) return undefined;
-  return {
-    model: payload.model,
-    stream: payload.stream,
-    toolCount: Array.isArray(payload.tools) ? payload.tools.length : 0,
-    messages: Array.isArray(payload.messages)
-      ? payload.messages.map((message, index) => {
-          if (!isRecord(message)) return { index, type: typeof message };
-          return {
-            index,
-            role: message.role,
-            ...summarizeContent(message.content),
-            toolCallCount: Array.isArray(message.tool_calls) ? message.tool_calls.length : 0,
-            hasReasoning: hasNonEmptyString(message.reasoning),
-            reasoningLength: hasNonEmptyString(message.reasoning) ? message.reasoning.length : 0,
-            hasReasoningContent: hasNonEmptyString(message.reasoning_content),
-            reasoningContentLength: hasNonEmptyString(message.reasoning_content)
-              ? message.reasoning_content.length
-              : 0,
-            toolCallId: typeof message.tool_call_id === 'string' ? message.tool_call_id : undefined,
-          };
-        })
-      : undefined,
-  };
-}
-
 function getRequestUrl(input: FetchInput): string {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.toString();
@@ -139,7 +100,8 @@ export function shouldUseMimoReasoningContentCompat(
   return MIMO_BASE_URL_PATTERN.test(baseURL)
     || MIMO_MODEL_PATTERN.test(models)
     || DEEPSEEK_BASE_URL_PATTERN.test(baseURL)
-    || DEEPSEEK_MODEL_PATTERN.test(models);
+    || DEEPSEEK_MODEL_PATTERN.test(models)
+    || isOfficialGlmOrigin(baseURL);
 }
 
 export function normalizeMimoChatRequestPayload(payload: unknown): boolean {
@@ -219,7 +181,7 @@ function decodeRequestBody(body: unknown): string | undefined {
   return undefined;
 }
 
-function normalizeRequestBody(body: unknown): { body: unknown; changed: boolean; summary?: RequestSummary } {
+function normalizeRequestBody(body: unknown): { body: unknown; changed: boolean } {
   const text = decodeRequestBody(body);
   if (text === undefined) return { body, changed: false };
   const trimmed = text.trim();
@@ -228,10 +190,9 @@ function normalizeRequestBody(body: unknown): { body: unknown; changed: boolean;
   try {
     const payload = JSON.parse(text);
     const changed = normalizeMimoChatRequestPayload(payload);
-    const summary = summarizeMimoChatRequestPayload(payload);
     return changed
-      ? { body: JSON.stringify(payload), changed, summary }
-      : { body, changed: false, summary };
+      ? { body: JSON.stringify(payload), changed }
+      : { body, changed: false };
   } catch {
     return { body, changed: false };
   }
@@ -239,13 +200,13 @@ function normalizeRequestBody(body: unknown): { body: unknown; changed: boolean;
 
 async function normalizeRequestInputBody(
   input: Request,
-): Promise<{ input: FetchInput; changed: boolean; summary?: RequestSummary }> {
+): Promise<{ input: FetchInput; changed: boolean }> {
   if (input.bodyUsed) return { input, changed: false };
 
   try {
     const body = await input.clone().text();
     const normalized = normalizeRequestBody(body);
-    if (!normalized.changed) return { input, changed: false, summary: normalized.summary };
+    if (!normalized.changed) return { input, changed: false };
 
     const RequestCtor = (globalThis as any).Request;
     return {
@@ -254,7 +215,6 @@ async function normalizeRequestInputBody(
         headers: headersWithoutContentLength(input.headers) as any,
       }),
       changed: true,
-      summary: normalized.summary,
     };
   } catch {
     return { input, changed: false };
@@ -264,7 +224,7 @@ async function normalizeRequestInputBody(
 async function normalizeFetchRequest(
   input: FetchInput,
   init: FetchInit,
-): Promise<{ input: FetchInput; init: FetchInit; isChatCompletions: boolean; summary?: RequestSummary }> {
+): Promise<{ input: FetchInput; init: FetchInit; isChatCompletions: boolean }> {
   const isChatCompletions = CHAT_COMPLETIONS_PATH.test(getRequestUrl(input));
   if (!isChatCompletions) return { input, init, isChatCompletions };
 
@@ -282,11 +242,10 @@ async function normalizeFetchRequest(
               }
             : init,
           isChatCompletions,
-          summary: normalizedInput.summary,
         };
       }
     }
-    return { input, init, isChatCompletions, summary: normalized.summary };
+    return { input, init, isChatCompletions };
   }
 
   return {
@@ -297,7 +256,6 @@ async function normalizeFetchRequest(
       headers: headersWithoutContentLength(init?.headers) as any,
     },
     isChatCompletions,
-    summary: normalized.summary,
   };
 }
 
@@ -393,18 +351,7 @@ export function createMimoReasoningContentFetch(baseFetch: FetchLike = fetch): F
     const normalizedRequest = await normalizeFetchRequest(input, init);
     const response = await baseFetch(normalizedRequest.input, normalizedRequest.init);
     if (normalizedRequest.isChatCompletions && response.status >= 400) {
-      let responsePreview: string | undefined;
-      try {
-        responsePreview = (await response.clone().text()).slice(0, 500);
-      } catch {
-        responsePreview = undefined;
-      }
-      console.warn('[ReasoningContentCompat] Chat completions request failed', {
-        status: response.status,
-        statusText: response.statusText,
-        request: normalizedRequest.summary,
-        responsePreview,
-      });
+      console.warn('[ReasoningContentCompat] Chat completions request failed', {status: response.status});
     }
     return normalizedRequest.isChatCompletions
       ? normalizeFetchResponse(response)

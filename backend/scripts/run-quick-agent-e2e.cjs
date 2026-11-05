@@ -6,7 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const {frameFactExpectation} = require('./run-deepseek-agent-e2e.cjs');
+const {frameFactExpectation} = require('./agent-e2e-harness.cjs');
 
 const backendRoot = path.resolve(__dirname, '..');
 const verifierPath = path.join(backendRoot, 'src/scripts/verifyAgentSseScrolling.ts');

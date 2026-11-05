@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
 import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
@@ -136,6 +137,7 @@ import {
   runtimeOutcomeFromError,
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
+  type RuntimeModelCallPurpose,
 } from '../../runtimePerformance';
 import {stableStringify} from '../../../utils/stableJson';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
@@ -1508,16 +1510,24 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const modelConfig = resolvePiAgentCoreModel(this.env, false);
     // Pi accepts one complete configured model, not an ID-only light-model override.
     // The same pinned native provider is reused by classification and the main Agent.
-    const fencedStream = (stream: PiAgentCoreProviderRuntime['streamFn']): PiAgentCoreProviderRuntime['streamFn'] =>
-      (...args) => {
+    const fencedStream = (stream: PiAgentCoreProviderRuntime['streamFn'],
+      purpose: RuntimeModelCallPurpose = 'answer_turn'): PiAgentCoreProviderRuntime['streamFn'] =>
+      (model, context, streamOptions) => {
         authorization.assertCurrent();
-        return stream(...args);
+        // Only installed HTTP adapters whose native SDK accepts fetch injection.
+        // WebSocket and other APIs retain their original transport untouched.
+        const observableHttp = ['openai-completions', 'openai-responses', 'anthropic-messages'].includes(model.api)
+          && streamOptions?.transport !== 'websocket' && streamOptions?.transport !== 'websocket-cached';
+        return stream(model, context, observableHttp ? {...streamOptions,
+          fetch: createModelRequestMetricsFetch(streamOptions?.fetch ?? fetch, {
+            source: options.runManifestAttributionSink, purpose: () => ({purpose}),
+          })} : streamOptions);
       };
     const providerPromise = this.getProviderRuntime(modelConfig).then(runtime => ({
       ...runtime,
       streamFn: fencedStream(runtime.streamFn),
       ...(runtime.streamFnForPurpose ? {streamFnForPurpose: (...args: Parameters<NonNullable<PiAgentCoreProviderRuntime['streamFnForPurpose']>>) =>
-        fencedStream(runtime.streamFnForPurpose!(...args))} : {}),
+        fencedStream(runtime.streamFnForPurpose!(...args), args[0])} : {}),
     }));
     const classifierTimeoutMs = positiveIntegerEnv(this.env, ['AGENT_CLASSIFIER_TIMEOUT_MS'], 30_000);
     const intentResolver = createAnalysisTurnIntentResolver({

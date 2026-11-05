@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
+// This file is part of SmartPerfetto. See LICENSE for details.
 
-// Keep helper imports compatible; legacy CLI never spends against another provider.
-module.exports = require('./run-glm-agent-e2e.cjs');
-if (require.main === module) {
-  console.error('DeepSeek E2E is disabled. Use scripts/run-glm-agent-e2e.cjs or npm run verify:e2e:glm-flagship:strict with GLM_API_KEY.');
-  process.exitCode = 1;
-}
+const {createProviderE2eHarness} = require('./agent-e2e-harness.cjs');
+const harness = createProviderE2eHarness('deepseek');
+module.exports = harness;
+if (require.main === module) harness.main();

@@ -126,6 +126,36 @@ export interface RuntimePerformanceModelCallReceiptV1 {
   usage?: RuntimeModelCallUsageV1;
 }
 
+export const MODEL_REQUEST_COMPONENTS = ['system', 'toolDescription', 'toolSchema', 'user', 'assistant',
+  'reasoning', 'toolArguments', 'toolResults', 'other'] as const;
+export interface ModelRequestBodyMetrics {
+  status: 'observed' | 'body_unobservable';
+  /** Bytes of the actual supplied body, before HTTP transfer encoding. Not tokens. */
+  bodyBytes?: number;
+  /** Re-encoded JSON values, never original wire slices. Compare separately from bodyBytes. */
+  normalized?: {measurement: 'normalized_json_utf8'; totalBytes: number;
+    components: Record<typeof MODEL_REQUEST_COMPONENTS[number], number>};
+  normalizedUnavailableReason?: 'non_json' | 'too_large' | 'unsupported_shape';
+}
+
+/** A fetch dispatch, not a native model turn. Headers do not certify stream completion.
+ * Native usage/output stay in modelCalls: there is no inferred dispatch association. */
+export interface RuntimeModelRequestReceiptV1 {
+  dispatchOrdinal: number;
+  purpose?: RuntimeModelCallPurpose;
+  trigger?: RuntimeModelCallTrigger;
+  startOffsetMs: number;
+  fetchOutcome: 'pending' | 'headers' | 'error' | 'cancelled';
+  headersMs?: number;
+  httpStatus?: number;
+  body: ModelRequestBodyMetrics;
+}
+
+export interface RuntimeModelRequestSpan {
+  headers(httpStatus: number): void;
+  fail(cancelled: boolean): void;
+}
+
 /**
  * A delivery call's budget decision made before dispatch
  * (`assessDeliveryCallBudget`): the estimate it compared and where it came from.
@@ -172,6 +202,7 @@ export interface RuntimePerformanceReceiptV1 {
   sql: RuntimePerformanceSqlReceiptV1[];
   /** Absent in receipts recorded before per-call records existed. */
   modelCalls?: RuntimePerformanceModelCallReceiptV1[];
+  modelRequests?: RuntimeModelRequestReceiptV1[];
   finalReview?: RuntimePerformanceFinalReviewReceiptV1;
   declaration?: RuntimePerformanceDeclarationReceiptV1;
   deliveryBudgets?: RuntimePerformanceDeliveryBudgetReceiptV1[];
@@ -182,6 +213,7 @@ export interface RuntimePerformanceReceiptV1 {
     tools: number;
     sql: number;
     modelCalls?: number;
+    modelRequests?: number;
   };
 }
 
@@ -225,6 +257,7 @@ export interface RuntimePerformanceRecorderOptions {
   maxTools?: number;
   maxSql?: number;
   maxModelCalls?: number;
+  maxModelRequests?: number;
   maxHashInputBytes?: number;
   onActivity?(snapshot: RuntimeActivitySnapshot): void;
 }
@@ -312,6 +345,7 @@ export class RuntimePerformanceRecorder {
   private readonly maxTools: number;
   private readonly maxSql: number;
   private readonly maxModelCalls: number;
+  private readonly maxModelRequests: number;
   private readonly maxHashInputBytes: number;
   private readonly startedAt: number;
   private lastOffsetMs = 0;
@@ -320,6 +354,7 @@ export class RuntimePerformanceRecorder {
   private readonly tools: RuntimePerformanceToolReceiptV1[] = [];
   private readonly sql: RuntimePerformanceSqlReceiptV1[] = [];
   private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
+  private readonly modelRequests: RuntimeModelRequestReceiptV1[] = [];
   private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
   private declaration: RuntimePerformanceDeclarationReceiptV1 | undefined;
   // Independent of capped timing arrays. Absence from those arrays cannot
@@ -333,6 +368,7 @@ export class RuntimePerformanceRecorder {
     tools: 0,
     sql: 0,
     modelCalls: 0,
+    modelRequests: 0,
   };
   private sealedReceipt: RuntimePerformanceReceiptV1 | undefined;
   private activityLifetime?: () => boolean;
@@ -346,6 +382,7 @@ export class RuntimePerformanceRecorder {
     this.maxTools = positiveCap(options.maxTools, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxSql = positiveCap(options.maxSql, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxModelCalls = positiveCap(options.maxModelCalls, DEFAULT_MAX_RECEIPT_ITEMS);
+    this.maxModelRequests = positiveCap(options.maxModelRequests, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxHashInputBytes = positiveCap(
       options.maxHashInputBytes,
       DEFAULT_MAX_HASH_INPUT_BYTES,
@@ -392,6 +429,7 @@ export class RuntimePerformanceRecorder {
       || this.tools.length > 0
       || this.sql.length > 0
       || this.modelCalls.length > 0
+      || this.modelRequests.length > 0
       || this.finalReview !== undefined
       || this.declaration !== undefined
       || this.deliveryBudgets.length > 0
@@ -400,6 +438,7 @@ export class RuntimePerformanceRecorder {
       || this.truncated.tools > 0
       || this.truncated.sql > 0
       || this.truncated.modelCalls > 0
+      || this.truncated.modelRequests > 0
     );
   }
 
@@ -506,6 +545,49 @@ export class RuntimePerformanceRecorder {
       executionMs: boundedMs(input.executionMs, 'sql_execution'),
       outcome: input.outcome,
     });
+  }
+
+  startModelRequest(input: {purpose?: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger;
+    body: ModelRequestBodyMetrics}): RuntimeModelRequestSpan | undefined {
+    this.assertCollecting('start_model_request');
+    if (this.modelRequests.length >= this.maxModelRequests) {
+      this.truncated.modelRequests++;
+      return undefined;
+    }
+    const body: ModelRequestBodyMetrics = {status: 'body_unobservable'};
+    if (input.body.status === 'observed' && Number.isSafeInteger(input.body.bodyBytes) && input.body.bodyBytes! >= 0) {
+      body.status = 'observed';
+      body.bodyBytes = input.body.bodyBytes;
+      const normalized = input.body.normalized;
+      if (normalized?.measurement === 'normalized_json_utf8' && Number.isSafeInteger(normalized.totalBytes) &&
+          normalized.totalBytes >= 0 && MODEL_REQUEST_COMPONENTS.every(key =>
+          Number.isSafeInteger(normalized.components[key]) && normalized.components[key] >= 0)) {
+        body.normalized = {measurement: 'normalized_json_utf8', totalBytes: normalized.totalBytes,
+          components: Object.fromEntries(MODEL_REQUEST_COMPONENTS.map(key => [key, normalized.components[key]])) as
+            NonNullable<ModelRequestBodyMetrics['normalized']>['components']};
+      }
+      if (input.body.normalizedUnavailableReason &&
+          ['non_json', 'too_large', 'unsupported_shape'].includes(input.body.normalizedUnavailableReason)) {
+        body.normalizedUnavailableReason = input.body.normalizedUnavailableReason;
+      }
+    }
+    const entry: RuntimeModelRequestReceiptV1 = {dispatchOrdinal: this.modelRequests.length + 1,
+      ...(input.purpose && RUNTIME_MODEL_CALL_PURPOSES.includes(input.purpose) ? {purpose: input.purpose} : {}),
+      ...(input.trigger && RUNTIME_MODEL_CALL_TRIGGERS.includes(input.trigger) ? {trigger: input.trigger} : {}),
+      startOffsetMs: this.offsetMs(), fetchOutcome: 'pending', body};
+    this.modelRequests.push(entry);
+    return {
+      headers: status => {
+        if (!this.canObserveActivity() || entry.fetchOutcome !== 'pending') return;
+        entry.fetchOutcome = 'headers';
+        entry.headersMs = boundedMs(this.offsetMs() - entry.startOffsetMs, 'model_request_headers');
+        if (Number.isSafeInteger(status) && status >= 0 && status <= 599) entry.httpStatus = status;
+      },
+      fail: cancelled => {
+        if (!this.canObserveActivity() || entry.fetchOutcome !== 'pending') return;
+        entry.fetchOutcome = cancelled ? 'cancelled' : 'error';
+      },
+    };
   }
 
   startModelCall(input: RuntimeModelCallStart): RuntimeModelCallSpan {
@@ -646,6 +728,7 @@ export class RuntimePerformanceRecorder {
       tools: [...this.tools],
       sql: [...this.sql],
       ...(this.modelCalls.length > 0 ? {modelCalls: [...this.modelCalls]} : {}),
+      ...(this.modelRequests.length > 0 ? {modelRequests: [...this.modelRequests]} : {}),
       ...(this.finalReview ? {finalReview: this.finalReview} : {}),
       ...(this.declaration ? {declaration: this.declaration} : {}),
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
@@ -654,11 +737,13 @@ export class RuntimePerformanceRecorder {
         || this.truncated.tools > 0
         || this.truncated.sql > 0
         || this.truncated.modelCalls > 0
+        || this.truncated.modelRequests > 0
         ? {truncated: {
           phases: this.truncated.phases,
           tools: this.truncated.tools,
           sql: this.truncated.sql,
           ...(this.truncated.modelCalls > 0 ? {modelCalls: this.truncated.modelCalls} : {}),
+          ...(this.truncated.modelRequests > 0 ? {modelRequests: this.truncated.modelRequests} : {}),
         }}
         : {}),
     };

@@ -52,6 +52,7 @@ import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendor
 import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorResolver';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerformanceContext';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
@@ -424,6 +425,105 @@ describe('OpenAI typed intent integration', () => {
     expect(first.completion.runId).toBe('run-1'); expect(second.completion.runId).toBe('run-2');
     expect(first.completion.attemptId).not.toBe(second.completion.attemptId);
     expect(second.completion.conclusionFingerprint).toBe(analysisDeliveryFingerprint('second'));
+  });
+});
+
+describe('GLM native reasoning continuity', () => {
+  it('roundtrips two actual SDK tool turns without exposing private reasoning or carrying it into the next logical turn', async () => {
+    const model = 'glm-5.3-flash';
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      protocol: 'chat_completions', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', model, lightModel: model,
+      maxTurns: 5, quickMaxTurns: 5, quickTargetTurns: 5,
+    }));
+    const canary = 'PRIVATE_GLM_REASONING_7162';
+    const reasons = [`第一段私有推理：${canary}；先读取首轮指标。`, `第二段私有推理：${canary}；再核对后续指标。`];
+    const labels = ['首轮', '次轮'];
+    const visible = ['正在读取第一项。', '正在读取第二项。'];
+    const finalBody = '两项工具调用已完成。';
+    const declaration = renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: []});
+    // Canonical protocol framing keeps this fixture out of declaration repair.
+    const nativeAnswer = `${declaration}\n${finalBody}\n`;
+    const nextAnswer = `${declaration}\n后续回答。\n`;
+    const toolResults = labels.map((label, index) => JSON.stringify({step: index + 1, label, ok: true}));
+    const calls = labels.map((label, index) => ({id: `glm-tool-${index + 1}`, type: 'function',
+      function: {name: 'read_metric', arguments: JSON.stringify({step: index + 1, label})}}));
+    const execute = jest.fn(async ({step}: {step: number; label: string}) => toolResults[step - 1]);
+    const metric = tool({name: 'read_metric', description: 'Read one fixture metric',
+      parameters: z.object({step: z.number(), label: z.string()}), execute});
+    const {runtime, updates} = createRuntimeWithUpdates();
+    prepareStub(runtime).mockImplementation(async (...args: any[]) => ({
+      systemPrompt: 'Use the fixture tools, then answer.', tools: [metric], allowedTools: ['read_metric'],
+      sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns, hypotheses: [],
+    }));
+    const requests: Array<{messages: Array<Record<string, any>>}> = [];
+    const requestBytes: number[] = [];
+    const wire = (turn: number) => {
+      const frame = (delta: Record<string, unknown>, finish: string | null = null) => `data: ${JSON.stringify({
+        id: `glm-response-${turn}`, object: 'chat.completion.chunk', created: 1, model,
+        choices: [{index: 0, delta, finish_reason: finish}],
+      })}\n\n`;
+      const text = turn < 2 ? frame({role: 'assistant', reasoning_content: reasons[turn].slice(0, 7)}) +
+        frame({reasoning_content: reasons[turn].slice(7)}) + frame({content: visible[turn]}) +
+        frame({tool_calls: [{index: 0, ...calls[turn], function: {...calls[turn].function,
+          arguments: calls[turn].function.arguments.slice(0, 10)}}]}) +
+        frame({tool_calls: [{index: 0, function: {arguments: calls[turn].function.arguments.slice(10)}}]}) +
+        frame({}, 'tool_calls') : frame({role: 'assistant', content: turn === 2 ? nativeAnswer : nextAnswer}) + frame({}, 'stop');
+      const bytes = new TextEncoder().encode(text + 'data: [DONE]\n\n');
+      // Every Chinese codepoint and SSE line crosses transport chunk boundaries.
+      return new Response(new ReadableStream({start(controller) {
+        for (let index = 0; index < bytes.length; index++) controller.enqueue(bytes.slice(index, index + 1));
+        controller.close();
+      }}), {headers: {'content-type': 'text/event-stream'}});
+    };
+    const transport = jest.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(String(input instanceof Request ? input.url : input)).toBe('https://open.bigmodel.cn/api/coding/paas/v4/chat/completions');
+      const body = input instanceof Request ? await input.clone().text() : init?.body;
+      requests.push(JSON.parse(String(body)));
+      requestBytes.push(Buffer.byteLength(String(body)));
+      return wire(requests.length - 1);
+    });
+    const sessionId = 'glm-native-private';
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder,
+      identity: {runId: 'glm-first', sessionId, scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    const first = await scope.run(() => runtime.analyze('读取两项指标。', sessionId, 'conversation-placeholder', {
+      providerId: null, runId: 'glm-first', assistantSurface: 'conversation', conversationTraceAttached: false,
+    }));
+    expect(transport).toHaveBeenCalledTimes(3);
+    expect(requests).toHaveLength(3);
+    const measured = recorder.seal();
+    expect(measured.modelRequests?.map(item => item.body.bodyBytes)).toEqual(requestBytes);
+    expect(measured.modelRequests?.map(item => item.dispatchOrdinal)).toEqual([1, 2, 3]);
+    expect(measured.modelRequests?.every(item => item.purpose === 'answer_turn' && item.fetchOutcome === 'headers')).toBe(true);
+    expect(measured.modelRequests![1].body.normalized!.components.reasoning).toBeGreaterThan(0);
+    expect(measured.modelRequests![2].body.bodyBytes!).toBeGreaterThan(measured.modelRequests![0].body.bodyBytes!);
+    expect(JSON.stringify(measured)).not.toContain(canary);
+    scope.dispose();
+    expect(execute.mock.calls.map(call => call[0])).toEqual([{step: 1, label: labels[0]}, {step: 2, label: labels[1]}]);
+    const expected = calls.flatMap((call, index) => [
+      {role: 'assistant', content: [{type: 'text', text: visible[index], annotations: []}],
+        reasoning_content: reasons[index], tool_calls: [call]},
+      {role: 'tool', tool_call_id: call.id, content: toolResults[index]},
+    ]);
+    expect(requests[1].messages.filter(message => ['assistant', 'tool'].includes(message.role))).toEqual(expected.slice(0, 2));
+    expect(requests[2].messages.filter(message => ['assistant', 'tool'].includes(message.role))).toEqual(expected);
+    expect(first.conclusion).toBe(nativeAnswer);
+    expect(first.completion.status).toBe('completed');
+    expect(JSON.stringify(updates)).not.toContain(canary);
+    expect(updates.filter(update => update.type === 'thought')).toEqual([]);
+    expect(JSON.stringify(first)).not.toContain(canary);
+    attachedDeliveryContext(first);
+    const second = await runtime.analyze('继续解释上一轮。', sessionId, 'conversation-placeholder', {
+      providerId: null, runId: 'glm-next', assistantSurface: 'conversation', conversationTraceAttached: false,
+    });
+    expect(transport).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(requests[3])).toContain(finalBody);
+    expect(JSON.stringify(requests[3])).not.toContain(canary);
+    expect(requests[3].messages.some(message => 'reasoning_content' in message || 'reasoning' in message)).toBe(false);
+    expect(second.conclusion).toBe(nextAnswer);
+    expect(JSON.stringify(updates)).not.toContain(canary);
+    attachedDeliveryContext(second);
   });
 });
 
