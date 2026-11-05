@@ -178,6 +178,17 @@ describe('EnhancedSessionContext', () => {
       expect(typeof promptCtx).toBe('string');
     });
 
+    test('retains typed-history continuation with the existing 500-token caller budget', () => {
+      const context = new EnhancedSessionContext('session-history-small', 'trace-history-small');
+      context.addTurn('Continue this earlier question', mockIntent,
+        {success: true, findings: [], message: 'A long earlier answer. '.repeat(1000)});
+      const prompt = context.generatePromptContext(500);
+      expect(prompt).toContain('read_session_history');
+      expect(prompt).toContain(context.getAnalysisHistory()[0].id);
+      expect(prompt).toContain('"completionStatus":"unknown"');
+      expect(prompt).toContain('"previewUnavailable":"byte_budget"');
+    });
+
     test('should retain finding evidence needed for implicit frame follow-ups', () => {
       const context = new EnhancedSessionContext('session-1', 'trace-1');
       context.addTurn('分析这一帧为什么卡顿', mockIntent, undefined, [{

@@ -23,11 +23,15 @@ import {
 import {createRuntimeToolConcurrencyCoordinator} from '../runtimeToolConcurrency';
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
-import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import {createRuntimePerformanceRecorder, createRuntimePerformanceRun, startRuntimeModelCall, recordRuntimeFinalReview} from '../runtimePerformance';
+import {ArtifactStore} from '../../agentv3/artifactStore';
+import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
+import {resolveRuntimePerformanceRecorder} from '../runtimePerformanceContext';
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../runtimeCandidateAdmission';
 import {
   RunManifestLifecycle,
+  currentRuntimePerformanceRecorder,
   withRunManifestLifecycle,
 } from '../../services/selfEvolution/runManifestLifecycle';
 import type {RunManifestStore} from '../../services/selfEvolution/runManifestStore';
@@ -409,7 +413,7 @@ describe('SharedToolSpec', () => {
     lifecycle.dispose();
   });
 
-  it('keeps a request-bound RunManifest sink authoritative over stale per-call extras', async () => {
+  it('keeps request-bound attribution while suppressing conflicting per-call observations', async () => {
     const coordinator = createRuntimeToolConcurrencyCoordinator();
     const boundLifecycle = createLifecycle('run-bound-tool-sink');
     const staleLifecycle = createLifecycle('run-stale-tool-sink');
@@ -436,10 +440,77 @@ describe('SharedToolSpec', () => {
       type: 'text',
       text: 'run-bound-tool-sink',
     });
-    expect(boundLifecycle.builder.runtimePerformanceRecorder.seal().tools).toHaveLength(1);
+    expect(boundLifecycle.builder.runtimePerformanceRecorder.seal().tools).toEqual([]);
+    expect(boundLifecycle.builder.runtimePerformanceRecorder.activitySnapshot().observation).toBe('partial');
     expect(staleLifecycle.builder.runtimePerformanceRecorder.seal().tools).toEqual([]);
     boundLifecycle.dispose();
     staleLifecycle.dispose();
+  });
+
+  it.each([['a', 'b'], ['b', 'a']])(
+    'suppresses downstream capture/model observations for bound %s under foreign ambient %s', async (owner, other) => {
+      const bound = createLifecycle(`bound-${owner}`);
+      const foreign = createLifecycle(`ambient-${other}`);
+      const foreignRecorder = foreign.builder.runtimePerformanceRecorder;
+      const foreignBefore = foreignRecorder.activitySnapshot();
+      const store = new ArtifactStore();
+      let nested!: SharedToolSpec;
+      const downstream = () => {
+        const data = {columns: ['value'], rows: [[7]]};
+        const id = store.store({skillId: 'execute_sql', data, title: 'Captured'});
+        expect(store.registerEvidenceCapture(id, captureEvidenceTable(data), {evidenceRefId: id,
+          originRunId: bound.identity.runId})).toBe(true);
+        expect(currentRuntimePerformanceRecorder()).toBeUndefined();
+        expect(resolveRuntimePerformanceRecorder(foreign.builder)).toBeUndefined();
+        expect(resolveRuntimePerformanceRecorder(bound.builder)).toBeUndefined();
+        createRuntimePerformanceRun(foreign.builder).finishClassification();
+        startRuntimeModelCall(currentRuntimePerformanceRecorder(), {purpose: 'answer_turn'}).end();
+        startRuntimeModelCall(undefined, {purpose: 'review'}).end();
+        recordRuntimeFinalReview(undefined, {necessity: 'not_required', triggers: [], declaredClaimCount: 0});
+      };
+      const shared = withRuntimeToolConcurrency({name: 'lookup_sql_schema', description: 'Read', exposure: 'public',
+        inputSchema: {}, handler: async (_args, extra) => {
+          await Promise.resolve();
+          downstream();
+          // A callback created here must retain suppression after transport loses this async context.
+          nested = withRuntimeToolConcurrency({name: 'nested', description: 'Nested', exposure: 'public', inputSchema: {},
+            handler: async () => { downstream(); return createRuntimeToolResult({success: true}); }},
+          createRuntimeToolConcurrencyCoordinator(), {runManifestAttributionSink: foreign.builder});
+          return {content: [{type: 'text' as const, text: extra.runManifestAttributionSink?.identity.runId ?? 'missing'}]};
+        }}, createRuntimeToolConcurrencyCoordinator(), {runManifestAttributionSink: bound.builder});
+      const result = await withRunManifestLifecycle(foreign, () => shared.handler({}, {}));
+      expect(result.content[0]).toEqual({type: 'text', text: bound.identity.runId});
+      expect(store.size).toBe(1);
+      await withRunManifestLifecycle(foreign, () => nested.handler({}, {}));
+      expect(store.size).toBe(2);
+      expect(bound.builder.runtimePerformanceRecorder.activitySnapshot().observation).toBe('partial');
+      expect(foreignRecorder.activitySnapshot()).toEqual(foreignBefore);
+      expect(foreignRecorder.hasRecordedData).toBe(false);
+      // Suppression is local to the conflicting callback, not a global switch.
+      withRunManifestLifecycle(foreign, () => startRuntimeModelCall(currentRuntimePerformanceRecorder(),
+        {purpose: 'answer_turn'}).end());
+      expect(foreignRecorder.seal().modelCalls).toHaveLength(1);
+      bound.dispose(); foreign.dispose();
+    });
+
+  it('suppresses downstream ambient fallback at the direct timing boundary without a registry binding', async () => {
+    const perCall = createLifecycle('direct-per-call');
+    const ambient = createLifecycle('direct-ambient');
+    const store = new ArtifactStore();
+    const shared = withRuntimeToolTiming({name: 'direct', description: 'Direct', exposure: 'public', inputSchema: {},
+      handler: async () => {
+        const data = {columns: ['value'], rows: [[1]]};
+        const id = store.store({skillId: 'execute_sql', data});
+        expect(store.registerEvidenceCapture(id, captureEvidenceTable(data), {evidenceRefId: id})).toBe(true);
+        expect(currentRuntimePerformanceRecorder()).toBeUndefined();
+        startRuntimeModelCall(currentRuntimePerformanceRecorder(), {purpose: 'answer_turn'}).end();
+        return createRuntimeToolResult({success: true});
+      }});
+    await withRunManifestLifecycle(ambient, () => shared.handler({}, {runManifestAttributionSink: perCall.builder}));
+    expect(store.size).toBe(1);
+    expect(perCall.builder.runtimePerformanceRecorder.hasRecordedData).toBe(false);
+    expect(ambient.builder.runtimePerformanceRecorder.hasRecordedData).toBe(false);
+    perCall.dispose(); ambient.dispose();
   });
 
   it('uses a per-call RunManifest sink only when no request-bound sink is configured', async () => {

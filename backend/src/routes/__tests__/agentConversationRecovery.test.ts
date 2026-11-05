@@ -10,6 +10,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as runtime from '../../agentRuntime';
+import * as traceMetadata from '../../services/traceMetadataStore';
+import {getTraceProcessorService} from '../../services/traceProcessorService';
 import * as authorization from '../../services/resolvedAnalysisContext';
 import type {IOrchestrator} from '../../agent/core/orchestratorTypes';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
@@ -18,7 +20,7 @@ import {resolveProviderRuntimeSnapshot} from '../../services/providerManager/pro
 import {getConversationSessionStore, resetConversationSessionStoreForTests,
   type ConversationSessionDescriptor} from '../../services/conversationSessionStore';
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../../services/analysisRunStore';
-import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
+import {ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} from '../../services/enterpriseDb';
 import {registerAgentConversationRoutes} from '../agentConversationRoutes';
 import * as finalization from '../../services/finalizeAnalysisResult';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
@@ -389,5 +391,144 @@ describe('conversation source selection is read after merging the previous turn'
     for (let attempt = 0; !analyzedOptions && attempt < 50; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
     expect(analyzedOptions).toMatchObject({codeAwareMode: 'off'});
     expect(analyzedOptions?.codebaseIds).toBeUndefined();
+  });
+});
+
+describe('conversation status and supplemental context routes', () => {
+  it('reads persisted status without restoring an adapter or reading history, and keeps owner isolation', async () => {
+    storeSnapshot();
+    const history = jest.spyOn(getConversationSessionStore(), 'listTurns');
+    const response = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}/status`);
+    expect(response.status).toBe(200);
+    expect(response.body.work).toMatchObject({sessionId: descriptor.sessionId, phase: 'ready', hasResult: true});
+    expect(response.body.context).toEqual({availability: 'unavailable'});
+    expect(JSON.stringify(response.body)).not.toMatch(/previous question|Final retained answer|providerSnapshotHash|analysisContextFingerprint/);
+    expect(factory).not.toHaveBeenCalled(); expect(history).not.toHaveBeenCalled();
+    expect(response.body).not.toHaveProperty('sourceSelection');
+    const detail = await request(await app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    expect(detail.body.sourceSelection).toEqual({codeAwareMode: 'off', codebaseIds: [], knowledgeSourceIds: []});
+    factory.mockClear();
+    const denied = await request(await app('other-owner')).get(`/api/agent/v1/conversation/${descriptor.sessionId}/status`);
+    expect(denied.status).toBe(404); expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('keeps the active run while adding notes, then shares the effective request with analysis, finalizer and history', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {release = resolve;});
+    const prompts: string[] = []; const finalQueries: string[] = [];
+    factory.mockImplementation(() => {
+      const emitter = new EventEmitter() as unknown as IOrchestrator;
+      emitter.reset = jest.fn();
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (query, sessionId) => {
+        prompts.push(query); if (prompts.length === 1) await gate;
+        return {sessionId: sessionId!, success: true, findings: [], hypotheses: [], conclusion: 'answer',
+          confidence: 1, rounds: 1, totalDurationMs: 1};
+      }); return emitter;
+    });
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      finalQueries.push(input.query); input.context?.dispose();
+      return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
+    });
+    const server = await app();
+    const start = await request(server).post('/api/agent/v1/conversation').send({query: 'original'});
+    const base = `/api/agent/v1/conversation/${start.body.sessionId}`;
+    const status = await request(server).get(`${base}/status`);
+    const note = {expectedQueueEpoch: status.body.context.queueEpoch, expectedRunId: start.body.runId,
+      idempotencyKey: 'note-route', text: 'SUPPLEMENT_MAIN_THREAD'};
+    const added = await request(server).post(`${base}/context`).send(note);
+    expect(added.status).toBe(200); expect(added.body.receipt.status).toBe('accepted');
+    expect(prompts).toHaveLength(1);
+    expect((await request(server).get(`${base}/status`)).body.work.runId).toBe(start.body.runId);
+    const duplicate = await request(server).post(`${base}/context`).send(note);
+    expect(duplicate.body).toEqual(added.body);
+    const historyBefore = await request(server).get(base);
+    expect(JSON.stringify(historyBefore.body.history)).not.toContain(note.text);
+    release();
+    for (let i = 0; i < 50; i++) {
+      if (!(await request(server).get(base)).body.activeRunId) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    const next = await request(server).post('/api/agent/v1/conversation').send({sessionId: start.body.sessionId, query: 'next question'});
+    expect(next.status).toBe(202); expect(next.body.context.consumedContextIds).toEqual(['note-route']);
+    for (let i = 0; i < 50 && finalQueries.length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    expect(prompts[1]).toContain(note.text); expect(finalQueries[1]).toContain(note.text);
+    const after = await request(server).get(base);
+    expect(after.body.history.find((message: {role: string; turnId: string}) => message.role === 'user' && message.turnId === next.body.runId)?.content).toBe(finalQueries[1]);
+    expect((await request(server).post(`${base}/context`).send(note)).body.receipt)
+      .toMatchObject({status: 'consumed', consumedByRunId: next.body.runId});
+  });
+});
+
+describe('supplement provider boundary', () => {
+  it('allows metadata reads but rejects writes while the live provider store is unreadable', async () => {
+    const {ProviderStoreUnreadableError} = await import('../../services/providerManager/providerStore');
+    let release!: () => void; const gate = new Promise<void>(resolve => {release = resolve;});
+    factory.mockImplementation(() => {
+      const emitter = new EventEmitter() as unknown as IOrchestrator; emitter.reset = jest.fn();
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId) => {await gate;
+        return {sessionId: sessionId!, success: true, findings: [], hypotheses: [], conclusion: 'answer', confidence: 1, rounds: 1, totalDurationMs: 1};});
+      return emitter;
+    });
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose(); return {result: input.result, conversationOutcome: {kind: 'answered', message: 'answer'}};
+    });
+    const server = await app(); const started = await request(server).post('/api/agent/v1/conversation').send({query: 'q'});
+    const base = `/api/agent/v1/conversation/${started.body.sessionId}`;
+    const unavailable = jest.spyOn(getProviderService(), 'getRawEffectiveProvider').mockImplementation(() => {throw new ProviderStoreUnreadableError('read');});
+    const status = await request(server).get(`${base}/status`); expect(status.status).toBe(200);
+    const result = await request(server).post(`${base}/context`).send({expectedQueueEpoch: status.body.context.queueEpoch,
+      expectedRunId: started.body.runId, idempotencyKey: 'pin-test', text: 'note'});
+    expect(result.status).toBe(409); expect(result.body.code).toBe('provider_store_unreadable');
+    unavailable.mockRestore(); release();
+  });
+});
+
+
+describe('conversation admission compensation', () => {
+  it('does not leave a running row when the descriptor write fails after run reservation', async () => {
+    const save = jest.spyOn(getConversationSessionStore(), 'save').mockImplementationOnce(() => {throw new Error('storage failure');});
+    const result = await request(await app()).post('/api/agent/v1/conversation').send({query: 'question'});
+    expect(result.status).toBe(500);
+    const db = openEnterpriseDb();
+    try {
+      expect(db.prepare('SELECT status FROM analysis_runs WHERE tenant_id = ? AND workspace_id = ?').all(owner.tenantId, owner.workspaceId))
+        .toEqual([{status: 'failed'}]);
+    } finally {db.close();}
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('context await fencing', () => {
+  it('rejects an old expected run after a new turn starts during Trace authorization lookup', async () => {
+    const metadata = {id: 'race-trace', filename: 'trace', size: 1, uploadedAt: new Date().toISOString(), status: 'ready', ...owner};
+    const lookup = jest.spyOn(traceMetadata, 'readTraceMetadataForContext').mockResolvedValue(metadata);
+    jest.spyOn(getTraceProcessorService(), 'getOrLoadTrace').mockResolvedValue({id: metadata.id, filename: 'trace',
+      size: 1, uploadTime: new Date(), status: 'ready'});
+    factory.mockImplementation(() => {
+      const emitter = new EventEmitter() as unknown as IOrchestrator; emitter.reset = jest.fn();
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId) => ({sessionId: sessionId!, success: true,
+        findings: [], hypotheses: [], conclusion: 'answer', confidence: 1, rounds: 1, totalDurationMs: 1})); return emitter;
+    });
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose(); return {result: input.result, conversationOutcome: {kind: 'answered', message: 'answer'}};
+    });
+    const server = await app();
+    const first = await request(server).post('/api/agent/v1/conversation').send({query: 'first', traceId: metadata.id});
+    const base = `/api/agent/v1/conversation/${first.body.sessionId}`;
+    const status = await request(server).get(`${base}/status`);
+    let reached!: () => void; let release!: () => void;
+    const entered = new Promise<void>(resolve => {reached = resolve;});
+    const held = new Promise<void>(resolve => {release = resolve;});
+    lookup.mockImplementationOnce(async () => {reached(); await held; return metadata;});
+    const delayed = request(server).post(`${base}/context`).send({expectedQueueEpoch: status.body.context.queueEpoch,
+      expectedRunId: first.body.runId, idempotencyKey: 'delayed-note', text: 'OLD_NOTE_PRIVATE'}).then(response => response);
+    await entered;
+    const next = await request(server).post('/api/agent/v1/conversation').send({sessionId: first.body.sessionId, query: 'second'});
+    expect(next.status).toBe(202); release();
+    const result = await delayed;
+    expect(result.status).toBe(409); expect(result.body.code).toBe('CONVERSATION_CONTEXT_RUN_CHANGED');
+    expect(JSON.stringify(result.body)).not.toContain('OLD_NOTE_PRIVATE');
+    expect((await request(server).get(`${base}/status`)).body.context.pendingCount).toBe(0);
   });
 });

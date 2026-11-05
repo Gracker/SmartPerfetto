@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveRuntimePerformanceRecorder} from './runtimePerformanceContext';
 import type {ComplexityClassifierInput, QueryComplexity} from '../agentv3/types';
 import {buildAnalysisTurnIntentPrompt} from '../agentv3/queryComplexityPrompt';
 import {
@@ -198,8 +199,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     if (Buffer.byteLength(prompt, 'utf8') > PROMPT_BYTE_LIMIT) return unavailable('context_limit');
     let result: IntentTransportResult;
     try {
-      const recorder = (product?.options.runManifestAttributionSink ?? currentRunManifestAttributionSink())
-        ?.runtimePerformanceRecorder;
+      const recorder = resolveRuntimePerformanceRecorder(product?.options.runManifestAttributionSink, currentRunManifestAttributionSink());
       result = await dispatchWithModelCallRecord(recorder, {purpose: 'classification'}, {prompt, systemPrompt: '', signal,
         deadlineMs, outputByteLimit: OUTPUT_BYTE_LIMIT}, dispatch);
     } catch {

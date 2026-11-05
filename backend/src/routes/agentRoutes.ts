@@ -106,6 +106,8 @@ import { registerAgentReportRoutes } from './agentReportRoutes';
 import { registerAgentExternalIssueRoutes } from './agentExternalIssueRoutes';
 import { registerAgentResumeRoutes } from './agentResumeRoutes';
 import { registerAgentSessionCatalogRoutes } from './agentSessionCatalogRoutes';
+import {registerAgentWorkCatalogRoutes} from './agentWorkCatalogRoutes';
+import {projectAssistantWork} from '../assistant/application/assistantWorkProjection';
 import { registerTeachingRoutes } from './agentTeachingRoutes';
 import {AnalyzeOptionsError, type AnalyzeMode} from './agent/normalizeAnalyzeOptions';
 import { finalizeAgentDrivenSession } from './agent/finalizeAgentDrivenSession';
@@ -218,6 +220,7 @@ import {buildSmartDeepDiveAnalysisContext} from '../services/effectiveAnalysisMo
 import {
   cleanupIdleAgentConversationSessions,
   registerAgentConversationRoutes,
+  readLiveConversationWork,
 } from './agentConversationRoutes';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
 import {createAnswerDraftRelay} from '../services/answerDraftRelay';
@@ -2360,6 +2363,22 @@ async function handleAnalyzeRequest(
 }
 
 registerAgentConversationRoutes(router);
+registerAgentWorkCatalogRoutes(router, (owner, sessionId, runId) => {
+  const conversation = readLiveConversationWork(owner, sessionId, runId);
+  if (conversation) return conversation;
+  const session = assistantAppService.getSession(sessionId);
+  if (!session || session.tenantId !== owner.tenantId || session.workspaceId !== owner.workspaceId ||
+    session.userId !== owner.userId) return undefined;
+  const run = session.activeRun ?? session.lastRun;
+  if (!run || (runId !== undefined && run.runId !== runId)) return undefined;
+  const selectedRunId = run.runId;
+  return projectAssistantWork({sessionId, runId: selectedRunId, status: session.status,
+    live: Boolean(session.activeRun && session.activeRun.runId === selectedRunId),
+    startedAt: run.startedAt, completedAt: run.completedAt,
+    provisionalDelivered: httpFinalizationRuns.get(session)?.get(selectedRunId)?.stop.provisionalDelivered,
+    hasResult: Boolean(session.result?.completion?.runId === selectedRunId && session.result?.conclusion),
+  });
+});
 
 router.post('/analyze', async (req, res) => {
   await handleAnalyzeRequest(req, res);

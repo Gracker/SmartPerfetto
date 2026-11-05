@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {AsyncLocalStorage} from 'node:async_hooks';
+import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import {createRuntimePerformanceScope, resolveRuntimePerformanceRecorder, sameRuntimePerformanceIdentity} from '../../agentRuntime/runtimePerformanceContext';
 import {createAnalysisHistoryReader, withAnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
 import type {AnalysisOptions, AnalysisResult, IOrchestrator} from '../../agent/core/orchestratorTypes';
 import type {StreamingUpdate} from '../../agent';
@@ -180,6 +182,18 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     const state = this.createExecution(input);
     const {runtimeSessionId} = state;
     const analysisOptions = this.options.analysisOptions ?? {};
+    const performanceIdentity = {runId: input.runId, sessionId: runtimeSessionId, scope: resolveKnowledgeScope(analysisOptions)};
+    const manifest = analysisOptions.runManifestAttributionSink;
+    const matchingRecorder = manifest && sameRuntimePerformanceIdentity(manifest.identity, performanceIdentity)
+      ? manifest.runtimePerformanceRecorder : undefined;
+    const performanceScope = createRuntimePerformanceScope({
+      identity: performanceIdentity,
+      recorder: matchingRecorder ?? createRuntimePerformanceRecorder({
+        onActivity: snapshot => { if (this.isCurrent(input, state)) input.onActivity?.(snapshot); },
+      }),
+      assertCurrent: () => this.assertActive(input, state),
+    });
+    if (manifest) performanceScope.run(() => resolveRuntimePerformanceRecorder(manifest));
     // A run with private context reads its own derived history; the fingerprint partitions it.
     const privateKnowledge = analysisHasPrivateContext(analysisOptions);
     const includeSourceDerived = privateKnowledge;
@@ -264,7 +278,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         withAnalysisHistoryReader(evidenceBinding.options, historyReader, {includeSourceDerived}),
         input.privateContext,
       );
-      const analysis = this.updateExecution.run(state, () => this.orchestrator.analyze(prompt,
+      const analysis = performanceScope.run(() => this.updateExecution.run(state, () => this.orchestrator.analyze(prompt,
         runtimeSessionId, traceId, runtimeOptions))
         .then(result => this.finalizeRuntimeResult(result, input, state, dataEnvelopes,
           () => {
@@ -277,7 +291,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           // Physical sessions are unique: late cleanup cannot touch a newer turn.
           // Cleanup must not delay delivery or Stop if an SDK ignores cancellation.
           void Promise.resolve().then(() => this.orchestrator.cleanupSession?.(runtimeSessionId)).catch(() => undefined);
-        });
+        }));
       const finalized = await this.awaitExecution(analysis, state.controller.signal);
       this.assertActive(input, state);
       const finalResult = privateKnowledge ? projectOwnerAnalysisResult(runtimeSessionId, finalized.result, outputLanguage) : finalized.result;
@@ -302,6 +316,12 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       // The conversation service projects the failure (`projectAnalysisFailure`) under this run's guard.
       throw error;
     } finally {
+      const activity = performanceScope.dispose();
+      // Cancellation may close an unfinished call. Publish its frozen facts only
+      // to the same still-authorized product run, never to a successor.
+      try {
+        if (this.isCurrent(input, state)) { state.assertAuthorized(); input.onActivity?.(activity); }
+      } catch { /* Internal observation cannot change the outcome. */ }
       this.orchestrator.off('update', onUpdate);
       evidenceBinding?.release();
       answerDraft?.dispose();

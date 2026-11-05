@@ -9,6 +9,7 @@ import {McpToolRegistry, type McpToolDefinition, type RuntimeAcquisitionPolicy} 
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
 import {dispatchOpenCodeBridgeRequest} from '../engines/opencode/openCodeRuntime';
+import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 import type {SharedToolSpec} from '../runtimeToolSpec';
 import {
   createRuntimePerformanceRecorder,
@@ -479,7 +480,7 @@ describe('runtime tool concurrency adapter boundaries', () => {
     expect(observedToolCallId).toBe('rpc-real-tool-call-id');
   });
 
-  it('keeps registry-bound RunManifest timing on the correct run when a stale extra sink is supplied', async () => {
+  it('keeps registry-bound attribution but suppresses observations when a stale extra sink is supplied', async () => {
     const boundRecorder = createRuntimePerformanceRecorder();
     const staleRecorder = createRuntimePerformanceRecorder();
     const boundSink = createNoopAttributionSink(boundRecorder, 'run-registry-bound');
@@ -504,7 +505,8 @@ describe('runtime tool concurrency adapter boundaries', () => {
     );
 
     expect(observedRunId).toBe('run-registry-bound');
-    expect(boundRecorder.seal().tools).toHaveLength(1);
+    expect(boundRecorder.seal().tools).toEqual([]);
+    expect(boundRecorder.activitySnapshot().observation).toBe('partial');
     expect(staleRecorder.seal().tools).toEqual([]);
   });
 
@@ -873,5 +875,84 @@ describe('tool-result handoff audit at the outermost registry boundary', () => {
       .rejects.toThrow('handler exploded');
     expect(throwing.toolResultAuditRecorder.seal().results)
       .toEqual([{toolName: 'invoke_skill', toolCallId: 'call-t', outcome: 'threw'}]);
+  });
+});
+
+
+describe('shared invocation activity across runtime adapters', () => {
+  it.each(adapterLookupCases)('%s counts exact repeated calls at the shared handoff boundary', async (_name, invoke) => {
+    const recorder = createRuntimePerformanceRecorder();
+    const registry = new McpToolRegistry({runManifestAttributionSink: createNoopAttributionSink(recorder)});
+    registry.registerShared({name: 'lookup_sql_schema', description: 'Read schema', exposure: 'public',
+      inputSchema: {keyword: z.string()}, handler: async () => createRuntimeToolResult({success: true, value: 'private'})});
+    await invoke(registry.list(), registry);
+    await invoke(registry.list(), registry);
+    expect(recorder.activitySnapshot()).toMatchObject({observation: 'observed', attempted: 2, dispatched: 2,
+      returned: 2, succeeded: 2, repeatedExactCalls: 1, inFlight: 0});
+    expect(JSON.stringify(recorder.activitySnapshot())).not.toContain('private');
+  });
+
+  it.each(adapterLookupCases)('%s keeps no-manifest callbacks bound when transport loses async context', async (_name, invoke) => {
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({identity: {runId: 'private-run', sessionId: 'private-session',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}}, recorder, assertCurrent() {}});
+    const registry = scope.run(() => {
+      const registry = new McpToolRegistry();
+      registry.registerShared({name: 'lookup_sql_schema', description: 'Read', exposure: 'public',
+        inputSchema: {keyword: z.string()}, handler: async () => createRuntimeToolResult({success: true})});
+      return registry;
+    });
+    await invoke(registry.list(), registry);
+    expect(recorder.activitySnapshot()).toMatchObject({observation: 'observed', attempted: 1, returned: 1});
+    scope.dispose();
+    const sealed = recorder.seal();
+    await invoke(registry.list(), registry);
+    expect(recorder.seal()).toBe(sealed);
+    expect(sealed.activity?.attempted).toBe(1);
+  });
+
+  it('observes repeated acquisition refusals without treating them as handler execution or malfunction', async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const handler = jest.fn(async () => createRuntimeToolResult({success: true}));
+    const registry = new McpToolRegistry({runManifestAttributionSink: createNoopAttributionSink(recorder),
+      canInvokeTool: () => false});
+    registry.registerShared({name: 'execute_sql', description: 'SQL', exposure: 'public', evidenceEffect: 'acquire',
+      inputSchema: {query: z.string()}, handler});
+    const tool = registry.list()[0].shared;
+    await tool.handler({query: 'private'}, {});
+    await tool.handler({query: 'private'}, {});
+    expect(handler).not.toHaveBeenCalled();
+    expect(recorder.activitySnapshot()).toMatchObject({attempted: 2, refused: 2, failed: 0,
+      succeeded: 0, repeatedExactCalls: 1});
+  });
+
+  it('observes authorization rejection without invoking the handler or manufacturing success', async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const denied = new Error('authorization_revoked');
+    const handler = jest.fn(async () => createRuntimeToolResult({success: true}));
+    const reject = (): never => {throw denied;};
+    const registry = new McpToolRegistry({runManifestAttributionSink: createNoopAttributionSink(recorder),
+      runAuthorization: {enforced: true, assertCurrent: reject, assertCurrentInTurn: reject, revoke: reject,
+        settled: async () => undefined}});
+    registry.registerShared({name: 'lookup_sql_schema', description: 'read', exposure: 'public', inputSchema: {}, handler});
+    await expect(registry.list()[0].shared.handler({}, {})).rejects.toBe(denied);
+    expect(handler).not.toHaveBeenCalled();
+    expect(recorder.activitySnapshot()).toMatchObject({attempted: 1, threw: 1, returned: 0, succeeded: 0});
+  });
+
+  it('records cancellation while queued separately from entering the execution callback', async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const registry = new McpToolRegistry({runManifestAttributionSink: createNoopAttributionSink(recorder)});
+    const gate = createDeferred();
+    registry.registerShared({name: 'execute_sql', description: 'SQL', exposure: 'public',
+      inputSchema: {}, handler: async () => {await gate.promise; return createRuntimeToolResult({success: true});}});
+    const tool = registry.list()[0].shared;
+    const first = tool.handler({}, {});
+    const abort = new AbortController();
+    const queued = tool.handler({}, {signal: abort.signal});
+    abort.abort();
+    await expect(queued).rejects.toThrow();
+    gate.resolve(); await first;
+    expect(recorder.activitySnapshot()).toMatchObject({attempted: 2, dispatched: 1, returned: 1, cancelled: 1, inFlight: 0});
   });
 });

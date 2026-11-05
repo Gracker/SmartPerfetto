@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {RuntimeActivitySnapshot} from './runtimeActivity';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import type {DataEnvelope} from '../types/dataContract';
@@ -118,6 +119,7 @@ export function buildAdaptiveRoutingPostEvidence(input: {
   previous: AdaptiveRoutingReceiptV1;
   result: AnalysisResult;
   dataEnvelopes: readonly DataEnvelope[];
+  activity?: RuntimeActivitySnapshot;
 }): AdaptiveRoutingReceiptV1 {
   const verification = input.result.claimVerificationResult;
   const verifiedClaims = verification?.claimResults.filter(claim =>
@@ -138,8 +140,9 @@ export function buildAdaptiveRoutingPostEvidence(input: {
       causalOpen: causalOpen(input.result),
     },
     dispatchBudgetRatio,
-    // No cross-runtime stable repeated-call counter exists yet.
-    repeatedToolCalls: 0,
+    toolObservation: input.activity?.observation ?? 'unavailable',
+    ...(input.activity?.observation === 'observed'
+      ? {repeatedToolCalls: input.activity.repeatedExactCalls} : {}),
   });
 }
 
@@ -160,6 +163,7 @@ export function recordAdaptiveRoutingPostEvidenceBestEffort(input: {
       previous,
       result: input.result,
       dataEnvelopes: input.dataEnvelopes,
+      activity: input.builder.runtimePerformanceRecorder.activitySnapshot(),
     }));
     return true;
   } catch {

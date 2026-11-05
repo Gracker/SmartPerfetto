@@ -108,6 +108,7 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | 私有 finalization 上下文、原 deadline、受授权的原始证据读取及跨轮 lease |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | 维护者控制的并发候选准入边界 |
 | `backend/src/agentRuntime/runtimePerformance.ts` | RunManifest 内部阶段、工具与 SQL 排队/执行耗时 receipt |
+| `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | 有界调用与采集活动、私有运行归属及迟到回调隔离 |
 | `backend/src/agentRuntime/runtimeToolResultAudit.ts` | RunManifest 内部工具结果交接 receipt：每次调用交给 runtime 的文本规模与受审计字段是否逐字可见 |
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | request-scoped 公平读写调度与默认独占策略 |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具注册，仍是工具单一事实源 |
@@ -141,6 +142,21 @@ OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`�
 并发默认 fail closed。一个 runtime/session 同时只允许一个分析执行；工具默认独占，只有显式标记且已准入的可交换只读工具可在同一 request 内重叠。每个 trace processor 实例仍由一个 SQL worker 串行执行查询，因此同一 trace/processor 的 SQL 不会因为工具并发而同时进入 processor；不同 processor/trace 或已准入的纯读准备工作可以重叠。processor 创建与恢复使用 single-flight，取消后旧执行不能覆盖新 session state。
 
 后端把真实阶段、first output、工具调度等待，以及 SQL 排队/执行耗时记录到内部 `RunManifest.performance`。该 `RuntimePerformance` receipt 不进入公开 SSE；公开流也不提供可用于准入的 model、provider snapshot、provider usage 或 performance 字段。它用于内部归因和受控 benchmark，不能单独证明真实 provider 的速度或准确性。
+
+共享工具交接边界另外记录有界的 `activity`：调用尝试、进入受控执行链、返回、拒绝、
+异常和取消，以及完整参数完全相同的重复调用数。参数只参与本轮内存中的随机密钥哈希，
+不写入回执；无法完整观察时明确为 `partial/unavailable`，不补零。进入受控执行链不代表
+权限检查已通过。自适应路由仅把完整观测的重复数用于 shadow 诊断，不据此停止调查或增加预算。
+
+`captureActivity` 只统计证据存储已接纳的签发 capture 注册，同一 witness 在本轮去重，
+来源分为本轮、复用和未知。`rowSlots` 包含不可用表的行槽，不能解释为可用证据量。
+累计注册数不因后续淘汰而减少，也不涵盖所有读取或直接复用路径；它不证明证据被使用、
+调查覆盖或语义新颖性。没有采集观测与观察到空表保持可区分。
+
+没有 RunManifest 的 Conversation 使用独立的私有运行作用域，复用同一观测器。
+SDK 回调即使脱离原异步链也保持本轮绑定；归属冲突会抑制整条调用链的观测，
+不修改工具执行、授权或固定 attribution。运行结束后冻结回执，迟到回调不能写入后继运行。
+观测失败不改变分析结果，工具和采集计数也不能决定交付完成或核验通过。
 
 SSE 与 session log 里的工具结果会被截断到 2000 字符，截断后看不出模型是否拿到了尾部的 `vendorOverride` 这类提示。为此，内部 `RunManifest.toolResults` 在最外层共享工具边界上记录每次调用交给 runtime 的内容，记录发生在所有产品包装（包括 pacing 提醒）之后、传输截断之前。记录项包括：工具名、调用 id（仅当 adapter 提供时，目前是 OpenAI、Pi、OpenCode）、结果状态、receipt 事实（`planPhaseId` 只记是否存在），以及 adapter 序列化之前的文本规模。对 `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` 中的每个字段，还会记录它的 key 和值是否逐字出现在交接文本里。这份记录不复制任何 payload 的值。它只能证明内容交给了 runtime adapter，runtime 自身的输出上限不在产品视野内。
 
@@ -424,8 +440,13 @@ Web 将服务器核验详情作为独立消息字段，绑定候选身份；替�
 或 opaque transcript 隐式带入整段前史。
 
 `analysisHistory.ts` 为分类器和主分析提供同一套有界历史：最近 3 轮问答、最近未完成项和
-更早轮次索引，明确保留 partial/unknown、终止原因、不足和下一步。默认主分析预览
-最多 12,000 bytes、分类器 6,000 bytes；详细正文优先让位于完成状态和未完成项。
+更早轮次索引，明确保留 partial/unknown、终止原因、不足和下一步。最新一轮与最近
+未完成轮分别保留，不能为旧未完成事项挤掉最新回答。默认主分析预览最多 12,000 bytes、
+分类器 6,000 bytes，按包含模板的实际 UTF-8 字节测量；详细正文和导航优先让位于身份、
+完成状态与未完成项。遗漏计数由最终投影重算，区分未提供详细预览与连索引也未列出的轮次。
+极小预算先退化为合法续读索引；连完整身份都放不下时，返回安全的预算错误，不把非空历史
+伪装为空历史，也不增加模型调用。`relatedTurnIds` 只在同 Trace、同授权分区且完整定位符
+精确相同时提供有限导航，不能依据同名 artifact、相同问题或源码路径推断关联，更不签发证明。
 `read_session_history` 只读取产品绑定的当前会话，可按轮分页回查完整问答与声明定位；
 它不接受用户/会话选择器，也不执行新 SQL。`fetch_artifact` 仍负责读取可用的原始表格。
 
@@ -447,6 +468,18 @@ Conversation 的逻辑 session 保留精确 trace pair、授权指纹和 tenant/
 目录，可据此读取已有 artifact；目录本身没有 rows、覆盖或证明权。finalization 固定已
 接纳的 capture 集合，结束后释放本轮 lease 并清理物理 session。范围变化/销毁撤销 context，
 迟到事件按生产 run 隔离，旧取消和 cleanup 不影响下一轮。
+
+`ConversationPendingContext` 独立管理下一次用户提问的进程内补充队列。状态查询只读
+运行事实；补充不改变正在执行的请求、不进入动态历史，也不自动启动下一轮。下一轮先
+冻结同一份 effective query，成功持久化启动记录并复核权限后才消费队列；分类、分析和
+最终核验使用同一请求。随机队列代际、精确 run 和有界幂等回执隔离重试与重启。
+客户端的非打断操作有独立请求归属，绑定会话实际来源，不能借当前设置悄悄改变旧会话。
+
+`assistantWorkCatalogService.ts` 把既有会话、运行和产物投影为工作概览，不拥有执行状态机。
+owner 过滤先于候选组、待处理筛选和分页；注入的 live reader 只提供同 owner 的运行事实。
+同毫秒轮次不靠随机 ID 推断顺序，缺少一致的最近轮指针时明确未知；分页锚点不充当运行
+证据。共享 `assistantWorkProjection.ts` 区分执行阶段和结果可用性，不改变核验结论。
+UI 的详情、下载和显式继续在交付前即时复核 owner/来源归属，不能依赖下一帧重绘才撤销。
 
 Raw trace comparison session 还必须持久化 `referenceTraceId`、`comparisonSource`
 和 `comparisonReportSection`。同一个 session 不能从 comparison 降级成 single-trace，

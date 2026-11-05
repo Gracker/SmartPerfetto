@@ -35,6 +35,7 @@ import {createRuntimeSourceFinalizationFixture, SOURCE_FINALIZATION_CANARY, SOUR
   type RuntimeSourceFinalizationFixture} from './sourceFinalizationFixture';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
+import {createAnalysisHistoryReader, withAnalysisHistoryReader, type AnalysisHistoryTurn} from '../analysisHistory';
 
 const TRACE_ID = 'trace-source-history-gate';
 const FIRST_RUN_ID = 'source-history-gate-run-1';
@@ -159,6 +160,20 @@ async function nextTurnModelInput(options: AnalysisOptions) {
 }
 
 describe('source-derived history after an authorization change (real runtime model input)', () => {
+  it('projects an impossible history budget safely before any classifier or model call', async () => {
+    const history: AnalysisHistoryTurn = {id: 'PRIVATE_HISTORY_IDENTIFIER'.repeat(1000), turnIndex: 0,
+      timestamp: 1, traceId: TRACE_ID, query: 'PRIVATE_HISTORY_QUESTION', answer: 'PRIVATE_HISTORY_ANSWER',
+      partial: false, completionStatus: 'completed', uncertainties: [], nextSteps: [], evidence: []};
+    const transport = modelTransport([], 'unexpected provider call');
+    const result = await analyze(withAnalysisHistoryReader({}, createAnalysisHistoryReader({
+      getTurns: () => [history], assertActive: () => {},
+    })), 'history-budget-failure');
+    expect(result).toMatchObject({success: false, partial: true, terminationReason: 'execution_error',
+      terminationMessage: 'analysis_history_context_budget_exceeded'});
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_HISTORY');
+    expect(intentInputs).toHaveLength(0);
+    expect(transport.fetchMock).not.toHaveBeenCalled();
+  });
   it.each([
     ['off', {codeAwareMode: 'off' as const}],
     ['off with codebase ids', {codeAwareMode: 'off' as const, codebaseIds: ['ignored-under-off']}],

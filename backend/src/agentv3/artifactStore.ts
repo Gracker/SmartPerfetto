@@ -24,6 +24,8 @@ import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserv
 import {captureInvestigationToolObservation, recordCaptureToolCall,
   type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
 import {currentRuntimeToolInvocation} from '../agentRuntime/runtimeToolInvocationContext';
+import {resolveRuntimePerformanceRecorder, runtimePerformanceRunId} from '../agentRuntime/runtimePerformanceContext';
+import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import {createDataEnvelope} from '../types/dataContract';
 import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
@@ -471,6 +473,16 @@ export class ArtifactStore {
       capturedCellCount(this.executionCaptures.get(key)?.record);
     this.executionCaptures.set(key, {witness, record});
     this.evictRetainedEvidence();
+    // Count an accepted issued registration once per observing run. This does
+    // not assert that it remains retained, was used, or added new knowledge.
+    try {
+      const source = currentRunManifestAttributionSink();
+      const recorder = resolveRuntimePerformanceRecorder(source);
+      const currentRunId = runtimePerformanceRunId(source);
+      recorder?.recordCaptureActivity(witness, {rowSlots: table.rows.length, unavailable: Boolean(table.unavailableReason),
+        origin: !capturedOriginRunId || !currentRunId ? 'unknown'
+          : capturedOriginRunId === currentRunId ? 'current_run' : 'reused'});
+    } catch { /* Observation never changes evidence registration. */ }
   }
 
   /**

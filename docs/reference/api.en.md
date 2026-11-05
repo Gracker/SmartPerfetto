@@ -438,7 +438,10 @@ Base path: `/api/agent/v1`
 |---|---|---|
 | `POST` | `/analyze` | Start analysis |
 | `POST` | `/conversation` | Start or continue a lightweight conversation with optional trace and authorized source context |
+| `GET` | `/work` | Page through the current owner's attention items or recent work |
 | `GET` | `/conversation/:sessionId` | Read conversation state and the latest 200 history messages |
+| `GET` | `/conversation/:sessionId/status` | Read run and pending-context metadata without interrupting analysis |
+| `POST` | `/conversation/:sessionId/context` | Queue supplemental input for the next user turn |
 | `GET` | `/conversation/:sessionId/stream` | Conversation SSE by `runId`, with `Last-Event-ID` replay |
 | `POST` | `/conversation/:sessionId/cancel` | Cancel the exact conversation run |
 | `GET` | `/conversation/:sessionId/full-handoff` | Read a recommended full-analysis handoff |
@@ -483,7 +486,7 @@ it the route answers 403.
 
 ### Lightweight Conversation
 
-All five `/conversation` endpoints require `agent:run` and revalidate tenant,
+The `/conversation` endpoints require `agent:run` and revalidate tenant,
 workspace, and user ownership on every request. `POST /conversation` returns a
 `sessionId` and exact `runId`. A new turn in the same session stops the older
 run before reserving the new run, waiting at most one review-stop watchdog
@@ -493,6 +496,54 @@ permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
 replay or durable persistence.
 
+`GET /work` accepts `filter=needs_input|recent`, `limit` (default 20, maximum
+50), and an opaque `cursor`. It reads only the current tenant/workspace/owner's
+work, selects each session's latest candidate group, then filters and pages.
+It never restores a runtime, invokes a model, or extends a session's lifetime.
+Responses contain lifecycle, time, and authorized artifact locators, without
+questions, source IDs, paths, or authorization fingerprints.
+
+When run timestamps tie within a session, only a matching live-run or Conversation
+recovery pointer resolves the latest run. Missing or conflicting evidence returns
+`metadataReason: latest_run_ambiguous` and `phase: unknown`, without a definite
+run or artifact. The attention filter retains unknown groups with potential
+pending work. `nextCursor` follows scanned groups, so an empty display page may
+still have a next page.
+
+`hasResult` is separate from execution phase. An unexpired snapshot/report matching
+the owner/session/run remains available even when live result metadata is incomplete;
+a report also requires an existing file. Opening details does not stop the active
+run. Explicit continuation reauthorizes and binds the selected conversation, retaining
+its attached trace on the next send. Ordinary analysis opens an exact-run snapshot
+when available; fallback content is labeled session history, not the selected run's
+result.
+
+`GET /conversation/:sessionId/status` returns `work` and `context` metadata.
+It does not restore a runtime, load full history, execute Trace SQL, call a
+model, or extend session liveness. `work.phase` distinguishes analysis, review,
+waiting for input, an available result, a finished run without an available
+result, and interruption. `hasResult` remains separate from execution status.
+Tool activity and capture-registration counts are diagnostic, not proof of
+verification; unobserved counts are not filled with zero. Without an in-process
+session, the pending queue is `availability: unavailable`, not already consumed.
+
+`POST /conversation/:sessionId/context` accepts `expectedQueueEpoch`,
+`expectedRunId`, `idempotencyKey`, and `text`. Read the queue epoch and current or
+latest run from status first. An identical request with the same key returns
+its original receipt; different input with that key returns 409. Stale epochs,
+changed runs, and invalid authorization cannot admit new notes. The queue holds
+at most eight pending notes totaling 16 KiB in the current backend process only.
+
+An `accepted` receipt means queued, with `appliesTo: next_user_turn` and
+`durability: process_memory`. The current run continues; queuing a note never
+starts another turn automatically. On successful admission of the next user
+question, the notes and original question form one frozen request shared by
+intent classification, analysis, final verification, and authorized history.
+The start receipt's `context.consumedContextIds` identifies the notes used in
+that turn. Failed admission retains pending input; an execution failure after
+admission does not replay it automatically. Notes must be submitted again after
+a backend restart or session cleanup. Status reads never return their text.
+
 `GET /conversation/:sessionId` returns `status`, `traceContext`, the latest 200
 `history` messages (older ones counted in `historyOmittedMessages`, those hidden
 because their source authorization is unavailable in
@@ -500,6 +551,10 @@ because their source authorization is unavailable in
 `activeRunId`, and, when the latest turn's sources are readable,
 `pendingQuestion`, `recommendedFullAnalysis`, and `fullHandoff`. Source-derived
 messages pass the owner credential filter before they are returned.
+The authorized detail also returns `sourceSelection` (mode, codebase IDs, and
+knowledge-source IDs). The client compares it with the current selection in
+memory to restore noninterrupting controls. It is absent from status/catalog
+responses and browser locators and never changes the user's source settings.
 
 When the semantic review is dispatched, the stream first sends one
 `provisional_answer` (`message` is the owner-projected final body,

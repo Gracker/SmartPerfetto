@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+
 import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
@@ -1730,7 +1732,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         if (recovery && correctionPrompt &&
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
             remainingTurns > 0 && Date.now() < requestDeadline &&
-            admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+            admitDeliveryCall(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink), {
               providerOrigin: sdkEnv.ANTHROPIC_BASE_URL, model: runtimeConfig.model, purpose: correctionPurpose,
               inputBytes: correctionInputBytes, remainingMs: requestDeadline - Date.now(),
               failOpen: deliveryCallFailsOpen(turnIntent,

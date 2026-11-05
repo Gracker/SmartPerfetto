@@ -6,6 +6,7 @@ import {AsyncLocalStorage} from 'async_hooks';
 
 import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {RuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import {resolveRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformanceContext';
 import type {
   RunManifestAttributionSink,
   RunManifestIdentity,
@@ -152,6 +153,7 @@ export class RunManifestLifecycle {
       },
     };
     this.builder = new RunManifestBuilder(builderInput);
+    this.builder.runtimePerformanceRecorder.bindActivityLifetime(() => this.lifecycleState === 'collecting');
     this.builder.recordSkillRegistry(input.skillRegistry);
   }
 
@@ -212,6 +214,7 @@ export class RunManifestLifecycle {
     }
     active.delete(identityKey(this.identity));
     this.lifecycleState = 'disposed';
+    this.builder.runtimePerformanceRecorder.seal();
   }
 }
 
@@ -258,7 +261,7 @@ export function currentRunManifestAttributionSink():
 
 /** The current run's internal performance recorder, when one is in scope. */
 export function currentRuntimePerformanceRecorder(): RuntimePerformanceRecorder | undefined {
-  return context.getStore()?.runtimePerformanceRecorder;
+  return resolveRuntimePerformanceRecorder(context.getStore());
 }
 
 export function resolveRunManifestAttributionSink(

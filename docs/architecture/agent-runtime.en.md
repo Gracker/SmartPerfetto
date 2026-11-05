@@ -115,6 +115,7 @@ for the user-visible contract.
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | Private finalization context, original deadline, authorized capture reads and cross-turn leases |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
 | `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
+| `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | Bounded invocation and capture activity, private run ownership, and late-callback isolation |
 | `backend/src/agentRuntime/runtimeToolResultAudit.ts` | Internal RunManifest tool-result handoff receipt: text size each call handed to its runtime and whether audited fields sit verbatim in it |
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | Request-scoped fair read/write scheduling with an exclusive default |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto tool implementation and composition |
@@ -180,6 +181,31 @@ queue/execution timing in the internal `RunManifest.performance` field. This
 also does not expose admission-grade model, provider snapshot, provider usage,
 or performance fields. The receipt supports internal attribution and controlled
 benchmarks; by itself it does not prove real-provider speed or accuracy.
+
+The shared tool handoff also records bounded `activity`: attempts, dispatch into
+the guarded pipeline, returns, refusals, exceptions, cancellations, and repeated
+calls with exactly equal complete arguments. Arguments only participate in
+run-local keyed hashes held in memory; receipts contain no arguments or hashes.
+Incomplete observation is `partial/unavailable`, never an invented zero.
+Dispatch into the guarded pipeline does not establish authorization. Adaptive
+routing uses complete repeat counts only for shadow diagnostics, without stopping
+investigation or extending its budget.
+
+`captureActivity` counts issued capture registrations accepted by the evidence
+store, deduplicating each witness within the observing run. Origins are current,
+reused, or unknown. `rowSlots` includes unavailable tables and is not a count of
+usable evidence. Eviction does not reduce cumulative registrations; the metric
+does not cover every read or direct reuse path. It proves neither evidence use,
+investigation coverage, nor semantic novelty. No capture observation remains
+distinct from observing an empty table.
+
+Conversation runs without a RunManifest use an independent private execution
+scope and the same recorder. SDK callbacks retain their run binding even when
+their transport loses the original async context. Conflicting ownership
+suppresses observation throughout the callback without changing execution,
+authorization, or fixed attribution. Closing the run freezes its receipt; late
+callbacks cannot update a successor. Observation failure never changes the
+analysis result, and activity counts determine neither delivery nor verification.
 
 Tool results in SSE and session logs are cut to 2000 characters, so they cannot
 show whether the model received a trailing hint such as `vendorOverride`. The
@@ -597,8 +623,17 @@ or opaque transcripts across questions.
 `analysisHistory.ts` supplies bounded, typed history to classification and analysis:
 the latest three questions and answers, the latest unfinished work, and an older-turn index.
 It preserves partial/unknown status, termination, uncertainties and next steps.
-The default analysis preview is bounded to 12,000 bytes, classification to 6,000;
-answer detail yields to completeness and open questions. `read_session_history`
+The latest exchange and the most recent incomplete turn are independently protected:
+older unfinished work cannot evict the newest answer. The default analysis preview
+is bounded to 12,000 actual UTF-8 bytes including its template, classification to
+6,000. Prose and navigation yield to identity, completion and open obligations.
+Omission counts are recomputed from the final projection, distinguishing absent
+detail from turns missing even an index entry. Tiny budgets first fall back to a
+valid continuation index; if exact identities cannot fit, a safe budget error stops
+dispatch instead of disguising nonempty history as empty or adding a model call.
+`relatedTurnIds` supplies limited navigation only for exact full locators within
+the same trace and authorization partition. Artifact names, identical questions,
+and source paths alone imply no relationship or proof. `read_session_history`
 pages the full questions, answers and declared locators of the product-bound
 session. It accepts no owner/session selector and performs no new SQL acquisition.
 `fetch_artifact` remains the reader for available raw table evidence.
@@ -632,6 +667,25 @@ finalization fixes its admitted capture set; release the lease and clean up the
 physical session after it settles. Scope changes/disposal revoke the context,
 events are isolated by their producer run, and old cancellation/cleanup cannot
 affect the next turn.
+
+`ConversationPendingContext` separately owns process-memory notes for the next
+user turn. Status reads only observe run facts. Notes do not change the active
+request, enter dynamic history, or automatically launch another turn. The next
+turn freezes one effective query and consumes notes only after startup persistence
+and a renewed authority check; classification, analysis and finalization use that
+same request. A random queue epoch, exact run and bounded idempotent receipts
+isolate retries and restarts. Noninterrupting client controls have independent
+request ownership bound to the conversation's actual sources; current settings
+cannot silently change an existing conversation.
+
+`assistantWorkCatalogService.ts` projects existing sessions, runs, and artifacts
+into a work overview; it owns no execution state machine. Owner filtering precedes
+candidate grouping, attention filtering, and pagination. Injected live readers supply
+only owner-bound run facts. Random IDs never establish ordering between same-millisecond
+runs: missing consistent latest pointers remain unknown, and pagination anchors are
+not run evidence. Shared `assistantWorkProjection.ts` separates lifecycle from result
+availability without changing verification. Detail, download, and explicit-continuation
+clients recheck owner/source authority at delivery, without waiting for the next redraw.
 
 Raw trace comparison sessions must also persist `referenceTraceId`,
 `comparisonSource`, and `comparisonReportSection`. A comparison session cannot

@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'crypto';
+import {RuntimeActivityRecorder, type RuntimeActivitySnapshot, type RuntimeActivitySpan, type RuntimeCaptureActivityInput} from './runtimeActivity';
+import {resolveRuntimePerformanceRecorder, type RuntimePerformanceSource} from './runtimePerformanceContext';
 import {performance as nodePerformance} from 'perf_hooks';
 
 import {immutableCanonicalSnapshot} from '../services/selfEvolution/canonicalJson';
@@ -162,6 +164,8 @@ export interface RuntimePerformanceDeclarationReceiptV1 {
 
 export interface RuntimePerformanceReceiptV1 {
   schemaVersion: 1;
+  /** Internal run activity, not a verification or progress verdict. */
+  activity?: RuntimeActivitySnapshot;
   firstOutputMs?: number;
   phases: RuntimePerformancePhaseReceiptV1[];
   tools: RuntimePerformanceToolReceiptV1[];
@@ -222,6 +226,7 @@ export interface RuntimePerformanceRecorderOptions {
   maxSql?: number;
   maxModelCalls?: number;
   maxHashInputBytes?: number;
+  onActivity?(snapshot: RuntimeActivitySnapshot): void;
 }
 
 export interface RuntimePerformanceToolInput {
@@ -241,9 +246,7 @@ export interface RuntimePerformanceSqlInput {
   outcome: RuntimePerformanceOutcome;
 }
 
-interface RuntimePerformanceSink {
-  readonly runtimePerformanceRecorder?: RuntimePerformanceRecorder;
-}
+type RuntimePerformanceSink = RuntimePerformanceSource;
 
 const MAX_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_MODEL_NAME_CHARS = 128;
@@ -332,6 +335,9 @@ export class RuntimePerformanceRecorder {
     modelCalls: 0,
   };
   private sealedReceipt: RuntimePerformanceReceiptV1 | undefined;
+  private activityLifetime?: () => boolean;
+  private readonly activity: RuntimeActivityRecorder;
+  private readonly onActivity?: (snapshot: RuntimeActivitySnapshot) => void;
 
   constructor(options: RuntimePerformanceRecorderOptions = {}) {
     this.now = options.now ?? defaultNow;
@@ -345,11 +351,43 @@ export class RuntimePerformanceRecorder {
       DEFAULT_MAX_HASH_INPUT_BYTES,
     );
     this.startedAt = this.now();
+    this.onActivity = options.onActivity;
+    this.activity = new RuntimeActivityRecorder(() => this.canObserveActivity(), () => this.offsetMs(), () => {
+      try { if (this.canObserveActivity()) this.onActivity?.(this.activity.snapshot()); } catch { /* Observability only. */ }
+    });
+  }
+
+  /** Additional product lifetimes can only restrict an existing recorder. */
+  bindActivityLifetime(active: () => boolean): void {
+    const previous = this.activityLifetime;
+    this.activityLifetime = previous ? () => previous() && active() : active;
+  }
+
+  private canObserveActivity(): boolean {
+    if (this.sealedReceipt) return false;
+    try { return this.activityLifetime?.() !== false; } catch { return false; }
+  }
+
+  startToolActivity(toolName: string, args: Record<string, unknown>): RuntimeActivitySpan {
+    return this.activity.start(toolName, args);
+  }
+
+  recordCaptureActivity(witness: object, input: RuntimeCaptureActivityInput): void {
+    this.activity.capture(witness, input);
+  }
+
+  markActivityPartial(): void {
+    if (!this.sealedReceipt) this.activity.markPartial();
+  }
+
+  activitySnapshot(): RuntimeActivitySnapshot {
+    return this.sealedReceipt?.activity ?? this.activity.snapshot();
   }
 
   get hasRecordedData(): boolean {
     return (
-      this.firstOutputMs !== undefined
+      this.activity.hasRecordedData
+      || this.firstOutputMs !== undefined
       || this.phases.length > 0
       || this.tools.length > 0
       || this.sql.length > 0
@@ -480,16 +518,16 @@ export class RuntimePerformanceRecorder {
     let ended = false;
     return {
       recordFirstOutput: () => {
-        if (ended || firstOutputMs !== undefined || doneOffsetMs !== undefined) return;
+        if (ended || !this.canObserveActivity() || firstOutputMs !== undefined || doneOffsetMs !== undefined) return;
         firstOutputMs = this.offsetMs() - startOffsetMs;
       },
       markDone: usage => {
-        if (ended || doneOffsetMs !== undefined) return;
+        if (ended || !this.canObserveActivity() || doneOffsetMs !== undefined) return;
         doneOffsetMs = this.offsetMs();
         doneUsage = usage;
       },
       end: (end = {}) => {
-        if (ended || this.sealedReceipt) return;
+        if (ended || !this.canObserveActivity()) return;
         ended = true;
         // A native success is not declaration acceptance. Keep an explicit
         // acceptance decision even if the transport attaches its facts later.
@@ -597,8 +635,10 @@ export class RuntimePerformanceRecorder {
 
   seal(): RuntimePerformanceReceiptV1 {
     if (this.sealedReceipt) return this.sealedReceipt;
+    if (this.activity.snapshot().inFlight > 0) this.activity.markPartial();
     const receipt: RuntimePerformanceReceiptV1 = {
       schemaVersion: 1,
+      ...(this.activity.hasRecordedData ? {activity: this.activity.snapshot()} : {}),
       ...(this.firstOutputMs !== undefined
         ? {firstOutputMs: this.firstOutputMs}
         : {}),
@@ -633,8 +673,8 @@ export class RuntimePerformanceRecorder {
   }
 
   private assertCollecting(operation: string): void {
-    if (!this.sealedReceipt) return;
-    throw new Error(`runtime_performance_already_sealed:${operation}`);
+    if (this.sealedReceipt) throw new Error(`runtime_performance_already_sealed:${operation}`);
+    if (this.activityLifetime?.() === false) throw new Error('runtime_performance_scope_inactive');
   }
 
   private pushCapped<T>(
@@ -733,7 +773,7 @@ export function startRuntimeModelCall(
 ): RuntimeModelCallSpan {
   let span: RuntimeModelCallSpan;
   try {
-    span = recorder?.startModelCall(input) ?? noopModelCallSpan;
+    span = resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.startModelCall(input) ?? noopModelCallSpan;
   } catch {
     return noopModelCallSpan;
   }
@@ -752,7 +792,7 @@ export function recordRuntimeFinalReview(
   recorder: RuntimePerformanceRecorder | undefined,
   input: RuntimePerformanceFinalReviewReceiptV1,
 ): void {
-  try { recorder?.recordFinalReview(input); } catch { /* Internal observability only. */ }
+  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordFinalReview(input); } catch { /* Internal observability only. */ }
 }
 
 /** Record the acceptance boundary's decision; never alters the candidate or throws. */
@@ -760,7 +800,7 @@ export function recordRuntimeDeclarationRepair(
   recorder: RuntimePerformanceRecorder | undefined,
   outcome: 'accepted' | 'rejected',
 ): void {
-  try { recorder?.recordDeclarationRepair(outcome); } catch { /* Internal observability only. */ }
+  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordDeclarationRepair(outcome); } catch { /* Internal observability only. */ }
 }
 
 /** Record the first canonical declaration without changing its verification state. */
@@ -768,7 +808,7 @@ export function recordRuntimeFinalDeclaration(
   recorder: RuntimePerformanceRecorder | undefined,
   input: Omit<RuntimePerformanceDeclarationReceiptV1, 'repair'>,
 ): void {
-  try { recorder?.recordFinalDeclaration(input); } catch { /* Internal observability only. */ }
+  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordFinalDeclaration(input); } catch { /* Internal observability only. */ }
 }
 
 /** Record a delivery call's pre-dispatch budget decision on an optional recorder; never throws. */
@@ -776,13 +816,13 @@ export function recordRuntimeDeliveryBudget(
   recorder: RuntimePerformanceRecorder | undefined,
   input: RuntimePerformanceDeliveryBudgetReceiptV1,
 ): void {
-  try { recorder?.recordDeliveryBudget(input); } catch { /* Internal observability only. */ }
+  try { resolveRuntimePerformanceRecorder(recorder ? {runtimePerformanceRecorder: recorder} : undefined)?.recordDeliveryBudget(input); } catch { /* Internal observability only. */ }
 }
 
 export function createRuntimePerformanceRun(
   sink?: RuntimePerformanceSink,
 ): RuntimePerformanceRun {
-  const recorder = sink?.runtimePerformanceRecorder;
+  const recorder = resolveRuntimePerformanceRecorder(sink);
   const safeStartPhase = (name: RuntimePhaseName): RuntimePerformanceSpan => {
     try {
       return recorder?.startPhase(name) ?? noopSpan;

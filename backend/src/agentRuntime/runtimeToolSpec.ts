@@ -12,7 +12,9 @@ import type {RunAuthorizationCheck} from './runAuthorizationFence';
 import type { McpToolExposure } from '../types/sparkContracts';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {runtimeOutcomeFromError} from './runtimePerformance';
-import {normalizeRuntimeToolResult, readRuntimeToolReceipt, runtimeToolReceiptMetadata} from './runtimeToolResult';
+import {resolveRuntimeActivityObservation, bindRuntimePerformanceContext, withRuntimePerformanceSuppressed} from './runtimePerformanceContext';
+import type {RuntimeActivitySpan} from './runtimeActivity';
+import {normalizeRuntimeToolResult, readRuntimeToolReceipt, readRuntimeToolResultFacts, isPolicyRefusalResult, runtimeToolReceiptMetadata} from './runtimeToolResult';
 import {describeRuntimeToolFailure, describeRuntimeToolResultHandoff} from './runtimeToolResultAudit';
 import {
   currentRunManifestAttributionSink,
@@ -273,12 +275,13 @@ export function withRuntimeToolTiming(spec: SharedToolSpec): SharedToolSpec {
   const handler = spec.handler as TimedRuntimeToolHandler;
   if (handler[TIMED_SHARED_TOOL_HANDLER]) return spec;
 
-  const timedHandler: TimedRuntimeToolHandler = async (args, extra) => {
+  const timedHandler: TimedRuntimeToolHandler = bindRuntimePerformanceContext(async (args: Record<string, unknown>, extra: RuntimeToolExtra) => {
     const normalizedExtra = normalizeRuntimeToolExtra(extra);
     const timingSinkResolution = resolveRuntimeToolTimingSink(normalizedExtra);
-    const recorder = timingSinkResolution.kind === 'resolved'
-      ? timingSinkResolution.sink.runtimePerformanceRecorder
-      : undefined;
+    const observation = resolveRuntimeActivityObservation(undefined, normalizedExtra.runManifestAttributionSink,
+      currentRunManifestAttributionSink());
+    const suppressObservation = timingSinkResolution.kind === 'suppressed' || observation.kind === 'suppressed';
+    const recorder = !suppressObservation && observation.kind === 'available' ? observation.recorder : undefined;
     const toolCallId = typeof normalizedExtra.toolCallId === 'string'
       && normalizedExtra.toolCallId.trim()
       ? normalizedExtra.toolCallId
@@ -297,28 +300,31 @@ export function withRuntimeToolTiming(spec: SharedToolSpec): SharedToolSpec {
     } catch {
       timing = undefined;
     }
-    try {
-      const result = normalizeRuntimeToolResult(await handler(args, normalizedExtra));
-      const outcome = normalizedExtra.signal?.aborted
-        ? 'cancelled'
-        : (result as {isError?: unknown} | undefined)?.isError === true
-          ? 'error'
-          : 'ok';
+    const execute = async () => {
       try {
-        timing?.end(outcome);
-      } catch {
-        // Runtime performance is internal observability only.
+        const result = normalizeRuntimeToolResult(await handler(args, normalizedExtra));
+        const outcome = normalizedExtra.signal?.aborted
+          ? 'cancelled'
+          : (result as {isError?: unknown} | undefined)?.isError === true
+            ? 'error'
+            : 'ok';
+        try {
+          timing?.end(outcome);
+        } catch {
+          // Runtime performance is internal observability only.
+        }
+        return result;
+      } catch (error) {
+        try {
+          timing?.end(runtimeOutcomeFromError(error, normalizedExtra.signal));
+        } catch {
+          // Preserve the original tool failure.
+        }
+        throw error;
       }
-      return result;
-    } catch (error) {
-      try {
-        timing?.end(runtimeOutcomeFromError(error, normalizedExtra.signal));
-      } catch {
-        // Preserve the original tool failure.
-      }
-      throw error;
-    }
-  };
+    };
+    return suppressObservation ? withRuntimePerformanceSuppressed(execute) : execute();
+  });
   timedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
   return {...spec, handler: timedHandler};
 }
@@ -332,8 +338,9 @@ export function withRuntimeToolConcurrency(
 ): SharedToolSpec {
   const timedSpec = withRuntimeToolTiming(spec);
   const timedHandler = timedSpec.handler;
-  const coordinatedHandler: TimedRuntimeToolHandler = async (args, extra) => {
+  const coordinatedHandler: TimedRuntimeToolHandler = bindRuntimePerformanceContext(async (args: Record<string, unknown>, extra: RuntimeToolExtra) => {
     const normalizedExtra = normalizeRuntimeToolExtra(extra);
+    // The registry's fixed attribution remains authoritative for execution.
     const timingSinkResolution: RuntimeToolTimingSinkResolution = options.runManifestAttributionSink
       ? {kind: 'resolved', sink: options.runManifestAttributionSink}
       : resolveRuntimeToolTimingSink(normalizedExtra);
@@ -344,31 +351,51 @@ export function withRuntimeToolConcurrency(
     // reminders, has already shaped the result the adapter receives.
     const auditRecorder = runManifestAttributionSink?.toolResultAuditRecorder;
     const toolCallId = normalizedExtra.toolCallId;
-    try {
-      const result = await coordinator.run({
-        toolName: timedSpec.name,
-        policy: timedSpec.concurrency,
-        signal: normalizedExtra.signal,
-        execute: scheduling => timedHandler(args, {
-          ...normalizedExtra,
-          ...(timingSinkResolution.kind === 'suppressed'
-            ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
-            : {}),
-          runManifestAttributionSink,
-          runtimeToolScheduling: scheduling,
-        }),
-      });
-      auditRecorder?.record(() => describeRuntimeToolResultHandoff(timedSpec.name, result, {
-        toolCallId, cancelled: normalizedExtra.signal?.aborted === true,
-      }));
-      return result;
-    } catch (error) {
-      auditRecorder?.record(() => describeRuntimeToolFailure(timedSpec.name, {
-        toolCallId, cancelled: runtimeOutcomeFromError(error, normalizedExtra.signal) === 'cancelled',
-      }));
-      throw error;
-    }
-  };
+    const ambientManifest = currentRunManifestAttributionSink();
+    const observation = resolveRuntimeActivityObservation(options.runManifestAttributionSink,
+      normalizedExtra.runManifestAttributionSink, ambientManifest);
+    const suppressObservation = timingSinkResolution.kind === 'suppressed' || observation.kind === 'suppressed';
+    const activityRecorder = !suppressObservation && observation.kind === 'available' ? observation.recorder : undefined;
+    let activity: RuntimeActivitySpan | undefined;
+    try { activity = activityRecorder?.startToolActivity(timedSpec.name, args); } catch { /* Observability only. */ }
+    const execute = async () => {
+      try {
+        const result = await coordinator.run({
+          toolName: timedSpec.name,
+          policy: timedSpec.concurrency,
+          signal: normalizedExtra.signal,
+          execute: scheduling => {
+            try { activity?.dispatched(); } catch { /* Observability only. */ }
+            return timedHandler(args, {
+              ...normalizedExtra,
+              ...(timingSinkResolution.kind === 'suppressed'
+                ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
+                : {}),
+              runManifestAttributionSink,
+              runtimeToolScheduling: scheduling,
+            });
+          },
+        });
+        try {
+          activity?.end(normalizedExtra.signal?.aborted ? 'cancelled' : 'returned', {
+            ...readRuntimeToolResultFacts(result), refused: isPolicyRefusalResult(result),
+          });
+        } catch { activityRecorder?.markActivityPartial(); }
+        auditRecorder?.record(() => describeRuntimeToolResultHandoff(timedSpec.name, result, {
+          toolCallId, cancelled: normalizedExtra.signal?.aborted === true,
+        }));
+        return result;
+      } catch (error) {
+        try { activity?.end(runtimeOutcomeFromError(error, normalizedExtra.signal) === 'cancelled' ? 'cancelled' : 'threw'); }
+        catch { activityRecorder?.markActivityPartial(); }
+        auditRecorder?.record(() => describeRuntimeToolFailure(timedSpec.name, {
+          toolCallId, cancelled: runtimeOutcomeFromError(error, normalizedExtra.signal) === 'cancelled',
+        }));
+        throw error;
+      }
+    };
+    return suppressObservation ? withRuntimePerformanceSuppressed(execute) : execute();
+  });
   coordinatedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
   return {...timedSpec, handler: coordinatedHandler};
 }

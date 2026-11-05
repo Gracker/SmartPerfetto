@@ -270,6 +270,8 @@ ${externalIssueReportingContent}
 // =============================================================================
 
 ${criticalPathContractContent}
+
+${contractFragments.assistantWork}
 `);
 
 // Column Types Section

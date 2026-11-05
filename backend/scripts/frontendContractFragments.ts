@@ -237,6 +237,7 @@ export function criticalPathContractFragment(content: string): string {
  * generated from where.
  */
 export const FRONTEND_CONTRACT_SOURCES = {
+  assistantWork: {path: 'backend/src/assistant/contracts/assistantWorkContract.ts', fragment: verbatimContractFragment},
   conclusion: {path: 'backend/src/agent/core/conclusionContract.ts', fragment: conclusionContractFragment},
   evidence: {path: 'backend/src/types/evidenceContract.ts', fragment: verbatimContractFragment},
   claimVerification: {path: 'backend/src/types/claimVerification.ts', fragment: verbatimContractFragment},

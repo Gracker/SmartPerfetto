@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+
 import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
@@ -1772,7 +1774,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         rounds < turnBudget.totalTurns
         && Date.now() < getRunDeadlineMs()
         && (acceptedCompletion.status === 'completed' || outputLimitDelivery)
-        && admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+        && admitDeliveryCall(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink), {
           providerOrigin: providerRuntime.model.baseUrl, model: providerRuntime.model.id,
           purpose: declarationRequest ? 'declaration_repair' : 'continuation',
           inputBytes: Buffer.byteLength(correctionPrompt) + Buffer.byteLength(prep.systemPrompt),

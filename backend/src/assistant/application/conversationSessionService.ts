@@ -2,6 +2,10 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {ConversationPendingContext, ConversationContextError} from './conversationPendingContext';
+import {projectAssistantWork} from './assistantWorkProjection';
+import type {ConversationContextRequest, ConversationContextResponse, ConversationStatusResponse, ConversationTurnContextReceipt, AssistantWorkSummary} from '../contracts/assistantWorkContract';
+import type {RuntimeActivitySnapshot} from '../../agentRuntime/runtimeActivity';
 import type {AssistantSessionStatus, ManagedAssistantSession} from './assistantApplicationService';
 import {AssistantApplicationService} from './assistantApplicationService';
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
@@ -58,6 +62,8 @@ export interface ConversationRuntimeInput {
   /** This turn's requested source depth: its own, else the conversation's last one. */
   sourceDepth?: AnalysisOptions['sourceDepth'];
   onUpdate?(update: unknown): void;
+  /** Internal closed activity facts; neither public SSE nor evidence authority. */
+  onActivity?(snapshot: RuntimeActivitySnapshot): void;
   /**
    * Display-only answer draft (`answer_token` / `answer_segment_reset`) from a
    * draft-capable runtime. Delivered live only: never retained for replay or
@@ -125,6 +131,7 @@ export interface ConversationRun {
    * restored run's marker is its session's.
    */
   privateContext: AnalysisPrivateContextMarker;
+  activity?: RuntimeActivitySnapshot;
 }
 
 export interface ConversationSession extends ManagedAssistantSession {
@@ -187,6 +194,7 @@ export interface ConversationTurnReceipt {
   runId: string;
   isNewSession: boolean;
   completion: Promise<ConversationRuntimeOutcome>;
+  context: ConversationTurnContextReceipt;
 }
 
 interface ConversationSessionServiceDeps {
@@ -267,6 +275,7 @@ export class ConversationSessionService {
   private readonly reviewStopWatchdogMs: number;
   private readonly onRunStarted?: ConversationSessionServiceDeps['onRunStarted'];
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
+  private readonly pendingContexts = new WeakMap<ConversationSession, ConversationPendingContext>();
   private readonly listeners = new Map<string, Set<(event: ConversationPublishedEvent) => void>>();
   private nextEventSeqId = 0;
   private readonly cancellationRequested = new WeakSet<ConversationRun>();
@@ -289,6 +298,54 @@ export class ConversationSessionService {
   }
 
   /** Caller checks current provider, Trace access and source grants before loading history. */
+  status(sessionId: string): ConversationStatusResponse | undefined {
+    const session = this.sessions.getSession(sessionId);
+    if (!session) return undefined;
+    const run = session.activeRun ?? session.runs[session.runs.length - 1];
+    const activity = run?.activity;
+    return {success: true, work: projectAssistantWork({sessionId, runId: run?.runId,
+      status: session.status, live: Boolean(session.activeRun), startedAt: run?.startedAt,
+      completedAt: run?.completedAt, interrupted: session.recoveryStatus === 'interrupted',
+      provisionalDelivered: run ? this.runStops.get(run)?.provisionalDelivered : false,
+      hasResult: Boolean(run?.outcome?.message), outcomeKind: run?.outcome?.kind,
+      ...(activity?.captureActivity ? {captureActivity: {observation: activity.captureActivity.observation,
+        tables: activity.captureActivity.tables, rowSlots: activity.captureActivity.rowSlots,
+        unavailableTables: activity.captureActivity.unavailableTables}} : {}),
+      activity: !activity || activity.observation === 'unavailable' ? {observation: 'unavailable'} : {
+        observation: activity.observation, attempted: activity.attempted, returned: activity.returned,
+        inFlight: activity.inFlight, ...(activity.repeatedExactCalls !== undefined
+          ? {repeatedExactCalls: activity.repeatedExactCalls} : {}),
+      }}), context: this.pendingContexts.get(session)?.state() ?? {availability: 'unavailable'}};
+  }
+
+  /** Minimal owner/run-bound metadata for the cross-surface work directory. */
+  catalogWork(owner: {tenantId: string; workspaceId: string; userId: string},
+    sessionId: string, runId?: string): AssistantWorkSummary | undefined {
+    const session = this.sessions.getSession(sessionId);
+    if (!session || session.tenantId !== owner.tenantId || session.workspaceId !== owner.workspaceId ||
+      session.userId !== owner.userId) return undefined;
+    const status = this.status(sessionId);
+    return status && (runId === undefined || status.work.runId === runId) ? status.work : undefined;
+  }
+
+  discardPendingContext(session: ConversationSession): void {
+    if (this.sessions.getSession(session.sessionId) === session) this.pendingContexts.delete(session);
+  }
+
+  appendContext(sessionId: string, request: ConversationContextRequest,
+    expectedSession: ConversationSession): ConversationContextResponse {
+    const session = this.sessions.getSession(sessionId);
+    if (!session || session !== expectedSession) throw new ConversationContextError('CONVERSATION_CONTEXT_EXPIRED',
+      'The conversation instance changed; read its current status', 409);
+    try { assertCurrentAnalysisContextAuthorization(session, resolveKnowledgeScope(session), session.analysisContextFingerprint); }
+    catch (error) { this.pendingContexts.delete(session); throw error; }
+    const pending = this.pendingContexts.get(session);
+    if (!pending) throw new ConversationContextError('CONVERSATION_CONTEXT_UNAVAILABLE', 'Pending context is unavailable', 409);
+    const latestRun = session.activeRun ?? session.runs[session.runs.length - 1];
+    const receipt = pending.append(request, latestRun?.runId);
+    return {success: true, sessionId, receipt, context: pending.state()};
+  }
+
   restoreSession(descriptor: ConversationSessionDescriptor, turns: readonly AnalysisHistoryTurn[],
     input: StartConversationTurnInput): ConversationSession {
     const existing = this.sessions.getSession(descriptor.sessionId);
@@ -340,6 +397,7 @@ export class ConversationSessionService {
       startedAt: descriptor.lastRun.startedAt, completedAt: descriptor.lastRun.completedAt, outcome,
       completion: Promise.resolve(outcome), lifecycleSettled: true, events: [],
       privateContext: resolveAnalysisPrivateContext(session)});
+    this.pendingContexts.set(session, new ConversationPendingContext());
     this.sessions.setSession(session.sessionId, session);
     return session;
   }
@@ -358,8 +416,9 @@ export class ConversationSessionService {
   }
 
   startTurn(input: StartConversationTurnInput): ConversationTurnReceipt {
-    const query = input.query.trim();
-    if (!query) throw new ConversationRequestError('CONVERSATION_QUERY_REQUIRED', 'Conversation query is required');
+    const question = input.query.trim();
+    if (question.length > 50_000) throw new ConversationContextError('CONVERSATION_QUERY_TOO_LARGE', 'Conversation query exceeds the input limit', 413);
+    if (!question) throw new ConversationRequestError('CONVERSATION_QUERY_REQUIRED', 'Conversation query is required');
 
     let session = input.sessionId
       ? this.sessions.getSession(input.sessionId)
@@ -417,11 +476,13 @@ export class ConversationSessionService {
             }
           : {}),
       };
+      this.pendingContexts.set(session, new ConversationPendingContext());
       this.sessions.setSession(sessionId, session);
     }
     if (input.owner && (session.userId !== input.owner.userId || session.tenantId !== input.owner.tenantId ||
       session.workspaceId !== input.owner.workspaceId)) throw conversationNotFound();
     if (!isNewSession && input.analysisContextFingerprint !== session.analysisContextFingerprint) {
+      this.pendingContexts.delete(session);
       throw new ConversationRequestError('ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED',
         'Start a new conversation after changing authorized sources', 409);
     }
@@ -429,6 +490,7 @@ export class ConversationSessionService {
       ? normalizeTraceContext(input.traceContext)
       : session.traceContext;
     if (!isNewSession && !traceContextsEqual(session.traceContext, requestedTraceContext)) {
+      this.pendingContexts.delete(session);
       throw new ConversationRequestError('CONVERSATION_TRACE_CHANGED',
         'Start a new conversation after changing the attached Trace', 409);
     }
@@ -437,6 +499,7 @@ export class ConversationSessionService {
       input.providerId !== undefined &&
       session.providerId !== input.providerId
     ) {
+      this.pendingContexts.delete(session);
       throw new ConversationRequestError('CONVERSATION_PROVIDER_CHANGED',
         'Start a new conversation after changing the AI provider', 409);
     }
@@ -446,6 +509,7 @@ export class ConversationSessionService {
       session.providerSnapshotHash &&
       session.providerSnapshotHash !== input.providerSnapshotHash
     ) {
+      this.pendingContexts.delete(session);
       throw new ConversationRequestError('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
         'Start a new conversation after changing the AI provider configuration', 409);
     }
@@ -453,6 +517,20 @@ export class ConversationSessionService {
       throw new ConversationRequestError('RUN_ALREADY_ACTIVE',
         `Conversation already in progress for session ${session.sessionId}`, 409);
     }
+
+    const pending = this.pendingContexts.get(session) ?? new ConversationPendingContext();
+    let prepared: {query: string; ids: string[]};
+    try { prepared = pending.prepare(question, session.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE)); }
+    catch (error) {
+      if (isNewSession) {
+        this.sessions.deleteSession(session.sessionId);
+        this.pendingContexts.delete(session);
+        void Promise.resolve().then(() => session!.runtime.dispose?.()).catch(() => undefined);
+      }
+      throw error;
+    }
+    this.pendingContexts.set(session, pending);
+    const query = prepared.query;
 
     session.traceContext = requestedTraceContext;
     const previousStatus = session.status;
@@ -483,6 +561,11 @@ export class ConversationSessionService {
       traceContext: session.traceContext,
       selectionContext: input.runtimeOptions?.selectionContext,
       ...(sourceDepth ? {sourceDepth} : {}),
+      onActivity: (activity) => {
+        if (!this.isCurrentRun(session!, run)) return;
+        this.runAuthorizationChecks.get(run)?.();
+        run.activity = activity;
+      },
       onUpdate: (update) => {
         if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
         this.runAuthorizationChecks.get(run)?.();
@@ -532,17 +615,22 @@ export class ConversationSessionService {
     const authorizationFingerprint = session.analysisContextFingerprint;
     run.analysisContextFingerprint = authorizationFingerprint;
     this.runStops.set(run, stop);
-    this.runAuthorizationChecks.set(run, () => assertCurrentAnalysisContextAuthorization(
-      authorizationSelection, authorizationScope, authorizationFingerprint));
+    this.runAuthorizationChecks.set(run, () => {
+      try { assertCurrentAnalysisContextAuthorization(authorizationSelection, authorizationScope, authorizationFingerprint); }
+      catch (error) { this.pendingContexts.delete(session!); throw error; }
+    });
     session.activeRun = run;
     session.runs.push(run);
     try {
       this.onRunStarted?.(session, run);
     } catch (error) {
+      stop.dispose();
       session.activeRun = undefined;
       session.runs.pop();
       if (isNewSession) {
         this.sessions.deleteSession(session.sessionId);
+        this.pendingContexts.delete(session);
+        void Promise.resolve().then(() => session!.runtime.dispose?.()).catch(() => undefined);
       } else {
         session.status = previousStatus;
         session.lastActivityAt = previousLastActivityAt;
@@ -554,19 +642,21 @@ export class ConversationSessionService {
     }
     // A started turn that names a depth keeps it for the turns after it.
     if (input.runtimeOptions?.sourceDepth) session.sourceDepth = input.runtimeOptions.sourceDepth;
-    if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
-      this.publish(session.sessionId, {type: 'run_started', sessionId: session.sessionId, runId});
-    }
-    if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
-      session.history.push({role: 'user', content: query, turnId: runId,
-        ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})});
-    }
-
+    let consumedContextIds: string[] = [];
     let runtimeCompletion: Promise<ConversationRuntimeOutcome>;
     try {
       if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) this.runAuthorizationChecks.get(run)?.();
-      runtimeCompletion = this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)
-        ? session.runtime.run(runtimeInput) : Promise.resolve({kind: 'cancelled', message: ''});
+      if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
+        pending.consume(prepared.ids, runId);
+        consumedContextIds = prepared.ids;
+        if (session.recoveryStatus === 'interrupted') session.recoveryStatus = 'available';
+        this.publish(session.sessionId, {type: 'run_started', sessionId: session.sessionId, runId});
+        if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
+          session.history.push({role: 'user', content: query, turnId: runId,
+            ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})});
+          runtimeCompletion = session.runtime.run(runtimeInput);
+        } else runtimeCompletion = Promise.resolve({kind: 'cancelled', message: ''});
+      } else runtimeCompletion = Promise.resolve({kind: 'cancelled', message: ''});
     } catch (error) {
       runtimeCompletion = Promise.reject(error);
     }
@@ -603,6 +693,7 @@ export class ConversationSessionService {
       sessionId: session.sessionId,
       runId,
       isNewSession,
+      context: {queueEpoch: pending.epoch, consumedContextIds},
       completion,
     };
   }
@@ -728,6 +819,7 @@ export class ConversationSessionService {
     return this.sessions.cleanupIdleSessions({
       ...options,
       onCleanup: (sessionId, session) => {
+        this.pendingContexts.delete(session);
         for (const client of session.sseClients) {
           try {
             client.end();

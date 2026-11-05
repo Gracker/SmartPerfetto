@@ -1546,6 +1546,12 @@ strategies:
   backend/strategies/prompt-conversation-evidence-context.template.md:
     disposition: product-only
     reason: SmartPerfetto conversation artifact retention and authorization
+  backend/strategies/prompt-conversation-supplement-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto next-turn supplemental input and authorization
+  backend/strategies/prompt-conversation-supplement-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto next-turn supplemental input and authorization
   backend/strategies/prompt-final-semantic-assessment.template.md:
     disposition: product-only
     reason: SmartPerfetto finalization semantic assessment protocol
@@ -1874,6 +1880,12 @@ strategies:
   backend/strategies/prompt-runtime-history-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime session history projection
+  backend/strategies/prompt-runtime-history-minimal-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto bounded session history continuation
+  backend/strategies/prompt-runtime-history-minimal-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto bounded session history continuation
   backend/strategies/prompt-runtime-history-tool-en.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime session tool-history projection

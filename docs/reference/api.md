@@ -392,7 +392,10 @@ Base path: `/api/agent/v1`
 |---|---|---|
 | `POST` | `/analyze` | 启动分析 |
 | `POST` | `/conversation` | 启动或继续轻量对话；可选附加 Trace 与已授权源码 |
+| `GET` | `/work` | 按当前 owner 分页读取待处理或最近工作 |
 | `GET` | `/conversation/:sessionId` | 读取对话状态与最近 200 条历史 |
+| `GET` | `/conversation/:sessionId/status` | 只读运行状态和补充队列元数据，不打断分析 |
+| `POST` | `/conversation/:sessionId/context` | 暂存下一次用户提问时使用的补充信息 |
 | `GET` | `/conversation/:sessionId/stream` | 对话 SSE，使用 `runId` 并支持 `Last-Event-ID` 重放 |
 | `POST` | `/conversation/:sessionId/cancel` | 取消精确对话 run |
 | `GET` | `/conversation/:sessionId/full-handoff` | 读取已建议的完整分析交接 |
@@ -431,16 +434,51 @@ Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路
 
 ### 轻量对话
 
-五个 `/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
+`/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
 user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 session 的新消息
 会先停止旧 run 并至多等待一个复核停止看门狗时长（见下文）让它提交，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
 codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
 provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
 
+`GET /work` 接受 `filter=needs_input|recent`、`limit`（默认 20，最多 50）和不透明的
+`cursor`。只读取当前 tenant、workspace、owner 的工作，先确定每个会话的最近候选组，
+再筛选与分页，不恢复 runtime、触发模型或延长会话寿命。响应只包含生命周期、时间和
+授权产物定位，不包含问题正文、源码 ID、路径或授权指纹。
+
+同一会话的运行时间并列时，只用匹配的当前运行或 Conversation 恢复指针确认最近一轮；
+证据不足或指针冲突返回 `metadataReason: latest_run_ambiguous`、`phase: unknown`，
+不附带确定的 run 或产物。待处理筛选保留含潜在待处理事项的未知组。`nextCursor`
+跟随已扫描组，所以本页可能没有可展示事项但仍有下一页。
+
+`hasResult` 与执行阶段分开：存在匹配 owner/session/run、未过期的 snapshot 或报告，
+不会被不完整的内存结果标记覆盖；报告还须有实际文件。默认详情查看不停止当前运行。
+只有显式继续对话才重新鉴权并绑定选中会话；下一次发送保留已附加的 Trace。普通分析
+优先打开精确运行的 snapshot，回退内容明确标为会话历史，不冒充所选运行的结果。
+
+`GET /conversation/:sessionId/status` 返回 `work` 和 `context` 元数据。它不恢复 runtime、
+加载完整历史、执行 Trace SQL、调用模型或延长会话活跃时间。`work.phase` 区分分析、复核、
+等待输入、可查看结果、已结束但没有可查看结果，以及中断等状态；`hasResult` 与执行终态
+保持独立。工具活动与 capture 注册数仅作诊断，不能推断核验通过；未观察到的计数不补零。
+无进程内会话时，补充队列为 `availability: unavailable`，不能解释为已经消费。
+
+`POST /conversation/:sessionId/context` 接收 `expectedQueueEpoch`、`expectedRunId`、
+`idempotencyKey` 和 `text`。先从 status 读取队列代际和当前或最近 run。相同 key、相同
+请求返回原回执；相同 key 配不同内容返回 409。旧代际、已变化的 run 或失效授权不会接纳
+新补充。队列最多暂存 8 条、合计 16 KiB，且仅保存在当前后端进程内。
+
+回执的 `accepted` 表示已暂存，`appliesTo: next_user_turn`、`durability: process_memory`
+明确其生效时机与存储性质；当前运行继续执行，不会因补充自动启动下一轮。下一次用户问题
+成功接纳时，补充与原问题组成同一冻结请求，供意图判断、分析、核验和授权历史共同使用。
+启动回执的 `context.consumedContextIds` 列出本轮使用的补充。接纳失败保留待用内容；
+接纳后执行失败不自动重放。后端重启或会话清理后须重新提交，状态读取不返回补充正文。
+
 `GET /conversation/:sessionId` 返回 `status`、`traceContext`、最近 200 条 `history`（更早的条数在
 `historyOmittedMessages`，来源授权已不可用而隐藏的条数在 `historyUnavailableMessages`）、
 `recoveryStatus`、进行中 run 的 `activeRunId`，以及最近一轮来源可读时的 `pendingQuestion`、
 `recommendedFullAnalysis` 与 `fullHandoff`。源码派生的消息在返回前经 owner 凭据过滤。
+授权详情还返回 `sourceSelection`（模式、源码库 ID 和知识库 ID）。客户端只在内存中
+用它核对当前来源选择，恢复活跃会话的补充能力；它不进入状态列表或浏览器 locator，
+也不会自动改变用户的来源设置。
 
 语义复核一旦发出，流先发送一次 `provisional_answer`（`message` 为经 owner 投影的最终正文，
 `verification: "pending"`）：正文已定稿、可以阅读，但核验结论尚未产生；客户端应保持 run

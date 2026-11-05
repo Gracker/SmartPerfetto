@@ -21,6 +21,7 @@
  * observed as started and then completed or failed.
  */
 
+import {resolveRuntimePerformanceRecorder} from './runtimePerformanceContext';
 import {isToolAllowedForScope} from '../agentv3/mcpToolRegistry';
 import type {ArtifactStore} from '../agentv3/artifactStore';
 import {entrySkillExecutabilityErrors} from '../agentv3/entrySkillPolicy';
@@ -517,7 +518,7 @@ export async function collectSceneEvidenceForPrompt(
 export function scenePerformanceFromSink(
   sink: {readonly runtimePerformanceRecorder?: RuntimePerformanceRecorder} | undefined,
 ): SceneEntryEvidenceInput['runtimePerformance'] {
-  const recorder = sink?.runtimePerformanceRecorder;
+  const recorder = resolveRuntimePerformanceRecorder(sink);
   if (!recorder) return undefined;
   return {
     startPhase: name => {

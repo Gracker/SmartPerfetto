@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+
 import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import {EventEmitter} from 'events';
@@ -954,7 +956,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             const recoveryInput = buildOpenAiOutputLimitRecoveryInput(stream.history, config.maxHistoryBytes,
               observedToolCalls, turnIntent, config.outputLanguage, recoveryReason, candidateProtocolDiagnostic,
               declarationRequest);
-            if (recoveryInput && admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {
+            if (recoveryInput && admitDeliveryCall(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink), {
               providerOrigin: config.baseURL, model: selectedModel,
               purpose: declarationRequest && recoveryReason === declarationRequest.reason ? 'declaration_repair' : 'continuation',
               inputBytes: serializedByteLength(recoveryInput) + Buffer.byteLength(context.systemPrompt),

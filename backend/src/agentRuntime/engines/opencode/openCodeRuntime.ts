@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+
 import {collectSceneEvidenceForPrompt, scenePerformanceFromSink} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
@@ -2881,7 +2883,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         ? closeoutTape.buildEmptyBodyPrompt({query, priorConclusion: conclusion, outputLanguage}) : undefined;
     const deliveryCall = {providerOrigin: openCodeProviderBaseUrl(modelConfig), model: modelConfig.model.modelID};
     const admitDelivery = (purpose: 'continuation' | 'declaration_repair', prompt: string) =>
-      admitDeliveryCall(options.runManifestAttributionSink?.runtimePerformanceRecorder, {...deliveryCall, purpose,
+      admitDeliveryCall(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink), {...deliveryCall, purpose,
         inputBytes: Buffer.byteLength(prompt) + Buffer.byteLength(prep.systemPrompt),
         remainingMs: deadlineMs - Date.now(),
         // Its continuation exists only for a candidate without an answer body.
@@ -2891,7 +2893,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       try {
         assertActive();
         actualTurns++;
-        const continued = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
+        const continued = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
           {purpose: 'continuation', trigger: outputLimitDelivery ? 'output_limit' : 'empty_body', ...deliveryCall},
           {prompt: continuationPrompt, systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,
             outputByteLimit: 64 * 1024},
@@ -2928,7 +2930,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       try {
         assertActive();
         actualTurns++;
-        const repaired = await dispatchWithModelCallRecord(options.runManifestAttributionSink?.runtimePerformanceRecorder,
+        const repaired = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options.runManifestAttributionSink),
           {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
           {prompt: declarationPrompt,
             systemPrompt: prep.systemPrompt, signal: executionLease.signal, deadlineMs,

@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+
 import {collectSceneEvidenceForPrompt} from '../../sceneEntryEvidence';
 import {snapshotSceneCoverageRegistry} from '../../../agent/scene/sceneCoveragePlan';
 import { EventEmitter } from 'events';
@@ -1284,7 +1286,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           priorConclusion: sanitizeOwnerCodeAwareText(sessionId, originalAnswer)}) : undefined;
       const deliveryCall = {providerOrigin: this.config.byok.baseUrl, model: this.config.model};
       const admitDelivery = (purpose: 'continuation' | 'declaration_repair', prompt: string, deadlineMs: number) =>
-        admitDeliveryCall(options?.runManifestAttributionSink?.runtimePerformanceRecorder, {...deliveryCall, purpose,
+        admitDeliveryCall(resolveRuntimePerformanceRecorder(options?.runManifestAttributionSink), {...deliveryCall, purpose,
           inputBytes: Buffer.byteLength(prompt) + Buffer.byteLength(finalSystemPrompt),
           remainingMs: deadlineMs - Date.now(),
           // Its continuation exists only for a candidate without an answer body.
@@ -1295,7 +1297,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         await retireAcquisition();
         sessionState.rounds += 1;
         try {
-          const continued = await dispatchWithModelCallRecord(options?.runManifestAttributionSink?.runtimePerformanceRecorder,
+          const continued = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options?.runManifestAttributionSink),
             {purpose: 'continuation', trigger: 'empty_body', ...deliveryCall},
             {prompt: continuationPrompt, systemPrompt: finalSystemPrompt, signal: executionLease.signal,
               deadlineMs: sessionState.deadlineMs, outputByteLimit: 128 * 1024},
@@ -1330,7 +1332,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         await retireAcquisition();
         sessionState.rounds += 1;
         try {
-          const repaired = await dispatchWithModelCallRecord(options?.runManifestAttributionSink?.runtimePerformanceRecorder,
+          const repaired = await dispatchWithModelCallRecord(resolveRuntimePerformanceRecorder(options?.runManifestAttributionSink),
             {purpose: 'declaration_repair', trigger: declarationRequest.reason, ...deliveryCall},
             {prompt: declarationPrompt,
               systemPrompt: finalSystemPrompt, signal: executionLease.signal,

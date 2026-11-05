@@ -12,7 +12,7 @@ import path from 'path';
 import {PassThrough} from 'stream';
 
 import type {ConclusionContract} from '../../agent/core/conclusionContract';
-import type {RuntimePerformanceReceiptV1} from '../../agentRuntime/runtimePerformance';
+import {createRuntimePerformanceRecorder, type RuntimePerformanceReceiptV1} from '../../agentRuntime/runtimePerformance';
 import {PRODUCTION_RUNTIME_KINDS} from '../../agentRuntime/runtimeKinds';
 import {
   CANDIDATE_TARGET_PHASES,
@@ -434,6 +434,13 @@ describe('agent runtime latency benchmark contracts', () => {
     expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
       modelCalls: [{purpose: 'answer_turn', startOffsetMs: 0, durationMs: 10, outcome: 'ok'}],
       finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}}})).toEqual(cell());
+    const activityRecorder = createRuntimePerformanceRecorder();
+    activityRecorder.startToolActivity('tool', {}).end('returned', {success: true});
+    activityRecorder.recordCaptureActivity({}, {rowSlots: 3, origin: 'unknown', unavailable: true});
+    const activity = activityRecorder.activitySnapshot();
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance, activity}})).toEqual(cell());
+    expect(() => parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      activity: {...activity, query: 'SECRET'}}})).toThrow('runtime_activity_invalid');
     // The scene entry evidence phase and its closed receipt are accepted and kept.
     const sceneEvidence = {skillId: 'scrolling_analysis', status: 'ran', durationMs: 4, artifactCount: 24, captureCount: 23};
     const scenePhase = {name: 'scene_evidence', startOffsetMs: 1, durationMs: 4, outcome: 'ok'};

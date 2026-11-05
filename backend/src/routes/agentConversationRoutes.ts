@@ -4,6 +4,10 @@
 
 import type express from 'express';
 
+import {effectiveAnalysisSelection} from '../services/effectiveAnalysisSelection';
+import {ConversationContextError} from '../assistant/application/conversationPendingContext';
+import {projectAssistantWork} from '../assistant/application/assistantWorkProjection';
+import type {ConversationContextRequest} from '../assistant/contracts/assistantWorkContract';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {createAgentOrchestrator} from '../agentRuntime';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
@@ -68,6 +72,7 @@ const heartbeatTimers = new Map<string, NodeJS.Timeout>();
 /** Errors whose text a conversation route returns: written by the conversation and authorization layers. */
 const CONVERSATION_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
   ConversationRequestError,
+  ConversationContextError,
   AnalysisContextAuthorizationChangedError,
   ProviderRequestError,
 ];
@@ -193,12 +198,19 @@ const conversationSessionService = new ConversationSessionService({
     const scope = runScope(session, run);
     persistAnalysisRunState(scope, 'running');
     const descriptor = sessionDescriptor(session, run);
-    getConversationSessionStore().save(descriptor, toAnalysisHistoryTurn({id: run.runId,
-      turnIndex: run.turnIndex, query: run.query, traceId: scope.traceId,
-      timestamp: run.startedAt, sourceDerived: descriptor.lastRun.sourceDerived,
-      analysisContextFingerprint: descriptor.analysisContextFingerprint,
-      result: {partial: true, completion: {status: 'unknown'}},
-    }));
+    try {
+      getConversationSessionStore().save(descriptor, toAnalysisHistoryTurn({id: run.runId,
+        turnIndex: run.turnIndex, query: run.query, traceId: scope.traceId,
+        timestamp: run.startedAt, sourceDerived: descriptor.lastRun.sourceDerived,
+        analysisContextFingerprint: descriptor.analysisContextFingerprint,
+        result: {partial: true, completion: {status: 'unknown'}},
+      }));
+    } catch (error) {
+      // The run row and descriptor are separate writes. Compensate the first
+      // if admission fails; never leave a phantom running row with no owner.
+      persistAnalysisRunState(scope, 'failed', {error: 'conversation_start_persistence_failed'});
+      throw error;
+    }
     const timer = setInterval(() => heartbeatAnalysisRun(scope), CONVERSATION_RUN_HEARTBEAT_MS);
     timer.unref?.();
     heartbeatTimers.set(run.runId, timer);
@@ -464,6 +476,7 @@ async function startConversation(req: express.Request, res: express.Response): P
       isNewSession: receipt.isNewSession,
       traceContextAttached: turnInput.traceContext.kind === 'attached',
       status: 'running',
+      context: receipt.context,
     });
   } catch (error: unknown) {
     // Typed option, conversation and authorization errors carry text we
@@ -477,7 +490,7 @@ async function startConversation(req: express.Request, res: express.Response): P
   }
 }
 
-async function readAuthorizedConversation(req: express.Request, res: express.Response): Promise<ConversationSession | undefined> {
+async function readAuthorizedConversationMetadata(req: express.Request, res: express.Response, mutation = false) {
   const context = requireConversationRunPermission(req, res);
   if (!context) return undefined;
   const sessionId = routeParam(req.params.sessionId);
@@ -498,15 +511,18 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
     outputLanguage: metadata.outputLanguage ?? configuredOutputLanguage(),
     canReadRegisteredContext: hasRbacPermission(context, 'codebase:read')});
   if (!authorized.allowed) {
+    if (mutation && live) conversationSessionService.discardPendingContext(live);
     res.status(authorized.httpStatus).json(authorized.payload); return undefined;
   }
-  assertCurrentAnalysisContextAuthorization(metadata, knowledgeScopeFromRequestContext(context),
-    metadata.analysisContextFingerprint!);
+  const assertMetadataCurrent = () => {
+    try { assertCurrentAnalysisContextAuthorization(metadata, knowledgeScopeFromRequestContext(context), metadata.analysisContextFingerprint!); }
+    catch (error) { if (mutation && live) conversationSessionService.discardPendingContext(live); throw error; }
+  };
+  assertMetadataCurrent();
   if (metadata.traceContext.kind === 'attached' &&
     !(await ensureTraceAccessible(req, res, metadata.traceContext.traceId))) return undefined;
   // Recheck after the awaited access lookup, before loading any history or creating an SDK adapter.
-  assertCurrentAnalysisContextAuthorization(metadata, knowledgeScopeFromRequestContext(context),
-    metadata.analysisContextFingerprint!);
+  assertMetadataCurrent();
   const provider = getProviderService();
   const owner = ownerFieldsFromContext(context);
   let pin: ReturnType<typeof resolveProviderRuntimeSnapshot>;
@@ -518,17 +534,26 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
     // A pin that depends on an unreadable providers.json cannot be checked. A
     // live conversation keeps the runtime it has (its next run is checked when
     // it starts); recovery would build a new one, so it waits for the file.
-    if (live && error instanceof ProviderStoreUnreadableError) return live;
+    if (!mutation && live && error instanceof ProviderStoreUnreadableError) return {metadata, live, stored, owner};
     if (sendProviderStoreUnreadableIfPresent(res, error)) return undefined;
     throw error;
   }
   if (pin.snapshotHash !== metadata.providerSnapshotHash || pin.snapshot.runtimeKind !== metadata.runtimeKind ||
     (metadata.providerFollowsActive && activeProviderId !== metadata.providerId)) {
+    if (mutation && live) conversationSessionService.discardPendingContext(live);
     res.status(409).json({success: false, code: 'CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
       error: 'Start a new conversation after changing the AI provider configuration'});
     return undefined;
   }
+  return {metadata, live, stored, owner};
+}
+
+async function readAuthorizedConversation(req: express.Request, res: express.Response): Promise<ConversationSession | undefined> {
+  const authorized = await readAuthorizedConversationMetadata(req, res);
+  if (!authorized) return undefined;
+  const {live, stored, owner} = authorized;
   if (live) return live;
+  const sessionId = stored!.sessionId;
   const runtimeOptions: AnalysisOptions = {outputLanguage: stored!.outputLanguage, codeAwareMode: stored!.codeAwareMode,
     codebaseIds: stored!.codebaseIds, knowledgeSourceIds: stored!.knowledgeSourceIds,
     sourceDepth: stored!.sourceDepth, analysisContextFingerprint: stored!.analysisContextFingerprint};
@@ -579,6 +604,49 @@ function requireAccessibleSettledRunHistory(session: ConversationSession, run: C
   return true;
 }
 
+async function getConversationStatus(req: express.Request, res: express.Response): Promise<void> {
+  const authorized = await readAuthorizedConversationMetadata(req, res);
+  if (!authorized) return;
+  const liveStatus = conversationSessionService.status(authorized.metadata.sessionId);
+  if (authorized.live && conversationSessionService.getSession(authorized.live.sessionId) === authorized.live && liveStatus) {
+    res.json(liveStatus); return;
+  }
+  const stored = authorized.stored;
+  if (!stored) throw new ConversationContextError('CONVERSATION_CONTEXT_EXPIRED', 'The conversation instance changed', 409);
+  res.json({success: true, work: projectAssistantWork({sessionId: stored.sessionId, runId: stored.lastRun.runId,
+    status: stored.status, live: false, startedAt: stored.lastRun.startedAt, completedAt: stored.lastRun.completedAt,
+    hasResult: Boolean(stored.lastOutcome?.message), outcomeKind: stored.lastOutcome?.kind}),
+    context: {availability: 'unavailable'}});
+}
+
+async function appendConversationContext(req: express.Request, res: express.Response): Promise<void> {
+  try {
+    const requestContext = requireConversationRunPermission(req, res);
+    if (!requestContext) return;
+    if (!requireAiEnabledForHttp(res, 'agent_analyze')) return;
+    const tenantDecision = evaluateTenantMutationPolicy(requestContext);
+    if (!tenantDecision.allowed) {
+      res.status(tenantDecision.httpStatus).json(sendTenantMutationDeniedPayload(tenantDecision)); return;
+    }
+    const authorized = await readAuthorizedConversationMetadata(req, res, true);
+    if (!authorized) return;
+    if (!authorized.live) throw new ConversationContextError('CONVERSATION_CONTEXT_UNAVAILABLE',
+      'Pending context is not available after restart; open the conversation before submitting it again', 409);
+    const body: unknown = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+      Object.keys(body).some(key => !['expectedQueueEpoch', 'expectedRunId', 'idempotencyKey', 'text'].includes(key)) ||
+      !['expectedQueueEpoch', 'expectedRunId', 'idempotencyKey', 'text'].every(key =>
+        typeof (body as Record<string, unknown>)[key] === 'string')) {
+      throw new ConversationContextError('CONVERSATION_CONTEXT_INVALID', 'Invalid supplemental context request', 400);
+    }
+    res.json(conversationSessionService.appendContext(authorized.live.sessionId,
+      body as ConversationContextRequest, authorized.live));
+  } catch (error) {
+    sendRouteError(res, error, {code: 'CONVERSATION_CONTEXT_FAILED', error: 'Failed to add supplemental context',
+      logLabel: '[AgentConversation] Context error'}, CONVERSATION_PUBLIC_ERRORS);
+  }
+}
+
 async function getConversation(req: express.Request, res: express.Response): Promise<void> {
   const session = await readAuthorizedConversation(req, res);
   if (!session) return;
@@ -586,7 +654,10 @@ async function getConversation(req: express.Request, res: express.Response): Pro
     sourceHistoryTurnAccessible(session, message.turnId ?? message.turn?.id));
   const latestRun = session.runs[session.runs.length - 1];
   const controlsAccessible = !latestRun || settledRunHistoryAccessible(session, latestRun);
+  const selection = effectiveAnalysisSelection(session);
   res.json({success: true, sessionId: session.sessionId, status: session.status, traceContext: session.traceContext,
+    sourceSelection: {codeAwareMode: selection.codeAwareMode, codebaseIds: selection.codebaseIds ?? [],
+      knowledgeSourceIds: selection.knowledgeSourceIds ?? []},
     // A private turn stores its question verbatim for the model, so every
     // source-derived message is read back under the owner guard. The run's
     // guards are gone by now, so only the credential patterns apply.
@@ -737,8 +808,14 @@ function conversationReadRoute(handler: (req: express.Request, res: express.Resp
   };
 }
 
+/** Composition-only read seam; listing never creates or restores a conversation. */
+export const readLiveConversationWork: import('../services/assistantWorkCatalogService').AssistantWorkLiveReader =
+  (owner, sessionId, runId) => conversationSessionService.catalogWork(owner, sessionId, runId);
+
 export function registerAgentConversationRoutes(router: express.Router): void {
   router.post('/conversation', (req, res) => void startConversation(req, res));
+  router.get('/conversation/:sessionId/status', conversationReadRoute(getConversationStatus));
+  router.post('/conversation/:sessionId/context', (req, res) => void appendConversationContext(req, res));
   router.get('/conversation/:sessionId', conversationReadRoute(getConversation));
   router.get('/conversation/:sessionId/stream', conversationReadRoute(streamConversation));
   router.post('/conversation/:sessionId/cancel', (req, res) => void cancelConversation(req, res));

@@ -160,7 +160,7 @@ export function routeAdaptiveEvidencePreflight(input: {
     reasons: unique(reasons),
     obligations,
     evidence: emptyEvidence(),
-    budget: {dispatchUtilization: '0_49', repeatedToolCalls: 0},
+    budget: {dispatchUtilization: '0_49', toolObservation: 'unavailable'},
     shadow: true,
     policyFingerprint: POLICY_FINGERPRINT,
     ...(input.outputCap === undefined ? {} : {outputCap: input.outputCap}),
@@ -188,7 +188,8 @@ export function routeAdaptiveEvidencePostEvidence(input: {
   previous: AdaptiveRoutingReceiptV1;
   evidence: Omit<AdaptiveRoutingReceiptV1['evidence'], 'missing'>;
   dispatchBudgetRatio: number;
-  repeatedToolCalls: number;
+  repeatedToolCalls?: number;
+  toolObservation?: 'observed' | 'partial' | 'unavailable';
 }): AdaptiveRoutingReceiptV1 {
   const previous = parseAdaptiveRoutingReceipt(input.previous);
   const evidence = {
@@ -258,11 +259,14 @@ export function routeAdaptiveEvidencePostEvidence(input: {
   if (budgetBucket === '80_99' || budgetBucket === '100_plus') {
     evidenceReasons.push('budget_dispatch_threshold');
   }
-  const repeatedToolCalls = nonnegativeInteger(
-    input.repeatedToolCalls,
-    'adaptive_routing_repeated_tool_calls_invalid',
-  );
-  if (repeatedToolCalls > 0) evidenceReasons.push('repeated_tool_call');
+  const toolObservation = input.toolObservation ?? (input.repeatedToolCalls === undefined ? 'unavailable' : 'observed');
+  if (!['observed', 'partial', 'unavailable'].includes(toolObservation) ||
+    (toolObservation !== 'observed' && input.repeatedToolCalls !== undefined)) {
+    throw new Error('adaptive_routing_tool_observation_invalid');
+  }
+  const repeatedToolCalls = toolObservation === 'observed'
+    ? nonnegativeInteger(input.repeatedToolCalls!, 'adaptive_routing_repeated_tool_calls_invalid') : undefined;
+  if (repeatedToolCalls !== undefined && repeatedToolCalls > 0) evidenceReasons.push('repeated_tool_call');
   const evidenceUnresolved = evidenceReasons.some(reason => ![
     'budget_dispatch_threshold',
     'repeated_tool_call',
@@ -303,7 +307,8 @@ export function routeAdaptiveEvidencePostEvidence(input: {
     reasons: unique(reasons),
     obligations: unique(obligations),
     evidence,
-    budget: {dispatchUtilization: budgetBucket, repeatedToolCalls},
+    budget: {dispatchUtilization: budgetBucket, toolObservation,
+      ...(repeatedToolCalls === undefined ? {} : {repeatedToolCalls})},
     shadow: true,
     policyFingerprint: previous.policyFingerprint,
     ...(previous.outputCap === undefined ? {} : {outputCap: previous.outputCap}),
@@ -315,6 +320,15 @@ function record(value: unknown, error: string): Record<string, unknown> {
     throw new Error(error);
   }
   return value as Record<string, unknown>;
+}
+
+function validToolObservation(budget: Record<string, unknown>): boolean {
+  // Legacy receipts keep their exact serialized bytes and hash; new producers declare coverage.
+  if (budget.toolObservation === undefined || budget.toolObservation === 'observed') {
+    return Number.isSafeInteger(budget.repeatedToolCalls) && (budget.repeatedToolCalls as number) >= 0;
+  }
+  return (budget.toolObservation === 'partial' || budget.toolObservation === 'unavailable') &&
+    budget.repeatedToolCalls === undefined;
 }
 
 export function parseAdaptiveRoutingReceipt(
@@ -404,12 +418,11 @@ export function parseAdaptiveRoutingReceipt(
       String(evidence.schemaStatus),
     )
     || Object.keys(budget).some(key =>
-      key !== 'dispatchUtilization' && key !== 'repeatedToolCalls')
+      key !== 'dispatchUtilization' && key !== 'repeatedToolCalls' && key !== 'toolObservation')
     || !['0_49', '50_79', '80_99', '100_plus'].includes(
       String(budget.dispatchUtilization),
     )
-    || !Number.isSafeInteger(budget.repeatedToolCalls)
-    || (budget.repeatedToolCalls as number) < 0
+    || !validToolObservation(budget)
     || (
       receipt.outputCap !== undefined
       && (!Number.isSafeInteger(receipt.outputCap) || (receipt.outputCap as number) < 1)
@@ -437,7 +450,8 @@ export function parseAdaptiveRoutingReceipt(
       && (
         evidenceNumbers.some(item => item !== 0)
         || budget.dispatchUtilization !== '0_49'
-        || budget.repeatedToolCalls !== 0
+        || (budget.toolObservation === undefined ? budget.repeatedToolCalls !== 0
+          : budget.toolObservation !== 'unavailable' || budget.repeatedToolCalls !== undefined)
         || receipt.decision === 'return_gap'
       )
     )

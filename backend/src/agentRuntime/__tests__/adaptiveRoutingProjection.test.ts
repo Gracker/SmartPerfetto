@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import type {DataEnvelope} from '../../types/dataContract';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
@@ -76,6 +77,27 @@ describe('adaptive routing runtime projection', () => {
       recommendedTier: 'L3',
       obligations: ['reference_comparison'],
     });
+  });
+
+  it('projects observed exact repeats while preserving incomplete and unavailable observation', () => {
+    const previous = buildAdaptiveRoutingPreflight({requestedMode: 'auto', resolvedMode: 'quick',
+      classifierSource: 'ai', quickAcknowledgementDirectAnswer: false, directEvidenceAvailable: false,
+      hasReferenceTrace: false, privateContext: false});
+    const recorder = createRuntimePerformanceRecorder();
+    const project = () => buildAdaptiveRoutingPostEvidence({previous, result: result(), dataEnvelopes: [],
+      activity: recorder.activitySnapshot()});
+    expect(project().budget).toMatchObject({toolObservation: 'unavailable'});
+    expect(project().budget.repeatedToolCalls).toBeUndefined();
+    recorder.startToolActivity('execute_sql', {query: 'SELECT 1'}).end('returned', {success: true});
+    expect(project().budget).toMatchObject({toolObservation: 'observed', repeatedToolCalls: 0});
+    recorder.startToolActivity('execute_sql', {query: 'SELECT 1'}).end('returned', {success: true});
+    expect(project().budget.repeatedToolCalls).toBe(1);
+    expect(project().reasons).toContain('repeated_tool_call');
+    expect(project().shadow).toBe(true);
+    recorder.startToolActivity('execute_sql', {query: undefined}).end('returned');
+    expect(project().budget).toMatchObject({toolObservation: 'partial'});
+    expect(project().budget.repeatedToolCalls).toBeUndefined();
+    expect(project().reasons).not.toContain('repeated_tool_call');
   });
 
   it('derives post-evidence counters only from structured contracts', () => {
@@ -167,7 +189,7 @@ describe('adaptive routing runtime projection', () => {
         schemaStatus: 'uncertain',
         causalOpen: 1,
       },
-      budget: {dispatchUtilization: '50_79', repeatedToolCalls: 0},
+      budget: {dispatchUtilization: '50_79', toolObservation: 'unavailable'},
       decision: 'recommend_upgrade',
       recommendedTier: 'L3',
     });
@@ -337,6 +359,8 @@ describe('adaptive routing runtime projection', () => {
       onDiagnostic: code => diagnostics.push(code),
     })).toBe(true);
     expect(builder.currentAdaptiveRouting?.stage).toBe('post_evidence');
+    expect(builder.currentAdaptiveRouting?.budget).toMatchObject({toolObservation: 'unavailable'});
+    expect(builder.currentAdaptiveRouting?.budget.repeatedToolCalls).toBeUndefined();
     expect(builder.seal().adaptiveRouting?.stage).toBe('post_evidence');
 
     expect(recordAdaptiveRoutingPostEvidenceBestEffort({

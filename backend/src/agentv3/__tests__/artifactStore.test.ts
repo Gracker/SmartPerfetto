@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it} from '@jest/globals';
+import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerformanceContext';
 import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorConnectionModel';
 import {sanitizeQueryReview} from '../../types/queryReviewContract';
 import {ArtifactStore, EVIDENCE_RETENTION_CELLS_ENV, RETAINED_EVIDENCE_CAPTURE_CEILING} from '../artifactStore';
@@ -485,5 +487,48 @@ describe('ArtifactStore', () => {
     expect(full.queryReview.guardrails).toHaveLength(16);
     expect(full.queryReview.limitations).toHaveLength(12);
     expect(full.queryReview.observedExecution.executableSql).toContain('SELECT');
+  });
+});
+
+
+describe('accepted capture activity', () => {
+  it('observes issued capture registrations without a manifest or a tool call, and keeps origins honest', () => {
+    const store = new ArtifactStore();
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({identity: {runId: 'current-run', sessionId: 'session',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}}, recorder, assertCurrent() {}});
+    const data = {columns: ['private_metric'], rows: [['private value'], ['private value']]};
+    const current = captureEvidenceTable(data);
+    const reused = captureEvidenceTable({columns: ['x'], rows: [[1]]});
+    const unknown = captureEvidenceTable(undefined);
+    const empty = captureEvidenceTable({columns: ['x'], rows: []});
+    const register = (witness: typeof current, originRunId?: string) => {
+      const id = store.store({skillId: 'execute_sql', data, title: 'Private title'});
+      return store.registerEvidenceCapture(id, witness, {evidenceRefId: `evidence-${id}`, originRunId});
+    };
+    expect(register(captureEvidenceTable(data), 'outside-run')).toBe(true);
+    expect(recorder.activitySnapshot().captureActivity).toBeUndefined();
+    scope.run(() => {
+      expect(register(current, 'current-run')).toBe(true);
+      expect(register(current, 'current-run')).toBe(true);
+      expect(register(reused, 'older-run')).toBe(true);
+      expect(register(unknown)).toBe(true);
+      expect(register(empty, 'current-run')).toBe(true);
+      expect(register({captureId: 'model-invented'}, 'current-run')).toBe(false);
+    });
+    scope.dispose();
+    const receipt = recorder.seal();
+    expect(receipt.activity).toMatchObject({observation: 'unavailable', attempted: 0, evidenceNovelty: 'not_assessed',
+      captureActivity: {observation: 'observed', tables: 4, rowSlots: 3, unavailableTables: 1,
+        currentRunTables: 2, reusedTables: 1, unknownOriginTables: 1, dropped: 0}});
+    expect(JSON.stringify(receipt.activity)).not.toMatch(/private|current-run|older-run|evidence-/);
+    const next = createRuntimePerformanceRecorder();
+    const nextScope = createRuntimePerformanceScope({identity: {runId: 'next-run', sessionId: 'session',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}}, recorder: next, assertCurrent() {}});
+    nextScope.run(() => register(current, 'next-run'));
+    expect(next.activitySnapshot().captureActivity).toMatchObject({tables: 1, reusedTables: 1, currentRunTables: 0});
+    nextScope.dispose();
+    scope.run(() => register(captureEvidenceTable(data), 'current-run'));
+    expect(recorder.seal()).toBe(receipt);
   });
 });

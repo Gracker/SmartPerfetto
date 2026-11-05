@@ -13,6 +13,7 @@ import path from 'path';
 import {performance as nodePerformance} from 'perf_hooks';
 import {Readable} from 'stream';
 
+import {parseRuntimeActivitySnapshot} from '../agentRuntime/runtimeActivity';
 import type {ConclusionContract} from '../agent/core/conclusionContract';
 import {
   isProductionAgentRuntimeKind,
@@ -770,10 +771,12 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
   // Per-call model records, the review decision and delivery budget decisions are diagnostic
   // receipt fields; the latency scorer does not read them, so they are accepted and dropped.
   assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'finalReview',
-    'deliveryBudgets', 'sceneEvidence', 'declaration', 'truncated'],
+    'deliveryBudgets', 'sceneEvidence', 'declaration', 'activity', 'truncated'],
     'benchmark_runtime_performance_unknown_field');
   const sceneEvidence = parseSceneEvidenceReceipt(record.sceneEvidence);
   const declaration = parseDeclarationReceipt(record.declaration);
+  // Invocation activity is diagnostic only; validate then exclude it from admission scoring.
+  if (record.activity !== undefined) parseRuntimeActivitySnapshot(record.activity);
   if (record.modelCalls !== undefined && !Array.isArray(record.modelCalls)) {
     throw new Error('benchmark_runtime_performance_arrays_invalid');
   }

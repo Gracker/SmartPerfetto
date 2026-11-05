@@ -32,6 +32,7 @@
         "src/agentRuntime/engines/pi/piAgentCoreRuntime.ts!",
         "src/agentv3/selfImprove/migrateFailureModeHash.ts!",
         "src/agentv3/selfImprove/promoteSkillNote.ts!",
+        "src/assistant/contracts/assistantWorkContract.ts!",
         "src/cli-user/bin.ts!",
         "src/cli/index.ts!",
         "src/index.ts!",

@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {EventEmitter} from 'events';
+import type {RuntimeActivitySnapshot} from '../../../agentRuntime/runtimeActivity';
+import {resolveRuntimePerformanceRecorder} from '../../../agentRuntime/runtimePerformanceContext';
+import {createRuntimePerformanceRecorder, createRuntimePerformanceRun, startRuntimeModelCall} from '../../../agentRuntime/runtimePerformance';
 import {resolveAnalysisHistoryReader, createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, type AnalysisHistoryReader, toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
 import {setImmediate as nextImmediate} from 'node:timers/promises';
 import {beforeEach, describe, expect, it, jest} from '@jest/globals';
@@ -171,8 +174,12 @@ describe('Conversation evidence and stream consumer boundaries', () => {
       return value;
     });
     const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
+    const activities: RuntimeActivitySnapshot[] = [];
     const first = await adapter.run({sessionId: 'conversation', runId: 'first', query: 'Observe the metric', history: [],
-      traceContext: {kind: 'attached', traceId: 'trace-1'}});
+      traceContext: {kind: 'attached', traceId: 'trace-1'}, onActivity: snapshot => activities.push(snapshot)});
+    expect(activities[activities.length - 1]).toMatchObject({observation: 'observed', attempted: 1, returned: 1, inFlight: 0});
+    expect(activities[activities.length - 1].captureActivity?.currentRunTables).toBeGreaterThan(0);
+    expect(JSON.stringify(activities)).not.toContain('SELECT');
     expect(query).toHaveBeenCalled();
     query.mockClear();
     const updates: unknown[] = [];
@@ -417,6 +424,49 @@ function result(conclusion: string, sessionId = 'runtime-session'): AnalysisResu
 }
 
 describe('OrchestratorConversationRuntimeAdapter', () => {
+  it('does not bind, seal or mutate a foreign manifest recorder supplied to a conversation', async () => {
+    const foreign = createRuntimePerformanceRecorder();
+    const source = {identity: {runId: 'foreign-run', sessionId: 'foreign-session',
+      scope: {tenantId: 'foreign', workspaceId: 'foreign'}}, runtimePerformanceRecorder: foreign} as
+      NonNullable<AnalysisOptions['runManifestAttributionSink']>;
+    const orchestrator = createOrchestrator(async () => {
+      expect(resolveRuntimePerformanceRecorder()).toBeUndefined();
+      return result('Answer');
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {runManifestAttributionSink: source}});
+    await expect(adapter.run({sessionId: 'observation', runId: 'one', query: 'Question', history: [], traceContext: {kind: 'none'}}))
+      .resolves.toMatchObject({kind: 'answered'});
+    expect(foreign.activitySnapshot().observation).toBe('unavailable');
+    expect(() => foreign.recordFirstOutput()).not.toThrow();
+    await adapter.dispose();
+  });
+
+  it('records model and finalization activity without a manifest, then seals the private scope', async () => {
+    let recorder: ReturnType<typeof resolveRuntimePerformanceRecorder>;
+    const orchestrator = createOrchestrator(async options => {
+      expect(options.runManifestAttributionSink).toBeUndefined();
+      recorder = resolveRuntimePerformanceRecorder();
+      const performance = createRuntimePerformanceRun();
+      performance.finishClassification();
+      startRuntimeModelCall(undefined, {purpose: 'answer_turn'}).end();
+      return result('Answer');
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+    const previous = mockFinalize.getMockImplementation()!;
+    mockFinalize.mockImplementation(async input => {
+      expect(resolveRuntimePerformanceRecorder()).toBe(recorder);
+      startRuntimeModelCall(undefined, {purpose: 'review'}).end();
+      return previous(input);
+    });
+    await adapter.run({sessionId: 'observation', runId: 'one', query: 'Question', history: [], traceContext: {kind: 'none'}});
+    const sealed = recorder!.seal();
+    expect(sealed.phases.map(phase => phase.name)).toContain('classification');
+    expect(sealed.modelCalls?.map(call => call.purpose)).toEqual(['answer_turn', 'review']);
+    expect(resolveRuntimePerformanceRecorder()).toBeUndefined();
+    expect(() => recorder!.recordFirstOutput()).toThrow('runtime_performance_already_sealed');
+    await adapter.dispose();
+  });
+
   it.each([
     ['a public run marker', NO_PRIVATE_CONTEXT, true],
     ['a private run marker under a public selection', {codebase: false, knowledge: true}, false],

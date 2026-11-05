@@ -15,7 +15,7 @@ import {openEnterpriseDb, resolveEnterpriseDbPath} from './enterpriseDb';
 import {parseStoredJson} from '../utils/storedData';
 import {isRequestedSourceDepth} from './codebase/sourceDepthPolicy';
 
-const RUNTIME_TYPE = 'conversation-logical-session@1';
+export const CONVERSATION_SNAPSHOT_RUNTIME_TYPE = 'conversation-logical-session@1';
 type WithoutRuntimeResult<T> = T extends unknown ? Omit<T, 'finalResult' | 'recoveryStatus'> : never;
 export type ConversationSessionOwner = {tenantId: string; workspaceId: string; userId: string};
 
@@ -99,7 +99,7 @@ export class ConversationSessionStore {
         AND session.tenant_id = snapshot.tenant_id AND session.workspace_id = snapshot.workspace_id
       WHERE snapshot.id = ? AND snapshot.runtime_type = ? AND snapshot.tenant_id = ?
         AND snapshot.workspace_id = ? AND snapshot.session_id = ? AND session.created_by = ?`).get(
-      snapshotId({...owner, sessionId}), RUNTIME_TYPE, owner.tenantId, owner.workspaceId, sessionId, owner.userId,
+      snapshotId({...owner, sessionId}), CONVERSATION_SNAPSHOT_RUNTIME_TYPE, owner.tenantId, owner.workspaceId, sessionId, owner.userId,
     ) as {snapshot_json: string} | undefined;
     if (!row) return undefined;
     let parsed: ConversationSessionDescriptor;
@@ -154,7 +154,7 @@ export class ConversationSessionStore {
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET run_id = excluded.run_id, snapshot_json = excluded.snapshot_json,
           created_at = excluded.created_at`).run(snapshotId(descriptor), descriptor.tenantId,
-        descriptor.workspaceId, descriptor.sessionId, descriptor.lastRun.runId, RUNTIME_TYPE,
+        descriptor.workspaceId, descriptor.sessionId, descriptor.lastRun.runId, CONVERSATION_SNAPSHOT_RUNTIME_TYPE,
         JSON.stringify(descriptor), descriptor.lastActivityAt);
     }).immediate();
   }

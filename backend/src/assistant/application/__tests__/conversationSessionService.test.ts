@@ -1062,3 +1062,158 @@ describe('ConversationSessionService', () => {
   });
 
 });
+
+describe('conversation noninterrupting controls', () => {
+  it('reads status without dispatch or activity mutation, and consumes notes only in the next admitted request', async () => {
+    const gate = deferred<ConversationRuntimeOutcome>();
+    const inputs: ConversationRuntimeInput[] = [];
+    const adapter = {run: jest.fn((input: ConversationRuntimeInput) => {inputs.push(input); return gate.promise;}),
+      cancel: jest.fn(async () => undefined)};
+    const service = createService(adapter);
+    const first = service.startTurn({query: 'original'});
+    const session = service.getSession(first.sessionId)!;
+    const activityAt = session.lastActivityAt;
+    const status = service.status(first.sessionId)!;
+    expect(status.work.phase).toBe('running');
+    expect(service.status(first.sessionId)).toEqual(status);
+    expect(session.lastActivityAt).toBe(activityAt);
+    const context = status.context;
+    if (context.availability !== 'available') throw new Error('missing queue');
+    const request = {expectedQueueEpoch: context.queueEpoch, expectedRunId: first.runId,
+      idempotencyKey: 'note-1', text: 'Only inspect the main thread'};
+    const accepted = service.appendContext(first.sessionId, request, session);
+    expect(accepted.receipt.status).toBe('accepted');
+    expect(service.appendContext(first.sessionId, request, session)).toEqual(accepted);
+    expect(inputs[0].query).toBe('original');
+    expect(inputs[0].getHistoryTurns?.()).toEqual([]);
+    expect(session.history.map(message => message.content)).toEqual(['original']);
+    expect(adapter.cancel).not.toHaveBeenCalled();
+    expect(adapter.run).toHaveBeenCalledTimes(1);
+    gate.resolve({kind: 'answered', message: 'done'});
+    await first.completion;
+    const next = service.startTurn({sessionId: first.sessionId, query: 'Continue with the selected scope'});
+    expect(next.context.consumedContextIds).toEqual(['note-1']);
+    expect(inputs[1].query).toContain(request.text);
+    expect(inputs[1].query).toContain('Continue with the selected scope');
+    expect(session.activeRun!.query).toBe(inputs[1].query);
+    expect(session.history.find(message => message.turnId === next.runId)?.content).toBe(inputs[1].query);
+    const retried = service.appendContext(first.sessionId, request, session);
+    expect(retried.receipt).toMatchObject({status: 'consumed', consumedByRunId: next.runId});
+    await next.completion;
+    const third = service.startTurn({sessionId: first.sessionId, query: 'Another question'});
+    expect(inputs[2].query).toBe('Another question');
+    await third.completion;
+  });
+
+  it('keeps notes after a start-hook failure and rejects stale epochs, changed payload and new stale requests', async () => {
+    let failStart = false;
+    const service = new ConversationSessionService({createRuntime: () => ({
+      run: async () => ({kind: 'answered', message: 'answer'}), cancel: async () => undefined,
+    }), onRunStarted: () => {if (failStart) throw new Error('store unavailable');}});
+    const first = service.startTurn({query: 'start'}); await first.completion;
+    const session = service.getSession(first.sessionId)!;
+    const state = service.status(first.sessionId)!.context;
+    if (state.availability !== 'available') throw new Error('missing queue');
+    const request = {expectedQueueEpoch: state.queueEpoch, expectedRunId: first.runId, idempotencyKey: 'retry', text: 'note'};
+    service.appendContext(first.sessionId, request, session);
+    expect(() => service.appendContext(first.sessionId, {...request, text: 'changed'}, session)).toThrow('different input');
+    expect(() => service.appendContext(first.sessionId, {...request, expectedQueueEpoch: 'old'}, session)).toThrow('no longer available');
+    failStart = true;
+    expect(() => service.startTurn({sessionId: first.sessionId, query: 'next'})).toThrow('store unavailable');
+    expect(session.activeRun).toBeUndefined();
+    expect(service.status(first.sessionId)!.context).toMatchObject({pendingCount: 1});
+    failStart = false;
+    const next = service.startTurn({sessionId: first.sessionId, query: 'retry next'});
+    expect(next.context.consumedContextIds).toEqual(['retry']); await next.completion;
+    expect(() => service.appendContext(first.sessionId, {...request, idempotencyKey: 'new-stale'}, session)).toThrow('another turn');
+  });
+
+  it('keeps status phases independent from tool activity and ignores late activity', async () => {
+    const gate = deferred<ConversationRuntimeOutcome>();
+    let input!: ConversationRuntimeInput;
+    const service = createService({run: value => {input = value; return gate.promise;}, cancel: async () => undefined});
+    const receipt = service.startTurn({query: 'question'});
+    input.onProvisionalAnswer?.({message: 'provisional'});
+    expect(service.status(receipt.sessionId)!.work.phase).toBe('reviewing');
+    gate.resolve({kind: 'needs_user_input', message: 'Need trace', question: 'Which trace?'});
+    await receipt.completion;
+    expect(service.status(receipt.sessionId)!.work).toMatchObject({phase: 'needs_input', inputReason: 'question', hasResult: true});
+    expect(JSON.stringify(service.status(receipt.sessionId))).not.toContain('Which trace');
+    const oldInput = input;
+    const settled = service.status(receipt.sessionId);
+    const activity = {schemaVersion: 1 as const, observation: 'observed' as const, attempted: 99, dispatched: 99,
+      returned: 99, threw: 0, cancelled: 0, succeeded: 99, failed: 0, refused: 0, unknownOutcome: 0,
+      inFlight: 0, dropped: 0, repeatedExactCalls: 98, evidenceNovelty: 'not_assessed' as const};
+    oldInput.onActivity?.(activity);
+    expect(service.status(receipt.sessionId)).toEqual(settled);
+    const successor = service.startTurn({sessionId: receipt.sessionId, query: 'next'});
+    oldInput.onActivity?.(activity);
+    expect(service.status(receipt.sessionId)!.work.activity).toEqual({observation: 'unavailable'});
+    await successor.completion;
+  });
+});
+
+describe('bounded supplemental context inbox', () => {
+  it('does not evict same-run idempotency keys to admit duplicates and has no text in receipts', () => {
+    const {ConversationPendingContext} = require('../conversationPendingContext') as typeof import('../conversationPendingContext');
+    const queue = new ConversationPendingContext();
+    for (let i = 0; i < 64; i++) {
+      queue.append({expectedQueueEpoch: queue.epoch, expectedRunId: 'same-run', idempotencyKey: `key-${i}`, text: 'private note'}, 'same-run');
+      queue.consume([`key-${i}`], `consumer-${i}`);
+    }
+    expect(() => queue.append({expectedQueueEpoch: queue.epoch, expectedRunId: 'same-run', idempotencyKey: 'overflow', text: 'note'}, 'same-run')).toThrow('capacity');
+    const retry = queue.append({expectedQueueEpoch: queue.epoch, expectedRunId: 'same-run', idempotencyKey: 'key-0', text: 'private note'}, 'new-run');
+    expect(retry.status).toBe('consumed'); expect(JSON.stringify(retry)).not.toContain('private note');
+    queue.append({expectedQueueEpoch: queue.epoch, expectedRunId: 'new-run', idempotencyKey: 'new', text: 'note'}, 'new-run');
+    expect(() => queue.append({expectedQueueEpoch: queue.epoch, expectedRunId: 'same-run', idempotencyKey: 'key-0', text: 'private note'}, 'new-run')).toThrow('another turn');
+  });
+});
+
+describe('supplement admission safety', () => {
+  it('does not create a runtime for an oversized new request', () => {
+    const createRuntime = jest.fn(() => ({run: async (): Promise<ConversationRuntimeOutcome> => ({kind: 'answered', message: 'ok'}), cancel: async () => undefined}));
+    const service = new ConversationSessionService({createRuntime});
+    expect(() => service.startTurn({query: 'x'.repeat(50_001)})).toThrow('input limit');
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+  it('retains source input independently of tool activity availability and keeps finished distinct from ready', async () => {
+    const {projectAssistantWork} = require('../assistantWorkProjection') as typeof import('../assistantWorkProjection');
+    expect(projectAssistantWork({sessionId: 's', status: 'completed', live: false, hasResult: false}).phase).toBe('finished');
+    let runtimeInput!: ConversationRuntimeInput;
+    const gate = deferred<ConversationRuntimeOutcome>();
+    const service = createService({run: input => {runtimeInput = input; return gate.promise;}, cancel: async () => undefined});
+    const run = service.startTurn({query: 'q'});
+    runtimeInput.onActivity?.({schemaVersion: 1, observation: 'unavailable', attempted: 0, dispatched: 0, returned: 0,
+      threw: 0, cancelled: 0, succeeded: 0, failed: 0, refused: 0, unknownOutcome: 0, inFlight: 0, dropped: 0,
+      evidenceNovelty: 'not_assessed', captureActivity: {observation: 'observed', tables: 2, rowSlots: 9,
+        unavailableTables: 1, currentRunTables: 2, reusedTables: 0, unknownOriginTables: 0, dropped: 0}});
+    expect(service.status(run.sessionId)!.work).toMatchObject({activity: {observation: 'unavailable'},
+      captureActivity: {tables: 2, rowSlots: 9, unavailableTables: 1}});
+    gate.resolve({kind: 'answered', message: 'done'}); await run.completion;
+  });
+});
+
+describe('supplement authorization revocation', () => {
+  it('clears queued text and closes the admitted run when authorization changes after reservation', async () => {
+    let revoked = false; let starts = 0;
+    jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
+      if (revoked) throw new Error('authorization revoked');
+    });
+    const adapter = {run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({kind: 'answered', message: 'done'})),
+      cancel: async () => undefined};
+    const service = new ConversationSessionService({createRuntime: () => adapter,
+      onRunStarted: () => {if (++starts === 2) revoked = true;}});
+    const first = service.startTurn({query: 'original'}); await first.completion;
+    const session = service.getSession(first.sessionId)!;
+    const state = service.status(first.sessionId)!.context;
+    if (state.availability !== 'available') throw new Error('queue missing');
+    service.appendContext(first.sessionId, {expectedQueueEpoch: state.queueEpoch, expectedRunId: first.runId,
+      idempotencyKey: 'revoked-note', text: 'source-derived note'}, session);
+    const next = service.startTurn({sessionId: first.sessionId, query: 'continue'});
+    await expect(next.completion).rejects.toThrow('authorization revoked');
+    expect(session.activeRun).toBeUndefined(); expect(session.status).toBe('failed');
+    expect(next.context.consumedContextIds).toEqual([]);
+    expect(service.status(first.sessionId)!.context).toEqual({availability: 'unavailable'});
+    expect(adapter.run).toHaveBeenCalledTimes(1);
+  });
+});

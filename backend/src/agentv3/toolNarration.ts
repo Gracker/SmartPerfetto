@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from '../agentRuntime/runtimeToolResult';
+import {decodeRuntimeToolResult, readRuntimeToolResultFacts, isPolicyRefusalResult} from '../agentRuntime/runtimeToolResult';
 import { normalizeWaitChainSelectors } from '../services/criticalPathSelectors';
 import { waitClassText } from '../services/criticalPathText';
 import { KNOWLEDGE_REFUSAL_ACTIONS, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape } from '../services/knowledge/knowledgeTools';
@@ -1126,11 +1126,7 @@ export function toolResultIsFailure(input: ToolResultNarrationInput): boolean {
  * to tell the model to simplify its scope — the system manufacturing evidence
  * that the model is failing, then shrinking its room because of it.
  */
-export function isPolicyRefusalResult(result: unknown): boolean {
-  const body = readToolResultBody(result);
-  if (readRuntimeToolResultFacts(result).success !== false) return false;
-  return typeof body.action_required === 'string' && body.action_required.trim().length > 0;
-}
+export {isPolicyRefusalResult};
 
 /**
  * Tools whose whole job is to come back with hits.

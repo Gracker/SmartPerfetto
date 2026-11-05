@@ -164,6 +164,13 @@ export function readRuntimeToolResultFacts(value: unknown): RuntimeToolResultFac
   return decoded.isError === true || decoded.body?.isError === true ? {...facts, success: false} : facts;
 }
 
+/** A structured refusal is distinct from a malfunction; prose grants no classification. */
+export function isPolicyRefusalResult(result: unknown): boolean {
+  const body = decodeRuntimeToolResult(result).body;
+  return readRuntimeToolResultFacts(result).success === false &&
+    typeof body?.action_required === 'string' && body.action_required.trim().length > 0;
+}
+
 /** Construct facts before any notes, watchdog warnings, or transport truncation. */
 export function createRuntimeToolResult(
   payload: JsonObject,

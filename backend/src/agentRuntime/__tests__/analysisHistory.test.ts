@@ -3,16 +3,182 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {describe, expect, it, jest} from '@jest/globals';
-import {createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext,
+import {createHash} from 'node:crypto';
+import {AnalysisHistoryContextBudgetError, createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext,
   resolveAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryReader, type AnalysisHistoryTurn} from '../analysisHistory';
 import {AnalysisHistoryStore, parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
 import {clearCodeAwareOutputGuards, sanitizeCodeAwareText, sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
+import {renderRequiredLocalizedStrategyTemplate} from '../../agentv3/localizedStrategyTemplate';
+import {ConversationPendingContext} from '../../assistant/application/conversationPendingContext';
 
 function turn(index = 0): AnalysisHistoryTurn {
   return toAnalysisHistoryTurn({id: `run-${index}`, turnIndex: index, traceId: 'trace', timestamp: index,
     query: `question-${index}`, result: {message: `answer-${index}`,
       completion: {status: 'completed'}, conclusionContract: {uncertainties: [], nextSteps: []}}});
 }
+
+interface HistoryContextCase {
+  id: string;
+  outputLanguage: 'zh-CN' | 'en';
+  budgets: number[];
+  turns: AnalysisHistoryTurn[];
+  reader?: {sessionId: string; traceId: string; options: {analysisContextFingerprint: string;
+    codeAwareMode: 'provider_send'; codebaseIds: string[]}};
+  expectations: {latestId: string; latestIncompleteId?: string; mustRetainIncompleteAtOrAbove?: number;
+    relatedToLatest?: string[]; neverRelatedToLatest?: string[]; authorizedIds?: string[]; forbiddenText?: string[]};
+}
+
+/** Six inputs frozen before changing the renderer; data, budgets and case order are fingerprinted. */
+function historyContextCases(): HistoryContextCase[] {
+  const entry = (index: number, prefix: string): AnalysisHistoryTurn => ({id: `${prefix}-${index}`, turnIndex: index,
+    timestamp: 1793850000000 + index * 1000, traceId: 'trace-main', query: `Question ${index}: inspect this interval.`,
+    answer: `Answer ${index}: this is a bounded historical result.`, partial: false, completionStatus: 'completed',
+    uncertainties: [], nextSteps: [], evidence: []});
+  const locator = (index: number) => ({artifactId: `art-${index + 1}`, evidenceRefId: `fixture-evidence-${index}`,
+    sourceToolCallId: `fixture-call-${index}`, traceId: 'trace-main', rowIndex: index, column: 'duration_ns',
+    rowSelector: {id: index, active: true}});
+  const cases: HistoryContextCase[] = [];
+  const tight = Array.from({length: 6}, (_, i) => entry(i, 'tight'));
+  for (const item of tight) item.answer = 'Historical answer with enough detail to require spilling. '.repeat(100);
+  Object.assign(tight[1], {partial: true, completionStatus: 'incomplete', terminationReason: 'turn_limit',
+    terminationMessage: 'Required GPU evidence was not collected.',
+    uncertainties: ['GPU_EVIDENCE_UNAVAILABLE', 'SCHEDULING_SCOPE_UNCONFIRMED'],
+    nextSteps: ['Read the original scope before another investigation.']});
+  tight[5].query = 'LATEST_COMPLETE_QUESTION';
+  tight[5].answer = `LATEST_COMPLETE_ANSWER ${tight[5].answer}`;
+  tight[5].evidence = Array.from({length: 7}, (_, i) => locator(i));
+  cases.push({id: 'latest-complete-older-incomplete', outputLanguage: 'en', budgets: [1800, 3000, 6000, 12000],
+    turns: tight, expectations: {latestId: 'tight-5', latestIncompleteId: 'tight-1', mustRetainIncompleteAtOrAbove: 3000}});
+  for (const language of ['zh-CN', 'en'] as const) {
+    const entries = Array.from({length: 20}, (_, i) => entry(i, language === 'zh-CN' ? 'zh' : 'en'));
+    for (const [index, item] of entries.entries()) {
+      item.query = (language === 'zh-CN' ? `问题${index}：核对本次启动区间，不改变分析范围。`
+        : `Question ${index}: examine the original startup interval without widening its scope. `).repeat(8);
+      item.answer = (language === 'zh-CN' ? '历史说明：数据不足并不等于零。😀 引号“示例”与换行\n仍属于普通文本。'
+        : 'Historical explanation: missing evidence is not zero. 😀 Quoted "example" and a newline\nremain ordinary text. ').repeat(180);
+      item.uncertainties = Array.from({length: 6}, (_, j) => (language === 'zh-CN' ? `不足${j}：需要核对原始数据来源。`
+        : `Uncertainty ${j}: original source data must be checked. `).repeat(15));
+      item.nextSteps = Array.from({length: 5}, (_, j) => (language === 'zh-CN' ? `下一步${j}：只读取已授权的历史定位。`
+        : `Next step ${j}: read only the authorized historical locator. `).repeat(10));
+      item.evidence = Array.from({length: 7}, (_, j) => locator(index * 10 + j));
+    }
+    Object.assign(entries[15], {partial: true, completionStatus: 'unknown', terminationReason: 'execution_error'});
+    cases.push({id: language === 'zh-CN' ? 'long-chinese' : 'long-english', outputLanguage: language,
+      budgets: [3000, 6000, 12000], turns: entries,
+      expectations: {latestId: entries[19].id, latestIncompleteId: entries[15].id, mustRetainIncompleteAtOrAbove: 3000}});
+  }
+  const shared = locator(3);
+  const related = Array.from({length: 5}, (_, i) => entry(i, 'same-locator'));
+  for (const index of [0, 4]) related[index].evidence = [{...shared}];
+  related[2].evidence = [{...shared, rowSelector: {active: true, id: 3}}];
+  related[1].evidence = [{...shared, column: 'cpu_time_ns'}];
+  related[3].evidence = [{...shared, rowIndex: 4}];
+  cases.push({id: 'complete-stable-locator-match', outputLanguage: 'en', budgets: [3000, 6000, 12000], turns: related,
+    expectations: {latestId: 'same-locator-4', relatedToLatest: ['same-locator-2', 'same-locator-0'],
+      neverRelatedToLatest: ['same-locator-3', 'same-locator-1']}});
+  const collision = Array.from({length: 6}, (_, i) => entry(i, 'collision'));
+  for (const item of collision) {item.query = 'The same question'; item.evidence = [{artifactId: 'art-1'}];}
+  collision[1].traceId = 'trace-other'; collision[2].traceId = '';
+  collision[3].evidence = [{...locator(3), traceId: 'trace-conflict'}];
+  collision[4].evidence = [{sourceRef: 'src/example.kt'}];
+  cases.push({id: 'same-query-different-identity', outputLanguage: 'en', budgets: [3000, 6000, 12000], turns: collision,
+    expectations: {latestId: 'collision-5', relatedToLatest: []}});
+  const authorized = Array.from({length: 4}, (_, i) => entry(i, 'auth'));
+  Object.assign(authorized[0], {sourceDerived: true, analysisContextFingerprint: 'fixture-old-scope',
+    query: 'OLD_SCOPE_PRIVATE_CANARY', answer: 'OLD_SCOPE_ANSWER_CANARY'});
+  Object.assign(authorized[1], {sourceDerived: true, query: 'NO_SCOPE_PRIVATE_CANARY', answer: 'NO_SCOPE_ANSWER_CANARY'});
+  Object.assign(authorized[2], {sourceDerived: true, analysisContextFingerprint: 'fixture-current-scope',
+    query: 'CURRENT_SCOPE_AUTHORIZED_CANARY', answer: 'CURRENT_SCOPE_AUTHORIZED_ANSWER'});
+  for (const item of authorized) item.evidence = [locator(8)];
+  cases.push({id: 'source-history-authorization-filter', outputLanguage: 'en', budgets: [3000, 6000, 12000], turns: authorized,
+    reader: {sessionId: 'fixture-physical-run', traceId: 'trace-main', options: {analysisContextFingerprint: 'fixture-current-scope',
+      codeAwareMode: 'provider_send', codebaseIds: ['fixture-codebase']}}, expectations: {authorizedIds: ['auth-2', 'auth-3'],
+      forbiddenText: ['OLD_SCOPE_PRIVATE_CANARY', 'OLD_SCOPE_ANSWER_CANARY', 'NO_SCOPE_PRIVATE_CANARY', 'NO_SCOPE_ANSWER_CANARY'],
+      latestId: 'auth-3', relatedToLatest: []}});
+  return cases;
+}
+
+function historyPreviewPayload(context: string): any {
+  return JSON.parse(context.slice(context.indexOf('\n{') + 1));
+}
+
+describe('supplemental input in shared analysis history', () => {
+  it.each(['zh-CN', 'en'] as const)('retains the actual %s question before long notes in preview and full history', outputLanguage => {
+    const pending = new ConversationPendingContext();
+    const question = outputLanguage === 'zh-CN' ? '本轮要核对哪段耗时？' : 'Which interval is slow?';
+    const note = 'Previously queued background; this is not the current question. '.repeat(90);
+    pending.append({expectedQueueEpoch: pending.epoch, expectedRunId: 'previous-run',
+      idempotencyKey: 'queued-note', text: note}, 'previous-run');
+    const prepared = pending.prepare(question, outputLanguage);
+    const entry = toAnalysisHistoryTurn({id: 'latest-run', turnIndex: 1, traceId: 'trace', timestamp: 1,
+      query: prepared.query, result: {message: 'The interval needs a scoped check.', completion: {status: 'completed'}}});
+    for (const maxBytes of [1800, 6000, 12000]) {
+      const context = renderAnalysisHistoryContext([entry], {outputLanguage, maxBytes})!;
+      expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(maxBytes);
+      expect(historyPreviewPayload(context).recent[0].query).toContain(question);
+    }
+    const reader = createAnalysisHistoryReader({getTurns: () => [entry], assertActive: () => {}});
+    expect((reader.read({}).entries as Array<{query: string}>)[0].query).toContain(question);
+    let offset: number | null = 0;
+    let serialized = '';
+    while (offset !== null) {
+      const page = reader.read({turnId: entry.id, textOffset: offset, maxChars: 127});
+      serialized += page.text;
+      offset = page.nextTextOffset as number | null;
+    }
+    expect(JSON.parse(serialized).query).toBe(prepared.query);
+    expect(prepared.query).toContain(note);
+    expect(prepared.ids).toEqual(['queued-note']);
+  });
+});
+
+describe('fixed history context comparison inputs', () => {
+  const cases = historyContextCases();
+  it('retains the six-case input fingerprint frozen before implementation', () => {
+    const payload = {schemaVersion: 1, kind: 'synthetic-context-contract-baseline', caseOrder: cases.map(item => item.id), cases};
+    expect(createHash('sha256').update(`${JSON.stringify(payload, null, 2)}\n`).digest('hex'))
+      .toBe('c09f84e45f94581a0ac1d1274039c7127212da60855e410760ab4b965b0f42f2');
+  });
+  it.each(cases.flatMap(input => input.budgets.map(maxBytes => ({input, maxBytes}))))(
+    '$input.id within $maxBytes bytes', ({input, maxBytes}) => {
+      const entries = input.reader ? createRuntimeAnalysisHistoryReader({...input.reader,
+        getTurns: () => input.turns, assertActive: () => {}}).getTurns() : input.turns;
+      const context = renderAnalysisHistoryContext(entries, {outputLanguage: input.outputLanguage, maxBytes});
+      const payload = context ? historyPreviewPayload(context) : undefined;
+      console.info('[HistoryContextCase]', JSON.stringify({id: input.id, maxBytes, bytes: context ? Buffer.byteLength(context) : null,
+        available: context !== undefined, latest: payload?.recent.find((item: any) => item.id === input.expectations.latestId) ?? null,
+        incomplete: payload?.recent.find((item: any) => item.id === input.expectations.latestIncompleteId) ?? null,
+        recentIds: payload?.recent.map((item: any) => item.id) ?? [], earlierIds: payload?.earlier.map((item: any) => item.id) ?? [],
+        omittedTurns: payload?.omittedTurns, unlistedTurns: payload?.unlistedTurns}));
+      expect(context).toBeDefined();
+      expect(Buffer.byteLength(context!)).toBeLessThanOrEqual(maxBytes);
+      expect(payload.recent[0].id).toBe(input.expectations.latestId);
+      expect(payload.recent[0].answer.length).toBeGreaterThan(0);
+      if (input.expectations.latestIncompleteId && maxBytes >= input.expectations.mustRetainIncompleteAtOrAbove!) {
+        const incomplete = payload.recent.find((item: any) => item.id === input.expectations.latestIncompleteId);
+        expect(incomplete).toBeDefined();
+        expect(incomplete.completionStatus).not.toBe('completed');
+        expect(incomplete.uncertainties.length).toBeGreaterThan(0);
+        expect(incomplete.nextSteps.length).toBeGreaterThan(0);
+      }
+      expect(payload.omittedTurns).toBe(entries.length - payload.recent.length);
+      expect(payload.unlistedTurns).toBe(entries.length - new Set([...payload.recent, ...payload.earlier].map((item: any) => item.id)).size);
+      for (const item of payload.recent) {
+        const original = entries.find(turn => turn.id === item.id)!;
+        expect(item.evidenceCount).toBe(original.evidence.length);
+        expect(item.omittedEvidence).toBe(original.evidence.length - item.evidence.length);
+        expect(item.omittedUncertainties).toBe(original.uncertainties.length - item.uncertainties.length);
+        expect(item.omittedNextSteps).toBe(original.nextSteps.length - item.nextSteps.length);
+        if (item.omittedEvidence || item.omittedUncertainties || item.omittedNextSteps) expect(item.truncated).toBe(true);
+      }
+      const reader = createAnalysisHistoryReader({getTurns: () => entries, assertActive: () => {}});
+      if (input.expectations.relatedToLatest) expect(reader.read({turnId: input.expectations.latestId}).relatedTurnIds)
+        .toEqual(input.expectations.relatedToLatest);
+      for (const item of [...payload.recent, ...payload.earlier]) expect(reader.read({turnId: item.id})).toMatchObject({success: true});
+      for (const forbidden of input.expectations.forbiddenText ?? []) expect(context).not.toContain(forbidden);
+      if (input.reader) clearCodeAwareOutputGuards(input.reader.sessionId);
+    });
+});
 
 describe('typed analysis history', () => {
   it('carries product-resolved source activation through real runtime wrappers', () => {
@@ -268,5 +434,92 @@ describe('typed analysis history', () => {
     expect(context).toContain('GPU_MISSING');
     expect(context).toContain('read_session_history');
     expect(context).toContain('"truncated":true');
+  });
+
+  it('distinguishes empty history from an impossible budget without exposing historical content', () => {
+    expect(renderAnalysisHistoryContext([], {maxBytes: 0})).toBeUndefined();
+    const secret = {...turn(), query: 'PRIVATE_QUESTION_CANARY', answer: 'PRIVATE_ANSWER_CANARY'};
+    for (const maxBytes of [0, 1, -1, NaN, 0.5]) {
+      try {
+        renderAnalysisHistoryContext([secret], {maxBytes});
+        throw new Error('expected a budget failure');
+      } catch (error) {
+        expect(error).toBeInstanceOf(AnalysisHistoryContextBudgetError);
+        expect(String(error)).toBe('AnalysisHistoryContextBudgetError: analysis_history_context_budget_exceeded');
+        expect(error).not.toHaveProperty('cause');
+      }
+    }
+  });
+
+  it('falls back to intact continuation locators when detailed previews cannot fit', () => {
+    const entries = [0, 1].map(index => ({...turn(index), query: 'long question '.repeat(300), answer: 'long answer '.repeat(1000),
+      uncertainties: ['Missing original evidence.'], nextSteps: ['Read original history.']}));
+    entries[0] = {...entries[0], partial: true, completionStatus: 'incomplete'};
+    const overhead = Buffer.byteLength(renderRequiredLocalizedStrategyTemplate('prompt-runtime-history', 'en', {history: ''}));
+    const maxBytes = overhead + 450;
+    const context = renderAnalysisHistoryContext(entries, {outputLanguage: 'en', maxBytes})!;
+    const payload = historyPreviewPayload(context);
+    expect(Buffer.byteLength(context)).toBeLessThanOrEqual(maxBytes);
+    expect(payload).toMatchObject({previewUnavailable: 'byte_budget', omittedTurns: 2, unlistedTurns: 0, recent: [],
+      earlier: [{id: 'run-1', completionStatus: 'completed'}, {id: 'run-0', completionStatus: 'incomplete'}]});
+  });
+
+  it('keeps a valid continuation inside the existing 900-byte caller limit', () => {
+    const entry = {...turn(), answer: 'Large historical reply. '.repeat(1000)};
+    const context = renderAnalysisHistoryContext([entry], {outputLanguage: 'zh-CN', maxBytes: 900})!;
+    expect(Buffer.byteLength(context)).toBeLessThanOrEqual(900);
+    expect(context).toContain('read_session_history');
+    expect(historyPreviewPayload(context)).toMatchObject({previewUnavailable: 'byte_budget',
+      earlier: [{id: entry.id, completionStatus: 'completed'}]});
+  });
+
+  it.each([6000, 12000])('spills oversized metadata and locators within the %i-byte production budget', maxBytes => {
+    const entry = {...turn(), traceId: 'huge-trace'.repeat(2000), answer: '😀'.repeat(4000),
+      evidence: [{artifactId: 'art-1', sourceRef: 'LONG_LOCATOR_CANARY'.repeat(10000)}]};
+    const context = renderAnalysisHistoryContext([entry], {outputLanguage: 'en', maxBytes})!;
+    expect(Buffer.byteLength(context)).toBeLessThanOrEqual(maxBytes);
+    const item = historyPreviewPayload(context).recent[0];
+    expect(item).toMatchObject({id: entry.id, evidenceCount: 1, omittedEvidence: 1, evidence: [], truncated: true});
+    expect(context).not.toContain('LONG_LOCATOR_CANARY');
+    expect(item.answer).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+    expect(() => renderAnalysisHistoryContext([{...entry, id: 'PRIVATE_ID_CANARY'.repeat(2000)}], {maxBytes}))
+      .toThrow(AnalysisHistoryContextBudgetError);
+  });
+
+  it('never links ambiguous local IDs, changed locator fields or authorization partitions', () => {
+    const ref = {artifactId: 'art-1', evidenceRefId: 'evidence', sourceToolCallId: 'tool', traceId: 'trace',
+      rowIndex: 0, rowSelector: {upid: 10, name: 'main'}, column: 'dur'};
+    const first = {...turn(0), evidence: [ref]};
+    const exact = {...turn(1), evidence: [{...ref, rowSelector: {name: 'main', upid: 10}}]};
+    const different = [
+      {...turn(2), evidence: [{artifactId: 'art-1'}]},
+      {...turn(3), evidence: [{sourceRef: 'source'}]},
+      {...turn(4), traceId: 'other', evidence: [ref]},
+      {...turn(5), evidence: [{...ref, rowIndex: 1}]},
+      {...turn(6), evidence: [{...ref, column: 'cpu'}]},
+      {...turn(7), evidence: [{...ref, traceId: ''}]},
+      {...turn(8), sourceDerived: true, analysisContextFingerprint: 'scope-A', evidence: [ref]},
+      {...turn(9), evidence: [{...ref, sourceToolCallId: ' '}]},
+      {...turn(10), evidence: [{...ref, sourceRef: ''}]},
+      {...turn(11), evidence: [{...ref, rowSelector: {}}]},
+    ];
+    const reader = createAnalysisHistoryReader({getTurns: () => [first, exact, ...different], assertActive: () => {}});
+    expect(reader.read({turnId: first.id}).relatedTurnIds).toEqual([exact.id]);
+    const privateReader = createAnalysisHistoryReader({getTurns: () => [
+      {...first, sourceDerived: true, analysisContextFingerprint: 'scope-A'},
+      {...exact, sourceDerived: true, analysisContextFingerprint: 'scope-B'},
+    ], assertActive: () => {}});
+    expect(privateReader.read({turnId: first.id}).relatedTurnIds).toEqual([]);
+    expect(JSON.stringify(reader.read({turnId: first.id}))).not.toContain('scope-A');
+  });
+
+  it('bounds navigation to two recent exact matches and keeps full turn paging unchanged', () => {
+    const entries = Array.from({length: 5}, (_, index) => ({...turn(index),
+      evidence: [{evidenceRefId: 'same-evidence', sourceToolCallId: 'same-call', traceId: 'trace', rowIndex: 0}]}));
+    const reader = createAnalysisHistoryReader({getTurns: () => entries, assertActive: () => {}});
+    const response = reader.read({turnId: entries[0].id});
+    expect(response.relatedTurnIds).toEqual(['run-4', 'run-3']);
+    expect(JSON.parse(String(response.text))).toEqual(entries[0]);
+    expect(reader.getTurns()).toEqual(entries);
   });
 });

@@ -17,6 +17,8 @@ import {
   runtimeProviderOrigin,
   startRuntimeModelCall,
 } from '../runtimePerformance';
+import {createRuntimePerformanceScope, resolveRuntimePerformanceRecorder, bindRuntimePerformanceContext, withRuntimePerformanceSuppressed} from '../runtimePerformanceContext';
+import {parseRuntimeActivitySnapshot} from '../runtimeActivity';
 import {dispatchWithModelCallRecord} from '../intentTransport';
 
 function expectedRuntimeHash(value: string, salt = ''): string {
@@ -641,5 +643,136 @@ describe('scene entry evidence receipt', () => {
     const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
     expect(() => run.recordSceneEvidence({durationMs: 1, artifactCount: 0, captureCount: 0, ...partial} as any)).not.toThrow();
     expect(recorder.seal().sceneEvidence).toBeUndefined();
+  });
+});
+
+
+describe('run activity observation', () => {
+  const identity = (runId: string) => ({runId, sessionId: `session-${runId}`,
+    scope: {tenantId: 'tenant', workspaceId: 'workspace'}});
+
+  it('counts exact calls independent of key order without retaining tool inputs or hashes', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recorder.activitySnapshot()).toMatchObject({observation: 'unavailable'});
+    const one = recorder.startToolActivity('execute_sql', {query: 'PRIVATE SQL', params: {upid: 42, start: 10}});
+    one.dispatched(); one.end('returned', {success: true});
+    const two = recorder.startToolActivity('execute_sql', {params: {start: 10, upid: 42}, query: 'PRIVATE SQL'});
+    two.dispatched(); two.end('returned', {success: false, refused: true});
+    recorder.startToolActivity('execute_sql', {query: 'PRIVATE SQL', params: {upid: 43, start: 10}}).end('cancelled');
+    const activity = recorder.seal().activity!;
+    expect(activity).toMatchObject({observation: 'observed', attempted: 3, dispatched: 2, repeatedExactCalls: 1,
+      returned: 2, succeeded: 1, refused: 1, failed: 0, cancelled: 1, inFlight: 0, evidenceNovelty: 'not_assessed'});
+    expect(parseRuntimeActivitySnapshot(activity)).toEqual(activity);
+    expect(JSON.stringify(activity)).not.toMatch(/PRIVATE|execute_sql|upid|sha256/);
+    const other = createRuntimePerformanceRecorder();
+    other.startToolActivity('execute_sql', {query: 'PRIVATE SQL', params: {upid: 42, start: 10}}).end('returned');
+    expect(other.activitySnapshot()).toMatchObject({repeatedExactCalls: 0, unknownOutcome: 1});
+  });
+
+  it.each(['oversized', 'cyclic', 'getter', 'undefined'])(
+    'keeps %s argument comparison incomplete rather than matching a truncated prefix', kind => {
+      const recorder = createRuntimePerformanceRecorder();
+      const args: Record<string, unknown> = kind === 'oversized' ? {query: 'X'.repeat(70_000)} : {};
+      if (kind === 'cyclic') args.self = args;
+      if (kind === 'getter') Object.defineProperty(args, 'query', {enumerable: true, get: () => {throw new Error('getter must not run');}});
+      if (kind === 'undefined') args.query = undefined;
+      recorder.startToolActivity('execute_sql', args).end('returned');
+      recorder.startToolActivity('execute_sql', args).end('returned');
+      const activity = recorder.activitySnapshot();
+      expect(activity).toMatchObject({observation: 'partial', attempted: 2});
+      expect(activity.repeatedExactCalls).toBeUndefined();
+    });
+
+  it('bounds retained comparison state and exposes incomplete counts at the cap', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    for (let index = 0; index < 513; index++) recorder.startToolActivity('tool', {index}).end('returned');
+    expect(recorder.activitySnapshot()).toMatchObject({observation: 'partial', attempted: 512, dropped: 1, inFlight: 0});
+    expect(recorder.activitySnapshot().repeatedExactCalls).toBeUndefined();
+  });
+
+  it('uses a private no-manifest scope for phases/model/finalization and ignores late spans', async () => {
+    const recorder = createRuntimePerformanceRecorder();
+    let authorized = true;
+    const scope = createRuntimePerformanceScope({identity: identity('one'), recorder,
+      assertCurrent: () => {if (!authorized) throw new Error('revoked');}});
+    let pending!: ReturnType<typeof recorder.startToolActivity>;
+    let phase!: ReturnType<typeof recorder.startPhase>;
+    await scope.run(async () => {
+      expect(resolveRuntimePerformanceRecorder()).toBe(recorder);
+      const run = createRuntimePerformanceRun();
+      run.finishClassification();
+      const model = startRuntimeModelCall(undefined, {purpose: 'answer_turn'});
+      model.end();
+      recordRuntimeFinalReview(undefined, {necessity: 'not_required', triggers: [], declaredClaimCount: 0});
+      pending = recorder.startToolActivity('tool', {});
+      phase = run.startPhase('provider');
+    });
+    authorized = false;
+    scope.dispose();
+    const sealed = recorder.seal();
+    pending.end('cancelled');
+    expect(() => phase.end()).not.toThrow();
+    expect(recorder.seal()).toBe(sealed);
+    expect(sealed.activity).toMatchObject({observation: 'partial', inFlight: 1});
+    expect(sealed.modelCalls).toHaveLength(1);
+    expect(sealed.finalReview?.necessity).toBe('not_required');
+    expect(sealed.phases.map(item => item.name)).toEqual(['classification']);
+    expect(scope.run(() => resolveRuntimePerformanceRecorder())).toBeUndefined();
+  });
+
+  it('suppresses identity conflicts without changing a foreign or successor recorder', () => {
+    const current = createRuntimePerformanceRecorder();
+    const foreign = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({identity: identity('current'), recorder: current, assertCurrent() {}});
+    scope.run(() => {
+      expect(resolveRuntimePerformanceRecorder({identity: identity('other'), runtimePerformanceRecorder: foreign})).toBeUndefined();
+      expect(resolveRuntimePerformanceRecorder()).toBeUndefined();
+      startRuntimeModelCall(undefined, {purpose: 'answer_turn'}).end();
+    });
+    expect(current.activitySnapshot().observation).toBe('partial');
+    expect(foreign.activitySnapshot().observation).toBe('unavailable');
+    expect(current.seal().modelCalls).toBeUndefined();
+    scope.dispose();
+  });
+
+  it('bounds capture registrations independently of tool observation and never retains witness ids', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    for (let index = 0; index < 513; index++) recorder.recordCaptureActivity({captureId: `private-${index}`},
+      {rowSlots: 1, unavailable: false, origin: 'current_run'});
+    const activity = recorder.seal().activity!;
+    expect(activity).toMatchObject({observation: 'unavailable', captureActivity: {observation: 'partial',
+      tables: 512, rowSlots: 512, dropped: 1, currentRunTables: 512}});
+    expect(parseRuntimeActivitySnapshot(activity)).toEqual(activity);
+    expect(JSON.stringify(activity)).not.toContain('private');
+    expect(() => parseRuntimeActivitySnapshot({...activity,
+      captureActivity: {...activity.captureActivity, rowSlots: -1}})).toThrow('runtime_capture_activity_invalid');
+    expect(() => parseRuntimeActivitySnapshot({...activity,
+      captureActivity: {...activity.captureActivity, captureId: 'private'}})).toThrow('runtime_capture_activity_invalid');
+  });
+
+  it('suppresses nested pre-bound callbacks without invalidating either run recorder', () => {
+    const first = createRuntimePerformanceRecorder();
+    const second = createRuntimePerformanceRecorder();
+    const firstScope = createRuntimePerformanceScope({identity: identity('first'), recorder: first, assertCurrent() {}});
+    const secondScope = createRuntimePerformanceScope({identity: identity('second'), recorder: second, assertCurrent() {}});
+    const callback = firstScope.run(() => bindRuntimePerformanceContext(() => {
+      expect(resolveRuntimePerformanceRecorder()).toBeUndefined();
+      startRuntimeModelCall(undefined, {purpose: 'answer_turn'}).end();
+    }));
+    secondScope.run(() => withRuntimePerformanceSuppressed(callback));
+    expect(first.activitySnapshot().observation).toBe('unavailable');
+    expect(second.activitySnapshot().observation).toBe('unavailable');
+    firstScope.run(() => expect(resolveRuntimePerformanceRecorder()).toBe(first));
+    secondScope.run(() => expect(resolveRuntimePerformanceRecorder()).toBe(second));
+    firstScope.dispose(); secondScope.dispose();
+  });
+
+  it('rejects activity payload fields and inconsistent closed counts', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    recorder.startToolActivity('tool', {}).end('returned', {success: true});
+    const activity = recorder.activitySnapshot();
+    expect(() => parseRuntimeActivitySnapshot({...activity, sql: 'private'})).toThrow('runtime_activity_invalid');
+    expect(() => parseRuntimeActivitySnapshot({...activity, attempted: 0})).toThrow('runtime_activity_invalid');
+    expect(() => parseRuntimeActivitySnapshot({...activity, observation: 'partial'})).toThrow('runtime_activity_invalid');
   });
 });

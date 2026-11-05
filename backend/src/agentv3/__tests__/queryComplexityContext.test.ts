@@ -4,10 +4,18 @@
 
 import { describe, expect, it } from '@jest/globals';
 import { buildComplexityClassifierInput } from '../queryComplexityContext';
-import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
+import {AnalysisHistoryContextBudgetError, toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {buildAnalysisTurnIntentPrompt} from '../queryComplexityPrompt';
 
 describe('buildComplexityClassifierInput', () => {
+  it('fails closed instead of classifying with silently missing nonempty history', () => {
+    const history = [toAnalysisHistoryTurn({id: 'PRIVATE_HISTORY_ID'.repeat(1000), turnIndex: 0, timestamp: 1,
+      traceId: 'trace', query: 'PRIVATE_QUESTION', result: {message: 'PRIVATE_ANSWER'}})];
+    expect(() => buildComplexityClassifierInput({query: 'Continue', sceneType: 'general',
+      hasReferenceTrace: false, history})).toThrow(AnalysisHistoryContextBudgetError);
+    expect(buildComplexityClassifierInput({query: 'First question', sceneType: 'general',
+      hasReferenceTrace: false, history: []}).historyContext).toBe('');
+  });
   it('only uses bounded scoped typed history and carries unfinished state into the actual intent prompt', () => {
     const history = [toAnalysisHistoryTurn({id: 'run-1', turnIndex: 0, timestamp: 1, traceId: 'trace', query: 'prior',
       result: {message: 'Partial answer', completion: {status: 'incomplete', reason: 'turn_limit'},

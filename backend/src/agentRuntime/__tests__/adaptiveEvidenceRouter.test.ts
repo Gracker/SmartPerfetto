@@ -263,6 +263,17 @@ describe('adaptive evidence shadow router', () => {
     });
   });
 
+  it('retains legacy receipt hashes while new unobserved receipts omit a fabricated zero', () => {
+    const current = direct();
+    expect(current.budget).toEqual({dispatchUtilization: '0_49', toolObservation: 'unavailable'});
+    const {contentHash: _hash, ...body} = current;
+    const legacyBody = {...body, budget: {dispatchUtilization: '0_49', repeatedToolCalls: 0}};
+    const legacy = {...legacyBody, contentHash: canonicalContentHash(legacyBody)};
+    expect(parseAdaptiveRoutingReceipt(legacy)).toEqual(legacy);
+    expect(() => parseAdaptiveRoutingReceipt({...body, budget: {...current.budget, repeatedToolCalls: 0},
+      contentHash: canonicalContentHash({...body, budget: {...current.budget, repeatedToolCalls: 0}})})).toThrow();
+  });
+
   it('strictly hashes receipts and rejects unknown/free-form payload fields', () => {
     const receipt = direct();
     expect(parseAdaptiveRoutingReceipt(receipt)).toEqual(receipt);

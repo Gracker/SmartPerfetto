@@ -46,6 +46,18 @@ function lifecycleWithStore(store: RunManifestStoreType): RunManifestLifecycle {
 }
 
 describe('RunManifestLifecycle', () => {
+  it('closes observation on dispose and freezes unfinished invocations as partial', () => {
+    const lifecycle = lifecycleWithStore({append: jest.fn(), pin: jest.fn(), unpin: jest.fn()} as unknown as RunManifestStoreType);
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    const span = recorder.startToolActivity('tool', {});
+    lifecycle.dispose();
+    const snapshot = recorder.seal();
+    span.end('returned', {success: true});
+    recorder.markActivityPartial();
+    expect(snapshot.activity).toMatchObject({observation: 'partial', attempted: 1, returned: 0, inFlight: 1});
+    expect(recorder.seal()).toBe(snapshot);
+  });
+
   it('captures the canonical M0 apply flag name', () => {
     expect(buildRunManifestFeatureFlagSnapshot({
       SELF_EVOLUTION_ENABLED: 'true',

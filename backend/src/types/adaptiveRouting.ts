@@ -65,7 +65,10 @@ export interface AdaptiveRoutingReceiptV1 {
   };
   budget: {
     dispatchUtilization: '0_49' | '50_79' | '80_99' | '100_plus';
-    repeatedToolCalls: number;
+    /** Absent when invocation comparison was unavailable or incomplete. */
+    repeatedToolCalls?: number;
+    /** Absent only in legacy receipts, whose numeric field is kept for replay. */
+    toolObservation?: 'observed' | 'partial' | 'unavailable';
   };
   shadow: true;
   policyFingerprint: string;
