@@ -4,15 +4,15 @@
 This directory is the source-controlled trace test and reference corpus.
 
 - [Real trace cases](./real/README.md): 6
-- [Constructed trace cases](./constructed/README.md): 28
+- [Constructed trace cases](./constructed/README.md): 29
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Evidence tiers: R1=6, R2=0, R3=28.
+Evidence tiers: R1=6, R2=0, R3=29.
 
-Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
+Pinned Perfetto SQL source: `1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 264 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 277 source-column-backed semantic, 33 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
 Exact-scope unit bindings (each `exact_sql` and each UPID-bound target step): 27 semantic, 127 execution-only.
 
@@ -68,6 +68,7 @@ Every constructed case is an analysis scenario unless its `case.json` declares `
 | [GPU workload and frequency](./constructed/gpu-workload/) | gpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 11 target(s) |
 | [Java heap dump class growth](./constructed/heap-dump-class-growth/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Input and interaction latency](./constructed/input-interaction-latency/) | interaction | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 14 target(s) |
+| [JobScheduler completed-job wait reasons](./constructed/job-scheduler-pending-reasons/) | background | Android 16 / API 36 | android-scroll-customer | 1 target(s) |
 | [Linux and Android system state](./constructed/linux-system-state/) | linux | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
 | [Lock holder intervals (android.lock_held)](./constructed/lock-held-ownership/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 1 target(s) |
 | [Main-thread work between animation frames](./constructed/main-thread-frame-work/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |

@@ -199,6 +199,23 @@ test('generates full docs directly from a runtime source tree', () => {
   }
 });
 
+test('pinned upstream full docs retain SQL columns, signatures and separate prelude modules', () => {
+  const perfettoRoot = path.join(projectRoot, 'perfetto');
+  const docs = generateFullStdlibDocs({
+    perfettoRoot,
+    stdlibRoot: path.join(perfettoRoot, 'src/trace_processor/perfetto_sql/stdlib'),
+  });
+  const modules = docs.flatMap(group => group.modules);
+  const jobs = modules.find(mod => mod.module_name === 'android.job_scheduler_states_track_events');
+  const pending = jobs?.data_objects.find(obj => obj.name === 'android_job_scheduler_pending_reasons_track_events');
+  assert.ok(pending, 'full docs must include the pending-reason table');
+  assert.ok(pending.cols.some(col => col.name === 'pending_duration_ms' && col.type));
+  const functions = modules.flatMap(mod => mod.functions);
+  assert.ok(functions.some(fn => fn.args.length > 0 && fn.return_type));
+  assert.ok(modules.some(mod => mod.module_name.startsWith('prelude.')));
+  assert.equal(modules.some(mod => mod.module_name === 'prelude'), false);
+});
+
 test('runtime asset generation requires an exact immutable revision', () => {
   assert.equal(
     parseRuntimeRevision(`PERFETTO_VERSION=${'a'.repeat(40)}\n`),

@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "scheduler-cpu-contention-v1",
     "output": "Trace/.generated/constructed/scheduler-cpu-contention/trace.pftrace",
-    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+    "runtime_revision": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d"
   },
   "coverage": {
     "skills": [
@@ -103,12 +103,21 @@
         "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
         "parameters": {},
         "required_steps": [
-          "job_events"
+          "job_events",
+          "pending_reason_capability",
+          "pending_reason_data",
+          "pending_reason_summary"
         ],
         "required_sql_steps": [
-          "job_events"
+          "job_events",
+          "pending_reason_capability",
+          "pending_reason_data",
+          "pending_reason_summary"
         ],
-        "forced_sql_steps": [],
+        "forced_sql_steps": [
+          "pending_reason_data",
+          "pending_reason_summary"
+        ],
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "job_events",
@@ -119,7 +128,8 @@
           "package_name",
           "uid"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "limitation_reason": "Positive semantics cover the legacy ATrace job_events only. This case has no JobScheduler pending-reason track events; pending_reason_data reports absent completed-job reason data and pending_reason_summary is forced only for read-only SQL execution coverage, not positive wait evidence."
       },
       {
         "id": "execute-cache_miss_impact",

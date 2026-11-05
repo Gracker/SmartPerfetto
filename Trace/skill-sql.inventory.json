@@ -863,14 +863,18 @@
     },
     "android_job_scheduler_events": {
       "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
-      "source_sha256": "ba9540e773bd4ae67b91b141674cfe0b66e89de879fc3d328ea0e98c480c110b",
+      "source_sha256": "aa6721a92d941b2fca0139aeba55e46532db1d83720306e4d47b18ac850346bd",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
-        "android.job_scheduler"
+        "android.job_scheduler",
+        "android.job_scheduler_states_track_events"
       ],
       "top_level_steps": [
-        "job_events"
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
       ],
       "unexecuted_sql": false,
       "units": [
@@ -887,6 +891,65 @@
             "uid"
           ],
           "has_condition": false,
+          "read_only": true,
+          "placeholders": [
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "pending_reason_capability",
+          "at": "steps[1].sql",
+          "top_level_index": 1,
+          "sha256": "a10c04178063ef9baa5c42a00ff0771cafb1068f9cfdd0f86156d779d9847cd6",
+          "required_columns": [
+            "status"
+          ],
+          "has_condition": false,
+          "read_only": true,
+          "placeholders": [],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "pending_reason_data",
+          "at": "steps[2].sql",
+          "top_level_index": 2,
+          "sha256": "21b6fe5e7665ea5259ac1cbf8731d2d917710f20a2e2657140385337ff345ea7",
+          "required_columns": [
+            "completed_job_count",
+            "reason_entry_count",
+            "missing_duration_count",
+            "status"
+          ],
+          "has_condition": true,
+          "read_only": true,
+          "placeholders": [
+            "${package}",
+            "${start_ts}",
+            "${end_ts}"
+          ],
+          "process_scope_valid": null,
+          "forceable": true
+        },
+        {
+          "id": "pending_reason_summary",
+          "at": "steps[3].sql",
+          "top_level_index": 3,
+          "sha256": "11f477bd9cd0f3af49fd2d5ffc1fa271c7941dba9c9be9d10c6da4bcff7fb75b",
+          "required_columns": [
+            "package_name",
+            "uid",
+            "pending_reason",
+            "completed_job_count",
+            "known_duration_count",
+            "missing_duration_count",
+            "reported_wait_ms"
+          ],
+          "has_condition": true,
           "read_only": true,
           "placeholders": [
             "${package}",
@@ -1042,7 +1105,7 @@
     },
     "android_process_state_residency": {
       "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
-      "source_sha256": "f785279fb41abf9e40451b7089d02655c17180229724e8a28759af866c6347cf",
+      "source_sha256": "226abdc8bd617a35c5005014a5020538455aa88290a2d96fa911645bbb2387b1",
       "type": "atomic",
       "execution": "steps",
       "declared_modules": [
@@ -1061,7 +1124,7 @@
           "id": "process_state_capability",
           "at": "steps[0].sql",
           "top_level_index": 0,
-          "sha256": "bad0a783ef6e495b32244c063db73ae0a28cbdf8920431fba5a61ee87f7ec700",
+          "sha256": "978bcd3fae75bdc2039428410bd2f3e70cf0e14e02c5d3e4fa43be889a9dda46",
           "required_columns": [
             "runtime_has_process_state_table",
             "runtime_has_process_state_module",
@@ -1094,7 +1157,7 @@
           "id": "process_state_residency",
           "at": "steps[2].sql",
           "top_level_index": 2,
-          "sha256": "1f919a72d417138c48b7c86870eb4880d565a512448cafc52cf7743524dad76d",
+          "sha256": "72932f11aad2004eabe7ed58161be23771eae5a3dde213b895c454a049420520",
           "required_columns": [
             "process_name",
             "upid",
@@ -1118,7 +1181,7 @@
           "id": "process_state_transitions",
           "at": "steps[3].sql",
           "top_level_index": 3,
-          "sha256": "c82213a033f93cfc0f0bf956387c6383a9eecc152626686528ac307b519fd331",
+          "sha256": "464f526c57f9e321328db41670ba207ae210f2094f41e32b002ad875625ec47e",
           "required_columns": [
             "process_name",
             "ts",
@@ -1126,7 +1189,14 @@
             "state",
             "prev_state_ms",
             "reason",
-            "lifecycle"
+            "lifecycle",
+            "hosting_type",
+            "hosting_name",
+            "trigger_type",
+            "bind_application_delay_ms",
+            "process_start_delay_ms",
+            "exit_reason",
+            "exit_subreason"
           ],
           "has_condition": true,
           "read_only": true,
@@ -1142,7 +1212,7 @@
           "id": "process_state_last_observed",
           "at": "steps[4].sql",
           "top_level_index": 4,
-          "sha256": "3d407bbdcead21269d6c13fc57fca5d7b7ea99e79feb8fe0754b0069a079b919",
+          "sha256": "8095fda5129455956799549c0e041007173f1f47bfc3dede70e19e293fe57c74",
           "required_columns": [
             "process_name",
             "upid",

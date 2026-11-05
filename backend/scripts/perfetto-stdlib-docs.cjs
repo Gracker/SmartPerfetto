@@ -55,9 +55,14 @@ function fullModuleNames(docs) {
 
 function runUpstreamGenerator({perfettoRoot, inputListPath, outputPath}) {
   const generator = path.join(perfettoRoot, 'tools', 'gen_stdlib_docs_json.py');
+  // v59.1 moved the full-doc formatter into the website generator. Keep
+  // parsing and formatting owned by the exact pinned upstream source.
+  const args = fs.existsSync(generator)
+    ? [generator, '--json-out', outputPath, '--input-list-file', inputListPath]
+    : [path.join(__dirname, 'perfetto-stdlib-docs.py'), perfettoRoot, inputListPath, outputPath];
   execFileSync(
     process.env.PYTHON_BIN || 'python3',
-    [generator, '--json-out', outputPath, '--input-list-file', inputListPath],
+    args,
     {cwd: perfettoRoot, stdio: ['ignore', 'inherit', 'inherit']},
   );
 }

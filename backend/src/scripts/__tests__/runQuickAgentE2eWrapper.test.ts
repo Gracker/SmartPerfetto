@@ -437,7 +437,7 @@ describe('run-quick-agent-e2e wrapper', () => {
   itWithLaunchLightTraceProcessor('matches the independent frame population oracle to launch_light', async () => {
     const fact = frameFactExpectation().facts.find(item => item.id === 'total_frames');
     expect(fact).toBeDefined();
-    const {stdout} = await execFileAsync(traceProcessorPath, ['query', launchLightTracePath, fact!.oracle.sql], {
+    const {stdout} = await execFileAsync(traceProcessorPath, ['query', '--no-agent', '--format', 'csv', launchLightTracePath, fact!.oracle.sql], {
       maxBuffer: 5 * 1024 * 1024,
       timeout: 30_000,
     });

@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "peer",
+        "name": "com.smartperfetto.peer",
+        "uid": 11000
+      },
+      {
+        "id": "system",
+        "name": "system_server",
+        "uid": 1000
+      },
+      {
+        "id": "control",
+        "name": "com.smartperfetto.idlecontrol",
+        "uid": 11001
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "jobs",
+        "process": "system",
+        "name": "JobScheduler"
+      },
+      {
+        "id": "control-main",
+        "process": "control",
+        "name": "main",
+        "is_main": true
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "800000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::job-scheduler-pending-reasons"
+    },
+    {
+      "type": "atrace-async-track-slice",
+      "at_ns": "150000000",
+      "duration_ns": "30000000",
+      "process": "system",
+      "thread": "jobs",
+      "track_name": "JobScheduler",
+      "name": "scheduled job #12#<10999>com.smartperfetto.fixture/.SyntheticJob#",
+      "cookie": 12
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "100000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#101",
+      "job_id": 101,
+      "job_state": "JOB_STATE_STARTED",
+      "pending_reasons": [
+        "PENDING_JOB_REASON_CONSTRAINT_CHARGING"
+      ],
+      "pending_durations_ms": [
+        1500
+      ]
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "200000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#101",
+      "job_id": 101,
+      "job_state": "JOB_STATE_FINISHED",
+      "internal_stop_reason": "INTERNAL_STOP_REASON_SUCCESSFUL_FINISH"
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "300000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#102",
+      "job_id": 102,
+      "job_state": "JOB_STATE_STARTED",
+      "pending_reasons": [
+        "PENDING_JOB_REASON_CONSTRAINT_CHARGING",
+        "PENDING_JOB_REASON_QUOTA"
+      ],
+      "pending_durations_ms": [
+        500
+      ]
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "400000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#102",
+      "job_id": 102,
+      "job_state": "JOB_STATE_FINISHED",
+      "internal_stop_reason": "INTERNAL_STOP_REASON_SUCCESSFUL_FINISH"
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "500000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "peer",
+      "job_name": "com.smartperfetto.peer/.SyncJob#201",
+      "job_id": 201,
+      "job_state": "JOB_STATE_STARTED",
+      "pending_reasons": [
+        "PENDING_JOB_REASON_CONSTRAINT_CHARGING"
+      ],
+      "pending_durations_ms": [
+        9000
+      ]
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "600000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "peer",
+      "job_name": "com.smartperfetto.peer/.SyncJob#201",
+      "job_id": 201,
+      "job_state": "JOB_STATE_FINISHED",
+      "internal_stop_reason": "INTERNAL_STOP_REASON_SUCCESSFUL_FINISH"
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "650000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#103",
+      "job_id": 103,
+      "job_state": "JOB_STATE_CANCELLED",
+      "pending_reasons": [
+        "PENDING_JOB_REASON_BACKGROUND_RESTRICTION"
+      ],
+      "pending_durations_ms": [
+        3000
+      ]
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "700000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#104",
+      "job_id": 104,
+      "job_state": "JOB_STATE_STARTED",
+      "pending_reasons": [
+        "PENDING_JOB_REASON_CONSTRAINT_DEVICE_IDLE"
+      ],
+      "pending_durations_ms": [
+        7000
+      ]
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "900000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#105",
+      "job_id": 105,
+      "job_state": "JOB_STATE_STARTED",
+      "pending_reasons": [
+        "PENDING_JOB_REASON_QUOTA"
+      ],
+      "pending_durations_ms": [
+        9999
+      ]
+    },
+    {
+      "type": "android-job-scheduler-state",
+      "at_ns": "950000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "jobs",
+      "owner_process": "app",
+      "job_name": "com.smartperfetto.fixture/.SyncJob#105",
+      "job_id": 105,
+      "job_state": "JOB_STATE_FINISHED",
+      "internal_stop_reason": "INTERNAL_STOP_REASON_SUCCESSFUL_FINISH"
+    },
+    {
+      "type": "android-packages-list",
+      "at_ns": "0",
+      "packages": [
+        {
+          "name": "com.smartperfetto.idlecontrol",
+          "process": "control"
+        }
+      ]
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "20000000",
+      "duration_ns": "10000000",
+      "process": "control",
+      "thread": "control-main",
+      "name": "Fixture control activity"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "version": "2.0",
-  "generatedAt": "2026-09-24T08:32:58.425908",
-  "generatedFrom": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368",
+  "generatedAt": "2026-11-05T10:20:54.618088",
+  "generatedFrom": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d",
   "source": "perfetto/src/trace_processor/perfetto_sql/stdlib",
   "templates": [
     {
@@ -1491,6 +1491,22 @@
       "description": "Retained for backwards compatibility with any external callers. The `depth` argument is unused."
     },
     {
+      "id": "stdlib.android._android_critical_blocking_call_names",
+      "name": "_android_critical_blocking_call_names",
+      "category": "android",
+      "type": "table",
+      "description": "Distinct slice names that match `_is_relevant_blocking_call_expr!`, along with their standardized name and flags used by downstream tables. Evaluating `android_standardize_slice_name` (which calls 3 nested Perfetto functions) once per distinct matching name rather than once per `thread_slice` row avoids redundant per-row function call overhead.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._android_critical_blocking_call_slices",
+      "name": "_android_critical_blocking_call_slices",
+      "category": "android",
+      "type": "table",
+      "description": "Materialized thread slices matching a relevant blocking call name.",
+      "columns": []
+    },
+    {
       "id": "stdlib.android._android_critical_blocking_calls_draw_frames",
       "name": "_android_critical_blocking_calls_draw_frames",
       "category": "android",
@@ -1572,6 +1588,20 @@
           "type": "LONG"
         }
       ]
+    },
+    {
+      "id": "stdlib.android._is_jank_cuj_slice",
+      "name": "_is_jank_cuj_slice",
+      "category": "android",
+      "type": "macro",
+      "description": "Macro defining the filtering conditions for a jank CUJ slice."
+    },
+    {
+      "id": "stdlib.android._is_cuj_slice",
+      "name": "_is_cuj_slice",
+      "category": "android",
+      "type": "macro",
+      "description": "Macro defining the filtering conditions for a jank or latency CUJ slice."
     },
     {
       "id": "stdlib.android._is_jank_slice",
@@ -1674,7 +1704,7 @@
       "id": "stdlib.android._all_frames_in_cuj",
       "name": "_all_frames_in_cuj",
       "category": "android",
-      "type": "view",
+      "type": "table",
       "description": "Information about all frames in a process that overlap with a CUJ from the same process. This can include multiple frames for the same frame_id (for eg. frames with different layers).",
       "columns": [
         {
@@ -1937,18 +1967,9 @@
       "id": "stdlib.android._marker_missed_callback",
       "name": "_marker_missed_callback",
       "category": "android",
-      "type": "view",
+      "type": "table",
       "description": "A missed callback in a perfetto trace means the ftrace was unable to capture callback events for an operation. For eg. a SFMissedCallback indicates that events related to surfaceflinger operations, such as vsync synchronization, transaction/presentation callbacks were not captured. This view captures all such missed callback slices.",
-      "columns": [
-        {
-          "name": "cuj_slice_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "marker_name",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.android._android_cuj_missed_vsyncs_for_callback",
@@ -1979,7 +2000,7 @@
       "id": "stdlib.android._android_jank_cuj_counter",
       "name": "_android_jank_cuj_counter",
       "category": "android",
-      "type": "view",
+      "type": "table",
       "description": "Extract all counters for Jank CUJ tracks.",
       "columns": [
         {
@@ -2153,43 +2174,103 @@
       "id": "stdlib.android._android_jank_cuj_slice",
       "name": "_android_jank_cuj_slice",
       "category": "android",
-      "type": "table",
-      "description": "Slices overlapping with the CUJ boundaries in the app processes."
+      "type": "view",
+      "description": "Slices overlapping with the CUJ boundaries in the app processes.",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_jank_cuj_main_thread_slice",
       "name": "_android_jank_cuj_main_thread_slice",
       "category": "android",
-      "type": "table",
-      "description": "Slices overlapping with the main thread CUJ boundaries in the app processes."
+      "type": "view",
+      "description": "Slices overlapping with the main thread CUJ boundaries in the app processes.",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_jank_cuj_render_thread_slice",
       "name": "_android_jank_cuj_render_thread_slice",
       "category": "android",
-      "type": "table",
-      "description": "Slices overlapping with the render thread CUJ boundaries in the app processes."
+      "type": "view",
+      "description": "Slices overlapping with the render thread CUJ boundaries in the app processes.",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_jank_cuj_sf_slice",
       "name": "_android_jank_cuj_sf_slice",
       "category": "android",
-      "type": "table",
-      "description": "Slices overlapping with the SF CUJ boundaries in SurfaceFlinger."
+      "type": "view",
+      "description": "Slices overlapping with the SF CUJ boundaries in SurfaceFlinger.",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_jank_cuj_sf_main_thread_slice",
       "name": "_android_jank_cuj_sf_main_thread_slice",
       "category": "android",
-      "type": "table",
-      "description": "Slices overlapping with the SF main thread CUJ boundaries in SurfaceFlinger."
+      "type": "view",
+      "description": "Slices overlapping with the SF main thread CUJ boundaries in SurfaceFlinger.",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_jank_cuj_sf_render_engine_slice",
       "name": "_android_jank_cuj_sf_render_engine_slice",
       "category": "android",
-      "type": "table",
-      "description": "For RenderEngine thread we use a different approach as it's only used when SF falls back to client composition. Instead of taking all slices during CUJ, we look at each frame explicitly and only take slices that are within RenderEngine frame boundaries."
+      "type": "view",
+      "description": "For RenderEngine thread we use a different approach as it's only used when SF falls back to client composition. Instead of taking all slices during CUJ, we look at each frame explicitly and only take slices that are within RenderEngine frame boundaries.",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android.android_sysui_jank_cujs",
@@ -3374,24 +3455,7 @@
       "category": "android",
       "type": "table",
       "description": "Intersection of startup events and gcs, for understanding what GCs are happining during app startup.",
-      "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "startup_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "gc_id",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.android._gc_heap_utilization",
@@ -4666,8 +4730,8 @@
       "id": "stdlib.android._android_js_job_state_events",
       "name": "_android_js_job_state_events",
       "category": "android",
-      "type": "table",
-      "description": "Create a table containing all JobScheduler job state changes from slices.",
+      "type": "view",
+      "description": "Create a view containing all JobScheduler job state changes from slices.",
       "columns": [
         {
           "name": "ts",
@@ -4828,40 +4892,28 @@
       ]
     },
     {
-      "id": "stdlib.android._android_js_job_started",
-      "name": "_android_js_job_started",
-      "category": "android",
-      "type": "table",
-      "description": "Valid state transitions in Android JobScheduler: 1. JOB_STATE_SCHEDULED -> JOB_STATE_STARTED: Constraints met and execution begins (JobServiceContext binds service). 2. JOB_STATE_SCHEDULED -> JOB_STATE_CANCELLED: App calls cancel() or updates job while waiting in queue (!wasRunning). 3. JOB_STATE_STARTED -> JOB_STATE_FINISHED: The only valid transition for a running job. Emitted on successful completion, timeout, constraint drop, preemption, process death/ANR, or cancellation of a running job. 4. JOB_STATE_FINISHED -> JOB_STATE_STARTED: Rescheduled periodic/retry job executes (internal rescheduling bypasses JOB_STATE_SCHEDULED). 5. JOB_STATE_FINISHED -> JOB_STATE_CANCELLED: A rescheduled job waiting in queue for next window is cancelled before running. 6. JOB_STATE_FINISHED -> JOB_STATE_SCHEDULED: App explicitly invokes JobScheduler.schedule() again for the job ID. 7. JOB_STATE_CANCELLED -> JOB_STATE_SCHEDULED: App re-schedules or replaces the cancelled job with the same job ID. Note on Packet Loss & Dropped Events: JOB_STATE_STARTED -> JOB_STATE_SCHEDULED is invalid in the OS runtime and only appears in traces due to packet loss (e.g. traced_chunks_discarded) where a JOB_STATE_FINISHED event was dropped, causing LEAD() to bridge across the idle gap to the next JOB_STATE_SCHEDULED event when an app recycles the integer job_id. Resilience to packet losses & dropped trace events: 1. If JOB_STATE_FINISHED is dropped/missing: The next event in the window partition will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or NULL. Because lead_state != 'JOB_STATE_FINISHED', the unclosed JOB_STATE_STARTED slice is safely discarded, preventing false multi-hour durations from bridging across recycled IDs. 2. If JOB_STATE_STARTED is dropped/missing: The preceding event will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or JOB_STATE_FINISHED. Because state != 'JOB_STATE_STARTED', no execution interval is emitted. 3. Incomplete execution intervals lacking a verified [ts_start, ts_end] pair are safely omitted, ensuring duration and latency metrics are not corrupted. Create table with verified job execution intervals (state='JOB_STATE_STARTED' AND lead_state='JOB_STATE_FINISHED').",
-      "columns": [
-        {
-          "name": "package_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "job_namespace",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "is_rescheduled",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "effective_requested_priority",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
       "id": "stdlib.android.android_job_scheduler_states_track_events",
       "name": "android_job_scheduler_states_track_events",
       "category": "android",
       "type": "table",
-      "description": "This table returns all running jobs from job scheduler track events. Values in this table are derived from job scheduler track events. To populate this table, the `jobscheduler` category must be enabled in the `track_event` data source."
+      "description": "Valid state transitions in Android JobScheduler: 1. JOB_STATE_SCHEDULED -> JOB_STATE_STARTED: Constraints met and execution begins (JobServiceContext binds service). 2. JOB_STATE_SCHEDULED -> JOB_STATE_CANCELLED: App calls cancel() or updates job while waiting in queue (!wasRunning). 3. JOB_STATE_STARTED -> JOB_STATE_FINISHED: The only valid transition for a running job. Emitted on successful completion, timeout, constraint drop, preemption, process death/ANR, or cancellation of a running job. 4. JOB_STATE_FINISHED -> JOB_STATE_STARTED: Rescheduled periodic/retry job executes (internal rescheduling bypasses JOB_STATE_SCHEDULED). 5. JOB_STATE_FINISHED -> JOB_STATE_CANCELLED: A rescheduled job waiting in queue for next window is cancelled before running. 6. JOB_STATE_FINISHED -> JOB_STATE_SCHEDULED: App explicitly invokes JobScheduler.schedule() again for the job ID. 7. JOB_STATE_CANCELLED -> JOB_STATE_SCHEDULED: App re-schedules or replaces the cancelled job with the same job ID. Note on Packet Loss & Dropped Events: JOB_STATE_STARTED -> JOB_STATE_SCHEDULED is invalid in the OS runtime and only appears in traces due to packet loss (e.g. traced_chunks_discarded) where a JOB_STATE_FINISHED event was dropped, causing LEAD() to bridge across the idle gap to the next JOB_STATE_SCHEDULED event when an app recycles the integer job_id. Resilience to packet losses & dropped trace events: 1. If JOB_STATE_FINISHED is dropped/missing: The next event in the window partition will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or NULL. Because lead_state != 'JOB_STATE_FINISHED', the unclosed JOB_STATE_STARTED slice is safely discarded, preventing false multi-hour durations from bridging across recycled IDs. 2. If JOB_STATE_STARTED is dropped/missing: The preceding event will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or JOB_STATE_FINISHED. Because state != 'JOB_STATE_STARTED', no execution interval is emitted. 3. Incomplete execution intervals lacking a verified [ts_start, ts_end] pair are safely omitted, ensuring duration and latency metrics are not corrupted. This table returns all running jobs from job scheduler track events. Values in this table are derived from job scheduler track events. To populate this table, the `jobscheduler` category must be enabled in the `track_event` data source."
+    },
+    {
+      "id": "stdlib.android.android_job_scheduler_pending_reasons_track_events",
+      "name": "android_job_scheduler_pending_reasons_track_events",
+      "category": "android",
+      "type": "view",
+      "description": "Provides the pending reason and wait duration breakdown for JobScheduler track events. This view is maintained as a normalized 1:N breakdown view (storing `slice_id`, `reason_index`, `pending_reason`, and `pending_duration_ms`) specifically for granular numerical queries and statistical aggregations (e.g., `AVG`, `SUM`, or `GROUP BY pending_reason`). Note on Cancelled Jobs: `android_job_scheduler_states_track_events` only contains verified `STARTED -> FINISHED` intervals, so joining it with this view silently excludes `JOB_STATE_CANCELLED` jobs; users who need cancelled jobs should join against the raw transition data (e.g. the internal `_android_js_job_state_events` view or the `slice` table) instead. If you need to analyze or aggregate numerical pending durations broken down by job metadata (such as `package_name`, `job_name`, or `uid`), join this view with `android_job_scheduler_states_track_events` on `slice_id`: ```sql SELECT s.package_name, r.pending_reason, COUNT(*) AS occurrence_count, SUM(r.pending_duration_ms) AS total_wait_ms, AVG(r.pending_duration_ms) AS avg_wait_ms FROM android_job_scheduler_states_track_events s JOIN android_job_scheduler_pending_reasons_track_events r ON s.slice_id = r.slice_id GROUP BY s.package_name, r.pending_reason; ```",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID"
+        },
+        {
+          "name": "slice_id",
+          "type": "JOINID(slice.id)"
+        }
+      ]
     },
     {
       "id": "stdlib.android._kernel_wakelock_track",
@@ -5519,7 +5571,7 @@
       "name": "_android_heap_profile_callstacks_for_allocations",
       "category": "android",
       "type": "macro",
-      "description": "Macro: _android_heap_profile_callstacks_for_allocations"
+      "description": "Builds a flamegraph callstack tree from heap profile allocations, summing the input per callsite and attaching the results as self_* metrics. size/count should be raw signed values (frees are negative). The net is clamped to 0 after summing, as flamegraphs reject negative values. Don't clamp them per row, as that discards frees. alloc_size/alloc_count are gross allocations, so pass max(size, 0) / max(count, 0) for them."
     },
     {
       "id": "stdlib.android._android_heap_profile_intervals",
@@ -6444,6 +6496,34 @@
         {
           "name": "state_rank",
           "type": "UNKNOWN"
+        },
+        {
+          "name": "hosting_type",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "hosting_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "trigger_type",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "bind_application_delay_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "process_start_delay_ms",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "exit_reason",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "exit_subreason",
+          "type": "UNKNOWN"
         }
       ]
     },
@@ -6454,6 +6534,10 @@
       "type": "table",
       "description": "Number of processes concurrently in each framework process state over time.",
       "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
         {
           "name": "dur",
           "type": "UNKNOWN"
@@ -12296,7 +12380,7 @@
       "name": "_interval_intersect",
       "category": "intervals",
       "type": "macro",
-      "description": "Macro: _interval_intersect"
+      "description": "Intersects intervals within matching partitions across the input tables. Positive durations describe half-open intervals [ts, ts + dur): the start is included and the end is excluded, so intervals touching only at an end do not intersect. A zero duration is a point (an instant), which intersects an interval covering its timestamp or another point at the same timestamp. Any intersection involving a point has duration zero. Negative durations are rejected; callers must filter them out before intersecting."
     },
     {
       "id": "stdlib.intervals._interval_rename_cols",
@@ -14067,28 +14151,7 @@
       "category": "pixel",
       "type": "table",
       "description": "Table: _pixel_touch_top_half_events",
-      "columns": [
-        {
-          "name": "th_slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "th_start_ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "th_dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "th_track_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "irq_idx",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.pixel.pixel_touch_events",
@@ -15525,6 +15588,10 @@
         },
         {
           "name": "profileable_from_shell",
+          "type": "LONG"
+        },
+        {
+          "name": "profileable",
           "type": "LONG"
         },
         {
@@ -17084,24 +17151,7 @@
       "category": "sched",
       "type": "table",
       "description": "Table: _critical_path_thread_state_slice_raw",
-      "columns": [
-        {
-          "name": "cr_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "th_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.sched._critical_path_thread_state_slice",
@@ -18232,6 +18282,27 @@
       ]
     },
     {
+      "id": "stdlib.std.gpu_vulkan_debug_names",
+      "name": "gpu_vulkan_debug_names",
+      "category": "std",
+      "type": "view",
+      "description": "Debug names given to Vulkan objects through vkSetDebugUtilsObjectNameEXT / vkDebugMarkerSetObjectNameEXT (VulkanApiEvent.VkDebugUtilsObjectName). One row is appended per naming event, so the same (vk_device, object_type, object) handle can appear several times: a later row renames the object and a row with a NULL name records that the previous name was cleared or the object was destroyed, after which the handle may be reused. The name in effect at a timestamp is the newest row with ts <= that timestamp.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)"
+        }
+      ]
+    },
+    {
       "id": "stdlib.std.__unparenthesize_identity",
       "name": "__unparenthesize_identity",
       "category": "std",
@@ -19247,7 +19318,13 @@
       "name": "_get_rate",
       "category": "wattson",
       "type": "function",
-      "description": "Converts event counter from count to rate (num of accesses per ns)."
+      "description": "Converts event counter from count to rate (num of accesses per ns).",
+      "columns": [
+        {
+          "name": "FROM",
+          "type": "("
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._arm_l3_miss_rate",
@@ -19448,12 +19525,53 @@
       ]
     },
     {
+      "id": "stdlib.wattson._idle_freq_params",
+      "name": "_idle_freq_params",
+      "category": "wattson",
+      "type": "table",
+      "description": "Inputs for _idle_freq_intersect that are fixed for the whole trace.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.wattson._idle_freq_missing_cpus",
+      "name": "_idle_freq_missing_cpus",
+      "category": "wattson",
+      "type": "table",
+      "description": "CPUs 0..7 not present on this device.",
+      "columns": []
+    },
+    {
+      "id": "stdlib.wattson._idle_freq_intersect",
+      "name": "_idle_freq_intersect",
+      "category": "wattson",
+      "type": "table",
+      "description": "Per CPU intersection of frequency, idle and hotplug state. Frequency is cut to start at the valid window, which cuts the result too. Without hotplug offline events, each CPU gets one online slice that spans the trace, so the hotplug operand adds no boundaries. Each missing CPU gets one offline slice that spans the trace.",
+      "columns": []
+    },
+    {
       "id": "stdlib.wattson._idle_freq_materialized",
       "name": "_idle_freq_materialized",
       "category": "wattson",
-      "type": "table",
-      "description": "Start matching CPUs with 1D curves based on combination of freq and idle. Passing freq and idle directly as id into _interval_intersect! eliminates rowid table joins inside _idle_freq_materialized, and carrying state_id through _stats_cpu0..7 eliminates 10 table joins in _w_cpu_slices.",
-      "columns": []
+      "type": "view",
+      "description": "Start matching CPUs with 1D curves based on combination of freq and idle. Carrying state_id through _w_cpu_slices eliminates 10 table joins.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._cpu_hotplug_offline",
@@ -19527,21 +19645,25 @@
       ]
     },
     {
-      "id": "stdlib.wattson._filtered_deep_idle_offsets",
-      "name": "_filtered_deep_idle_offsets",
+      "id": "stdlib.wattson._track_idle_offsets",
+      "name": "_track_idle_offsets",
       "category": "wattson",
-      "type": "view",
-      "description": "Get the corresponding deep idle time offset based on device and CPU.",
+      "type": "table",
+      "description": "Pre-map cpuidle counter track IDs to CPU and deep-idle offset so that interval generation and offset lookup require a single 8-row index join.",
       "columns": [
         {
-          "name": "cpu",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "offset_ns",
+          "name": "track_id",
           "type": "UNKNOWN"
         }
       ]
+    },
+    {
+      "id": "stdlib.wattson._deep_idle_before_exit",
+      "name": "_deep_idle_before_exit",
+      "category": "wattson",
+      "type": "table",
+      "description": "Deep idle slices immediately followed by an idle exit, keyed by exit ts.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._adjusted_deep_idle",
@@ -19551,196 +19673,88 @@
       "description": "Adjust duration of active portion to be slightly longer to account for overhead cost of transitioning out of deep idle. This is done because the device is active and consumes power for longer than the logs actually report.",
       "columns": [
         {
-          "name": "cpu",
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "idle",
           "type": "UNKNOWN"
         }
       ]
     },
     {
-      "id": "stdlib.wattson._stats_cpu0",
-      "name": "_stats_cpu0",
+      "id": "stdlib.wattson._w_cpu_slices_raw",
+      "name": "_w_cpu_slices_raw",
       "category": "wattson",
       "type": "table",
-      "description": "Table: _stats_cpu0",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu1",
-      "name": "_stats_cpu1",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu1",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu2",
-      "name": "_stats_cpu2",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu2",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu3",
-      "name": "_stats_cpu3",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu3",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu4",
-      "name": "_stats_cpu4",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu4",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu5",
-      "name": "_stats_cpu5",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu5",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu6",
-      "name": "_stats_cpu6",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu6",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.wattson._stats_cpu7",
-      "name": "_stats_cpu7",
-      "category": "wattson",
-      "type": "table",
-      "description": "Table: _stats_cpu7",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
+      "description": "Per-interval CPU data, and the last generic table before going to device specific table calcs.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._w_cpu_slices",
       "name": "_w_cpu_slices",
       "category": "wattson",
       "type": "table",
-      "description": "Per-interval CPU data, and the last generic table before going to device specific table calcs. Because `_stats_cpu0..7` pass `state_id` as their `id`, `_wattson_dsu_frequency` passes `dsu_freq` as its `id`, and `_gapless_suspend_slices` passes `suspended` as its `id`, `interval_intersect` directly outputs those values in `base.id_0..10`. This eliminates 10 out of 11 table joins across 434K intervals.",
+      "description": "Table: _w_cpu_slices",
       "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
         {
           "name": "ts",
           "type": "UNKNOWN"
         },
         {
           "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "l3_hit_count",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "l3_miss_count",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "suspended",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dsu_freq",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "config_hash",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_0",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_1",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_2",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_3",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_4",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_5",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_6",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "state_id_7",
           "type": "UNKNOWN"
         }
       ]
@@ -20484,6 +20498,14 @@
       "columns": []
     },
     {
+      "id": "stdlib.wattson._gpu_freq_idle_raw",
+      "name": "_gpu_freq_idle_raw",
+      "category": "wattson",
+      "type": "table",
+      "description": "GPU frequency and power state over the regions where both are defined.",
+      "columns": []
+    },
+    {
       "id": "stdlib.wattson._gpu_freq_idle",
       "name": "_gpu_freq_idle",
       "category": "wattson",
@@ -20501,6 +20523,14 @@
       ]
     },
     {
+      "id": "stdlib.wattson._gpu_tasks_w_power",
+      "name": "_gpu_tasks_w_power",
+      "category": "wattson",
+      "type": "table",
+      "description": "GPU tasks with the active task count and total GPU power at each instant.",
+      "columns": []
+    },
+    {
       "id": "stdlib.wattson._gpu_tasks_attribution",
       "name": "_gpu_tasks_attribution",
       "category": "wattson",
@@ -20508,15 +20538,23 @@
       "description": "Attribute GPU power to each UID based on its active task count. Formula: attributed_mw = total_gpu_mw / active_tasks",
       "columns": [
         {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
           "name": "ts",
           "type": "UNKNOWN"
         },
         {
           "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "uid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "gpu_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "estimated_mw",
           "type": "UNKNOWN"
         }
       ]
@@ -20594,12 +20632,7 @@
       "category": "wattson",
       "type": "table",
       "description": "Step 2: Find tasks within active regions",
-      "columns": [
-        {
-          "name": "region_id",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.wattson._gpu_active_region_boundaries",
@@ -20631,42 +20664,12 @@
       ]
     },
     {
-      "id": "stdlib.wattson._all_gaps",
-      "name": "_all_gaps",
-      "category": "wattson",
-      "type": "table",
-      "description": "Step 4: Classify gaps within active regions",
-      "columns": [
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
       "id": "stdlib.wattson._gaps_in_active_regions",
       "name": "_gaps_in_active_regions",
       "category": "wattson",
       "type": "table",
-      "description": "Table: _gaps_in_active_regions",
-      "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ]
+      "description": "Step 4: Classify gaps within active regions",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._gpu_active_region_gaps",
@@ -20687,16 +20690,7 @@
       "category": "wattson",
       "type": "table",
       "description": "Step 5: Final Gap Attribution with Power",
-      "columns": [
-        {
-          "name": "uid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "estimated_mw",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.wattson._gpu_tasks",
@@ -20711,7 +20705,7 @@
       "name": "_gpu_active_task_count",
       "category": "wattson",
       "type": "table",
-      "description": "Calculate the number of active GPU tasks at any point in time.",
+      "description": "Calculate the number of active GPU tasks at any point in time. The weight 0 background row, spanning from the first task start to the last task end, makes INTERVAL FLATTEN also emit the gaps with zero active tasks.",
       "columns": [
         {
           "name": "ts",
@@ -20722,10 +20716,18 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "active_tasks",
+          "name": "n",
           "type": "UNKNOWN"
         }
       ]
+    },
+    {
+      "id": "stdlib.wattson._ii_idle_swapper_gaps",
+      "name": "_ii_idle_swapper_gaps",
+      "category": "wattson",
+      "type": "table",
+      "description": "Synthesized swapper gaps (which can span multiple idle exits) clipped to each deep idle exit they overlap.",
+      "columns": []
     },
     {
       "id": "stdlib.wattson._ii_idle_tasks",
@@ -20734,10 +20736,6 @@
       "type": "table",
       "description": "Tasks that ran within each deep idle exit, keyed by the idle exit they belong to. Materialized because the three aggregates in _idle_w_tasks below all read it.",
       "columns": [
-        {
-          "name": "id",
-          "type": "UNKNOWN"
-        },
         {
           "name": "ts",
           "type": "UNKNOWN"
@@ -20748,6 +20746,14 @@
         },
         {
           "name": "cpu",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "utid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "idle_group",
           "type": "UNKNOWN"
         }
       ]
@@ -20766,12 +20772,7 @@
       "category": "wattson",
       "type": "table",
       "description": "Interval intersect with the estimate power track, so that each slice can be attributed to the power of the CPU in that time duration",
-      "columns": [
-        {
-          "name": "estimated_mw",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.wattson._filter_idle_attribution",
@@ -20845,7 +20846,7 @@
       "id": "stdlib.wattson._task_wo_irq_infos",
       "name": "_task_wo_irq_infos",
       "category": "wattson",
-      "type": "table",
+      "type": "view",
       "description": "Slices where tasks ran without IRQ information",
       "columns": [
         {
@@ -20997,12 +20998,7 @@
       "category": "wattson",
       "type": "table",
       "description": "Associate idle states, and specifically the active state, with tasks",
-      "columns": [
-        {
-          "name": "idle_group",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.wattson._task_causing_idle_exit",
@@ -21075,12 +21071,42 @@
       "columns": []
     },
     {
+      "id": "stdlib.wattson._tpu_requests_flattened",
+      "name": "_tpu_requests_flattened",
+      "category": "wattson",
+      "type": "table",
+      "description": "Number of parallel TPU requests at any point in time. The weight 0 background row spanning the whole trace makes INTERVAL FLATTEN also emit the gaps with zero requests.",
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.wattson._tpu_requests_count",
       "name": "_tpu_requests_count",
       "category": "wattson",
       "type": "table",
       "description": "Gapless time slices of TPU parallel requests from trace_start() to trace_end()",
-      "columns": []
+      "columns": [
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "requests",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.wattson._get_continuous_estimates",
@@ -26660,8 +26686,8 @@
       "id": "metric.android.android_jank_cuj_main_thread_slice",
       "name": "android_jank_cuj_main_thread_slice",
       "category": "android",
-      "type": "table",
-      "description": "Table: android_jank_cuj_main_thread_slice",
+      "type": "view",
+      "description": "View: android_jank_cuj_main_thread_slice",
       "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
@@ -26673,8 +26699,8 @@
       "id": "metric.android.android_jank_cuj_render_thread_slice",
       "name": "android_jank_cuj_render_thread_slice",
       "category": "android",
-      "type": "table",
-      "description": "Table: android_jank_cuj_render_thread_slice",
+      "type": "view",
+      "description": "View: android_jank_cuj_render_thread_slice",
       "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
@@ -26699,8 +26725,8 @@
       "id": "metric.android.android_jank_cuj_sf_main_thread_slice",
       "name": "android_jank_cuj_sf_main_thread_slice",
       "category": "android",
-      "type": "table",
-      "description": "Table: android_jank_cuj_sf_main_thread_slice",
+      "type": "view",
+      "description": "View: android_jank_cuj_sf_main_thread_slice",
       "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
@@ -26712,8 +26738,8 @@
       "id": "metric.android.android_jank_cuj_sf_render_engine_slice",
       "name": "android_jank_cuj_sf_render_engine_slice",
       "category": "android",
-      "type": "table",
-      "description": "Table: android_jank_cuj_sf_render_engine_slice",
+      "type": "view",
+      "description": "View: android_jank_cuj_sf_render_engine_slice",
       "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"

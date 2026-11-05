@@ -38,6 +38,11 @@ const GPU_COMPUTE_MAX_ARGS = 64;
 const FRAME_TIMELINE_TRACE_PACKET_FIELD_NUMBER = 76;
 const PROCESS_STATE_SNAPSHOT_EXTENSION = '.com.android.internal.FrameworksBaseTracePacket.androidProcessState';
 const PROCESS_STATE_CHANGED_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.processStateChangedEvent';
+const PROCESS_START_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.processStartEvent';
+const PROCESS_BINDER_DIED_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.binderDiedEvent';
+const PROCESS_DIED_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.processDiedEvent';
+const JOB_SCHEDULER_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.jobSchedulerJob';
+const JOB_NAME_EXTENSION = '.com.android.internal.FrameworksBaseInternedData.androidJobName';
 // BatteryStats history events that trace processor turns into
 // android_battery_stats_event_slices; `longwake` backs android_app_wakelocks.
 const BATTERY_STATS_EVENTS = new Set(['longwake']);
@@ -54,6 +59,7 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
   'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
+  'android-process-start', 'android-process-binder-died', 'android-process-died', 'android-job-scheduler-state',
   'android-system-info', 'android-network-packet', 'android-packages-list', 'sched-blocked-reason',
   'binder-transaction',
 ]);
@@ -672,7 +678,24 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
   const ftraceByCpu = new Map();
   const dataPackets = [];
   const inputEventIds = isolatedInputEventIds(scenario, options.usedInputEventIds);
-  const processStateTracks = new Set();
+  const frameworkTracks = new Set();
+  const jobNameIds = new Map();
+
+  function frameworkTrack(thread, timestamp) {
+    const trackUuid = ((BigInt(options.sequenceId) << 32n) | BigInt(thread.tid)).toString();
+    if (!frameworkTracks.has(trackUuid)) {
+      frameworkTracks.add(trackUuid);
+      dataPackets.push({
+        timestamp,
+        trackDescriptor: {uuid: trackUuid, thread: {pid: thread.tgid, tid: thread.tid, threadName: thread.name}},
+      });
+    }
+    return trackUuid;
+  }
+
+  function frameworkEnum(typeName, value, field) {
+    return protoEnumNumber(loadTraceType(repoRoot).root.lookupEnum(`com.android.internal.${typeName}`), value, field);
+  }
 
   function eventsForCpu(cpu) {
     if (!Number.isInteger(cpu) || cpu < 0) throw new Error(`invalid cpu: ${cpu}`);
@@ -895,14 +918,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     } else if (signal.type === 'android-process-state-change') {
       const {thread} = actorForSignal(signal, identities);
       const target = processActor(identities, signal.target_process, 'android-process-state-change target_process');
-      const trackUuid = ((BigInt(options.sequenceId) << 32n) | BigInt(thread.tid)).toString();
-      if (!processStateTracks.has(trackUuid)) {
-        processStateTracks.add(trackUuid);
-        dataPackets.push({
-          timestamp,
-          trackDescriptor: {uuid: trackUuid, thread: {pid: thread.tgid, tid: thread.tid, threadName: thread.name}},
-        });
-      }
+      const trackUuid = frameworkTrack(thread, timestamp);
       const state = (value, field) => protoEnumNumber(processStateEnum(repoRoot), value,
         `android-process-state-change ${field}`);
       dataPackets.push({
@@ -926,6 +942,87 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
           },
         },
       });
+    } else if (signal.type === 'android-process-start'
+      || signal.type === 'android-process-binder-died'
+      || signal.type === 'android-process-died') {
+      const {thread} = actorForSignal(signal, identities);
+      const target = processActor(identities, signal.target_process, `${signal.type} target_process`);
+      const event = {uid: target.uid, pid: target.pid, processName: target.name};
+      if (signal.start_seq_id !== undefined) {
+        event.startSeqId = String(nonNegativeSafeInteger(signal.start_seq_id, `${signal.type} start_seq_id`));
+      }
+      let extension;
+      if (signal.type === 'android-process-start') {
+        extension = PROCESS_START_EXTENSION;
+        if (signal.hosting_name !== undefined) event.hostingName = nonEmptyString(signal.hosting_name, 'android-process-start hosting_name');
+        for (const [field, protoField] of [
+          ['bind_application_delay_ms', 'bindApplicationDelayMs'],
+          ['process_start_delay_ms', 'processStartDelayMs'],
+        ]) {
+          if (signal[field] !== undefined) event[protoField] = String(nonNegativeSafeInteger(signal[field], `android-process-start ${field}`));
+        }
+        for (const [field, protoField, type] of [
+          ['hosting_type', 'hostingType', 'HostingTypeId'],
+          ['trigger_type', 'triggerType', 'TriggerType'],
+        ]) {
+          if (signal[field] !== undefined) event[protoField] = frameworkEnum(type, signal[field], `android-process-start ${field}`);
+        }
+      } else if (signal.type === 'android-process-binder-died') {
+        // This ends the process. ProcessDiedEvent may arrive much later and
+        // only records the exit reason against the original start_seq_id.
+        extension = PROCESS_BINDER_DIED_EXTENSION;
+      } else {
+        extension = PROCESS_DIED_EXTENSION;
+        for (const [field, protoField, type] of [
+          ['exit_reason', 'reason', 'AppExitReasonCode'],
+          ['exit_subreason', 'subReason', 'AppExitSubReasonCode'],
+        ]) {
+          if (signal[field] !== undefined) event[protoField] = frameworkEnum(type, signal[field], `android-process-died ${field}`);
+        }
+      }
+      dataPackets.push({timestamp, trackEvent: {
+        type: 'TYPE_INSTANT', trackUuid: frameworkTrack(thread, timestamp),
+        name: signal.type, [extension]: event,
+      }});
+    } else if (signal.type === 'android-job-scheduler-state') {
+      const {thread} = actorForSignal(signal, identities);
+      const owner = processActor(identities, signal.owner_process, 'android-job-scheduler-state owner_process');
+      const trackUuid = frameworkTrack(thread, timestamp);
+      const name = nonEmptyString(signal.job_name, 'android-job-scheduler-state job_name');
+      if (!jobNameIds.has(name)) {
+        jobNameIds.set(name, jobNameIds.size + 1);
+        dataPackets.push({timestamp, internedData: {[JOB_NAME_EXTENSION]: [{iid: jobNameIds.get(name), name}]}});
+      }
+      const job = {
+        jobId: int32(nonNegativeInteger(signal.job_id, 'android-job-scheduler-state job_id'), 'android-job-scheduler-state job_id'),
+        sourceUid: owner.uid,
+        state: frameworkEnum('AndroidJobSchedulerJob.JobState', signal.job_state, 'android-job-scheduler-state job_state'),
+        jobNameIid: jobNameIds.get(name),
+      };
+      for (const [field, protoField, type] of [
+        ['internal_stop_reason', 'internalStopReason', 'AndroidJobSchedulerJob.InternalStopReason'],
+        ['public_stop_reason', 'publicStopReason', 'AndroidJobSchedulerJob.PublicStopReason'],
+      ]) {
+        if (signal[field] !== undefined) job[protoField] = frameworkEnum(type, signal[field], `android-job-scheduler-state ${field}`);
+      }
+      for (const [field, protoField] of [
+        ['pending_reasons', 'pendingReasons'], ['pending_durations_ms', 'pendingDurationsMs'],
+      ]) {
+        if (signal[field] === undefined) continue;
+        if (!Array.isArray(signal[field]) || signal[field].length > 64) {
+          throw new Error(`android-job-scheduler-state ${field} must be an array of at most 64 entries`);
+        }
+        job[protoField] = signal[field].map((value) => field === 'pending_reasons'
+          ? frameworkEnum('AndroidJobSchedulerJob.PendingJobReason', value, `android-job-scheduler-state ${field}`)
+          : String(nonNegativeSafeInteger(value, `android-job-scheduler-state ${field}`)));
+      }
+      const duration = BigInt(decimalString(signal.duration_ns, 'android-job-scheduler-state duration_ns'));
+      if (duration === 0n) throw new Error('android-job-scheduler-state duration_ns must be positive');
+      dataPackets.push({timestamp, trackEvent: {
+        type: 'TYPE_SLICE_BEGIN', trackUuid, categories: ['jobscheduler'],
+        name: 'JobSchedulerStateEvent', [JOB_SCHEDULER_EXTENSION]: job,
+      }});
+      dataPackets.push({timestamp: (BigInt(timestamp) + duration).toString(), trackEvent: {type: 'TYPE_SLICE_END', trackUuid}});
     } else if (signal.type === 'android-network-packet') {
       // The packet's socket uid is its owner actor's uid; trace processor
       // names it by that uid's app id in package_list (android-packages-list).

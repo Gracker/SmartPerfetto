@@ -10,18 +10,18 @@ excluded_runtime_paths:
 fixture_manifest_source: backend/skills/public-fixtures.yaml
 official_perfetto:
   repository: https://github.com/google/perfetto
-  tag: v58.2
-  commit: add693d8b338ba9599dbcbc3e300b1ab8c000897
+  tag: v59.1
+  commit: 1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d
   rpc_api_version: 14
-  stdlib_tree: 54fc9f0b5c8dedb8772283b6786753fbb918da0d
+  stdlib_tree: 5a9a1eb9ef4de45444fa2445820405456215c01e
   official_skill_reference: ai/skills/perfetto/SKILL-template.md
   official_skill_role: gap_check_only
 runtime_perfetto:
   repository: https://github.com/google/perfetto
-  reported_version: v58.3
-  revision: 99234d73fe356bf7edf6b2cb7afcf2a9eefc5368
+  reported_version: v59.1
+  revision: 1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d
   rpc_api_version: 14
-  stdlib_tree: c4ed7bdb0dfc5c21fb00e3982220d39abe2911bf
+  stdlib_tree: 5a9a1eb9ef4de45444fa2445820405456215c01e
 sql_fragments:
   backend/skills/fragments/scene_response_marker_facts.sql:
     disposition: exported

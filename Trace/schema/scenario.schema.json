@@ -66,6 +66,7 @@
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
               "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
               "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change",
+              "android-process-start", "android-process-binder-died", "android-process-died", "android-job-scheduler-state",
               "android-system-info", "android-network-packet", "android-packages-list",
               "sched-blocked-reason", "binder-transaction"
             ]
@@ -136,6 +137,21 @@
           "cur_oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
           "reason": {"type": "string", "pattern": "^OOM_ADJ_REASON_[A-Z_]+$"},
           "seq_id": {"type": "integer", "minimum": 0},
+          "start_seq_id": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "hosting_name": {"type": "string", "minLength": 1},
+          "hosting_type": {"type": "string", "pattern": "^HOSTING_TYPE_[A-Z_]+$"},
+          "trigger_type": {"type": "string", "pattern": "^TRIGGER_TYPE_[A-Z_]+$"},
+          "bind_application_delay_ms": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "process_start_delay_ms": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "exit_reason": {"type": "string", "pattern": "^APP_EXIT_REASON_[A-Z_]+$"},
+          "exit_subreason": {"type": "string", "pattern": "^APP_EXIT_SUBREASON_[A-Z_]+$"},
+          "job_name": {"type": "string", "minLength": 1},
+          "job_id": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+          "job_state": {"type": "string", "pattern": "^JOB_STATE_[A-Z_]+$"},
+          "internal_stop_reason": {"type": "string", "pattern": "^INTERNAL_STOP_REASON_[A-Z_]+$"},
+          "public_stop_reason": {"type": "string", "pattern": "^STOP_REASON_[A-Z_]+$"},
+          "pending_reasons": {"type": "array", "maxItems": 64, "items": {"type": "string", "pattern": "^PENDING_JOB_REASON_[A-Z_]+$"}},
+          "pending_durations_ms": {"type": "array", "maxItems": 64, "items": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}},
           "name": {"type": "string"},
           "error_id": {"type": "string", "minLength": 1},
           "subject": {"type": "string", "minLength": 1},
@@ -345,6 +361,17 @@
           {
             "if": {"properties": {"type": {"const": "android-process-state-change"}}},
             "then": {"required": ["thread", "target_process", "prev_proc_state", "cur_proc_state"]}
+          },
+          {
+            "if": {"properties": {"type": {"enum": ["android-process-start", "android-process-binder-died", "android-process-died"]}}},
+            "then": {"required": ["thread", "target_process"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-job-scheduler-state"}}},
+            "then": {
+              "required": ["thread", "owner_process", "job_name", "job_id", "job_state", "duration_ns"],
+              "properties": {"duration_ns": {"pattern": "^[1-9][0-9]*$"}}
+            }
           },
           {
             "if": {"properties": {"type": {"const": "managed-heap-graph"}}},

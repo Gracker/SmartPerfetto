@@ -1,0 +1,405 @@
+{
+  "schema_version": 1,
+  "case_id": "job-scheduler-pending-reasons",
+  "marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons",
+  "expectations": [
+    {
+      "id": "legacy-atrace-jobs-preserved",
+      "type": "skill",
+      "target": "android_job_scheduler_events",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "required_sql_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "forced_sql_steps": [
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "job_events",
+      "required_columns": [
+        "ts",
+        "dur_ms",
+        "job_name",
+        "package_name",
+        "uid"
+      ],
+      "assertions": [
+        {
+          "column": "job_name",
+          "operator": "eq",
+          "value": ".SyntheticJob"
+        },
+        {
+          "column": "package_name",
+          "operator": "eq",
+          "value": "com.smartperfetto.fixture"
+        },
+        {
+          "column": "uid",
+          "operator": "eq",
+          "value": 10999
+        },
+        {
+          "column": "dur_ms",
+          "operator": "eq",
+          "value": 30
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons"
+    },
+    {
+      "id": "known-wait-durations-remain-milliseconds",
+      "type": "skill",
+      "target": "android_job_scheduler_events",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "required_sql_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "forced_sql_steps": [
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "pending_reason_summary",
+      "required_columns": [
+        "package_name",
+        "uid",
+        "pending_reason",
+        "completed_job_count",
+        "known_duration_count",
+        "missing_duration_count",
+        "reported_wait_ms"
+      ],
+      "assertions": [
+        {
+          "column": "package_name",
+          "operator": "eq",
+          "value": "com.smartperfetto.fixture"
+        },
+        {
+          "column": "uid",
+          "operator": "eq",
+          "value": 10999
+        },
+        {
+          "column": "pending_reason",
+          "operator": "eq",
+          "value": "PENDING_JOB_REASON_CONSTRAINT_CHARGING"
+        },
+        {
+          "column": "completed_job_count",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "column": "known_duration_count",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "column": "missing_duration_count",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "reported_wait_ms",
+          "operator": "eq",
+          "value": 2000
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons",
+      "max_rows": 2
+    },
+    {
+      "id": "missing-wait-duration-is-unknown",
+      "type": "skill",
+      "target": "android_job_scheduler_events",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "required_sql_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "forced_sql_steps": [
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "pending_reason_summary",
+      "required_columns": [
+        "package_name",
+        "uid",
+        "pending_reason",
+        "completed_job_count",
+        "known_duration_count",
+        "missing_duration_count",
+        "reported_wait_ms"
+      ],
+      "assertions": [
+        {
+          "column": "pending_reason",
+          "operator": "eq",
+          "value": "PENDING_JOB_REASON_QUOTA"
+        },
+        {
+          "column": "completed_job_count",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "known_duration_count",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "missing_duration_count",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "reported_wait_ms",
+          "operator": "eq",
+          "value": null
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons",
+      "max_rows": 2
+    },
+    {
+      "id": "completed-window-and-package-coverage",
+      "type": "skill",
+      "target": "android_job_scheduler_events",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "required_sql_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "forced_sql_steps": [
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "pending_reason_data",
+      "required_columns": [
+        "completed_job_count",
+        "reason_entry_count",
+        "missing_duration_count",
+        "status"
+      ],
+      "assertions": [
+        {
+          "column": "completed_job_count",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "column": "reason_entry_count",
+          "operator": "eq",
+          "value": 3
+        },
+        {
+          "column": "missing_duration_count",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "status",
+          "operator": "eq",
+          "value": "available"
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons",
+      "max_rows": 1
+    },
+    {
+      "id": "no-data-does-not-display-zero-wait-summary",
+      "type": "skill",
+      "target": "android_job_scheduler_events",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.idlecontrol",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
+      },
+      "required_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "required_sql_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "forced_sql_steps": [
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "pending_reason_data",
+      "required_columns": [
+        "completed_job_count",
+        "reason_entry_count",
+        "missing_duration_count",
+        "status"
+      ],
+      "assertions": [
+        {
+          "column": "completed_job_count",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "reason_entry_count",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "missing_duration_count",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "status",
+          "operator": "eq",
+          "value": "no_completed_jobs_with_pending_reasons"
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons",
+      "max_rows": 1
+    },
+    {
+      "id": "unbounded-start-window-includes-later-job",
+      "type": "skill",
+      "target": "android_job_scheduler_events",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture"
+      },
+      "required_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "required_sql_steps": [
+        "job_events",
+        "pending_reason_capability",
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "forced_sql_steps": [
+        "pending_reason_data",
+        "pending_reason_summary"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "pending_reason_summary",
+      "required_columns": [
+        "package_name",
+        "uid",
+        "pending_reason",
+        "completed_job_count",
+        "known_duration_count",
+        "missing_duration_count",
+        "reported_wait_ms"
+      ],
+      "assertions": [
+        {
+          "column": "pending_reason",
+          "operator": "eq",
+          "value": "PENDING_JOB_REASON_QUOTA"
+        },
+        {
+          "column": "completed_job_count",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "column": "known_duration_count",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "missing_duration_count",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "reported_wait_ms",
+          "operator": "eq",
+          "value": 9999
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::job-scheduler-pending-reasons",
+      "max_rows": 2
+    }
+  ]
+}

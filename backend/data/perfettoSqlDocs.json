@@ -1,20 +1,20 @@
 {
   "version": 1,
-  "generatedAt": "2026-09-24T00:32:57.559Z",
-  "generatedFrom": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368",
-  "sourceDocs": "git:99234d73fe356bf7edf6b2cb7afcf2a9eefc5368:src/trace_processor/perfetto_sql/stdlib",
+  "generatedAt": "2026-11-05T02:20:54.337Z",
+  "generatedFrom": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d",
+  "sourceDocs": "git:1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d:src/trace_processor/perfetto_sql/stdlib",
   "sourceDocsMode": "runtime-revision-source-generator",
   "pfsqlLineage": {
     "status": "unavailable"
   },
   "stats": {
-    "moduleCount": 269,
-    "entryCount": 474,
+    "moduleCount": 270,
+    "entryCount": 476,
     "byType": {
       "function": 72,
       "table": 198,
       "table_function": 31,
-      "view": 152,
+      "view": 154,
       "macro": 21
     }
   },
@@ -942,7 +942,6 @@
       ],
       "includes": [
         "android.startup.startups",
-        "intervals.intersect",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/garbage_collection.sql",
@@ -962,7 +961,6 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "intervals.intersect",
         "slices.with_context",
         "std.thread.with_context"
       ]
@@ -1159,6 +1157,7 @@
       "missingIncludes": [],
       "errors": [],
       "symbols": [
+        "android_job_scheduler_pending_reasons_track_events",
         "android_job_scheduler_states_track_events"
       ],
       "transitiveIncludes": []
@@ -4010,18 +4009,14 @@
       "module": "pixel.touch",
       "moduleDoc": "",
       "tags": [],
-      "includes": [
-        "intervals.intersect"
-      ],
+      "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/pixel/touch.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [
         "pixel_touch_events"
       ],
-      "transitiveIncludes": [
-        "intervals.intersect"
-      ]
+      "transitiveIncludes": []
     },
     {
       "package": "pkvm",
@@ -4061,7 +4056,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.core",
-      "moduleDoc": "Fundamental trace concepts and infrastructure. This module provides the core tables and views that represent fundamental trace concepts like trace boundaries and available metrics. Lists all metrics built-into trace processor.",
+      "moduleDoc": "",
       "tags": [
         "metadata"
       ],
@@ -4078,7 +4073,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.counters",
-      "moduleDoc": "Performance counters and counter tracks. This module provides counter-related tables and views for analyzing performance metrics collected across CPUs, processes, threads, GPUs, and other contexts.",
+      "moduleDoc": "",
       "tags": [
         "utilities"
       ],
@@ -4106,7 +4101,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.cpu_scheduling",
-      "moduleDoc": "CPU scheduling and thread state analysis. This module provides tables and views for analyzing CPU scheduling behavior, including scheduling slices, thread states, and CPU information.",
+      "moduleDoc": "",
       "tags": [
         "cpu",
         "scheduling"
@@ -4132,7 +4127,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.events",
-      "moduleDoc": "Event data and slices for trace analysis. This module provides tables and views for analyzing various types of events and slices including ftrace events, graphics frames, GPU events, and frame timeline information.",
+      "moduleDoc": "",
       "tags": [
         "trace"
       ],
@@ -4159,7 +4154,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.gpu",
-      "moduleDoc": "Contains information about the GPUs on the device this trace was taken on.",
+      "moduleDoc": "",
       "tags": [],
       "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/gpu.sql",
@@ -4173,7 +4168,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.memory",
-      "moduleDoc": "Memory and heap analysis tables. This module provides tables and views for analyzing memory usage, including heap graphs for Android Runtime (ART) and memory snapshots for detailed memory profiling.",
+      "moduleDoc": "",
       "tags": [
         "memory"
       ],
@@ -4252,7 +4247,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.state",
-      "moduleDoc": "State tracks and state events. This module provides state-related tables and views for analyzing states collected across processes and other contexts.",
+      "moduleDoc": "",
       "tags": [],
       "includes": [
         "prelude.after_eof.views"
@@ -4273,7 +4268,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.tracks",
-      "moduleDoc": "Track infrastructure for organizing trace events. This module provides the track concept and specialized track tables for organizing events by thread, process, CPU, and GPU contexts.",
+      "moduleDoc": "",
       "tags": [
         "trace"
       ],
@@ -4548,7 +4543,6 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "sched.thread_executing_span",
         "slices.flat_slices"
       ],
@@ -4891,6 +4885,20 @@
     },
     {
       "package": "std",
+      "module": "std.gpu.vulkan_debug_names",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/gpu/vulkan_debug_names.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "gpu_vulkan_debug_names"
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "std",
       "module": "std.metasql.unparenthesize",
       "moduleDoc": "",
       "tags": [],
@@ -4942,7 +4950,7 @@
     {
       "package": "std",
       "module": "std.traceinfo.metadata_for_primary_scope",
-      "moduleDoc": "Metadata summary table. A table containing a summary of metadata entries, picking the primary entry for each name (favoring the root trace and machine).",
+      "moduleDoc": "",
       "tags": [],
       "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/traceinfo/metadata_for_primary_scope.sql",
@@ -4954,7 +4962,7 @@
     {
       "package": "std",
       "module": "std.traceinfo.trace",
-      "moduleDoc": "Trace-level metadata functions and tables. A table containing pivoted metadata for each trace in the session.",
+      "moduleDoc": "",
       "tags": [],
       "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/traceinfo/trace.sql",
@@ -5261,10 +5269,8 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "linux.devfreq",
-        "wattson.device_infos",
-        "wattson.utils"
+        "wattson.device_infos"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/cpu/arm_dsu.sql",
       "missingIncludes": [],
@@ -5273,7 +5279,6 @@
       "transitiveIncludes": [
         "android.device",
         "counters.intervals",
-        "intervals.intersect",
         "linux.devfreq",
         "wattson.device_infos",
         "wattson.utils"
@@ -5299,7 +5304,6 @@
         "android.suspend",
         "counters.intervals",
         "intervals.fill_gaps",
-        "intervals.intersect",
         "linux.cpu.frequency",
         "linux.devfreq",
         "std.metasql.unparenthesize",
@@ -5347,7 +5351,6 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.cpu.freq",
         "wattson.cpu.hotplug",
         "wattson.cpu.idle",
@@ -5363,7 +5366,6 @@
         "android.suspend",
         "counters.intervals",
         "intervals.fill_gaps",
-        "intervals.intersect",
         "linux.cpu.frequency",
         "std.metasql.unparenthesize",
         "time.conversion",
@@ -5407,6 +5409,7 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
+        "counters.intervals",
         "wattson.device_infos"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/cpu/idle.sql",
@@ -5415,6 +5418,7 @@
       "symbols": [],
       "transitiveIncludes": [
         "android.device",
+        "counters.intervals",
         "wattson.device_infos",
         "wattson.utils"
       ]
@@ -5425,7 +5429,6 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.cpu.arm_dsu",
         "wattson.cpu.freq",
         "wattson.cpu.freq_idle",
@@ -5443,7 +5446,6 @@
         "android.suspend",
         "counters.intervals",
         "intervals.fill_gaps",
-        "intervals.intersect",
         "linux.cpu.frequency",
         "linux.devfreq",
         "std.metasql.unparenthesize",
@@ -5641,7 +5643,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "counters.intervals",
-        "intervals.intersect",
         "wattson.curves.cpu_1d",
         "wattson.curves.cpu_2d",
         "wattson.curves.gpu",
@@ -5661,9 +5662,7 @@
       "includes": [
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
-        "intervals.intersect",
-        "wattson.device_infos",
-        "wattson.utils"
+        "wattson.device_infos"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/gpu/freq_idle.sql",
       "missingIncludes": [],
@@ -5674,7 +5673,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "counters.intervals",
-        "intervals.intersect",
         "wattson.device_infos",
         "wattson.utils"
       ]
@@ -5685,15 +5683,13 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.device_infos",
         "wattson.estimates",
         "wattson.gpu.estimates",
         "wattson.tasks.gpu_active_regions",
         "wattson.tasks.gpu_tasks",
         "wattson.tasks.task_slices",
-        "wattson.ui.continuous_estimates",
-        "wattson.utils"
+        "wattson.ui.continuous_estimates"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/tasks/attribution.sql",
       "missingIncludes": [],
@@ -5748,11 +5744,9 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.gpu.estimates",
         "wattson.gpu.freq_idle",
-        "wattson.tasks.gpu_tasks",
-        "wattson.utils"
+        "wattson.tasks.gpu_tasks"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/tasks/gpu_active_regions.sql",
       "missingIncludes": [],
@@ -5764,7 +5758,6 @@
         "android.gpu.mali_power_state",
         "android.gpu.work_period",
         "counters.intervals",
-        "intervals.intersect",
         "wattson.curves.cpu_1d",
         "wattson.curves.cpu_2d",
         "wattson.curves.gpu",
@@ -5800,10 +5793,9 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.estimates",
-        "wattson.tasks.task_slices",
-        "wattson.utils"
+        "wattson.tasks.attribution",
+        "wattson.tasks.task_slices"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/tasks/idle_transitions_attribution.sql",
       "missingIncludes": [],
@@ -5813,6 +5805,7 @@
         "android.device",
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
+        "android.gpu.work_period",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -5842,9 +5835,13 @@
         "wattson.estimates",
         "wattson.gpu.estimates",
         "wattson.gpu.freq_idle",
+        "wattson.tasks.attribution",
+        "wattson.tasks.gpu_active_regions",
+        "wattson.tasks.gpu_tasks",
         "wattson.tasks.task_slices",
         "wattson.tpu.estimates",
         "wattson.tpu.freq_idle",
+        "wattson.ui.continuous_estimates",
         "wattson.utils"
       ]
     },
@@ -5855,11 +5852,9 @@
       "tags": [],
       "includes": [
         "android.process_metadata",
-        "intervals.intersect",
         "intervals.overlap",
         "linux.irqs",
-        "wattson.cpu.idle",
-        "wattson.utils"
+        "wattson.cpu.idle"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/tasks/task_slices.sql",
       "missingIncludes": [],
@@ -5869,6 +5864,7 @@
         "android.device",
         "android.process_metadata",
         "android.user_list",
+        "counters.intervals",
         "intervals.intersect",
         "intervals.overlap",
         "linux.irqs",
@@ -5884,10 +5880,8 @@
       "moduleDoc": "",
       "tags": [],
       "includes": [
-        "intervals.intersect",
         "wattson.curves.utils",
-        "wattson.tpu.freq_idle",
-        "wattson.utils"
+        "wattson.tpu.freq_idle"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/wattson/tpu/estimates.sql",
       "missingIncludes": [],
@@ -5895,7 +5889,6 @@
       "symbols": [],
       "transitiveIncludes": [
         "android.device",
-        "intervals.intersect",
         "wattson.curves.cpu_1d",
         "wattson.curves.cpu_2d",
         "wattson.curves.gpu",
@@ -10610,7 +10603,6 @@
       "include": "INCLUDE PERFETTO MODULE android.garbage_collection;",
       "moduleIncludes": [
         "android.startup.startups",
-        "intervals.intersect",
         "slices.with_context"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/garbage_collection.sql",
@@ -10726,7 +10718,6 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "intervals.intersect",
         "slices.with_context",
         "std.thread.with_context"
       ]
@@ -12508,6 +12499,52 @@
       "transitiveIncludes": []
     },
     {
+      "id": "stdlib.android.job_scheduler_states_track_events.android_job_scheduler_pending_reasons_track_events",
+      "name": "android_job_scheduler_pending_reasons_track_events",
+      "type": "view",
+      "category": "android",
+      "subcategory": "job_scheduler_states_track_events",
+      "module": "android.job_scheduler_states_track_events",
+      "package": "android",
+      "description": "Provides the pending reason and wait duration breakdown for JobScheduler track events",
+      "fullDescription": "Provides the pending reason and wait duration breakdown for JobScheduler track events. This view is maintained as a normalized 1:N breakdown view (storing `slice_id`, `reason_index`, `pending_reason`, and `pending_duration_ms`) specifically for granular numerical queries and statistical aggregations (e.g., `AVG`, `SUM`, or `GROUP BY pending_reason`). Note on Cancelled Jobs: `android_job_scheduler_states_track_events` only contains verified `STARTED -> FINISHED` intervals, so joining it with this view silently excludes `JOB_STATE_CANCELLED` jobs; users who need cancelled jobs should join against the raw transition data (e.g. the internal `_android_js_job_state_events` view or the `slice` table) instead. If you need to analyze or aggregate numerical pending durations broken down by job metadata (such as `package_name`, `job_name`, or `uid`), join this view with `android_job_scheduler_states_track_events` on `slice_id`: ```sql SELECT s.package_name, r.pending_reason, COUNT(*) AS occurrence_count, SUM(r.pending_duration_ms) AS total_wait_ms, AVG(r.pending_duration_ms) AS avg_wait_ms FROM android_job_scheduler_states_track_events s JOIN android_job_scheduler_pending_reasons_track_events r ON s.slice_id = r.slice_id GROUP BY s.package_name, r.pending_reason; ```",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states_track_events;",
+      "moduleIncludes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states_track_events.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for the row."
+        },
+        {
+          "name": "slice_id",
+          "type": "JOINID(slice.id)",
+          "description": "Id of the slice.",
+          "table": "slice",
+          "column": "id"
+        },
+        {
+          "name": "reason_index",
+          "type": "LONG",
+          "description": "0-based index in the pending reasons list."
+        },
+        {
+          "name": "pending_reason",
+          "type": "STRING",
+          "description": "Pending reason string."
+        },
+        {
+          "name": "pending_duration_ms",
+          "type": "LONG",
+          "description": "Duration in milliseconds spent waiting for this reason."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
       "id": "stdlib.android.job_scheduler_states.android_job_scheduler_sdk",
       "name": "android_job_scheduler_sdk",
       "type": "view",
@@ -12781,8 +12818,8 @@
       "subcategory": "job_scheduler_states_track_events",
       "module": "android.job_scheduler_states_track_events",
       "package": "android",
-      "description": "This table returns all running jobs from job scheduler track events",
-      "fullDescription": "This table returns all running jobs from job scheduler track events. Values in this table are derived from job scheduler track events. To populate this table, the `jobscheduler` category must be enabled in the `track_event` data source.",
+      "description": "Valid state transitions in Android JobScheduler: 1",
+      "fullDescription": "Valid state transitions in Android JobScheduler: 1. JOB_STATE_SCHEDULED -> JOB_STATE_STARTED: Constraints met and execution begins (JobServiceContext binds service). 2. JOB_STATE_SCHEDULED -> JOB_STATE_CANCELLED: App calls cancel() or updates job while waiting in queue (!wasRunning). 3. JOB_STATE_STARTED -> JOB_STATE_FINISHED: The only valid transition for a running job. Emitted on successful completion, timeout, constraint drop, preemption, process death/ANR, or cancellation of a running job. 4. JOB_STATE_FINISHED -> JOB_STATE_STARTED: Rescheduled periodic/retry job executes (internal rescheduling bypasses JOB_STATE_SCHEDULED). 5. JOB_STATE_FINISHED -> JOB_STATE_CANCELLED: A rescheduled job waiting in queue for next window is cancelled before running. 6. JOB_STATE_FINISHED -> JOB_STATE_SCHEDULED: App explicitly invokes JobScheduler.schedule() again for the job ID. 7. JOB_STATE_CANCELLED -> JOB_STATE_SCHEDULED: App re-schedules or replaces the cancelled job with the same job ID. Note on Packet Loss & Dropped Events: JOB_STATE_STARTED -> JOB_STATE_SCHEDULED is invalid in the OS runtime and only appears in traces due to packet loss (e.g. traced_chunks_discarded) where a JOB_STATE_FINISHED event was dropped, causing LEAD() to bridge across the idle gap to the next JOB_STATE_SCHEDULED event when an app recycles the integer job_id. Resilience to packet losses & dropped trace events: 1. If JOB_STATE_FINISHED is dropped/missing: The next event in the window partition will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or NULL. Because lead_state != 'JOB_STATE_FINISHED', the unclosed JOB_STATE_STARTED slice is safely discarded, preventing false multi-hour durations from bridging across recycled IDs. 2. If JOB_STATE_STARTED is dropped/missing: The preceding event will be JOB_STATE_SCHEDULED, JOB_STATE_CANCELLED, or JOB_STATE_FINISHED. Because state != 'JOB_STATE_STARTED', no execution interval is emitted. 3. Incomplete execution intervals lacking a verified [ts_start, ts_end] pair are safely omitted, ensuring duration and latency metrics are not corrupted. This table returns all running jobs from job scheduler track events. Values in this table are derived from job scheduler track events. To populate this table, the `jobscheduler` category must be enabled in the `track_event` data source.",
       "visibility": "public",
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE android.job_scheduler_states_track_events;",
@@ -27685,6 +27722,62 @@
       ]
     },
     {
+      "id": "stdlib.std.gpu.vulkan_debug_names.gpu_vulkan_debug_names",
+      "name": "gpu_vulkan_debug_names",
+      "type": "view",
+      "category": "std",
+      "subcategory": "gpu.vulkan_debug_names",
+      "module": "std.gpu.vulkan_debug_names",
+      "package": "std",
+      "description": "Debug names given to Vulkan objects through vkSetDebugUtilsObjectNameEXT / vkDebugMarkerSetObjectNameEXT (VulkanApiEvent.VkDebugUtilsObjectName)",
+      "fullDescription": "Debug names given to Vulkan objects through vkSetDebugUtilsObjectNameEXT / vkDebugMarkerSetObjectNameEXT (VulkanApiEvent.VkDebugUtilsObjectName). One row is appended per naming event, so the same (vk_device, object_type, object) handle can appear several times: a later row renames the object and a row with a NULL name records that the previous name was cleared or the object was destroyed, after which the handle may be reused. The name in effect at a timestamp is the newest row with ts <= that timestamp.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE std.gpu.vulkan_debug_names;",
+      "moduleIncludes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/gpu/vulkan_debug_names.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "The id of the row."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the naming event."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process which named the object, or NULL when the event carries no pid.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "vk_device",
+          "type": "LONG",
+          "description": "VkDevice handle owning the object, or NULL when the event carries no device."
+        },
+        {
+          "name": "object_type",
+          "type": "LONG",
+          "description": "VkObjectType enum value of the named object, e.g. 24 for VK_OBJECT_TYPE_FRAMEBUFFER."
+        },
+        {
+          "name": "object",
+          "type": "LONG",
+          "description": "Vulkan object handle, interpreted per object_type."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Debug name, or NULL when the name was cleared (empty or omitted object_name)."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
       "id": "stdlib.graphs.dominator_tree.graph_dominator_tree",
       "name": "graph_dominator_tree",
       "type": "macro",
@@ -28073,6 +28166,11 @@
           "name": "kind",
           "type": "STRING",
           "description": "The kind of class."
+        },
+        {
+          "name": "potentially_merged",
+          "type": "BOOL",
+          "description": "True if other classes may have been merged into this class by optimization (e.g. R8 class merging)."
         }
       ],
       "transitiveIncludes": [
@@ -30662,7 +30760,12 @@
         {
           "name": "profileable_from_shell",
           "type": "LONG",
-          "description": "Bool whether this app is profileable."
+          "description": "Bool whether this app is profileable from the shell."
+        },
+        {
+          "name": "profileable",
+          "type": "LONG",
+          "description": "Bool whether this app is profileable by the platform."
         },
         {
           "name": "version_code",
@@ -31042,9 +31145,7 @@
       "visibility": "public",
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE pixel.touch;",
-      "moduleIncludes": [
-        "intervals.intersect"
-      ],
+      "moduleIncludes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/pixel/touch.sql",
       "columns": [
         {
@@ -31124,9 +31225,7 @@
           "description": "Resample latency offset (in nanoseconds)."
         }
       ],
-      "transitiveIncludes": [
-        "intervals.intersect"
-      ]
+      "transitiveIncludes": []
     },
     {
       "id": "stdlib.pkvm.hypervisor.pkvm_hypervisor_events",
@@ -37272,6 +37371,7 @@
     "android_job_scheduler": "android.job_scheduler_states",
     "android_job_scheduler_batterystats": "android.job_scheduler_states",
     "android_job_scheduler_events": "android.job_scheduler",
+    "android_job_scheduler_pending_reasons_track_events": "android.job_scheduler_states_track_events",
     "android_job_scheduler_sdk": "android.job_scheduler_states",
     "android_job_scheduler_states": "android.job_scheduler_states",
     "android_job_scheduler_states_track_events": "android.job_scheduler_states_track_events",
@@ -37485,6 +37585,7 @@
     "gpu_counter_track": "prelude.after_eof.counters",
     "gpu_slice": "prelude.after_eof.events",
     "gpu_track": "prelude.after_eof.tracks",
+    "gpu_vulkan_debug_names": "std.gpu.vulkan_debug_names",
     "graph_dominator_tree": "graphs.dominator_tree",
     "graph_next_sibling": "graphs.search",
     "graph_reachable_bfs": "graphs.search",

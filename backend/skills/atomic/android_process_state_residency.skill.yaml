@@ -16,20 +16,22 @@
 # Runtime 边界：
 # - 解析器与 stdlib 模块只在 v58.2 之后的 trace processor 中存在；旧 runtime
 #   上 process_state_capability 报 runtime_lacks_process_state，其余步骤跳过。
-# - 读取的 `_android_process_state_intervals` 是 stdlib 私有表。当前 pin 丢弃
-#   NONEXISTENT 行、dur >= 0；上游后续版本会合成 EXITED（dur = -1，死亡后
-#   一直开放）与出生前的 NONEXISTENT 行。这里统一处理：dur < 0 视为开放到
-#   trace 结束，EXITED/NONEXISTENT 不计入存活时间，只作为生命周期标记。
+# - 读取的 `_android_process_state_intervals` 是 pinned v59.1 的 stdlib 私有表。
+#   dur < 0 视为开放到 trace 结束，EXITED/NONEXISTENT 不计入存活时间，
+#   只作为生命周期标记。启动元数据只随 NONEXISTENT、退出原因只随 EXITED
+#   展示，缺失值保留 NULL；state_change_reason 保持产品输出列名 reason。
 
 name: android_process_state_residency
-version: "1.0"
+version: "1.1"
 type: atomic
 category: memory
 tier: B
 
 meta:
   display_name: "进程状态驻留与切换"
-  description: "Framework 进程状态（TOP/前台服务/CACHED 等）的驻留时长、切换序列与最后观测状态；用于 LMK、后台与内存压力分析，旧 trace processor 显式降级"
+  description: "Framework 进程状态驻留、切换与启动/退出元数据；区分 OomAdjuster 状态变更原因和进程退出原因，用于 LMK、后台与内存压力分析"
+  description_i18n:
+    en: "Framework process-state residency and transitions with recorded start and exit metadata; state-change reasons remain distinct from exit reasons."
   icon: "swap_vert"
   tags: [memory, lmk, process_state, background, oom_adj, framework]
 
@@ -97,7 +99,11 @@ steps:
           ) AS runtime_has_process_state_table,
           EXISTS (
             SELECT 1 FROM sqlite_master WHERE name = '_android_process_state_intervals'
-          ) AS runtime_has_process_state_module
+          ) AS runtime_has_process_state_module,
+          (SELECT COUNT(*) FROM pragma_table_info('_android_process_state_intervals')
+            WHERE name IN ('state_change_reason', 'hosting_type', 'hosting_name',
+              'trigger_type', 'bind_application_delay_ms', 'process_start_delay_ms',
+              'exit_reason', 'exit_subreason')) = 8 AS runtime_has_process_lifecycle
       )
       SELECT
         runtime_has_process_state_table,
@@ -105,6 +111,7 @@ steps:
         CASE
           WHEN NOT runtime_has_process_state_table THEN 'runtime_lacks_process_state'
           WHEN NOT runtime_has_process_state_module THEN 'runtime_lacks_process_state_module'
+          WHEN NOT runtime_has_process_lifecycle THEN 'runtime_lacks_process_lifecycle'
           ELSE 'runtime_supported'
         END AS status
       FROM facts
@@ -204,7 +211,7 @@ steps:
       intervals AS (
         SELECT upid, process_label AS process_name, state, state_rank, ts, open_dur AS dur
         FROM process_state_scoped_intervals
-        WHERE state != 'EXITED'
+        WHERE state NOT IN ('EXITED', 'NONEXISTENT')
       ),
       clipped AS (
         SELECT
@@ -241,6 +248,8 @@ steps:
       level: detail
       layer: list
       title: "进程状态切换序列"
+      title_i18n:
+        en: "Process State and Lifecycle Transitions"
       columns:
         - name: process_name
           label: "进程"
@@ -266,6 +275,38 @@ steps:
         - name: lifecycle
           label: "生命周期"
           type: string
+        - name: hosting_type
+          label: "启动宿主类型"
+          label_i18n: {en: "Hosting Type"}
+          type: string
+        - name: hosting_name
+          label: "启动宿主"
+          label_i18n: {en: "Hosting Name"}
+          type: string
+        - name: trigger_type
+          label: "启动触发类型"
+          label_i18n: {en: "Start Trigger"}
+          type: string
+        - name: bind_application_delay_ms
+          label: "绑定应用延迟"
+          label_i18n: {en: "Bind Application Delay"}
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: process_start_delay_ms
+          label: "进程启动延迟"
+          label_i18n: {en: "Process Start Delay"}
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: exit_reason
+          label: "退出原因"
+          label_i18n: {en: "Exit Reason"}
+          type: string
+        - name: exit_subreason
+          label: "退出补充原因"
+          label_i18n: {en: "Exit Subreason"}
+          type: string
     sql_fragments:
       - fragments/process_state_scoped_intervals.sql
     sql: |
@@ -278,9 +319,17 @@ steps:
         reason,
         CASE
           WHEN state = 'EXITED' THEN 'process_exited'
+          WHEN state = 'NONEXISTENT' THEN 'process_start_pending'
           WHEN prev_state IS NULL THEN 'initial_state'
           ELSE 'state_change'
-        END AS lifecycle
+        END AS lifecycle,
+        hosting_type,
+        hosting_name,
+        trigger_type,
+        bind_application_delay_ms,
+        process_start_delay_ms,
+        exit_reason,
+        exit_subreason
       FROM process_state_scoped_intervals
       WHERE (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -328,7 +377,7 @@ steps:
           *,
           ROW_NUMBER() OVER (PARTITION BY upid ORDER BY ts DESC) AS recency
         FROM process_state_scoped_intervals
-        WHERE state != 'EXITED'
+        WHERE state NOT IN ('EXITED', 'NONEXISTENT')
           AND (${end_ts} IS NULL OR ts < ${end_ts})
       )
       SELECT
@@ -347,12 +396,12 @@ output:
   format: structured
   fields:
     - name: process_state_capability
-      description: "Runtime support: runtime_lacks_process_state on trace processors up to v58.2, which cannot read this data at all"
+      description: "Runtime support: missing process-state parsing, module, or pinned lifecycle columns is reported explicitly; only runtime_supported runs the evidence queries"
     - name: process_state_data
       description: "Whether the trace carries android.process_state snapshot or state-change events, and whether any belong to the requested process"
     - name: process_state_residency
       description: "Per process and framework state, time spent while alive within the window and its share of alive time; EXITED/NONEXISTENT markers are excluded"
     - name: process_state_transitions
-      description: "Ordered state changes with the previous state's duration and the OomAdjuster reason; initial_state rows are backfilled from snapshots"
+      description: "Ordered state changes and lifecycle markers. reason is the OomAdjuster state-change reason. NONEXISTENT carries recorded hosting/trigger and start delays; EXITED carries exit reasons at the process end, even when the reason event arrives later. Missing metadata stays null."
     - name: process_state_last_observed
       description: "Last alive state per process and whether the process ended, for comparing with LMK kills and oom_score_adj"
