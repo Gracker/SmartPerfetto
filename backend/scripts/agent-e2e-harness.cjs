@@ -604,7 +604,7 @@ function createProviderE2eHarness(providerKind) {
       console.log('Only the official DeepSeek Flash endpoint/model is allowed. Claude uses the official Anthropic-format endpoint.');
     }
     console.log('OpenAI, Pi and OpenCode receive pinned provider/model configuration. An absent installed Pi model is unavailable, never replaced with another model.');
-    console.log('Qoder uses resolveModel BYOK and still requires QODER_PERSONAL_ACCESS_TOKEN or qodercli login; BYOK does not replace native authentication.');
+    console.log('Qoder uses resolveModel BYOK and still requires QODER_PERSONAL_ACCESS_TOKEN or qodercli login; BYOK does not replace Qoder authentication.');
     console.log(`Each real SSE scenario has a ${DEFAULT_TIMEOUT_MS}ms default timeout; --timeout-ms changes observation only.`);
     console.log('The code-aware semantic-delta suite requires --repeat 5 and writes paired-run plus aggregate JSON artifacts.');
     console.log(`The system-analysis suite uses declarative real/constructed fixtures. all/${profile.runtimeGroup} selects OpenAI, Pi and OpenCode; Claude/Qoder require separate runs.`);

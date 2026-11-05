@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 
 name: thread_system_summary_in_range
-version: "1.0"
+version: "1.1"
 type: atomic
 category: kernel
 tier: B
@@ -60,6 +60,7 @@ investigation_evidence:
     - domain: preemption
       metric_id: system.thread.preemption.count
       value: preemption_count
+      unit: count
       status: preemption_evidence
       coverage: state_covered_ns
       denominator: window_dur_ns
@@ -83,8 +84,8 @@ display:
     - {name: tid, label: "tid", type: number}
     - {name: thread_name, label: "thread_name", type: string}
     - {name: role, label: "role", type: string}
-    - {name: total_target_threads, label: "total_target_threads", type: number}
-    - {name: state_count, label: "state_count", type: number}
+    - {name: total_target_threads, label: "total_target_threads", type: number, unit: count}
+    - {name: state_count, label: "state_count", type: number, unit: count}
     - {name: state_covered_ns, label: "state_covered_ns", type: duration, unit: ns}
     - {name: running_ns, label: "running_ns", type: duration, unit: ns}
     - {name: runnable_ns, label: "runnable_ns", type: duration, unit: ns}
@@ -108,15 +109,15 @@ display:
     - {name: frequency_evidence, label: "frequency_evidence", type: string}
     - {name: priority_min, label: "priority_min", type: number}
     - {name: priority_max, label: "priority_max", type: number}
-    - {name: priority_value_count, label: "priority_value_count", type: number}
+    - {name: priority_value_count, label: "priority_value_count", type: number, unit: count}
     - {name: priority_evidence, label: "priority_evidence", type: string}
     - {name: scheduling_policy_evidence, label: "scheduling_policy_evidence", type: string}
     - {name: affinity_evidence, label: "affinity_evidence", type: string}
     - {name: cgroup_evidence, label: "cgroup_evidence", type: string}
     - {name: uclamp_evidence, label: "uclamp_evidence", type: string}
-    - {name: preemption_count, label: "preemption_count", type: number}
+    - {name: preemption_count, label: "preemption_count", type: number, unit: count}
     - {name: preemption_evidence, label: "preemption_evidence", type: string}
-    - {name: migrations, label: "migrations", type: number}
+    - {name: migrations, label: "migrations", type: number, unit: count}
     - {name: evidence_scope, label: "evidence_scope", type: string}
 sql: |
   WITH system_windows AS (

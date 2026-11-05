@@ -20995,7 +20995,7 @@
     },
     "thread_system_summary_in_range": {
       "source_file": "backend/skills/atomic/thread_system_summary_in_range.skill.yaml",
-      "source_sha256": "e523b849bf1e8c93117737f0a334009b9877f6001a098b8e3eed2888cf077dac",
+      "source_sha256": "5dc870799473652b620c8e5763fa0cafaa0f92b1c6fa3c8c84cdd21017a617b4",
       "type": "atomic",
       "execution": "root",
       "declared_modules": [

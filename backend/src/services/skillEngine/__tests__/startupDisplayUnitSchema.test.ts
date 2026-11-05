@@ -10,12 +10,13 @@ import {describe, it, expect} from '@jest/globals';
 import {createSkillExecutor} from '../skillExecutor';
 import {normalizeSkillDefinition, SkillRegistry} from '../skillLoader';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
-import {captureEvidenceTable, capturedEvidenceTable, evidenceTableFor, getCapturedAnchorFacts} from '../../evidence/evidenceCapture';
+import {captureEvidenceTable, capturedEvidenceTable, evidenceTableFor, getCapturedAnchorFacts, evidenceCaptureHash} from '../../evidence/evidenceCapture';
 import {investigationCaptureFields} from '../../evidence/investigationEvidenceLedger';
 import {prepareClaimEvidence} from '../../evidence/claimEvidencePreparation';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
 import {buildColumnDefinitions, validateColumnDefinition} from '../../../types/dataContract';
+import {fingerprintSkillDefinition} from '../../selfEvolution/skillFingerprint';
 
 describe('startup display unit contracts', () => {
   const loadYaml = (relativePath: string) => {
@@ -962,6 +963,11 @@ describe('Skill literal unit authority', () => {
 
 describe('startup primitive unit authority', () => {
   it.each([
+    ['thread_system_summary_in_range', 'total_target_threads', 'count', 'proved', 'numeric_operator_proved'],
+    ['thread_system_summary_in_range', 'state_count', 'count', 'proved', 'numeric_operator_proved'],
+    ['thread_system_summary_in_range', 'priority_value_count', 'count', 'proved', 'numeric_operator_proved'],
+    ['thread_system_summary_in_range', 'preemption_count', 'count', 'proved', 'numeric_operator_proved'],
+    ['thread_system_summary_in_range', 'migrations', 'count', 'proved', 'numeric_operator_proved'],
     ['startup_main_thread_slices_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
     ['startup_main_thread_states_in_range', 'total_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
     ['startup_sched_latency_in_range', 'total_wait_ms', 'ms', 'proved', 'numeric_operator_proved'],
@@ -999,16 +1005,22 @@ describe('startup primitive unit authority', () => {
     ['startup_binder_in_range', 'avg_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
     ['startup_binder_in_range', 'max_dur_ms', 'ms', 'proved', 'numeric_operator_proved'],
     ['startup_binder_in_range', 'all_percent_of_startup', '%', 'proved', 'numeric_operator_proved'],
-  ])('retains %s explicit units without inferring ambiguous percentage scale',
+  ])('retains %s %s explicit units without inferring ambiguous percentage scale',
     async (name, column, unit, status, reason) => {
     const skill = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills/atomic', `${name}.skill.yaml`), 'utf8')) as any;
     const columns = skill.display.columns.map((item: any) => item.name);
-    const row = skill.display.columns.map((item: any) => item.type === 'string' ? 'observed' : 2);
-    const executor = createSkillExecutor({query: async () => ({columns, rows: [row], durationMs: 1})});
+    const row: Array<string | number | null> = skill.display.columns.map((item: any) => item.type === 'string' ? 'observed' : 2);
+    const executedSql: string[] = [];
+    const executor = createSkillExecutor({query: async (_traceId: string, sql: string) => {
+      executedSql.push(sql);
+      return {columns, rows: [row], durationMs: 1};
+    }});
     // The Skill's own fragments, as the registry would supply them.
-    executor.setFragmentRegistry(new Map((skill.sql_fragments ?? []).map((fragment: string) =>
-      [fragment, fs.readFileSync(path.join(process.cwd(), 'skills', fragment), 'utf8').trim()])));
-    executor.registerSkill(normalizeSkillDefinition(skill, `${name}.skill.yaml`)!);
+    const fragments = new Map<string, string>((skill.sql_fragments ?? []).map((fragment: string) =>
+      [fragment, fs.readFileSync(path.join(process.cwd(), 'skills', fragment), 'utf8').trim()]));
+    executor.setFragmentRegistry(fragments);
+    const normalized = normalizeSkillDefinition(skill, `${name}.skill.yaml`)!;
+    executor.registerSkill(normalized);
     // A named run of a target-scoped Skill cites evidence that needs a verified
     // process identity, and this harness registers no resolver; unscoped, it needs none.
     const selector = skill.process_scope?.role === 'target' ? {} : {package: 'example.app'};
@@ -1060,6 +1072,68 @@ describe('startup primitive unit authority', () => {
       expect(facts?.fields[column]).not.toHaveProperty('clock');
     } else {
       expect(facts?.fields[column]).toBeUndefined();
+    }
+    if (name === 'thread_system_summary_in_range') {
+      // Keep the full original producer, including investigation_evidence:
+      // its metric field overrides the display field on the actual witness.
+      expect(normalized.investigation_evidence).toBeDefined();
+      expect(facts?.fields[column]).toMatchObject({unit: 'count', origin: {kind: 'skill_literal',
+        skillId: name, stepId: 'root', definitionFingerprint: fingerprintSkillDefinition(normalized, fragments),
+        selectedSqlHash: evidenceCaptureHash(executedSql[executedSql.length - 1])}});
+      if (column === 'preemption_count') {
+        expect(facts?.fields[column]).toMatchObject({metricId: 'system.thread.preemption.count'});
+        expect(skill.investigation_evidence.metrics.find((metric: any) => metric.value === column))
+          .toMatchObject({metric_id: 'system.thread.preemption.count', unit: 'count'});
+      }
+      for (const field of ['window_id', 'upid', 'pid', 'utid', 'tid', 'priority_min', 'priority_max']) {
+        expect(skill.display.columns.find((entry: any) => entry.name === field)).not.toHaveProperty('unit');
+        expect(facts?.fields[field]?.unit).toBeUndefined();
+      }
+      const verify = async (candidate: any, allowed = true) => {
+        const prepared = await prepareClaimEvidence({conclusionContract: candidate,
+          evidenceReadView: store.createEvidenceReadView({ownerKey: 'test',
+            allowedTraces: allowed ? [{traceId: 'trace', traceSide: 'current'}] : []})});
+        const proof = runClaimVerification({conclusionContract: candidate, preparedEvidence: prepared})
+          .claimVerificationResult.claimResults[0].deterministicProof;
+        expect(proof).toBeDefined();
+        if (!proof) throw new Error('Expected numeric-cell proof outcome');
+        return proof;
+      };
+      const wrongValue = structuredClone(conclusionContract);
+      wrongValue.claims[0].semantics.numeric.value = 3;
+      expect(await verify(wrongValue)).toMatchObject({status: 'rejected', reason: 'numeric_operator_rejected'});
+      const wrongUnit = structuredClone(conclusionContract);
+      wrongUnit.claims[0].semantics.numeric.unit = 'ms';
+      expect(await verify(wrongUnit)).toMatchObject({status: 'rejected', reason: 'unit_dimension_mismatch'});
+      const wrongReference = structuredClone(conclusionContract);
+      wrongReference.claims[0].references[0].artifactId = 'not-issued';
+      wrongReference.claims[0].semantics.scope.subjectRefs[0].artifactId = 'not-issued';
+      expect((await verify(wrongReference)).status).not.toBe('proved');
+      expect((await verify(conclusionContract, false)).status).not.toBe('proved');
+      for (const field of ['upid', 'priority_min']) {
+        const unitless = structuredClone(conclusionContract);
+        unitless.claims[0].references[0].column = field;
+        unitless.claims[0].semantics.scope.subjectRefs[0].column = field;
+        expect(await verify(unitless)).toMatchObject({status: 'candidate', reason: 'unit_authority_unknown'});
+      }
+      if (column === 'preemption_count' || column === 'migrations') {
+        row[columns.indexOf(column)] = null;
+        row[columns.indexOf(column === 'preemption_count' ? 'preemption_evidence' : 'placement_evidence')] = 'unavailable';
+        const unavailable = await executor.execute(name, 'trace', {start_ts: 0, end_ts: 10000000});
+        expect(unavailable.success).toBe(true);
+        const display = unavailable.displayResults[0];
+        const table = capturedEvidenceTable(evidenceTableFor(display)!);
+        expect(table?.rows[0][columns.indexOf(column)]).toBeNull();
+        const missingId = store.store({skillId: name, data: display.data, scopeProvenance: display.scopeProvenance,
+          sourceToolCallId: 'invoke:unavailable',
+          traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+        expect(store.registerEvidenceCapture(missingId, evidenceTableFor(display)!, {evidenceRefId: 'unavailable-metric'})).toBe(true);
+        const zero = structuredClone(conclusionContract);
+        zero.claims[0].references[0] = {artifactId: missingId, rowIndex: 0, column, value: null};
+        zero.claims[0].semantics.scope.subjectRefs[0] = {...zero.claims[0].references[0]};
+        zero.claims[0].semantics.numeric.value = 0;
+        expect((await verify(zero)).status).not.toBe('proved');
+      }
     }
   });
 
