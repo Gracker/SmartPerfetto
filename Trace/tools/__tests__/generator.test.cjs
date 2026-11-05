@@ -1206,12 +1206,116 @@ test('materializes framework process state, statsd atoms, battery stats and free
       (SELECT unfreeze_reason_str || ':' || dur FROM android_freezer_events) AS freeze_slice`);
   const pid = overlay.identities.processes.app;
   assert.equal(output.trim().split(/\r?\n/)[1], [
-    '"TOP:0,LAST_ACTIVITY:300000000,CACHED_ACTIVITY:301000000"',
+    '"TOP:0,LAST_ACTIVITY:300000000,CACHED_ACTIVITY:-1"',
     '"SyncJob:10123:300000000"',
     '"BUCKET_RARE:MAIN_TIMEOUT"',
     `"FREEZE_APP:${pid}"`,
     '"binder_txns:250000000"',
   ].join(','));
+});
+
+test('materializes process lifecycle metadata without moving death to a delayed reason event', () => {
+  const scenario = frameworkStateScenario();
+  scenario.signals = scenario.signals.filter((signal) => signal.type.startsWith('android-process-state'));
+  scenario.signals.find((signal) => signal.type === 'android-process-state-snapshot').records = [
+    {process: 'system', proc_state: 'PROCESS_STATE_PERSISTENT', oom_score: -900},
+  ];
+  scenario.signals.push(
+    {type: 'android-process-start', at_ns: '20000000', thread: 'am', target_process: 'app', start_seq_id: 101,
+      hosting_type: 'HOSTING_TYPE_ACTIVITY', hosting_name: '{com.smartperfetto.fixture/.MainActivity}',
+      trigger_type: 'TRIGGER_TYPE_JOB', bind_application_delay_ms: 0, process_start_delay_ms: 25},
+    {type: 'android-process-state-change', at_ns: '50000000', thread: 'am', target_process: 'app',
+      prev_proc_state: 'PROCESS_STATE_NONEXISTENT', cur_proc_state: 'PROCESS_STATE_TOP'},
+    {type: 'android-process-binder-died', at_ns: '700000000', thread: 'am', target_process: 'app', start_seq_id: 101},
+    {type: 'android-process-died', at_ns: '750000000', thread: 'am', target_process: 'app', start_seq_id: 101,
+      exit_reason: 'APP_EXIT_REASON_LOW_MEMORY', exit_subreason: 'APP_EXIT_SUBREASON_MEMORY_PRESSURE'},
+  );
+  scenario.signals.sort((a, b) => Number(BigInt(a.at_ns) - BigInt(b.at_ns)));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-process-lifecycle-'));
+  const outputPath = path.join(tempDir, 'trace.pftrace');
+  try {
+    const overlay = encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 555556});
+    materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+    const output = queryTrace(outputPath, `
+      INCLUDE PERFETTO MODULE android.process_state;
+      SELECT
+        (SELECT COUNT(*) FROM _android_process_state_intervals
+          WHERE state = 'NONEXISTENT' AND ts = 1020000000 AND dur = 30000000
+            AND hosting_type = 'HOSTING_TYPE_ACTIVITY'
+            AND hosting_name = 'com.smartperfetto.fixture/.MainActivity'
+            AND trigger_type = 'TRIGGER_TYPE_JOB'
+            AND bind_application_delay_ms = 0 AND process_start_delay_ms = 25) AS startup,
+        (SELECT COUNT(*) FROM _android_process_state_intervals
+          WHERE state = 'EXITED' AND ts = 1700000000 AND dur = -1
+            AND exit_reason = 'APP_EXIT_REASON_LOW_MEMORY'
+            AND exit_subreason = 'APP_EXIT_SUBREASON_MEMORY_PRESSURE'
+            AND state_change_reason IS NULL AND hosting_type IS NULL) AS death,
+        (SELECT COUNT(*) FROM _android_process_state_intervals
+          WHERE process_name = 'com.smartperfetto.fixture' AND state = 'CACHED_ACTIVITY'
+            AND dur = 300000000 AND exit_reason IS NULL) AS alive,
+        (SELECT COUNT(*) FROM _android_process_state_intervals
+          WHERE process_name = 'system_server' AND hosting_type IS NULL
+            AND bind_application_delay_ms IS NULL AND exit_reason IS NULL) AS absent_metadata`);
+    assert.equal(output.trim().split(/\r?\n/)[1], '1,1,1,1');
+  } finally {
+    fs.rmSync(tempDir, {recursive: true, force: true});
+  }
+});
+
+test('materializes JobScheduler pending reason rows with zero and missing durations', () => {
+  const scenario = frameworkStateScenario();
+  const job = {
+    type: 'android-job-scheduler-state', thread: 'am', owner_process: 'app',
+    duration_ns: '1000000', job_id: 101,
+    job_name: '#sync#@SYNC@com.smartperfetto.fixture/.SyncJob#101',
+  };
+  scenario.signals = [
+    {...job, at_ns: '100000000', job_state: 'JOB_STATE_STARTED',
+      pending_reasons: ['PENDING_JOB_REASON_CONSTRAINT_CHARGING', 'PENDING_JOB_REASON_CONSTRAINT_DEVICE_IDLE'],
+      pending_durations_ms: [0]},
+    {...job, at_ns: '300000000', job_state: 'JOB_STATE_FINISHED', internal_stop_reason: 'INTERNAL_STOP_REASON_SUCCESSFUL_FINISH'},
+    {...job, at_ns: '500000000', job_id: 102, job_state: 'JOB_STATE_CANCELLED',
+      pending_reasons: ['PENDING_JOB_REASON_CONSTRAINT_CHARGING'], pending_durations_ms: [50]},
+  ];
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-job-scheduler-'));
+  const outputPath = path.join(tempDir, 'trace.pftrace');
+  try {
+    const overlay = encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1000000000', usedPids: new Set(), sequenceId: 555557});
+    materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+    const output = queryTrace(outputPath, `
+      INCLUDE PERFETTO MODULE android.job_scheduler_states_track_events;
+      SELECT
+        (SELECT COUNT(*) FROM android_job_scheduler_states_track_events
+          WHERE job_id = 101 AND uid = 10123 AND package_name = 'com.smartperfetto.fixture'
+            AND dur = 200000000) AS completed,
+        (SELECT COUNT(*) FROM android_job_scheduler_pending_reasons_track_events) AS reasons,
+        (SELECT COUNT(*) FROM android_job_scheduler_pending_reasons_track_events WHERE pending_duration_ms = 0) AS zero_duration,
+        (SELECT COUNT(*) FROM android_job_scheduler_pending_reasons_track_events WHERE pending_duration_ms IS NULL) AS unknown_duration,
+        (SELECT COUNT(*) FROM android_job_scheduler_pending_reasons_track_events AS r
+          JOIN android_job_scheduler_states_track_events AS s USING (slice_id)) AS completed_reasons`);
+    assert.equal(output.trim().split(/\r?\n/)[1], '1,3,1,1,2');
+  } finally {
+    fs.rmSync(tempDir, {recursive: true, force: true});
+  }
+});
+
+test('rejects invalid lifecycle and JobScheduler fields before encoding', () => {
+  const encode = (signal) => {
+    const scenario = frameworkStateScenario();
+    scenario.signals = [signal];
+    return () => encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1', usedPids: new Set(), sequenceId: 1});
+  };
+  const start = {type: 'android-process-start', at_ns: '1', thread: 'am', target_process: 'app'};
+  assert.throws(encode({...start, hosting_type: 'ACTIVITY'}), /HostingTypeId value name/);
+  assert.throws(encode({...start, bind_application_delay_ms: -1}), /non-negative safe integer/);
+  assert.throws(encode({...start, start_seq_id: Number.MAX_SAFE_INTEGER + 1}), /non-negative safe integer/);
+  const job = {type: 'android-job-scheduler-state', at_ns: '1', thread: 'am', owner_process: 'app',
+    job_name: 'com.smartperfetto.fixture/.Job#1', job_id: 1, job_state: 'JOB_STATE_STARTED', duration_ns: '1'};
+  assert.throws(encode({...job, job_state: 'STARTED'}), /JobState value name/);
+  assert.throws(encode({...job, pending_reasons: ['UNKNOWN']}), /PendingJobReason value name/);
+  assert.throws(encode({...job, pending_durations_ms: [Number.MAX_SAFE_INTEGER + 1]}), /non-negative safe integer/);
+  assert.throws(encode({...job, pending_reasons: Array(65).fill('PENDING_JOB_REASON_CONSTRAINT_CHARGING')}), /at most 64 entries/);
+  assert.throws(encode({...job, duration_ns: '0'}), /duration_ns must be positive/);
 });
 
 test('rejects framework signals outside the pinned proto and atom allow-list', () => {

@@ -33,8 +33,9 @@ function csvRows(text) {
 function query(sql, label, file = path.join(output, 'trace.pftrace')) {
   const queryFile = path.join(output, `${label}.sql`);
   fs.writeFileSync(queryFile, sql);
-  const result = spawnSync(resolveTraceProcessor(root), ['query', '-f', queryFile, file], {
+  const result = spawnSync(resolveTraceProcessor(root), ['query', '--no-agent', '--format', 'csv', '-f', queryFile, file], {
     cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+    env: {...process.env, AI_AGENT: '1'},
   });
   fs.writeFileSync(path.join(output, `${label}.csv`), result.stdout || '');
   fs.writeFileSync(path.join(output, `${label}.stderr`), result.stderr || '');
@@ -71,6 +72,14 @@ before(() => {
     outputPath: path.join(output, 'trace.pftrace'),
   });
   fs.writeFileSync(path.join(output, 'build-provenance.json'), JSON.stringify(built.provenance, null, 2));
+});
+
+test('machine CSV queries remain complete inside an agent environment', () => {
+  const rows = query(`WITH RECURSIVE rows(n) AS (
+    VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < 1500
+  ) SELECT n FROM rows`, 'untruncated-machine-csv');
+  assert.equal(rows.length, 1500);
+  assert.equal(rows.at(-1).n, '1500');
 });
 
 test('native motion and two window deliveries survive real protobuf encoding and pinned TP ingestion', () => {

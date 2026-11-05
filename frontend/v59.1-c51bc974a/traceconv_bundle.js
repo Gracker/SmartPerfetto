@@ -25,7 +25,7 @@
 	}) : target, mod));
 	//#endregion
 	//#region \0perfetto:version:ui/src/virtual/version
-	var VERSION = "v58.3-027e70691";
+	var VERSION = "v59.1-c51bc974a";
 	//#endregion
 	//#region ../../ui/src/base/utils.ts
 	function exists(value) {
@@ -731,8 +731,8 @@
 							$parts$jscomp$1_path$jscomp$11$$ = $parts$jscomp$1_path$jscomp$11$$.split("/");
 							for (var $parent$jscomp$10$$ = $root$jscomp$4$$, $i$jscomp$13$$ = 0; $i$jscomp$13$$ < $parts$jscomp$1_path$jscomp$11$$.length - 1; $i$jscomp$13$$++) {
 								var $curr$$ = $parts$jscomp$1_path$jscomp$11$$.slice(0, $i$jscomp$13$$ + 1).join("/");
-								let $$jscomp$logical$assign$tmpm2116917159$3$$, $$jscomp$logical$assign$tmpindexm2116917159$3$$;
-								($$jscomp$logical$assign$tmpm2116917159$3$$ = $createdParents$$)[$$jscomp$logical$assign$tmpindexm2116917159$3$$ = $curr$$] || ($$jscomp$logical$assign$tmpm2116917159$3$$[$$jscomp$logical$assign$tmpindexm2116917159$3$$] = $WORKERFS$$.createNode($parent$jscomp$10$$, $parts$jscomp$1_path$jscomp$11$$[$i$jscomp$13$$], $WORKERFS$$.$DIR_MODE$, 0));
+								let $$jscomp$logical$assign$tmpm1996226014$3$$, $$jscomp$logical$assign$tmpindexm1996226014$3$$;
+								($$jscomp$logical$assign$tmpm1996226014$3$$ = $createdParents$$)[$$jscomp$logical$assign$tmpindexm1996226014$3$$ = $curr$$] || ($$jscomp$logical$assign$tmpm1996226014$3$$[$$jscomp$logical$assign$tmpindexm1996226014$3$$] = $WORKERFS$$.createNode($parent$jscomp$10$$, $parts$jscomp$1_path$jscomp$11$$[$i$jscomp$13$$], $WORKERFS$$.$DIR_MODE$, 0));
 								$parent$jscomp$10$$ = $createdParents$$[$curr$$];
 							}
 							return $parent$jscomp$10$$;
@@ -1716,10 +1716,10 @@
 					$createDevice$($parent$jscomp$31_path$jscomp$42$$, $mode$jscomp$42_name$jscomp$103$$, $input$jscomp$11$$, $output$jscomp$4$$) {
 						$parent$jscomp$31_path$jscomp$42$$ = $PATH$join2$$("string" == typeof $parent$jscomp$31_path$jscomp$42$$ ? $parent$jscomp$31_path$jscomp$42$$ : $JSCompiler_StaticMethods_getPath$$($parent$jscomp$31_path$jscomp$42$$), $mode$jscomp$42_name$jscomp$103$$);
 						$mode$jscomp$42_name$jscomp$103$$ = $FS_getMode$$(!!$input$jscomp$11$$, !!$output$jscomp$4$$);
-						var $$jscomp$logical$assign$tmpm2116917159$6_dev$jscomp$11$$;
-						($$jscomp$logical$assign$tmpm2116917159$6_dev$jscomp$11$$ = $FS$$.$createDevice$).$major$ ?? ($$jscomp$logical$assign$tmpm2116917159$6_dev$jscomp$11$$.$major$ = 64);
-						$$jscomp$logical$assign$tmpm2116917159$6_dev$jscomp$11$$ = $FS$$.$makedev$($FS$$.$createDevice$.$major$++, 0);
-						$JSCompiler_StaticMethods_registerDevice$$($$jscomp$logical$assign$tmpm2116917159$6_dev$jscomp$11$$, {
+						var $$jscomp$logical$assign$tmpm1996226014$6_dev$jscomp$11$$;
+						($$jscomp$logical$assign$tmpm1996226014$6_dev$jscomp$11$$ = $FS$$.$createDevice$).$major$ ?? ($$jscomp$logical$assign$tmpm1996226014$6_dev$jscomp$11$$.$major$ = 64);
+						$$jscomp$logical$assign$tmpm1996226014$6_dev$jscomp$11$$ = $FS$$.$makedev$($FS$$.$createDevice$.$major$++, 0);
+						$JSCompiler_StaticMethods_registerDevice$$($$jscomp$logical$assign$tmpm1996226014$6_dev$jscomp$11$$, {
 							open($stream$jscomp$45$$) {
 								$stream$jscomp$45$$.seekable = !1;
 							},
@@ -1751,7 +1751,7 @@
 								return $i$jscomp$17$$;
 							}
 						});
-						return $JSCompiler_StaticMethods_mkdev$$($parent$jscomp$31_path$jscomp$42$$, $mode$jscomp$42_name$jscomp$103$$, $$jscomp$logical$assign$tmpm2116917159$6_dev$jscomp$11$$);
+						return $JSCompiler_StaticMethods_mkdev$$($parent$jscomp$31_path$jscomp$42$$, $mode$jscomp$42_name$jscomp$103$$, $$jscomp$logical$assign$tmpm1996226014$6_dev$jscomp$11$$);
 					},
 					$createLazyFile$($parent$jscomp$32_stream_ops$$, $name$jscomp$104$$, $url$jscomp$29$$, $canRead$jscomp$6$$, $canWrite$jscomp$6$$) {
 						function $writeChunks$$($contents$jscomp$5_stream$jscomp$49$$, $buffer$jscomp$31$$, $offset$jscomp$42$$, $length$jscomp$34_size$jscomp$25$$, $position$jscomp$11$$) {
@@ -2171,7 +2171,7 @@
 					$unexportedRuntimeSymbol$$($sym$jscomp$2$$);
 				});
 				"run out err abort wasmExports HEAPF32 HEAPF64 HEAP8 HEAP16 HEAPU16 HEAP32 HEAPU32 HEAP64 HEAPU64 writeStackCookie checkStackCookie readI53FromI64 INT53_MAX INT53_MIN bigintToI53Checked stackSave stackRestore stackAlloc ptrToString zeroMemory exitJS getHeapMax growMemory ENV ERRNO_CODES strError DNS Protocols Sockets timers warnOnce readEmAsmArgsArray readEmAsmArgs runEmAsmFunction getExecutableName handleException keepRuntimeAlive asyncLoad alignMemory mmapAlloc wasmTable wasmMemory getUniqueRunDependency noExitRuntime addRunDependency removeRunDependency addOnPreRun addOnPostRun convertJsFunctionToWasm freeTableIndexes functionsInTableMap getEmptyTableSlot updateTableMap getFunctionAddress setValue getValue PATH PATH_FS UTF8Decoder UTF8ArrayToString UTF8ToString stringToUTF8Array stringToUTF8 lengthBytesUTF8 intArrayFromString UTF16Decoder stringToNewUTF8 stringToUTF8OnStack writeArrayToMemory JSEvents specialHTMLTargets findCanvasEventTarget currentFullscreenStrategy restoreOldWindowedStyle jsStackTrace UNWIND_CACHE ExitStatus getEnvStrings checkWasiClock doReadv doWritev initRandomFill randomFill emSetImmediate emClearImmediate_deps emClearImmediate promiseMap uncaughtExceptionCount exceptionLast exceptionCaught Browser requestFullscreen requestFullScreen setCanvasSize getUserMedia createContext getPreloadedImageData__data wget MONTH_DAYS_REGULAR MONTH_DAYS_LEAP MONTH_DAYS_REGULAR_CUMULATIVE MONTH_DAYS_LEAP_CUMULATIVE isLeapYear ydayFromDate SYSCALLS preloadPlugins FS_createPreloadedFile FS_preloadFile FS_modeStringToFlags FS_getMode FS_fileDataToTypedArray FS_stdin_getChar_buffer FS_stdin_getChar FS_createPath FS_createDevice FS_root FS_mounts FS_devices FS_streams FS_nextInode FS_nameTable FS_currentPath FS_initialized FS_ignorePermissions FS_filesystems FS_syncFSRequests FS_getPath FS_hashName FS_hashAddNode FS_hashRemoveNode FS_lookupNode FS_createNode FS_destroyNode FS_isRoot FS_isMountpoint FS_isFile FS_isDir FS_isLink FS_isChrdev FS_isBlkdev FS_isFIFO FS_isSocket FS_flagsToPermissionString FS_nodePermissions FS_mayLookup FS_mayCreate FS_mayDelete FS_mayOpen FS_checkOpExists FS_nextfd FS_getStreamChecked FS_getStream FS_createStream FS_closeStream FS_dupStream FS_doSetAttr FS_chrdev_stream_ops FS_major FS_minor FS_makedev FS_registerDevice FS_getDevice FS_getMounts FS_syncfs FS_unmount FS_lookup FS_mknod FS_statfs FS_statfsStream FS_statfsNode FS_create FS_mkdev FS_symlink FS_rename FS_rmdir FS_readlink FS_stat FS_fstat FS_lstat FS_doChmod FS_chmod FS_lchmod FS_fchmod FS_doChown FS_chown FS_lchown FS_fchown FS_doTruncate FS_truncate FS_ftruncate FS_utime FS_open FS_close FS_isClosed FS_llseek FS_read FS_write FS_mmap FS_msync FS_ioctl FS_writeFile FS_cwd FS_chdir FS_createDefaultDirectories FS_createDefaultDevices FS_createSpecialDirectories FS_createStandardStreams FS_staticInit FS_init FS_quit FS_findObject FS_analyzePath FS_createFile FS_createDataFile FS_forceLoadFile FS_createLazyFile MEMFS TTY PIPEFS SOCKFS tempFixedLengthArray miniTempWebGLFloatBuffers miniTempWebGLIntBuffers GL AL GLUT EGL GLEW IDBStore SDL SDL_gfx print printErr jstoi_s".split(" ").forEach($unexportedRuntimeSymbol$$);
-				var $ASM_CONSTS$$ = { 4989812: () => "undefined" !== typeof wasmOffsetConverter }, $_main$$ = $Module$$._main = $makeInvalidEarlyAccess$$("_main"), $_strerror$$ = $makeInvalidEarlyAccess$$("_strerror"), $_malloc$$ = $makeInvalidEarlyAccess$$("_malloc"), $_free$$ = $makeInvalidEarlyAccess$$("_free"), $_fflush$$ = $makeInvalidEarlyAccess$$("_fflush");
+				var $ASM_CONSTS$$ = { 5011892: () => "undefined" !== typeof wasmOffsetConverter }, $_main$$ = $Module$$._main = $makeInvalidEarlyAccess$$("_main"), $_strerror$$ = $makeInvalidEarlyAccess$$("_strerror"), $_malloc$$ = $makeInvalidEarlyAccess$$("_malloc"), $_free$$ = $makeInvalidEarlyAccess$$("_free"), $_fflush$$ = $makeInvalidEarlyAccess$$("_fflush");
 				$Module$$._SynqPerfettoParseAlloc = $makeInvalidEarlyAccess$$("_SynqPerfettoParseAlloc");
 				$Module$$._SynqPerfettoParseFree = $makeInvalidEarlyAccess$$("_SynqPerfettoParseFree");
 				$Module$$._SynqPerfettoParse = $makeInvalidEarlyAccess$$("_SynqPerfettoParse");

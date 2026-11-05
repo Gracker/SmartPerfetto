@@ -9,6 +9,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
+const {startHangingOpenAIStub} = require('../e2e/hanging-openai-stub.cjs');
 const {
   childEnvironments,
   configureServices,
@@ -16,6 +17,52 @@ const {
   resolveRealProvider,
   validateBackendHealth,
 } = require('../e2e/dual-trace-e2e-services.cjs');
+
+test('provider stub completes streamed tool-free intent and holds only the analysis stream', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dual-trace-streamed-intent-'));
+  const stub = await startHangingOpenAIStub(path.join(directory, 'provider.log'), 'test-key');
+  const controller = new AbortController();
+  const headers = {'Content-Type': 'application/json', Authorization: 'Bearer test-key'};
+  try {
+    const intent = await fetch(`${stub.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers,
+      body: JSON.stringify({model: 'test-model', stream: true, temperature: 0,
+        messages: [{role: 'user', content: 'Compare the two startup traces'}]}),
+    });
+    assert.equal(intent.status, 200);
+    assert.equal(intent.headers.get('content-type'), 'text/event-stream');
+    const events = (await intent.text()).split('\n\n').filter(Boolean);
+    const first = JSON.parse(events[0].slice('data: '.length));
+    assert.equal(JSON.parse(first.choices[0].delta.content).taskKind, 'comparison');
+    assert.equal(JSON.parse(events[1].slice('data: '.length)).choices[0].finish_reason, 'stop');
+    assert.equal(events[2], 'data: [DONE]');
+    assert.equal(stub.snapshot().active, 0);
+
+    const analysis = await fetch(`${stub.baseUrl}/v1/chat/completions`, {
+      method: 'POST', headers, signal: controller.signal,
+      body: JSON.stringify({model: 'test-model', stream: true,
+        stream_options: {include_usage: true}, parallel_tool_calls: false,
+        tools: [], messages: [{role: 'user', content: 'Compare the two startup traces'}]}),
+    });
+    assert.equal(analysis.status, 200);
+    assert.equal(stub.snapshot().active, 1);
+    assert.deepEqual(stub.snapshot().requests.map(({kind, validationErrors}) => ({kind, validationErrors})), [
+      {kind: 'classification', validationErrors: []},
+      {kind: 'analysis', validationErrors: []},
+    ]);
+    controller.abort();
+    const deadline = Date.now() + 2000;
+    while (stub.snapshot().active && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(stub.snapshot().active, 0);
+    assert.equal(stub.snapshot().closed, 2);
+  } finally {
+    controller.abort();
+    await stub.close();
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+});
 
 test('real browser E2E requires Coding Plan credentials without a paid provider fallback', () => {
   assert.throws(() => resolveRealProvider({

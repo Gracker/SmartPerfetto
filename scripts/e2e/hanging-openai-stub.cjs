@@ -28,7 +28,9 @@ async function readJsonRequest(request) {
 }
 
 function classifyRequest(body) {
-  return body?.stream === true ? 'analysis' : 'classification';
+  // The native intent transport streams too, but deliberately has no tools.
+  // Analysis always carries the tool array, including when it is empty.
+  return body?.tools === undefined ? 'classification' : 'analysis';
 }
 
 function validateRequest(request, body, apiKey, kind) {
@@ -41,6 +43,7 @@ function validateRequest(request, body, apiKey, kind) {
   }
   if (!model) errors.push('model must be a non-empty string');
   if (kind === 'analysis') {
+    if (!stream) errors.push('analysis must stream');
     if (body?.stream_options?.include_usage !== true) {
       errors.push('stream_options.include_usage must be true');
     }
@@ -128,18 +131,32 @@ async function startHangingOpenAIStub(logPath, apiKey) {
     }
 
     if (kind === 'classification') {
+      const decision = JSON.stringify({
+        schemaVersion: 1,
+        taskKind: 'comparison',
+        sceneId: 'startup',
+        scope: 'scene_wide',
+        recommendedComplexity: 'full',
+        deliverable: 'report',
+        evidenceAccess: 'read_new',
+        reason: 'E2E exercises the full dual-trace workflow',
+      });
       record.closedAt = new Date().toISOString();
       closed += 1;
-      response.writeHead(200, {'Content-Type': 'application/json'});
-      response.end(JSON.stringify({
-        choices: [{
-          message: {content: JSON.stringify({
-            complexity: 'full',
-            reason: 'E2E exercises the full dual-trace workflow',
-          })},
-          finish_reason: 'stop',
-        }],
-      }));
+      if (validation.stream) {
+        response.writeHead(200, {'Content-Type': 'text/event-stream'});
+        const chunk = (delta, finish_reason) => `data: ${JSON.stringify({
+          id, model: validation.model,
+          choices: [{index: 0, delta, finish_reason}],
+        })}\n\n`;
+        response.end(chunk({role: 'assistant', content: decision}, null)
+          + chunk({}, 'stop') + 'data: [DONE]\n\n');
+      } else {
+        response.writeHead(200, {'Content-Type': 'application/json'});
+        response.end(JSON.stringify({choices: [{
+          message: {role: 'assistant', content: decision}, finish_reason: 'stop',
+        }]}));
+      }
       appendLog(logPath, {id, event: 'classification_completed'});
       return;
     }

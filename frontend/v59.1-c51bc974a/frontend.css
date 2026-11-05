@@ -32,42 +32,7 @@
   font-weight: 100 700;
   font-display: block;
   src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-:root {
+}:root {
   --sidebar-width: 230px;
   --topbar-height: 44px;
   --track-shell-width: 250px;
@@ -95,6 +60,7 @@ html {
   height: 100%;
   width: 100%;
   touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
 }
 
 @media (pointer: coarse) {
@@ -111,7 +77,6 @@ body > main {
   width: 100%;
   padding: 0;
   margin: 0;
-  overscroll-behavior: contain;
   overflow: hidden;
 }
 
@@ -159,41 +124,6 @@ button {
   font: inherit;
   cursor: pointer;
   outline: inherit;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
 }
 @keyframes pf-spinner-rotation {
   from {
@@ -407,42 +337,7 @@ button {
 .pf-button-group .pf-button:not(:first-child) {
   border-top-left-radius: unset;
   border-bottom-left-radius: unset;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-@layer pf-widgets {
+}@layer pf-widgets {
   .pf-icon {
     font-family: "Material Symbols Sharp";
     font-weight: normal;
@@ -485,42 +380,7 @@ button {
   .pf-icon.pf-intent-warning {
     color: var(--pf-color-warning);
   }
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-popup-portal {
+}.pf-popup-portal {
   position: absolute;
   z-index: 10;
   width: 100%;
@@ -587,42 +447,7 @@ button {
   left: -6px;
   border-top: none;
   border-right: none;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-tooltip-portal {
+}.pf-tooltip-portal {
   position: absolute;
   z-index: 20;
   width: 100%;
@@ -638,42 +463,7 @@ button {
   border: solid 1px var(--pf-color-border);
   box-shadow: 2px 2px 16px var(--pf-color-box-shadow);
   pointer-events: none;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-timecode .pf-timecode-millis {
+}.pf-timecode .pf-timecode-millis {
   margin-left: 1px;
 }
 .pf-timecode .pf-timecode-micros {
@@ -684,42 +474,7 @@ button {
 }
 .pf-timecode .pf-button {
   margin-left: 2px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-details-shell {
+}.pf-details-shell {
   display: flex;
   flex-direction: column;
   font-family: var(--pf-font-compact);
@@ -764,42 +519,7 @@ button {
 }
 .pf-details-shell.pf-fill-height .pf-content {
   overflow-y: auto;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-grid-layout {
+}.pf-grid-layout {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
@@ -816,42 +536,7 @@ button {
 }
 .pf-grid-layout td {
   word-break: break-all;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-section {
+}.pf-section {
   border-radius: 2px;
   border: 1px solid var(--pf-color-border-secondary);
 }
@@ -862,42 +547,7 @@ button {
 .pf-section article {
   padding: 6px;
   font-size: var(--pf-font-size-m);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-tree {
+}.pf-tree {
   display: grid;
   grid-template-columns: [left] auto [right] 1fr;
   row-gap: 5px;
@@ -1049,42 +699,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 }
 .pf-tree.pf-tree--bordered .pf-tree-node:not(.pf-collapsed):not(.pf-expanded):not(.pf-loading) > .pf-tree-left > .pf-tree-gutter {
   display: none;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-anchor {
+}.pf-anchor {
   color: var(--pf-color-primary);
   border-radius: 2px;
   cursor: pointer;
@@ -1104,42 +719,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 }
 .pf-anchor:focus-visible {
   outline: 2px solid var(--pf-color-accent);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-popup-menu.pf-popup .pf-popup-content {
+}.pf-popup-menu.pf-popup .pf-popup-content {
   padding: 0;
 }
 
@@ -1333,42 +913,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
   color: var(--pf-color-foreground-muted);
   cursor: help;
   font-size: var(--pf-font-size-m);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-@keyframes pf-spinner-rotation {
+}@keyframes pf-spinner-rotation {
   from {
     transform: rotate(0deg);
   }
@@ -1723,42 +1268,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
   background-image: repeating-linear-gradient(45deg, color-mix(in srgb, var(--pf-color-danger) 10%, transparent), color-mix(in srgb, var(--pf-color-danger) 10%, transparent) 4px, transparent 4px, transparent 8px);
   color: var(--pf-color-danger);
   font-style: italic;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-callout {
+}.pf-callout {
   display: flex;
   align-items: start;
   background: var(--pf-color-background-secondary);
@@ -1789,42 +1299,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 .pf-callout.pf-intent-warning {
   color: var(--pf-color-warning);
   background: color-mix(in srgb, var(--pf-color-warning) 15%, transparent);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-empty-state {
+}.pf-empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1854,42 +1329,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 }
 .pf-empty-state__content {
   text-align: center;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-grid-header-cell {
+}.pf-grid-header-cell {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2165,42 +1605,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
     left: 100%;
     right: -90%;
   }
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-text-input {
+}.pf-text-input {
   display: inline-flex;
   align-items: baseline;
   font-family: var(--pf-font-compact);
@@ -2241,42 +1646,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
   opacity: 0.5;
   pointer-events: none;
   cursor: not-allowed;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-form {
+}.pf-form {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2344,42 +1714,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 }
 .pf-box.pf-spacing-large {
   padding: 6px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-chip {
+}.pf-chip {
   display: inline-flex;
   align-items: baseline;
   font-family: var(--pf-font-compact);
@@ -2486,6 +1821,28 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 .pf-stack-auto {
   flex: 1;
   overflow: hidden;
+}
+
+.pf-inline {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  align-items: baseline;
+}
+.pf-inline.pf-spacing-small {
+  gap: 2px;
+}
+.pf-inline.pf-spacing-medium {
+  gap: 4px;
+}
+.pf-inline.pf-spacing-large {
+  gap: 16px;
+}
+.pf-inline--wrap {
+  flex-wrap: wrap;
+}
+.pf-inline--inline {
+  display: inline-flex;
 }.pf-export-item {
   display: flex;
   flex-direction: column;
@@ -2736,42 +2093,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 
 .pf-results-table__error-icon {
   font-size: var(--pf-font-size-xl);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-radio-group {
+}.pf-radio-group {
   font-family: var(--pf-font-compact);
   display: inline-flex;
   flex-direction: row;
@@ -2831,42 +2153,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 .pf-radio-group.pf-intent-danger .pf-active {
   background: var(--pf-color-danger);
   color: var(--pf-color-text-on-danger);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-select {
+}.pf-select {
   display: inline;
   font-family: var(--pf-font-compact);
   font-size: inherit;
@@ -2938,42 +2225,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
   top: 0;
   float: right;
   visibility: hidden;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-editor .cm-editor {
+}.pf-editor .cm-editor {
   height: 100%;
 }
 .pf-editor .cm-editor .cm-scroller {
@@ -2982,42 +2234,7 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
 }
 .pf-editor--fill-height {
   height: 100%;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-kbd.pf-keycap {
+}kbd.pf-keycap {
   font-family: inherit;
   user-select: none;
   line-height: 1;
@@ -3096,103 +2313,111 @@ kbd.pf-keycap.pf-spacing-large {
 }
 .pf-resize-handle--horizontal::after {
   inset: 0 -1px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-tabs {
+}.pf-tabs {
   display: flex;
   flex-direction: column;
   height: 100%;
 }
-.pf-tabs__tabs {
+.pf-tabs__tab--dragging {
+  opacity: 0.5;
+}
+.pf-tabs .pf-tab-strip__tab.pf-tabs__tab--drop-before {
+  box-shadow: -2px 0 0 0 var(--pf-color-primary);
+}
+.pf-tabs .pf-tab-strip__tab.pf-tabs__tab--drop-after {
+  box-shadow: 2px 0 0 0 var(--pf-color-primary);
+}
+.pf-tabs__new-tab-btn {
+  margin-left: 2px;
+}
+.pf-tabs__content {
+  flex: 1;
+  overflow: auto;
+}.pf-tab-strip {
   display: flex;
+  align-items: baseline;
   background-color: var(--pf-color-background-secondary);
-  border-bottom: 1px solid var(--pf-color-border);
+  box-shadow: inset var(--pf-color-border) 0px -1px 0px 0px;
   padding-inline: 3px;
+  overflow: hidden;
+}
+.pf-tab-strip__tabs {
+  display: flex;
+  align-items: baseline;
+  flex: 1;
+  min-width: 0;
+}
+.pf-tab-strip__left {
+  display: flex;
   align-items: baseline;
 }
-.pf-tabs__tab {
+.pf-tab-strip__right {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+}
+.pf-tab-strip__tab {
   display: flex;
   align-items: baseline;
   gap: 2px;
   font-family: var(--pf-font-compact);
-  padding: 5px 7px;
+  padding: 5px;
   margin-top: 2px;
-  margin-bottom: -1px;
   cursor: pointer;
+  text-decoration: none;
   border-radius: 3px 3px 0 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   border-style: solid;
-  border-color: transparent;
+  border-color: var(--pf-color-border-secondary);
   border-width: 1px 1px 0 1px;
   color: var(--pf-color-text-muted);
 }
-.pf-tabs__tab:hover {
+.pf-tab-strip__tab + .pf-tab-strip__tab {
+  margin-left: -1px;
+}
+.pf-tab-strip__tab:hover {
   background: color-mix(in srgb, transparent, var(--pf-color-interactive-base) 8%);
   color: var(--pf-color-text);
 }
-.pf-tabs__tab-icon {
+.pf-tab-strip__tab-icon {
   align-self: center;
 }
-.pf-tabs__tab--active {
-  cursor: default;
-  background-color: var(--pf-color-background);
-  border-color: var(--pf-color-border);
-  color: var(--pf-color-text);
-  z-index: 1;
-}
-.pf-tabs__tab--active:hover {
-  background-color: var(--pf-color-background);
-}
-.pf-tabs__tab-menu-btn {
-  visibility: hidden;
-}
-.pf-tabs__tab-menu-btn.pf-active {
-  visibility: visible;
-}
-.pf-tabs__tab:hover .pf-tabs__tab-menu-btn {
-  visibility: visible;
-}
-.pf-tabs__tab-title {
+.pf-tab-strip__tab-title {
   margin: 0px 4px;
   overflow: hidden;
   user-select: none;
 }
-.pf-tabs__tab-rename-input {
+.pf-tab-strip__tab--active {
+  cursor: default;
+  background-color: var(--pf-color-background);
+  border-color: var(--pf-color-border);
+  box-shadow: var(--pf-color-box-shadow) 0px 0px 3px;
+  color: var(--pf-color-text);
+  z-index: 1;
+}
+.pf-tab-strip__tab--active:hover {
+  background-color: var(--pf-color-background);
+}
+.pf-tab-strip__tab--disabled {
+  filter: opacity(50%);
+  cursor: not-allowed;
+}
+.pf-tab-strip__tab--disabled:hover {
+  background: transparent;
+  color: var(--pf-color-text-muted);
+}
+.pf-tab-strip__tab-menu-btn {
+  visibility: hidden;
+}
+.pf-tab-strip__tab-menu-btn.pf-active {
+  visibility: visible;
+}
+.pf-tab-strip__tab:hover .pf-tab-strip__tab-menu-btn {
+  visibility: visible;
+}
+.pf-tab-strip__tab-rename-input {
   border: none;
   outline: none;
   background: transparent;
@@ -3202,29 +2427,28 @@ kbd.pf-keycap.pf-spacing-large {
   margin: 0 4px;
   width: 100%;
 }
-.pf-tabs__tab-wrapper {
-  display: contents;
+.pf-tab-strip--underline {
+  background-color: transparent;
+  border-bottom: none;
+  padding-inline: 0;
 }
-.pf-tabs__tab-wrapper--dragging > .pf-tabs__tab {
-  opacity: 0.5;
+.pf-tab-strip--underline .pf-tab-strip__tab {
+  margin-top: 0;
+  margin-bottom: 0;
+  margin-left: 0;
+  padding: 5px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
 }
-.pf-tabs__tab-wrapper--drop-before > .pf-tabs__tab {
-  box-shadow: -2px 0 0 0 var(--pf-color-primary);
+.pf-tab-strip--underline .pf-tab-strip__tab--active {
+  background-color: transparent;
+  border-bottom-color: var(--pf-color-primary);
+  box-shadow: none;
+  color: var(--pf-color-primary);
 }
-.pf-tabs__tab-wrapper--drop-after > .pf-tabs__tab {
-  box-shadow: 2px 0 0 0 var(--pf-color-primary);
-}
-.pf-tabs__new-tab-btn {
-  margin-left: 2px;
-}
-.pf-tabs__right-content {
-  margin-left: auto;
-  display: flex;
-  align-items: baseline;
-}
-.pf-tabs__content {
-  flex: 1;
-  overflow: auto;
+.pf-tab-strip--underline .pf-tab-strip__tab--active:hover {
+  background-color: color-mix(in srgb, transparent, var(--pf-color-interactive-base) 8%);
 }.pf-accordion {
   display: flex;
   flex-direction: column;
@@ -3322,16 +2546,33 @@ kbd.pf-keycap.pf-spacing-large {
   flex-direction: column;
   overflow-y: hidden;
 }
-.pf-tree-explorer > .pf-flamegraph,
-.pf-tree-explorer > .pf-tree-explorer__grid {
+.pf-tree-explorer .pf-tree-explorer__container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+.pf-tree-explorer .pf-tree-explorer__container > .pf-flamegraph,
+.pf-tree-explorer .pf-tree-explorer__container > .pf-tree-explorer__grid {
   flex: 1;
   min-height: 0;
 }
-.pf-tree-explorer .pf-tree-explorer__loading {
+.pf-tree-explorer .pf-tree-explorer__container .pf-tree-explorer__loading {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.pf-tree-explorer__node-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pf-tree-explorer__node-icon {
+  font-size: 16px;
+  cursor: help;
 }.pf-flamegraph {
   height: 100%;
   overflow-y: hidden;
@@ -3574,42 +2815,7 @@ kbd.pf-keycap.pf-spacing-large {
   overflow: hidden;
   white-space: nowrap;
   flex-shrink: 0;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-tag-input {
+}.pf-tag-input {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -3646,86 +2852,7 @@ kbd.pf-keycap.pf-spacing-large {
 }
 .pf-tag-input:focus-within {
   border: solid 1px var(--pf-color-primary);
-}.pf-tab-strip {
-  display: flex;
-  align-items: baseline;
-}
-.pf-tab-strip__tabs {
-  display: flex;
-  overflow: hidden;
-  flex: 1;
-}
-.pf-tab-strip__tab {
-  color: var(--pf-color-text-muted);
-  padding: 4px;
-  margin-top: 3px;
-  align-items: center;
-  cursor: pointer;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
-}
-.pf-tab-strip__tab:hover {
-  background-color: color_hover(transparent);
-}
-.pf-tab-strip__tab[active] {
-  color: var(--pf-color-primary);
-  border-bottom: solid 2px var(--pf-color-primary);
-  cursor: default;
-}
-.pf-tab-strip__tab:nth-child(1) {
-  margin-left: 3px;
-}
-.pf-tab-strip__tab-title {
-  margin: 0px 4px;
-  overflow: hidden;
-}
-.pf-tab-strip__tab-icon--left {
-  margin-right: 4px;
-  align-self: center;
-}
-.pf-tab-strip__tab-icon--right {
-  margin-left: 4px;
-  align-self: center;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-@keyframes modalFadeOut {
+}@keyframes modalFadeOut {
   from {
     opacity: 1;
   }
@@ -3886,42 +3013,7 @@ kbd.pf-keycap.pf-spacing-large {
 }
 .pf-error-dialog__note {
   margin: 0;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-checkbox {
+}.pf-checkbox {
   display: inline;
   align-items: baseline;
   position: relative;
@@ -4095,46 +3187,11 @@ kbd.pf-keycap.pf-spacing-large {
 }
 .pf-lock-owner-panel__margin-top {
   margin-top: 15px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-@layer pf-widgets {
+}@layer pf-widgets {
   .pf-card {
     padding: 12px 16px;
-    box-shadow: 0px 2px 6px var(--pf-color-box-shadow);
-    border-radius: 4px;
+    box-shadow: 0px 2px 4px var(--pf-color-box-shadow);
+    border-radius: 3px;
     border: solid 1px var(--pf-color-border);
   }
   .pf-card.pf-interactive {
@@ -4148,8 +3205,8 @@ kbd.pf-keycap.pf-spacing-large {
     display: flex;
     flex-direction: column;
     border: solid 1px var(--pf-color-border);
-    border-radius: 4px;
-    box-shadow: 0px 2px 6px var(--pf-color-box-shadow);
+    border-radius: 3px;
+    box-shadow: 0px 2px 4px var(--pf-color-box-shadow);
     overflow: hidden;
   }
   .pf-card-stack > .pf-card:not(:last-child) {
@@ -4663,42 +3720,33 @@ kbd.pf-keycap.pf-spacing-large {
   overflow: hidden;
   text-overflow: ellipsis;
   width: 200px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}.pf-merged-class-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+
+.pf-merged-class-warning__icon {
+  font-size: 1.2em;
+  cursor: help;
+  flex-shrink: 0;
 }
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+
+.pf-merged-class-warning__title {
+  font-weight: 600;
+  margin-bottom: 4px;
 }
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
+
+.pf-merged-class-warning__desc {
+  color: var(--pf-color-text-muted);
 }
-.pf-wattson-warning {
+
+.pf-merged-class-flamegraph-callout {
+  max-width: 360px;
+  margin-bottom: 4px;
+  white-space: normal;
+}.pf-wattson-warning {
   color: var(--pf-color-danger);
 }
 .pf-wattson-warning__list {
@@ -4723,41 +3771,15 @@ kbd.pf-keycap.pf-spacing-large {
   user-select: none;
   width: 100px;
   height: 150px;
+}.pf-actual-frames-tooltip__header {
+  font-weight: bold;
+  margin-bottom: 4px;
 }
-/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+.pf-actual-frames-tooltip__reason {
+  margin-top: 4px;
 }
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
+.pf-actual-frames-tooltip__reason-name {
+  font-weight: 500;
 }
 .pf-checkbox {
   display: inline;
@@ -5400,7 +4422,7 @@ kbd.pf-keycap.pf-spacing-large {
 .pf-record-page__section .chrome-probe-settings .chrome-privacy-setting {
   padding-bottom: calc(var(--record-section-padding) / 2);
 }
-.pf-record-page__section .chrome-probe-settings .chrome-categories-presets .pf-tabs__tabs {
+.pf-record-page__section .chrome-probe-settings .chrome-categories-presets .pf-tab-strip {
   font-size: var(--pf-font-size-l);
   background-color: transparent;
 }
@@ -5881,42 +4903,7 @@ kbd.pf-keycap.pf-spacing-large {
   font-size: var(--pf-font-size-m);
   line-height: 1.6;
   color: var(--pf-color-text);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-code-snippet {
+}.pf-code-snippet {
   background-color: var(--pf-color-background-secondary);
   border: 1px solid var(--pf-color-border);
   border-radius: 4px;
@@ -12990,42 +11977,7 @@ tr.detail-row .expanded-empty.compact .empty-sections {
 .ai-context-control-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-aggregate-profiles-page {
+}.pf-aggregate-profiles-page {
   overflow: auto;
   padding: 0.25rem;
 }
@@ -13062,42 +12014,7 @@ tr.detail-row .expanded-empty.compact .empty-sections {
 }
 .pf-hotkey-context--fill-height {
   height: 100%;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-exp-input, .pf-exp-table-list .pf-search {
+}.pf-exp-input, .pf-exp-table-list .pf-search {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid var(--pf-color-border);
@@ -17023,42 +15940,7 @@ tr.detail-row .expanded-empty.compact .empty-sections {
 }
 .pf-group-column-readonly .pf-column-type {
   cursor: default;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-canvas {
+}.pf-canvas {
   isolation: isolate;
   overflow: hidden;
   position: relative;
@@ -17512,42 +16394,7 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
   padding: 8px;
   color: var(--pf-color-text-secondary);
   font-style: italic;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-text-paragraph {
+}.pf-text-paragraph {
   white-space: pre-wrap;
   padding-top: 5px;
   padding-bottom: 5px;
@@ -17627,42 +16474,7 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
   align-items: center;
   justify-content: center;
   min-height: 40px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-drawer-panel {
+}.pf-drawer-panel {
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -17688,49 +16500,18 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
   padding-inline: 3px;
   display: flex;
   overflow: hidden;
+  font-size: 14px;
   align-self: flex-end;
   margin-bottom: -1px;
   cursor: default;
+}
+.pf-drawer-panel__tabs .pf-tab-strip__tab {
+  margin-bottom: 0;
 }
 .pf-drawer-panel__spacer {
   flex: 1;
   align-self: stretch;
   min-width: 30px;
-}
-.pf-drawer-panel__tab {
-  display: flex;
-  align-items: baseline;
-  gap: 2px;
-  font-family: var(--pf-font-compact);
-  font-size: 14px;
-  padding: 5px;
-  margin-top: 2px;
-  cursor: pointer;
-  border-radius: 3px 3px 0 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  border-style: solid;
-  border-color: var(--pf-color-border-secondary);
-  border-width: 1px 1px 0 1px;
-}
-.pf-drawer-panel__tab:not(:first-child) {
-  margin-left: -1px;
-}
-.pf-drawer-panel__tab:hover {
-  background: color-mix(in srgb, transparent, var(--pf-color-interactive-base) 8%);
-}
-.pf-drawer-panel__tab.pf-drawer-panel__tab--active {
-  cursor: default;
-  background-color: var(--pf-color-background);
-  box-shadow: var(--pf-color-box-shadow) 0px 0px 3px;
-  border-color: var(--pf-color-border);
-  z-index: 1;
-}
-.pf-drawer-panel__tab-title {
-  margin: 0px 4px;
-  overflow: hidden;
-  user-select: none;
 }
 .pf-drawer-panel__drawer {
   flex-shrink: 0;
@@ -17749,15 +16530,6 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
 .pf-help-modal h2 {
   font: inherit;
   font-weight: bold;
-}.pf-actual-frames-tooltip__header {
-  font-weight: bold;
-  margin-bottom: 4px;
-}
-.pf-actual-frames-tooltip__reason {
-  margin-top: 4px;
-}
-.pf-actual-frames-tooltip__reason-name {
-  font-weight: 500;
 }.pf-ftrace-explorer {
   height: 100%;
   font-size: 11px;
@@ -17861,42 +16633,7 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
   gap: 2px;
   font-size: 0.85em;
   white-space: nowrap;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-popup.pf-combobox__popup .pf-popup-content {
+}.pf-popup.pf-combobox__popup .pf-popup-content {
   padding: 0;
 }
 
@@ -19496,42 +18233,7 @@ a.pf-memscope-classname:hover {
   font-style: italic;
   color: var(--pf-color-text-muted);
   font-size: var(--pf-font-size-xs);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-metrics-page-picker {
+}.pf-metrics-page-picker {
   display: flex;
 }
 
@@ -19701,42 +18403,7 @@ a.pf-memscope-classname:hover {
   display: flex;
   gap: 8px;
   align-items: baseline;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-trace-info-page {
+}.pf-trace-info-page {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px;
@@ -19748,7 +18415,7 @@ a.pf-memscope-classname:hover {
   max-width: 1400px;
   background: var(--pf-color-background);
   border-radius: 12px;
-  box-shadow: 0px 2px 6px var(--pf-color-box-shadow);
+  box-shadow: 0px 2px 4px var(--pf-color-box-shadow);
   overflow: hidden;
 }
 .pf-trace-info-page__header {
@@ -19994,15 +18661,6 @@ a.pf-memscope-classname:hover {
 .pf-trace-info-page__stats-section {
   margin: 0;
   padding: 0;
-}
-.pf-trace-info-page .pf-tabs {
-  border-bottom: 1px solid var(--pf-color-border);
-  padding: 0 28px;
-}
-.pf-trace-info-page .pf-tabs .pf-tabs__tab {
-  font-size: var(--pf-font-size-l);
-  font-weight: 500;
-  padding: 14px 18px;
 }
 .pf-trace-info-page__tab-content .pf-section {
   border: none;
@@ -20325,42 +18983,7 @@ a.pf-memscope-classname:hover {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-multiselect-input {
+}.pf-multiselect-input {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -20407,42 +19030,7 @@ a.pf-memscope-classname:hover {
 }
 .pf-multiselect-input:focus-within {
   border-color: var(--pf-color-primary);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-track {
+}.pf-track {
   --indent-size: 8px;
   --sticky-top: 0;
   --depth: 0;
@@ -20591,42 +19179,7 @@ a.pf-memscope-classname:hover {
   display: flex;
   flex-direction: column;
   row-gap: 6px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-treetable {
+}.pf-treetable {
   border-collapse: collapse;
   text-align: left;
 }
@@ -20751,42 +19304,7 @@ a.pf-memscope-classname:hover {
 }
 .pf-perf-stats table {
   border-collapse: collapse;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-json-settings-editor {
+}.pf-json-settings-editor {
   width: 500px;
 }
 .pf-json-settings-editor__editor-section {
@@ -20805,42 +19323,7 @@ a.pf-memscope-classname:hover {
   margin-top: 10px;
   display: flex;
   gap: 8px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-extension-servers-settings__header {
+}.pf-extension-servers-settings__header {
   margin-bottom: 12px;
 }
 .pf-extension-servers-settings__empty {
@@ -20946,41 +19429,6 @@ a.pf-memscope-classname:hover {
   justify-content: center;
 }
 
-/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
 .pf-plugins-page {
   margin-block: 16px;
 }
@@ -21130,88 +19578,25 @@ a.pf-memscope-classname:hover {
   100% {
     background-color: color-mix(in srgb, var(--pf-color-highlight) 70%, transparent);
   }
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}.pf-multi-trace-modal .pf-text-paragraph {
+  padding-block: 8px;
 }
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-multi-trace-modal__description-panel {
+.pf-multi-trace-modal__description {
   border-bottom: 1px solid var(--pf-color-border);
-  margin-bottom: 0px;
-  padding-bottom: 0px;
-}
-.pf-multi-trace-modal__tabs {
-  margin-bottom: 16px;
-}
-.pf-multi-trace-modal__description-content {
-  padding: 0 8px;
-  width: 550px;
-  box-sizing: border-box;
-}
-.pf-multi-trace-modal__description-content .pf-text-paragraph {
-  padding-top: 0;
-  padding-bottom: 16px;
-  font-size: 0.9em;
-  color: var(--pf-color-text-secondary);
-  line-height: 1.4;
+  padding: 0 4px;
+  font-size: var(--pf-font-size-s);
 }
 .pf-multi-trace-modal__list-panel {
-  border: none;
   overflow-y: auto;
-  width: 550px;
   max-height: 700px;
-  padding-top: 8px;
-  padding-bottom: 8px;
-}
-.pf-multi-trace-modal__card {
-  padding: 16px;
-  align-items: stretch;
-  flex-shrink: 0;
+  padding-block: 8px;
+  padding-inline: 4px;
 }
 .pf-multi-trace-modal__name {
-  color: var(--pf-color-text);
-  font-size: 0.95em;
   font-weight: 600;
 }
-.pf-multi-trace-modal__size, .pf-multi-trace-modal__status, .pf-multi-trace-modal__format {
-  color: var(--pf-color-text-secondary);
-  font-size: 0.9em;
-}
-.pf-multi-trace-modal__size strong, .pf-multi-trace-modal__format strong {
-  font-weight: 600;
-}
-.pf-multi-trace-modal__actions {
-  min-width: 50px;
+.pf-multi-trace-modal__meta {
+  font-size: var(--pf-font-size-s);
 }
 .pf-multi-trace-modal__status::before {
   content: "";
@@ -21236,91 +19621,57 @@ a.pf-memscope-classname:hover {
 }
 .pf-multi-trace-modal__add-card {
   border: 1px dashed var(--pf-color-border);
-  background-color: var(--pf-color-background-secondary);
-  cursor: pointer;
-  padding: 8px;
-  color: var(--pf-color-text-secondary);
-  font-family: var(--pf-font);
-  font-size: 0.9em;
-  font-weight: bold;
+  border-radius: 3px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  flex-shrink: 0;
+  font-size: var(--pf-font-size-s);
+  color: var(--pf-color-text-muted);
 }
 .pf-multi-trace-modal__add-card:hover {
-  background: color-mix(in srgb, var(--pf-color-background-secondary), var(--pf-color-interactive-base) 8%);
+  background: color-mix(in srgb, transparent, var(--pf-color-interactive-base) 8%);
 }
-.pf-multi-trace-modal__reference-row {
-  align-items: center;
-  padding: 8px 0;
-  font-size: 0.9em;
+.pf-multi-trace-modal__add-card:focus-visible {
+  outline: 2px solid var(--pf-color-accent);
+}
+.pf-multi-trace-modal__add-card .pf-icon {
+  font-size: var(--pf-font-size-l);
 }
 .pf-multi-trace-modal__offset--invalid {
   outline: 1px solid var(--pf-color-danger);
-  border-radius: 2px;
 }
 .pf-multi-trace-modal__hint {
   color: var(--pf-color-danger);
-  font-size: 0.85em;
+  font-size: var(--pf-font-size-xs);
 }
-.pf-multi-trace-modal__help {
-  display: inline-flex;
-  align-items: center;
-  line-height: 1;
-  color: var(--pf-color-text-secondary);
+.pf-multi-trace-modal__help-icon {
+  color: var(--pf-color-text-muted);
   cursor: help;
-  font-size: 1.1em;
-}
-.pf-multi-trace-modal__control-row {
-  align-items: center;
-}
-.pf-multi-trace-modal__align-row {
-  align-items: center;
-  flex-wrap: wrap;
-}
-.pf-multi-trace-modal__row-top {
-  align-items: flex-start;
-  justify-content: space-between;
-  width: 100%;
+  align-self: center;
 }
 .pf-multi-trace-modal__config {
-  align-items: flex-start;
   padding-top: 8px;
   margin-top: 8px;
   border-top: 1px solid var(--pf-color-border);
-  font-size: 0.9em;
-  color: var(--pf-color-text-secondary);
+  font-size: var(--pf-font-size-s);
 }
 .pf-multi-trace-modal__note {
   font-style: italic;
-  color: var(--pf-color-text-secondary);
 }
 .pf-multi-trace-modal__status-panel {
-  padding: 12px 0 4px;
+  padding-block: 12px 4px;
+  padding-inline: 4px;
   min-height: 60px;
-  width: 550px;
-  box-sizing: border-box;
 }
 .pf-multi-trace-modal__footer {
   border-top: 1px solid var(--pf-color-border);
   padding-top: 8px;
-  margin-top: 0px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.pf-multi-trace-modal__footer-error {
-  flex: 0 0 auto;
-  font-family: var(--pf-font);
-  word-wrap: break-word;
-  white-space: normal;
-  max-width: 450px;
-}
-.pf-multi-trace-modal__footer-spacer {
-  flex: 1;
 }
 
 .pf-multi-trace-modal-override main {
   margin-top: 16px;
+  max-width: 550px;
 }
 .pf-multi-trace-modal-override {
   padding: 16px;
@@ -21441,42 +19792,7 @@ a.pf-memscope-classname:hover {
   margin: 8px 0;
   font-style: italic;
   color: var(--subtle-foreground-color);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-settings-page__plugin-section {
+}.pf-settings-page__plugin-section {
   margin-bottom: 32px;
 }
 .pf-settings-page__plugin-section:last-child {
@@ -21579,42 +19895,7 @@ a.pf-memscope-classname:hover {
   margin: 4px 8px;
   font-size: 0.7em;
   font-style: italic;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-timeline-header {
+}.pf-timeline-header {
   position: relative;
 }
 
@@ -21656,7 +19937,7 @@ a.pf-memscope-classname:hover {
   isolation: isolate;
   flex: 0 0 auto;
   z-index: 1;
-  box-shadow: 0px 2px 6px var(--pf-color-box-shadow);
+  box-shadow: 0px 2px 4px var(--pf-color-box-shadow);
   overflow: hidden;
 }
 .pf-timeline-page__pinned-track-tree .pf-track-tree {
@@ -21745,42 +20026,7 @@ a.pf-memscope-classname:hover {
 .pf-cookie-consent button:hover {
   background-color: #373f4b;
   cursor: pointer;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-sidebar {
+}.pf-sidebar {
   --sidebar-timing: 0.15s;
   grid-area: sidebar;
   position: relative;
@@ -22187,42 +20433,7 @@ body.pf-fonts-loading .pf-sidebar__section-header:after {
 }
 .pf-statusbar > .pf-button {
   border-radius: unset;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-task-status {
+}.pf-task-status {
   display: inline-flex;
   align-items: baseline;
   justify-content: center;
@@ -22266,42 +20477,7 @@ body.pf-fonts-loading .pf-sidebar__section-header:after {
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
   color: var(--pf-color-on-surface-muted);
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-topbar {
+}.pf-topbar {
   grid-area: topbar;
   position: relative;
   z-index: 3;
@@ -22372,7 +20548,7 @@ body.pf-fonts-loading .pf-sidebar__section-header:after {
 }
 .pf-omnibox:focus-within {
   border-color: var(--pf-color-primary);
-  box-shadow: 0px 2px 6px var(--pf-color-box-shadow);
+  box-shadow: 0px 2px 4px var(--pf-color-box-shadow);
 }
 .pf-omnibox__right-content {
   grid-area: stepthrough;
@@ -22585,42 +20761,7 @@ body.pf-fonts-loading .pf-omnibox--prompt-mode:before {
   display: flex;
   justify-content: center;
   gap: 4px;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-home-page {
+}.pf-home-page {
   height: 100%;
   display: grid;
   align-items: stretch;
@@ -22895,6 +21036,10 @@ body.pf-fonts-loading .pf-omnibox--prompt-mode:before {
   display: flex;
   flex-direction: column;
 }
+.pf-sql-table__tabs {
+  flex: 1;
+  min-height: 0;
+}
 
 .pf-sql-table__toolbar {
   display: flex;
@@ -22902,53 +21047,7 @@ body.pf-fonts-loading .pf-omnibox--prompt-mode:before {
   gap: 4px;
   padding: 2px;
   border-bottom: solid 1px var(--pf-color-border);
-}
-.pf-sql-table__toolbar .pf-tabs .pf-button {
-  padding: 0px;
-}
-.pf-sql-table__toolbar .pf-tabs .pf-tabs__tab-icon--right {
-  margin-left: 0px;
-}
-
-.pf-sql-table__table {
-  flex: 1;
-  overflow-y: auto;
-}/* latin */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Condensed";
-  font-style: normal;
-  font-display: swap;
-  font-weight: 100 900;
-  font-stretch: 50%;
-  src: url(assets/Roboto.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-/* latin */
-@font-face {
-  font-family: "Roboto Mono";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url(assets/RobotoMono-Regular.woff2) format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: "Material Symbols Sharp";
-  font-style: normal;
-  font-weight: 100 700;
-  font-display: block;
-  src: url(assets/MaterialSymbolsOutlined.woff2) format("woff2");
-}
-.pf-pivot-table__total-values {
+}.pf-pivot-table__total-values {
   font-weight: bolder;
 }
 .pf-pivot-table__cell--indent {
@@ -22972,7 +21071,7 @@ body.pf-fonts-loading .pf-omnibox--prompt-mode:before {
   --pf-color-border: #ccc;
   --pf-color-border-secondary: #e0e0e0;
   --pf-color-text-hint: #808080;
-  --pf-color-box-shadow: rgba(0, 0, 0, 0.2);
+  --pf-color-box-shadow: rgba(0, 0, 0, 0.1);
   --pf-color-neutral: gray;
   --pf-color-accent: #2667e7;
   --pf-color-text-on-accent: white;
@@ -23018,7 +21117,7 @@ body.pf-fonts-loading .pf-omnibox--prompt-mode:before {
   --pf-color-border: #484848;
   --pf-color-border-secondary: #383838;
   --pf-color-text-hint: #9aa0a6;
-  --pf-color-box-shadow: rgba(0, 0, 0, 0.4);
+  --pf-color-box-shadow: rgba(0, 0, 0, 0.6);
   --pf-color-neutral: gray;
   --pf-color-accent: #2667e7;
   --pf-color-text-on-accent: white;

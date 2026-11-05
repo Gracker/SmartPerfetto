@@ -9,20 +9,24 @@
 # 后台任务排期不当是续航问题的第一阶高频根因。
 
 name: android_job_scheduler_events
-version: "1.0"
+version: "1.1"
 type: atomic
 category: background
 tier: B
 
 meta:
   display_name: "JobScheduler 事件"
-  description: "JobScheduler 后台任务执行序列"
+  display_name_i18n: {en: "JobScheduler Events and Wait Reasons"}
+  description: "保留 ATrace 任务执行序列，补充 track-event 已完成任务的等待原因；按包名/UID 归属，不证明具体 UPID。等待原因可能重叠，不可相加为排队总时长；取消或未完成任务不在等待汇总内。"
+  description_i18n:
+    en: "ATrace job execution and reported wait reasons for completed track-event jobs. Package/UID attribution is not exact UPID attribution. Reasons may overlap and cannot be added into total queue time; cancelled or unfinished jobs are excluded from the wait summary."
   icon: "schedule"
   tags: [job_scheduler, background, lifecycle, atomic]
 
 prerequisites:
   modules:
     - android.job_scheduler
+    - android.job_scheduler_states_track_events
 
 inputs:
   - name: package
@@ -32,7 +36,7 @@ inputs:
   - name: start_ts
     type: timestamp
     required: false
-    description: "分析起始时间戳(ns)"
+    description: "分析起始时间戳(ns)：ATrace 按执行区间相交，等待汇总按任务启动时间筛选；上报等待时长不按窗口裁剪"
   - name: end_ts
     type: timestamp
     required: false
@@ -75,3 +79,128 @@ steps:
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
       ORDER BY ts ASC
+
+  - id: pending_reason_capability
+    type: atomic
+    name: "等待原因能力检查"
+    display:
+      level: detail
+      layer: overview
+      title: "JobScheduler track-event 等待原因能力"
+      title_i18n: {en: "JobScheduler track-event wait-reason support"}
+      columns:
+        - name: status
+          label: "Runtime 状态"
+          label_i18n: {en: "Runtime status"}
+          type: string
+    sql: |
+      SELECT CASE
+        WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_job_scheduler_states_track_events')
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_job_scheduler_pending_reasons_track_events')
+        THEN 'runtime_supported'
+        ELSE 'runtime_lacks_job_pending_reasons'
+      END AS status
+    save_as: pending_reason_capability
+
+  - id: pending_reason_data
+    type: atomic
+    name: "已完成任务等待原因数据检查"
+    optional: true
+    condition: pending_reason_capability.data[0]?.status === 'runtime_supported'
+    display:
+      level: detail
+      layer: overview
+      title: "窗口内启动且已完成的任务：等待原因覆盖"
+      title_i18n: {en: "Wait-reason coverage for completed jobs started in the window"}
+      columns:
+        - name: completed_job_count
+          label: "带等待原因的已完成任务数"
+          label_i18n: {en: "Completed jobs with wait reasons"}
+          type: number
+        - name: reason_entry_count
+          label: "等待原因条目数"
+          label_i18n: {en: "Wait-reason entries"}
+          type: number
+        - name: missing_duration_count
+          label: "缺少等待时长的条目数"
+          label_i18n: {en: "Entries missing a duration"}
+          type: number
+        - name: status
+          label: "数据状态"
+          label_i18n: {en: "Data status"}
+          type: string
+    sql: |
+      SELECT
+        COUNT(DISTINCT s.slice_id) AS completed_job_count,
+        COUNT(*) AS reason_entry_count,
+        COUNT(*) - COUNT(r.pending_duration_ms) AS missing_duration_count,
+        CASE WHEN COUNT(*) > 0 THEN 'available'
+          ELSE 'no_completed_jobs_with_pending_reasons' END AS status
+      FROM android_job_scheduler_states_track_events AS s
+      JOIN android_job_scheduler_pending_reasons_track_events AS r ON r.slice_id = s.slice_id
+      WHERE ('${package}' = '' OR s.package_name = '${package}' OR s.package_name GLOB '${package}:*')
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+    save_as: pending_reason_data
+
+  - id: pending_reason_summary
+    type: atomic
+    name: "已完成任务等待原因汇总"
+    optional: true
+    condition: pending_reason_data.data[0]?.status === 'available'
+    display:
+      level: key
+      layer: list
+      title: "已完成任务上报的等待原因（非排队总时长；取消/未完成任务不含）"
+      title_i18n: {en: "Reported wait reasons for completed jobs (not total queue time; excludes cancelled/unfinished jobs)"}
+      columns:
+        - name: package_name
+          label: "包名"
+          label_i18n: {en: "Package"}
+          type: string
+        - name: uid
+          label: "UID"
+          label_i18n: {en: "UID"}
+          type: number
+        - name: pending_reason
+          label: "等待原因"
+          label_i18n: {en: "Wait reason"}
+          type: string
+        - name: completed_job_count
+          label: "已完成任务数"
+          label_i18n: {en: "Completed jobs"}
+          type: number
+        - name: known_duration_count
+          label: "已知时长条目数"
+          label_i18n: {en: "Entries with a duration"}
+          type: number
+        - name: missing_duration_count
+          label: "缺失时长条目数"
+          label_i18n: {en: "Entries missing a duration"}
+          type: number
+        - name: reported_wait_ms
+          label: "已知上报等待时长（未按窗口裁剪）"
+          label_i18n: {en: "Known reported wait (not window-clipped)"}
+          type: duration
+          format: duration_ms
+          unit: ms
+    # This join deliberately admits only verified STARTED -> FINISHED jobs.
+    # The reported reason durations are already milliseconds and can overlap.
+    # They carry no interval timestamps, so a start-time window selects jobs
+    # without pretending to clip their prior waits. SUM(NULL) remains NULL.
+    sql: |
+      SELECT
+        s.package_name,
+        s.uid,
+        r.pending_reason,
+        COUNT(DISTINCT s.slice_id) AS completed_job_count,
+        COUNT(r.pending_duration_ms) AS known_duration_count,
+        COUNT(*) - COUNT(r.pending_duration_ms) AS missing_duration_count,
+        SUM(r.pending_duration_ms) AS reported_wait_ms
+      FROM android_job_scheduler_states_track_events AS s
+      JOIN android_job_scheduler_pending_reasons_track_events AS r ON r.slice_id = s.slice_id
+      WHERE ('${package}' = '' OR s.package_name = '${package}' OR s.package_name GLOB '${package}:*')
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+      GROUP BY s.package_name, s.uid, r.pending_reason
+      ORDER BY s.package_name, s.uid, r.pending_reason

@@ -227,7 +227,7 @@ function queryMaterializedTrace(
     'JOIN process p USING(upid)',
     `WHERE s.name = '${marker}'`,
   ].join(' ');
-  const result = spawnSync(getTraceProcessorPath(), ['query', tracePath, query], {
+  const result = spawnSync(getTraceProcessorPath(), ['query', '--no-agent', '--format', 'csv', tracePath, query], {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024,
   });

@@ -84,11 +84,20 @@ Perfetto stdlib, trace processor, or official Perfetto AI Skill identity.
 | `perfetto` v57 Agent Skill: Java/native allocation profile scripts | `native_heap_breakdown`, `android_memory_v57_ai_diagnostics` heap-profile hotspot step | Implemented |
 | v57 `linux.systemd_journald` stdlib | `linux_systemd_journald_analysis` | Implemented |
 | v57 `state` table / state tracks | `trace_state_track_summary`; existing `state_timeline` remains the higher-level interaction timeline | Implemented |
+| v59.1 Android process start/exit metadata | `android_process_state_residency`; lifecycle context stays separate from alive-time residency and absent metadata stays unknown | Implemented |
+| v59.1 JobScheduler track-event pending reasons | `android_job_scheduler_events`; completed-job package/UID evidence complements ATrace, with explicit cancelled-job and duration-coverage limits | Implemented |
+| v59.1 Vulkan debug names | Runtime/schema lookup only; a dedicated resource-attribution workflow needs event-time, handle-reuse and destruction fixtures | Deferred |
 | `android/skills` `profilers/perfetto-sql` | SQL guardrails, schema/stdlib lookup, idempotent execution, and explicit SPAN_JOIN non-overlap proof | Implemented |
 | `android/skills` `profilers/perfetto-trace-analysis` | Scene routing, evidence chain, dependency drill-down, and bounded secondary-bottleneck closure | Implemented |
 | `android/skills` IRQ/runnable-delay, RT policy, and catch-up-storm ideas | No new atomic Skill without a data-present fixture and semantic assertion | Deferred |
 
 ## Acceptance
+
+Perfetto UI capabilities and Smart analysis are separate surfaces. FrameTimeline
+layer groups, HeapDump Explorer and smaps recording controls do not by themselves
+establish a new Agent evidence contract. Heap dump classes flagged as possibly
+merged by R8 may represent several source classes; their displayed name and
+memory cannot be attributed to one original class without additional mapping.
 
 A translation is complete only when the SmartPerfetto asset can be invoked by
 the existing Skill/strategy runtime and its output contract is tested. A markdown

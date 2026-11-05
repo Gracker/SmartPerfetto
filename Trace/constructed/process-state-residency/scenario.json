@@ -44,12 +44,25 @@
   },
   "signals": [
     {
-      "type": "atrace-slice",
-      "at_ns": "10000000",
-      "duration_ns": "18000000",
-      "process": "app",
-      "thread": "main",
-      "name": "SmartPerfetto::CASE::process-state-residency"
+      "type": "android-process-start",
+      "at_ns": "20000000",
+      "thread": "am",
+      "target_process": "app",
+      "start_seq_id": 101,
+      "hosting_type": "HOSTING_TYPE_ACTIVITY",
+      "hosting_name": "{com.smartperfetto.fixture/.MainActivity}",
+      "trigger_type": "TRIGGER_TYPE_JOB",
+      "bind_application_delay_ms": 0,
+      "process_start_delay_ms": 25
+    },
+    {
+      "type": "android-process-state-change",
+      "at_ns": "50000000",
+      "thread": "am",
+      "target_process": "app",
+      "prev_proc_state": "PROCESS_STATE_NONEXISTENT",
+      "cur_proc_state": "PROCESS_STATE_TOP",
+      "seq_id": 0
     },
     {
       "type": "android-process-state-change",
@@ -62,6 +75,14 @@
       "cur_oom_score": 700,
       "reason": "OOM_ADJ_REASON_ACTIVITY",
       "seq_id": 1
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "250000000",
+      "duration_ns": "250000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::process-state-residency"
     },
     {
       "type": "android-process-state-change",
@@ -88,14 +109,25 @@
       "seq_id": 3
     },
     {
+      "type": "android-process-binder-died",
+      "at_ns": "700000000",
+      "thread": "am",
+      "target_process": "app",
+      "start_seq_id": 101
+    },
+    {
+      "type": "android-process-died",
+      "at_ns": "750000000",
+      "thread": "am",
+      "target_process": "app",
+      "start_seq_id": 101,
+      "exit_reason": "APP_EXIT_REASON_LOW_MEMORY",
+      "exit_subreason": "APP_EXIT_SUBREASON_MEMORY_PRESSURE"
+    },
+    {
       "type": "android-process-state-snapshot",
       "at_ns": "900000000",
       "records": [
-        {
-          "process": "app",
-          "proc_state": "PROCESS_STATE_CACHED_ACTIVITY",
-          "oom_score": 900
-        },
         {
           "process": "sync",
           "proc_state": "PROCESS_STATE_CACHED_EMPTY",

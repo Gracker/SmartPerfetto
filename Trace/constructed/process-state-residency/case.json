@@ -3,7 +3,7 @@
   "id": "process-state-residency",
   "kind": "constructed",
   "title": "Framework process state residency",
-  "description": "android.process_state snapshot plus process_state_changed_event track events: an app moves TOP -> LAST_ACTIVITY -> CACHED_ACTIVITY and its :sync subprocess drops from SERVICE to CACHED_EMPTY.",
+  "description": "Framework process-state changes with start metadata, a 700 ms binder death and delayed 750 ms exit reason. Lifecycle markers are excluded from residency; a live :sync subprocess has no start/exit metadata. The app marker defines a 250-500 ms clipped analysis window. Analysis uses the admitted name/package-family scope (app plus :sync), not exact UPID scope.",
   "scene": "memory",
   "tags": [
     "android",
@@ -16,7 +16,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "298699d4ab7a5368a3f4fac4b110a0f7cb7a39cf2d30c52810854dc39794650e",
+    "sha256": "6f4e791b9216f24492b1f9d447035b02b41daf0e2357cb155f71d5aa63c6d44e",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -52,7 +52,7 @@
     "generator_version": 1,
     "seed": "process-state-residency-v1",
     "output": "Trace/.generated/constructed/process-state-residency/trace.pftrace",
-    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+    "runtime_revision": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d"
   },
   "coverage": {
     "skills": [
@@ -165,7 +165,14 @@
           "state",
           "prev_state_ms",
           "reason",
-          "lifecycle"
+          "lifecycle",
+          "hosting_type",
+          "hosting_name",
+          "trigger_type",
+          "bind_application_delay_ms",
+          "process_start_delay_ms",
+          "exit_reason",
+          "exit_subreason"
         ],
         "assertions": [
           {
@@ -306,6 +313,601 @@
           }
         ],
         "required_marker": "SmartPerfetto::CASE::process-state-residency"
+      },
+      {
+        "id": "startup-metadata-keeps-zero-delay",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_transitions",
+        "required_columns": [
+          "process_name",
+          "ts",
+          "prev_state",
+          "state",
+          "prev_state_ms",
+          "reason",
+          "lifecycle",
+          "hosting_type",
+          "hosting_name",
+          "trigger_type",
+          "bind_application_delay_ms",
+          "process_start_delay_ms",
+          "exit_reason",
+          "exit_subreason"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "state",
+            "operator": "eq",
+            "value": "NONEXISTENT"
+          },
+          {
+            "column": "lifecycle",
+            "operator": "eq",
+            "value": "process_start_pending"
+          },
+          {
+            "column": "hosting_type",
+            "operator": "eq",
+            "value": "HOSTING_TYPE_ACTIVITY"
+          },
+          {
+            "column": "hosting_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture/.MainActivity"
+          },
+          {
+            "column": "trigger_type",
+            "operator": "eq",
+            "value": "TRIGGER_TYPE_JOB"
+          },
+          {
+            "column": "bind_application_delay_ms",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "process_start_delay_ms",
+            "operator": "eq",
+            "value": 25
+          },
+          {
+            "column": "reason",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "exit_reason",
+            "operator": "eq",
+            "value": null
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency"
+      },
+      {
+        "id": "exit-reason-attaches-to-actual-death",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_transitions",
+        "required_columns": [
+          "process_name",
+          "ts",
+          "prev_state",
+          "state",
+          "prev_state_ms",
+          "reason",
+          "lifecycle",
+          "hosting_type",
+          "hosting_name",
+          "trigger_type",
+          "bind_application_delay_ms",
+          "process_start_delay_ms",
+          "exit_reason",
+          "exit_subreason"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "prev_state",
+            "operator": "eq",
+            "value": "CACHED_ACTIVITY"
+          },
+          {
+            "column": "state",
+            "operator": "eq",
+            "value": "EXITED"
+          },
+          {
+            "column": "prev_state_ms",
+            "operator": "eq",
+            "value": 300
+          },
+          {
+            "column": "lifecycle",
+            "operator": "eq",
+            "value": "process_exited"
+          },
+          {
+            "column": "reason",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "exit_reason",
+            "operator": "eq",
+            "value": "APP_EXIT_REASON_LOW_MEMORY"
+          },
+          {
+            "column": "exit_subreason",
+            "operator": "eq",
+            "value": "APP_EXIT_SUBREASON_MEMORY_PRESSURE"
+          },
+          {
+            "column": "hosting_type",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "bind_application_delay_ms",
+            "operator": "eq",
+            "value": null
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency"
+      },
+      {
+        "id": "missing-lifecycle-metadata-stays-null",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_transitions",
+        "required_columns": [
+          "process_name",
+          "ts",
+          "prev_state",
+          "state",
+          "prev_state_ms",
+          "reason",
+          "lifecycle",
+          "hosting_type",
+          "hosting_name",
+          "trigger_type",
+          "bind_application_delay_ms",
+          "process_start_delay_ms",
+          "exit_reason",
+          "exit_subreason"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture:sync"
+          },
+          {
+            "column": "state",
+            "operator": "eq",
+            "value": "CACHED_EMPTY"
+          },
+          {
+            "column": "hosting_type",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "hosting_name",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "trigger_type",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "bind_application_delay_ms",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "process_start_delay_ms",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "exit_reason",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "exit_subreason",
+            "operator": "eq",
+            "value": null
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency"
+      },
+      {
+        "id": "lifecycle-markers-do-not-inflate-alive-time",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_residency",
+        "required_columns": [
+          "process_name",
+          "upid",
+          "state",
+          "state_rank",
+          "residency_ms",
+          "residency_pct",
+          "interval_count",
+          "first_entered_ts"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "state",
+            "operator": "eq",
+            "value": "CACHED_ACTIVITY"
+          },
+          {
+            "column": "residency_ms",
+            "operator": "eq",
+            "value": 300
+          },
+          {
+            "column": "residency_pct",
+            "operator": "eq",
+            "value": 46.15
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency",
+        "min_rows": 5,
+        "max_rows": 5,
+        "limitation_reason": "This Skill uses its admitted process-name/package-family scope, including the :sync subprocess. Exact UPID runs are not admitted by its capability-step contract."
+      },
+      {
+        "id": "dead-process-last-observed-state-is-alive-state",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_last_observed",
+        "required_columns": [
+          "process_name",
+          "upid",
+          "last_state",
+          "entered_ts",
+          "process_end_ts",
+          "lifecycle"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "last_state",
+            "operator": "eq",
+            "value": "CACHED_ACTIVITY"
+          },
+          {
+            "column": "lifecycle",
+            "operator": "eq",
+            "value": "process_ended"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency",
+        "min_rows": 2,
+        "max_rows": 2,
+        "limitation_reason": "This Skill uses its admitted process-name/package-family scope, including the :sync subprocess. Exact UPID runs are not admitted by its capability-step contract."
+      },
+      {
+        "id": "residency-clips-to-window-with-package-family-scope",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture",
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_residency",
+        "required_columns": [
+          "process_name",
+          "upid",
+          "state",
+          "state_rank",
+          "residency_ms",
+          "residency_pct",
+          "interval_count",
+          "first_entered_ts"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "state",
+            "operator": "eq",
+            "value": "LAST_ACTIVITY"
+          },
+          {
+            "column": "residency_ms",
+            "operator": "eq",
+            "value": 150
+          },
+          {
+            "column": "residency_pct",
+            "operator": "eq",
+            "value": 60
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency",
+        "min_rows": 4,
+        "max_rows": 4,
+        "limitation_reason": "This Skill uses its admitted process-name/package-family scope, including the :sync subprocess. Exact UPID runs are not admitted by its capability-step contract."
+      },
+      {
+        "id": "transitions-exclude-lifecycle-outside-window",
+        "type": "skill",
+        "target": "android_process_state_residency",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture",
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
+        },
+        "required_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "required_sql_steps": [
+          "process_state_capability",
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "forced_sql_steps": [
+          "process_state_data",
+          "process_state_residency",
+          "process_state_transitions",
+          "process_state_last_observed"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "process_state_transitions",
+        "required_columns": [
+          "process_name",
+          "ts",
+          "prev_state",
+          "state",
+          "prev_state_ms",
+          "reason",
+          "lifecycle",
+          "hosting_type",
+          "hosting_name",
+          "trigger_type",
+          "bind_application_delay_ms",
+          "process_start_delay_ms",
+          "exit_reason",
+          "exit_subreason"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "prev_state",
+            "operator": "eq",
+            "value": "LAST_ACTIVITY"
+          },
+          {
+            "column": "state",
+            "operator": "eq",
+            "value": "CACHED_ACTIVITY"
+          },
+          {
+            "column": "reason",
+            "operator": "eq",
+            "value": "OOM_ADJ_REASON_UI_VISIBILITY"
+          },
+          {
+            "column": "lifecycle",
+            "operator": "eq",
+            "value": "state_change"
+          },
+          {
+            "column": "exit_reason",
+            "operator": "eq",
+            "value": null
+          },
+          {
+            "column": "hosting_type",
+            "operator": "eq",
+            "value": null
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::process-state-residency",
+        "min_rows": 2,
+        "max_rows": 2,
+        "limitation_reason": "This Skill uses its admitted process-name/package-family scope, including the :sync subprocess. Exact UPID runs are not admitted by its capability-step contract."
       }
     ]
   }

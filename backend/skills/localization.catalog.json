@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1370,
-    "explicitColumnCount": 5178
+    "stepCount": 1373,
+    "explicitColumnCount": 5197
   },
   "skills": {
     "ams_module": {
@@ -1890,11 +1890,11 @@
     "android_job_scheduler_events": {
       "displayName": {
         "zh-CN": "JobScheduler 事件",
-        "en": "Android Job Scheduler Events"
+        "en": "JobScheduler Events and Wait Reasons"
       },
       "description": {
-        "zh-CN": "JobScheduler 后台任务执行序列",
-        "en": "Analyzes Android Job Scheduler Events using trace metrics and supporting evidence."
+        "zh-CN": "保留 ATrace 任务执行序列，补充 track-event 已完成任务的等待原因；按包名/UID 归属，不证明具体 UPID。等待原因可能重叠，不可相加为排队总时长；取消或未完成任务不在等待汇总内。",
+        "en": "ATrace job execution and reported wait reasons for completed track-event jobs. Package/UID attribution is not exact UPID attribution. Reasons may overlap and cannot be added into total queue time; cancelled or unfinished jobs are excluded from the wait summary."
       },
       "type": "atomic",
       "steps": {
@@ -1945,10 +1945,109 @@
           },
           "synthesizeLabels": {}
         },
+        "pending_reason_capability": {
+          "title": {
+            "zh-CN": "JobScheduler track-event 等待原因能力",
+            "en": "JobScheduler track-event wait-reason support"
+          },
+          "columns": {
+            "status": {
+              "label": {
+                "zh-CN": "Runtime 状态",
+                "en": "Runtime status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "pending_reason_data": {
+          "title": {
+            "zh-CN": "窗口内启动且已完成的任务：等待原因覆盖",
+            "en": "Wait-reason coverage for completed jobs started in the window"
+          },
+          "columns": {
+            "completed_job_count": {
+              "label": {
+                "zh-CN": "带等待原因的已完成任务数",
+                "en": "Completed jobs with wait reasons"
+              }
+            },
+            "reason_entry_count": {
+              "label": {
+                "zh-CN": "等待原因条目数",
+                "en": "Wait-reason entries"
+              }
+            },
+            "missing_duration_count": {
+              "label": {
+                "zh-CN": "缺少等待时长的条目数",
+                "en": "Entries missing a duration"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "数据状态",
+                "en": "Data status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "pending_reason_summary": {
+          "title": {
+            "zh-CN": "已完成任务上报的等待原因（非排队总时长；取消/未完成任务不含）",
+            "en": "Reported wait reasons for completed jobs (not total queue time; excludes cancelled/unfinished jobs)"
+          },
+          "columns": {
+            "package_name": {
+              "label": {
+                "zh-CN": "包名",
+                "en": "Package"
+              }
+            },
+            "uid": {
+              "label": {
+                "zh-CN": "Uid",
+                "en": "UID"
+              }
+            },
+            "pending_reason": {
+              "label": {
+                "zh-CN": "等待原因",
+                "en": "Wait reason"
+              }
+            },
+            "completed_job_count": {
+              "label": {
+                "zh-CN": "已完成任务数",
+                "en": "Completed jobs"
+              }
+            },
+            "known_duration_count": {
+              "label": {
+                "zh-CN": "已知时长条目数",
+                "en": "Entries with a duration"
+              }
+            },
+            "missing_duration_count": {
+              "label": {
+                "zh-CN": "缺失时长条目数",
+                "en": "Entries missing a duration"
+              }
+            },
+            "reported_wait_ms": {
+              "label": {
+                "zh-CN": "已知上报等待时长（未按窗口裁剪）",
+                "en": "Known reported wait (not window-clipped)"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "root": {
           "title": {
             "zh-CN": "JobScheduler 事件",
-            "en": "Android Job Scheduler Events"
+            "en": "JobScheduler Events and Wait Reasons"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -2246,8 +2345,8 @@
         "en": "Android Process State Residency"
       },
       "description": {
-        "zh-CN": "Framework 进程状态（TOP/前台服务/CACHED 等）的驻留时长、切换序列与最后观测状态；用于 LMK、后台与内存压力分析，旧 trace processor 显式降级",
-        "en": "Analyzes Android Process State Residency using trace metrics and supporting evidence."
+        "zh-CN": "Framework 进程状态驻留、切换与启动/退出元数据；区分 OomAdjuster 状态变更原因和进程退出原因，用于 LMK、后台与内存压力分析",
+        "en": "Framework process-state residency and transitions with recorded start and exit metadata; state-change reasons remain distinct from exit reasons."
       },
       "type": "atomic",
       "steps": {
@@ -2424,7 +2523,7 @@
         "process_state_transitions": {
           "title": {
             "zh-CN": "进程状态切换序列",
-            "en": "Process State Transitions"
+            "en": "Process State and Lifecycle Transitions"
           },
           "columns": {
             "process_name": {
@@ -2467,6 +2566,48 @@
               "label": {
                 "zh-CN": "生命周期",
                 "en": "Lifecycle"
+              }
+            },
+            "hosting_type": {
+              "label": {
+                "zh-CN": "启动宿主类型",
+                "en": "Hosting Type"
+              }
+            },
+            "hosting_name": {
+              "label": {
+                "zh-CN": "启动宿主",
+                "en": "Hosting Name"
+              }
+            },
+            "trigger_type": {
+              "label": {
+                "zh-CN": "启动触发类型",
+                "en": "Start Trigger"
+              }
+            },
+            "bind_application_delay_ms": {
+              "label": {
+                "zh-CN": "绑定应用延迟",
+                "en": "Bind Application Delay"
+              }
+            },
+            "process_start_delay_ms": {
+              "label": {
+                "zh-CN": "进程启动延迟",
+                "en": "Process Start Delay"
+              }
+            },
+            "exit_reason": {
+              "label": {
+                "zh-CN": "退出原因",
+                "en": "Exit Reason"
+              }
+            },
+            "exit_subreason": {
+              "label": {
+                "zh-CN": "退出补充原因",
+                "en": "Exit Subreason"
               }
             }
           },

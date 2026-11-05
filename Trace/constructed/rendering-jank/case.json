@@ -50,7 +50,7 @@
     "generator_version": 1,
     "seed": "rendering-jank-v1",
     "output": "Trace/.generated/constructed/rendering-jank/trace.pftrace",
-    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+    "runtime_revision": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d"
   },
   "coverage": {
     "skills": [

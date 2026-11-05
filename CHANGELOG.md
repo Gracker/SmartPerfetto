@@ -13,6 +13,33 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-11-05
+
+### Added
+
+- Expose Android process start context, startup delays and exit reasons alongside process-state transitions, keeping unknown values distinct from zero and lifecycle markers outside alive-time residency.
+- Analyze JobScheduler pending reasons from framework track events alongside the existing ATrace view. Results identify completed jobs and package/UID scope; cancelled jobs and unrecorded waiting durations remain explicit limitations.
+
+### Changed
+
+- Synchronize the Perfetto fork, Web UI/Wasm, five-platform trace-processor pins and generated SQL knowledge to Google Perfetto v59.1 (`1e9c61e984`).
+- Include upstream FrameTimeline layer groups, heap-dump navigation and merged-class warnings, CPU-time columns, Wattson selection improvements, subtree expansion controls, pinned-flow fixes and the ART heap-dump smaps option.
+
+### Fixed
+
+- Adapt process-state queries to the renamed upstream reason column without changing the existing output field.
+- Generate complete SQL documentation through the pinned upstream parser and website formatter after removal of the old JSON generator.
+- Incorporate upstream unreleased-heap accounting, CUJ/blocking analysis and trace-parser corrections while preserving SmartPerfetto's AI Assistant and trace ownership contracts.
+
+### Scope
+
+- This release targets the latest stable v59.1. Later main-only freezer/capability views, automatic input-lifecycle UI, heap retention workflows and pipeline changes are reviewed follow-up candidates, not included features.
+- The independent Perfetto-Skills runtime/overlay migration is tracked in [Perfetto-Skills #4](https://github.com/Gracker/Perfetto-Skills/issues/4); this release does not claim that public projection has adopted v59.1.
+
+### Verification limits
+
+- Full real-model report acceptance is not established: exploratory GLM startup and scrolling runs produced invalid candidate framing/declarations and reached the 20-minute observation timeout without final reports. SQL/Skill and browser regression results remain separate from model delivery and claim verification.
+
 ## [1.16.4] - 2026-11-02
 
 ### Fixed

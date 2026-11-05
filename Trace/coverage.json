@@ -824,6 +824,7 @@
       "gpu-workload",
       "heap-dump-class-growth",
       "input-interaction-latency",
+      "job-scheduler-pending-reasons",
       "linux-system-state",
       "lock-held-ownership",
       "main-thread-frame-work",
@@ -844,7 +845,7 @@
     ]
   },
   "sql_sources": {
-    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368",
+    "runtime_revision": "1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d",
     "skills": [
       {
         "target": "android_app_background_power_state",
@@ -1304,6 +1305,10 @@
           {
             "name": "android.job_scheduler",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler.sql"
+          },
+          {
+            "name": "android.job_scheduler_states_track_events",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/job_scheduler_states_track_events.sql"
           }
         ],
         "steps": [
@@ -1316,6 +1321,36 @@
               "job_name",
               "package_name",
               "uid"
+            ]
+          },
+          {
+            "id": "pending_reason_capability",
+            "sha256": "a10c04178063ef9baa5c42a00ff0771cafb1068f9cfdd0f86156d779d9847cd6",
+            "required_columns": [
+              "status"
+            ]
+          },
+          {
+            "id": "pending_reason_data",
+            "sha256": "21b6fe5e7665ea5259ac1cbf8731d2d917710f20a2e2657140385337ff345ea7",
+            "required_columns": [
+              "completed_job_count",
+              "reason_entry_count",
+              "missing_duration_count",
+              "status"
+            ]
+          },
+          {
+            "id": "pending_reason_summary",
+            "sha256": "11f477bd9cd0f3af49fd2d5ffc1fa271c7941dba9c9be9d10c6da4bcff7fb75b",
+            "required_columns": [
+              "package_name",
+              "uid",
+              "pending_reason",
+              "completed_job_count",
+              "known_duration_count",
+              "missing_duration_count",
+              "reported_wait_ms"
             ]
           }
         ]
@@ -1357,7 +1392,7 @@
         "steps": [
           {
             "id": "process_state_capability",
-            "sha256": "bad0a783ef6e495b32244c063db73ae0a28cbdf8920431fba5a61ee87f7ec700",
+            "sha256": "978bcd3fae75bdc2039428410bd2f3e70cf0e14e02c5d3e4fa43be889a9dda46",
             "required_columns": [
               "runtime_has_process_state_table",
               "runtime_has_process_state_module",
@@ -1376,7 +1411,7 @@
           },
           {
             "id": "process_state_residency",
-            "sha256": "1f919a72d417138c48b7c86870eb4880d565a512448cafc52cf7743524dad76d",
+            "sha256": "72932f11aad2004eabe7ed58161be23771eae5a3dde213b895c454a049420520",
             "required_columns": [
               "process_name",
               "upid",
@@ -1390,7 +1425,7 @@
           },
           {
             "id": "process_state_transitions",
-            "sha256": "c82213a033f93cfc0f0bf956387c6383a9eecc152626686528ac307b519fd331",
+            "sha256": "464f526c57f9e321328db41670ba207ae210f2094f41e32b002ad875625ec47e",
             "required_columns": [
               "process_name",
               "ts",
@@ -1398,12 +1433,19 @@
               "state",
               "prev_state_ms",
               "reason",
-              "lifecycle"
+              "lifecycle",
+              "hosting_type",
+              "hosting_name",
+              "trigger_type",
+              "bind_application_delay_ms",
+              "process_start_delay_ms",
+              "exit_reason",
+              "exit_subreason"
             ]
           },
           {
             "id": "process_state_last_observed",
-            "sha256": "3d407bbdcead21269d6c13fc57fca5d7b7ea99e79feb8fe0754b0069a079b919",
+            "sha256": "8095fda5129455956799549c0e041007173f1f47bfc3dede70e19e293fe57c74",
             "required_columns": [
               "process_name",
               "upid",

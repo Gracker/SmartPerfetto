@@ -79,7 +79,7 @@ describe('android_heap_graph_leak_candidates _excluded_refs contract', () => {
       fs.writeFileSync(emptyTrace, '');
       const result = spawnSync(
         getTraceProcessorPath(),
-        ['query', emptyTrace, EXCLUDED_REFS_PROBE],
+        ['query', '--no-agent', '--format', 'csv', emptyTrace, EXCLUDED_REFS_PROBE],
         { encoding: 'utf8', maxBuffer: 1024 * 1024 },
       );
       expect(result.status).toBe(0);
