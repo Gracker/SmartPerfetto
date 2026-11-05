@@ -11,6 +11,7 @@ import {setImmediate as nextImmediate} from 'node:timers/promises';
 import {beforeEach, describe, expect, it, jest} from '@jest/globals';
 import type {FinalizeAnalysisResultInput, FinalizedAnalysisResult} from '../../../services/finalizeAnalysisResult';
 import {canonicalizeAnalysisResult} from '../../../services/canonicalAnalysisResult';
+import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import * as finalizationContexts from '../../../agentRuntime/analysisFinalizationContext';
 import type {RuntimeFinalizationContextInput} from '../../../agentRuntime/analysisFinalizationContext';
 import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/strategyLoader';
@@ -116,6 +117,56 @@ describe('Conversation evidence and stream consumer boundaries', () => {
     return value;
   }
   const isAnswer = (update: unknown) => updateRecord(update).type === 'answer_token';
+
+  it('delivers a no-trace native acknowledgement after provisional review without synthesizing a contract', async () => {
+    useActualFinalizer();
+    const body = 'FIRST_TURN';
+    const order: string[] = [];
+    const dispatch = jest.fn<NonNullable<RuntimeFinalizationContextInput['dispatchText']>>(async () => {
+      order.push('review');
+      return {status: 'ok', text: JSON.stringify({schemaVersion: 'final_semantic_response@4',
+        bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: body.length}]},
+        claims: [], omissions: [], requirements: [], investigation: []})};
+    });
+    const orchestrator = createOrchestrator(async () => result('unused'));
+    orchestrator.analyze = jest.fn<IOrchestrator['analyze']>(async (_prompt, sessionId, _traceId, options = {}) => {
+      expect(options.conversationTraceAttached).toBe(false);
+      const value = {...result(body, sessionId), findings: []};
+      const candidate = {runId: options.runId!, attemptId: 'attempt', candidateRef: 'candidate',
+        conclusionFingerprint: analysisDeliveryFingerprint(body)};
+      const projection = finalizeOwnerSourceAwareAnalysisResultWithProjection(value, undefined, {context: {
+        entry: 'runtime_draft', acceptedCandidate: candidate, outputOrigin: 'sdk_final',
+        completion: {...candidate, schemaVersion: 1, runtimeKind: 'openai-agents-sdk', status: 'completed'},
+      }});
+      expect(projection.protocolProjection).toBeDefined();
+      expect(value.conclusionContract).toBeUndefined();
+      attachContext(value, options.runId!, {taskKind: 'acknowledgement'}, {
+        // This fixture must have enough review budget to exercise the real finalizer's dispatch.
+        deadlineMs: Date.now() + 600_000, traceIdentity: {}, deliveryContext: projection.deliveryContext!,
+        protocolProjection: projection.protocolProjection, dispatchText: dispatch,
+      });
+      return value;
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+    try {
+      const outcome = await adapter.run({sessionId: 'conversation-no-trace', runId: 'no-trace-run',
+        query: 'Reply with exactly FIRST_TURN.', history: [], traceContext: {kind: 'none'},
+        onProvisionalAnswer: answer => {expect(answer.message).toBe(body); order.push('provisional');},
+        onUpdate: update => {
+          const content = updateRecord(updateRecord(update).content);
+          if (content.phase === 'final_review') order.push(String(content.stage));
+        },
+      });
+      order.push(outcome.kind);
+      expect(order).toEqual(['provisional', 'started', 'review', 'finished', 'answered']);
+      expect(outcome.message).toBe(body);
+      expect(outcome.finalResult?.completion).toMatchObject({status: 'completed'});
+      expect(outcome.finalResult?.conclusionContract).toBeUndefined();
+      expect(outcome.finalResult?.claimVerificationResult).toMatchObject({passed: true, checkedClaimCount: 0, claimResults: []});
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(mockFinalize).toHaveBeenCalledTimes(1);
+    } finally {await adapter.dispose();}
+  });
 
   it('provides discoverable live locators and reads them via real MCP on the second turn without another SQL query', async () => {
     useActualFinalizer();

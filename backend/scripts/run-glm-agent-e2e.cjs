@@ -331,7 +331,11 @@ if (require.main === module) main();
 
 function main() {
   loadBackendEnv();
-  const options = parseArgs(process.argv.slice(2));
+  runConfiguredSuites(parseArgs(process.argv.slice(2)));
+}
+
+/** Execute parsed configuration without loading a developer's .env. */
+function runConfiguredSuites(options) {
   if (options.help) {
     printUsage();
     return;
@@ -377,7 +381,8 @@ function main() {
     for (const suiteName of suiteNames) {
       if (suiteName === SYSTEM_ANALYSIS_SUITE) {
         for (const scenario of systemAnalysisScenarios().filter(item => !options.systemScenario || item.id === options.systemScenario)) runSuite(suiteName, availability, runtimeKind,
-          runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME, options.timeoutMs, scenario);
+          runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME, options.timeoutMs, scenario,
+          {outputDir: options.outputDirExplicit ? options.outputDir : undefined});
         continue;
       }
       runSuite(
@@ -386,6 +391,8 @@ function main() {
         runtimeKind,
         runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME,
         options.timeoutMs,
+        undefined,
+        {outputDir: options.outputDirExplicit ? options.outputDir : undefined},
       );
     }
   }
@@ -408,6 +415,7 @@ function parseArgs(argv) {
   let systemScenario;
   let strict = false;
   let deltaBaseline;
+  let outputDirExplicit = false;
   let outputDir = path.resolve(
     backendRoot,
     'test-output/code-aware-semantic-delta/real-provider',
@@ -491,6 +499,7 @@ function parseArgs(argv) {
       const value = argv[i + 1];
       if (!value) throw new Error('--output-dir requires a value');
       outputDir = path.resolve(backendRoot, value);
+      outputDirExplicit = true;
       i += 1;
       continue;
     }
@@ -519,7 +528,7 @@ function parseArgs(argv) {
     throw new Error(`--strict and --delta-baseline require the ${FLAGSHIP_SUITE}, ${FLAGSHIP_SUITE_NAMES.join(' or ')} suite`);
   }
   const selectedProvider = glmCodingConfiguration({GLM_BASE_URL: baseUrl, GLM_MODEL: model, GLM_LIGHT_MODEL: lightModel}, provider);
-  return {...selectedProvider, suite, runtime, timeoutMs, repeat, outputDir, preflight, queryId, condition, systemScenario, strict, deltaBaseline,
+  return {...selectedProvider, suite, runtime, timeoutMs, repeat, outputDir, outputDirExplicit, preflight, queryId, condition, systemScenario, strict, deltaBaseline,
     help: false };
 }
 
@@ -1472,14 +1481,15 @@ function runFlagshipSuites(options, suiteNames, runtimeKinds) {
       // Read before running: the new summary may replace the very file used as the baseline.
       const baseline = options.deltaBaseline !== undefined ? readFlagshipBaseline(options.deltaBaseline, fileName) : undefined;
       const run = runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, options.timeoutMs, undefined,
-        {throwOnFailure: false, extraArgs: options.strict ? ['--strict'] : []});
+        {throwOnFailure: false, extraArgs: options.strict ? ['--strict'] : [],
+          outputDir: options.outputDirExplicit ? options.outputDir : undefined});
       const report = run.outputPath ? readJsonFile(path.resolve(backendRoot, run.outputPath)).value : undefined;
       const summary = buildFlagshipSummary({suiteName, runtimeKind, report, reportPath: run.outputPath, exitCode: run.status,
         provider: run.provider, git, strict: options.strict});
       if (baseline) summary.delta = compareFlagshipSummaries(baseline, summary);
       const verdict = flagshipRunVerdict(summary);
       summary.verdict = verdict;
-      const summaryPath = path.join(backendRoot, FLAGSHIP_SUMMARY_DIR, fileName);
+      const summaryPath = path.join(options.outputDirExplicit ? options.outputDir : path.join(backendRoot, FLAGSHIP_SUMMARY_DIR), fileName);
       writeJson(summaryPath, summary);
       console.log(`[glm-e2e] flagship ${suiteName}/${runtimeKind}: semantic=${summary.semanticAcceptance} ` +
         `proof=${summary.proofAcceptance} exit=${summary.exitCode}` +
@@ -1507,12 +1517,14 @@ function loadBackendEnv() {
 }
 
 function runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, timeoutMs, scenario,
-  {throwOnFailure = true, extraArgs = []} = {}) {
+  {throwOnFailure = true, extraArgs = [], outputDir} = {}) {
   const suite = scenario ?? suites[suiteName];
   const suiteArgs = runtimeSpecificOutput
     ? withRuntimeOutputPath(suite.args, suite.output, runtimeKind)
     : suite.args;
-  const args = [...suiteArgs, ...extraArgs, '--timeout-ms', String(timeoutMs)];
+  const baseOutput = getOutputPathFromArgs(suiteArgs) ?? suite.output;
+  const output = outputDir === undefined ? baseOutput : path.join(outputDir, path.basename(baseOutput));
+  const args = withOutputPath([...suiteArgs, ...extraArgs, '--timeout-ms', String(timeoutMs)], output);
   console.log(`\n[glm-e2e] suite=${suiteName} (${suite.label})`);
   console.log(`[glm-e2e] runtime=${runtimeKind}`);
   console.log(`[glm-e2e] output=${getOutputPathFromArgs(args) || suite.output}`);
@@ -1575,17 +1587,23 @@ function preserveIsolatedSessionLogs(isolatedRoot, outputPath) {
   }
 }
 
+/** Keep one output switch, without mutating shared suite/scenario definitions. */
+function withOutputPath(args, outputPath) {
+  const next = [];
+  let inserted = false;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] !== '--output') {next.push(args[index]); continue;}
+    index++;
+    if (!inserted) {next.push('--output', outputPath); inserted = true;}
+  }
+  if (!inserted) next.push('--output', outputPath);
+  return next;
+}
+
 function withRuntimeOutputPath(args, outputPath, runtimeKind) {
-  const next = [...args];
-  const index = next.indexOf('--output');
   const runtimeOutput = outputPath.replace(/(-real)?\.json$/, (_match, realSuffix = '') =>
     `-${runtimeKind}${realSuffix}.json`);
-  if (index >= 0 && next[index + 1]) {
-    next[index + 1] = runtimeOutput;
-  } else {
-    next.push('--output', runtimeOutput);
-  }
-  return next;
+  return withOutputPath(args, runtimeOutput);
 }
 
 function getOutputPathFromArgs(args) {
@@ -1734,6 +1752,7 @@ module.exports = {
   systemAnalysisScenarios,
   resolveRuntimeKinds,
   runSuite,
+  runConfiguredSuites,
   preserveIsolatedSessionLogs,
   withRuntimeOutputPath,
 };

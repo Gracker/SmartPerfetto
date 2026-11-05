@@ -785,7 +785,9 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       // The verdict is computed from original values. Only its owner-safe projection enters private delivery artifacts.
       const storedContract = projectStoredConclusionSourceMetadata(validationContract, result.sourceUseDecision);
       const ownerContract = projectOwnerConclusionContract(result.sessionId, storedContract);
-      if (!ownerContract && ((validationContract?.claims?.length ?? 0) > 0 || result.claimVerificationResult.passed)) {
+      // Native provenance may carry no contract. A present contract must survive projection,
+      // even when it has no claims or its verification did not pass.
+      if (validationContract !== undefined && ownerContract === undefined) {
         throw new Error('owner_conclusion_contract_projection_failed');
       }
       result.conclusionContract = ownerContract;

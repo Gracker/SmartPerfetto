@@ -800,3 +800,150 @@ describe('flagship gate wrapper: file expectations, strict acceptance and regres
     }
   });
 });
+
+describe('GLM configured suite output isolation', () => {
+  let directory: string;
+  let previousExitCode: string | number | null | undefined;
+  beforeEach(() => {
+    directory = fs.mkdtempSync(path.join(os.tmpdir(), 'glm-output-isolation-'));
+    previousExitCode = process.exitCode;
+    const env: NodeJS.ProcessEnv = {...process.env, GLM_API_KEY: 'glm-harness-fixture-key',
+      GLM_BASE_URL: 'https://open.bigmodel.cn/api/coding/paas/v4', GLM_MODEL: 'glm-5.3-flash', GLM_LIGHT_MODEL: 'glm-5.3-flash'};
+    delete env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON;
+    delete env.SMARTPERFETTO_OPENCODE_MODEL_JSON;
+    jest.replaceProperty(process, 'env', env);
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    process.exitCode = previousExitCode;
+    jest.dontMock('child_process'); jest.restoreAllMocks();
+    fs.rmSync(directory, {recursive: true, force: true});
+  });
+
+  function mocked(run: (wrapper: any, calls: Array<{args: string[]; env: NodeJS.ProcessEnv}>) => void,
+    options: {fail?: boolean; writeReports?: boolean; logs?: boolean} = {}) {
+    const calls: Array<{args: string[]; env: NodeJS.ProcessEnv}> = [];
+    const spawn = jest.fn((command: string, args: string[], child: any) => {
+      if (command === 'git') return {status: 0, stdout: args[0] === 'rev-parse' ? 'a'.repeat(40) : ''};
+      if (args[0] === '--input-type=module') return {status: 0, stdout: JSON.stringify({
+        model: {id: 'glm-5.3-flash', provider: 'zai-coding-cn', contextWindow: 100_000, maxTokens: 8192},
+        supportedThinkingLevels: ['off', 'low'],
+      })};
+      expect(args[1]).toBe(path.join(backendRoot, 'src/scripts/verifyAgentSseScrolling.ts'));
+      calls.push({args: [...args], env: {...child.env}});
+      const output = args[args.indexOf('--output') + 1];
+      if (options.writeReports) {
+        fs.mkdirSync(path.dirname(output), {recursive: true});
+        fs.writeFileSync(output, JSON.stringify({checkGroups: {}, semanticAcceptance: 'INCONCLUSIVE'}));
+        fs.writeFileSync(`${output}.diagnostics.json`, '{}');
+      }
+      if (options.logs) {
+        const logs = path.join(child.env.SMARTPERFETTO_BACKEND_LOG_DIR, 'sessions');
+        fs.mkdirSync(logs, {recursive: true});
+        fs.writeFileSync(path.join(logs, 'session_fixture.jsonl'), JSON.stringify({message: 'fixture_failure', apiKey: 'never-export-this'}));
+      }
+      return {status: options.fail ? 1 : 0};
+    });
+    jest.doMock('child_process', () => ({...jest.requireActual('child_process'), spawnSync: spawn}));
+    jest.isolateModules(() => run(require(path.join(backendRoot, 'scripts/run-glm-agent-e2e.cjs')), calls));
+  }
+  const flashArgs = ['--model', 'glm-5.3-flash', '--light-model', 'glm-5.3-flash'];
+
+  it.each(['startup', 'context', 'system-analysis'])('routes actual %s child outputs to the explicit directory with Flash pins', suite => {
+    mocked((wrapper, calls) => {
+      const originals = JSON.stringify(wrapper.suites);
+      const scenarios = JSON.stringify(wrapper.systemAnalysisScenarios());
+      const args = ['--suite', suite, '--runtime', 'all-glm', '--output-dir', directory, ...flashArgs,
+        ...(suite === 'system-analysis' ? ['--system-scenario', 'scheduler-constructed'] : [])];
+      const parsed = wrapper.parseArgs(args);
+      expect(parsed.outputDirExplicit).toBe(true);
+      wrapper.runConfiguredSuites(parsed);
+      expect(calls).toHaveLength(suite === 'context' ? 9 : 3);
+      const outputs = calls.map(call => {
+        expect(call.args.filter(arg => arg === '--output')).toHaveLength(1);
+        const output = call.args[call.args.indexOf('--output') + 1];
+        expect(path.dirname(output)).toBe(directory);
+        expect(output).toContain(call.env.SMARTPERFETTO_AGENT_RUNTIME);
+        expect(call.env).toMatchObject({OPENAI_MODEL: 'glm-5.3-flash', OPENAI_LIGHT_MODEL: 'glm-5.3-flash',
+          OPENAI_BASE_URL: 'https://open.bigmodel.cn/api/coding/paas/v4'});
+        if (call.env.SMARTPERFETTO_OPENCODE_MODEL_JSON) expect(JSON.parse(call.env.SMARTPERFETTO_OPENCODE_MODEL_JSON))
+          .toMatchObject({modelID: 'glm-5.3-flash', smallModel: 'glm-5.3-flash', baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4'});
+        if (call.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON) expect(JSON.parse(call.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON))
+          .toMatchObject({id: 'glm-5.3-flash', baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4'});
+        return output;
+      });
+      expect(new Set(outputs).size).toBe(outputs.length);
+      expect(JSON.stringify(wrapper.suites)).toBe(originals);
+      expect(JSON.stringify(wrapper.systemAnalysisScenarios())).toBe(scenarios);
+    });
+  });
+
+  it('keeps omitted output-dir defaults', () => {
+    mocked((wrapper, calls) => {
+      const defaults = wrapper.parseArgs(['--suite', 'startup', ...flashArgs]);
+      expect(defaults.outputDirExplicit).toBe(false);
+      wrapper.runConfiguredSuites(defaults);
+      expect(calls[0].args[calls[0].args.indexOf('--output') + 1]).toBe(wrapper.suites.startup.output);
+    });
+  });
+
+  it('does not overwrite a default sentinel when an explicit directory is requested', () => {
+    mocked((wrapper, calls) => {
+      const defaultFile = path.resolve(backendRoot, wrapper.suites.startup.output);
+      const previous = fs.existsSync(defaultFile) ? fs.readFileSync(defaultFile) : undefined;
+      fs.mkdirSync(path.dirname(defaultFile), {recursive: true});
+      fs.writeFileSync(defaultFile, 'default-sentinel');
+      try {
+        wrapper.runConfiguredSuites(wrapper.parseArgs(['--suite', 'startup', '--output-dir', directory, ...flashArgs]));
+        expect(fs.readFileSync(defaultFile, 'utf8')).toBe('default-sentinel');
+        const output = calls[0].args[calls[0].args.indexOf('--output') + 1];
+        expect(path.dirname(output)).toBe(directory);
+        expect(fs.existsSync(output)).toBe(true);
+      } finally {if (previous) fs.writeFileSync(defaultFile, previous); else fs.unlinkSync(defaultFile);}
+    }, {writeReports: true});
+  });
+
+  it('writes flagship summaries and verifier diagnostics under the explicit directory', () => {
+    mocked((wrapper, calls) => {
+      wrapper.runConfiguredSuites(wrapper.parseArgs(['--suite', 'flagship', '--runtime', 'all-glm', '--output-dir', directory, ...flashArgs]));
+      expect(calls).toHaveLength(6);
+      for (const call of calls) {
+        const output = call.args[call.args.indexOf('--output') + 1];
+        expect(fs.existsSync(`${output}.diagnostics.json`)).toBe(true);
+        expect(path.dirname(output)).toBe(directory);
+      }
+      for (const suite of ['startup', 'scrolling']) for (const runtime of wrapper.resolveRuntimeKinds('all-glm')) {
+        const summary = JSON.parse(fs.readFileSync(path.join(directory, `${suite}-${runtime}.json`), 'utf8'));
+        expect(summary.fingerprint.model).toBe('glm-5.3-flash');
+        expect(path.resolve(backendRoot, summary.report).startsWith(directory + path.sep)).toBe(true);
+      }
+    }, {writeReports: true});
+  });
+
+  it('preserves failure logs next to the relocated output even when the child exits nonzero', () => {
+    mocked((wrapper, calls) => {
+      expect(() => wrapper.runConfiguredSuites(wrapper.parseArgs(['--suite', 'startup', '--output-dir', directory, ...flashArgs])))
+        .toThrow('exited with status 1');
+      const output = calls[0].args[calls[0].args.indexOf('--output') + 1];
+      const log = fs.readFileSync(`${output}.isolated-session-log.jsonl`, 'utf8');
+      expect(path.dirname(output)).toBe(directory); expect(log).toContain('fixture_failure');
+      expect(fs.existsSync(`${output}.diagnostics.json`)).toBe(true);
+      expect(log).not.toContain('never-export-this');
+      expect(fs.existsSync(path.dirname(calls[0].env.SMARTPERFETTO_BACKEND_LOG_DIR!))).toBe(false);
+    }, {fail: true, logs: true, writeReports: true});
+  });
+
+  it('rewrites duplicate output switches to one without mutating an explicit scenario', () => {
+    mocked((wrapper, calls) => {
+      const scenario = {label: 'fixture', output: 'test-output/scenario.json',
+        args: Object.freeze(['--output', 'old.json', '--query', 'q', '--output', 'duplicate.json'])};
+      wrapper.runSuite('system-analysis', {apiKey: 'fixture', credentialKind: 'test'}, 'opencode', true, 123,
+        scenario, {outputDir: directory});
+      expect(calls[0].args.filter(arg => arg === '--output')).toHaveLength(1);
+      expect(calls[0].args[calls[0].args.indexOf('--output') + 1]).toBe(path.join(directory, 'scenario-opencode.json'));
+      expect(scenario.args).toEqual(['--output', 'old.json', '--query', 'q', '--output', 'duplicate.json']);
+      expect(calls[0].args).toContain('--query'); expect(calls[0].args).toContain('q');
+    });
+  });
+});

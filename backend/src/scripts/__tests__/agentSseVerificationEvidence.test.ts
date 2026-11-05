@@ -6,6 +6,8 @@ import type {CodeLookupLedgerEntry} from '../../services/codebase/codeLookupLedg
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
+import express from 'express';
 import {
   privateProjectedSourceEventType,
   successfulCodeLookupToolCounts,
@@ -21,6 +23,7 @@ import {
   parseAgentSseExpectation,
   taskAcceptanceStatus,
   assertVerificationTraceReady,
+  startVerificationServer,
   loadVerificationTracePair,
   collectSseSummary,
   findSessionLogFile,
@@ -1724,5 +1727,68 @@ describe('producer-bound flagship facts', () => {
     }
     // The scrolling gate binds by producer; startup stays on the column allowlist to pin the fallback.
     expect(producerFacts).toBeGreaterThanOrEqual(2);
+  });
+});
+
+
+describe('verification server IPv4 lifecycle', () => {
+  const servers: http.Server[] = [];
+  const nativeListeners = http.createServer();
+  const close = (server: http.Server) => new Promise<void>((resolve, reject) => {
+    if (!server.listening) {resolve(); return;}
+    server.close(error => error ? reject(error) : resolve());
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await Promise.all(servers.splice(0).map(close));
+  });
+  async function start(port = 0) {
+    const app = express();
+    app.get('/ready', (_request, response) => response.send('ready'));
+    const server = await startVerificationServer(app, port);
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Expected an IPv4 address');
+    return {server, address};
+  }
+  const read = (port: number) => new Promise<string>((resolve, reject) => {
+    http.get(`http://127.0.0.1:${port}/ready`, {agent: false}, response => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', chunk => {body += chunk;});
+      response.once('end', () => resolve(body));
+      response.once('error', reject);
+    }).once('error', reject);
+  });
+
+  it('returns only after an ephemeral IPv4 loopback listener is ready', async () => {
+    const {server, address} = await start();
+    expect(address).toMatchObject({address: '127.0.0.1', family: 'IPv4'});
+    expect(address.port).toBeGreaterThan(0);
+    expect(server.listening).toBe(true);
+    expect(server.listeners('listening')).toEqual(nativeListeners.listeners('listening'));
+    expect(server.listeners('error')).toEqual(nativeListeners.listeners('error'));
+    expect(await read(address.port)).toBe('ready');
+  });
+
+  it('rejects an occupied port and removes startup listeners without closing its owner', async () => {
+    const {server: owner, address} = await start();
+    const create = jest.spyOn(http, 'createServer');
+    await expect(startVerificationServer(express(), address.port)).rejects.toMatchObject({code: 'EADDRINUSE'});
+    const failed = create.mock.results[0].value as http.Server;
+    expect(failed.listening).toBe(false);
+    expect(failed.listeners('listening')).toEqual(nativeListeners.listeners('listening'));
+    expect(failed.listeners('error')).toEqual(nativeListeners.listeners('error'));
+    expect(owner.listening).toBe(true);
+    expect(await read(address.port)).toBe('ready');
+  });
+
+  it('releases the owned port on close so another verification can reuse it', async () => {
+    const first = await start();
+    await close(first.server);
+    expect(first.server.address()).toBeNull();
+    const second = await start(first.address.port);
+    expect(second.address).toEqual(first.address);
+    expect(await read(second.address.port)).toBe('ready');
   });
 });

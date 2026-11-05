@@ -337,6 +337,96 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
 
+describe('native no-trace conclusion contract presence', () => {
+  function nativeAnswer(options: {body?: string; contract?: ConclusionContract;
+    review?: 'checked' | 'unavailable' | 'omitted'; taskKind?: 'acknowledgement' | 'fact'} = {}) {
+    const raw = options.body ?? 'FIRST_TURN';
+    const result: AnalysisResult = {sessionId: 'native-no-trace', conclusion: raw, success: true,
+      confidence: 0.8, findings: [], hypotheses: [], rounds: 1, totalDurationMs: 1,
+      ...(options.contract !== undefined ? {conclusionContract: options.contract} : {})};
+    const candidate = {runId: 'native-no-trace-run', attemptId: 'attempt', candidateRef: 'candidate',
+      conclusionFingerprint: analysisDeliveryFingerprint(raw)};
+    const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate, outputOrigin: 'sdk_final' as const,
+      completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const, status: 'completed' as const}};
+    // Use the production issuer: no sidecar, fake contract or serialized receipt is added.
+    const projection = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, undefined, {context: nativeDelivery});
+    expect(projection.protocolProjection).toBeDefined();
+    const dispatch = jest.fn(async (): Promise<IntentTransportResult> => options.review === 'unavailable'
+      ? {status: 'unavailable', reason: 'provider_error'}
+      : {status: 'ok', text: JSON.stringify({schemaVersion: 'final_semantic_response@4',
+        bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: raw.length}]},
+        claims: [], omissions: options.review === 'omitted' ? [{code: 'undeclared_claim', contentLocations: [{text: raw}]}] : [],
+        requirements: [], investigation: []})});
+    attachFinalizationContext(result, {runId: candidate.runId, sessionId: result.sessionId, deadlineMs: Date.now() + 600_000,
+      strategyRegistry: registry, traceIdentity: {},
+      turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: registry.registryFingerprint,
+        taskKind: options.taskKind ?? 'acknowledgement', sceneId: 'general', scope: 'bounded_question',
+        recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'existing_only'},
+      deliveryContext: projection.deliveryContext!, protocolProjection: projection.protocolProjection, dispatchText: dispatch});
+    const context = takeFinalizationContext(result)!;
+    const owner: AnalysisFinalizationOwner = {runId: candidate.runId, signal: new AbortController().signal,
+      isCurrent: () => true, assertAuthorized: () => {}};
+    const native = context.getNativeDeclaration(result, owner.signal)!;
+    expect(native.raw).toBe(raw);
+    return {native, dispatch, context, run: () => finalizeAnalysisResult({result, context, owner,
+      query: 'Reply with exactly FIRST_TURN.', conversation: {fallbackQuestion: 'Reply with exactly FIRST_TURN.'}})};
+  }
+
+  it('completes an issued native acknowledgement without manufacturing a missing contract', async () => {
+    const target = nativeAnswer();
+    expect(target.native).not.toHaveProperty('contract');
+    const final = await target.run();
+    expect(final.conversationOutcome).toMatchObject({kind: 'answered', message: 'FIRST_TURN'});
+    expect(final.result.conclusionContract).toBeUndefined();
+    expect(final.result.claimVerificationResult).toMatchObject({status: 'passed', passed: true,
+      checkedClaimCount: 0, claimResults: []});
+    expect(final.result.completion).toMatchObject({status: 'completed'});
+    expect(final.semanticAssessment).toMatchObject({status: 'checked', coverage: {body: 'complete', claims: 'complete'}});
+    expect(target.dispatch).toHaveBeenCalledTimes(1);
+    expect(() => target.context.runId).toThrow('finalization_context_disposed');
+  });
+
+  it.each(['unavailable', 'omitted'] as const)('keeps absent declarations unverified when review is %s', async review => {
+    const target = nativeAnswer({review});
+    expect(target.native).not.toHaveProperty('contract');
+    const final = await target.run();
+    expect(final.result.conclusionContract).toBeUndefined();
+    expect(final.result.claimVerificationResult?.passed).toBe(false);
+    expect(final.result.claimVerificationResult?.claimResults).toEqual([]);
+    if (review === 'omitted') expect(final.result.claimVerificationResult?.issues)
+      .toContainEqual(expect.objectContaining({code: 'semantic_undeclared_claim'}));
+    else expect(final.semanticAssessment?.status).toBe('unavailable');
+    expect(target.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not turn an invalid native declaration into a passed empty claim set', async () => {
+    const target = nativeAnswer({body: 'FIRST_TURN\n<!-- smartperfetto:conclusion-contract@1\n```json\n{"mode":"broken"}\n```\n-->'});
+    const final = await target.run();
+    expect(final.result.claimVerificationResult?.passed).toBe(false);
+    expect(final.semanticAssessment).toMatchObject({status: 'not_checked', reason: 'invalid_declarations'});
+    expect(target.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('preserves an explicitly empty native contract through real owner projection', async () => {
+    const contract = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [], claims: []}).contract!;
+    const target = nativeAnswer({contract});
+    expect(target.native.contract).toEqual(contract);
+    const final = await target.run();
+    expect(final.result.conclusionContract).toMatchObject({schemaVersion: 'conclusion_contract_v1', claims: []});
+    expect(final.result.claimVerificationResult?.passed).toBe(true);
+  });
+
+  it('fails closed when the real projector rejects a present non-JSON contract with no claims or passed verification', async () => {
+    // Adversarial runtime metadata, retained by the real native receipt but rejected by the JSON-only projector.
+    const target = nativeAnswer({contract: new Date(0) as unknown as ConclusionContract, taskKind: 'fact'});
+    expect(Object.prototype.toString.call(target.native.contract)).toBe('[object Date]');
+    await expect(target.run()).rejects.toThrow('owner_conclusion_contract_projection_failed');
+    expect(target.dispatch).not.toHaveBeenCalled();
+    expect(() => target.context.runId).toThrow('finalization_context_disposed');
+  });
+});
+
 describe('finalizer-owned terminal state', () => {
   it('writes the quality verdict a runtime draft left to it', async () => {
     // A runtime records only native facts: an output-limited answer is partial,

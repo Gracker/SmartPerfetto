@@ -12,6 +12,7 @@ import cors from 'cors';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import http from 'node:http';
 import {createHash, randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import agentRoutes from '../routes/agentRoutes';
@@ -3365,6 +3366,24 @@ export function preserveVerificationSessionLog(outputPath: string, sessionId: st
   return {sessionLogFile, ...(lifecycleErrorCode ? {lifecycleErrorCode} : {})};
 }
 
+/** @internal Own an IPv4 loopback server only after the listening event. */
+export async function startVerificationServer(app: express.Express, port = 0): Promise<http.Server> {
+  const server = http.createServer(app);
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      server.removeListener('listening', onListening);
+      server.removeListener('error', onError);
+    };
+    const onListening = () => {cleanup(); resolve();};
+    const onError = (error: Error) => {cleanup(); reject(error);};
+    server.once('listening', onListening);
+    server.once('error', onError);
+    try { server.listen(port, '127.0.0.1'); }
+    catch (error) { cleanup(); reject(error); }
+  });
+  return server;
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(options.tracePath)) {
@@ -3384,7 +3403,7 @@ async function main(): Promise<void> {
   }
 
   const traceProcessorService = getTraceProcessorService();
-  let server: ReturnType<express.Express['listen']> | undefined;
+  let server: http.Server | undefined;
   let baseUrl = '';
   let traceId = '';
   let referenceTraceId = '';
@@ -3407,7 +3426,7 @@ async function main(): Promise<void> {
 
   try {
     const app = createVerificationApp();
-    server = app.listen(0);
+    server = await startVerificationServer(app);
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Failed to bind local verification server');
     baseUrl = `http://127.0.0.1:${address.port}`;
