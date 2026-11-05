@@ -72,9 +72,15 @@ Provider connection 支持两套端点字段：
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 | `baseUrl` / `apiKey` | legacy/shared | 作为旧配置兼容或双协议共享 key |
 
-Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high/xhigh/max`）；不支持的设置会在 SDK 调用前拒绝，不会静默换档。主分析和收尾保留主模型推理配置。未显式配置 thinkingLevel 时，声明专用修复、补正文的交付续写和唯一一次无工具语义核验在 wire API 可表达时使用 low，否则使用 off，为完整 JSON 留出输出预算；显式 thinkingLevel 仍约束这些调用。截断的核验响应继续标记 incomplete，不作为核验成功。主分析和收尾对官方 GLM origin，省略该字段时保留 provider 默认，不因 Pi Agent 的默认 `off` 自动发送 `thinking: disabled`。显式 `off` 仍按关闭请求发送，服务端是否允许由 provider 决定。`thinkingLevelMap` 保留 provider 原生映射；GLM 的 `reasoning_effort` 需要在 model 的 `compat` 中显式设置 `supportsReasoningEffort: true`，适用于已确认支持该字段的模型。
+模型控制由 `modelExecutionProfile.ts` 区分服务端模型能力、实际 SDK 表达能力及已捕获的用户配置，`modelExecutionPolicy.ts` 决定本轮用途允许的参数。匹配依据是实际 endpoint、model ID 和协议，未知 gateway 或尚未建模的协议保持 unknown；已由原生 SDK 验证的合法配置继续保留。不能根据 provider 名称、请求耗时或模型自述推断能力，也不能静默切换 pinned provider/model。
 
-分类独立受现有输出和时间预算约束：可表达推理强度时使用 `low`，否则保留显式关闭的快速分类请求；若配置同时禁止这两种设置，分类返回 unavailable，不自动升级。分类设置不会改动主模型配置。任意 gateway 的兼容选项仍须显式配置，不能由运行耗时推断实际推理强度。
+主分析与普通续写保留原生设置。分类、声明修复、唯一一次无工具语义审核及显式 output-only 交付，只有在服务端与当前 adapter 都支持时才选择最低合法思考设置。例如已知 GLM 5.3 Flash 不能关闭思考，使用 enabled/low；已知 DeepSeek Flash 支持的相应接口可以关闭。用户显式设置优先，已知不合法的设置在派发前返回配置错误，不能作为临时网络错误重试。SDK 不支持或能力未知时不猜参数。
+
+Pi 的 model JSON 可显式设置 `thinkingLevel`（`off/minimal/low/medium/high/xhigh/max`）；installed SDK 不支持的设置会在调用前拒绝，不静默换档。`thinkingLevelMap` 保留 SDK 的原生映射。官方 GLM 未显式设置时不会因 Pi Agent 的默认 off 而自动发送 disabled；已知强制思考模型的显式 off 会被拒绝。OpenCode 使用它实际支持的 agent option 映射，例如 `reasoningEffort` 由宿主转成 wire `reasoning_effort`；缺失的模型温度、工具、成本能力不伪造为已知值，独立轻模型不继承主模型的能力和限制。
+
+`model_execution_fingerprint@1` 独立于既有 provider snapshot，绑定实际模型、接口、有效配置及已知 SDK/adapter 事实；未知版本明确保留 unknown。内部 `policyObservations` 只记录策略选择，固定 `wireObservation: not_observed`，不等于实际派发或服务端执行事实。真实 wire 行为使用维护入口 `test:pi-provider-runtime`、`test:opencode-provider-runtime` 验证；这些本地 fake-provider 合同测试不替代真实模型准确度和时延验收。
+
+`OPENAI_ANALYSIS_REASONING_EFFORT` 可显式配置 OpenAI runtime 的主分析与普通续写，省略时保留服务商默认。它不覆盖分类、声明修复、超时无工具收尾或语义审核各自的用途策略。合法性按实际选中的模型、端点、协议与当前 SDK 验证；通用 effort 通过 SDK 原生字段发送，不向未知网关注入 `thinking`。已识别 DeepSeek Chat 的 `none` 映射为关闭思考；强制思考的 GLM 拒绝 `none`。当前 adapter 仅在已识别且支持的 Chat 接口通过透传表达 `max`，未知网关与 Responses 的显式 `max` 暂不支持。配置进入同一隔离环境的 provider snapshot，非法值不进入公开快照。较低 effort 的准确性仍需真实验证。
 
 ## M10 独立反馈 triage
 
@@ -106,6 +112,9 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/agentRuntime/runtimeExecutionGuard.ts` | runtime/session 单活执行、取消与 stale settle 隔离 |
 | `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | 五个原生引擎共享的 typed intent、预算、范围和证据访问策略 |
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | 私有 finalization 上下文、原 deadline、受授权的原始证据读取及跨轮 lease |
+| `backend/src/services/providerManager/modelExecutionProfile.ts`, `backend/src/agentRuntime/modelExecutionPolicy.ts` | 实际模型与 SDK 能力、独立执行指纹、按用途选择合法模型参数 |
+| `backend/src/agentRuntime/runtimeTaskDeadline.ts` | 单轮内部 admission 身份与显式工作期限；不替代用户取消或授权 |
+| `backend/src/agent/core/conclusionAuthoring.ts` | 有界声明引用展开；保留原始 wire 与独立验证命题 |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | 维护者控制的并发候选准入边界 |
 | `backend/src/agentRuntime/runtimePerformance.ts` | RunManifest 内部阶段、工具与 SQL 排队/执行耗时 receipt |
 | `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | 有界调用与采集活动、私有运行归属及迟到回调隔离 |
@@ -132,6 +141,8 @@ planning 仍是 canonical shared layers；`claudeVerifier` 的兼容入口指向
 SmartPerfetto 的分析能力由 `createClaudeMcpServer()` 实现，并通过 `McpToolRegistry` 描述和筛选。工具面按真实 request scope、artifact store、codebase permission、referenceTraceId、comparison context 和 evidence access 生成。预算模式不授予权限，也不自动缩减已授权工具；`existing_only` 严格禁止新采集。
 
 Claude runtime 直接把这些工具暴露为 in-process MCP server。
+
+`list_skills(metricId, offset)` 可从本轮固定的 Skill 定义与 SQL fragments 发现对应指标的真实生产者、输入、身份选择器和范围限制。发现不执行工具，也不签发证据；raw SQL 列名或模型声明不能替代私有 producer binding。未知指标返回未找到，不能静默退回整个目录。
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
@@ -243,11 +254,35 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 `RuntimePerformance` 的 `scene_evidence` 阶段与闭合回执 `sceneEvidence`。`allowMemoryPrefetch` 只控制记忆层预取，
 与入口证据无关。
 字符串单元格若被上游截短，就不作为精确值交给模型；artifact 定位仍可用于读取原始证据。
+
+**当前选区的最低取证。** 已解析的 `bounded_question`、`read_new` investigation 还必须明确
+`targetUse=current_selection`，才可进入 `selectedEvidenceFoundation.ts`。UI 只在真实 renderer 的
+`rootTableName` 为 `slice` 时发送 `nativeTable: 'slice'`；后端重查同一 trace 的原生行及时间窗，
+并按原身份门核对精确 UTID/UPID。显式用户 selector 未被验证时不登记 capture。profile 的可选
+`entry_acquisition` 声明一个最低 metric 和四个精确参数绑定；产品只运行 pinned registry 中唯一安全的
+root producer，不按 Skill 名称选择。缺省或不明 target-use、旧客户端缺表提示、其他选择类型、另一目标、
+existing-only 和双 trace 均不启用此路径。
+
+五个 runtime 在通用焦点、架构和完整性预取之前完成该采集：先从同一 processor 的原始响应签发
+native witness，再运行身份门与最低 metric，避免预取加载模块后失去原生证据资格。已不可信的 processor
+不会因此恢复资格。早期采集与后续模型工具、finalizer 复用本轮同一个 evidence store、executor 和
+pinned registry；失败或不可用结果也只处理一次。后续预检失败不删除或重新归属已合法提交的捕获，
+整体运行仍按实际失败状态结束。
+
+原生 capture 与 metric 执行使用两个独立状态轴，`captured`/`committed` 不表示证据完整或断言 verified。
+合法的 native capture 可在后续 metric 失败时保留；所有工作共用原截止时间内至多 20 s 的采集预算，
+取消后等待已启动工作收尾，不能再开始采集或提交。提示仍受同一 24 单元格/2 KiB 预算约束，保留定位符和缺口；
+完整性、单位、量词及因果关系继续由原 ledger、finite proof 和 semantic review 判断。
+
+工具结果中的 `modelEvidence` 仅反馈完整 backing capture 的行可用性、可信列单位是否存在、私有注册 metric
+binding 是否存在；分页空页不等于空 capture，binding 存在不表示 metric 已观测。恢复数据不会重建这些权限或 witness。
 完整性探测在检查 stdlib 视图前先加载其定义模块（能力定义静态声明 `requiredModules`，并由测试守住）；
 模块加载失败或查询未完成的能力带 `reasonCode`，表示“未探测”，不是“缺失”。计划按需产生，阶段完成标记必须有真实成功证据或明确处置。
 未结束的探索计划和假设保留原状态，不自动触发续跑，也不单独决定回答是否完整。
 
 ## 轮次预算与收尾
+
+HTTP、CLI、conversation 与直接 runtime 调用共用私有 `RuntimeAdmission` 身份。预算从本轮获准开始处理时计算，包含分类与准备阶段，不能在进入 native SDK 时重新起算。显式任务上限、工作停止信号与用户取消/授权保持分离；未配置显式上限时不增加配置解析前的硬定时器。已开始的准备查询可以排空。超时保留已完成候选，guard 等待真实 native 工作、工具与清理结束后才释放，迟到结果不能影响后继 run。
 
 完整模式默认 100 轮，快速模式默认 50 轮；5 轮 quick target 仅为软目标。
 总预算大于 1 时预留一次无工具交付。正常提前完成且已带有效必需声明，或 typed intent
@@ -259,6 +294,10 @@ artifact、capture 与 queryReview；但它不是模型工具调用：不进 Run
 说明有限结论、证据不足及下一轮可追问的问题。它不会继续查询，也不会把调查升级为
 完成；`partial`、`completion.reason=turn_limit` 和 `terminationReason=max_turns` 保留。
 触顶后不再追加模型语义审核，确定性证据检查仍可执行。原生 `length/output_limit` 表示单次输出未写完，可在原始预算和截止时间内使用同一预留额度补齐完整正文与声明；只有新候选获得自身 completed/stop 记录并通过严格协议后才接受。失败、取消、未知、pending tool/deferred 状态不能据此续写，续写失败保留原始未完成凭据。
+
+声明 authoring 是输入语法，不能生成证据或补全模型未提交的命题。`SMARTPERFETTO_CONCLUSION_AUTHORING` 默认 `canonical_v1`，可显式选择 `authoring_v1` / `authoring_v2`；非法值在本轮配置阶段拒绝。引用字典只在规定 schema 位置展开，每次使用均计入展开后的字节、节点与深度限额，完整内联引用仍可使用。@2 仅把未提交的根集合编译为空集合、把唯一 `{text:string}` 载体编译为原字符串；不修补 claim、单位、量词、来源或引用。raw 输入、编译材料与独立核验保持分离，无法解码的 authoring 不具备声明修复的保全基线。JSON 失败仅记录闭集格式事实及可确认的 UTF-16 位置/长度，不保存原文或包含输入的解析器错误消息。
+
+`check_conclusion_draft` 的 `diagnosticMode=claims_only` 可检查选定声明而不重复发送完整正文，presentation 明确为 `not_checked`；默认 `presentation` 仍要求完整正文。草稿输入的字符 guard 与 64 KiB UTF-8 执行上限分别生效；最终交付始终进行完整正文、声明、呈现与证据校验。
 
 声明 JSON 本身不算可读交付。Pi 已完成但只有声明的候选使用同一预留交付机会补写正文，保留已有 claim 数量与 ID；已有可读正文不因缺少标题而续写。完整闭合的单个畸形声明可隔离修复，但原文截断或重复 marker 不走声明专用修复。修复后仍须通过严格解析和独立核验。
 

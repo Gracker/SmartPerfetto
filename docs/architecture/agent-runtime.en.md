@@ -74,9 +74,15 @@ Provider connection fields map to runtime-specific env:
 | `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 
-Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`). Unsupported settings are rejected before SDK dispatch instead of silently clamping to another level. Main analysis and closeout preserve the main reasoning configuration. With no explicit thinkingLevel, declaration-only repair, no-tool body delivery continuation and the single semantic review use low if the configured wire API supports it, otherwise off, reserving output for the complete JSON. Explicit thinkingLevel remains binding for those calls. Truncated review output remains incomplete; it is never accepted as verification. For main analysis and closeout on official GLM origins, an omitted level preserves the provider default rather than sending `thinking: disabled` solely because Pi Agent defaults to off. Explicit off remains a disable request; provider support is authoritative. `thinkingLevelMap` retains native mappings. To send GLM `reasoning_effort`, explicitly set model `compat.supportsReasoningEffort: true` for models confirmed to support that field.
+`modelExecutionProfile.ts` separates documented server capabilities, actual SDK expression capabilities and captured authored settings; `modelExecutionPolicy.ts` selects controls by call purpose. Matching uses the actual endpoint, exact model ID and protocol. Unknown gateways or unmodeled protocols remain unknown, and native configurations already validated by their SDK remain intact. Provider names, latency and model self-descriptions do not establish capabilities or authorize switching the pinned provider/model.
 
-Classification has its own existing output/time limits: use low where the wire API can express it, otherwise retain an explicitly disabled fast classification request. If configuration disallows both, classification is unavailable rather than upgraded. Classification does not mutate main-model settings. Arbitrary gateways still require explicit compatibility settings; elapsed time does not establish actual reasoning strength.
+Main analysis and ordinary continuation preserve native settings. Classification, declaration repair, the single no-tool semantic review and explicit output-only delivery select the minimum legal thinking setting only when both server and adapter support it. Known GLM 5.3 Flash requires enabled thinking and uses low; known DeepSeek Flash interfaces may disable it. Authored settings take precedence; a known illegal setting is a configuration error before dispatch, not a transient network failure. Unknown capability does not authorize guessed parameters.
+
+Pi model JSON may explicitly set `thinkingLevel` (`off/minimal/low/medium/high/xhigh/max`); unsupported levels fail before dispatch. `thinkingLevelMap` preserves native mappings. Official GLM without an authored setting does not inherit disabled thinking solely from Pi Agent's off default; explicit off is rejected for known forced-thinking models. OpenCode uses actual host options, such as `reasoningEffort` mapped to wire `reasoning_effort`. Missing temperature/tool/cost capabilities remain unknown; a separate light model does not inherit the primary model's capabilities or limits.
+
+`model_execution_fingerprint@1` is separate from the existing provider snapshot and binds actual model/API, effective settings and known SDK/adapter facts. Unknown versions stay unknown. Internal `policyObservations` describe policy selection with `wireObservation: not_observed`; they are not actual dispatch or server execution facts. Maintainer commands `test:pi-provider-runtime` and `test:opencode-provider-runtime` verify native wire contracts against local fake providers, not real-model accuracy or latency.
+
+`OPENAI_ANALYSIS_REASONING_EFFORT` explicitly configures OpenAI runtime main analysis and ordinary continuation; omitting it preserves provider defaults. It does not override classification, declaration repair, timeout output-only closeout or semantic review purpose policies. Validation uses the actual selected model, endpoint, protocol and installed SDK. Generic effort uses native SDK fields and never injects vendor `thinking` into unknown gateways. Recognized DeepSeek Chat maps `none` to disabled thinking; forced-thinking GLM rejects it. This adapter currently expresses `max` through passthrough only on recognized supported Chat interfaces; explicit `max` on unknown gateways or Responses is not yet supported by this adapter. The same isolated provider environment binds the setting into its snapshot; invalid values cannot enter public snapshots. Lower effort still needs real accuracy validation.
 
 ## M10 Independent Feedback Triage
 
@@ -113,6 +119,9 @@ for the user-visible contract.
 | `backend/src/agentRuntime/runtimeExecutionGuard.ts` | Runtime/session single-active execution, cancellation, and stale-settle isolation |
 | `backend/src/agentRuntime/analysisTurnIntent.ts`, `runtimeTurnPolicy.ts` | Shared typed intent, budget, scope and evidence-access policy for all native engines |
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | Private finalization context, original deadline, authorized capture reads and cross-turn leases |
+| `backend/src/services/providerManager/modelExecutionProfile.ts`, `backend/src/agentRuntime/modelExecutionPolicy.ts` | Actual model/SDK capabilities, independent execution fingerprint and legal purpose controls |
+| `backend/src/agentRuntime/runtimeTaskDeadline.ts` | Private per-turn admission identity and explicit work deadline; separate from cancellation and authorization |
+| `backend/src/agent/core/conclusionAuthoring.ts` | Bounded declaration-reference expansion preserving raw input and independent proposition verification |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
 | `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
 | `backend/src/agentRuntime/runtimeActivity.ts`, `runtimePerformanceContext.ts` | Bounded invocation and capture activity, private run ownership, and late-callback isolation |
@@ -142,6 +151,8 @@ SmartPerfetto analysis capability is registered through
 `createClaudeMcpServer()` and described through `McpToolRegistry`: SQL
 execution, Skill invocation, SQL schema lookup, planning/hypothesis tools,
 artifacts, memory, code-aware lookup, baselines, and comparison tools.
+
+`list_skills(metricId, offset)` discovers actual metric producers, inputs, identity selectors and scope limits from this run's pinned Skill definitions and SQL fragments. Discovery neither executes a tool nor issues evidence. Raw SQL column names or model declarations cannot replace a private producer binding; an unknown metric returns no match rather than silently falling back to the whole catalog.
 
 Claude runtime exposes these tools as an in-process MCP server. OpenAI runtime
 does not duplicate tool logic; it reads the same `McpToolRegistry` and adapts
@@ -389,7 +400,44 @@ summary cells go before key cells), and `RuntimePerformance` records a
 String cells shortened upstream are not offered to the model as exact values;
 artifact locators remain available for reading the original evidence.
 
+**Minimum evidence for the current selection.** A resolved `bounded_question`
+`read_new` investigation also needs explicit `targetUse=current_selection`
+before entering `selectedEvidenceFoundation.ts`. The UI sends `nativeTable: 'slice'`
+only when the actual renderer's `rootTableName` is `slice`. The backend rereads
+the native row and time window in the same trace and uses the original identity
+gate to check exact UTID/UPID. An explicit user selector must be verified before
+registering a capture. Optional profile `entry_acquisition` metadata names one
+minimum metric and four exact parameter bindings. The product selects the unique
+safe root producer from the pinned registry, without choosing by Skill name.
+Missing or unknown target-use, old clients without the table hint, other selection
+types or targets, existing-only turns and dual traces do not enable this path.
+
+All five runtimes complete this acquisition before generic focus, architecture
+and completeness prefetch: the original response from the same processor issues
+the native witness before identity preparation and the minimum metric run.
+Prefetch module loading cannot invalidate that earlier immutable capture; an
+already untrusted processor gains no eligibility. Early acquisition, later model
+tools and finalization share the run's evidence store, executor and pinned
+registry. Failed or unavailable acquisition is handled only once. A later
+preflight failure preserves legally committed captures and their original
+ownership while the overall run still ends with its actual failure state.
+
+Native capture and metric execution have separate status axes; `captured` and
+`committed` establish neither complete evidence nor a verified claim. A legal
+native capture survives a later metric failure. All work shares at most 20 s of
+acquisition within the original deadline; cancellation waits for started work to
+settle and permits no further acquisition or commits. The prompt retains locators
+and gaps within the same 24-cell/2-KiB budget. The original ledger, finite proof
+and semantic review still assess completeness, units, quantifiers and causality.
+
+Tool-result `modelEvidence` reports only backing-capture row availability, whether
+any trusted column units exist, and whether a private registered metric binding
+exists. An empty page does not mean an empty capture, and a binding does not mean
+a metric was observed. Restored data cannot recreate authority or witnesses.
+
 ## Turn Budgets And Closeout
+
+HTTP, CLI, conversation and direct runtime entry points share a private `RuntimeAdmission` identity. Budgets start when authorized work for the turn begins, including classification and preparation, and never restart on entering the native SDK. An explicit task cap and work-stop signal remain separate from user cancellation and authorization. Without an explicit cap, no new hard timer is added before configuration parsing; already-started preparation queries may drain. A timeout preserves an already completed candidate. The guard waits for actual native work, tools and cleanup before releasing ownership, and late results cannot affect a successor run.
 
 Full mode defaults to 100 turns and quick mode to 50; the five-turn quick target
 is advisory. A budget above one reserves one no-tool delivery call. Native length/output_limit may use that same reserved call within the original deadline to complete its body and declaration. A new candidate needs its own completed/stop receipt and valid protocol; failed, cancelled, unknown or pending tool/deferred states cannot use this recovery. Failure retains the first incomplete receipt. Early normal
@@ -402,6 +450,10 @@ retain the original candidate. Tools and duplicate visible-body streaming stay
 disabled during this completion. At investigation exhaustion, closeout uses the selected
 model, pinned provider, current authorization and original deadline to explain
 the supported findings, missing evidence and useful follow-up questions.
+Declaration authoring is input syntax, never evidence or permission to invent missing propositions. `SMARTPERFETTO_CONCLUSION_AUTHORING` defaults to `canonical_v1`; explicit `authoring_v1` / `authoring_v2` select alternative input grammars, and invalid values fail during run configuration. Dictionary references expand only at defined schema positions; every use counts toward expanded byte/node/depth limits, and full inline references remain available. @2 only compiles omitted root collections to empty collections and sole `{text:string}` carriers to the original string. It does not repair claims, units, quantifiers, source bindings or references. Raw input, compiled material and independent verification remain separate. Undecodable authoring has no preservation baseline for declaration repair. JSON failures log only closed format facts and confirmed UTF-16 positions/lengths, never raw input or parser messages quoting it.
+
+`check_conclusion_draft` with `diagnosticMode=claims_only` checks selected declarations without repeating the full body and records presentation as `not_checked`. The default `presentation` mode still requires the complete body. Its character guard and 64 KiB UTF-8 execution limit are distinct; final delivery always checks the complete body, declarations, presentation and evidence.
+
 Declaration JSON alone is not readable delivery. A completed Pi declaration-only candidate uses the same reserved delivery call to add a body, retaining existing claim count and IDs. Readable unheaded answers need no rewrite. A single completely closed malformed declaration may be isolated for repair; interrupted frames and duplicate markers cannot use declaration-only repair. Repaired output still requires strict parsing and independent verification.
 
 It cannot query again or certify completion: `partial`, `turn_limit` completion

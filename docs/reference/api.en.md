@@ -786,7 +786,13 @@ in the current UI conversation for `/pins`; it does not pin a timeline track or
 automatically add the result to later AI context. Clients must execute actions
 only after an explicit user click; they are not automatic commands.
 
-Supported `selectionContext` values contain identity and time bounds only:
+Supported `selectionContext` values contain locator identity, time bounds and an optional native table hint:
+
+A `track_event` may include `nativeTable: "slice"` only from the actual track
+renderer's native table metadata. Omit it for other tables or unknown sources.
+The backend still rereads the native object, time window and identity; the hint
+grants no evidence authority. Older requests may omit it; other values return
+`INVALID_SELECTION_CONTEXT`.
 
 ```json
 {

@@ -651,7 +651,9 @@ DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转
 
 支持的 `selectionContext`：
 
-该对象只接受身份和时间边界。旧客户端附带的名称、线程、进程、深度或子项数量会在请求归一化时被丢弃，不会进入 runtime prompt 或证据状态。
+该对象只接受定位身份、时间边界及可选原生表提示。旧客户端附带的名称、线程、进程、深度或子项数量会在请求归一化时被丢弃，不会进入 runtime prompt 或证据状态。
+`track_event` 可附带 `nativeTable: "slice"`，其来源必须是实际轨道 renderer 的原生表元数据；其余表或来源未知时省略。
+后端仍重查原生对象、时间窗和身份，表提示不授予证据权威。旧请求可省略该字段；`nativeTable` 的其他值返回 `INVALID_SELECTION_CONTEXT`。
 
 ```json
 {
