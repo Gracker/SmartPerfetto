@@ -8,12 +8,12 @@ import {Agent, OpenAIProvider, Runner, StreamedRunResult} from '@openai/agents';
 import {isPlainObject} from '../../../utils/llmJson';
 import {resolveModelExecutionProfile, type ResolvedModelExecutionProfile} from '../../../services/providerManager/modelExecutionProfile';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
-import {assertFinalSubmissionPreDispatch, type FinalSubmissionSdkCompatibility} from '../../finalSubmissionConfig';
+import {assertFinalSubmissionPreDispatch, type FinalSubmissionSdkCompatibility, type FinalSubmissionMode} from '../../finalSubmissionConfig';
 import {OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION} from './openAiTypedFinalAdmission';
 import type {OpenAIAgentConfig} from './openAiConfig';
 
 /** Resolve the packages used by the already imported umbrella SDK, not a configured version label. */
-export function installedOpenAiSdkCompatibility(): FinalSubmissionSdkCompatibility {
+export function installedOpenAiSdkCompatibility(_finalSubmission: FinalSubmissionMode = 'authored_claim_document_v1'): FinalSubmissionSdkCompatibility {
   const unknown = {agentsCoreVersion: 'unknown', agentsOpenAiVersion: 'unknown', contractVersion: 'unknown'};
   try {
     const sdkRequire = createRequire(require.resolve('@openai/agents'));

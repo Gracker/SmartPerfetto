@@ -14,14 +14,19 @@ import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {resolveModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
 import {resolveOpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
 import type {LlmPurposeContractsV1} from './preflightLlmExecutionTarget';
+import type {OpenAiOutputImplementation} from '../agentRuntime/finalSubmissionImplementation';
 import {adjudicateLlmSourceFacet, buildLlmExecutionQuality, compareLlmExecutionQuality, elapsedIntervalUnion, scoreLlmExecutionLatency,
   type LlmExecutionQuality, type LlmExecutionLatencyPair, type LlmMaterialChangeReview} from './llmExecutionBenchmark';
 
-const {CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, makeRepresentationTreatment, parsePurposeContracts, sourceFacetContext, validateSourceFacetCollection, assertExecutionTarget} = require('../../scripts/llm-execution-lifecycle.cjs') as {
+const {CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, TREATMENT_OUTPUTS, makeRepresentationTreatment,
+  treatmentOutputImplementation, parsePreflightOutputImplementation, parsePurposeContracts, sourceFacetContext, validateSourceFacetCollection, assertExecutionTarget} = require('../../scripts/llm-execution-lifecycle.cjs') as {
   CELLS: readonly string[];
   TREATMENT_ID: string;
+  MIXED_CONTENT_TREATMENT_ID: string;
   TREATMENT_OUTPUTS: Record<'base' | 'candidate', {finalSubmission: string; declarationSyntax: string}>;
-  makeRepresentationTreatment(base: unknown, candidate: unknown): Record<string, unknown>;
+  makeRepresentationTreatment(base: unknown, candidate: unknown, id?: string): Record<string, unknown>;
+  treatmentOutputImplementation(id: string, side: string): OpenAiOutputImplementation;
+  parsePreflightOutputImplementation(result: unknown, id: string, side: string): OpenAiOutputImplementation | undefined;
   parsePurposeContracts(value: unknown): LlmPurposeContractsV1;
   SOURCE_FACET: {receiptFile: string; reviewSchema: string};
   sourceFacetContext(root: string): {contract: Record<string, unknown>; inputs: {sourceRoot: string};
@@ -31,6 +36,8 @@ const {CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, makeRepresentationT
   assertExecutionTarget(target: unknown, request: Record<string, unknown>, processId: number): void;
 };
 type RecordValue = Record<string, unknown>;
+interface ValidatedTreatment {id: string; candidate: Extract<OpenAiOutputImplementation, {kind: 'typed'}>}
+
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^[a-z0-9][a-z0-9_-]{0,100}$/;
 const MAX_JSON_BYTES = 64 * 1024 * 1024;
@@ -250,7 +257,7 @@ function knownConfigString(rows: Fields, field: string, allowed: readonly string
   return value;
 }
 function inspectPreflight(proofValue: unknown, sample: RecordValue, benchmark: RecordValue, root: string,
-  configuration: NonNullable<ReturnType<typeof parseRuntimeBenchmarkConfigCommitments>>, sampleProbe: boolean) {
+  configuration: NonNullable<ReturnType<typeof parseRuntimeBenchmarkConfigCommitments>>, sampleProbe: boolean, treatment: ValidatedTreatment) {
   const proof = object(proofValue), lifecycle = object(proof?.lifecycle);
   if (!proof || typeof proof.request !== 'string' || typeof proof.receipt !== 'string' || !validHash(proof.requestHash) ||
       !validHash(proof.receiptHash) || proof.side !== sample.side || proof.cellId !== sample.cellId ||
@@ -263,7 +270,7 @@ function inspectPreflight(proofValue: unknown, sample: RecordValue, benchmark: R
   const requestRead = readJsonFile(scopedPath(root, proof.request), 1024 * 1024), resultRead = readJsonFile(scopedPath(root, proof.receipt), 1024 * 1024);
   const request = object(requestRead.value), result = object(resultRead.value), sdk = object(result?.sdk);
   if (requestRead.sha256 !== proof.requestHash || resultRead.sha256 !== proof.receiptHash ||
-      request?.schemaVersion !== 'llm_target_preflight_request@1' || result?.schemaVersion !== 'llm_target_preflight@2' ||
+      request?.schemaVersion !== 'llm_target_preflight_request@1' || !result || !['llm_target_preflight@2', 'llm_target_preflight@3'].includes(String(result?.schemaVersion)) ||
       request.nonce !== benchmark.nonce || result.nonce !== benchmark.nonce || request.side !== sample.side || result.side !== sample.side ||
       request.cellId !== sample.cellId || result.cellId !== sample.cellId || request.requestedMode !== proof.requestedMode || result.requestedMode !== proof.requestedMode ||
       request.expectedSourceFingerprint !== sample.sourceFingerprint || result.observedSourceFingerprint !== sample.sourceFingerprint ||
@@ -274,8 +281,11 @@ function inspectPreflight(proofValue: unknown, sample: RecordValue, benchmark: R
       sdk?.identity !== 'matched' || sdk.nodeVersion !== benchmark.nodeVersion || typeof sdk.agentsCoreVersion !== 'string' || typeof sdk.agentsOpenAiVersion !== 'string' ||
       !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sdk.agentsCoreVersion) || !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sdk.agentsOpenAiVersion) ||
       !runtimeConfigCommitmentsFingerprint(result.actualResolvedConfig as Fields)) fail('llm_score_preflight_binding_unproven');
+  let outputImplementation: OpenAiOutputImplementation | undefined;
+  try {outputImplementation = parsePreflightOutputImplementation(result, treatment.id, String(sample.side));}
+  catch {fail('llm_score_preflight_implementation_unproven');}
   return {mode: proof.requestedMode as string, sdk, resolved: result.actualResolvedConfig as Fields,
-    purposeContracts: parsePurposeContracts(result.purposeContracts)};
+    schemaVersion: result.schemaVersion, outputImplementation, purposeContracts: parsePurposeContracts(result.purposeContracts)};
 }
 function stageContract(dispatch: Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}>,
   probe: ReturnType<typeof inspectPreflight>) {
@@ -288,7 +298,7 @@ const EFFECTIVE_CONFIG_FIELDS: Record<string, string> = {maxOutputTokens: 'maxOu
   classifierTimeoutMs: 'classifierTimeoutMs', maxHistoryBytes: 'maxHistoryBytes'};
 /** Rebuild the public profile facts; numeric leaves stay commitments to the actual captured settings. */
 function profileContractMatches(profile: RuntimeExecutionProfileObservation, dispatch: Extract<RuntimeFinalTransportEvent,
-  {kind: 'main_dispatch' | 'stage_dispatch'}>, benchmark: RecordValue, probe: ReturnType<typeof inspectPreflight>): boolean {
+  {kind: 'main_dispatch' | 'stage_dispatch'}>, benchmark: RecordValue, probe: ReturnType<typeof inspectPreflight>, treatment: ValidatedTreatment): boolean {
   try {
     const controls = dispatch.controls, purpose = stageContract(dispatch, probe);
     const common = purpose?.commonConfig ?? stripRootFields(probe.resolved, ['outputConfig']);
@@ -300,7 +310,7 @@ function profileContractMatches(profile: RuntimeExecutionProfileObservation, dis
     if (!baseUrl) return false;
     const stage = profile.role === 'stage_policy', direct = dispatch.kind === 'stage_dispatch';
     const sdk = profile.role === 'typed_admission' ? {packageName: '@openai/agents-openai',
-      version: String(probe.sdk.agentsOpenAiVersion), adapterContractVersion: 'openai_typed_final_admission@2'}
+      version: String(probe.sdk.agentsOpenAiVersion), adapterContractVersion: treatment.candidate.admissionVersion}
       : stage && direct ? {packageName: 'node:fetch', version: String(probe.sdk.nodeVersion), adapterContractVersion: 'openai-text-http@1'}
         : {packageName: '@openai/agents-openai', version: 'unknown', adapterContractVersion: stage ? 'provider-data@1' : 'analysis-controls@1'};
     const effective: Record<string, unknown> = {};
@@ -368,7 +378,7 @@ function purposeSettingsMatch(dispatch: Extract<RuntimeFinalTransportEvent, {kin
   } catch {return false;}
 }
 function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report: RecordValue,
-  probe: ReturnType<typeof inspectPreflight>, require: (value: unknown, code: string) => void): Record<string, string[]> {
+  probe: ReturnType<typeof inspectPreflight>, treatment: ValidatedTreatment, require: (value: unknown, code: string) => void): Record<string, string[]> {
   const metrics = object(report.executionMetrics), performance = object(metrics?.performance);
   const observed = projectRuntimeFinalTransportObservation(performance?.finalTransportObservation);
   const side = raw.side as 'base' | 'candidate';
@@ -402,7 +412,7 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
     if (dispatch.kind === 'stage_dispatch') require(controls.profiles.some(profile => profile.role === 'stage_policy'), 'stage_profile_missing');
     for (const profile of controls.profiles) {
       const key = `${profile.role}:${profile.purpose}:${profile.modelHash}`;
-      require(!roles.has(key) && profileContractMatches(profile, dispatch, benchmark, probe), 'actual_profile_contract_unproven'); roles.add(key);
+      require(!roles.has(key) && profileContractMatches(profile, dispatch, benchmark, probe, treatment), 'actual_profile_contract_unproven'); roles.add(key);
       if (dispatch.kind === 'stage_dispatch' && profile.role === 'stage_policy') require(equalFields(
         controls.commonConfig.filter(row => row.field === '/sdk' || row.field.startsWith('/sdk/')),
         profile.fields.filter(row => row.field === '/sdk' || row.field.startsWith('/sdk/'))), 'stage_sdk_context_mismatch');
@@ -461,8 +471,9 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
       const dispatched = logical.get(event.logicalCallKey);
       require(side === 'candidate' && dispatched && dispatched.sequence < event.sequence && dispatched.attemptKey === event.attemptKey &&
         event.actualModel.status === 'observed' && event.actualModel.hash === hash(String(benchmark.model)) &&
-        event.representationVersion === 'authored_claim_document@2' && event.compilerVersion === 'authored_claim_document_compiler@2' &&
-        event.admissionVersion === 'openai_typed_final_admission@2', 'typed_native_author_unproven');
+        event.representationVersion === treatment.candidate.representationVersion && event.compilerVersion === treatment.candidate.compilerVersion &&
+        event.admissionVersion === treatment.candidate.admissionVersion &&
+        (event.wireVersion === undefined ? treatment.id === TREATMENT_ID : event.wireVersion === treatment.candidate.wireVersion), 'typed_native_author_unproven');
     } else require(false, 'native_author_missing');
   }
   const completion = object(object(object(report.summary)?.terminalAnalysis)?.completion);
@@ -482,7 +493,7 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
   return Object.fromEntries(Object.entries(signatures).map(([key, values]) => [key, [...values].sort()]));
 }
 
-function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, reviews: SavedReviews): InspectedSample {
+function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, reviews: SavedReviews, treatment?: ValidatedTreatment): InspectedSample {
   const sample: InspectedSample = {pairId: raw.pairId as string, cellId: raw.cellId as string,
     repetition: raw.repetition as number, side: raw.side as 'base' | 'candidate',
     issues: [], quality: buildLlmExecutionQuality(undefined), outcome: 'censored'};
@@ -565,6 +576,7 @@ function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, r
     let comparedConfig = raw.configFingerprint;
     let purposeContractFingerprint: string | undefined;
     if (version2) {
+      if (!treatment) fail('representation_treatment_unproven');
       const configuration = parseRuntimeBenchmarkConfigCommitments(raw.configuration);
       require(configuration && configuration.legacyConfigFingerprint === raw.configFingerprint &&
         configuration.controlsFingerprint === object(benchmark.treatment)?.controlsFingerprint &&
@@ -573,14 +585,14 @@ function inspectSample(raw: RecordValue, benchmark: RecordValue, root: string, r
       if (configuration) {
         const proofs = array(raw.preflights), initial = array(benchmark.preflights).filter(value => object(value)?.cellId === sample.cellId && object(value)?.side === sample.side);
         require(proofs.length > 0 && proofs.length === initial.length, 'preflight_coverage_incomplete');
-        const current = proofs.map(proof => inspectPreflight(proof, raw, benchmark, root, configuration, true));
-        const earlier = initial.map(proof => inspectPreflight(proof, raw, benchmark, root, configuration, false));
+        const current = proofs.map(proof => inspectPreflight(proof, raw, benchmark, root, configuration, true, treatment));
+        const earlier = initial.map(proof => inspectPreflight(proof, raw, benchmark, root, configuration, false, treatment));
         require(stableStringify(current) === stableStringify(earlier) && new Set(current.map(item => item.mode)).size === current.length, 'preflight_changed');
         if (current.length) {
           require(current.every(item => stableStringify(item.purposeContracts) === stableStringify(current[0].purposeContracts) &&
             stableStringify(item.resolved) === stableStringify(current[0].resolved)), 'preflight_mode_controls_mismatch');
           purposeContractFingerprint = hash(stableStringify(current[0].purposeContracts));
-          sample.purposeControls = inspectActualTransport(raw, benchmark, report, current[0], require);
+          sample.purposeControls = inspectActualTransport(raw, benchmark, report, current[0], treatment, require);
         }
         comparedConfig = configuration.controlsFingerprint;
       }
@@ -646,7 +658,7 @@ export interface ScoreLlmExecutionBenchmarkOptions {input: string; reviews?: str
 export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOptions) {
   const input = explicitInput(options.input), saved = readJsonFile(input.file), benchmark = object(saved.value);
   if (!benchmark || !['llm_execution_benchmark@1', 'llm_execution_benchmark@2'].includes(String(benchmark.schemaVersion)) ||
-      benchmark.candidate !== (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? TREATMENT_ID : 'llm-execution-v1') ||
+      (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? ![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID].includes(String(benchmark.candidate)) : benchmark.candidate !== 'llm-execution-v1') ||
       typeof benchmark.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(benchmark.nonce) ||
       !['glm', 'deepseek'].includes(String(benchmark.provider)) ||
       !PRODUCTION_RUNTIME_KINDS.includes(benchmark.runtime as typeof PRODUCTION_RUNTIME_KINDS[number]) ||
@@ -658,15 +670,18 @@ export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOp
       !positiveInteger(coverage.repetitions) || coverage.repetitions < 3 || coverage.repetitions > 30) fail('llm_score_coverage_invalid');
   const requested = coverage.cells as string[], repetitions = coverage.repetitions;
   const artifactIssues: string[] = [];
+  let treatment: ValidatedTreatment | undefined;
   if (benchmark.schemaVersion === 'llm_execution_benchmark@2') {
     try {
       const base = benchmark.samples.map(object).find(sample => sample?.side === 'base');
       const candidate = benchmark.samples.map(object).find(sample => sample?.side === 'candidate');
-      if (benchmark.candidate !== TREATMENT_ID || benchmark.runtime !== 'openai-agents-sdk' ||
+      const described = makeRepresentationTreatment(base?.configuration, candidate?.configuration, String(benchmark.candidate));
+      const implementation = treatmentOutputImplementation(String(described.id), 'candidate');
+      if (benchmark.runtime !== 'openai-agents-sdk' || implementation.kind !== 'typed' ||
           typeof benchmark.nodeVersion !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(benchmark.nodeVersion) ||
-          stableStringify(makeRepresentationTreatment(base?.configuration, candidate?.configuration)) !== stableStringify(benchmark.treatment)) {
+          stableStringify(described) !== stableStringify(benchmark.treatment)) {
         artifactIssues.push('representation_treatment_unproven');
-      }
+      } else treatment = {id: String(described.id), candidate: implementation};
     } catch {artifactIssues.push('representation_treatment_unproven');}
   }
   if (benchmark.schemaVersion === 'llm_execution_benchmark@2') {
@@ -696,7 +711,7 @@ export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOp
       artifactIssues.push('sample_shape_invalid'); continue;
     }
     const key = `${value.cellId}:${value.repetition}:${value.side}`;
-    const sample = inspectSample(value, benchmark, input.root, reviews);
+    const sample = inspectSample(value, benchmark, input.root, reviews, treatment);
     if (sampleKeys.has(key)) sample.issues.push('duplicate_sample');
     sampleKeys.add(key);
     if (sample.sessionId && sessions.has(sample.sessionId) || sample.runId && runs.has(sample.runId)) sample.issues.push('session_not_fresh');

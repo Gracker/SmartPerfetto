@@ -10,6 +10,7 @@ import {resolveOpenAITextRequestPurpose} from '../../services/providerManager/op
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {OPENAI_TYPED_FINAL_CONTRACTS, OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION} from '../../agentRuntime/finalSubmissionImplementation';
 import {stableStringify} from '../../utils/stableJson';
 import {buildLlmExecutionQuality} from '../llmExecutionBenchmark';
 import {parseLlmExecutionScoreArgs, scoreLlmExecutionBenchmark} from '../scoreLlmExecutionBenchmark';
@@ -536,7 +537,11 @@ function syntheticPurposeContracts(common: {baseURL: string; protocol: string; m
 }
 
 /** Synthetic reader fixtures only: these never constitute real benchmark evidence. */
-function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: {maxOutputTokens?: number} = {maxOutputTokens: 4096}) {
+function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: {maxOutputTokens?: number} = {maxOutputTokens: 4096},
+  treatmentId: string = sourceLifecycle.TREATMENT_ID) {
+  const mixed = treatmentId === sourceLifecycle.MIXED_CONTENT_TREATMENT_ID;
+  const identity = OPENAI_TYPED_FINAL_CONTRACTS[mixed ? 'openai_typed_final_admission@3' : 'openai_typed_final_admission@2'];
+  const {wireVersion: _wireVersion, ...historicalIdentity} = identity;
   const {maxOutputTokens} = configured;
   const data = fixture(root, cells);
   const sdk = {agentsCoreVersion: '0.13.0', agentsOpenAiVersion: '0.13.0', identity: 'matched' as const};
@@ -550,8 +555,8 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
   const aligned = sourceLifecycle.alignConfigCommitments(sourceLifecycle.buildConfigCommitments(materials.base), sourceLifecycle.buildConfigCommitments(materials.candidate));
   const configurations: Json = Object.fromEntries(['base', 'candidate'].map((side, index) => [side,
     sourceLifecycle.makeConfigCommitments(aligned[index], hash(stableStringify(materials[side])))]));
-  const treatment = sourceLifecycle.makeRepresentationTreatment(configurations.base, configurations.candidate);
-  Object.assign(data.benchmark, {schemaVersion: 'llm_execution_benchmark@2', candidate: sourceLifecycle.TREATMENT_ID,
+  const treatment = sourceLifecycle.makeRepresentationTreatment(configurations.base, configurations.candidate, treatmentId);
+  Object.assign(data.benchmark, {schemaVersion: 'llm_execution_benchmark@2', candidate: treatmentId,
     nodeVersion: process.versions.node, treatment, preflights: []});
   const initial = new Set<string>();
   for (const sample of data.benchmark.samples) {
@@ -564,7 +569,7 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
     const profiles = [];
     if (side === 'candidate') {
       const profile = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId: MODEL,
-        baseUrl: common.baseURL, sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion: 'openai_typed_final_admission@2'},
+        baseUrl: common.baseURL, sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion: identity.admissionVersion},
         sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'contract_test'},
         effective: {maxOutputTokens, maxTurns: 100}});
       const {fingerprint: _fingerprint, ...facts} = profile;
@@ -585,7 +590,7 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
       : recorder.recordFinalTransportEvent({kind: 'typed_issued_after_drain', attemptKey, logicalCallKey,
         responseKey: hash('native-response'), callKey: hash('native-call'), actualModel: {status: 'observed', hash: hash(MODEL)},
         nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: nativeCandidate.conclusionFingerprint,
-        representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@2'})!;
+        ...(mixed ? identity : historicalIdentity)})!;
     const retained = recorder.recordFinalTransportEvent({kind: 'candidate_retained', nativeCandidateKey: nativeKey,
       carrier: side === 'base' ? 'assistant_text' : 'model_tool_arguments', transform: 'native',
       authors: [{role: 'body_and_declaration', terminalEventKey: terminal}], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed'})!;
@@ -598,7 +603,8 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
     const probe = (directory: string, initialProbe = false) => {
       const request = {schemaVersion: 'llm_target_preflight_request@1', nonce: sample.nonce, side, cellId: sample.cellId,
         requestedMode: 'auto', expectedSourceFingerprint: sample.sourceFingerprint, declaredConfig: configuration, treatmentHash: sample.treatmentHash};
-      const result = {schemaVersion: 'llm_target_preflight@2', nonce: sample.nonce, side, cellId: sample.cellId,
+      const result = {schemaVersion: mixed ? 'llm_target_preflight@3' : 'llm_target_preflight@2',
+        ...(mixed ? {outputImplementation: side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION : {kind: 'typed', ...identity}} : {}), nonce: sample.nonce, side, cellId: sample.cellId,
         requestedMode: 'auto', observedSourceFingerprint: sample.sourceFingerprint, declaredConfigFingerprint: configuration.fullFingerprint,
         declaredControlsFingerprint: configuration.controlsFingerprint, declaredTreatmentHash: sample.treatmentHash, status: 'ready',
         capturedOutput: output, actualResolvedConfig: buildRuntimeConfigCommitments({...common, outputConfig: output}),
@@ -688,6 +694,101 @@ describe('W0 versioned representation-treatment scoring', () => {
     expect(result.cells[0].pairs.map((pair: any) => pair.issues)).toEqual([[], [], []]);
     expect(result.cells[0].performance.status).toBe('passed');
     expect(result.status).toBe('inconclusive'); // Synthetic reader exercise, one cell, not real-provider evidence.
+  });
+
+  it('does not let contradictory new implementation facts pass a legitimately rehashed historical probe', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'candidate')!;
+    const proof = sample.preflights[0], filename = path.join(root, proof.receipt);
+    const result = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+    proof.receiptHash = write(root, proof.receipt, result);
+    const report = data.reportFor(sample);
+    report.executionTarget.declaredPreflightFingerprint = hash(stableStringify(sample.preflights));
+    data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const score = data.score();
+    expect(score.cells[0].performance.status).toBe('inconclusive');
+    expect(score.cells[0].pairs.some((pair: Json) => pair.issues.some((issue: string) => issue.includes('preflight')))).toBe(true);
+  });
+
+  it('checks the complete mixed tuple/profile/probe chain as a synthetic reader exercise, not real performance admission', () => {
+    const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.MIXED_CONTENT_TREATMENT_ID);
+    bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].pairs.map((pair: Json) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].performance.status).toBe('passed');
+    expect(result.status).toBe('inconclusive'); // One synthetic fixture cell, never a real-provider five-cell admission.
+  });
+
+  it.each(['missing_implementation', 'old_receipt', 'old_admission', 'wrong_wire', 'wrong_compiler', 'base_typed'])(
+    'rejects independently rehashed mixed preflight implementation mutation: %s', mutation => {
+      const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.MIXED_CONTENT_TREATMENT_ID);
+      const sample = data.samples.find(item => item.side === (mutation === 'base_typed' ? 'base' : 'candidate'))!;
+      const proof = sample.preflights[0], report = data.reportFor(sample);
+      const receipt = JSON.parse(fs.readFileSync(path.join(root, proof.receipt), 'utf8'));
+      if (mutation === 'missing_implementation') delete receipt.outputImplementation;
+      if (mutation === 'old_receipt') {receipt.schemaVersion = 'llm_target_preflight@2'; delete receipt.outputImplementation;}
+      if (mutation === 'old_admission') receipt.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@2']};
+      if (mutation === 'wrong_wire') receipt.outputImplementation.wireVersion = 'openai_chat_final_wire@1';
+      if (mutation === 'wrong_compiler') receipt.outputImplementation.compilerVersion = 'authored_claim_document_compiler@1';
+      if (mutation === 'base_typed') receipt.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+      proof.receiptHash = write(root, proof.receipt, receipt);
+      report.executionTarget.declaredPreflightFingerprint = hash(stableStringify(sample.preflights));
+      data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score();
+      expect(result.cells[0].performance.status).toBe('inconclusive');
+      expect(result.cells[0].pairs.some((pair: Json) => pair.issues.includes('llm_score_preflight_implementation_unproven'))).toBe(true);
+    });
+
+  it.each(['old_admission', 'missing_wire', 'wrong_wire', 'wrong_compiler', 'profile_adapter'])(
+    'rejects independently rehashed mixed native implementation mutation: %s', mutation => {
+      const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.MIXED_CONTENT_TREATMENT_ID);
+      const sample = data.samples.find(item => item.side === 'candidate')!, report = data.reportFor(sample);
+      const observation = report.executionMetrics.performance.finalTransportObservation;
+      const issued = observation.events.find((event: Json) => event.kind === 'typed_issued_after_drain');
+      if (mutation === 'old_admission') Object.assign(issued, OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@2']);
+      if (mutation === 'missing_wire') delete issued.wireVersion;
+      if (mutation === 'wrong_wire') issued.wireVersion = 'openai_chat_final_wire@1';
+      if (mutation === 'wrong_compiler') issued.compilerVersion = 'authored_claim_document_compiler@1';
+      if (mutation === 'profile_adapter') {
+        const controls = observation.events[0].controls, profile = controls.profiles[0];
+        profile.fields.find((row: Json) => row.field === '/sdk/adapterContractVersion').valueCommitment = canonicalContentHash(['string', 'openai_typed_final_admission@2']);
+        profile.structureFingerprint = sourceLifecycle.configFieldsFingerprint(profile.fields);
+        const {fullFingerprint: _full, ...body} = controls; controls.fullFingerprint = canonicalContentHash(body);
+      }
+      rehashTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score();
+      expect(result.cells[0].performance.status).toBe('inconclusive');
+      const expected = mutation === 'old_admission' ? 'typed_native_author_unproven' : mutation === 'profile_adapter'
+        ? 'actual_profile_contract_unproven' : 'actual_transport_observation_unproven';
+      expect(result.cells[0].pairs.some((pair: Json) => pair.issues.includes(expected))).toBe(true);
+    });
+
+  it('does not upgrade an old artifact by relabeling its treatment and rehashing all declared target bindings', () => {
+    const data = treatmentScoreFixture(root);
+    const baseline = data.samples.find(item => item.side === 'base')!, candidate = data.samples.find(item => item.side === 'candidate')!;
+    const treatment = sourceLifecycle.makeRepresentationTreatment(baseline.configuration, candidate.configuration, sourceLifecycle.MIXED_CONTENT_TREATMENT_ID);
+    data.benchmark.candidate = sourceLifecycle.MIXED_CONTENT_TREATMENT_ID; data.benchmark.treatment = treatment;
+    for (const sample of data.samples) {
+      sample.treatmentHash = hash(stableStringify(treatment));
+      for (const proof of sample.preflights) {
+        const request = JSON.parse(fs.readFileSync(path.join(root, proof.request), 'utf8'));
+        const receipt = JSON.parse(fs.readFileSync(path.join(root, proof.receipt), 'utf8'));
+        request.treatmentHash = sample.treatmentHash; receipt.declaredTreatmentHash = sample.treatmentHash;
+        proof.requestHash = write(root, proof.request, request); proof.receiptHash = write(root, proof.receipt, receipt);
+      }
+      const report = data.reportFor(sample); report.executionTarget.declaredTreatmentHash = sample.treatmentHash;
+      report.executionTarget.declaredPreflightFingerprint = hash(stableStringify(sample.preflights)); data.resave(sample, report);
+    }
+    for (const proof of data.benchmark.preflights) {
+      const request = JSON.parse(fs.readFileSync(path.join(root, proof.request), 'utf8'));
+      const receipt = JSON.parse(fs.readFileSync(path.join(root, proof.receipt), 'utf8'));
+      request.treatmentHash = hash(stableStringify(treatment)); receipt.declaredTreatmentHash = request.treatmentHash;
+      proof.requestHash = write(root, proof.request, request); proof.receiptHash = write(root, proof.receipt, receipt);
+    }
+    data.save(); bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].performance.status).toBe('inconclusive');
+    expect(result.cells[0].pairs.every((pair: Json) => pair.issues.includes('llm_score_preflight_implementation_unproven'))).toBe(true);
   });
 
   it('checks real stage SDK profiles and permits fewer bounded reviews as an outcome, not a parameter exemption', () => {

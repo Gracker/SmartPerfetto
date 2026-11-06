@@ -6,6 +6,7 @@ import path from 'node:path';
 import type {ProviderScope} from '../services/providerManager';
 import type {RuntimeBenchmarkConfigCommitmentsV2, RuntimeConfigFieldCommitment} from '../agentRuntime/runtimePerformance';
 import type {OpenAIAgentConfig} from '../agentRuntime/engines/openai/openAiConfig';
+import {OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION, type OpenAiOutputImplementation} from '../agentRuntime/finalSubmissionImplementation';
 import {parseStoredJson} from '../utils/storedData';
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -47,7 +48,7 @@ export interface LlmPurposeContractsV1 {
   readonly review: PurposeContract;
 }
 interface PreflightBindings {
-  readonly schemaVersion: 'llm_target_preflight@2';
+  readonly schemaVersion: 'llm_target_preflight@3';
   readonly nonce: string;
   readonly side: 'base' | 'candidate';
   readonly cellId: string;
@@ -59,6 +60,7 @@ interface PreflightBindings {
 }
 export type LlmTargetPreflightResult = PreflightBindings & (
   | Readonly<{status: 'ready'; capturedOutput: PreflightOutputConfig;
+    outputImplementation: OpenAiOutputImplementation;
     actualResolvedConfig: readonly RuntimeConfigFieldCommitment[];
     purposeContracts: LlmPurposeContractsV1;
     sdk: Readonly<{agentsCoreVersion: string; agentsOpenAiVersion: string; identity: 'matched' | 'unknown'; nodeVersion: string}>}>
@@ -184,7 +186,7 @@ function inspectTarget(request: LlmTargetPreflightRequest, directory: string): L
   const lifecycle: {fingerprintSourceTree(root: string): string} = require('../../scripts/llm-execution-lifecycle.cjs');
   const observedSourceFingerprint = lifecycle.fingerprintSourceTree(path.resolve(__dirname, '../../..'));
   if (!HASH.test(observedSourceFingerprint)) unavailable();
-  const bindings: PreflightBindings = {schemaVersion: 'llm_target_preflight@2', nonce: request.nonce,
+  const bindings: PreflightBindings = {schemaVersion: 'llm_target_preflight@3', nonce: request.nonce,
     side: request.side, cellId: request.cellId, requestedMode: request.requestedMode, observedSourceFingerprint,
     declaredConfigFingerprint: request.declaredConfig.fullFingerprint,
     declaredControlsFingerprint: request.declaredConfig.controlsFingerprint, declaredTreatmentHash: request.treatmentHash};
@@ -207,15 +209,14 @@ function inspectTarget(request: LlmTargetPreflightRequest, directory: string): L
     let capturedOutput: PreflightOutputConfig;
     if (request.side === 'base' && output.finalSubmission === 'assistant_text' && output.declarationSyntax === 'canonical_v1') {
       capturedOutput = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'};
-    } else if (request.side === 'candidate' && output.finalSubmission === 'authored_claim_document_v2' && output.declarationSyntax === 'authoring_v2') {
-      capturedOutput = {finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'};
     } else return failed('invalid_configuration');
-    const observedSdk = installedOpenAiSdkCompatibility();
+    const observedSdk = installedOpenAiSdkCompatibility(config.outputConfig.finalSubmission);
     const version = (value: string) => /^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(value) ? value : 'unknown';
     const agentsCoreVersion = version(observedSdk.agentsCoreVersion), agentsOpenAiVersion = version(observedSdk.agentsOpenAiVersion);
     const sdk = {agentsCoreVersion, agentsOpenAiVersion,
       identity: agentsCoreVersion !== 'unknown' && agentsOpenAiVersion !== 'unknown' && observedSdk.contractVersion !== 'unknown'
         ? 'matched' as const : 'unknown' as const};
+    const outputImplementation = OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION;
     const {buildRuntimeCommonModelConfig, buildRuntimeConfigCommitments}:
       typeof import('../agentRuntime/runtimePerformance') = require('../agentRuntime/runtimePerformance');
     const common = buildRuntimeCommonModelConfig(config, {runtime: 'openai-agents-sdk', sdk});
@@ -226,7 +227,7 @@ function inspectTarget(request: LlmTargetPreflightRequest, directory: string): L
     const purposeContracts: LlmPurposeContractsV1 = {schemaVersion: 'llm_purpose_controls@1',
       classification: purposeContract(config, resolveOpenAiClassifierOutputLimit(config)),
       review: purposeContract(finalizationConfig, finalizationConfig.maxOutputTokens)};
-    return {...bindings, status: 'ready', capturedOutput, actualResolvedConfig, purposeContracts,
+    return {...bindings, status: 'ready', capturedOutput, outputImplementation, actualResolvedConfig, purposeContracts,
       sdk: {...sdk, nodeVersion: process.versions.node}};
   } catch {return failed('probe_unavailable');}
 }

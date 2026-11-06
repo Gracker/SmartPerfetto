@@ -33,6 +33,7 @@
         "src/agentRuntime/engines/pi/piAgentCoreProvider.ts!",
         "src/agentRuntime/engines/pi/piAgentCoreRuntime.ts!",
         "src/agentRuntime/engines/pi/piIntentTransport.ts!",
+        "src/agentRuntime/finalSubmissionImplementation.ts!",
         "src/agentRuntime/modelRequestMetrics.ts!",
         "src/agentRuntime/runtimePerformance.ts!",
         "src/agentRuntime/runtimePerformanceContext.ts!",

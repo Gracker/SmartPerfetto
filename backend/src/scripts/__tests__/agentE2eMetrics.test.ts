@@ -7,6 +7,7 @@ import {projectAgentE2ePerformance, readAgentE2eMetrics} from '../agentE2eMetric
 import {measureModelRequestBody} from '../../agentRuntime/modelRequestMetrics';
 import {RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS} from '../../agentRuntime/runtimePerformance';
 import type {RunManifestV1} from '../../types/selfEvolution';
+import {OPENAI_TYPED_FINAL_CONTRACTS} from '../../agentRuntime/finalSubmissionImplementation';
 
 const performance = {
   schemaVersion: 1,
@@ -270,5 +271,33 @@ describe('R11 typed material metrics consumption', () => {
   });
   it('does not invent an observation when default assistant has no final role', () => {
     expect(projectAgentE2ePerformance(performance)).not.toHaveProperty('finalTransportObservation');
+  });
+});
+
+
+describe('R11 Stage B issued tuple metrics', () => {
+  it('preserves the actual admission3/wire2 receipt through the existing shared projector', () => {
+    const event = {kind: 'typed_issued_after_drain', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      responseKey: 'c'.repeat(64), callKey: 'd'.repeat(64), actualModel: {status: 'observed', hash: 'e'.repeat(64)},
+      nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: 'f'.repeat(64),
+      ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3'], sequence: 1, offsetMs: 1};
+    const finalTransportObservation = {schemaVersion: 'final_transport_observation@1',
+      events: [{...event, eventKey: canonicalContentHash(event)}], truncated: 0};
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      performance: {...performance, finalTransportObservation}} as unknown as RunManifestV1));
+    expect(result).toMatchObject({status: 'sealed', performance: {finalTransportObservation}});
+  });
+
+  it('rejects individually known but mismatched legacy versions after a valid event hash', () => {
+    const event = {kind: 'typed_issued_after_drain', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      responseKey: 'c'.repeat(64), callKey: 'd'.repeat(64), actualModel: {status: 'observed', hash: 'e'.repeat(64)},
+      nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: 'f'.repeat(64),
+      representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@1',
+      admissionVersion: 'openai_typed_final_admission@2', sequence: 1, offsetMs: 1};
+    const finalTransportObservation = {schemaVersion: 'final_transport_observation@1',
+      events: [{...event, eventKey: canonicalContentHash(event)}], truncated: 0};
+    const result = readAgentE2eMetrics(identity, () => ({...manifest,
+      performance: {...performance, finalTransportObservation}} as unknown as RunManifestV1));
+    expect(result).toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
   });
 });
