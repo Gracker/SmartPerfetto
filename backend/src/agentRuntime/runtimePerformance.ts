@@ -15,6 +15,9 @@ import type {RuntimeToolConcurrencyFallbackReason} from './runtimeToolConcurrenc
 import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
 import type {ModelExecutionPolicyReceipt} from './modelExecutionPolicy';
 import type {ReasoningSetting} from '../services/providerManager/modelExecutionProfile';
+import {CONCLUSION_PROTOCOL_VALUES} from '../agent/core/conclusionContract';
+import {TYPED_OUTPUT_MATERIAL_LIMITS, TYPED_OUTPUT_WIRE_FINISH_REASONS, type RuntimeTypedOutputMaterial, type RuntimeTypedOutputCollection,
+  type RuntimeTypedOutputStructure, type RuntimeTypedOutputDecoded} from './typedOutputMaterial';
 
 export type RuntimePhaseName =
   | 'classification'
@@ -195,6 +198,8 @@ export type RuntimeFinalTransportEventInput =
   | Readonly<{kind: 'stage_dispatch'; stageCallKey: string; purpose: RuntimeModelCallPurpose;
       configuredModelHash: string; providerOriginHash: string; controls: RuntimeAppliedModelControls}>
   | Readonly<{kind: 'native_terminal'; fact: RuntimeObservedNativeFact; drainStatus: RuntimeObservedDrainStatus}>
+  | Readonly<{kind: 'typed_output_observed'; attemptKey: string; logicalCallKey: string;
+      collectorDispatchOrdinal: number; material: RuntimeTypedOutputMaterial}>
   | Readonly<{kind: 'typed_issued_after_drain'; attemptKey: string; logicalCallKey: string; responseKey: string;
       callKey: string; actualModel: RuntimeObservedHash; nativeStatus: 'completed'; drainStatus: 'fulfilled';
       nativeBodyHash: string; representationVersion: 'authored_claim_document@1' | 'authored_claim_document@2';
@@ -441,6 +446,153 @@ function parseObservedHash(value: unknown): RuntimeObservedHash {
   if (input.status !== 'observed') throw new Error('runtime_observation_status_invalid');
   return {status: 'observed', hash: observationHash(input.hash)};
 }
+function observationCount(value: unknown, maximum = Number.MAX_SAFE_INTEGER): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > maximum) throw new Error('runtime_observation_count_invalid');
+  return value;
+}
+function observationCounts<K extends string>(value: unknown, keys: readonly K[], maximum = Number.MAX_SAFE_INTEGER): Readonly<Record<K, number>> {
+  const input = exactObservationObject(value, keys);
+  return Object.fromEntries(keys.map(key => [key, observationCount(input[key], maximum)])) as Record<K, number>;
+}
+function materialInvariant(valid: boolean): void {
+  if (!valid) throw new Error('runtime_observation_material_invalid');
+}
+function materialCountSum(values: readonly number[]): number {
+  return observationCount(values.reduce((sum, value) => sum + value, 0));
+}
+function parseTypedOutputStructure(value: unknown): RuntimeTypedOutputStructure {
+  const input = observationData(value);
+  if (input.status !== 'measured') {
+    exactObservationObject(input, ['status']);
+    return {status: observationMember(input.status, ['unsupported_shape', 'resource_limit', 'not_applicable', 'not_observed'])};
+  }
+  exactObservationObject(input, ['status', 'collections', 'explicitNullCount', 'partition'], ['claimKinds', 'bodyParts', 'exactTextReuse']);
+  const collectionKeys = ['referenceDictionary', 'semanticFrames', 'claims', 'bodyParts', 'relationProposals', 'sourceClaimBindings'] as const;
+  const source = exactObservationObject(input.collections, collectionKeys);
+  const collections = Object.fromEntries(collectionKeys.map(key => {
+    const row = observationData(source[key]);
+    let parsed: RuntimeTypedOutputCollection;
+    if (row.status === 'array') {
+      exactObservationObject(row, ['status', 'items']); parsed = {status: 'array', items: observationCount(row.items, TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes)};
+    } else {
+      exactObservationObject(row, ['status']); parsed = {status: observationMember(row.status, ['null', 'missing', 'wrong_type'])};
+    }
+    return [key, parsed];
+  })) as Record<typeof collectionKeys[number], RuntimeTypedOutputCollection>;
+  // These fixed arrays occupy disjoint slots in the measured document tree.
+  materialInvariant(materialCountSum(Object.values(collections).map(row => row.status === 'array' ? row.items : 0)) <= TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes);
+  const claims = collections.claims, parts = collections.bodyParts;
+  materialInvariant(observationOwn(input, 'claimKinds') === (claims.status === 'array'));
+  materialInvariant(observationOwn(input, 'bodyParts') === (parts.status === 'array'));
+  materialInvariant(observationOwn(input, 'exactTextReuse') === (claims.status === 'array' && parts.status === 'array'));
+  const claimKinds = claims.status === 'array' ? (() => {
+    const row = exactObservationObject(input.claimKinds, ['counts', 'absent', 'unclassified']);
+    const counts = observationCounts(row.counts, CONCLUSION_PROTOCOL_VALUES.claimKind, TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes);
+    const absent = observationCount(row.absent, TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes),
+      unclassified = observationCount(row.unclassified, TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes);
+    materialInvariant(materialCountSum([...Object.values(counts), absent, unclassified]) === claims.items);
+    return {counts, absent, unclassified};
+  })() : undefined;
+  const bodyParts = parts.status === 'array' ? observationCounts(input.bodyParts,
+    ['literalPartCount', 'literalPartTextUtf8Bytes', 'claimTextUseCount', 'unclassifiedPartCount']) : undefined;
+  if (bodyParts && parts.status === 'array') {
+    observationCount(bodyParts.literalPartTextUtf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes);
+    materialInvariant(materialCountSum([bodyParts.literalPartCount, bodyParts.claimTextUseCount, bodyParts.unclassifiedPartCount]) === parts.items);
+    materialInvariant(bodyParts.literalPartCount !== 0 || bodyParts.literalPartTextUtf8Bytes === 0);
+  }
+  const exactTextReuse = claims.status === 'array' && parts.status === 'array' ? observationCounts(input.exactTextReuse,
+    ['duplicateClaimTextCount', 'duplicateClaimTextUtf8Bytes', 'literalPartMatchingClaimTextCount', 'literalPartMatchingClaimTextUtf8Bytes']) : undefined;
+  if (exactTextReuse && claims.status === 'array' && bodyParts) {
+    observationCount(exactTextReuse.duplicateClaimTextUtf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes);
+    observationCount(exactTextReuse.literalPartMatchingClaimTextUtf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes);
+    materialInvariant(exactTextReuse.duplicateClaimTextCount <= Math.max(0, claims.items - 1));
+    materialInvariant(exactTextReuse.duplicateClaimTextCount !== 0 || exactTextReuse.duplicateClaimTextUtf8Bytes === 0);
+    materialInvariant(exactTextReuse.literalPartMatchingClaimTextCount <= bodyParts.literalPartCount);
+    materialInvariant(exactTextReuse.literalPartMatchingClaimTextUtf8Bytes <= bodyParts.literalPartTextUtf8Bytes);
+    materialInvariant(exactTextReuse.literalPartMatchingClaimTextCount !== 0 || exactTextReuse.literalPartMatchingClaimTextUtf8Bytes === 0);
+    materialInvariant(claims.items !== 0 || exactTextReuse.literalPartMatchingClaimTextCount === 0);
+  }
+  const partitionInput = observationData(input.partition);
+  let partition: Extract<RuntimeTypedOutputStructure, {status: 'measured'}>['partition'];
+  if (partitionInput.status === 'measured') {
+    const bucketKeys = ['referenceDictionary', 'semanticFrames', 'claims', 'bodyParts', 'contractOther', 'overhead'] as const;
+    exactObservationObject(partitionInput, ['status', 'totalNormalizedUtf8Bytes', ...bucketKeys]);
+    const buckets = Object.fromEntries(bucketKeys.map(key => [key, observationCount(partitionInput[key], key === 'overhead'
+      ? TYPED_OUTPUT_MATERIAL_LIMITS.normalizedOuterUtf8Bytes : TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes)])) as Record<typeof bucketKeys[number], number>;
+    const totalNormalizedUtf8Bytes = observationCount(partitionInput.totalNormalizedUtf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.normalizedOuterUtf8Bytes);
+    materialInvariant(materialCountSum(Object.values(buckets)) === totalNormalizedUtf8Bytes);
+    for (const key of ['referenceDictionary', 'semanticFrames', 'claims', 'bodyParts'] as const) {
+      const collection = collections[key];
+      materialInvariant(collection.status === 'array' && buckets[key] >= 2 && (collection.items !== 0 || buckets[key] === 2));
+    }
+    materialInvariant(buckets.contractOther >= 2);
+    partition = {status: 'measured', totalNormalizedUtf8Bytes, ...buckets};
+  } else {
+    exactObservationObject(partitionInput, ['status']);
+    materialInvariant(partitionInput.status === 'unsupported_shape'); partition = {status: 'unsupported_shape'};
+  }
+  const explicitNullCount = observationCount(input.explicitNullCount, TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes);
+  materialInvariant(explicitNullCount >= Object.values(collections).filter(row => row.status === 'null').length);
+  return {status: 'measured', collections, ...(claimKinds ? {claimKinds} : {}), ...(bodyParts ? {bodyParts} : {}),
+    explicitNullCount, ...(exactTextReuse ? {exactTextReuse} : {}), partition};
+}
+function parseTypedOutputMaterial(value: unknown): RuntimeTypedOutputMaterial {
+  const input = exactObservationObject(value, ['schemaVersion', 'wireToolRole', 'transport', 'decoded', 'retention', 'json', 'representation', 'structure']);
+  materialInvariant(input.schemaVersion === 'typed_output_material@1');
+  const wireToolRole = observationMember(input.wireToolRole, ['final_role', 'other_tool', 'no_tool', 'ambiguous', 'unknown']);
+  const rawTransport = exactObservationObject(input.transport, ['doneSeen', 'eofSeen', 'framing'], ['finishReason']);
+  if (typeof rawTransport.doneSeen !== 'boolean' || typeof rawTransport.eofSeen !== 'boolean') throw new Error('runtime_observation_material_invalid');
+  const transport = {doneSeen: rawTransport.doneSeen, eofSeen: rawTransport.eofSeen,
+    framing: observationMember(rawTransport.framing, ['valid', 'invalid', 'unknown']),
+    ...(observationOwn(rawTransport, 'finishReason') ? {finishReason: observationMember(rawTransport.finishReason, TYPED_OUTPUT_WIRE_FINISH_REASONS)} : {})};
+  const components = ['arguments', 'companion', 'refusal'] as const;
+  const decodedInput = exactObservationObject(input.decoded, [], components);
+  const decoded: Partial<Record<typeof components[number], RuntimeTypedOutputDecoded>> = {};
+  for (const key of components) if (observationOwn(decodedInput, key)) {
+    const row = exactObservationObject(decodedInput[key], ['utf8Bytes', 'utf16Chars', 'utf8Precision', 'utf16Precision']);
+    const utf8Precision = observationMember(row.utf8Precision, ['exact', 'lower_bound']);
+    const utf16Precision = observationMember(row.utf16Precision, ['exact', 'lower_bound']);
+    const utf8Bytes = observationCount(row.utf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes + (utf8Precision === 'lower_bound' ? 1 : 0));
+    const utf16Chars = observationCount(row.utf16Chars, TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf16Chars + (utf16Precision === 'lower_bound' ? 1 : 0));
+    if (utf8Precision === 'exact') materialInvariant(utf16Chars <= utf8Bytes);
+    if (utf16Precision === 'exact') materialInvariant(utf8Bytes <= 3 * utf16Chars);
+    decoded[key] = {utf8Bytes, utf16Chars, utf8Precision, utf16Precision};
+  }
+  const retentionInput = exactObservationObject(input.retention, [...components, 'combinedRetainedUtf8Bytes']);
+  const retentionParts = Object.fromEntries(components.map(key => {
+    const row = exactObservationObject(retentionInput[key], ['status', 'retainedUtf8Bytes']);
+    const status = observationMember(row.status, ['complete', 'over_limit', 'ambiguous', 'not_retained', 'not_observed']);
+    const retainedUtf8Bytes = observationCount(row.retainedUtf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.retainedUtf8Bytes);
+    materialInvariant(!['not_retained', 'not_observed'].includes(status) || retainedUtf8Bytes === 0);
+    const observed = decoded[key];
+    if (status === 'complete') materialInvariant(observed?.utf8Precision === 'exact' && observed.utf16Precision === 'exact' &&
+      retainedUtf8Bytes === observed.utf8Bytes);
+    if (status === 'not_retained') materialInvariant(observed !== undefined);
+    if (observed?.utf8Precision === 'exact') materialInvariant(retainedUtf8Bytes <= observed.utf8Bytes);
+    return [key, {status, retainedUtf8Bytes}];
+  })) as Pick<RuntimeTypedOutputMaterial['retention'], typeof components[number]>;
+  const combinedRetainedUtf8Bytes = observationCount(retentionInput.combinedRetainedUtf8Bytes, TYPED_OUTPUT_MATERIAL_LIMITS.retainedUtf8Bytes);
+  materialInvariant(materialCountSum(Object.values(retentionParts).map(row => row.retainedUtf8Bytes)) === combinedRetainedUtf8Bytes);
+  const retention = {...retentionParts, combinedRetainedUtf8Bytes};
+  const jsonInput = exactObservationObject(input.json, ['status']);
+  const json = {status: observationMember(jsonInput.status, ['complete_json', 'invalid_json', 'not_parsed'])};
+  const representation = observationMember(input.representation, ['authored_claim_document@1', 'authored_claim_document@2', 'unknown', 'not_applicable']);
+  const structure = parseTypedOutputStructure(input.structure);
+  if (json.status !== 'not_parsed') materialInvariant(wireToolRole === 'final_role' && transport.eofSeen && transport.framing === 'valid' &&
+    retention.arguments.status === 'complete' && decoded.arguments?.utf8Precision === 'exact' && decoded.arguments?.utf16Precision === 'exact');
+  if (representation === 'authored_claim_document@1' || representation === 'authored_claim_document@2') materialInvariant(json.status === 'complete_json');
+  if (wireToolRole === 'no_tool' || wireToolRole === 'other_tool') {
+    materialInvariant(representation === 'not_applicable' && structure.status === 'not_applicable' && json.status === 'not_parsed');
+  } else if (wireToolRole === 'ambiguous' || wireToolRole === 'unknown') {
+    materialInvariant(representation === 'unknown' && structure.status === 'not_observed' && json.status === 'not_parsed');
+  } else {
+    materialInvariant(representation !== 'not_applicable');
+    if (representation === 'authored_claim_document@1') materialInvariant(structure.status === 'not_applicable');
+    else if (representation === 'unknown') materialInvariant(structure.status === 'not_observed');
+    else materialInvariant(structure.status !== 'not_applicable');
+  }
+  return {schemaVersion: 'typed_output_material@1', wireToolRole, transport, decoded, retention, json, representation, structure};
+}
 function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInput {
   // Check descriptors/proxies before any nested read, including arrays of references/profiles.
   if (!buildRuntimeConfigCommitments(value)) throw new Error('runtime_observation_data_invalid');
@@ -469,6 +621,13 @@ function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInp
         finish: observationMember(fact.finish, ['stop', 'length', 'tool_calls', 'completed', 'incomplete', 'failed', 'other', 'unknown']),
         rawMaterial: parseObservedHash(fact.rawMaterial), nativeContract: fact.nativeContract, sdkStreamCompleted: fact.sdkStreamCompleted},
         drainStatus: observationMember(input.drainStatus, ['fulfilled', 'rejected', 'unavailable'])};
+    }
+    case 'typed_output_observed': {
+      keys(['attemptKey', 'logicalCallKey', 'collectorDispatchOrdinal', 'material']);
+      const collectorDispatchOrdinal = observationCount(input.collectorDispatchOrdinal);
+      materialInvariant(collectorDispatchOrdinal > 0);
+      return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
+        collectorDispatchOrdinal, material: parseTypedOutputMaterial(input.material)};
     }
     case 'typed_issued_after_drain':
       keys(['attemptKey', 'logicalCallKey', 'responseKey', 'callKey', 'actualModel', 'nativeStatus', 'drainStatus',
@@ -1038,6 +1197,12 @@ export class RuntimePerformanceRecorder {
     return eventKey;
   }
 
+  /** A missing/conflicting observation is incompleteness, never a fabricated event. */
+  dropFinalTransportObservation(): void {
+    this.assertCollecting('drop_final_transport');
+    this.finalTransportTruncated++;
+  }
+
   findFinalTransportRetainedEvent(nativeCandidateKey: string): Readonly<{eventKey: string; nativeCandidateKey: string}> | undefined {
     if (this.sealedReceipt || this.finalTransportTruncated) return undefined;
     const found = this.finalTransportEvents.filter(event => event.kind === 'candidate_retained' && event.nativeCandidateKey === nativeCandidateKey);
@@ -1415,6 +1580,11 @@ export function recordRuntimeFinalTransportEvent(source: RuntimePerformanceSourc
   input: RuntimeFinalTransportEventInput): string | undefined {
   try {return resolveRuntimePerformanceRecorder(source)?.recordFinalTransportEvent(input);}
   catch {return undefined;}
+}
+/** Unbound observation drop; late/sealed/currentness failures cannot mutate any receipt. */
+export function dropRuntimeFinalTransportObservation(source: RuntimePerformanceSource | undefined): void {
+  try {resolveRuntimePerformanceRecorder(source)?.dropFinalTransportObservation();}
+  catch { /* Internal observability only. */ }
 }
 /** Lookup a recorded lineage summary; this does not grant or recreate any native capability. */
 export function findRuntimeRetainedTransportEvent(source: RuntimePerformanceSource | undefined,

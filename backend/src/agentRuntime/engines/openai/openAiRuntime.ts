@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {resolveRuntimePerformanceRecorder} from '../../runtimePerformanceContext';
+import {bindRuntimePerformanceContext, resolveRuntimePerformanceRecorder, type RuntimePerformanceSource} from '../../runtimePerformanceContext';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 
 import {collectSceneEvidenceForPrompt, collectSelectedEvidenceForPrompt} from '../../sceneEntryEvidence';
@@ -78,7 +78,7 @@ import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeEx
 import {createRuntimePerformanceRun, recordRuntimeModelExecutionPolicy, runtimeModelCallInputBytesBucket, runtimeOutcomeFromError, type RuntimeModelCallPurpose, type RuntimeModelCallSpan,
   type RuntimeModelCallTrigger, type RuntimeModelCallStart, type RuntimeModelCallEnd, type RuntimePerformanceOutcome, type RuntimePerformanceRun} from '../../runtimePerformance';
 import {buildRuntimeAppliedModelControls, buildRuntimeCommonModelConfig, buildRuntimeExecutionProfileObservation,
-  recordRuntimeFinalTransportEvent, runtimeObservationHash, runtimeCandidateObservationKey, runtimeProviderOrigin,
+  recordRuntimeFinalTransportEvent, dropRuntimeFinalTransportObservation, runtimeObservationHash, runtimeCandidateObservationKey, runtimeProviderOrigin,
   type RuntimeFinalTransportEventInput} from '../../runtimePerformance';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -162,8 +162,63 @@ function observedDeclaration(parsed: {status: string; contract?: {claims?: unkno
   return Array.isArray(parsed.contract?.claims) ? 'present' : 'absent';
 }
 
-// An old SDK chain retains its own revoked observer after timeout; it cannot borrow a newer attempt's span.
-const modelCallDispatchContext = new AsyncLocalStorage<() => void>();
+interface OpenAiLogicalDispatchBinding {
+  readonly attemptKey: string;
+  readonly logicalCallKey: string;
+}
+interface OpenAiDispatchObservationScope {
+  readonly attemptKey: string;
+  readonly wireObserver?: OpenAiTypedFinalWireObserver;
+  onAuthorizedDispatch(): OpenAiLogicalDispatchBinding | undefined;
+}
+interface OpenAiWireRequestTicket {
+  bindAuthorizedDispatch(binding: OpenAiLogicalDispatchBinding | undefined): void;
+  track(pending: Set<OpenAiWireRequestTicket>): void;
+  close(): void;
+}
+// Observation retention only: exceeding this cap never blocks a provider request.
+const MAX_PENDING_WIRE_OBSERVATIONS = 512;
+// Old SDK chains retain their own attempt and request, never a newer collector or span.
+const modelCallDispatchContext = new AsyncLocalStorage<OpenAiDispatchObservationScope>();
+const wireRequestContext = new AsyncLocalStorage<OpenAiWireRequestTicket>();
+
+function createOpenAiWireRequestTicket(scope: OpenAiDispatchObservationScope,
+  events: OpenAiTypedFinalWireEvents | undefined, source: RuntimePerformanceSource | undefined): OpenAiWireRequestTicket {
+  let binding: OpenAiLogicalDispatchBinding | undefined;
+  let bindingAttempted = false, bindingConflict = false, closed = false;
+  let untrack: (() => void) | undefined;
+  const drop = bindRuntimePerformanceContext(() => observeSafely(() => dropRuntimeFinalTransportObservation(source)));
+  const close = bindRuntimePerformanceContext(() => {
+    if (closed) return;
+    closed = true;
+    untrack?.();
+    try {
+      if (!events || !binding || bindingConflict) {drop(); return;}
+      const collectorDispatchOrdinal = events.dispatchOrdinal;
+      if (collectorDispatchOrdinal === undefined || !Number.isSafeInteger(collectorDispatchOrdinal) || collectorDispatchOrdinal < 1) {drop(); return;}
+      const material = events.materialSnapshot?.();
+      if (!material) {drop(); return;}
+      recordRuntimeFinalTransportEvent(source, {kind: 'typed_output_observed', ...binding,
+        collectorDispatchOrdinal, material});
+    } catch {drop();} // A diagnostic failure must not enter the wire collector's fail/revoke path.
+  });
+  const ticket: OpenAiWireRequestTicket = Object.freeze({
+    bindAuthorizedDispatch(value: OpenAiLogicalDispatchBinding | undefined) {
+      if (closed) return;
+      if (bindingAttempted || value?.attemptKey !== scope.attemptKey) bindingConflict = true;
+      bindingAttempted = true;
+      if (!bindingConflict && value) binding = Object.freeze({attemptKey: value.attemptKey, logicalCallKey: value.logicalCallKey});
+    },
+    track(pending: Set<OpenAiWireRequestTicket>) {
+      if (closed || untrack) return;
+      if (pending.size >= MAX_PENDING_WIRE_OBSERVATIONS) {closed = true; drop(); return;}
+      pending.add(ticket);
+      untrack = () => {pending.delete(ticket);};
+    },
+    close,
+  });
+  return ticket;
+}
 
 class OpenAiNativeDrainUnavailableError extends Error {
   readonly code = 'OPENAI_SDK_NATIVE_DRAIN_UNAVAILABLE';
@@ -210,12 +265,17 @@ function createOpenAiTerminalFetch(
   fetchImpl: typeof fetch,
   onRequest: (terminal: OpenAiChatTerminal) => void,
   typedFinalObserver?: OpenAiTypedFinalWireObserver,
+  observationSource?: RuntimePerformanceSource,
 ): typeof fetch {
   return async (input, init) => {
     const terminal: OpenAiChatTerminal = {};
     onRequest(terminal);
+    const scope = modelCallDispatchContext.getStore();
+    const observer = scope ? scope.wireObserver : typedFinalObserver;
     let typed: OpenAiTypedFinalWireEvents | undefined;
-    try { typed = typedFinalObserver?.startRequest(); } catch { /* Observation cannot alter legacy delivery. */ }
+    try { typed = observer?.startRequest(); } catch { /* Observation cannot alter legacy delivery. */ }
+    const ticket = scope?.wireObserver
+      ? observeSafely(() => createOpenAiWireRequestTicket(scope, typed, observationSource)) : undefined;
     const observe = (callback: (events: OpenAiTypedFinalWireEvents) => void) => {
       if (typed) {
         try { callback(typed); } catch {
@@ -225,10 +285,11 @@ function createOpenAiTerminalFetch(
       }
     };
     let response: Response;
-    try { response = await fetchImpl(input, init); }
-    catch (error) {observe(events => events.fail('transport_error')); throw error;}
+    try { response = await (ticket ? wireRequestContext.run(ticket, () => fetchImpl(input, init)) : fetchImpl(input, init)); }
+    catch (error) {observe(events => events.fail('transport_error')); observeSafely(() => ticket?.close()); throw error;}
     if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
       observe(events => events.fail('not_sse'));
+      observeSafely(() => ticket?.close());
       return response;
     }
     const decoder = new TextDecoder();
@@ -291,6 +352,7 @@ function createOpenAiTerminalFetch(
         // SSE dispatch requires the wire's blank line. EOF is not an event delimiter.
         if (buffer || eventData.length) terminal.invalid = true;
         observe(events => events.end(!buffer && !eventData.length));
+        observeSafely(() => ticket?.close());
       },
     }));
     return new Response(body, {status: response.status, statusText: response.statusText, headers: response.headers});
@@ -724,6 +786,7 @@ export const __testing = {
   buildOpenAIModelSettings,
   outputOnlyProviderData,
   createOpenAiTerminalFetch,
+  createOpenAiWireRequestTicket,
   installedOpenAiSdkCompatibility,
   admitFinalSubmissionConfiguration,
   resolveOpenAiNativeCompletion,
@@ -853,7 +916,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const authorizedFetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         authorization.assertCurrent();
         assertWorkRemaining();
-        try { modelCallDispatchContext.getStore()?.(); } catch { /* Observation never changes dispatch. */ }
+        observeSafely(() => {
+          const binding = modelCallDispatchContext.getStore()?.onAuthorizedDispatch();
+          wireRequestContext.getStore()?.bindAuthorizedDispatch(binding);
+        });
         return measuredFetch(input, {...init, signal: init?.signal
           ? AbortSignal.any([init.signal, workSignal]) : workSignal});
       }) as typeof fetch;
@@ -941,12 +1007,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const nativeFetch = shouldUseMimoReasoningContentCompat(config)
         ? createMimoReasoningContentFetch(authorizedFetch) as typeof fetch : authorizedFetch;
       const observedFetch = config.protocol === 'chat_completions'
-        ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}, usesTypedFinal ? {
-          startRequest: () => {
-            if (!currentTypedAttempt) throw new Error('final_submission_attempt_unavailable');
-            return currentTypedAttempt.wireObserver.startRequest();
-          },
-        } : undefined) : nativeFetch;
+        ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}, undefined,
+          options.runManifestAttributionSink) : nativeFetch;
       setTracingDisabled(true);
       const observedCommonConfig = observeSafely(() => {
         const sdk = installedOpenAiSdkCompatibility();
@@ -1033,6 +1095,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const attemptMaxTurns = recoveringOutputLimit ? 1 : remainingTurns - (reserveDeliveryTurn ? 1 : 0);
         attemptId = randomUUID();
         const observedAttemptId = attemptId;
+        const observedAttemptKey = observeSafely(() => runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId}))) ?? '';
+        const pendingWireObservations = new Set<OpenAiWireRequestTicket>();
         const observedPurpose = attemptCall.purpose;
         const observedAttemptProfile = observedStageProfile ?? observedMainProfile;
         const observedProfileRole = observedStageProfile ? 'stage_policy' as const : 'main_controls' as const;
@@ -1077,6 +1141,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           const issuer = createAuthoredFinalSubmissionIssuer({binding: ownerBinding, assertCurrent: assertRunCurrent,
             assertAttemptCurrent: () => {assertRunCurrent(); if (!typedAttemptCurrent) throw new Error('final_submission_attempt_inactive');}});
           typedAttempt = createOpenAiTypedFinalAttempt({finalTool: context.finalTool.tool, toolName: context.finalTool.nativeName,
+            knownToolNames: context.tools.map(installedTool => installedTool.name),
             issuer, ownerBinding, signal: analysisAbortScope.signal, assertCurrent: assertRunCurrent,
             deadlineAt: () => runDeadline.current()});
           currentTypedAttempt = typedAttempt;
@@ -1107,10 +1172,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           modelCallDone = false;
           completedModel = undefined;
         };
-        const observeAttemptDispatch = () => {
+        const observeAttemptDispatch = (): OpenAiLogicalDispatchBinding | undefined => {
           if (!active || controller.signal.aborted || analysisAbortScope.signal.aborted || executionLease.signal.aborted ||
-              modelCallDispatchContext.getStore() !== observeAttemptDispatch) return;
+              modelCallDispatchContext.getStore() !== dispatchObservationScope) return;
           advanceModelCall();
+          observeSafely(() => wireRequestContext.getStore()?.track(pendingWireObservations));
           observeSafely(() => {
             const providerOrigin = runtimeProviderOrigin(config.baseURL);
             if (!providerOrigin || !observedCommonConfig || !observedLogicalCallKey ||
@@ -1131,10 +1197,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               commonConfig: observedCommonConfig, appliedSettings: agent.modelSettings, profiles});
             if (!controls) return;
             recordRuntimeFinalTransportEvent(options.runManifestAttributionSink, {kind: 'main_dispatch',
-              attemptKey: runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId})), logicalCallKey: observedLogicalCallKey, purpose: observedPurpose,
+              attemptKey: observedAttemptKey, logicalCallKey: observedLogicalCallKey, purpose: observedPurpose,
               configuredModelHash: runtimeObservationHash(selectedModel), providerOriginHash: runtimeObservationHash(providerOrigin), controls});
           });
+          return observedAttemptKey && observedLogicalCallKey
+            ? Object.freeze({attemptKey: observedAttemptKey, logicalCallKey: observedLogicalCallKey}) : undefined;
         };
+        const dispatchObservationScope: OpenAiDispatchObservationScope = Object.freeze({attemptKey: observedAttemptKey,
+          wireObserver: typedAttempt?.wireObserver, onAuthorizedDispatch: observeAttemptDispatch});
         const answerStreamFilter = createOpenAiReasoningFilterState();
         const answerTextProjection = analysisHasPrivateContext(options)
           ? createCodeAwareStreamingTextProjection(sessionId, `openai-answer-${attemptId}`, 'owner') : undefined;
@@ -1168,7 +1238,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               purpose: 'answer_turn', selection: 'preserve'}).receipt);
           }
           modelCall = startAttemptModelCall();
-          const started = modelCallDispatchContext.run(observeAttemptDispatch, () => runner.run(agent, runInput, {stream: true, maxTurns: attemptMaxTurns,
+          const started = modelCallDispatchContext.run(dispatchObservationScope, () => runner.run(agent, runInput, {stream: true, maxTurns: attemptMaxTurns,
             context: {signal: controller.signal}, signal: controller.signal}));
           rawRun = started;
           // Keep startup and its actual background lifetime even if the race loses
@@ -1244,7 +1314,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             streamCompleted = true;
             recordEvaluationTokenDeltaIfPresent((stream as any).runContext?.usage ?? (stream as any).context?.usage ?? (stream as any).state?.usage);
           };
-          consumeWork = modelCallDispatchContext.run(observeAttemptDispatch, consume);
+          consumeWork = modelCallDispatchContext.run(dispatchObservationScope, consume);
           void consumeWork.catch(() => undefined);
           await Promise.race([consumeWork, requestTimeout.promise, providerIdleTimeout.promise, cancellation]);
           // SDK abort can resolve public completed before the timeout race rejects.
@@ -1508,6 +1578,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           // Rejection of one known operation must never skip draining the others.
           // In particular, a continue cannot overlap the old loop with recovery.
           const observedDrainResults = await Promise.allSettled([rawRun, nativeDrain, consumeWork]);
+          // A body read error/cancellation skips Transform.flush. Close only observation
+          // after the existing drain, without asserting EOF or changing collector admission.
+          for (const ticket of pendingWireObservations) observeSafely(() => ticket.close());
+          pendingWireObservations.clear();
           observeSafely(() => {
             if (!frozenNativeFact) return;
             const drainStatus = !rawRun || !nativeDrain || !consumeWork ? 'unavailable'

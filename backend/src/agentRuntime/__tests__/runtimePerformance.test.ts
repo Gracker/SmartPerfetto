@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'crypto';
+import type {RuntimeFinalTransportEventInput} from '../runtimePerformance';
+import {TYPED_OUTPUT_MATERIAL_LIMITS, type RuntimeTypedOutputMaterial} from '../typedOutputMaterial';
+import {CONCLUSION_PROTOCOL_VALUES} from '../../agent/core/conclusionContract';
 import {describe, expect, it, jest} from '@jest/globals';
 
 import {
@@ -27,6 +30,7 @@ import {
   buildRuntimeAppliedModelControls,
   buildRuntimeExecutionProfileObservation,
   recordRuntimeFinalTransportEvent,
+  dropRuntimeFinalTransportObservation,
   findRuntimeRetainedTransportEvent,
   projectRuntimeFinalTransportObservation,
   runtimeCandidateObservationKey,
@@ -1093,5 +1097,326 @@ describe('explicit provider model provenance', () => {
     recorder.startModelCall({purpose: 'review'}).end({modelSource: 'provider_reported'});
     expect(recorder.seal().modelCalls![0]).not.toHaveProperty('model');
     expect(recorder.seal().modelCalls![0]).not.toHaveProperty('modelSource');
+  });
+});
+
+
+describe('R11 closed typed output material observations', () => {
+  function material(): RuntimeTypedOutputMaterial {
+    return {
+      schemaVersion: 'typed_output_material@1', wireToolRole: 'final_role',
+      transport: {doneSeen: true, eofSeen: true, framing: 'valid', finishReason: 'length'},
+      decoded: {arguments: {utf8Bytes: 1000, utf16Chars: 1000, utf8Precision: 'exact', utf16Precision: 'exact'},
+        companion: {utf8Bytes: 12, utf16Chars: 4, utf8Precision: 'exact', utf16Precision: 'exact'}},
+      retention: {arguments: {status: 'complete', retainedUtf8Bytes: 1000},
+        companion: {status: 'not_retained', retainedUtf8Bytes: 0}, refusal: {status: 'not_observed', retainedUtf8Bytes: 0},
+        combinedRetainedUtf8Bytes: 1000},
+      json: {status: 'complete_json'}, representation: 'authored_claim_document@2',
+      structure: {status: 'measured', collections: {
+        referenceDictionary: {status: 'array', items: 0}, semanticFrames: {status: 'array', items: 0},
+        claims: {status: 'array', items: 3}, bodyParts: {status: 'array', items: 3},
+        relationProposals: {status: 'null'}, sourceClaimBindings: {status: 'missing'}},
+        claimKinds: {counts: Object.fromEntries(CONCLUSION_PROTOCOL_VALUES.claimKind.map(kind => [kind, kind === 'numeric' ? 1 : 0])) as
+          Record<typeof CONCLUSION_PROTOCOL_VALUES.claimKind[number], number>, absent: 1, unclassified: 1},
+        bodyParts: {literalPartCount: 1, literalPartTextUtf8Bytes: 6, claimTextUseCount: 1, unclassifiedPartCount: 1},
+        explicitNullCount: 3,
+        exactTextReuse: {duplicateClaimTextCount: 1, duplicateClaimTextUtf8Bytes: 4,
+          literalPartMatchingClaimTextCount: 1, literalPartMatchingClaimTextUtf8Bytes: 6},
+        partition: {status: 'measured', totalNormalizedUtf8Bytes: 400, referenceDictionary: 2, semanticFrames: 2,
+          claims: 100, bodyParts: 100, contractOther: 20, overhead: 176}},
+    };
+  }
+  function event(value: unknown = material(), collectorDispatchOrdinal = 1): RuntimeFinalTransportEventInput {
+    return {kind: 'typed_output_observed', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      collectorDispatchOrdinal, material: value} as unknown as RuntimeFinalTransportEventInput;
+  }
+  const mutable = (value: unknown): Record<string, unknown> => JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  function paths(value: Record<string, unknown>, select: 'object' | 'number', prefix: string[] = []): string[][] {
+    return [...(select === 'object' ? [prefix] : []), ...Object.entries(value).flatMap(([key, child]) =>
+      child !== null && typeof child === 'object' ? paths(child as Record<string, unknown>, select, [...prefix, key]) :
+        select === 'number' && typeof child === 'number' ? [[...prefix, key]] : [])];
+  }
+  function at(value: Record<string, unknown>, path: readonly string[]): Record<string, unknown> {
+    return path.reduce<Record<string, unknown>>((current, key) => current[key] as Record<string, unknown>, value);
+  }
+  function dropped(value: unknown, ordinal = 1): void {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value, ordinal))).toBeUndefined();
+    expect(recorder.seal().finalTransportObservation).toEqual({schemaVersion: 'final_transport_observation@1', events: [], truncated: 1});
+  }
+
+  it('preserves counts for complete length-terminated JSON without granting authorship, native status or proof', () => {
+    const recorder = createRuntimePerformanceRecorder({now: () => 0});
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event())).toMatch(/^[a-f0-9]{64}$/);
+    const receipt = recorder.seal();
+    expect(receipt.finalTransportObservation?.events).toEqual([expect.objectContaining(event())]);
+    expect(projectRuntimeFinalTransportObservation(receipt.finalTransportObservation)).toEqual(receipt.finalTransportObservation);
+    expect(receipt.finalTransportObservation?.events[0]).not.toHaveProperty('nativeStatus');
+    expect(findRuntimeRetainedTransportEvent({runtimePerformanceRecorder: recorder}, 'a'.repeat(64))).toBeUndefined();
+    expect(Object.isFrozen(receipt.finalTransportObservation?.events[0])).toBe(true);
+  });
+
+  it('retains not_observed for absent structure measurement and distinct nullable/missing collections', () => {
+    const unknown = {...material(), structure: {status: 'not_observed'}};
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(unknown))).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject({material: {structure: {status: 'not_observed'}}});
+    const partial = mutable(material());
+    const structure = at(partial, ['structure']);
+    at(structure, ['collections']).claims = {status: 'null'};
+    at(structure, ['collections']).bodyParts = {status: 'missing'};
+    delete structure.claimKinds; delete structure.bodyParts; delete structure.exactTextReuse;
+    structure.partition = {status: 'unsupported_shape'};
+    const partialRecorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: partialRecorder}, event(partial))).toBeDefined();
+    expect(partialRecorder.seal().finalTransportObservation?.events[0]).toMatchObject({material: {structure: {
+      collections: {claims: {status: 'null'}, bodyParts: {status: 'missing'}}}}});
+  });
+
+  it.each(['other_tool', 'no_tool'] as const)('records %s wire transport without final-document structure', wireToolRole => {
+    const value = {...material(), wireToolRole, json: {status: 'not_parsed'}, representation: 'not_applicable',
+      structure: {status: 'not_applicable'}};
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value))).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject({material: value});
+  });
+
+  it('accepts interrupted lower-bound counts without making EOF or parse facts', () => {
+    const value = {...material(), transport: {doneSeen: false, eofSeen: false, framing: 'unknown'},
+      decoded: {arguments: {utf8Bytes: 1048577, utf16Chars: 1048577, utf8Precision: 'lower_bound', utf16Precision: 'lower_bound'}},
+      retention: {arguments: {status: 'over_limit', retainedUtf8Bytes: 1000}, companion: {status: 'not_observed', retainedUtf8Bytes: 0},
+        refusal: {status: 'not_observed', retainedUtf8Bytes: 0}, combinedRetainedUtf8Bytes: 1000},
+      json: {status: 'not_parsed'}, representation: 'unknown', structure: {status: 'not_observed'}};
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value))).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject({material: value});
+  });
+
+  it('keeps genuine empty arrays and empty text counts as measured zero', () => {
+    const value = mutable(material()), structure = at(value, ['structure']);
+    at(structure, ['collections']).claims = {status: 'array', items: 0};
+    at(structure, ['collections']).bodyParts = {status: 'array', items: 0};
+    for (const path of paths(structure, 'number')) at(structure, path.slice(0, -1))[path[path.length - 1]] = 0;
+    structure.explicitNullCount = 1;
+    structure.partition = {status: 'measured', totalNormalizedUtf8Bytes: 400, referenceDictionary: 2, semanticFrames: 2,
+      claims: 2, bodyParts: 2, contractOther: 20, overhead: 372};
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value))).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject({material: {structure: {
+      collections: {claims: {status: 'array', items: 0}}, claimKinds: {absent: 0, unclassified: 0}}}});
+  });
+
+  it('rejects an unknown private key at every material object boundary', () => {
+    for (const path of paths(mutable(material()), 'object')) {
+      const value = mutable(material()); at(value, path).privatePayload = 'PRIVATE_R11_MATERIAL_CANARY'; dropped(value);
+    }
+  });
+
+  it('rejects each non-safe count independently at every numeric material leaf', () => {
+    for (const path of paths(mutable(material()), 'number')) for (const invalid of [-1, 0.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, '1']) {
+      const value = mutable(material()); at(value, path.slice(0, -1))[path[path.length - 1]] = invalid; dropped(value);
+    }
+    for (const invalid of [0, -1, 0.5, Infinity, Number.MAX_SAFE_INTEGER + 1]) dropped(material(), invalid);
+  });
+
+  it('rejects inconsistent conditional facts instead of filling missing material with zero', () => {
+    const changes: Array<(value: Record<string, unknown>) => void> = [
+      value => {at(value, ['retention']).combinedRetainedUtf8Bytes = 999;},
+      value => {at(value, ['retention', 'companion']).retainedUtf8Bytes = 1; at(value, ['retention']).combinedRetainedUtf8Bytes = 1001;},
+      value => {at(value, ['transport']).eofSeen = false;},
+      value => {at(value, ['transport']).framing = 'invalid';},
+      value => {at(value, ['retention', 'arguments']).status = 'over_limit';},
+      value => {at(value, ['decoded', 'arguments']).utf8Precision = 'lower_bound';},
+      value => {at(value, ['decoded', 'arguments']).utf8Bytes = 999;},
+      value => {at(value, ['json']).status = 'not_parsed';},
+      value => {value.representation = 'unknown';},
+      value => {value.wireToolRole = 'ambiguous';},
+      value => {delete at(value, ['structure']).claimKinds;},
+      value => {at(value, ['structure', 'claimKinds']).absent = 0;},
+      value => {at(value, ['structure', 'claimKinds', 'counts']).made_up = 0;},
+      value => {delete at(value, ['structure', 'claimKinds', 'counts']).numeric;},
+      value => {delete at(value, ['structure']).bodyParts;},
+      value => {at(value, ['structure', 'bodyParts']).unclassifiedPartCount = 0;},
+      value => {at(value, ['structure', 'bodyParts']).literalPartCount = 0; at(value, ['structure', 'bodyParts']).unclassifiedPartCount = 2;},
+      value => {at(value, ['structure', 'exactTextReuse']).duplicateClaimTextCount = 3;},
+      value => {at(value, ['structure', 'exactTextReuse']).literalPartMatchingClaimTextCount = 2;},
+      value => {at(value, ['structure', 'exactTextReuse']).literalPartMatchingClaimTextUtf8Bytes = 7;},
+      value => {at(value, ['structure', 'partition']).overhead = 177;},
+      value => {at(value, ['structure', 'collections']).referenceDictionary = {status: 'missing'};},
+      value => {at(value, ['structure']).status = 'resource_limit';},
+    ];
+    for (const change of changes) {const value = mutable(material()); change(value); dropped(value);}
+  });
+
+  it('rejects impossible measured node counts and disjoint collection totals', () => {
+    const cases: Array<(value: Record<string, unknown>) => void> = [
+      value => {at(value, ['structure', 'collections', 'referenceDictionary']).items = TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes + 1;},
+      value => {at(value, ['structure']).explicitNullCount = TYPED_OUTPUT_MATERIAL_LIMITS.structureNodes + 1;},
+      value => {
+        at(value, ['structure', 'collections', 'referenceDictionary']).items = 6000;
+        at(value, ['structure', 'collections', 'semanticFrames']).items = 6000;
+      },
+    ];
+    for (const change of cases) {
+      const value = mutable(material()); at(value, ['structure']).partition = {status: 'unsupported_shape'};
+      change(value); dropped(value);
+    }
+  });
+
+  it('rejects decoded domain overflow and an exact saturation sentinel independently of JSON parsing', () => {
+    for (const channel of ['arguments', 'companion', 'refusal']) for (const dimension of ['utf8Bytes', 'utf16Chars']) {
+      const cap = dimension === 'utf8Bytes' ? TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes : TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf16Chars;
+      const precision = dimension === 'utf8Bytes' ? 'utf8Precision' : 'utf16Precision';
+      for (const [count, accuracy] of [[cap + 1, 'exact'], [cap + 2, 'lower_bound'], [1_000_000_000, 'exact']] as const) {
+        const value = mutable(material()); value.json = {status: 'not_parsed'}; value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+        at(value, ['retention'])[channel] = {status: 'not_retained', retainedUtf8Bytes: 0};
+        at(value, ['retention']).combinedRetainedUtf8Bytes = channel === 'arguments' ? 0 : 1000;
+        at(value, ['decoded'])[channel] = {utf8Bytes: 1, utf16Chars: 1, utf8Precision: 'lower_bound', utf16Precision: 'lower_bound', [dimension]: count, [precision]: accuracy};
+        dropped(value);
+      }
+    }
+  });
+
+  it('rejects retained bytes beyond their independent domain and combined retained overflow', () => {
+    for (const channel of ['arguments', 'companion', 'refusal']) {
+      const value = mutable(material()); value.json = {status: 'not_parsed'}; value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+      at(value, ['decoded'])[channel] = {utf8Bytes: TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes + 1,
+        utf16Chars: TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf16Chars, utf8Precision: 'lower_bound', utf16Precision: 'exact'};
+      at(value, ['retention'])[channel] = {status: 'over_limit', retainedUtf8Bytes: TYPED_OUTPUT_MATERIAL_LIMITS.retainedUtf8Bytes + 1};
+      at(value, ['retention']).combinedRetainedUtf8Bytes = TYPED_OUTPUT_MATERIAL_LIMITS.retainedUtf8Bytes + 1 + (channel === 'arguments' ? 0 : 1000);
+      dropped(value);
+    }
+    const value = mutable(material()); value.json = {status: 'not_parsed'}; value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+    for (const channel of ['arguments', 'companion']) {
+      at(value, ['decoded'])[channel] = {utf8Bytes: 600000, utf16Chars: 600000, utf8Precision: 'exact', utf16Precision: 'exact'};
+      at(value, ['retention'])[channel] = {status: 'complete', retainedUtf8Bytes: 600000};
+    }
+    at(value, ['retention']).combinedRetainedUtf8Bytes = 1200000; dropped(value);
+  });
+
+  it('bounds measured text bytes and normalized outer partition independently from wire retention', () => {
+    for (const path of [['bodyParts', 'literalPartTextUtf8Bytes'], ['exactTextReuse', 'duplicateClaimTextUtf8Bytes'],
+      ['exactTextReuse', 'literalPartMatchingClaimTextUtf8Bytes']]) {
+      const value = mutable(material());
+      at(value, ['structure', ...path.slice(0, -1)])[path[path.length - 1]] = TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes + 1;
+      if (path[1] === 'literalPartMatchingClaimTextUtf8Bytes') at(value, ['structure', 'bodyParts']).literalPartTextUtf8Bytes = TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes + 1;
+      dropped(value);
+    }
+    const value = mutable(material()), partition = at(value, ['structure', 'partition']);
+    const next = TYPED_OUTPUT_MATERIAL_LIMITS.normalizedOuterUtf8Bytes + 1;
+    partition.overhead = Number(partition.overhead) + next - Number(partition.totalNormalizedUtf8Bytes);
+    partition.totalNormalizedUtf8Bytes = next; dropped(value);
+  });
+
+  it('records real three-byte text with saturated UTF8 and still-exact UTF16 counts', () => {
+    const text = '中'.repeat(Math.ceil((TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes + 1) / 3));
+    expect(Buffer.byteLength(text)).toBeGreaterThan(TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes);
+    expect(text.length).toBeLessThan(TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf16Chars);
+    const value = mutable(material()); value.json = {status: 'not_parsed'}; value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+    at(value, ['decoded']).arguments = {utf8Bytes: TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes + 1,
+      utf16Chars: text.length, utf8Precision: 'lower_bound', utf16Precision: 'exact'};
+    at(value, ['retention']).arguments = {status: 'over_limit', retainedUtf8Bytes: 0};
+    at(value, ['retention']).combinedRetainedUtf8Bytes = 0;
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value))).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject({material: value});
+  });
+
+  it.each([
+    {utf8Bytes: 3, utf16Chars: 4, utf8Precision: 'exact', utf16Precision: 'exact'},
+    {utf8Bytes: 4, utf16Chars: 1, utf8Precision: 'exact', utf16Precision: 'exact'},
+    {utf8Bytes: 1000, utf16Chars: TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf16Chars + 1, utf8Precision: 'exact', utf16Precision: 'lower_bound'},
+    {utf8Bytes: TYPED_OUTPUT_MATERIAL_LIMITS.decodedUtf8Bytes + 1, utf16Chars: 1000, utf8Precision: 'lower_bound', utf16Precision: 'exact'},
+  ])('rejects physically impossible cross-axis decoded facts: %j', decoded => {
+    const value = mutable(material()); value.json = {status: 'not_parsed'}; value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+    at(value, ['decoded']).arguments = decoded;
+    at(value, ['retention']).arguments = {status: 'over_limit', retainedUtf8Bytes: 0};
+    at(value, ['retention']).combinedRetainedUtf8Bytes = 0;
+    dropped(value);
+  });
+
+  it('does not infer an ordering between two incomplete lower bounds', () => {
+    for (const [utf8Bytes, utf16Chars] of [[1000, 2000], [4000, 1000]]) {
+      const value = mutable(material()); value.json = {status: 'not_parsed'}; value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+      at(value, ['decoded']).arguments = {utf8Bytes, utf16Chars, utf8Precision: 'lower_bound', utf16Precision: 'lower_bound'};
+      at(value, ['retention']).arguments = {status: 'over_limit', retainedUtf8Bytes: 0};
+      at(value, ['retention']).combinedRetainedUtf8Bytes = 0;
+      const recorder = createRuntimePerformanceRecorder();
+      expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value))).toBeDefined();
+    }
+  });
+
+  it('accepts a real normalized outer boundary above wire cap when lone-surrogate escaping accounts for the difference', () => {
+    const document = {representationVersion: 'authored_claim_document@2', referenceDictionary: [], semanticFrames: [],
+      contract: {claims: []}, bodyParts: ['\ud800'.repeat(5)]};
+    const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+    document.bodyParts[0] += 'x'.repeat(TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes - bytes(document));
+    const normalized = JSON.stringify({document});
+    // JSON permits the literal lone surrogate; the normalized serializer escapes it.
+    const raw = normalized.split('\\ud800').join('\ud800');
+    expect(JSON.parse(raw)).toEqual({document});
+    expect(bytes(document)).toBe(TYPED_OUTPUT_MATERIAL_LIMITS.normalizedDocumentUtf8Bytes);
+    expect(Buffer.byteLength(raw)).toBeLessThan(TYPED_OUTPUT_MATERIAL_LIMITS.retainedUtf8Bytes);
+    expect(Buffer.byteLength(normalized)).toBe(TYPED_OUTPUT_MATERIAL_LIMITS.normalizedOuterUtf8Bytes);
+    const buckets = {referenceDictionary: bytes(document.referenceDictionary), semanticFrames: bytes(document.semanticFrames),
+      claims: bytes(document.contract.claims), bodyParts: bytes(document.bodyParts), contractOther: bytes({})};
+    const value: RuntimeTypedOutputMaterial = {schemaVersion: 'typed_output_material@1', wireToolRole: 'final_role',
+      transport: {doneSeen: true, eofSeen: true, framing: 'valid'},
+      decoded: {arguments: {utf8Bytes: Buffer.byteLength(raw), utf16Chars: raw.length, utf8Precision: 'exact', utf16Precision: 'exact'}},
+      retention: {arguments: {status: 'complete', retainedUtf8Bytes: Buffer.byteLength(raw)},
+        companion: {status: 'not_observed', retainedUtf8Bytes: 0}, refusal: {status: 'not_observed', retainedUtf8Bytes: 0},
+        combinedRetainedUtf8Bytes: Buffer.byteLength(raw)},
+      json: {status: 'complete_json'}, representation: 'authored_claim_document@2',
+      structure: {status: 'measured', collections: {referenceDictionary: {status: 'array', items: 0},
+        semanticFrames: {status: 'array', items: 0}, claims: {status: 'array', items: 0}, bodyParts: {status: 'array', items: 1},
+        relationProposals: {status: 'missing'}, sourceClaimBindings: {status: 'missing'}},
+        claimKinds: {counts: Object.fromEntries(CONCLUSION_PROTOCOL_VALUES.claimKind.map(kind => [kind, 0])) as
+          Record<typeof CONCLUSION_PROTOCOL_VALUES.claimKind[number], number>, absent: 0, unclassified: 0},
+        bodyParts: {literalPartCount: 1, literalPartTextUtf8Bytes: Buffer.byteLength(document.bodyParts[0]),
+          claimTextUseCount: 0, unclassifiedPartCount: 0}, explicitNullCount: 0,
+        exactTextReuse: {duplicateClaimTextCount: 0, duplicateClaimTextUtf8Bytes: 0,
+          literalPartMatchingClaimTextCount: 0, literalPartMatchingClaimTextUtf8Bytes: 0},
+        partition: {status: 'measured', ...buckets, totalNormalizedUtf8Bytes: Buffer.byteLength(normalized),
+          overhead: Buffer.byteLength(normalized) - Object.values(buckets).reduce((sum, count) => sum + count, 0)}}};
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: recorder}, event(value))).toBeDefined();
+    expect(projectRuntimeFinalTransportObservation(recorder.seal().finalTransportObservation)).toEqual(recorder.seal().finalTransportObservation);
+  });
+
+  it('requires observed exact channel counts for complete retention even when JSON was not parsed', () => {
+    const changes: Array<(value: Record<string, unknown>) => void> = [
+      value => {delete at(value, ['decoded']).arguments;},
+      value => {at(value, ['decoded', 'arguments']).utf8Precision = 'lower_bound';},
+      value => {at(value, ['decoded', 'arguments']).utf16Precision = 'lower_bound';},
+      value => {at(value, ['decoded', 'arguments']).utf8Bytes = 1001;},
+    ];
+    for (const change of changes) {
+      const value = mutable(material()); value.json = {status: 'not_parsed'};
+      value.representation = 'unknown'; value.structure = {status: 'not_observed'};
+      change(value); dropped(value);
+    }
+  });
+
+  it('requires an actually counted channel for not_retained instead of inventing an absent zero', () => {
+    const value = mutable(material()); delete at(value, ['decoded']).companion; dropped(value);
+  });
+
+  it('does not execute material getters/proxy traps and makes invalid observations drops only', () => {
+    const getter = jest.fn(() => material());
+    const value = Object.defineProperty({}, 'schemaVersion', {enumerable: true, get: getter});
+    dropped(value); expect(getter).not.toHaveBeenCalled();
+    const trap = jest.fn();
+    dropped(new Proxy({}, {ownKeys: () => {trap(); return [];}})); expect(trap).not.toHaveBeenCalled();
+  });
+
+  it('counts explicit unbound/conflicting observation drops only while collecting, leaving sealed receipts unchanged', () => {
+    const drop = dropRuntimeFinalTransportObservation;
+    const recorder = createRuntimePerformanceRecorder(); const source = {runtimePerformanceRecorder: recorder};
+    drop(source); drop(source);
+    expect(recorder.seal().finalTransportObservation).toEqual({schemaVersion: 'final_transport_observation@1', events: [], truncated: 2});
+    const before = JSON.stringify(recorder.seal());
+    expect(() => drop(source)).not.toThrow();
+    expect(recordRuntimeFinalTransportEvent(source, event())).toBeUndefined();
+    expect(JSON.stringify(recorder.seal())).toBe(before);
   });
 });

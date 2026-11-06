@@ -7,6 +7,8 @@ import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_FINAL_SUBMISSION_PEND
   type AuthoredFinalSubmissionIssuer, type AuthoredFinalSubmissionOwnerBinding,
   type AuthoredFinalSubmissionReadInput, type IssuedAuthoredFinalSubmission} from '../../authoredFinalSubmission';
 import type {AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
+import {createOpenAiTypedFinalOutputMaterial, type OpenAiTypedFinalMaterialOptions} from './openAiTypedFinalOutputMaterial';
+import {TYPED_OUTPUT_WIRE_FINISH_REASONS, type RuntimeTypedOutputMaterial} from '../../typedOutputMaterial';
 
 /** Versioned experimental transport boundary; not enabled by importing it. */
 export const OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION = 'openai_typed_final_admission@1';
@@ -19,8 +21,7 @@ export type OpenAiTypedFinalWireFailure =
   | 'multiple_tools' | 'conflicting_identity' | 'raw_limit' | 'assistant_content'
   | 'missing_done' | 'data_after_done' | 'missing_tool' | 'non_tool_terminal';
 
-const WIRE_FINISH_REASONS = ['stop', 'length', 'tool_calls', 'function_call', 'content_filter',
-  'insufficient_system_resource', 'aborted', 'other'] as const;
+const WIRE_FINISH_REASONS = TYPED_OUTPUT_WIRE_FINISH_REASONS;
 type WireFinishReason = typeof WIRE_FINISH_REASONS[number];
 
 export interface OpenAiTypedFinalWireReceipt {
@@ -32,6 +33,8 @@ export interface OpenAiTypedFinalWireReceipt {
   readonly rawArguments: string;
 }
 export interface OpenAiTypedFinalWireEvents {
+  readonly dispatchOrdinal?: number;
+  materialSnapshot?(): RuntimeTypedOutputMaterial | undefined;
   chunk(value: unknown): void;
   done(): void;
   end(framingValid: boolean): void;
@@ -62,7 +65,7 @@ function appendedUtf8Bytes(previous: string, fragment: string): number {
 }
 
 /** Receives the existing terminal fetch parser's data; never reads or rewrites a response. */
-export function createOpenAiTypedFinalWireCollector(): OpenAiTypedFinalWireCollector {
+export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMaterialOptions = {}): OpenAiTypedFinalWireCollector {
   let ordinal = 0;
   let current: OpenAiTypedFinalWireReceipt | undefined;
   let diagnostic: ReturnType<OpenAiTypedFinalWireCollector['diagnostic']> = {dispatchOrdinal: 0, status: 'pending'};
@@ -86,6 +89,7 @@ export function createOpenAiTypedFinalWireCollector(): OpenAiTypedFinalWireColle
       let toolName = '', rawArguments = '', argumentBytes = 0;
       let finishReason: string | undefined;
       let done = false, ended = false;
+      const material = createOpenAiTypedFinalOutputMaterial(options, () => rawArguments);
       const reject = (reason: OpenAiTypedFinalWireFailure, unsafe = true) => {
         failure ??= reason;
         if (unsafe) unsafeWireFailure ??= reason;
@@ -95,12 +99,15 @@ export function createOpenAiTypedFinalWireCollector(): OpenAiTypedFinalWireColle
         }
       };
       const events: OpenAiTypedFinalWireEvents = {
-        fail: reason => reject(reason),
+        dispatchOrdinal, materialSnapshot: () => material.snapshot(),
+        fail: reason => {material.fail(reason); reject(reason);},
         done() {
+          material.done();
           if (done || ended) reject('data_after_done');
           done = true;
         },
         chunk(value) {
+          material.chunk(value);
           if (done || ended) {reject('data_after_done'); return;}
           if (!record(value) || !onlyKeys(value, chunkKeys)) {reject('unknown_field'); return;}
           if (!Array.isArray(value.choices)) {reject('invalid_chunk'); return;}
@@ -170,6 +177,7 @@ export function createOpenAiTypedFinalWireCollector(): OpenAiTypedFinalWireColle
           }
         },
         end(framingValid) {
+          material.end(framingValid);
           if (ended) {reject('invalid_framing'); return;}
           ended = true;
           if (!framingValid) reject('invalid_framing');
@@ -222,6 +230,8 @@ interface StopDecision {response: object; processed: object; deadlineAt: number}
 export function createOpenAiTypedFinalAttempt(input: {
   finalTool: object;
   toolName: string;
+  /** Observation only: names of this attempt's actual installed tools. */
+  knownToolNames?: readonly string[];
   issuer: AuthoredFinalSubmissionIssuer;
   ownerBinding: AuthoredFinalSubmissionOwnerBinding;
   /** Product/run cancellation only; never the SDK's successful-finally cleanup controller. */
@@ -230,7 +240,7 @@ export function createOpenAiTypedFinalAttempt(input: {
   deadlineAt(): number;
 }) {
   input = Object.freeze({...input, ownerBinding: Object.freeze({...input.ownerBinding})});
-  const collector = createOpenAiTypedFinalWireCollector();
+  const collector = createOpenAiTypedFinalWireCollector({finalToolName: input.toolName, knownToolNames: input.knownToolNames});
   let resolveReady!: (stream: NativeStream) => void, rejectReady!: (error: unknown) => void;
   const ready = new Promise<NativeStream>((resolve, reject) => {resolveReady = resolve; rejectReady = reject;});
   void ready.catch(() => undefined);
@@ -322,7 +332,8 @@ export function createOpenAiTypedFinalAttempt(input: {
     if (pending || decision || issued) revoke('subsequent_dispatch');
     const events = collector.startRequest();
     const checkAfter = () => {if (pending && !collector.isCurrent(pending.receipt)) revoke('wire_ineligible');};
-    return {chunk: value => {events.chunk(value); checkAfter();}, done: () => {events.done(); checkAfter();},
+    return {dispatchOrdinal: events.dispatchOrdinal, materialSnapshot: events.materialSnapshot,
+      chunk: value => {events.chunk(value); checkAfter();}, done: () => {events.done(); checkAfter();},
       end: valid => {events.end(valid); checkAfter();}, fail: code => {events.fail(code); checkAfter();}};
   }};
   return {
