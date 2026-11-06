@@ -185,6 +185,16 @@ export function isIssuedEvidenceReadResolution(resolution: EvidenceReadResolutio
   return resolution.status !== 'resolved' || resolutions.has(resolution);
 }
 
+/** Match an issued immutable read with an exact record and witness pair. */
+export function matchesIssuedEvidenceReadRecord(resolution: unknown, entry: EvidenceReadRecord): boolean {
+  if (resolution === null || typeof resolution !== 'object') return false;
+  // Do not inspect status/record on copies, getters or proxies before the private binding exists.
+  const captured = resolutions.get(resolution);
+  if (!captured) return false;
+  const issued = resolution as EvidenceReadResolution;
+  return issued.status === 'resolved' && issued.record === entry.record && captured.witness === entry.witness;
+}
+
 const normalized = (value: string) => value.trim().toLowerCase();
 function recordIdentifierChecks(record: CapturedEvidenceRecord, ref: ConclusionContractClaimReference): {field: string; ok: boolean}[] {
   const meta = record.meta;

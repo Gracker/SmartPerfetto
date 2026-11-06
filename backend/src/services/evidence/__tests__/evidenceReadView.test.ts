@@ -12,7 +12,8 @@ import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVe
 import {SkillExecutor} from '../../skillEngine/skillExecutor';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedEvidenceMatchesInput, evidenceReferenceKey,
   preparedIdentityResolutions, type PreparedClaimEvidence} from '../claimEvidencePreparation';
-import {bindReadResolutionToAnchor, createEvidenceReadView, evidenceReadFailureIsUnreadable, isIssuedEvidenceReadResolution, type EvidenceReadView, type EvidenceReadViewOptions} from '../evidenceReadView';
+import {bindReadResolutionToAnchor, createEvidenceReadView, evidenceReadFailureIsUnreadable, isIssuedEvidenceReadResolution,
+  matchesIssuedEvidenceReadRecord, type EvidenceReadRecord, type EvidenceReadView, type EvidenceReadViewOptions} from '../evidenceReadView';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import type {ConclusionContract, ConclusionContractClaimReference} from '../../../agent/core/conclusionContract';
@@ -870,5 +871,69 @@ describe('native row companions in prepared evidence', () => {
     expect(proof.status).toBe('proved');
     expect(proof.nativeRows?.map(row => row.id)).toEqual([8]);
     expect(proof.nativeRows?.[0].anchorId).toBe(result.claimSupport[0].anchors[1].anchorId);
+  });
+});
+
+describe('A1 exact issued read and retained record pairing', () => {
+  async function fixture() {
+    const store = new ArtifactStore(), registered = add(store);
+    const view = store.createEvidenceReadView(readOptions);
+    const [resolution] = await read(view, {artifactId: registered.id, rowIndex: 0, column: 'metric'});
+    if (resolution.status !== 'resolved') throw new Error('Expected a real issued row');
+    const entry: EvidenceReadRecord = {record: resolution.record, witness: registered.witness};
+    return {store, registered, view, resolution, entry};
+  }
+
+  it('matches only the exact public record and private witness pair, including metadata reads', async () => {
+    const {store, registered, resolution, entry} = await fixture();
+    expect(matchesIssuedEvidenceReadRecord(resolution, entry)).toBe(true);
+    const [metadata] = await store.createEvidenceReadView(readOptions).resolveReferences([
+      {key: 'metadata', reference: {artifactId: registered.id}, requiredColumns: [], metadataOnly: true},
+    ]);
+    expect(metadata.status).toBe('resolved'); expect(metadata).not.toHaveProperty('row');
+    expect(matchesIssuedEvidenceReadRecord(metadata, entry)).toBe(true);
+    expect(matchesIssuedEvidenceReadRecord(resolution, {...entry, record: {...entry.record}})).toBe(false);
+    expect(matchesIssuedEvidenceReadRecord(resolution, {...entry,
+      witness: captureEvidenceTable({columns: ['id', 'metric'], rows: [[1, 2]]}, {metric: field})})).toBe(false);
+    expect(matchesIssuedEvidenceReadRecord(resolution, {...entry,
+      witness: JSON.parse(JSON.stringify(registered.witness))})).toBe(false);
+  });
+
+  it('rejects copied/fabricated reads and does not interpret the old non-resolved helper as authority', async () => {
+    const {view, resolution, entry} = await fixture();
+    const [missing] = await read(view, {evidenceRefId: 'never-issued', rowIndex: 0, column: 'metric'});
+    expect(missing.status).toBe('missing'); expect(isIssuedEvidenceReadResolution(missing)).toBe(true);
+    for (const value of [undefined, null, false, 1, 'resolved', Symbol('read'), {}, missing,
+      {...resolution}, JSON.parse(JSON.stringify(resolution)),
+      {key: 'forged', status: 'resolved', record: entry.record, originalRowIndex: 0, row: {metric: 2}},
+      {key: 'forged-failure', status: 'denied', reason: 'fixture'}]) {
+      expect(matchesIssuedEvidenceReadRecord(value, entry)).toBe(false);
+    }
+    expect(isIssuedEvidenceReadResolution(resolution)).toBe(true);
+  });
+
+  it.each(['getters', 'proxy', 'revoked_proxy'] as const)('rejects %s before reading any untrusted property', async kind => {
+    const {resolution, entry} = await fixture(); let inspected = 0;
+    const inspect = () => {inspected++; throw new Error('Untrusted read was inspected');};
+    const revocable = Proxy.revocable(resolution, {get: inspect, getPrototypeOf: inspect, ownKeys: inspect, getOwnPropertyDescriptor: inspect});
+    const value = kind === 'getters' ? Object.defineProperties({}, {status: {get: inspect}, record: {get: inspect}}) : revocable.proxy;
+    if (kind === 'revoked_proxy') revocable.revoke();
+    expect(matchesIssuedEvidenceReadRecord(value, entry)).toBe(false); expect(inspected).toBe(0);
+  });
+
+  it('does not change the old immutable issued fact when the store replaces its registration', async () => {
+    const {store, registered, resolution, entry} = await fixture();
+    const replacement = captureEvidenceTable({columns: ['id', 'metric'], rows: [[1, 9]]}, {metric: field});
+    expect(store.registerEvidenceCapture(registered.id, replacement, {evidenceRefId: registered.evidenceRefId})).toBe(true);
+    const [fresh] = await read(store.createEvidenceReadView(readOptions), {artifactId: registered.id, rowIndex: 0, column: 'metric'});
+    if (fresh.status !== 'resolved') throw new Error('Expected replacement read');
+    expect(fresh.record.generation).toBeGreaterThan(resolution.record.generation);
+    expect(matchesIssuedEvidenceReadRecord(resolution, {record: fresh.record, witness: replacement})).toBe(false);
+    expect(matchesIssuedEvidenceReadRecord(fresh, entry)).toBe(false);
+    expect(matchesIssuedEvidenceReadRecord(fresh, {record: fresh.record, witness: replacement})).toBe(true);
+    // Matcher alone describes an exact pair, not the pair's current retention.
+    expect(matchesIssuedEvidenceReadRecord(resolution, entry)).toBe(true);
+    expect(isIssuedEvidenceReadResolution(resolution)).toBe(true); expect(resolution.row).toEqual({metric: 2});
+    expect(fresh.row).toEqual({metric: 9});
   });
 });

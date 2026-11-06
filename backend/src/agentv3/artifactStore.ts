@@ -31,7 +31,7 @@ import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, 
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
   type ModelEvidenceProjectionUnavailableReason} from '../services/evidence/evidenceCapture';
 import {projectModelEvidenceMetadata, type ModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
-import {createEvidenceReadView, MAX_EVIDENCE_READ_REFERENCES, type EvidenceReadView, type EvidenceReadViewOptions,
+import {createEvidenceReadView, matchesIssuedEvidenceReadRecord, MAX_EVIDENCE_READ_REFERENCES, type EvidenceReadView, type EvidenceReadViewOptions,
   type EvidenceReadRecord} from '../services/evidence/evidenceReadView';
 import { scopeMetadata, type IdentityResolutionV1, type EvidenceScopeMetadata, type EvidenceScopeProvenanceV1 } from '../types/identityContract';
 import type { DataEnvelopeMeta } from '../types/dataContract';
@@ -509,6 +509,14 @@ export class ArtifactStore {
     const admitted = new Set(this.executionCaptures.values());
     const observations = [...this.investigationToolObservations.values()];
     return createEvidenceReadView(() => [...this.executionCaptures.values()].filter(record => admitted.has(record)), options, () => observations);
+  }
+
+  /** Check current registration retention. Ownership, trace access and run origin have separate guards. */
+  isEvidenceReadResolutionRetained(resolution: unknown): boolean {
+    for (const entry of this.executionCaptures.values()) {
+      if (matchesIssuedEvidenceReadRecord(resolution, entry)) return true;
+    }
+    return false;
   }
 
   /** Shared admitted-tool observer; records no payload or model-authored success claims. */

@@ -10,7 +10,7 @@ import {sanitizeQueryReview, SQL_EXECUTION_CONTEXTS} from '../../types/queryRevi
 import {ArtifactStore, EVIDENCE_RETENTION_CELLS_ENV, RETAINED_EVIDENCE_CAPTURE_CEILING} from '../artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
 import {attachInvestigationEvidence} from '../../services/evidence/investigationEvidenceLedger';
-import {MAX_EVIDENCE_READ_REFERENCES} from '../../services/evidence/evidenceReadView';
+import {MAX_EVIDENCE_READ_REFERENCES, isIssuedEvidenceReadResolution} from '../../services/evidence/evidenceReadView';
 import type {EvidenceScopeProvenanceV1} from '../../types/identityContract';
 
 describe('ArtifactStore evidence retention', () => {
@@ -590,5 +590,114 @@ describe('accepted capture activity', () => {
     nextScope.dispose();
     scope.run(() => register(captureEvidenceTable(data), 'current-run'));
     expect(recorder.seal()).toBe(receipt);
+  });
+});
+
+describe('A1 current execution-record retention', () => {
+  const options = {ownerKey: 'a1-retention-owner', allowedTraces: [{traceId: 'trace', traceSide: 'current' as const}]};
+  function register(store: ArtifactStore, value = 7, originRunId = 'earlier-run') {
+    const data = {columns: ['metric'], rows: [[value]]}, witness = captureEvidenceTable(data);
+    const id = store.store({skillId: 'fixture', data, sourceToolCallId: `capture:${value}`,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+    const evidenceRefId = `evidence:${id}`;
+    expect(store.registerEvidenceCapture(id, witness, {evidenceRefId, originRunId})).toBe(true);
+    return {id, evidenceRefId, witness};
+  }
+  async function read(store: ArtifactStore, id: string) {
+    const [resolution] = await store.createEvidenceReadView(options).resolveReferences([
+      {key: id, reference: {artifactId: id, rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']},
+    ]);
+    if (resolution.status !== 'resolved') throw new Error('Expected a real retained cell');
+    return resolution;
+  }
+
+  it('retains the exact issued pair across unrelated registrations and payload-only LRU eviction', async () => {
+    const store = new ArtifactStore(1), first = register(store), resolution = await read(store, first.id);
+    expect(store.isEvidenceReadResolutionRetained(resolution)).toBe(true);
+    store.store({skillId: 'display-only', data: {columns: [], rows: []}});
+    expect(store.get(first.id)).toBeUndefined();
+    expect(store.isEvidenceReadResolutionRetained(resolution)).toBe(true);
+    register(store, 8);
+    expect(store.isEvidenceReadResolutionRetained(resolution)).toBe(true);
+    expect(await read(store, first.id)).toMatchObject({row: {metric: 7}});
+    expect(resolution.record.originRunId).toBe('earlier-run'); // Retention is not current-run authorization.
+  });
+
+  it('keeps a genuinely deduplicated standalone re-issue attached to its original registration', async () => {
+    const store = new ArtifactStore(), data = {columns: ['metric'], rows: [[7]]};
+    const descriptor = {meta: {type: 'sql_result' as const, version: '2.0', source: 'producer', timestamp: 0,
+      evidenceRefId: 'standalone-a1', sourceToolCallId: 'same-producer', traceId: 'trace', traceSide: 'current' as const},
+      display: {layer: 'list' as const, format: 'table' as const, title: 'Standalone'}, originRunId: 'first-run'};
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(data), descriptor)).toBe(true);
+    const view = store.createEvidenceReadView(options), request = {key: 'one',
+      reference: {evidenceRefId: 'standalone-a1', rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']};
+    const [original] = await view.resolveReferences([request]);
+    if (original.status !== 'resolved') throw new Error('Expected standalone read');
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable(data), {...descriptor, originRunId: 'second-run'})).toBe(true);
+    const [again] = await store.createEvidenceReadView(options).resolveReferences([request]);
+    if (again.status !== 'resolved') throw new Error('Expected deduplicated read');
+    expect(again.record).toBe(original.record);
+    expect(store.isEvidenceReadResolutionRetained(original)).toBe(true);
+    expect(store.isEvidenceReadResolutionRetained(again)).toBe(true);
+  });
+
+  it.each(['same-witness', 'new-witness'] as const)('invalidates only the replaced registration with %s while preserving old immutable facts', async replacementKind => {
+    const store = new ArtifactStore(), first = register(store), old = await read(store, first.id);
+    const unaffected = register(store, 8), unaffectedRead = await read(store, unaffected.id);
+    const witness = replacementKind === 'same-witness' ? first.witness : captureEvidenceTable({columns: ['metric'], rows: [[9]]});
+    expect(store.registerEvidenceCapture(first.id, witness, {evidenceRefId: first.evidenceRefId, originRunId: 'new-run'})).toBe(true);
+    const fresh = await read(store, first.id);
+    expect(fresh.record.generation).toBeGreaterThan(old.record.generation);
+    expect(store.isEvidenceReadResolutionRetained(old)).toBe(false);
+    expect(store.isEvidenceReadResolutionRetained(fresh)).toBe(true);
+    expect(store.isEvidenceReadResolutionRetained(unaffectedRead)).toBe(true);
+    expect(isIssuedEvidenceReadResolution(old)).toBe(true); expect(old.row).toEqual({metric: 7});
+    expect(fresh.row).toEqual({metric: replacementKind === 'same-witness' ? 7 : 9});
+  });
+
+  it('does not match an old read after clear, even when its artifact locator is reused', async () => {
+    const store = new ArtifactStore(), first = register(store), old = await read(store, first.id);
+    store.clear(); expect(store.isEvidenceReadResolutionRetained(old)).toBe(false);
+    const replacement = register(store, 9), fresh = await read(store, replacement.id);
+    expect(replacement.id).toBe(first.id);
+    expect(store.isEvidenceReadResolutionRetained(old)).toBe(false);
+    expect(store.isEvidenceReadResolutionRetained(fresh)).toBe(true);
+    expect(isIssuedEvidenceReadResolution(old)).toBe(true); expect(old.row).toEqual({metric: 7});
+  });
+
+  it('rejects a truly evicted capture while leaving its issued value unchanged', async () => {
+    const previous = process.env[EVIDENCE_RETENTION_CELLS_ENV]; process.env[EVIDENCE_RETENTION_CELLS_ENV] = '1';
+    try {
+      const store = new ArtifactStore(), first = register(store), old = await read(store, first.id);
+      const second = register(store, 9), fresh = await read(store, second.id);
+      expect(store.get(first.id)).toBeDefined(); // Payload still present; only the retained witness was evicted.
+      expect(store.isEvidenceReadResolutionRetained(old)).toBe(false);
+      expect(store.isEvidenceReadResolutionRetained(fresh)).toBe(true);
+      expect(isIssuedEvidenceReadResolution(old)).toBe(true); expect(old.row).toEqual({metric: 7});
+    } finally {
+      if (previous === undefined) delete process.env[EVIDENCE_RETENTION_CELLS_ENV]; else process.env[EVIDENCE_RETENTION_CELLS_ENV] = previous;
+    }
+  });
+
+  it('does not recover retention from another store, display-only restoration or copied resolution', async () => {
+    const store = new ArtifactStore(), first = register(store), original = await read(store, first.id);
+    const other = new ArtifactStore(); register(other);
+    const restored = ArtifactStore.fromSnapshot(JSON.parse(JSON.stringify(store.serialize())));
+    for (const candidate of [other, restored]) expect(candidate.isEvidenceReadResolutionRetained(original)).toBe(false);
+    for (const value of [{...original}, JSON.parse(JSON.stringify(original)), undefined, null,
+      {status: 'resolved', record: original.record}, {status: 'missing', reason: 'not_retained'}]) {
+      expect(store.isEvidenceReadResolutionRetained(value)).toBe(false);
+    }
+    expect(store.isEvidenceReadResolutionRetained(original)).toBe(true);
+  });
+
+  it('rejects hostile non-issued inputs without invoking status or record getters', async () => {
+    const store = new ArtifactStore(), registered = register(store), issued = await read(store, registered.id);
+    let inspected = 0; const inspect = () => {inspected++; throw new Error('Untrusted property was read');};
+    const plain = Object.defineProperties({}, {status: {get: inspect}, record: {get: inspect}});
+    const proxy = new Proxy(issued, {get: inspect, getPrototypeOf: inspect, ownKeys: inspect});
+    const revoked = Proxy.revocable(issued, {get: inspect}); revoked.revoke();
+    for (const value of [plain, proxy, revoked.proxy]) expect(store.isEvidenceReadResolutionRetained(value)).toBe(false);
+    expect(inspected).toBe(0);
   });
 });

@@ -230,6 +230,8 @@ function createRunStore(run: RunState): ArtifactStore {
     get size() { return access(() => store.size); },
     serialize: () => access(() => structuredClone(store.serialize())),
     clear: () => access(() => store.clear()),
+    isEvidenceReadResolutionRetained: (resolution: unknown) =>
+      access(() => store.isEvidenceReadResolutionRetained(resolution)),
     createEvidenceReadView: (...args: Parameters<ArtifactStore['createEvidenceReadView']>): EvidenceReadView => access(() => {
       const scope = run.context.scope;
       if (args[0].allowedTraces.some(trace => trace.traceId !==

@@ -173,6 +173,7 @@ describe('product-owned live evidence continuity', () => {
       fetch: () => run.store.fetch(id, 'full'), size: () => run.store.size,
       serialize: () => run.store.serialize(), clear: () => run.store.clear(),
       createEvidenceReadView: () => run.store.createEvidenceReadView(readOptions),
+      isEvidenceReadResolutionRetained: () => run.store.isEvidenceReadResolutionRetained(undefined),
     };
     run.binding.release();
     for (const call of Object.values(calls)) expect(call).toThrow();
@@ -344,5 +345,75 @@ describe('product-owned live evidence continuity', () => {
     ]);
     expect(resolved).toMatchObject({status: 'resolved', row: {metric: 7}});
     expect(isIssuedEvidenceReadResolution(resolved)).toBe(true);
+  });
+});
+
+describe('A1 run facade retention guard', () => {
+  it('forwards the actual issued object without cloning and allows retained earlier-run facts', async () => {
+    const context = contextFor(), first = bind(context, 'a1-first'), saved = capture(first.store);
+    const [original] = await read(first.store.createEvidenceReadView(readOptions), saved.id);
+    expect(original.status).toBe('resolved'); expect(isIssuedEvidenceReadResolution(original)).toBe(true);
+    const consult = jest.spyOn(ArtifactStore.prototype, 'isEvidenceReadResolutionRetained');
+    expect(first.store.isEvidenceReadResolutionRetained(original)).toBe(true);
+    expect(consult.mock.calls[0][0]).toBe(original);
+    first.binding.release();
+    const second = bind(context, 'a1-second');
+    consult.mockClear();
+    expect(second.store.isEvidenceReadResolutionRetained(original)).toBe(true);
+    expect(consult.mock.calls[0][0]).toBe(original);
+    if (original.status !== 'resolved') throw new Error('Expected original issued read');
+    expect(original.record.originRunId).toBe('a1-first');
+    expect(second.store.isEvidenceReadResolutionRetained({...original})).toBe(false);
+    // Retention does not apply the later compositor's separate current-run rule.
+    expect(isIssuedEvidenceReadResolution(original)).toBe(true);
+  });
+
+  it.each(['release', 'cancel', 'supersede', 'dispose'] as const)('rejects %s before consulting the backing store', async stop => {
+    const context = contextFor(), run = bind(context, `a1-${stop}`), saved = capture(run.store);
+    const [original] = await read(run.store.createEvidenceReadView(readOptions), saved.id);
+    const consult = jest.spyOn(ArtifactStore.prototype, 'isEvidenceReadResolutionRetained');
+    expect(run.store.isEvidenceReadResolutionRetained(original)).toBe(true); consult.mockClear();
+    if (stop === 'release') run.binding.release();
+    if (stop === 'cancel') run.controller.abort(new Error('a1_product_cancelled'));
+    if (stop === 'supersede') bind(context, 'a1-successor');
+    if (stop === 'dispose') context.dispose();
+    expect(() => run.store.isEvidenceReadResolutionRetained(original)).toThrow(stop === 'cancel'
+      ? 'a1_product_cancelled' : 'Runtime evidence run is no longer active');
+    expect(consult).not.toHaveBeenCalled();
+    expect(isIssuedEvidenceReadResolution(original)).toBe(true);
+  });
+
+  it('propagates an actual run authorization guard failure instead of returning false absence', async () => {
+    const context = contextFor(), controller = new AbortController(); let authorized = true;
+    const binding = context.bind(baseOptions, {runtimeSessionId: 'conversation:a1-authorized', runId: 'a1-authorized',
+      signal: controller.signal, assertAuthorized() {if (!authorized) throw new Error('a1_authorization_revoked');}});
+    const store = resolveRuntimeEvidenceStore(binding.options, {sessionId: 'conversation:a1-authorized', traceId: 'trace'},
+      () => {throw new Error('Unexpected store fallback');});
+    const saved = capture(store), [original] = await read(store.createEvidenceReadView(readOptions), saved.id);
+    const consult = jest.spyOn(ArtifactStore.prototype, 'isEvidenceReadResolutionRetained');
+    expect(store.isEvidenceReadResolutionRetained(original)).toBe(true); consult.mockClear(); authorized = false;
+    expect(() => store.isEvidenceReadResolutionRetained(original)).toThrow('a1_authorization_revoked');
+    expect(consult).not.toHaveBeenCalled(); expect(isIssuedEvidenceReadResolution(original)).toBe(true);
+  });
+
+  it('checks real source consent revocation even when the captured authorization fingerprint is unchanged', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-a1-retention-scope-'));
+    roots.push(root);
+    const registry = new CodebaseRegistry(path.join(root, 'registry.json'));
+    const registered = registry.register({kind: 'app_source', displayName: 'A1 evidence fixture', rootPath: root,
+      rootAuthorization: 'native_picker', sendToProvider: true, ...baseOptions});
+    jest.spyOn(codebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue(registry);
+    const options: AnalysisOptions = {...baseOptions, codeAwareMode: 'provider_send', codebaseIds: [registered.codebaseId]};
+    options.analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(options, options);
+    const context = contextFor(options), run = bind(context, 'a1-private', options), saved = capture(run.store);
+    const [original] = await read(run.store.createEvidenceReadView(readOptions), saved.id);
+    const consult = jest.spyOn(ArtifactStore.prototype, 'isEvidenceReadResolutionRetained');
+    expect(run.store.isEvidenceReadResolutionRetained(original)).toBe(true); consult.mockClear();
+    registry.setProviderConsent(registered.codebaseId, options, false, 'a1-retention-test');
+    expect(() => run.store.isEvidenceReadResolutionRetained(original)).toThrow();
+    expect(consult).not.toHaveBeenCalled();
+    registry.setProviderConsent(registered.codebaseId, options, true, 'a1-retention-test');
+    expect(() => run.store.isEvidenceReadResolutionRetained(original)).toThrow();
+    expect(consult).not.toHaveBeenCalled();
   });
 });
