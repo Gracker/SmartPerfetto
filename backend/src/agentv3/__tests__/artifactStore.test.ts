@@ -13,6 +13,7 @@ import {attachInvestigationEvidence} from '../../services/evidence/investigation
 import {MAX_EVIDENCE_READ_REFERENCES, isIssuedEvidenceReadResolution,
   type EvidenceReadSessionOptions} from '../../services/evidence/evidenceReadView';
 import type {EvidenceScopeProvenanceV1} from '../../types/identityContract';
+import type {B1QuotePage, B1QuoteScope, B1QuoteStore} from '../../services/evidence/__tests__/modelEvidenceProjection.test';
 
 describe('ArtifactStore evidence retention', () => {
   const storeCaptured = (store: ArtifactStore, index: number, rowCount = 1, columnCount = 1) => {
@@ -856,5 +857,205 @@ describe('A2 retained batches and fixed session capture sets', () => {
     expect(session.checkRetainedBatchForCommit([original, again])).toBe(true);
     expect(session.budgetSnapshot()).toMatchObject({used: {references: 2, cells: 1}, reusedCells: 1, reusedRecordMetadata: 1});
     session.dispose();
+  });
+});
+
+describe('B1 store-owned quote projection bindings', () => {
+  const scope: B1QuoteScope = {runId: 'b1-current', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]};
+  function register(store: ArtifactStore, value = 7, originRunId: string | undefined = scope.runId) {
+    const data = {columns: ['metric'], rows: [[value]]}, witness = captureEvidenceTable(data);
+    const id = store.store({skillId: 'fixture', data, sourceToolCallId: `b1-producer:${value}`,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+    const evidenceRefId = `b1:${id}`;
+    expect(store.registerEvidenceCapture(id, witness, {evidenceRefId, originRunId})).toBe(true);
+    return {id, evidenceRefId, witness};
+  }
+  const page = (value = 7): B1QuotePage => ({rows: [0], columns: ['metric'],
+    cells: [{rowIndex: 0, column: 'metric', value, availability: 'visible'}],
+    page: {hasMore: 'no', coverage: 'visible_page_only'}});
+  async function read(store: ArtifactStore, id: string, rowIndex = 0) {
+    const [resolution] = await store.createEvidenceReadView({ownerKey: 'b1-reader', allowedTraces: scope.allowedTraces})
+      .resolveReferences([{key: id, reference: {artifactId: id, rowIndex, column: 'metric'}, requiredColumns: ['metric']}]);
+    if (resolution.status !== 'resolved') throw new Error('Expected actual B1 issued capture read');
+    return resolution;
+  }
+
+  it('prepares either exact issued locator without calling a read view or changing payload serialization', async () => {
+    const store = new ArtifactStore() as B1QuoteStore, saved = register(store);
+    const payloadBefore = JSON.stringify(store.serialize()), visible = page();
+    const reader = jest.spyOn(store, 'createEvidenceReadView');
+    let artifactBinding: ReturnType<B1QuoteStore['prepareQuoteProjectionBinding']>;
+    let evidenceBinding: ReturnType<B1QuoteStore['prepareQuoteProjectionBinding']>;
+    try {
+      artifactBinding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: visible});
+      evidenceBinding = store.prepareQuoteProjectionBinding({evidenceRefId: saved.evidenceRefId}, {scope, page: visible});
+      expect(artifactBinding).toBeDefined(); expect(evidenceBinding).toBeDefined();
+      expect(reader).not.toHaveBeenCalled();
+    } finally {reader.mockRestore();}
+    const resolution = await read(store, saved.id);
+    expect(store.matchesQuoteProjectionRead(artifactBinding, resolution)).toBe(true);
+    expect(store.matchesQuoteProjectionRead(evidenceBinding, resolution)).toBe(true);
+    expect(JSON.stringify(store.serialize())).toBe(payloadBefore);
+    expect(JSON.stringify(artifactBinding)).not.toMatch(/captureId|generation|originRunId|rowIndex|fields|metric/);
+  });
+
+  it.each(['earlier-run', 'unknown-origin'] as const)('does not promote a readable %s capture into current-run quoting', async origin => {
+    const store = new ArtifactStore() as B1QuoteStore, saved = register(store, 7, origin === 'earlier-run' ? 'old-run' : '');
+    const resolution = await read(store, saved.id);
+    expect(isIssuedEvidenceReadResolution(resolution)).toBe(true);
+    expect(store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()})).toBeUndefined();
+  });
+
+  it.each([
+    {runId: 'other-run', allowedTraces: [{traceId: 'trace', traceSide: 'current' as const}]},
+    {runId: scope.runId, allowedTraces: [{traceId: 'foreign', traceSide: 'current' as const}]},
+    {runId: scope.runId, allowedTraces: [{traceId: 'trace', traceSide: 'reference' as const}]},
+  ])('rejects a scope that does not bind the capture origin and trace side: %p', requestedScope => {
+    const store = new ArtifactStore() as B1QuoteStore, saved = register(store);
+    expect(store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: requestedScope, page: page()})).toBeUndefined();
+  });
+
+  it('requires a real unique registration rather than payloads, display aliases or restored snapshots', () => {
+    const store = new ArtifactStore() as B1QuoteStore;
+    const id = store.store({skillId: 'fixture', title: 'display-alias', data: {columns: ['metric'], rows: [[7]]}});
+    expect(store.prepareQuoteProjectionBinding({artifactId: id}, {scope, page: page()})).toBeUndefined();
+    const saved = register(store);
+    expect(store.prepareQuoteProjectionBinding({evidenceRefId: 'display-alias'}, {scope, page: page()})).toBeUndefined();
+    const restored = ArtifactStore.fromSnapshot(JSON.parse(JSON.stringify(store.serialize()))) as B1QuoteStore;
+    expect(restored.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()})).toBeUndefined();
+    const descriptor = {meta: {type: 'sql_result' as const, version: '2.0', source: 'producer', timestamp: 0,
+      evidenceRefId: 'ambiguous-b1', sourceToolCallId: 'producer', traceId: 'trace', traceSide: 'current' as const},
+      display: {layer: 'list' as const, format: 'table' as const, title: 'Standalone'}, originRunId: scope.runId};
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable({columns: ['metric'], rows: [[7]]}), descriptor)).toBe(true);
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable({columns: ['metric'], rows: [[8]]}), descriptor)).toBe(true);
+    expect(store.prepareQuoteProjectionBinding({evidenceRefId: 'ambiguous-b1'}, {scope, page: page()})).toBeUndefined();
+  });
+
+  it('validates original noncontiguous row coordinates and reordered columns without granting hidden-row visibility', async () => {
+    const store = new ArtifactStore() as B1QuoteStore;
+    const data = {columns: ['metric', 'other'], rows: [[7, 70], [8, 80], [9, 90]]};
+    const id = store.store({skillId: 'fixture', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(id, captureEvidenceTable(data), {evidenceRefId: 'b1-page', originRunId: scope.runId})).toBe(true);
+    const visible: B1QuotePage = {rows: [2, 0], columns: ['other', 'metric'], cells: [
+      {rowIndex: 2, column: 'other', value: 90, availability: 'visible'},
+      {rowIndex: 2, column: 'metric', value: 9, availability: 'visible'},
+      {rowIndex: 0, column: 'other', value: 70, availability: 'visible'},
+      {rowIndex: 0, column: 'metric', value: 7, availability: 'visible'},
+    ], page: {hasMore: 'unknown', coverage: 'visible_page_only'}};
+    const binding = store.prepareQuoteProjectionBinding({artifactId: id}, {scope, page: visible});
+    expect(binding).toBeDefined();
+    expect(store.matchesQuoteProjectionRead(binding, await read(store, id, 2))).toBe(true);
+    // The boolean is intentionally entry-only; C must separately reject row 1 if it was not visible on the producing page.
+    expect(store.matchesQuoteProjectionRead(binding, await read(store, id, 1))).toBe(true);
+    expect(visible.rows).toEqual([2, 0]); expect(visible.columns).toEqual(['other', 'metric']);
+    const wrongIndex: B1QuotePage = {...visible, cells: [{rowIndex: 0, column: 'metric', value: 9, availability: 'visible'}]};
+    expect(store.prepareQuoteProjectionBinding({artifactId: id}, {scope, page: wrongIndex})).toBeUndefined();
+    const outside: B1QuotePage = {...page(), rows: [3], cells: [{rowIndex: 3, column: 'metric', value: 7, availability: 'visible'}]};
+    expect(store.prepareQuoteProjectionBinding({artifactId: id}, {scope, page: outside})).toBeUndefined();
+  });
+
+  it.each(['captured-empty', 'empty-visible-page'] as const)('requires a real metadata read for %s without treating page emptiness as absence', async kind => {
+    const store = new ArtifactStore() as B1QuoteStore;
+    const data = {columns: ['metric'], rows: kind === 'captured-empty' ? [] : [[7], [8]]};
+    const id = store.store({skillId: 'fixture', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(id, captureEvidenceTable(data), {evidenceRefId: 'b1-empty', originRunId: scope.runId})).toBe(true);
+    const visible: B1QuotePage = {rows: [], columns: ['metric'], cells: [],
+      page: {hasMore: kind === 'captured-empty' ? 'no' : 'unknown', coverage: 'visible_page_only'}};
+    const binding = store.prepareQuoteProjectionBinding({artifactId: id}, {scope, page: visible});
+    expect(binding).toBeDefined();
+    expect(store.matchesQuoteProjectionRead(binding, undefined)).toBe(false);
+    const session = store.createEvidenceReadSession({ownerKey: 'b1-empty-reader', allowedTraces: scope.allowedTraces,
+      currentRunId: scope.runId, sessionId: 'b1-session', attemptId: 'b1-attempt', productSignal: new AbortController().signal,
+      deadlineAtMs: Date.now() + 60_000, assertCurrent() {}});
+    try {
+      const [metadata] = await session.resolveReferences([{key: 'empty-page-metadata', reference: {artifactId: id},
+        requiredColumns: [], metadataOnly: true}]);
+      expect(metadata.status).toBe('resolved');
+      expect(store.matchesQuoteProjectionRead(binding, metadata)).toBe(true);
+      expect(session.budgetSnapshot().used.references).toBe(1);
+      expect(session.checkRetainedBatchForCommit([metadata])).toBe(true);
+    } finally {session.dispose();}
+  });
+
+  it('binds the prepared exact generation, leaving current retention to A2 after replacement or clear', async () => {
+    const store = new ArtifactStore() as B1QuoteStore, saved = register(store);
+    const binding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()});
+    const original = await read(store, saved.id);
+    expect(store.matchesQuoteProjectionRead(binding, original)).toBe(true);
+    expect(store.registerEvidenceCapture(saved.id, saved.witness, {evidenceRefId: saved.evidenceRefId, originRunId: scope.runId})).toBe(true);
+    const replacement = await read(store, saved.id);
+    expect(replacement.record.generation).not.toBe(original.record.generation);
+    expect(store.matchesQuoteProjectionRead(binding, replacement)).toBe(false);
+    expect(store.matchesQuoteProjectionRead(binding, original)).toBe(true);
+    expect(store.areEvidenceReadResolutionsRetained([original])).toBe(false);
+    const fresh = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()});
+    expect(store.matchesQuoteProjectionRead(fresh, replacement)).toBe(true);
+    expect(store.matchesQuoteProjectionRead(fresh, original)).toBe(false);
+    store.clear();
+    expect(store.matchesQuoteProjectionRead(binding, original)).toBe(true); // Immutable preparation fact, not live retention.
+    expect(store.areEvidenceReadResolutionsRetained([original])).toBe(false);
+    expect(store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()})).toBeUndefined();
+  });
+
+  it('does not retarget a prepared identity when caller-owned locator, scope or page inputs are rewritten in place', async () => {
+    const store = new ArtifactStore() as B1QuoteStore, first = register(store), second = register(store, 9);
+    const locator = {artifactId: first.id};
+    const traces = [{traceId: 'trace', traceSide: 'current' as const}];
+    const requestedScope: B1QuoteScope = {runId: scope.runId, allowedTraces: traces};
+    const rows = [0], columns = ['metric'];
+    const cells = [{rowIndex: 0, column: 'metric', value: 7, availability: 'visible' as const}];
+    const visible: B1QuotePage = {rows, columns, cells, page: {hasMore: 'unknown', coverage: 'visible_page_only'}};
+    const binding = store.prepareQuoteProjectionBinding(locator, {scope: requestedScope, page: visible});
+    expect(binding).toBeDefined();
+    const original = await read(store, first.id), other = await read(store, second.id);
+    locator.artifactId = second.id; requestedScope.runId = 'rewritten'; traces[0].traceId = 'foreign';
+    rows[0] = 99; columns[0] = 'hidden'; cells[0].rowIndex = 99; cells[0].value = 9;
+    expect(store.matchesQuoteProjectionRead(binding, original)).toBe(true);
+    expect(store.matchesQuoteProjectionRead(binding, other)).toBe(false);
+    expect(original.row).toEqual({metric: 7});
+    // B1 exposes no private page getter. C separately verifies its stored visible-cell snapshot.
+  });
+
+  it('preserves binding across payload LRU but never makes a truly evicted capture current', async () => {
+    const store = new ArtifactStore(1) as B1QuoteStore, saved = register(store);
+    const binding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()}), original = await read(store, saved.id);
+    store.store({skillId: 'display-only', data: {columns: [], rows: []}});
+    expect(store.get(saved.id)).toBeUndefined();
+    expect(store.matchesQuoteProjectionRead(binding, original)).toBe(true);
+    expect(store.areEvidenceReadResolutionsRetained([original])).toBe(true);
+    expect(store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()})).toBeDefined();
+    const previous = process.env[EVIDENCE_RETENTION_CELLS_ENV]; process.env[EVIDENCE_RETENTION_CELLS_ENV] = '1';
+    try {
+      const limited = new ArtifactStore() as B1QuoteStore, first = register(limited);
+      const prepared = limited.prepareQuoteProjectionBinding({artifactId: first.id}, {scope, page: page()});
+      const issued = await read(limited, first.id); register(limited, 9);
+      expect(limited.matchesQuoteProjectionRead(prepared, issued)).toBe(true);
+      expect(limited.areEvidenceReadResolutionsRetained([issued])).toBe(false);
+      expect(limited.prepareQuoteProjectionBinding({artifactId: first.id}, {scope, page: page()})).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env[EVIDENCE_RETENTION_CELLS_ENV];
+      else process.env[EVIDENCE_RETENTION_CELLS_ENV] = previous;
+    }
+  });
+
+  it('rejects cross-store, copied and fabricated bindings or reads before inspecting unknown properties', async () => {
+    const store = new ArtifactStore() as B1QuoteStore, saved = register(store);
+    const binding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope, page: page()}), resolution = await read(store, saved.id);
+    expect(binding).toBeDefined();
+    const other = new ArtifactStore() as B1QuoteStore; register(other);
+    expect(other.matchesQuoteProjectionRead(binding, resolution)).toBe(false);
+    let inspected = 0; const trap = () => {inspected++; throw new Error('Unknown quote binding/read must remain opaque');};
+    const getter = Object.defineProperties({}, {kind: {get: trap}, record: {get: trap}, status: {get: trap}});
+    const proxy = new Proxy({}, {get: trap, ownKeys: trap, getPrototypeOf: trap});
+    const revoked = Proxy.revocable({}, {get: trap}); revoked.revoke();
+    for (const fake of [{kind: 'prepared_quote_projection'}, {...binding}, JSON.parse(JSON.stringify(binding)), getter, proxy, revoked.proxy, null]) {
+      expect(store.matchesQuoteProjectionRead(fake, resolution)).toBe(false);
+    }
+    for (const fake of [{...resolution}, JSON.parse(JSON.stringify(resolution)), {status: 'missing'}, getter, proxy, revoked.proxy, undefined]) {
+      expect(store.matchesQuoteProjectionRead(binding, fake)).toBe(false);
+    }
+    expect(inspected).toBe(0);
   });
 });

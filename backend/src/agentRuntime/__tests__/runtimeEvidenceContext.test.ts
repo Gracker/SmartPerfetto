@@ -21,6 +21,7 @@ import {buildTraceProcessorQueryProvenance} from '../../services/traceProcessorC
 import {createRuntimeEvidenceContext, resolveRuntimeEvidenceStore,
   type RuntimeEvidenceContext, type RuntimeEvidenceScopeInput} from '../runtimeEvidenceContext';
 import {createAnalysisHistoryReader, toAnalysisHistoryTurn} from '../analysisHistory';
+import type {B1QuotePage, B1QuoteScope, B1QuoteStore} from '../../services/evidence/__tests__/modelEvidenceProjection.test';
 
 const contexts: RuntimeEvidenceContext[] = [];
 const roots: string[] = [];
@@ -159,7 +160,8 @@ describe('product-owned live evidence continuity', () => {
   it('guards every public store entrypoint after releasing a run', () => {
     const run = bind(contextFor(), 'first');
     const {id, witness} = capture(run.store);
-    const calls: Record<keyof ArtifactStore, () => unknown> = {
+    const quoteStore = run.store as B1QuoteStore;
+    const calls: Record<keyof B1QuoteStore, () => unknown> = {
       store: () => run.store.store({skillId: 'late', data: {columns: [], rows: []}}),
       registerEvidenceCapture: () => run.store.registerEvidenceCapture(id, witness, {evidenceRefId: 'late'}),
       registerStandaloneEvidenceCapture: () => run.store.registerStandaloneEvidenceCapture(witness, {
@@ -179,6 +181,12 @@ describe('product-owned live evidence continuity', () => {
       createEvidenceReadSession: () => run.store.createEvidenceReadSession({...readOptions, currentRunId: 'first',
         sessionId: run.sessionId, attemptId: 'a2-exhaustive', productSignal: run.controller.signal,
         deadlineAtMs: Date.now() + 60_000, assertCurrent() {}}),
+      prepareQuoteProjectionBinding: () => quoteStore.prepareQuoteProjectionBinding({artifactId: id}, {
+        scope: {runId: 'first', allowedTraces: readOptions.allowedTraces},
+        page: {rows: [5001], columns: ['metric'], cells: [{rowIndex: 5001, column: 'metric', value: 7, availability: 'visible'}],
+          page: {hasMore: 'no', coverage: 'visible_page_only'}},
+      }),
+      matchesQuoteProjectionRead: () => quoteStore.matchesQuoteProjectionRead(undefined, undefined),
     };
     run.binding.release();
     for (const call of Object.values(calls)) expect(call).toThrow();
@@ -667,5 +675,119 @@ describe('A2 run-owned cumulative read session facade', () => {
     expect(batch).not.toHaveBeenCalled();
     expect(isIssuedEvidenceReadResolution(issued)).toBe(true);
     session.dispose();
+  });
+});
+
+describe('B1 runtime-owned quote projection facade', () => {
+  const page = (value = 7, rowIndex = 5001): B1QuotePage => ({rows: [rowIndex], columns: ['metric'],
+    cells: [{rowIndex, column: 'metric', value, availability: 'visible'}],
+    page: {hasMore: 'unknown', coverage: 'visible_page_only'}});
+  const quoteScope = (runId: string): B1QuoteScope => ({runId, allowedTraces: readOptions.allowedTraces});
+
+  it('forwards the exact prepared binding and issued read without cloning their private identities', async () => {
+    const runId = 'b1-facade-current', run = bind(contextFor(), runId), store = run.store as B1QuoteStore;
+    const saved = capture(store), [resolution] = await read(store.createEvidenceReadView(readOptions), saved.id);
+    const prepare = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'prepareQuoteProjectionBinding');
+    const requestedScope = quoteScope(runId);
+    const binding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: requestedScope, page: page()});
+    expect(binding).toBeDefined(); expect(prepare).toHaveBeenCalledTimes(1);
+    expect(binding).toBe(prepare.mock.results[0].value);
+    expect(prepare.mock.calls[0][1].scope).toEqual(requestedScope);
+    const match = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'matchesQuoteProjectionRead');
+    expect(store.matchesQuoteProjectionRead(binding, resolution)).toBe(true);
+    expect(match).toHaveBeenCalledTimes(1);
+    expect(match.mock.calls[0][0]).toBe(binding); expect(match.mock.calls[0][1]).toBe(resolution);
+    expect(store.matchesQuoteProjectionRead({...binding}, resolution)).toBe(false);
+    expect(store.matchesQuoteProjectionRead(binding, {...resolution})).toBe(false);
+  });
+
+  it.each(['current', 'reference'] as const)('admits the actual %s trace subset without rebinding the other side', async traceSide => {
+    const runId = `b1-pair-${traceSide}`, run = bind(contextFor(), runId), store = run.store as B1QuoteStore;
+    const traceId = traceSide === 'current' ? 'trace' : 'reference-trace';
+    const data = {columns: ['metric'], rows: [[9]]};
+    const id = store.store({skillId: 'fixture', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId, traceSide})});
+    expect(store.registerEvidenceCapture(id, captureEvidenceTable(data), {evidenceRefId: `b1:${id}`})).toBe(true);
+    const requested: B1QuoteScope = {runId, allowedTraces: [{traceId, traceSide}]};
+    const binding = store.prepareQuoteProjectionBinding({artifactId: id}, {scope: requested, page: page(9, 0)});
+    expect(binding).toBeDefined();
+    const [resolution] = await store.createEvidenceReadView({ownerKey: 'b1-pair-reader', allowedTraces: requested.allowedTraces})
+      .resolveReferences([{key: id, reference: {artifactId: id, rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']}]);
+    expect(resolution.status).toBe('resolved');
+    expect(store.matchesQuoteProjectionRead(binding, resolution)).toBe(true);
+  });
+
+  it.each([
+    ['wrong-run', {runId: 'wrong', allowedTraces: [{traceId: 'trace', traceSide: 'current'}]}],
+    ['foreign-trace', {runId: 'b1-bad-scope', allowedTraces: [{traceId: 'foreign', traceSide: 'current'}]}],
+    ['side-swap', {runId: 'b1-bad-scope', allowedTraces: [{traceId: 'trace', traceSide: 'reference'}]}],
+    ['unknown-side', {runId: 'b1-bad-scope', allowedTraces: [{traceId: 'reference-trace', traceSide: 'invented'}]}],
+    ['blank-trace', {runId: 'b1-bad-scope', allowedTraces: [{traceId: '', traceSide: 'current'}]}],
+  ])('rejects %s before consulting the backing quote preparation method', (_label, requestedScope) => {
+    const run = bind(contextFor(), 'b1-bad-scope'), store = run.store as B1QuoteStore, saved = capture(store);
+    const prepare = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'prepareQuoteProjectionBinding');
+    expect(() => Reflect.apply(store.prepareQuoteProjectionBinding, store,
+      [{artifactId: saved.id}, {scope: requestedScope, page: page()}])).toThrow();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('does not add a reference trace when the actual runtime pair has none', () => {
+    const noReference = {...baseOptions, referenceTraceId: undefined};
+    const runId = 'b1-no-reference', run = bind(contextFor(noReference), runId, noReference), store = run.store as B1QuoteStore;
+    const saved = capture(store), prepare = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'prepareQuoteProjectionBinding');
+    expect(() => store.prepareQuoteProjectionBinding({artifactId: saved.id}, {page: page(),
+      scope: {runId, allowedTraces: [{traceId: 'reference-trace', traceSide: 'reference'}]}})).toThrow();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it('keeps earlier-run captures readable without giving a successor new current-run quote preparation', async () => {
+    const context = contextFor(), first = bind(context, 'b1-origin'), saved = capture(first.store);
+    const original = await read(first.store.createEvidenceReadView(readOptions), saved.id);
+    first.binding.release();
+    const successor = bind(context, 'b1-next'), store = successor.store as B1QuoteStore;
+    const [laterRead] = await read(store.createEvidenceReadView(readOptions), saved.id);
+    expect(laterRead).toMatchObject({status: 'resolved', row: {metric: 7}, record: {originRunId: 'b1-origin'}});
+    expect(isIssuedEvidenceReadResolution(original[0])).toBe(true);
+    expect(store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: quoteScope('b1-next'), page: page()})).toBeUndefined();
+  });
+
+  it.each(['release', 'cancel', 'supersede', 'dispose'] as const)('rejects %s before quote prepare or match reaches the backing store', async action => {
+    const context = contextFor(), runId = `b1-revoke-${action}`, run = bind(context, runId), store = run.store as B1QuoteStore;
+    const saved = capture(store), [resolution] = await read(store.createEvidenceReadView(readOptions), saved.id);
+    const binding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: quoteScope(runId), page: page()});
+    expect(binding).toBeDefined(); expect(store.matchesQuoteProjectionRead(binding, resolution)).toBe(true);
+    const prepare = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'prepareQuoteProjectionBinding');
+    const match = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'matchesQuoteProjectionRead');
+    if (action === 'release') run.binding.release();
+    if (action === 'cancel') run.controller.abort(new Error('b1-product-cancelled'));
+    if (action === 'supersede') bind(context, 'b1-successor');
+    if (action === 'dispose') context.dispose();
+    expect(() => store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: quoteScope(runId), page: page()})).toThrow();
+    expect(() => store.matchesQuoteProjectionRead(binding, resolution)).toThrow();
+    expect(prepare).not.toHaveBeenCalled(); expect(match).not.toHaveBeenCalled();
+    expect(isIssuedEvidenceReadResolution(resolution)).toBe(true);
+  });
+
+  it('honors actual source consent revocation without cloning or restoring a prepared binding', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-b1-quote-consent-')); roots.push(root);
+    const registry = new CodebaseRegistry(path.join(root, 'registry.json'));
+    const registered = registry.register({kind: 'app_source', displayName: 'B1 quote fixture', rootPath: root,
+      rootAuthorization: 'native_picker', sendToProvider: true, ...baseOptions});
+    jest.spyOn(codebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue(registry);
+    const privateOptions: AnalysisOptions = {...baseOptions, codeAwareMode: 'provider_send', codebaseIds: [registered.codebaseId]};
+    privateOptions.analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(privateOptions, privateOptions);
+    const runId = 'b1-private-quote', run = bind(contextFor(privateOptions), runId, privateOptions), store = run.store as B1QuoteStore;
+    const saved = capture(store), [resolution] = await read(store.createEvidenceReadView(readOptions), saved.id);
+    const binding = store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: quoteScope(runId), page: page()});
+    expect(binding).toBeDefined(); expect(store.matchesQuoteProjectionRead(binding, resolution)).toBe(true);
+    const prepare = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'prepareQuoteProjectionBinding');
+    const match = jest.spyOn(ArtifactStore.prototype as B1QuoteStore, 'matchesQuoteProjectionRead');
+    registry.setProviderConsent(registered.codebaseId, privateOptions, false, 'b1-quote-test');
+    expect(() => store.matchesQuoteProjectionRead(binding, resolution)).toThrow();
+    expect(() => store.prepareQuoteProjectionBinding({artifactId: saved.id}, {scope: quoteScope(runId), page: page()})).toThrow();
+    expect(prepare).not.toHaveBeenCalled(); expect(match).not.toHaveBeenCalled();
+    registry.setProviderConsent(registered.codebaseId, privateOptions, true, 'b1-quote-test');
+    expect(() => store.matchesQuoteProjectionRead(binding, resolution)).toThrow();
+    expect(isIssuedEvidenceReadResolution(resolution)).toBe(true);
   });
 });

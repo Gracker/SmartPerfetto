@@ -27,10 +27,12 @@ import {currentRuntimeToolInvocation} from '../agentRuntime/runtimeToolInvocatio
 import {resolveRuntimePerformanceRecorder, runtimePerformanceRunId} from '../agentRuntime/runtimePerformanceContext';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import {createDataEnvelope} from '../types/dataContract';
-import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
+import {capturedEvidenceTable, capturedRawSqlContext, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
   type ModelEvidenceProjectionUnavailableReason} from '../services/evidence/evidenceCapture';
-import {projectModelEvidenceMetadata, type ModelEvidenceMetadata} from '../services/evidence/modelEvidenceMetadata';
+import {projectModelEvidenceMetadata, quoteProjectedPageMatchesCapture, snapshotQuoteProjectionScope,
+  type ModelEvidenceMetadata, type PreparedQuoteProjectionBinding, type QuoteLocator, type QuoteProjectedPage,
+  type QuoteProjectionScope} from '../services/evidence/modelEvidenceMetadata';
 import {createEvidenceReadView, createEvidenceReadSession, matchesIssuedEvidenceReadRecord, MAX_EVIDENCE_READ_REFERENCES,
   type EvidenceReadSession, type EvidenceReadSessionOptions, type EvidenceReadView, type EvidenceReadViewOptions,
   type EvidenceReadRecord} from '../services/evidence/evidenceReadView';
@@ -340,6 +342,7 @@ function sameCapturedTable(left: CapturedEvidenceTable | undefined, right: Captu
 export class ArtifactStore {
   private artifacts: Map<string, StoredArtifact> = new Map();
   private readonly executionCaptures = new Map<string, EvidenceReadRecord>();
+  private readonly quoteProjectionBindings = new WeakMap<object, EvidenceReadRecord>();
   private readonly investigationToolObservations = new Map<string, InvestigationToolObservation & {originRunId?: string}>();
   private readonly evidenceStoreId = randomUUID();
   private captureGeneration = 0;
@@ -525,6 +528,50 @@ export class ArtifactStore {
       if (matchesIssuedEvidenceReadRecord(resolution, entry)) return true;
     }
     return false;
+  }
+
+  /** Validate the supplied producer page; this performs no evidence read or final retention check. */
+  prepareQuoteProjectionBinding(locator: QuoteLocator,
+    actual: {scope: QuoteProjectionScope; page: QuoteProjectedPage}): PreparedQuoteProjectionBinding | undefined {
+    if (!locator || typeof locator !== 'object' || types.isProxy(locator) ||
+        !actual || typeof actual !== 'object' || types.isProxy(actual)) return undefined;
+    const keys = Reflect.ownKeys(locator);
+    const key = keys[0];
+    if (keys.length !== 1 || (key !== 'artifactId' && key !== 'evidenceRefId')) return undefined;
+    const identifier = Object.getOwnPropertyDescriptor(locator, key);
+    if (!identifier || !('value' in identifier) || typeof identifier.value !== 'string' || !identifier.value.trim()) return undefined;
+    const scopeField = Object.getOwnPropertyDescriptor(actual, 'scope');
+    const pageField = Object.getOwnPropertyDescriptor(actual, 'page');
+    if (!scopeField || !('value' in scopeField) || !pageField || !('value' in pageField)) return undefined;
+    const scope = snapshotQuoteProjectionScope(scopeField.value);
+    if (!scope) return undefined;
+    let selected: EvidenceReadRecord | undefined;
+    for (const entry of this.executionCaptures.values()) {
+      if (entry.record.meta[key] !== identifier.value) continue;
+      if (selected) return undefined;
+      selected = entry;
+    }
+    if (!selected) return undefined;
+    const {record, witness} = selected;
+    if (record.originRunId !== scope.runId || record.captureId !== witness.captureId ||
+        !scope.allowedTraces.some(trace => trace.traceId === record.meta.traceId && trace.traceSide === record.meta.traceSide)) return undefined;
+    const {executionStatus} = record.meta;
+    if (executionStatus === 'unavailable' || executionStatus === 'optional_error' || executionStatus === 'skipped') return undefined;
+    const rawContext = capturedRawSqlContext(witness);
+    if (rawContext && (rawContext.traceId !== record.meta.traceId || rawContext.traceSide !== record.meta.traceSide)) return undefined;
+    const table = capturedEvidenceTable(witness);
+    if (!table || table.unavailableReason) return undefined;
+    try {if (!quoteProjectedPageMatchesCapture(pageField.value, table)) return undefined;} catch {return undefined;}
+    const binding: PreparedQuoteProjectionBinding = Object.freeze({kind: 'prepared_quote_projection'});
+    this.quoteProjectionBindings.set(binding, selected);
+    return binding;
+  }
+
+  /** Preparation-time exact identity only; A2 separately checks current retention of the full batch. */
+  matchesQuoteProjectionRead(binding: unknown, resolution: unknown): boolean {
+    if (!binding || typeof binding !== 'object') return false;
+    const prepared = this.quoteProjectionBindings.get(binding);
+    return Boolean(prepared && matchesIssuedEvidenceReadRecord(resolution, prepared));
   }
 
   /** A pure complete-set check. Callers establish authorization once before entering this scan. */

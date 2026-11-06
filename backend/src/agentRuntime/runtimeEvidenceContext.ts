@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {types} from 'util';
 import {runAllowedTraces} from './runtimeTraceAttachment';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {ArtifactStore} from '../agentv3/artifactStore';
@@ -11,6 +12,7 @@ import {
 } from '../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../services/scopedKnowledgeStore';
 import type {EvidenceReadSession, EvidenceReadView} from '../services/evidence/evidenceReadView';
+import {snapshotQuoteProjectionScope} from '../services/evidence/modelEvidenceMetadata';
 
 export interface RuntimeEvidenceScopeInput {
   logicalSessionId: string;
@@ -234,6 +236,24 @@ function createRunStore(run: RunState): ArtifactStore {
       access(() => store.isEvidenceReadResolutionRetained(resolution)),
     areEvidenceReadResolutionsRetained: (resolutions: readonly unknown[]) =>
       access(() => store.areEvidenceReadResolutionsRetained(resolutions)),
+    prepareQuoteProjectionBinding: (...args: Parameters<ArtifactStore['prepareQuoteProjectionBinding']>) => access(() => {
+      const actual = args[1];
+      if (!actual || typeof actual !== 'object' || types.isProxy(actual)) throw new Error('runtime_evidence_quote_scope_mismatch');
+      const scopeField = Object.getOwnPropertyDescriptor(actual, 'scope'), pageField = Object.getOwnPropertyDescriptor(actual, 'page');
+      if (!scopeField || !('value' in scopeField) || !pageField || !('value' in pageField)) throw new Error('runtime_evidence_quote_scope_mismatch');
+      const requested = snapshotQuoteProjectionScope(scopeField.value);
+      const scope = run.context.scope;
+      if (!requested || requested.runId !== run.input.runId || requested.allowedTraces.some(trace => trace.traceId !==
+        (trace.traceSide === 'current' ? scope.traceId : scope.referenceTraceId))) {
+        throw new Error('runtime_evidence_quote_scope_mismatch');
+      }
+      const allowedTraces = requested.allowedTraces.map(trace => ({traceSide: trace.traceSide,
+        traceId: trace.traceSide === 'current' ? scope.traceId : scope.referenceTraceId!}));
+      return store.prepareQuoteProjectionBinding(args[0], {page: pageField.value,
+        scope: {runId: run.input.runId, allowedTraces}});
+    }),
+    matchesQuoteProjectionRead: (binding: unknown, resolution: unknown) =>
+      access(() => store.matchesQuoteProjectionRead(binding, resolution)),
     createEvidenceReadSession: (input: Parameters<ArtifactStore['createEvidenceReadSession']>[0]): EvidenceReadSession => access(() => {
       const captured = {...input};
       const scope = run.context.scope;
