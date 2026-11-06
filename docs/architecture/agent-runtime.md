@@ -109,6 +109,19 @@ V1 用 `documentJson` 提交正文片段和原始 canonical 声明。工具 stri
 不改写 SDK 的真实完成状态，也不启动旧声明修复或续写。没有 main 调用的程序 ACK／
 直接证据路径保持原交付，运输观察记为 `not_exercised`。
 
+运输版本按完整组合校验。
+
+| 文档提交 | representation / compiler | admission / wire |
+| --- | --- | --- |
+| V1 | `@1` / `@1` | `@1` / `@1` |
+| 历史 V2 | `@2` / `@2` | `@2` / `@1` |
+| 当前 V2 | `@2` / `@2` | `@3` / `@2` |
+
+当前 V2 允许同一响应包含有界的 assistant 伴随文字和唯一最终文档函数调用。伴随文字
+须与 SDK 完成的 assistant message 逐字对应，并绑定该响应。最终正文取自工具提交的
+完整文档。非空 refusal、额外待完成工作和不完整运输会阻止提交准入。实际合同版本取自
+当前 SDK 适配实现及本次私有 attempt，历史记录保留其原始版本。
+
 Conversation 的 typed envelope 当前交付 `answered` 正文，附带既有 evidence。正文里的
 控制协议样式文字保持字面。显式 `needs_user_input` 和 `recommend_full` 会话动作仍使用
 `assistant_text` 的控制协议，typed envelope 尚无对应控制字段。
@@ -127,6 +140,12 @@ V2 的片段引文在编译时绑定原始 claim 序号和正文 UTF-16 位置�
 修复或预算；历史没有记录的失败不能用新诊断回填原因。
 请求指标中的 `toolArguments` 统计该次请求携带的历史参数，不包含它随后生成的响应；
 没有后续派发时，最终提交不会进入这项输入计数。缺少材料诊断也不代表输出大小为零。
+
+内部 `typed_output_observed` 按实际授权派发绑定请求，即使未签发最终文档也可记录闭集
+材料统计。decoded UTF-8／UTF-16、实际保留内容、DONE／EOF、JSON 完整性和结构分别计量。
+截断计数使用显式下界，结构计数保留原始无效条目及 null／missing 区别。normalized JSON
+分区与原始参数字节各有独立口径。这些统计仅提供成本诊断，提交与证明仍由原准入和
+finalizer 执行。
 
 内部性能观察区分实际 main、分类和语义审核派发，记录原生结束、工具排空、候选选择与
 finalizer 的对应关系。配置承诺、实际发送参数和服务端明确返回的模型身份分别保存，缺失

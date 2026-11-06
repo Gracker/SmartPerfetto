@@ -9,8 +9,8 @@ const path = require('node:path');
 const {randomBytes} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {ProcessHarness} = require('../../scripts/e2e/process-harness.cjs');
-const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
-  configFieldsFingerprint, makeConfigCommitments, parsePurposeContracts, makeRepresentationTreatment, cellPreflightSelections,
+const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
+  configFieldsFingerprint, makeConfigCommitments, parsePurposeContracts, makeRepresentationTreatment, parsePreflightOutputImplementation, cellPreflightSelections,
   sourceFacetContext, validateSourceFacetCollection,
   canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
   parseTargetRequest, assertExecutionTarget, prepareFreshOutputDirectory, writeNewJson,
@@ -55,7 +55,7 @@ function parseArgs(argv) {
   if (!/^[a-z][a-z0-9-]+$/.test(values['--runtime'])) throw new Error('benchmark_runtime_invalid');
   if ((values['--sample-kind'] ?? 'local-cold') !== 'local-cold') throw new Error('benchmark_warm_not_configured');
   if (!/^[a-f0-9]{64}$/.test(values['--observer-hook-fingerprint'])) throw new Error('benchmark_observer_hook_fingerprint_invalid');
-  if (values['--treatment'] !== undefined && (values['--treatment'] !== TREATMENT_ID || values['--runtime'] !== 'openai-agents-sdk')) {
+  if (values['--treatment'] !== undefined && (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID].includes(values['--treatment']) || values['--runtime'] !== 'openai-agents-sdk')) {
     throw new Error('benchmark_treatment_invalid');
   }
   const cells = values['--cells'] === undefined ? [...CELLS] : values['--cells'].split(',');
@@ -177,7 +177,7 @@ async function runTreatmentProbe({checkout, options, side, cell, directory, prep
   writeNewJson(path.join(directory, 'process.json'), proof);
   if (lifecycle.outcome !== 'exited' || lifecycle.exitCode !== 0 || lifecycle.signal !== null || lifecycle.censored !== false ||
       lifecycle.cleanup !== 'confirmed' || !Number.isSafeInteger(lifecycle.processId) || lifecycle.processId <= 0 || read.status !== 'available' ||
-      result?.schemaVersion !== 'llm_target_preflight@2' || result.status !== 'ready' || result.nonce !== nonce ||
+      !['llm_target_preflight@2', 'llm_target_preflight@3'].includes(result?.schemaVersion) || result.status !== 'ready' || result.nonce !== nonce ||
       result.side !== side || result.cellId !== cell.id || result.requestedMode !== mode.requestedMode ||
       result.observedSourceFingerprint !== checkout.sourceFingerprint || result.declaredConfigFingerprint !== configuration.fullFingerprint ||
       result.declaredControlsFingerprint !== configuration.controlsFingerprint || result.declaredTreatmentHash !== request.treatmentHash ||
@@ -188,6 +188,8 @@ async function runTreatmentProbe({checkout, options, side, cell, directory, prep
       (dependencies.fingerprintSourceTree ?? fingerprintSourceTree)(checkout.root) !== checkout.sourceFingerprint) {
     throw new Error('benchmark_preflight_failed');
   }
+  try {parsePreflightOutputImplementation(result, treatment.id, side);}
+  catch {throw new Error('benchmark_preflight_failed');}
   configFieldsFingerprint(result.actualResolvedConfig); // Strict structure check before comparing commitments.
   parsePurposeContracts(result.purposeContracts);
   return {proof, actual: result};
@@ -207,7 +209,7 @@ async function prepareTreatmentTargets({options, sides, output, nonce, dependenc
     for (const [index, side] of ['base', 'candidate'].entries()) {
       configurations.set(`${cellId}:${side}`, makeConfigCommitments(aligned[index], pending[side].prepared.legacyHash));
     }
-    const described = makeRepresentationTreatment(configurations.get(`${cellId}:base`), configurations.get(`${cellId}:candidate`));
+    const described = makeRepresentationTreatment(configurations.get(`${cellId}:base`), configurations.get(`${cellId}:candidate`), options.treatment);
     if (treatment && canonicalJson(treatment) !== canonicalJson(described)) throw new Error('benchmark_config_mismatch');
     treatment = described;
     for (const side of ['base', 'candidate']) {
@@ -344,7 +346,9 @@ async function runBenchmark(options, injectedDependencies) {
               const observed = await runTreatmentProbe({checkout, options, side, cell, directory, prepared: probePrepared,
                 configuration, treatment: treatmentState.treatment, nonce, dependencies, harness, output, mode});
               const earlier = treatmentState.actuals.get(`${pair.cellId}:${side}`)[index];
-              if (canonicalJson(observed.actual.sdk) !== canonicalJson(earlier.sdk) ||
+              if (observed.actual.schemaVersion !== earlier.schemaVersion ||
+                  canonicalJson(observed.actual.outputImplementation) !== canonicalJson(earlier.outputImplementation) ||
+                  canonicalJson(observed.actual.sdk) !== canonicalJson(earlier.sdk) ||
                   canonicalJson(observed.actual.actualResolvedConfig) !== canonicalJson(earlier.actualResolvedConfig) ||
                   canonicalJson(observed.actual.purposeContracts) !== canonicalJson(earlier.purposeContracts)) throw new Error('benchmark_preflight_changed');
               samplePreflights.push(observed.proof);
@@ -452,7 +456,7 @@ async function runBenchmark(options, injectedDependencies) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1]');
+    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1|assistant_text_to_native_v2@2]');
     console.log('Collects paired lifecycle/report evidence. It does not grant quality or performance admission. Warm provider cache is not controlled.');
     return;
   }

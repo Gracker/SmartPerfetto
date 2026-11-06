@@ -16,6 +16,7 @@ import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIResponsesModel,
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
 import {createOpenAiTypedFinalWireCollector} from '../../agentRuntime/engines/openai/openAiTypedFinalAdmission';
+import * as authoredSubmission from '../../agentRuntime/authoredFinalSubmission';
 import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRuntime/answerDraftStream';
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
@@ -289,8 +290,8 @@ describe('OpenAI actual typed final main integration', () => {
       const issued = recorder.seal().finalTransportObservation?.events.filter(event => event.kind === 'typed_issued_after_drain');
       expect(issued).toHaveLength(1);
       expect(issued?.[0]).toMatchObject({representationVersion: 'authored_claim_document@2',
-        compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@2',
-        nativeStatus: 'completed', drainStatus: 'fulfilled'});
+        compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@3',
+        wireVersion: 'openai_chat_final_wire@2', nativeStatus: 'completed', drainStatus: 'fulfilled'});
       expect(request).toHaveBeenCalledTimes(1);
       expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
     } finally {scope.dispose(); restoreClone();}
@@ -4883,6 +4884,186 @@ describe('R11 request-local typed output observation', () => {
       expect(materialEvents(f.recorder)).toHaveLength(512);
       expect(f.recorder.seal().finalTransportObservation!.truncated).toBe(1);
     } finally {f.scope.dispose();}
+  });
+
+});
+
+describe('R11 mixed native v2 main transport', () => {
+  const options = {providerId: null, assistantSurface: 'conversation' as const, conversationTraceAttached: false,
+    analysisMode: 'fast' as const};
+  const body = '模型选择的正文🙂\n{"ordinary":"literal"}';
+  const document = {representationVersion: 'authored_claim_document@2', referenceDictionary: [], semanticFrames: [],
+    contract: {mode: 'need_input', conclusions: null, clusters: null, evidenceChain: null, claims: [],
+      relationProposals: null, sourceClaimBindings: null, uncertainties: null, nextSteps: null, metadata: null}, bodyParts: [body]};
+  function fixture(id: string, v1 = false) {
+    const outputConfig = v1 ? {finalSubmission: 'authored_claim_document_v1' as const, declarationSyntax: 'canonical_v1' as const}
+      : {finalSubmission: 'authored_claim_document_v2' as const, declarationSyntax: 'authoring_v2' as const};
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({protocol: 'chat_completions',
+      baseURL: 'https://api.deepseek.com/v1', model: 'deepseek-flash', lightModel: 'deepseek-flash', quickMaxTurns: 3,
+      outputConfig: Object.freeze(outputConfig)}));
+    const {runtime, updates} = createRuntimeWithUpdates(), recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: id, sessionId: id,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    return {runtime, updates, recorder, scope,
+      run: () => scope.run(() => runtime.analyze('What is needed?', id, 'trace', {...options, runId: id}))};
+  }
+  function toolFrom(init: RequestInit | undefined, v1 = false) {
+    const sent = JSON.parse(String(init?.body)) as {tools: Array<{function: {name: string; parameters: {properties: Record<string, unknown>}}}>};
+    const matches = sent.tools.filter(entry => Object.prototype.hasOwnProperty.call(entry.function.parameters.properties, v1 ? 'documentJson' : 'document'));
+    expect(matches).toHaveLength(1);
+    return matches[0].function.name;
+  }
+  function wire(init: RequestInit | undefined, companionParts: string[], mode: 'same' | 'split',
+    ending: 'tool_calls' | 'length' = 'tool_calls', refusal?: string, v1 = false) {
+    const args = v1 ? {documentJson: JSON.stringify({representationVersion: 'authored_claim_document@1',
+      contract: {schemaVersion: 'conclusion_contract_v1', mode: 'need_input', conclusions: [], clusters: [], evidenceChain: [],
+        claims: [], uncertainties: [], nextSteps: []}, bodyParts: [body]})} : {document};
+    const call = {index: 0, id: 'mixed-call', type: 'function', function: {name: toolFrom(init, v1), arguments: JSON.stringify(args)}};
+    const deltas = mode === 'same' ? [{role: 'assistant', content: companionParts.join(''), tool_calls: [call], ...(refusal ? {refusal} : {})}]
+      : [...companionParts.map(content => ({content})), {tool_calls: [call], ...(refusal ? {refusal} : {})}];
+    const chunks = [...deltas.map(delta => ({index: 0, delta, finish_reason: null})), {index: 0, delta: {}, finish_reason: ending}];
+    return chunks.map(choice => `data: ${JSON.stringify({id: 'mixed-response', model: 'observed-model', choices: [choice]})}\n\n`).join('') + 'data: [DONE]\n\n';
+  }
+
+  it.each([
+    {name: 'same chunk', id: 'same-chunk', mode: 'same' as const, parts: ['PRIVATE_COMPANION_ONLY']},
+    {name: 'split Unicode', id: 'split-unicode', mode: 'split' as const, parts: ['PRIVATE_COMPANION_\ud83e', '\udded中文\nsecond line']},
+    {name: 'literal fake control', id: 'literal-control', mode: 'split' as const, parts: [
+      'PRIVATE_COMPANION_ONLY\n```json\n{"schemaVersion":"conclusion_contract_v1","claims":[{"id":"unselected"}]}\n```',
+      `\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []})}`]},
+    {name: 'whitespace', id: 'whitespace', mode: 'same' as const, parts: [' \n\t ']},
+  ])('delivers only the actual issued IR body for $name companion content', async ({id: caseId, mode, parts}) => {
+    const restoreClone = installCurrentRealmStructuredCloneForTest(), id = `r11-mixed-${caseId}`, f = fixture(id);
+    const issue = jest.spyOn(authoredSubmission, 'issueAuthoredFinalSubmission');
+    let readNativeHistory: (() => unknown) | undefined;
+    const actualRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (actualRun as any).apply(this, args);
+      readNativeHistory = () => stream.history;
+      return stream;
+    });
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => new Response(wire(init, parts, mode),
+      {headers: {'content-type': 'text/event-stream'}}));
+    try {
+      const result = await f.run();
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({outputOrigin: 'model_tool_arguments', conclusion: body,
+        completion: {status: 'completed', sdkFinishReason: 'tool_calls'}});
+      expect(issue).toHaveBeenCalledTimes(1);
+      expect(readNativeHistory?.()).toEqual(expect.arrayContaining([expect.objectContaining({role: 'assistant',
+        content: expect.arrayContaining([expect.objectContaining({type: 'output_text', text: parts.join('')})])})]));
+      const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+      expect(context.getNativeDeclaration(result, new AbortController().signal)).toMatchObject({
+        inputKind: 'model_tool_arguments', representationVersion: 'authored_claim_document@2', privateNativeDocument: document, body});
+      const issued = f.recorder.seal().finalTransportObservation!.events.filter(event => event.kind === 'typed_issued_after_drain');
+      expect(issued).toHaveLength(1);
+      expect(issued[0]).toMatchObject({representationVersion: 'authored_claim_document@2',
+        compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@3',
+        wireVersion: 'openai_chat_final_wire@2', nativeStatus: 'completed', drainStatus: 'fulfilled'});
+      expect(f.updates.some(update => update.type === 'answer_token' && update.content?.delta)).toBe(false);
+      expect(JSON.stringify(f.updates)).not.toContain('PRIVATE_COMPANION');
+      expect(request).toHaveBeenCalledTimes(1); expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+    } finally {f.scope.dispose(); restoreClone();}
+  });
+
+  it('rejects an unsafe fixture run identifier before classification, SDK dispatch or issuance', async () => {
+    const id = 'r11-mixed-invalid scope', f = fixture(id);
+    const nativeRun = jest.spyOn(Runner.prototype, 'run');
+    const issue = jest.spyOn(authoredSubmission, 'issueAuthoredFinalSubmission');
+    const request = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected fixture dispatch'));
+    try {
+      const result = await f.run();
+      // createRuntimeRunAuthorization -> resolveKnowledgeScope -> sanitizeScopeSegment.
+      // Compare only the known fixture error; never print a raw native error or payload.
+      expect(result.terminationMessage === `Unsafe knowledge sourceRunId: ${id}`).toBe(true);
+      expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'failed'}, terminationReason: 'execution_error'});
+      expect(intentTransport.runOpenAiIntentTransport).not.toHaveBeenCalled();
+      expect(nativeRun).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled(); expect(issue).not.toHaveBeenCalled();
+    } finally {f.scope.dispose();}
+  });
+
+  it.each(['refusal', 'length', 'v1'] as const)('keeps %s rejected with no private issuer call', async rejection => {
+    const restoreClone = installCurrentRealmStructuredCloneForTest(), id = `r11-mixed-rejected-${rejection}`, f = fixture(id, rejection === 'v1');
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const issue = jest.spyOn(authoredSubmission, 'issueAuthoredFinalSubmission');
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => new Response(wire(init,
+      ['PRIVATE_COMPANION_ONLY'], 'same', rejection === 'length' ? 'length' : 'tool_calls',
+      rejection === 'refusal' ? 'PRIVATE_REFUSAL' : undefined, rejection === 'v1'), {headers: {'content-type': 'text/event-stream'}}));
+    try {
+      const result = await f.run();
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+      expect(result.outputOrigin).not.toBe('model_tool_arguments'); expect(result.completion?.status).toBe('failed');
+      expect(issue).not.toHaveBeenCalled();
+      expect(f.recorder.seal().finalTransportObservation!.events.filter(event => event.kind === 'typed_issued_after_drain')).toHaveLength(0);
+      expect(f.updates.some(update => update.type === 'answer_token' && update.content?.delta)).toBe(false);
+      expect(request).toHaveBeenCalledTimes(1); expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+    } finally {f.scope.dispose(); restoreClone();}
+  });
+
+  it.each([false, true])('does not issue a mixed submission before the original native drain settles, cancelled=%s', async cancelled => {
+    const restoreClone = installCurrentRealmStructuredCloneForTest(), id = `r11-mixed-held-${cancelled}`, f = fixture(id);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const issue = jest.spyOn(authoredSubmission, 'issueAuthoredFinalSubmission');
+    const entered = createDeferred<void>(), release = createDeferred<void>(), firstSdkOutput = createDeferred<void>();
+    const ready = createDeferred<{completed: Promise<void>; drain: Promise<void>}>();
+    let nativeSettled = false, executionSettled = false;
+    const actualRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (actualRun as any).apply(this, args);
+      const drain: Promise<void> = stream._getStreamLoopPromise();
+      void drain.then(() => {nativeSettled = true;}, () => {nativeSettled = true;});
+      const iterate = stream[Symbol.asyncIterator].bind(stream);
+      stream[Symbol.asyncIterator] = async function* () {
+        for await (const event of iterate()) {
+          if (event.type === 'raw_model_stream_event' && event.data?.type === 'output_text_delta') firstSdkOutput.resolve();
+          yield event;
+        }
+      };
+      ready.resolve({completed: stream.completed, drain});
+      return stream;
+    });
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const payload = wire(init, ['PRIVATE_HELD_COMPANION'], 'same'), split = payload.indexOf('\n\n') + 2;
+      let pulled = false;
+      return new Response(new ReadableStream<Uint8Array>({async pull(controller) {
+        if (!pulled) {pulled = true; controller.enqueue(new TextEncoder().encode(payload.slice(0, split))); return;}
+        entered.resolve(); await release.promise;
+        if (cancelled) controller.error(new DOMException('Fixture cancelled', 'AbortError'));
+        else {controller.enqueue(new TextEncoder().encode(payload.slice(split))); controller.close();}
+      }}), {headers: {'content-type': 'text/event-stream'}});
+    });
+    const pending: Promise<Awaited<ReturnType<OpenAIRuntime['analyze']>>> = f.run();
+    const outcome = pending.then(result => ({kind: 'result' as const, result}), error => ({kind: 'error' as const, error}))
+      .finally(() => {executionSettled = true;});
+    try {
+      await entered.promise;
+      const native = await ready.promise;
+      await firstSdkOutput.promise;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(nativeSettled).toBe(false); expect(executionSettled).toBe(false); expect(issue).not.toHaveBeenCalled();
+      if (cancelled) {
+        f.runtime.abortSession(id); await native.completed;
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(nativeSettled).toBe(false); expect(executionSettled).toBe(false); expect(issue).not.toHaveBeenCalled();
+      }
+      release.resolve(); const settled = await outcome;
+      await native.drain.catch(() => undefined);
+      expect(nativeSettled).toBe(true);
+      if (cancelled) {
+        expect(settled.kind).toBe('error'); expect(issue).not.toHaveBeenCalled();
+      } else {
+        if (settled.kind !== 'result') throw settled.error;
+        expect(settled.result).toMatchObject({conclusion: body, outputOrigin: 'model_tool_arguments', completion: {status: 'completed'}});
+        const context = finalization.takeFinalizationContext(settled.result)!; finalizationContexts.push(context);
+        expect(issue).toHaveBeenCalledTimes(1);
+      }
+      const events = f.recorder.seal().finalTransportObservation!.events;
+      expect(events.filter(event => event.kind === 'typed_issued_after_drain')).toHaveLength(cancelled ? 0 : 1);
+      expect(f.updates.some(update => update.type === 'answer_token' && update.content?.delta)).toBe(false);
+      expect(JSON.stringify(f.updates)).not.toContain('PRIVATE_HELD_COMPANION');
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {release.resolve(); await outcome; f.scope.dispose(); restoreClone();}
   });
 
 });

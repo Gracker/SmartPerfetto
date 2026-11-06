@@ -10,6 +10,7 @@ import {z} from 'zod';
 import {compileAuthoredClaimDocument, measureAuthoredJson} from '../../agent/core/authoredClaimDocument';
 import {CONCLUSION_PROTOCOL_VALUES} from '../../agent/core/conclusionContract';
 import type {RuntimeTypedOutputMaterial} from '../typedOutputMaterial';
+import * as outputMaterial from '../engines/openai/openAiTypedFinalOutputMaterial';
 import {compileAuthoredClaimObject, type AuthoredClaimObjectResult} from '../../agent/core/authoredClaimObject';
 import {authoredClaimObjectSchema, type AuthoredClaimObjectInput} from '../../agent/core/authoredClaimObjectSchema';
 import {createJsonSchemaFromZodRawShape, normalizeRuntimeToolArgs, preserveRuntimeLiteralJson} from '../runtimeToolSpec';
@@ -683,6 +684,9 @@ function nativeObjectFixture(): AuthoredClaimObjectInput {
 }
 
 function nativeObjectProbe(options: {
+  contractVersion?: 'openai_typed_final_admission@3';
+  response?: () => Response;
+  beforeCallback?: (stream: NativeStream) => void;
   productionBridge?: boolean;
   literalSubtree?: boolean;
   mutateHandler?: boolean;
@@ -753,7 +757,8 @@ function nativeObjectProbe(options: {
     installed.outputGuardrails = finalTool.outputGuardrails;
     finalTool = installed;
     admission = createOpenAiTypedFinalAttempt({finalTool, toolName: finalTool.name, issuer, ownerBinding,
-      representationVersion: 'authored_claim_document@2', signal: productController.signal, assertCurrent,
+      representationVersion: 'authored_claim_document@2', ...(options.contractVersion ? {contractVersion: options.contractVersion} : {}),
+      signal: productController.signal, assertCurrent,
       deadlineAt: options.deadlineAt ?? (() => Date.now() + 60_000)});
     const actualStage = admission.stageInvocation;
     admission.stageInvocation = call => {
@@ -768,6 +773,7 @@ function nativeObjectProbe(options: {
   const agent = new Agent<unknown, 'text'>({name: 'native-object-test-only', model: 'fixture-model', instructions: 'Fixture only.',
     tools: [finalTool, ...(options.otherGate ? [otherTool] : [])], toolUseBehavior: async (context, results) => {
       observations.callbackCalls++; callbackEntered.resolve();
+      if (options.beforeCallback) options.beforeCallback(await ready.promise);
       if (admission) return admission.toolUseBehavior(context, results);
       const stream = await ready.promise;
       if (controller.signal.aborted) throw new Error('prototype_cancelled');
@@ -790,6 +796,7 @@ function nativeObjectProbe(options: {
     const request = JSON.parse(String(init?.body));
     observations.requestSchema = request.tools[0].function.parameters;
     fetchEntered.resolve(); await options.fetchGate;
+    if (options.response) return options.response();
     if (options.otherGate) return chatResponse(argumentsText, {}, true);
     const pieces: string[] = [];
     for (let offset = 0; offset < argumentsText.length; offset += 4096) pieces.push(argumentsText.slice(offset, offset + 4096));
@@ -1357,4 +1364,258 @@ describe('R11 neutral per-request typed output material', () => {
     expect(events.materialSnapshot?.()).toBeUndefined();
     expect(collector.current()?.rawArguments).toBe(args); expect(collector.diagnostic().status).toBe('complete');
   });
+});
+
+/** Real installed converter/Runner plus the actual registry/adapter/issuer chain. */
+describe('R11 Stage B mixed-content native final', () => {
+  let restoreClone: (() => void) | undefined;
+  beforeEach(() => {restoreClone = installCurrentRealmStructuredCloneForTest();});
+  afterEach(() => {restoreClone?.(); restoreClone = undefined;});
+  const argumentsText = () => JSON.stringify({document: nativeObjectFixture()});
+  const mixedResponse = (fragments: string[], extra: Record<string, unknown> = {}, finish = 'tool_calls', done = true) => {
+    const deltas = fragments.map(content => ({content} as Record<string, unknown>));
+    deltas.push({tool_calls: [{index: 0, id: 'final-call', type: 'function', function: {name: finalToolName, arguments: argumentsText()}}], ...extra});
+    const chunks = deltas.map(delta => ({id: 'chat-final', object: 'chat.completion.chunk', created: 1, model: 'fixture-model',
+      choices: [{index: 0, delta, finish_reason: null as string | null}]}));
+    chunks.push({id: 'chat-final', object: 'chat.completion.chunk', created: 1, model: 'fixture-model',
+      choices: [{index: 0, delta: {}, finish_reason: finish}]});
+    return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + (done ? 'data: [DONE]\n\n' : ''),
+      {headers: {'content-type': 'text/event-stream'}});
+  };
+  const mixedProbe = (options: Parameters<typeof nativeObjectProbe>[0] = {}) => nativeObjectProbe({
+    productionBridge: true, literalSubtree: true, contractVersion: 'openai_typed_final_admission@3', ...options});
+
+  it('observes the installed converter preserving same-response message/raw-item identity alongside a function call', async () => {
+    const companion = '中文 progress 😀';
+    const h = probe({response: () => chatResponse(rawArguments, {content: companion}), onCallback: (stream, context) => {
+      const state = stream.state;
+      const output = state._lastTurnResponse!.output;
+      const message = output.find(item => item.type === 'message');
+      expect(message).toMatchObject({id: 'chat-final', type: 'message', role: 'assistant', status: 'completed',
+        content: [{type: 'output_text', text: companion}]});
+      const processed = state._lastProcessedResponse!.newItems.find(item => item.type === 'message_output_item');
+      expect(processed?.rawItem).toBe(message);
+      expect(processed?.agent).toBe(state._currentAgent);
+      expect(context).toBe(state._context);
+      expect(output.filter(item => item.type === 'function_call')).toHaveLength(1);
+      return body;
+    }});
+    try {const stream = await h.settle(); expect(stream.error).toBeNull(); expect(stream.finalOutput).toBe(body);}
+    finally {await h.cleanup();}
+  });
+
+  it.each(['same_chunk', 'split_chunks', 'whitespace', 'literal_sidecar'] as const)
+    ('selects only the compiled document after a real mixed %s response and drain', async variant => {
+      const fragments = variant === 'split_chunks' ? ['中文 ', '\ud83d', '', '\ude00'] :
+        variant === 'whitespace' ? [' \n\t'] : variant === 'literal_sidecar' ? ['<!-- perfetto-conclusion-contract\n{"claims":[]}\n-->'] : ['same chunk progress'];
+      const companion = fragments.join('');
+      const h = mixedProbe({response: () => variant === 'same_chunk' ? chatResponse(argumentsText(), {content: companion}) : mixedResponse(fragments)});
+      try {
+        const stream = await h.settle();
+        expect(stream.error).toBeNull(); expect(h.observations.admissionFailure).toBeUndefined();
+        expect(h.submission()).toBeDefined();
+        const issued = h.readSubmission();
+        expect(stream.finalOutput).toBe(issued.compiled.body);
+        expect(stream.finalOutput).not.toBe(companion);
+        expect(issued.rawArguments).toBe(argumentsText());
+        expect(h.observations.sdkRawArguments).toBe(argumentsText());
+        expect(h.observations.sdkArgs).toEqual(JSON.parse(argumentsText()));
+        expect(h.observations.handlerArgs).toEqual(h.observations.sdkArgs);
+        expect(h.admission()).toHaveProperty('contractIdentity', {representationVersion: 'authored_claim_document@2',
+          compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@3', wireVersion: 'openai_chat_final_wire@2'});
+        expect(stream.state._lastTurnResponse!.output.find(item => item.type === 'message')).toMatchObject({content: [{text: companion}]});
+        expect(h.observations.drained).toBe(true); expect(h.observations.consumerDrained).toBe(true);
+        expect(h.fetcher).toHaveBeenCalledTimes(1); expect(h.observations.handlerCalls).toBe(1);
+      } finally {await h.cleanup();}
+    });
+
+  it('keeps omitted v2 contract selection on the old strict wire and keeps v1 strict', async () => {
+    const v2 = nativeObjectProbe({productionBridge: true, literalSubtree: true, response: () => chatResponse(argumentsText(), {content: 'progress'})});
+    try {await v2.settle(); expect(v2.submission()).toBeUndefined(); expect(v2.admission()!.diagnostic()).toMatchObject({reason: 'assistant_content'});
+      expect(v2.admission()).toHaveProperty('contractIdentity.admissionVersion', 'openai_typed_final_admission@2');}
+    finally {await v2.cleanup();}
+    const v1 = probe({useAdmission: true, response: () => chatResponse(rawArguments, {content: 'progress'})});
+    try {await v1.settle(); expect(v1.submission()).toBeUndefined(); expect(v1.admission()!.diagnostic()).toMatchObject({reason: 'assistant_content'});
+      expect(v1.admission()).toHaveProperty('contractIdentity.admissionVersion', 'openai_typed_final_admission@1');}
+    finally {await v1.cleanup();}
+  });
+
+  it.each(['text', 'role', 'status', 'id', 'copied_raw_item', 'agent', 'missing_item', 'duplicate_message'] as const)
+    ('refuses changed actual SDK companion correspondence: %s', async mutation => {
+      let mutated = false;
+      const h = mixedProbe({response: () => mixedResponse(['unchanged wire text']), beforeCallback: stream => {
+        mutated = true;
+        const state = stream.state as unknown as {_lastTurnResponse: {output: Record<string, unknown>[]};
+          _lastProcessedResponse: {newItems: {type: string; rawItem: Record<string, unknown>; agent: unknown}[]}};
+        const message = state._lastTurnResponse.output.find(item => item.type === 'message')!;
+        const items = state._lastProcessedResponse.newItems, item = items.find(item => item.type === 'message_output_item')!;
+        if (mutation === 'text') (message.content as {text: string}[])[0].text = 'changed';
+        if (mutation === 'role') message.role = 'user';
+        if (mutation === 'status') message.status = 'in_progress';
+        if (mutation === 'id') message.id = 'other-response';
+        if (mutation === 'copied_raw_item') item.rawItem = {...message};
+        if (mutation === 'agent') item.agent = {};
+        if (mutation === 'missing_item') items.splice(items.indexOf(item), 1);
+        if (mutation === 'duplicate_message') state._lastTurnResponse.output.push({...message});
+      }});
+      try {await h.settle(); expect(mutated).toBe(true); expect(h.observations.handlerCalls).toBe(1);
+        expect(h.submission()).toBeUndefined(); expect(h.observations.drained).toBe(true); expect(h.fetcher).toHaveBeenCalledTimes(1);}
+      finally {await h.cleanup();}
+    });
+
+  it.each(['refusal', 'bad_content', 'bad_refusal', 'legacy_action', 'custom_action', 'length', 'missing_done'] as const)
+    ('does not widen raw final eligibility for mixed %s', async failure => {
+      const extra: Record<string, unknown> = failure === 'refusal' ? {refusal: 'cannot comply'} :
+        failure === 'bad_content' ? {content: {text: 'not a string'}} : failure === 'bad_refusal' ? {refusal: 7} :
+        failure === 'legacy_action' ? {function_call: {name: 'hidden_action', arguments: '{}'}} :
+        failure === 'custom_action' ? {tool_calls: [{index: 1, id: 'custom-call', type: 'custom', custom: {name: 'hidden', input: 'x'}}]} : {};
+      const h = mixedProbe({response: () => mixedResponse(['visible progress'], extra, failure === 'length' ? 'length' : 'tool_calls', failure !== 'missing_done')});
+      try {await h.settle(); expect(h.submission()).toBeUndefined(); expect(h.fetcher).toHaveBeenCalledTimes(1);}
+      finally {await h.cleanup();}
+    });
+
+  it.each([null, ''])('preserves absent refusal semantics for %s', async refusal => {
+    const h = mixedProbe({response: () => mixedResponse(['progress'], {refusal})});
+    try {const stream = await h.settle(); expect(stream.error).toBeNull(); expect(h.submission()).toBeDefined();}
+    finally {await h.cleanup();}
+  });
+
+  it('waits for the real consumer drain before issuing mixed output', async () => {
+    const gate = deferred<void>(), h = mixedProbe({response: () => mixedResponse(['progress']), consumerGate: gate.promise});
+    try {
+      const state = await h.tracked; await state.stream.completed.catch(() => undefined); await state.drain.catch(() => undefined);
+      expect(h.submission()).toBeUndefined(); expect(h.observations.consumerDrained).toBe(false);
+      gate.resolve(); const stream = await h.settle(); expect(stream.error).toBeNull(); expect(h.submission()).toBeDefined();
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it.each(['cancel', 'supersede'] as const)('does not issue mixed output after %s during the held consumer', async action => {
+    const gate = deferred<void>(), h = mixedProbe({response: () => mixedResponse(['progress']), consumerGate: gate.promise});
+    try {
+      const state = await h.tracked; await state.stream.completed; await state.drain;
+      expect(h.observations.handlerCalls).toBe(1); expect(h.submission()).toBeUndefined();
+      if (action === 'cancel') h.cancel(); else h.revokeOwner();
+      gate.resolve(); await h.settle(); expect(h.submission()).toBeUndefined();
+      expect(h.observations.admissionFailure).toMatchObject({code: action === 'cancel' ? 'cancelled' : 'stale_invocation'});
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it('does not finalize mixed output while another actual function handler is pending', async () => {
+    const gate = deferred<void>(), h = mixedProbe({otherGate: gate.promise,
+      response: () => chatResponse(argumentsText(), {content: 'progress'}, true)});
+    try {
+      await h.otherEntered.promise; expect(h.submission()).toBeUndefined(); expect(h.observations.drained).toBe(false);
+      gate.resolve(); await h.settle(); expect(h.submission()).toBeUndefined(); expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {gate.resolve(); await h.cleanup();}
+  });
+
+  it('rejects arguments rewritten by the SDK despite a matching companion message', async () => {
+    const args = '{}' + argumentsText(), h = mixedProbe({argumentsText: args, response: () => chatResponse(args, {content: 'progress'})});
+    try {await h.settle(); expect(h.observations.sdkRawArguments).toBe(argumentsText());
+      expect(h.observations.handlerCalls).toBe(0); expect(h.submission()).toBeUndefined();}
+    finally {await h.cleanup();}
+  });
+
+  it('rejects duplicate reasoning identity hiding an unmatched SDK item at equal lengths', async () => {
+    let mutated = false;
+    const h = mixedProbe({response: () => mixedResponse(['progress'], {reasoning: 'local fixture reasoning'}), beforeCallback: stream => {
+      const state = stream.state as unknown as {_lastTurnResponse: {output: Record<string, unknown>[]};
+        _lastProcessedResponse: {newItems: {type: string; rawItem: Record<string, unknown>; agent: unknown}[]}; _currentAgent: unknown};
+      const output = state._lastTurnResponse.output, items = state._lastProcessedResponse.newItems;
+      const reasoning = output.find(item => item.type === 'reasoning');
+      expect(reasoning).toBeDefined();
+      expect(items.find(item => item.type === 'reasoning_item')?.rawItem).toBe(reasoning);
+      output.push(reasoning!); // Reuse the actual converter object, not a fabricated parsed result.
+      items.push({type: 'unknown_item', rawItem: {type: 'unknown_action'}, agent: state._currentAgent});
+      expect(output.length).toBe(items.length); mutated = true;
+    }});
+    try {
+      await h.settle(); expect(mutated).toBe(true); expect(h.observations.handlerCalls).toBe(1);
+      expect(h.submission()).toBeUndefined(); expect(h.observations.admissionFailure).toMatchObject({code: 'pending_work'});
+      expect(h.observations.drained).toBe(true); expect(h.fetcher).toHaveBeenCalledTimes(1);
+    } finally {await h.cleanup();}
+  });
+
+  it('requires the original handler and output-guardrail ACK after mixed content', async () => {
+    const h = mixedProbe({response: () => mixedResponse(['progress']), guardrail: 'output_rewrite'});
+    try {await h.settle(); expect(h.observations.handlerCalls).toBe(1); expect(h.submission()).toBeUndefined();
+      expect(h.observations.admissionFailure).toMatchObject({code: 'handler_failed'});}
+    finally {await h.cleanup();}
+  });
+});
+
+
+describe('R11 Stage B bounded mixed retention', () => {
+  const chunk = (delta: Record<string, unknown>) => ({id: 'bounded-response', choices: [{index: 0, delta, finish_reason: null}]});
+  const call = (args: string) => ({tool_calls: [{index: 0, id: 'bounded-call', type: 'function', function: {name: finalToolName, arguments: args}}]});
+  const finish = (events: ReturnType<ReturnType<typeof createOpenAiTypedFinalWireCollector>['startRequest']>) => {
+    events.chunk({id: 'bounded-response', choices: [{index: 0, delta: {}, finish_reason: 'tool_calls'}]}); events.done(); events.end(true);
+  };
+  const make = (wireVersion: 'openai_chat_final_wire@1' | 'openai_chat_final_wire@2' = 'openai_chat_final_wire@2') =>
+    createOpenAiTypedFinalWireCollector({wireVersion, finalToolName, materialProvider: {representationVersion: 'authored_claim_document@2',
+      rootKeys: Object.keys(authoredClaimObjectSchema.shape), contractKeys: Object.keys(authoredClaimObjectSchema.shape.contract.shape), measure: measureAuthoredJson}});
+
+  it('does not parse a valid argument prefix lost only because companion consumed the combined limit', () => {
+    const collector = make(), events = collector.startRequest();
+    events.chunk(chunk({content: 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES - 2)})); events.chunk(chunk(call('{}')));
+    events.chunk(chunk({tool_calls: [{index: 0, function: {arguments: ' '}}]})); finish(events);
+    expect(collector.current()).toBeUndefined(); expect(collector.diagnostic()).toMatchObject({reason: 'raw_limit'});
+    expect(events.materialSnapshot!()).toMatchObject({decoded: {arguments: {utf8Bytes: 3, utf8Precision: 'exact'}},
+      retention: {arguments: {status: 'over_limit', retainedUtf8Bytes: 2}, companion: {status: 'complete', retainedUtf8Bytes: OPENAI_TYPED_FINAL_RAW_BYTES - 2},
+        combinedRetainedUtf8Bytes: OPENAI_TYPED_FINAL_RAW_BYTES}, json: {status: 'not_parsed'}});
+  });
+
+  it('still measures complete arguments when later companion retention exceeds only the combined limit', () => {
+    const collector = make(), events = collector.startRequest(), args = JSON.stringify({document: nativeObjectFixture()});
+    events.chunk(chunk(call(args))); events.chunk(chunk({content: 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES - Buffer.byteLength(args) + 1)})); finish(events);
+    expect(collector.current()).toBeUndefined();
+    expect(events.materialSnapshot!()).toMatchObject({retention: {arguments: {status: 'complete', retainedUtf8Bytes: Buffer.byteLength(args)},
+      companion: {status: 'over_limit', retainedUtf8Bytes: 0}, combinedRetainedUtf8Bytes: Buffer.byteLength(args)},
+      json: {status: 'complete_json'}, structure: {status: 'measured'}});
+  });
+
+  it.each(['arguments', 'companion'] as const)('retains no oversized %s component and refuses the wire', component => {
+    const collector = make(), events = collector.startRequest(), huge = 'x'.repeat(OPENAI_TYPED_FINAL_RAW_BYTES + 1);
+    events.chunk(chunk(component === 'arguments' ? call(huge) : {...call('{}'), content: huge})); finish(events);
+    expect(collector.current()).toBeUndefined();
+    expect(events.materialSnapshot!()!.retention[component]).toEqual({status: 'over_limit', retainedUtf8Bytes: 0});
+  });
+
+  it('counts split companion Unicode bytes from the actual retained string and leaves old no-callback observations unchanged', () => {
+    const snapshots: RuntimeTypedOutputMaterial[] = [];
+    for (const wire of ['openai_chat_final_wire@1', 'openai_chat_final_wire@2'] as const) {
+      const collector = make(wire), events = collector.startRequest();
+      for (const content of ['中', '\ud83d', '', '\ude00']) events.chunk(chunk({content}));
+      events.chunk(chunk(call('{}'))); finish(events); snapshots.push(events.materialSnapshot!()!);
+      if (wire === 'openai_chat_final_wire@2') expect(collector.current()).toMatchObject({wireVersion: wire, companion: '中😀'});
+      else expect(collector.current()).toBeUndefined();
+    }
+    expect(snapshots[0].decoded).toEqual(snapshots[1].decoded);
+    expect(snapshots[0].retention.companion).toEqual({status: 'not_retained', retainedUtf8Bytes: 0});
+    expect(snapshots[1].retention).toMatchObject({companion: {status: 'complete', retainedUtf8Bytes: 7}, combinedRetainedUtf8Bytes: 9});
+  });
+
+  it('drops a failing private retention observer without changing actual wire completion', () => {
+    const original = outputMaterial.createOpenAiTypedFinalOutputMaterial;
+    const spy = jest.spyOn(outputMaterial, 'createOpenAiTypedFinalOutputMaterial').mockImplementation((options, readArgs) =>
+      original(options, readArgs, () => {throw new Error('PRIVATE_RETENTION_FAILURE');}));
+    try {
+      const collector = make(), events = collector.startRequest(); events.chunk(chunk({...call('{}'), content: 'retained'})); finish(events);
+      expect(events.materialSnapshot!()).toBeUndefined(); expect(collector.current()).toMatchObject({rawArguments: '{}', companion: 'retained'});
+      expect(collector.diagnostic().status).toBe('complete');
+    } finally {spy.mockRestore();}
+  });
+
+  it.each(['length', 'missing_done', 'trailing', 'second_tool', 'unknown_delta', 'refusal'] as const)
+    ('does not weaken terminal or action boundaries for %s', failure => {
+      const collector = make(), events = collector.startRequest();
+      events.chunk(chunk({...call('{}'), content: 'progress', ...(failure === 'refusal' ? {refusal: 'no'} : {})}));
+      if (failure === 'second_tool') events.chunk(chunk({tool_calls: [{index: 1, id: 'other', type: 'function', function: {name: 'other', arguments: '{}'}}]}));
+      if (failure === 'unknown_delta') events.chunk(chunk({audio: {data: 'hidden'}}));
+      events.chunk({id: 'bounded-response', choices: [{index: 0, delta: {}, finish_reason: failure === 'length' ? 'length' : 'tool_calls'}]});
+      if (failure !== 'missing_done') events.done();
+      if (failure === 'trailing') events.chunk(chunk({content: 'late'}));
+      events.end(true); expect(collector.current()).toBeUndefined();
+      if (failure === 'refusal') expect(collector.diagnostic()).toMatchObject({reason: 'assistant_refusal'});
+    });
 });

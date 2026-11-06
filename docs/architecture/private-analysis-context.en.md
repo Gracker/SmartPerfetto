@@ -177,6 +177,14 @@ projection chain. Hashes alone grant no authority. Normal SDK cleanup preserves 
 handed-off submission; product cancellation, revoked authorization or finalization
 disposal revokes it. Persisted authorship cannot restore this capability.
 
+V2 mixed-response companion text stays in the current run's private SDK context
+and bounded temporary buffer. Retained arguments and companion text share a
+1 MiB limit. Each component records any content lost to retention limits.
+Issued final-submission material comes from the unique tool document. Internal
+material observations retain fixed-field counts and statuses, with distinct
+markers for null, unknown and unretained material. Cancellation and late events
+remain bound to their run, attempt and request.
+
 Semantic review within the same run uses original text fields from the issued
 declaration. Input permission binds the native declaration, display candidate,
 and canonical projection; field path, owning declaration identity, and full

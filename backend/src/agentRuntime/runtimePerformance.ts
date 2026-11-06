@@ -16,6 +16,7 @@ import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1}
 import type {ModelExecutionPolicyReceipt} from './modelExecutionPolicy';
 import type {ReasoningSetting} from '../services/providerManager/modelExecutionProfile';
 import {CONCLUSION_PROTOCOL_VALUES} from '../agent/core/conclusionContract';
+import {getOpenAiTypedFinalContractIdentity, type OpenAiTypedFinalContractIdentity} from './finalSubmissionImplementation';
 import {TYPED_OUTPUT_MATERIAL_LIMITS, TYPED_OUTPUT_WIRE_FINISH_REASONS, type RuntimeTypedOutputMaterial, type RuntimeTypedOutputCollection,
   type RuntimeTypedOutputStructure, type RuntimeTypedOutputDecoded} from './typedOutputMaterial';
 
@@ -203,7 +204,7 @@ export type RuntimeFinalTransportEventInput =
   | Readonly<{kind: 'typed_issued_after_drain'; attemptKey: string; logicalCallKey: string; responseKey: string;
       callKey: string; actualModel: RuntimeObservedHash; nativeStatus: 'completed'; drainStatus: 'fulfilled';
       nativeBodyHash: string; representationVersion: 'authored_claim_document@1' | 'authored_claim_document@2';
-      compilerVersion: string; admissionVersion: string}>
+      compilerVersion: string; admissionVersion: string; wireVersion?: OpenAiTypedFinalContractIdentity['wireVersion']}>
   | Readonly<{kind: 'candidate_retained'; nativeCandidateKey: string; carrier: 'assistant_text' | 'model_tool_arguments';
       transform: 'native' | 'declaration_repair';
       authors: readonly Readonly<{role: 'body' | 'declaration' | 'body_and_declaration'; terminalEventKey: string}>[];
@@ -629,16 +630,22 @@ function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInp
       return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
         collectorDispatchOrdinal, material: parseTypedOutputMaterial(input.material)};
     }
-    case 'typed_issued_after_drain':
-      keys(['attemptKey', 'logicalCallKey', 'responseKey', 'callKey', 'actualModel', 'nativeStatus', 'drainStatus',
-        'nativeBodyHash', 'representationVersion', 'compilerVersion', 'admissionVersion']);
-      if (input.nativeStatus !== 'completed' || input.drainStatus !== 'fulfilled') throw new Error('runtime_observation_typed_invalid');
+    case 'typed_issued_after_drain': {
+      exactObservationObject(input, ['kind', 'attemptKey', 'logicalCallKey', 'responseKey', 'callKey', 'actualModel', 'nativeStatus', 'drainStatus',
+        'nativeBodyHash', 'representationVersion', 'compilerVersion', 'admissionVersion'], ['wireVersion']);
+      const identity = getOpenAiTypedFinalContractIdentity(input.admissionVersion);
+      const wireObserved = observationOwn(input, 'wireVersion');
+      if (input.nativeStatus !== 'completed' || input.drainStatus !== 'fulfilled' || !identity ||
+          input.representationVersion !== identity.representationVersion || input.compilerVersion !== identity.compilerVersion ||
+          (wireObserved ? input.wireVersion !== identity.wireVersion : identity.admissionVersion === 'openai_typed_final_admission@3')) {
+        throw new Error('runtime_observation_typed_invalid');
+      }
       return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
         responseKey: observationHash(input.responseKey), callKey: observationHash(input.callKey), actualModel: parseObservedHash(input.actualModel),
         nativeStatus: input.nativeStatus, drainStatus: input.drainStatus, nativeBodyHash: observationHash(input.nativeBodyHash),
-        representationVersion: observationMember(input.representationVersion, ['authored_claim_document@1', 'authored_claim_document@2']),
-        compilerVersion: observationMember(input.compilerVersion, ['authored_claim_document_compiler@1', 'authored_claim_document_compiler@2']),
-        admissionVersion: observationMember(input.admissionVersion, ['openai_typed_final_admission@1', 'openai_typed_final_admission@2'])};
+        representationVersion: identity.representationVersion, compilerVersion: identity.compilerVersion, admissionVersion: identity.admissionVersion,
+        ...(wireObserved ? {wireVersion: identity.wireVersion} : {})};
+    }
     case 'candidate_retained':
       keys(['nativeCandidateKey', 'carrier', 'transform', 'authors', 'declaredBody', 'declaredClaims', 'productStatus']);
       if (!Array.isArray(input.authors) || input.authors.length > 2) throw new Error('runtime_observation_authors_invalid');

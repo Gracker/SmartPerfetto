@@ -126,7 +126,7 @@ describe('captured final submission configuration', () => {
   it('captures native object mode with its own syntax and SDK contract without changing v1 rollback', () => {
     const env = {[SMARTPERFETTO_FINAL_SUBMISSION_ENV]: 'authored_claim_document_v2', [CONCLUSION_AUTHORING_ENV]: 'authoring_v2'};
     const nativeOutput = captureAnalysisOutputConfig(env);
-    const nativeSdk = {...sdk, contractVersion: 'openai_typed_final_admission@2'};
+    const nativeSdk = {...sdk, contractVersion: 'openai_typed_final_admission@3'};
     const nativeProfile = (modelId = 'deepseek-flash', adapterContractVersion = nativeSdk.contractVersion) => resolveModelExecutionProfile({
       runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId, baseUrl: 'https://api.deepseek.com/v1',
       sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion},
@@ -142,6 +142,14 @@ describe('captured final submission configuration', () => {
     expect(() => assertFinalSubmissionPreDispatch({...input, modelProfiles: [nativeProfile('deepseek-flash', sdk.contractVersion)]})).toThrow('model_set');
     expect(() => assertFinalSubmissionPreDispatch({...admission(), sdk: nativeSdk})).toThrow('final_submission:sdk');
     expect(() => assertFinalSubmissionPreDispatch(admission())).not.toThrow();
+    const historicalSdk = {...sdk, contractVersion: 'openai_typed_final_admission@2'};
+    const historicalDispatch = jest.fn();
+    expect(() => {
+      assertFinalSubmissionPreDispatch({...input, sdk: historicalSdk,
+        modelProfiles: [nativeProfile('deepseek-flash', historicalSdk.contractVersion)]});
+      historicalDispatch();
+    }).toThrow('final_submission:sdk');
+    expect(historicalDispatch).not.toHaveBeenCalled();
     const classify = jest.fn();
     for (const requestedMode of ['auto', 'fast'] as const) {
       for (const role of ['primaryModel', 'lightModel'] as const) {

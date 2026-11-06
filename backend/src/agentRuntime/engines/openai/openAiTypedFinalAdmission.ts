@@ -15,30 +15,35 @@ import type {AuthoredConclusionSubmission} from '../../../services/security/conc
 import {authoredClaimObjectSchema} from '../../../agent/core/authoredClaimObjectSchema';
 import {createOpenAiTypedFinalOutputMaterial, type OpenAiTypedFinalMaterialOptions} from './openAiTypedFinalOutputMaterial';
 import {TYPED_OUTPUT_WIRE_FINISH_REASONS, type RuntimeTypedOutputMaterial} from '../../typedOutputMaterial';
+import {OPENAI_TYPED_FINAL_CONTRACTS, getOpenAiTypedFinalContractIdentity,
+  type OpenAiTypedFinalContractIdentity} from '../../finalSubmissionImplementation';
 
 /** Versioned experimental transport boundary; not enabled by importing it. */
 export const OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION = 'openai_typed_final_admission@1';
 export const OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION_V2 = 'openai_typed_final_admission@2';
 export const OPENAI_TYPED_FINAL_WIRE_VERSION = 'openai_chat_final_wire@1';
 export const OPENAI_TYPED_FINAL_RAW_BYTES = 1024 * 1024;
+const MIXED_CONTRACT = OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3'];
 
 export type OpenAiTypedFinalWireFailure =
   | 'invalid_json' | 'invalid_framing' | 'transport_error' | 'not_sse'
   | 'unknown_field' | 'invalid_chunk' | 'multiple_choices' | 'invalid_tool_delta'
-  | 'multiple_tools' | 'conflicting_identity' | 'raw_limit' | 'assistant_content'
+  | 'multiple_tools' | 'conflicting_identity' | 'raw_limit' | 'assistant_content' | 'assistant_refusal'
   | 'missing_done' | 'data_after_done' | 'missing_tool' | 'non_tool_terminal';
 
 const WIRE_FINISH_REASONS = TYPED_OUTPUT_WIRE_FINISH_REASONS;
 type WireFinishReason = typeof WIRE_FINISH_REASONS[number];
 
-export interface OpenAiTypedFinalWireReceipt {
-  readonly wireVersion: typeof OPENAI_TYPED_FINAL_WIRE_VERSION;
+interface OpenAiTypedFinalWireMaterial {
   readonly dispatchOrdinal: number;
   readonly responseId: string;
   readonly callId: string;
   readonly toolName: string;
   readonly rawArguments: string;
 }
+export type OpenAiTypedFinalWireReceipt = OpenAiTypedFinalWireMaterial & (
+  {readonly wireVersion: typeof OPENAI_TYPED_FINAL_WIRE_VERSION} |
+  {readonly wireVersion: typeof MIXED_CONTRACT.wireVersion; readonly companion: string});
 export interface OpenAiTypedFinalWireEvents {
   readonly dispatchOrdinal?: number;
   materialSnapshot?(): RuntimeTypedOutputMaterial | undefined;
@@ -72,7 +77,14 @@ function appendedUtf8Bytes(previous: string, fragment: string): number {
 }
 
 /** Receives the existing terminal fetch parser's data; never reads or rewrites a response. */
-export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMaterialOptions = {}): OpenAiTypedFinalWireCollector {
+export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMaterialOptions & {
+  readonly wireVersion?: OpenAiTypedFinalContractIdentity['wireVersion'];
+} = {}): OpenAiTypedFinalWireCollector {
+  const wireVersion = options.wireVersion ?? OPENAI_TYPED_FINAL_WIRE_VERSION;
+  if (wireVersion !== OPENAI_TYPED_FINAL_WIRE_VERSION && wireVersion !== MIXED_CONTRACT.wireVersion) {
+    throw new OpenAiTypedFinalAdmissionError('contract_unavailable');
+  }
+  const mixed = wireVersion === MIXED_CONTRACT.wireVersion;
   let ordinal = 0;
   let current: OpenAiTypedFinalWireReceipt | undefined;
   let diagnostic: ReturnType<OpenAiTypedFinalWireCollector['diagnostic']> = {dispatchOrdinal: 0, status: 'pending'};
@@ -94,9 +106,11 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
       let failure: OpenAiTypedFinalWireFailure | undefined;
       let responseId: string | undefined, callId: string | undefined, callIndex: number | undefined;
       let toolName = '', rawArguments = '', argumentBytes = 0;
+      let companion = '', companionBytes = 0, argumentsOverLimit = false, companionOverLimit = false;
       let finishReason: string | undefined;
       let done = false, ended = false;
-      const material = createOpenAiTypedFinalOutputMaterial(options, () => rawArguments);
+      const material = createOpenAiTypedFinalOutputMaterial(options, () => rawArguments, mixed
+        ? () => ({companion, argumentsOverLimit, companionOverLimit}) : undefined);
       const reject = (reason: OpenAiTypedFinalWireFailure, unsafe = true) => {
         failure ??= reason;
         if (unsafe) unsafeWireFailure ??= reason;
@@ -150,7 +164,15 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
             for (const name of ['content', 'refusal', 'reasoning', 'reasoning_content']) {
               if (delta[name] != null && typeof delta[name] !== 'string') reject('invalid_chunk');
             }
-            if ((typeof delta.content === 'string' && delta.content.length) ||
+            if (mixed) {
+              if (typeof delta.refusal === 'string' && delta.refusal.length) reject('assistant_refusal', false);
+              if (typeof delta.content === 'string' && !companionOverLimit) {
+                const nextBytes = companionBytes + appendedUtf8Bytes(companion, delta.content);
+                if (nextBytes > OPENAI_TYPED_FINAL_RAW_BYTES || nextBytes + argumentBytes > OPENAI_TYPED_FINAL_RAW_BYTES) {
+                  companionOverLimit = true; reject('raw_limit');
+                } else {companionBytes = nextBytes; companion += delta.content;}
+              }
+            } else if ((typeof delta.content === 'string' && delta.content.length) ||
               (typeof delta.refusal === 'string' && delta.refusal.length)) reject('assistant_content', false);
             if (delta.tool_calls === undefined) continue;
             if (!Array.isArray(delta.tool_calls)) {reject('invalid_tool_delta'); continue;}
@@ -175,7 +197,14 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
                 if (Buffer.byteLength(toolName) + Buffer.byteLength(name) > OPENAI_TYPED_FINAL_RAW_BYTES) reject('raw_limit');
                 else toolName += name;
               }
-              if (typeof args === 'string' && failure !== 'raw_limit') {
+              if (mixed && typeof args === 'string') {
+                if (!argumentsOverLimit) {
+                  const nextBytes = argumentBytes + appendedUtf8Bytes(rawArguments, args);
+                  if (nextBytes > OPENAI_TYPED_FINAL_RAW_BYTES || nextBytes + companionBytes > OPENAI_TYPED_FINAL_RAW_BYTES) {
+                    argumentsOverLimit = true; reject('raw_limit');
+                  } else {argumentBytes = nextBytes; rawArguments += args;}
+                }
+              } else if (typeof args === 'string' && failure !== 'raw_limit') {
                 argumentBytes += appendedUtf8Bytes(rawArguments, args);
                 if (argumentBytes > OPENAI_TYPED_FINAL_RAW_BYTES) reject('raw_limit');
                 else rawArguments += args;
@@ -190,10 +219,11 @@ export function createOpenAiTypedFinalWireCollector(options: OpenAiTypedFinalMat
           if (!framingValid) reject('invalid_framing');
           if (!done) reject('missing_done');
           if (finishReason !== 'tool_calls') reject('non_tool_terminal', false);
-          if (!responseId || !callId || !toolName || !rawArguments) reject('missing_tool', false);
+          if (!responseId || !callId || !toolName || !rawArguments || (mixed && toolName !== options.finalToolName)) reject('missing_tool', false);
           if (failure || unsafeWireFailure || ordinal !== dispatchOrdinal) return;
-          current = Object.freeze({wireVersion: OPENAI_TYPED_FINAL_WIRE_VERSION, dispatchOrdinal,
-            responseId: responseId!, callId: callId!, toolName, rawArguments});
+          const retained = {dispatchOrdinal, responseId: responseId!, callId: callId!, toolName, rawArguments};
+          current = Object.freeze(mixed ? {...retained, wireVersion: MIXED_CONTRACT.wireVersion, companion}
+            : {...retained, wireVersion: OPENAI_TYPED_FINAL_WIRE_VERSION});
           diagnostic = {dispatchOrdinal, status: 'complete'};
         },
       };
@@ -258,6 +288,8 @@ export function createOpenAiTypedFinalAttempt(input: {
   ownerBinding: AuthoredFinalSubmissionOwnerBinding;
   /** Captured run syntax; omission keeps the existing v1 adapter contract. */
   representationVersion?: AuthoredFinalSubmissionVersion;
+  /** Actual pre-dispatch SDK/profile contract; omission keeps historical strict callers. */
+  contractVersion?: OpenAiTypedFinalContractIdentity['admissionVersion'];
   /** Product/run cancellation only; never the SDK's successful-finally cleanup controller. */
   signal: AbortSignal;
   assertCurrent(): void;
@@ -268,7 +300,13 @@ export function createOpenAiTypedFinalAttempt(input: {
   if (representationVersion !== AUTHORED_CLAIM_DOCUMENT_VERSION && representationVersion !== AUTHORED_CLAIM_OBJECT_VERSION) {
     throw new OpenAiTypedFinalAdmissionError('contract_unavailable');
   }
+  const contractIdentity = getOpenAiTypedFinalContractIdentity(input.contractVersion ??
+    (representationVersion === AUTHORED_CLAIM_DOCUMENT_VERSION ? OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION : OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION_V2));
+  if (!contractIdentity || contractIdentity.representationVersion !== representationVersion) {
+    throw new OpenAiTypedFinalAdmissionError('contract_unavailable');
+  }
   const collector = createOpenAiTypedFinalWireCollector({finalToolName: input.toolName, knownToolNames: input.knownToolNames,
+    wireVersion: contractIdentity.wireVersion,
     ...(representationVersion === AUTHORED_CLAIM_OBJECT_VERSION ? {materialProvider: {
       representationVersion: AUTHORED_CLAIM_OBJECT_VERSION,
       rootKeys: Object.keys(authoredClaimObjectSchema.shape),
@@ -329,16 +367,37 @@ export function createOpenAiTypedFinalAttempt(input: {
       !record(processed.functions[0]) || processed.functions[0].tool !== input.finalTool ||
       !matchesCall(processed.functions[0].toolCall, receipt)) return fail('contract_unavailable');
     const calls = response.output.filter(item => record(item) && item.type === 'function_call');
-    if (calls.length !== 1 || !matchesCall(calls[0], receipt) || response.output.some(item =>
-      !record(item) || (item.type !== 'function_call' && item.type !== 'reasoning'))) return fail('pending_work');
+    if (calls.length !== 1 || !matchesCall(calls[0], receipt)) return fail('pending_work');
+    if (receipt.wireVersion === MIXED_CONTRACT.wireVersion) {
+      if (new Set(response.output).size !== response.output.length) return fail('pending_work');
+      const messages = response.output.filter(item => record(item) && item.type === 'message');
+      const message = messages[0];
+      if (messages.length !== (receipt.companion.length ? 1 : 0) ||
+        (receipt.companion.length && (!record(message) || !onlyKeys(message, ['id', 'content', 'role', 'type', 'status']) ||
+          message.id !== receipt.responseId || message.role !== 'assistant' || message.status !== 'completed' ||
+          !Array.isArray(message.content) || message.content.length !== 1 || !record(message.content[0]) ||
+          !onlyKeys(message.content[0], ['type', 'text', 'providerData']) || message.content[0].type !== 'output_text' ||
+          message.content[0].text !== receipt.companion)) ||
+        !record(calls[0]) || calls[0].id !== receipt.responseId || processed.functions[0].toolCall !== calls[0] ||
+        !Array.isArray(processed.newItems) || processed.newItems.length !== response.output.length) return fail('pending_work');
+      for (const output of response.output) {
+        if (!record(output) || (output.type !== 'message' && output.type !== 'function_call' && output.type !== 'reasoning')) return fail('pending_work');
+        const counterparts = processed.newItems.filter(item => record(item) && item.rawItem === output);
+        const expectedType = output.type === 'message' ? 'message_output_item' : output.type === 'function_call' ? 'tool_call_item' : 'reasoning_item';
+        if (counterparts.length !== 1 || !record(counterparts[0]) || counterparts[0].type !== expectedType ||
+          counterparts[0].agent !== agent) return fail('pending_work');
+      }
+    } else if (response.output.some(item => !record(item) || (item.type !== 'function_call' && item.type !== 'reasoning'))) {
+      return fail('pending_work');
+    }
     for (const key of ['handoffs', 'computerActions', 'shellActions', 'applyPatchActions', 'mcpApprovalRequests']) {
       if (!Array.isArray(processed[key]) || processed[key].length !== 0) return fail('pending_work');
     }
     if (processed.functionToolsNotFound !== undefined && (!Array.isArray(processed.functionToolsNotFound) ||
       processed.functionToolsNotFound.length !== 0)) return fail('pending_work');
-    if (!Array.isArray(processed.newItems) || processed.newItems.some(item => !record(item) ||
+    if (receipt.wireVersion === OPENAI_TYPED_FINAL_WIRE_VERSION && (!Array.isArray(processed.newItems) || processed.newItems.some(item => !record(item) ||
       !record(item.rawItem) || (item.type !== 'tool_call_item' && item.type !== 'reasoning_item') ||
-      (item.rawItem.type !== 'reasoning' && !matchesCall(item.rawItem, receipt)))) return fail('pending_work');
+      (item.rawItem.type !== 'reasoning' && !matchesCall(item.rawItem, receipt))))) return fail('pending_work');
     if (!(state._pendingAgentToolRuns instanceof Map) || state._pendingAgentToolRuns.size !== 0 ||
       !Array.isArray(state._modelResponses) || !Array.isArray(state._generatedItems)) return fail('pending_work');
     const previous = new Set<string>();
@@ -370,6 +429,7 @@ export function createOpenAiTypedFinalAttempt(input: {
       end: valid => {events.end(valid); checkAfter();}, fail: code => {events.fail(code); checkAfter();}};
   }};
   return {
+    get contractIdentity() {return contractIdentity;},
     wireObserver,
     diagnostic: () => ({...collector.diagnostic(), ...(revoked ? {admissionFailure: revoked} : {}),
       ...(firstCompilerFailure ? {compilerFailure: firstCompilerFailure} : {})}),

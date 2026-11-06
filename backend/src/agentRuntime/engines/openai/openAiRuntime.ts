@@ -126,6 +126,7 @@ import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 import {createOpenAiTypedFinalAttempt,
   type OpenAiTypedFinalWireEvents, type OpenAiTypedFinalWireObserver} from './openAiTypedFinalAdmission';
 import {FinalSubmissionConfigurationError} from '../../finalSubmissionConfig';
+import {getOpenAiTypedFinalContractIdentity} from '../../finalSubmissionImplementation';
 import {admitFinalSubmissionConfiguration, installedOpenAiSdkCompatibility} from './openAiFinalSubmissionConfig';
 import {createAuthoredFinalSubmissionIssuer, readAuthoredFinalSubmission, type AuthoredFinalSubmissionSnapshot} from '../../authoredFinalSubmission';
 import {hasCurrentAuthoredFinalDelivery, type AuthoredConclusionSubmission} from '../../../services/security/conclusionProtocolProjection';
@@ -962,6 +963,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       if (admittedFinalModels && !admittedFinalModels.has(selectedModel)) {
         throw new FinalSubmissionConfigurationError('unsupported_final_submission', 'model_set');
       }
+      const typedContractIdentity = getOpenAiTypedFinalContractIdentity(admittedFinalModels?.get(selectedModel)?.sdk.adapterContractVersion);
+      if (usesTypedFinal && (!typedContractIdentity || typedContractIdentity.representationVersion !== typedRepresentationVersion)) {
+        throw new FinalSubmissionConfigurationError('unsupported_final_submission', 'sdk');
+      }
       const maxTurns = quickMode ? config.quickMaxTurns : config.maxTurns;
       const turnBudget = resolveRuntimeTurnBudget(maxTurns);
       const finalizationConfig = createOpenAiFinalizationConfig(config);
@@ -1135,7 +1140,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         let attemptContractFault: OpenAiNativeDrainUnavailableError | undefined;
         let typedAttempt: TypedFinalAttempt | undefined;
         let typedAttemptCurrent = true;
-        if (usesTypedFinal) {
+        if (typedContractIdentity) {
           if (!context.finalTool || context.finalTool.tool.type !== 'function') throw new Error('final_submission_tool_unavailable');
           const assertRunCurrent = () => {
             executionLease.throwIfAborted(); analysisAbortScope.throwIfAborted(); authorization.assertCurrent();
@@ -1146,6 +1151,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           const issuer = createAuthoredFinalSubmissionIssuer({binding: ownerBinding, representationVersion: typedRepresentationVersion, assertCurrent: assertRunCurrent,
             assertAttemptCurrent: () => {assertRunCurrent(); if (!typedAttemptCurrent) throw new Error('final_submission_attempt_inactive');}});
           typedAttempt = createOpenAiTypedFinalAttempt({finalTool: context.finalTool.tool, toolName: context.finalTool.nativeName,
+            contractVersion: typedContractIdentity.admissionVersion,
             knownToolNames: context.tools.map(installedTool => installedTool.name),
             issuer, ownerBinding, representationVersion: typedRepresentationVersion, signal: analysisAbortScope.signal, assertCurrent: assertRunCurrent,
             deadlineAt: () => runDeadline.current()});
@@ -1628,8 +1634,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             if (observedSubmission) {
               const issuedObservation = observedSubmission;
               observeSafely(() => {
-                const admissionVersion = admittedFinalModels?.get(selectedModel)?.sdk.adapterContractVersion;
-                if (!observedLogicalCallKey || !admissionVersion) return;
+                const contractIdentity = typedAttempt?.contractIdentity;
+                if (!observedLogicalCallKey || !contractIdentity ||
+                    contractIdentity.representationVersion !== issuedObservation.binding.representationVersion ||
+                    contractIdentity.compilerVersion !== issuedObservation.binding.compilerContractVersion) return;
                 const responseKey = runtimeObservationHash(issuedObservation.binding.responseId);
                 const actualModel = observedResponse?.logicalCallKey === observedLogicalCallKey &&
                     observedResponse.response.status === 'observed' && observedResponse.response.hash === responseKey
@@ -1638,8 +1646,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                   kind: 'typed_issued_after_drain', attemptKey: runtimeObservationHash(JSON.stringify({runId, attemptId: observedAttemptId})),
                   logicalCallKey: observedLogicalCallKey, responseKey, callKey: runtimeObservationHash(issuedObservation.binding.callId),
                   actualModel, nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: runtimeObservationHash(issuedObservation.compiled.body),
-                  representationVersion: issuedObservation.binding.representationVersion,
-                  compilerVersion: issuedObservation.binding.compilerContractVersion, admissionVersion,
+                  ...contractIdentity,
                 });
                 retainedLineage = {transform: 'native', authors: [{role: 'body_and_declaration', terminal: {eventKey}}],
                   declaredBody: issuedObservation.compiled.body.trim() ? 'present' : 'absent',

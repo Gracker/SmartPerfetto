@@ -141,7 +141,8 @@ function structure(outer: Record<string, unknown>, document: Record<string, unkn
 /** Pure observer over the existing parser callbacks and retained request buffer.
  * It never authorizes a tool, modifies a receipt or keeps a second raw document. */
 export function createOpenAiTypedFinalOutputMaterial(options: OpenAiTypedFinalMaterialOptions,
-  readRetainedArguments: () => string) {
+  readRetainedArguments: () => string,
+  readRetentionFacts?: () => Readonly<{companion: string; argumentsOverLimit: boolean; companionOverLimit: boolean}>) {
   const argumentsCount = new Counter(), companionCount = new Counter(), refusalCount = new Counter();
   const companionTail: Tail = {high: false}, refusalTail: Tail = {high: false};
   const calls = new Map<number, Call>();
@@ -220,8 +221,13 @@ export function createOpenAiTypedFinalOutputMaterial(options: OpenAiTypedFinalMa
           ...(companionCount.seen ? {companion: companionCount.snapshot(Number(companionTail.high))} : {}),
           ...(refusalCount.seen ? {refusal: refusalCount.snapshot(Number(refusalTail.high))} : {})};
         const rawArguments = readRetainedArguments(), retainedUtf8Bytes = Buffer.byteLength(rawArguments);
+        // Capture the private facts once. The callback is supplied only by a transport
+        // that actually retains companion text; old observers keep their original result.
+        const facts = readRetentionFacts?.();
+        const retainedCompanion = facts?.companion;
+        const lostArguments = facts?.argumentsOverLimit === true, lostCompanion = facts?.companionOverLimit === true;
         const argumentRetention: RuntimeTypedOutputRetention = {status: !decoded.arguments ? 'not_observed' :
-          argumentsOverLimit ? 'over_limit' : ambiguous ? 'ambiguous' :
+          argumentsOverLimit || lostArguments ? 'over_limit' : ambiguous ? 'ambiguous' :
             decoded.arguments.utf8Precision === 'exact' && decoded.arguments.utf16Precision === 'exact' &&
             decoded.arguments.utf8Bytes === retainedUtf8Bytes && decoded.arguments.utf16Chars === rawArguments.length ? 'complete' : 'not_retained',
           retainedUtf8Bytes};
@@ -230,6 +236,14 @@ export function createOpenAiTypedFinalOutputMaterial(options: OpenAiTypedFinalMa
           ? {status: 'ambiguous', retainedUtf8Bytes} : argumentRetention;
         const unretained = (counter?: RuntimeTypedOutputDecoded): RuntimeTypedOutputRetention => !counter ? {status: 'not_observed', retainedUtf8Bytes: 0} :
           {status: counter.utf8Bytes === 0 && counter.utf8Precision === 'exact' && counter.utf16Precision === 'exact' ? 'complete' : 'not_retained', retainedUtf8Bytes: 0};
+        let companionRetention = unretained(decoded.companion);
+        if (retainedCompanion !== undefined && decoded.companion) {
+          const retainedBytes = Buffer.byteLength(retainedCompanion);
+          companionRetention = {status: lostCompanion ? 'over_limit' :
+            decoded.companion.utf8Precision === 'exact' && decoded.companion.utf16Precision === 'exact' &&
+            retainedBytes === decoded.companion.utf8Bytes && retainedCompanion.length === decoded.companion.utf16Chars
+              ? 'complete' : retainedBytes ? 'ambiguous' : 'not_retained', retainedUtf8Bytes: retainedBytes};
+        }
         let json: RuntimeTypedOutputMaterial['json'] = {status: 'not_parsed'};
         let representation: RuntimeTypedOutputMaterial['representation'] = wireToolRole === 'other_tool' || wireToolRole === 'no_tool' ? 'not_applicable' : 'unknown';
         let observedStructure: RuntimeTypedOutputStructure = {status: representation === 'not_applicable' ? 'not_applicable' : 'not_observed'};
@@ -251,8 +265,8 @@ export function createOpenAiTypedFinalOutputMaterial(options: OpenAiTypedFinalMa
         }
         return freeze({schemaVersion: 'typed_output_material@1', wireToolRole,
           transport: {doneSeen, eofSeen, framing: invalidFraming ? 'invalid' : eofSeen ? 'valid' : 'unknown', ...(finishReason ? {finishReason} : {})}, decoded,
-          retention: {arguments: retainedArguments, companion: unretained(decoded.companion), refusal: unretained(decoded.refusal),
-            combinedRetainedUtf8Bytes: retainedArguments.retainedUtf8Bytes}, json, representation, structure: observedStructure});
+          retention: {arguments: retainedArguments, companion: companionRetention, refusal: unretained(decoded.refusal),
+            combinedRetainedUtf8Bytes: retainedArguments.retainedUtf8Bytes + companionRetention.retainedUtf8Bytes}, json, representation, structure: observedStructure});
       } catch {broken = true; return undefined;}
     },
   };

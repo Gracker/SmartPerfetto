@@ -20,7 +20,7 @@ const CANARY = 'PRIVATE_PREFLIGHT_FIXTURE_CANARY';
 const guardSource = String.raw`
 const fs = require('node:fs'), path = require('node:path'), Module = require('node:module');
 const sourceRoot = fs.realpathSync(path.join(process.env.PREFLIGHT_BACKEND_ROOT, 'src')) + path.sep;
-const journal = {attempts: [], forbiddenImports: [], guardedSdk: [], configCalls: [], purposeInputs: [], configKeys: [], events: [], allowedBootstrap: 0};
+const journal = {attempts: [], forbiddenImports: [], guardedSdk: [], configCalls: [], sdkModes: [], purposeInputs: [], configKeys: [], events: [], allowedBootstrap: 0};
 let loadedConfig;
 let umbrellaImportDepth = 0;
 const blocked = name => function () {journal.attempts.push(name); throw new Error('blocked_test_operation');};
@@ -119,6 +119,10 @@ Module._load = function (request, parent, isMain) {
   if (/[/\\]engines[/\\]openai[/\\]openAiFinalSubmissionConfig\.(?:ts|js)$/.test(resolved)) {
     if (!gateModules.has(value)) gateModules.set(value, new Proxy(value, {get(target, key, receiver) {
       const item = Reflect.get(target, key, receiver);
+      if (key === 'installedOpenAiSdkCompatibility') return function (mode) {
+        journal.sdkModes.push(mode === undefined ? 'absent' : mode);
+        return item.apply(this, arguments);
+      };
       if (key !== 'admitFinalSubmissionConfiguration') return item;
       return function () {journal.events.push('production_gate'); return item.apply(this, arguments);};
     }}));
@@ -134,6 +138,7 @@ interface GuardJournal {
   attempts: string[]; guardedSdk: string[]; events: string[]; allowedBootstrap: number;
   forbiddenImports: Array<{resolved: string; parents: string[]}>;
   configCalls: Array<{providerId: unknown; providerScope: unknown}>;
+  sdkModes: string[];
   configKeys: string[]; purposeInputs: Array<{helper: string; sameConfig: boolean}>;
 }
 
@@ -210,7 +215,9 @@ describe('maintained LLM execution target preflight', () => {
     input: {protocol: string; model: string; lightModel: string; baseURL: string; cap?: number;
       classifierLimit: number; classifierField: string; reviewField: string}) {
     if (receipt.status !== 'ready') throw new Error('Expected purpose contracts after actual gate success');
-    expect(receipt.schemaVersion).toBe('llm_target_preflight@2');
+    expect(receipt.schemaVersion).toBe('llm_target_preflight@3');
+    expect(receipt.outputImplementation).toEqual({kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'});
+    expect(journal.sdkModes).toEqual(['assistant_text']);
     expect(receipt.sdk.nodeVersion).toBe(process.versions.node);
     expect(receipt.actualResolvedConfig.some(row => row.field === '/sdk/nodeVersion')).toBe(false);
     expect(journal.purposeInputs).toEqual([
@@ -327,12 +334,37 @@ describe('maintained LLM execution target preflight', () => {
     }
   });
 
+  it('reports the actual installed native v2 implementation independently of declared treatment facts', () => {
+    const declaredFields = buildRuntimeConfigCommitments({configuration: {implementation: 'openai_typed_final_admission@2'},
+      environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'assistant_text'}})!;
+    const test = fixture({side: 'candidate', treatmentHash: 'd'.repeat(64), declaredConfig: {
+      schemaVersion: 'benchmark_config_commitments@2', fields: declaredFields,
+      fullFingerprint: runtimeConfigCommitmentsFingerprint(declaredFields)!,
+      controlsFingerprint: runtimeConfigControlsFingerprint(declaredFields)!, legacyConfigFingerprint: 'e'.repeat(64),
+    }});
+    const result = test.run({SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v2',
+      SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2', OPENAI_AGENTS_PROTOCOL: 'chat_completions',
+      OPENAI_BASE_URL: 'https://api.deepseek.com/v1', OPENAI_MODEL: 'deepseek-flash', OPENAI_LIGHT_MODEL: 'deepseek-flash',
+      OPENAI_ANALYSIS_REASONING_EFFORT: 'none'});
+    expect(result.status).toBe(0);
+    expect(result.observed.sdkModes).toEqual(['authored_claim_document_v2']);
+    const receipt = test.receipt();
+    expect(receipt).toMatchObject({schemaVersion: 'llm_target_preflight@3', status: 'ready',
+      capturedOutput: {finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'},
+      declaredTreatmentHash: test.request.treatmentHash});
+    if (receipt.status !== 'ready') throw new Error('Expected actual native v2 gate success');
+    expect(receipt.outputImplementation).toEqual({kind: 'typed', representationVersion: 'authored_claim_document@2',
+      compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@3',
+      wireVersion: 'openai_chat_final_wire@2'});
+    expect(fs.readFileSync(test.output, 'utf8')).not.toContain(CANARY);
+  });
+
   it('returns fixed real typed-gate refusal without sending a model request', () => {
     const test = fixture({side: 'candidate'});
     const result = test.run({SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v1'});
     expect(result.status).toBe(1);
     expect(result.observed.purposeInputs).toEqual([]);
-    expect(test.receipt()).toMatchObject({schemaVersion: 'llm_target_preflight@2', status: 'failed', failureCode: 'unsupported_final_submission'});
+    expect(test.receipt()).toMatchObject({schemaVersion: 'llm_target_preflight@3', status: 'failed', failureCode: 'unsupported_final_submission'});
   });
 
   it('keeps a supported typed-v1 production gate separate from v3 treatment eligibility', () => {

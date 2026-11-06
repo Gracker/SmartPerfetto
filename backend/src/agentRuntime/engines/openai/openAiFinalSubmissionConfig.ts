@@ -9,7 +9,7 @@ import {isPlainObject} from '../../../utils/llmJson';
 import {resolveModelExecutionProfile, type ResolvedModelExecutionProfile} from '../../../services/providerManager/modelExecutionProfile';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {assertFinalSubmissionPreDispatch, type FinalSubmissionSdkCompatibility, type FinalSubmissionMode} from '../../finalSubmissionConfig';
-import {OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION, OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION_V2} from './openAiTypedFinalAdmission';
+import {expectedOpenAiTypedFinalContract} from '../../finalSubmissionImplementation';
 import type {OpenAIAgentConfig} from './openAiConfig';
 
 /** Resolve the packages used by the already imported umbrella SDK, not a configured version label. */
@@ -27,8 +27,8 @@ export function installedOpenAiSdkCompatibility(finalSubmission: FinalSubmission
     };
     return {agentsCoreVersion: version(coreEntry, '@openai/agents-core'),
       agentsOpenAiVersion: version(openAiEntry, '@openai/agents-openai'),
-      contractVersion: finalSubmission === 'authored_claim_document_v2'
-        ? OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION_V2 : OPENAI_TYPED_FINAL_ADMISSION_CONTRACT_VERSION};
+      contractVersion: expectedOpenAiTypedFinalContract(finalSubmission === 'assistant_text'
+        ? 'authored_claim_document_v1' : finalSubmission).admissionVersion};
   } catch {return unknown;}
 }
 

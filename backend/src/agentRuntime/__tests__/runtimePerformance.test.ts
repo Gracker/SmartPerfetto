@@ -6,6 +6,7 @@ import {createHash} from 'crypto';
 import type {RuntimeFinalTransportEventInput} from '../runtimePerformance';
 import {TYPED_OUTPUT_MATERIAL_LIMITS, type RuntimeTypedOutputMaterial} from '../typedOutputMaterial';
 import {CONCLUSION_PROTOCOL_VALUES} from '../../agent/core/conclusionContract';
+import {OPENAI_TYPED_FINAL_CONTRACTS} from '../finalSubmissionImplementation';
 import {describe, expect, it, jest} from '@jest/globals';
 
 import {
@@ -1418,5 +1419,56 @@ describe('R11 closed typed output material observations', () => {
     expect(() => drop(source)).not.toThrow();
     expect(recordRuntimeFinalTransportEvent(source, event())).toBeUndefined();
     expect(JSON.stringify(recorder.seal())).toBe(before);
+  });
+});
+
+
+describe('R11 Stage B exact typed issued implementation tuples', () => {
+  function issued(tuple: Record<string, unknown>): RuntimeFinalTransportEventInput {
+    return {kind: 'typed_issued_after_drain', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      responseKey: 'c'.repeat(64), callKey: 'd'.repeat(64), actualModel: {status: 'observed', hash: 'e'.repeat(64)},
+      nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: 'f'.repeat(64), ...tuple} as unknown as RuntimeFinalTransportEventInput;
+  }
+  it.each(['openai_typed_final_admission@1', 'openai_typed_final_admission@2'] as const)('preserves historical %s bytes without manufacturing wire observations', admission => {
+    const {wireVersion: _wire, ...tuple} = OPENAI_TYPED_FINAL_CONTRACTS[admission];
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recorder.recordFinalTransportEvent(issued(tuple))).toBeDefined();
+    const receipt = recorder.seal().finalTransportObservation!;
+    expect(receipt.events[0]).not.toHaveProperty('wireVersion');
+    expect(projectRuntimeFinalTransportObservation(receipt)).toEqual(receipt);
+  });
+  it('requires and preserves the actual mixed admission3/wire2 tuple', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const input = issued(OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']);
+    expect(recorder.recordFinalTransportEvent(input)).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject(input);
+    expect(projectRuntimeFinalTransportObservation(recorder.seal().finalTransportObservation)).toEqual(recorder.seal().finalTransportObservation);
+  });
+  it.each(['missing_wire', 'old_wire', 'wrong_compiler', 'unknown_admission', 'extra'])(
+    'does not accept an incomplete or contradictory mixed tuple: %s', mutation => {
+      const tuple: Record<string, unknown> = {...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+      if (mutation === 'missing_wire') delete tuple.wireVersion;
+      if (mutation === 'old_wire') tuple.wireVersion = 'openai_chat_final_wire@1';
+      if (mutation === 'wrong_compiler') tuple.compilerVersion = 'authored_claim_document_compiler@1';
+      if (mutation === 'unknown_admission') tuple.admissionVersion = 'openai_typed_final_admission@4';
+      if (mutation === 'extra') tuple.privatePayload = 'PRIVATE';
+      const recorder = createRuntimePerformanceRecorder();
+      expect(recorder.recordFinalTransportEvent(issued(tuple))).toBeUndefined();
+      expect(recorder.seal().finalTransportObservation?.truncated).toBe(1);
+    });
+  it.each(['openai_typed_final_admission@1', 'openai_typed_final_admission@2'] as const)('preserves explicitly observed old wire1 for %s', admission => {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recorder.recordFinalTransportEvent(issued(OPENAI_TYPED_FINAL_CONTRACTS[admission]))).toBeDefined();
+    expect(recorder.seal().finalTransportObservation?.events[0]).toMatchObject({wireVersion: 'openai_chat_final_wire@1'});
+  });
+  it.each([
+    {representationVersion: 'authored_claim_document@1', compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@1'},
+    {representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@1', admissionVersion: 'openai_typed_final_admission@2'},
+    {representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@1'},
+    {representationVersion: 'authored_claim_document@1', compilerVersion: 'authored_claim_document_compiler@1', admissionVersion: 'openai_typed_final_admission@2'},
+  ])('rejects a Cartesian-product tuple even though all its version strings are individually known: %j', tuple => {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recorder.recordFinalTransportEvent(issued(tuple))).toBeUndefined();
+    expect(recorder.seal().finalTransportObservation).toEqual({schemaVersion: 'final_transport_observation@1', events: [], truncated: 1});
   });
 });

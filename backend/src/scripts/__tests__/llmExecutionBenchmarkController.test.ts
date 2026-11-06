@@ -13,6 +13,8 @@ import {CONCLUSION_AUTHORING_ENV} from '../../agent/core/conclusionAuthoring';
 import {SMARTPERFETTO_FINAL_SUBMISSION_ENV} from '../../agentRuntime/finalSubmissionConfig';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../../agentRuntime/runtimeCandidateAdmission';
 import {SMARTPERFETTO_SAFE_TOOL_CONCURRENCY_ENV} from '../../agentRuntime/runtimeToolConcurrency';
+import {OPENAI_TYPED_FINAL_CONTRACTS, OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION,
+  getOpenAiTypedFinalContractIdentity} from '../../agentRuntime/finalSubmissionImplementation';
 
 const backendRoot = path.resolve(__dirname, '../../..');
 const controller = require(path.join(backendRoot, 'scripts/run-llm-execution-benchmark.cjs'));
@@ -30,6 +32,7 @@ function checkout(root: string, changed = false) {
     write(root, `backend/src/agentRuntime/${name}.ts`, 'common observer');
   }
   write(root, 'backend/src/agentRuntime/typedOutputMaterial.ts', 'common material schema');
+  write(root, 'backend/src/agentRuntime/finalSubmissionImplementation.ts', 'common exact version table');
   write(root, 'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts', 'common material observer');
   write(root, 'Trace/fixture.pftrace', 'shared trace');
   return fs.realpathSync(root);
@@ -223,7 +226,7 @@ describe('LLM execution benchmark controller contracts', () => {
     write(root, 'backend/src/scripts/agentE2eMetrics.ts', 'common metrics');
     const legacy = lifecycle.fingerprintObserver(root, HOOK);
     const before = lifecycle.fingerprintObserver(root, HOOK, true);
-    for (const relative of ['backend/src/agentRuntime/typedOutputMaterial.ts',
+    for (const relative of ['backend/src/agentRuntime/typedOutputMaterial.ts', 'backend/src/agentRuntime/finalSubmissionImplementation.ts',
       'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts']) {
       const previous = fs.readFileSync(path.join(root, relative));
       write(root, relative, 'changed observer material');
@@ -509,6 +512,51 @@ describe('W0 default-text to native-v2 controller', () => {
     }
   });
 
+  it('requires an explicit supported treatment selection and preserves the no-treatment path', () => {
+    expect(controller.parseArgs(cli('/base', '/candidate'))).not.toHaveProperty('treatment');
+    for (const id of [lifecycle.TREATMENT_ID, lifecycle.MIXED_CONTENT_TREATMENT_ID]) {
+      expect(controller.parseArgs(cli('/base', '/candidate', ['--treatment', id])).treatment).toBe(id);
+    }
+    expect(() => controller.parseArgs(cli('/base', '/candidate', ['--treatment', 'assistant_text_to_native_v2@3']))).toThrow('benchmark_treatment_invalid');
+  });
+
+  it('keeps the historical constructor byte hash captured from actual Stage A source', () => {
+    const inputs = ['base', 'candidate'].map(side => ({runtime: 'openai-agents-sdk', control: {budget: 4096}, environment: {
+      SMARTPERFETTO_FINAL_SUBMISSION: lifecycle.TREATMENT_OUTPUTS[side].finalSubmission,
+      SMARTPERFETTO_CONCLUSION_AUTHORING: lifecycle.TREATMENT_OUTPUTS[side].declarationSyntax,
+    }}));
+    const aligned = lifecycle.alignConfigCommitments(...inputs.map(input => lifecycle.buildConfigCommitments(input)));
+    const configurations = aligned.map((fields: unknown, index: number) => lifecycle.makeConfigCommitments(fields, lifecycle.hash(JSON.stringify(inputs[index]))));
+    // Captured before any production edit: r11/d-stage-b/legacy-treatment-before.json.
+    const capturedSha = 'fb0f2a9b4774eb5242108186c489c48ef6331bf96e245a65ebc87630772a8b65';
+    expect(lifecycle.hash(JSON.stringify(lifecycle.makeRepresentationTreatment(...configurations)))).toBe(capturedSha);
+    expect(lifecycle.hash(JSON.stringify(lifecycle.makeRepresentationTreatment(...configurations, lifecycle.TREATMENT_ID)))).toBe(capturedSha);
+    const mixed = lifecycle.makeRepresentationTreatment(...configurations, lifecycle.MIXED_CONTENT_TREATMENT_ID);
+    expect(mixed).toMatchObject({schemaVersion: 'representation_treatment@2', implementationContracts: {
+      candidate: OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']}});
+    expect(() => lifecycle.makeRepresentationTreatment(...configurations, 'unknown')).toThrow('benchmark_treatment_invalid');
+  });
+
+  it('keeps the native CLI exact tuple mirror in parity without widening to Cartesian versions', () => {
+    expect(lifecycle.parseOutputImplementation(OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION)).toEqual(OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION);
+    for (const [admission, identity] of Object.entries(OPENAI_TYPED_FINAL_CONTRACTS)) {
+      expect(lifecycle.getOpenAiTypedFinalContractIdentity(admission)).toEqual(getOpenAiTypedFinalContractIdentity(admission));
+      expect(lifecycle.parseOutputImplementation({kind: 'typed', ...identity})).toEqual({kind: 'typed', ...identity});
+      for (const field of Object.keys(identity)) {
+        const partial: Record<string, unknown> = {kind: 'typed', ...identity}; delete partial[field];
+        expect(() => lifecycle.parseOutputImplementation(partial)).toThrow('benchmark_output_implementation_invalid');
+        for (const other of Object.values(OPENAI_TYPED_FINAL_CONTRACTS)) {
+          if (other[field as keyof typeof other] === identity[field as keyof typeof identity]) continue;
+          expect(() => lifecycle.parseOutputImplementation({...identity, kind: 'typed', [field]: other[field as keyof typeof other]}))
+            .toThrow('benchmark_output_implementation_invalid');
+        }
+      }
+      expect(() => lifecycle.parseOutputImplementation({kind: 'typed', ...identity, raw: 'PRIVATE'})).toThrow('benchmark_output_implementation_invalid');
+    }
+    for (const value of ['__proto__', 'unknown', undefined, null, 3]) expect(lifecycle.getOpenAiTypedFinalContractIdentity(value)).toBeUndefined();
+    expect(() => lifecycle.parseOutputImplementation({...OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION, wireVersion: 'openai_chat_final_wire@2'})).toThrow();
+  });
+
   it.each([
     [], ['--mode', 'full'], ['--mode', 'fast'], ['--mode', 'smart'], ['--provider-id', ' ENV '],
     ['--follow-up-query', 'next', '--follow-up-mode', 'fast'],
@@ -549,6 +597,99 @@ describe('W0 default-text to native-v2 controller', () => {
     return expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_').then(() => {
       expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
     });
+  });
+
+  it('rejects new implementation claims smuggled into a historical preflight before any paid sample', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      if (request.side === 'candidate') result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+    });
+    await expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_preflight_failed');
+    expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+  });
+
+  it('supports the explicitly selected mixed transport without silently relabeling the historical treatment', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3';
+      result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+        : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+    });
+    fixture.options.treatment = 'assistant_text_to_native_v2@2';
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(result.artifact.treatment).toMatchObject({schemaVersion: 'representation_treatment@2', id: 'assistant_text_to_native_v2@2',
+      implementationContracts: {candidate: OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']}});
+    expect(result.artifact.measurementOrigin).toBe('synthetic');
+    expect(fixture.dependencies.runOwnedVerifier).toHaveBeenCalledTimes(6);
+  });
+
+  it.each(['old_receipt', 'missing', 'old_contract', 'wrong_wire', 'wrong_compiler', 'base_typed', 'extra', 'old_id_new_contract'])(
+    'rejects a mixed implementation preflight mismatch before any paid sample: %s', fault => {
+      const fixture = treatmentFixture((_input, request, result) => {
+        result.schemaVersion = 'llm_target_preflight@3';
+        result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+          : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+        if (fault === 'base_typed' && request.side === 'base') result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+        if (request.side !== 'candidate') return;
+        if (fault === 'old_receipt') {result.schemaVersion = 'llm_target_preflight@2'; delete result.outputImplementation;}
+        if (fault === 'missing') delete result.outputImplementation;
+        if (fault === 'old_contract') result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@2']};
+        if (fault === 'wrong_wire') result.outputImplementation.wireVersion = 'openai_chat_final_wire@1';
+        if (fault === 'wrong_compiler') result.outputImplementation.compilerVersion = 'authored_claim_document_compiler@1';
+        if (fault === 'extra') result.outputImplementation.privatePayload = 'PRIVATE';
+      });
+      fixture.options.treatment = fault === 'old_id_new_contract' ? lifecycle.TREATMENT_ID : lifecycle.MIXED_CONTENT_TREATMENT_ID;
+      return expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_preflight_failed').then(() => {
+        expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+      });
+    });
+
+  it('finishes every initial cell implementation gate before any paid sample', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3';
+      result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+        : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS[request.cellId === 'startup'
+          ? 'openai_typed_final_admission@2' : 'openai_typed_final_admission@3']};
+    });
+    fixture.options.treatment = lifecycle.MIXED_CONTENT_TREATMENT_ID;
+    fixture.options.cells = ['scheduler', 'startup'];
+    const load = fixture.dependencies.loadCheckout;
+    fixture.dependencies.loadCheckout = (root: string) => {
+      const checkout = load(root);
+      return {...checkout, api: {...checkout.api,
+        suites: {startup: {args: ['--trace', '../Trace/fixture.pftrace', '--expectation-json', '{}']}}}};
+    };
+    await expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_preflight_failed');
+    expect(fixture.order).toEqual(['probe:base', 'probe:candidate', 'probe:base', 'probe:candidate']);
+    expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    const lastProbe = fixture.probe.mock.calls[3][0];
+    const saved = JSON.parse(fs.readFileSync(lastProbe.args[lastProbe.args.indexOf('--output') + 1], 'utf8'));
+    expect(saved).toMatchObject({status: 'ready', cellId: 'startup', side: 'candidate',
+      outputImplementation: {admissionVersion: 'openai_typed_final_admission@2'}});
+  });
+
+  it('accepts an actual @3 receipt for the exact historical implementation without upgrading it', async () => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3'; result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+        : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@2']};
+    });
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(result.artifact.treatment.id).toBe(lifecycle.TREATMENT_ID);
+    expect(result.artifact.treatment.implementationContracts.candidate).not.toHaveProperty('wireVersion');
+    expect(fixture.dependencies.runOwnedVerifier).toHaveBeenCalledTimes(6);
+  });
+
+  it('blocks an implementation drift in the first sample reprobe before that paid invocation', async () => {
+    let probeCount = 0;
+    const fixture = treatmentFixture((_input, request, result) => {
+      result.schemaVersion = 'llm_target_preflight@3';
+      result.outputImplementation = request.side === 'base' ? OPENAI_ASSISTANT_OUTPUT_IMPLEMENTATION
+        : {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@3']};
+      if (++probeCount === 3) result.outputImplementation = {kind: 'typed', ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@2']};
+    });
+    fixture.options.treatment = lifecycle.MIXED_CONTENT_TREATMENT_ID;
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    expect(result.artifact.lifecycle).toBe('incomplete');
+    expect(result.artifact.samples[0].failureCode).toBe('benchmark_preflight_failed');
   });
 
   it('refuses a later probe change before dispatching that sample', async () => {

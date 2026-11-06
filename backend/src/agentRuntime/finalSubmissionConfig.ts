@@ -4,6 +4,7 @@
 import {CONCLUSION_AUTHORING_ENV, resolveConclusionDeclarationSyntax} from '../agent/core/conclusionAuthoring';
 import type {ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
 import type {ModelExecutionProtocol, ResolvedModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
+import {expectedOpenAiTypedFinalContract} from './finalSubmissionImplementation';
 
 export const SMARTPERFETTO_FINAL_SUBMISSION_ENV = 'SMARTPERFETTO_FINAL_SUBMISSION';
 export type FinalSubmissionMode = 'assistant_text' | 'authored_claim_document_v1' | 'authored_claim_document_v2';
@@ -83,8 +84,7 @@ export function assertFinalSubmissionPreDispatch(input: FinalSubmissionPreDispat
     throw new FinalSubmissionConfigurationError('unsupported_final_submission', reason);
   }
   if (input.protocol !== 'chat_completions') unsupported('protocol');
-  const sdkContract = input.outputConfig.finalSubmission === 'authored_claim_document_v2'
-    ? 'openai_typed_final_admission@2' : 'openai_typed_final_admission@1';
+  const sdkContract = expectedOpenAiTypedFinalContract(input.outputConfig.finalSubmission).admissionVersion;
   if (input.sdk?.agentsCoreVersion !== '0.13.0' || input.sdk.agentsOpenAiVersion !== '0.13.0' ||
       input.sdk.contractVersion !== sdkContract) unsupported('sdk');
   const selection = input.modelSelection;

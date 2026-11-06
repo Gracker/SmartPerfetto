@@ -124,6 +124,22 @@ completion or start legacy declaration repair or continuation. Program ACK and
 direct-evidence paths without a main call retain their delivery. Transport
 observations record `not_exercised`.
 
+Transport versions are checked as exact combinations.
+
+| Document submission | representation / compiler | admission / wire |
+| --- | --- | --- |
+| V1 | `@1` / `@1` | `@1` / `@1` |
+| Historical V2 | `@2` / `@2` | `@2` / `@1` |
+| Current V2 | `@2` / `@2` | `@3` / `@2` |
+
+Current V2 accepts bounded assistant companion text alongside the unique final
+document function call in the same response. The text must match the SDK's
+completed assistant message exactly and belong to that response. The submitted
+complete document supplies the final body. Nonempty refusal, additional pending
+work and incomplete transport block admission. Contract versions come from the
+actual SDK adapter implementation and private attempt. Historical records retain
+their original versions.
+
 The current typed envelope delivers Conversation text as `answered`, with existing
 evidence. Control-looking body text remains literal. Explicit `needs_user_input`
 and `recommend_full` actions use the `assistant_text` control protocol. The typed
@@ -152,6 +168,15 @@ Request `toolArguments` metrics count historical arguments sent in that request,
 excluding its subsequently generated response. Without a later dispatch, the final
 submission never enters that input counter. Missing material diagnostics do not
 mean zero output size.
+
+Internal `typed_output_observed` events bind requests to actual authorized
+dispatches and can retain closed material counts before final document issuance.
+Decoded UTF-8/UTF-16, retained material, DONE/EOF, JSON completeness and structure
+are measured separately. Saturated counts carry explicit lower bounds. Structure
+counts retain original invalid entries and distinguish null from missing.
+Normalized JSON partitions and original argument bytes use distinct measures.
+These counts support cost diagnosis. Admission and the finalizer establish
+submission and verification.
 
 Internal performance observations distinguish actual main, classification and
 semantic-review dispatches, linking native termination, tool drain, candidate

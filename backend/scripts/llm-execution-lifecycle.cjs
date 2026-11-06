@@ -42,6 +42,7 @@ function canonicalJson(value) {
 // The native CLI cannot import TypeScript. Keep this bounded commitment codec in parity
 // with runtimePerformance.ts; owning fixtures compare exact rows and fingerprints.
 const TREATMENT_ID = 'assistant_text_to_native_v2@1';
+const MIXED_CONTENT_TREATMENT_ID = 'assistant_text_to_native_v2@2';
 const TREATMENT_OUTPUTS = Object.freeze({
   base: Object.freeze({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'}),
   candidate: Object.freeze({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'}),
@@ -139,7 +140,57 @@ function parsePurposeContracts(value) {
   return value;
 }
 
-function makeRepresentationTreatment(base, candidate) {
+// Native CLI mirror of the import-free finalSubmissionImplementation.ts table.
+// Owning fixtures compare every exact row and malformed cross-product with TypeScript.
+const TYPED_FINAL_CONTRACTS = Object.freeze({
+  'openai_typed_final_admission@1': Object.freeze({representationVersion: 'authored_claim_document@1',
+    compilerVersion: 'authored_claim_document_compiler@1', admissionVersion: 'openai_typed_final_admission@1', wireVersion: 'openai_chat_final_wire@1'}),
+  'openai_typed_final_admission@2': Object.freeze({representationVersion: 'authored_claim_document@2',
+    compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@2', wireVersion: 'openai_chat_final_wire@1'}),
+  'openai_typed_final_admission@3': Object.freeze({representationVersion: 'authored_claim_document@2',
+    compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@3', wireVersion: 'openai_chat_final_wire@2'}),
+});
+function getOpenAiTypedFinalContractIdentity(admissionVersion) {
+  return typeof admissionVersion === 'string' && Object.hasOwn(TYPED_FINAL_CONTRACTS, admissionVersion)
+    ? TYPED_FINAL_CONTRACTS[admissionVersion] : undefined;
+}
+function parseOutputImplementation(value) {
+  const fail = () => {throw new Error('benchmark_output_implementation_invalid');};
+  if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(value).length !== Object.keys(descriptors).length ||
+      Object.values(descriptors).some(row => !row.enumerable || !Object.hasOwn(row, 'value'))) fail();
+  let expected;
+  if (value.kind === 'assistant') expected = {kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'};
+  else if (value.kind === 'typed') {
+    const identity = getOpenAiTypedFinalContractIdentity(value.admissionVersion);
+    if (!identity) fail();
+    expected = {kind: 'typed', ...identity};
+  } else fail();
+  if (Object.keys(value).length !== Object.keys(expected).length ||
+      Object.entries(expected).some(([key, item]) => !Object.hasOwn(value, key) || value[key] !== item)) fail();
+  return Object.freeze(expected);
+}
+function treatmentOutputImplementation(id, side) {
+  if (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID].includes(id) || !['base', 'candidate'].includes(side)) {
+    throw new Error('benchmark_treatment_invalid');
+  }
+  return side === 'base' ? {kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'} : {kind: 'typed',
+    ...getOpenAiTypedFinalContractIdentity(id === TREATMENT_ID ? 'openai_typed_final_admission@2' : 'openai_typed_final_admission@3')};
+}
+/** An old receipt contains no implementation observation; never synthesize one. */
+function parsePreflightOutputImplementation(result, id, side) {
+  const expected = treatmentOutputImplementation(id, side);
+  if (result?.schemaVersion === 'llm_target_preflight@2' && id === TREATMENT_ID && !Object.hasOwn(result, 'outputImplementation')) return undefined;
+  if (result?.schemaVersion !== 'llm_target_preflight@3') throw new Error('benchmark_output_implementation_invalid');
+  const actual = parseOutputImplementation(result.outputImplementation);
+  if (canonicalJson(actual) !== canonicalJson(expected)) throw new Error('benchmark_output_implementation_mismatch');
+  return actual;
+}
+
+function makeRepresentationTreatment(base, candidate, id = TREATMENT_ID) {
+  const expected = treatmentOutputImplementation(id, 'candidate');
   const sides = {base: parseConfigCommitments(base), candidate: parseConfigCommitments(candidate)};
   if (base.controlsFingerprint !== candidate.controlsFingerprint) throw new Error('benchmark_config_mismatch');
   for (const side of ['base', 'candidate']) {
@@ -149,10 +200,10 @@ function makeRepresentationTreatment(base, candidate) {
       if (!row || row.presence !== 'present' || row.type !== 'string' || row.valueCommitment !== configHash(['string', value])) throw new Error('benchmark_treatment_mismatch');
     }
   }
-  return {schemaVersion: 'representation_treatment@1', id: TREATMENT_ID, sides: TREATMENT_OUTPUTS,
+  return {schemaVersion: id === TREATMENT_ID ? 'representation_treatment@1' : 'representation_treatment@2', id, sides: TREATMENT_OUTPUTS,
     implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {
       representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
-      admissionVersion: 'openai_typed_final_admission@2'}}, controlsFingerprint: base.controlsFingerprint,
+      admissionVersion: expected.admissionVersion, ...(id === MIXED_CONTENT_TREATMENT_ID ? {wireVersion: expected.wireVersion} : {})}}, controlsFingerprint: base.controlsFingerprint,
     sideFullFingerprints: {base: base.fullFingerprint, candidate: candidate.fullFingerprint}};
 }
 /** Mirrors only maintained cell selection flags; owning tests compare the real verifier parser. */
@@ -337,7 +388,7 @@ function createSourceFacetSettlement({repositoryRoot, reportPath, request}) {
 function fingerprintObserver(root, reviewedHookContractFingerprint, finalTransport = false) {
   if (!HASH.test(reviewedHookContractFingerprint || '')) throw new Error('benchmark_observer_hook_fingerprint_invalid');
   const inputs = finalTransport ? [...OBSERVER_INPUTS, 'backend/src/scripts/agentE2eMetrics.ts',
-    'backend/src/agentRuntime/typedOutputMaterial.ts',
+    'backend/src/agentRuntime/typedOutputMaterial.ts', 'backend/src/agentRuntime/finalSubmissionImplementation.ts',
     'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts'] : OBSERVER_INPUTS;
   for (const relative of inputs) {
     const stat = fs.lstatSync(path.join(root, relative));
@@ -536,7 +587,8 @@ async function runOwnedVerifier(input, dependencies) {
     censored: deadlineExpired || Boolean(harness.receivedSignal) || Boolean(exit?.error)};
 }
 
-module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
+module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID,
+  getOpenAiTypedFinalContractIdentity, parseOutputImplementation, treatmentOutputImplementation, parsePreflightOutputImplementation, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
   configFieldsFingerprint, configControlsFingerprint, makeConfigCommitments, parseConfigCommitments, parsePurposeContracts, makeRepresentationTreatment,
   cellPreflightSelections, canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
   sourceFacetContext, evaluateSourceFacetPending, validateSourceFacetCollection, createSourceFacetSettlement,
