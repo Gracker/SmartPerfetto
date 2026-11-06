@@ -1736,11 +1736,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const closingProvider = provider;
       return await commitAfterProviderClose(() => closingProvider.close().catch(() => undefined), analysisAbortScope, () => {
         provider = undefined;
+        const allowMemoryWrites = actualFinalSubmission === undefined || actualFinalSubmission.outcome === 'submitted';
         this.recordTurn({query, sessionId, result, sessionContext, previousTurnCount: previousTurns.length, quickMode,
+          allowMemoryWrites,
           sourceDerived: analysisHasPrivateContext(options),
           analysisContextFingerprint: options.analysisContextFingerprint});
-        this.recordPatternMemory({sessionId, result, previousTurnCount: previousTurns.length, quickMode,
-          sceneType, architecture: context.architecture, packageName: context.effectivePackageName, options});
+        if (allowMemoryWrites) {
+          this.recordPatternMemory({sessionId, result, previousTurnCount: previousTurns.length, quickMode,
+            sceneType, architecture: context.architecture, packageName: context.effectivePackageName, options});
+        }
         this.emitUpdate({type: 'conclusion', content: {conclusion: result.conclusion, durationMs: Date.now() - startTime, turns: rounds}, timestamp: Date.now()});
         this.emitUpdate({type: 'answer_token', content: {done: true, totalChars: result.conclusion.length}, timestamp: Date.now()});
         attachFinalizationContext(result, {
@@ -2400,6 +2404,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
     previousTurnCount: number;
     quickMode: boolean;
+    allowMemoryWrites: boolean;
     sourceDerived?: boolean;
     analysisContextFingerprint?: string;
   }): void {
@@ -2429,7 +2434,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       input.result.findings,
     );
 
-    if (input.result.partial === true) return;
+    if (input.allowMemoryWrites !== true || input.result.partial === true) return;
     input.sessionContext.updateWorkingMemoryFromConclusion({
       turnIndex: input.previousTurnCount,
       query: input.query,

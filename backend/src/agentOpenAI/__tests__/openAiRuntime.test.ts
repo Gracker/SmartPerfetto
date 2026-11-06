@@ -3474,6 +3474,74 @@ describe('OpenAI durable learning across the run lifecycle', () => {
       learningAdmission: {version: 1, basis: 'public_run', runId: 'run-completed'}});
   });
 
+  it.each([
+    {caseId: 'ordinary', mode: 'assistant_text', submitted: false, expectedWrites: 1},
+    {caseId: 'missing-v1', mode: 'authored_claim_document_v1', submitted: false, expectedWrites: 0},
+    {caseId: 'missing-v2', mode: 'authored_claim_document_v2', submitted: false, expectedWrites: 0},
+    {caseId: 'submitted-v1', mode: 'authored_claim_document_v1', submitted: true, expectedWrites: 1},
+  ] as const)('keeps memory writes bound to actual final submission for $caseId', async ({caseId, mode, submitted, expectedWrites}) => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      protocol: 'chat_completions', baseURL: 'https://api.deepseek.com/v1',
+      model: 'deepseek-flash', lightModel: 'deepseek-flash',
+      outputConfig: Object.freeze({finalSubmission: mode,
+        declarationSyntax: mode === 'authored_claim_document_v2' ? 'authoring_v2' : 'canonical_v1'}),
+    }));
+    const runtime = createOpenAiRuntimeForTest();
+    jest.mocked(runtime.recordPatternMemory).mockRestore();
+    const save = jest.spyOn(patternMemory, 'saveQuickPathPattern');
+    const sessionId = `learning-submission-${caseId}`, runId = `run-submission-${caseId}`;
+    const sessionContext = sessionContextManager.getOrCreate(sessionId, 'trace');
+    const workingMemory = jest.spyOn(sessionContext, 'updateWorkingMemoryFromConclusion');
+    const addTurn = jest.spyOn(sessionContext, 'addTurn');
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (!submitted) {
+        const content = mode === 'assistant_text' ? `${LEARNABLE_ANSWER}\n${renderConclusionContractSidecar({
+          schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+          evidenceChain: [], claims: [], uncertainties: [], nextSteps: [],
+        })}` : LEARNABLE_ANSWER;
+        return chatCompletionResponse('memory-native-stop', {role: 'assistant', content}, 'stop');
+      }
+      const sent = JSON.parse(String(init?.body)) as {
+        tools: Array<{function: {name: string; parameters: {properties: Record<string, unknown>}}}>;
+      };
+      const finalTools = sent.tools.filter(entry => entry.function.parameters.properties.documentJson);
+      expect(finalTools).toHaveLength(1);
+      return chatCompletionToolCall('memory-native-submission', finalTools[0].function.name, {documentJson: JSON.stringify({
+        representationVersion: 'authored_claim_document@1', bodyParts: [LEARNABLE_ANSWER],
+        contract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+          evidenceChain: [], claims: [], relationProposals: [], uncertainties: [], nextSteps: []},
+      })});
+    });
+    const options = withDurableLearningPermission({runId, providerId: null, assistantSurface: 'conversation' as const,
+      conversationTraceAttached: false, analysisMode: 'fast' as const}, NO_PRIVATE_CONTEXT);
+    const result = await runtime.analyze('query', sessionId, 'trace', options);
+    const entries = await learned(save);
+    const context = finalization.takeFinalizationContext(result)!;
+    finalizationContexts.push(context);
+    expect(result).toMatchObject({success: true, completion: {status: 'completed'}});
+    expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(LEARNABLE_ANSWER);
+    expect(result.partial).toBeUndefined();
+    expect(result.findings.length).toBeGreaterThan(0);
+    expect(addTurn).toHaveBeenCalledTimes(1);
+    expect(addTurn.mock.calls[0][2]).toMatchObject({success: true, completion: {status: 'completed'}, confidence: result.confidence});
+    expect(addTurn.mock.calls[0][2]!.partial).toBeUndefined();
+    expect({workingMemory: workingMemory.mock.calls.length, patternCalls: save.mock.calls.length, savedPatterns: entries.length})
+      .toEqual({workingMemory: expectedWrites, patternCalls: expectedWrites, savedPatterns: expectedWrites});
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+    if (expectedWrites === 0) {
+      expect(result.conclusion).toBe(LEARNABLE_ANSWER);
+      expect(context.deliveryContext).toMatchObject({finalSubmission: {mode, outcome: 'missing_submission'}});
+      expect(result.outputOrigin).toBe('sdk_final');
+      const final = await finalizeAnalysisResult({result, context, query: 'query',
+        owner: {runId: context.runId, signal: new AbortController().signal, isCurrent: () => true, assertAuthorized() {}}});
+      expect(final.result).toMatchObject({partial: true, terminationReason: 'quality_gate_failed',
+        completion: {status: 'completed'}, deliveryAssurance: {completion: 'failed'}});
+      expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+      expect(storedPatternFiles()).toEqual([]);
+    }
+  });
+
   it('learns nothing from a run the provider cut short', async () => {
     const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER, {status: 'incomplete'}));
     const result = await runtime.analyze('query', 'learning-partial', 'trace', grant('run-partial'));
