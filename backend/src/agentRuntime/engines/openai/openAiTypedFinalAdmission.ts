@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument, type AuthoredClaimDocumentResult} from '../../../agent/core/authoredClaimDocument';
+import {AUTHORED_CLAIM_DOCUMENT_VERSION, compileAuthoredClaimDocument, type AuthoredClaimDocumentFailure, type AuthoredClaimDocumentResult} from '../../../agent/core/authoredClaimDocument';
 import {AUTHORED_CLAIM_DOCUMENT_COMPILER_VERSION, AUTHORED_FINAL_SUBMISSION_PENDING_ACK,
   issueAuthoredFinalSubmission, readAuthoredFinalSubmission, revokeAuthoredFinalSubmissionIssuer,
   type AuthoredFinalSubmissionIssuer, type AuthoredFinalSubmissionOwnerBinding,
@@ -224,6 +224,7 @@ export function createOpenAiTypedFinalAttempt(input: {
   let naturalCompletion: Promise<boolean> | undefined;
   let pending: PendingSubmission | undefined, decision: StopDecision | undefined;
   let revoked: OpenAiTypedFinalAdmissionFailure | undefined, settled = false;
+  let firstCompilerFailure: AuthoredClaimDocumentFailure | undefined;
   let issued: IssuedAuthoredFinalSubmission | undefined;
   const revoke = (reason: OpenAiTypedFinalAdmissionFailure) => {
     revoked ??= reason;
@@ -312,7 +313,8 @@ export function createOpenAiTypedFinalAttempt(input: {
   }};
   return {
     wireObserver,
-    diagnostic: () => ({...collector.diagnostic(), ...(revoked ? {admissionFailure: revoked} : {})}),
+    diagnostic: () => ({...collector.diagnostic(), ...(revoked ? {admissionFailure: revoked} : {}),
+      ...(firstCompilerFailure ? {compilerFailure: firstCompilerFailure} : {})}),
     bindStream(value: unknown) {
       if (bound) return fail('contract_unavailable');
       bound = true;
@@ -352,7 +354,10 @@ export function createOpenAiTypedFinalAttempt(input: {
       try {outer = JSON.parse(receipt.rawArguments);} catch {return fail('invalid_submission');}
       if (!record(outer) || Object.keys(outer).length !== 1 || typeof outer.documentJson !== 'string') return fail('invalid_submission');
       const compiled = compileAuthoredClaimDocument(outer.documentJson);
-      if (compiled.status !== 'compiled') return fail('invalid_submission');
+      if (compiled.status !== 'compiled') {
+        firstCompilerFailure ??= compiled.code;
+        return fail('invalid_submission');
+      }
       const invocation: OpenAiTypedFinalInvocation = Object.freeze({kind: 'openai_typed_final_invocation'});
       pending = {invocation, context: call.context, receipt, documentJson: outer.documentJson, compiled, handlerSucceeded: false};
       return invocation;

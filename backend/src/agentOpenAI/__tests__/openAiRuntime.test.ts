@@ -237,6 +237,7 @@ describe('OpenAI actual typed final main integration', () => {
   });
 
   it('uses the actual shared registry handler, returned adapter tool and installed SDK to submit one private document', async () => {
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig());
     const {runtime, updates} = createRuntimeWithUpdates();
     const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
@@ -256,6 +257,7 @@ describe('OpenAI actual typed final main integration', () => {
     expect(JSON.stringify(toolEvents)).not.toContain(body);
     expect(JSON.stringify(toolEvents)).toContain('authored_final_submission');
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1); // classifier only, no reserved repair.
+    expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toHaveLength(0);
   });
 
   it('retains an ordinary assistant native completion but records missing_submission without recovery', async () => {
@@ -271,6 +273,7 @@ describe('OpenAI actual typed final main integration', () => {
   });
 
   it.each([false, true])('preserves typed whitespace native completion while retaining the legacy empty-body rule: typed=%s', async typed => {
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 1,
       ...(!typed ? {outputConfig: {finalSubmission: 'assistant_text' as const, declarationSyntax: 'canonical_v1' as const}} : {})}));
     const runtime = createOpenAiRuntimeForTest();
@@ -284,6 +287,7 @@ describe('OpenAI actual typed final main integration', () => {
     if (typed) expect(context).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'missing_submission'}});
     else expect(context).not.toHaveProperty('finalSubmission');
     expect(request).toHaveBeenCalledTimes(1);
+    if (!typed) expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toHaveLength(0);
   });
 
   it.each([false, true])('requires an actual bound submission before paid report review: submitted=%s', async submitted => {
@@ -326,7 +330,10 @@ describe('OpenAI actual typed final main integration', () => {
     if (!submitted) expect(final.qualityIssue?.code).toBe('missing_submission');
   });
 
-  it('keeps a rejected submission private and does not clone a continuation or declaration repair', async () => {
+  it.each([false, true])('keeps rejection diagnostics private and delivery unchanged when the logger throws=%s', async loggerThrows => {
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(prefix => {
+      if (loggerThrows && prefix === '[OpenAIRuntime] typed final admission failed') throw new Error('PRIVATE_LOGGER_CANARY');
+    });
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 3}));
     const {runtime, updates} = createRuntimeWithUpdates();
     const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
@@ -338,6 +345,47 @@ describe('OpenAI actual typed final main integration', () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(updates)).not.toContain('PRIVATE_INVALID_DOCUMENT_CANARY');
     expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+    const diagnostic = warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed');
+    expect(diagnostic).toEqual([['[OpenAIRuntime] typed final admission failed', {
+      wireStatus: 'complete', admissionFailure: 'invalid_submission', compilerFailure: 'invalid_json', dispatchOrdinal: 1,
+    }]]);
+    expect(JSON.stringify(diagnostic)).not.toContain('PRIVATE_');
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_');
+  });
+
+  it('waits for the real failed SDK consumer before logging one closed admission diagnostic', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig());
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const entered = createDeferred<void>(), release = createDeferred<void>();
+    const realRun = Runner.prototype.run;
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async function(this: Runner, ...args: any[]) {
+      const stream = await (realRun as any).apply(this, args);
+      const iterate = stream[Symbol.asyncIterator].bind(stream);
+      // Delegate every event and native getter; hold only the caller's real consumer cleanup.
+      stream[Symbol.asyncIterator] = async function* () {
+        try {yield* iterate();} finally {entered.resolve(); await release.promise;}
+      };
+      return stream;
+    });
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+      chatCompletionToolCall('typed-held-consumer', finalFromRequest(init), {documentJson: 'PRIVATE_CONSUMER_CANARY'}));
+    const runtime = createOpenAiRuntimeForTest();
+    let settled = false;
+    const work = runtime.analyze('Question', 'typed-held-consumer', 'trace', options).finally(() => {settled = true;});
+    void work.catch(() => undefined);
+    try {
+      await entered.promise;
+      expect(settled).toBe(false);
+      expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toHaveLength(0);
+      release.resolve();
+      const result = await work;
+      expect(result.completion?.status).toBe('failed');
+      expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toEqual([
+        ['[OpenAIRuntime] typed final admission failed', {
+          wireStatus: 'complete', admissionFailure: 'invalid_submission', compilerFailure: 'invalid_json', dispatchOrdinal: 1,
+        }],
+      ]);
+    } finally {release.resolve(); await work.catch(() => undefined);}
   });
 
   it('settles a typed SDK startup throw without hanging its unbound submission gate or leaking the error', async () => {
@@ -357,6 +405,7 @@ describe('OpenAI actual typed final main integration', () => {
     jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig({quickMaxTurns: 3,
       quickPathPerTurnMs: 1_000, maxRunTimeoutMs: 1_000, streamIdleTimeoutMs: 60_000}));
     const entered = createDeferred<void>(), release = createDeferred<void>();
+    const warnings = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const runtime = createOpenAiRuntimeForTest();
     const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
       entered.resolve(); await release.promise;
@@ -372,12 +421,14 @@ describe('OpenAI actual typed final main integration', () => {
       await entered.promise;
       await jest.advanceTimersByTimeAsync(1_001);
       expect(settled).toBe(false);
+      expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toHaveLength(0);
       release.resolve();
       const result = await work;
       expect(result.completion).toMatchObject({status: 'incomplete', reason: 'timeout'});
       expect(attachedDeliveryContext(result)).toMatchObject({finalSubmission: {mode: 'authored_claim_document_v1', outcome: 'transport_failure'}});
       expect(request).toHaveBeenCalledTimes(1);
       expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(1);
+      expect(warnings.mock.calls.filter(([prefix]) => prefix === '[OpenAIRuntime] typed final admission failed')).toHaveLength(1);
     } finally {release.resolve(); await work.catch(() => undefined); jest.useRealTimers();}
   });
 

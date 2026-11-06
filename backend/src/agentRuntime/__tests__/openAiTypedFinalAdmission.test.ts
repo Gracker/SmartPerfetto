@@ -475,11 +475,31 @@ describe('actual bounded typed-final wire collector at the existing terminal fet
 });
 
 describe('actual typed-final attempt helper with installed SDK and shared issued submission', () => {
+  it.each([
+    {document: 'PRIVATE_COMPILER_CANARY', code: 'invalid_json'},
+    {document: JSON.stringify({private: 'PRIVATE_COMPILER_CANARY'}), code: 'invalid_envelope'},
+    {document: JSON.stringify({representationVersion: 'authored_claim_document@1', contract: {},
+      bodyParts: [{claimText: 'PRIVATE_COMPILER_CANARY'}]}), code: 'unknown_claim_id'},
+  ])('retains the first closed compiler failure through SDK drain: $code', async ({document, code}) => {
+    const h = probe({useAdmission: true, response: () => chatResponse(JSON.stringify({documentJson: document}))});
+    try {
+      await h.settle();
+      expect(h.submission()).toBeUndefined();
+      expect(h.observations.admissionFailure).toMatchObject({code: 'invalid_submission'});
+      const before = h.admission()!.diagnostic();
+      expect(before).toEqual({dispatchOrdinal: 1, status: 'complete', admissionFailure: 'invalid_submission', compilerFailure: code});
+      h.admission()!.revoke('sdk_incomplete');
+      expect(h.admission()!.diagnostic()).toEqual(before);
+      expect(JSON.stringify(before)).not.toContain('PRIVATE_COMPILER_CANARY');
+    } finally {await h.cleanup();}
+  });
+
   it('issues once only after real native and consumer drain, preserving the exact original document', async () => {
     const h = probe({useAdmission: true});
     try {
       const stream = await h.settle();
       expect(h.observations.admissionFailure).toBeUndefined();
+      expect(h.admission()!.diagnostic()).not.toHaveProperty('compilerFailure');
       expect(h.submission()).toBeDefined();
       expect(h.readSubmission()).toMatchObject({rawArguments, documentJson, compiled: {body}});
       expect(h.readSubmission().compiled.rawCanonicalPayload).toEqual(rawCanonicalPayload);

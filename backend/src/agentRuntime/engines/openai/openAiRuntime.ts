@@ -1432,6 +1432,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               authoredSubmission = undefined;
               actualFinalSubmission = {mode: 'authored_claim_document_v1',
                 outcome: finish.status === 'completed' ? 'missing_submission' : 'transport_failure'};
+              try {
+                const diagnostic = typedAttempt.diagnostic();
+                console.warn('[OpenAIRuntime] typed final admission failed', {
+                  wireStatus: diagnostic.status,
+                  ...(diagnostic.reason ? {wireReason: diagnostic.reason} : {}),
+                  ...(diagnostic.admissionFailure ? {admissionFailure: diagnostic.admissionFailure} : {}),
+                  ...(diagnostic.compilerFailure ? {compilerFailure: diagnostic.compilerFailure} : {}),
+                  dispatchOrdinal: diagnostic.dispatchOrdinal,
+                });
+              } catch { /* Diagnostics never change completion or delivery. */ }
             }
           }
           typedAttemptCurrent = false;
