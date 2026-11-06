@@ -2,6 +2,11 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import fs from 'node:fs';
+import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
+import {createRuntimePerformanceRecorder, buildRuntimeConfigCommitments, buildRuntimeAppliedModelControls,
+  buildRuntimeExecutionProfileObservation} from '../../agentRuntime/runtimePerformance';
+import {resolveModelExecutionProfile} from '../../services/providerManager/modelExecutionProfile';
+import {resolveOpenAITextRequestPurpose} from '../../services/providerManager/openAiChatCompletionsCompat';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
@@ -515,5 +520,403 @@ describe('saved LLM execution benchmark scoring', () => {
     expect(parseLlmExecutionScoreArgs(['--input', 'a', '--output', 'b'])).toEqual({input: 'a', output: 'b'});
     expect(() => parseLlmExecutionScoreArgs(['--input', 'a', '--output', 'b', '--target-phase', 'provider'])).toThrow();
     expect(() => parseLlmExecutionScoreArgs(['--input', 'a', '--input', 'b', '--output', 'c'])).toThrow();
+  });
+});
+
+
+function syntheticPurposeContracts(common: {baseURL: string; protocol: string; model: string; lightModel: string; maxOutputTokens?: number; [key: string]: unknown}) {
+  const sdk = {packageName: 'node:fetch', version: process.versions.node, adapterContractVersion: 'openai-text-http@1'};
+  const limit = (value: number | undefined) => value === undefined ? {status: 'absent'}
+    : {status: 'explicit', field: 'max_tokens', valueCommitment: canonicalContentHash(['number', String(value)])};
+  return {schemaVersion: 'llm_purpose_controls@1', classification: {commonConfig: buildRuntimeConfigCommitments({...common, sdk}),
+    tokenLimit: limit(Math.min(common.maxOutputTokens ?? 2048, 2048))}, review: {
+    commonConfig: buildRuntimeConfigCommitments({baseURL: common.baseURL, protocol: common.protocol, lightModel: common.model,
+      ...(common.maxOutputTokens === undefined ? {} : {maxOutputTokens: common.maxOutputTokens}), runtime: 'openai-agents-sdk', sdk}),
+    tokenLimit: limit(common.maxOutputTokens)}};
+}
+
+/** Synthetic reader fixtures only: these never constitute real benchmark evidence. */
+function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: {maxOutputTokens?: number} = {maxOutputTokens: 4096}) {
+  const {maxOutputTokens} = configured;
+  const data = fixture(root, cells);
+  const sdk = {agentsCoreVersion: '0.13.0', agentsOpenAiVersion: '0.13.0', identity: 'matched' as const};
+  const common = {model: MODEL, lightModel: MODEL, baseURL: 'https://api.deepseek.com/v1', protocol: 'chat_completions',
+    maxOutputTokens, maxTurns: 100, runtime: 'openai-agents-sdk', sdk};
+  const materials = Object.fromEntries(['base', 'candidate'].map(side => [side, {configuration: {provider: 'deepseek',
+    model: MODEL, lightModel: MODEL, baseUrl: 'https://api.deepseek.com/v1'}, runtime: 'openai-agents-sdk', timeoutMs: 1200000,
+    environment: {SMARTPERFETTO_FINAL_SUBMISSION: sourceLifecycle.TREATMENT_OUTPUTS[side].finalSubmission,
+      SMARTPERFETTO_CONCLUSION_AUTHORING: sourceLifecycle.TREATMENT_OUTPUTS[side].declarationSyntax,
+      ...(maxOutputTokens === undefined ? {} : {OPENAI_MAX_OUTPUT_TOKENS: String(maxOutputTokens)})}}]));
+  const aligned = sourceLifecycle.alignConfigCommitments(sourceLifecycle.buildConfigCommitments(materials.base), sourceLifecycle.buildConfigCommitments(materials.candidate));
+  const configurations: Json = Object.fromEntries(['base', 'candidate'].map((side, index) => [side,
+    sourceLifecycle.makeConfigCommitments(aligned[index], hash(stableStringify(materials[side])))]));
+  const treatment = sourceLifecycle.makeRepresentationTreatment(configurations.base, configurations.candidate);
+  Object.assign(data.benchmark, {schemaVersion: 'llm_execution_benchmark@2', candidate: sourceLifecycle.TREATMENT_ID,
+    nodeVersion: process.versions.node, treatment, preflights: []});
+  const initial = new Set<string>();
+  for (const sample of data.benchmark.samples) {
+    const report = data.reportFor(sample), side = sample.side, configuration = configurations[side];
+    const output = sourceLifecycle.TREATMENT_OUTPUTS[side];
+    const nativeCandidate = {runId: report.executionMetrics.runId, attemptId: `attempt-${sample.repetition}-${side}`,
+      candidateRef: `candidate-${sample.repetition}-${side}`, conclusionFingerprint: hash(report.summary.terminalAnalysis.conclusion)};
+    const nativeKey = hash(JSON.stringify(nativeCandidate));
+    report.summary.terminalAnalysis.completion = {schemaVersion: 1, runtimeKind: 'openai-agents-sdk', ...nativeCandidate, status: 'completed', sdkFinishReason: side === 'base' ? 'stop' : 'tool_calls'};
+    const profiles = [];
+    if (side === 'candidate') {
+      const profile = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId: MODEL,
+        baseUrl: common.baseURL, sdk: {packageName: '@openai/agents-openai', version: '0.13.0', adapterContractVersion: 'openai_typed_final_admission@2'},
+        sdkCapabilities: {surface: 'none', thinking: 'unknown', reasoningRoundtrip: 'unknown', source: 'contract_test'},
+        effective: {maxOutputTokens, maxTurns: 100}});
+      const {fingerprint: _fingerprint, ...facts} = profile;
+      const body = {...facts, effective: {...output, ...(maxOutputTokens === undefined ? {} : {maxOutputTokens}), maxTurns: 100}};
+      profiles.push(buildRuntimeExecutionProfileObservation({...body, fingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: `sha256:${hash(JSON.stringify(body))}`}},
+        {role: 'typed_admission', purpose: 'answer_turn'})!);
+    }
+    const controls = buildRuntimeAppliedModelControls({requestedOutput: output, commonConfig: common,
+      appliedSettings: {...(maxOutputTokens === undefined ? {} : {maxTokens: maxOutputTokens}), parallelToolCalls: false, store: false}, profiles})!;
+    const recorder = createRuntimePerformanceRecorder({now: () => 100});
+    const attemptKey = hash(nativeCandidate.attemptId), logicalCallKey = hash(`${sample.pairId}-${side}-call`);
+    recorder.recordFinalTransportEvent({kind: 'main_dispatch', attemptKey, logicalCallKey, purpose: 'answer_turn',
+      configuredModelHash: hash(MODEL), providerOriginHash: hash(ORIGIN), controls});
+    const terminal = side === 'base' ? recorder.recordFinalTransportEvent({kind: 'native_terminal', fact: {attemptKey, logicalCallKey,
+      response: {status: 'observed', hash: hash('native-response')}, actualModel: {status: 'observed', hash: hash(MODEL)},
+      nativeStatus: 'completed', finish: 'stop', rawMaterial: {status: 'observed', hash: nativeCandidate.conclusionFingerprint},
+      nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: true}, drainStatus: 'fulfilled'})!
+      : recorder.recordFinalTransportEvent({kind: 'typed_issued_after_drain', attemptKey, logicalCallKey,
+        responseKey: hash('native-response'), callKey: hash('native-call'), actualModel: {status: 'observed', hash: hash(MODEL)},
+        nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: nativeCandidate.conclusionFingerprint,
+        representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@2'})!;
+    const retained = recorder.recordFinalTransportEvent({kind: 'candidate_retained', nativeCandidateKey: nativeKey,
+      carrier: side === 'base' ? 'assistant_text' : 'model_tool_arguments', transform: 'native',
+      authors: [{role: 'body_and_declaration', terminalEventKey: terminal}], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed'})!;
+    recorder.recordFinalTransportEvent({kind: 'finalizer_selected', retainedEventKey: retained, nativeCandidateKey: nativeKey,
+      displayCandidateKey: nativeKey, canonicalSourceCandidateKey: nativeKey, canonicalCandidateKey: nativeKey, productStatus: 'completed'});
+    report.executionMetrics.performance.finalTransportObservation = recorder.seal().finalTransportObservation;
+    report.executionMetrics.requestedOutputConfig = output;
+    Object.assign(sample, {schemaVersion: 'llm_execution_sample@2', configuration,
+      configFingerprint: configuration.legacyConfigFingerprint, treatmentHash: hash(stableStringify(treatment)), preflights: []});
+    const probe = (directory: string, initialProbe = false) => {
+      const request = {schemaVersion: 'llm_target_preflight_request@1', nonce: sample.nonce, side, cellId: sample.cellId,
+        requestedMode: 'auto', expectedSourceFingerprint: sample.sourceFingerprint, declaredConfig: configuration, treatmentHash: sample.treatmentHash};
+      const result = {schemaVersion: 'llm_target_preflight@2', nonce: sample.nonce, side, cellId: sample.cellId,
+        requestedMode: 'auto', observedSourceFingerprint: sample.sourceFingerprint, declaredConfigFingerprint: configuration.fullFingerprint,
+        declaredControlsFingerprint: configuration.controlsFingerprint, declaredTreatmentHash: sample.treatmentHash, status: 'ready',
+        capturedOutput: output, actualResolvedConfig: buildRuntimeConfigCommitments({...common, outputConfig: output}),
+        purposeContracts: syntheticPurposeContracts(common), sdk: {...sdk, nodeVersion: process.versions.node}};
+      const proof = {request: `${directory}/request.json`, requestHash: write(root, `${directory}/request.json`, request),
+        receipt: `${directory}/receipt.json`, receiptHash: write(root, `${directory}/receipt.json`, result), side, cellId: sample.cellId, requestedMode: 'auto',
+        lifecycle: {preparedAt: initialProbe ? 50000 : sample.reset.preparedAt - 20, settledAt: initialProbe ? 50010 : sample.reset.preparedAt - 10,
+          processId: sample.lifecycle.processId + 1000, exitCode: 0, signal: null, outcome: 'exited', cleanup: 'confirmed', censored: false}};
+      return proof;
+    };
+    const initialKey = `${sample.cellId}:${side}`;
+    if (!initial.has(initialKey)) {data.benchmark.preflights.push(probe(`preflight/${sample.cellId}/${side}`, true)); initial.add(initialKey);}
+    sample.preflights.push(probe(`${sample.pairId}/${side}/preflight-0`));
+    Object.assign(report.executionTarget, {schemaVersion: 'llm_execution_target@2', declaredConfigFingerprint: configuration.legacyConfigFingerprint,
+      declaredConfigFullFingerprint: configuration.fullFingerprint, declaredConfigControlsFingerprint: configuration.controlsFingerprint,
+      declaredTreatmentHash: sample.treatmentHash, declaredPreflightFingerprint: hash(stableStringify(sample.preflights))});
+    data.resave(sample, report);
+  }
+  data.save();
+  return {...data, common};
+}
+
+function rehashTransport(report: Json) {
+  const events = report.executionMetrics.performance.finalTransportObservation.events;
+  const changed = new Map<string, string>();
+  for (const event of events) {
+    const oldKey = event.eventKey;
+    for (const author of event.authors ?? []) author.terminalEventKey = changed.get(author.terminalEventKey) ?? author.terminalEventKey;
+    if (event.retainedEventKey) event.retainedEventKey = changed.get(event.retainedEventKey) ?? event.retainedEventKey;
+    const {eventKey: _eventKey, ...body} = event;
+    event.eventKey = canonicalContentHash(body); changed.set(oldKey, event.eventKey);
+  }
+}
+
+function addStageObservation(data: ReturnType<typeof treatmentScoreFixture>, sample: Json, purpose: 'classification' | 'review',
+  modelSource: 'provider_reported' | 'configured' = 'provider_reported', capOverride?: number) {
+  const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+  const sdk = {packageName: 'node:fetch', version: process.versions.node, adapterContractVersion: 'openai-text-http@1'};
+  const cap = capOverride ?? (purpose === 'classification' ? Math.min(data.common.maxOutputTokens ?? 2048, 2048) : data.common.maxOutputTokens);
+  const common = purpose === 'classification' ? {...data.common, sdk}
+    : {baseURL: data.common.baseURL, protocol: 'chat_completions', lightModel: MODEL,
+      ...(data.common.maxOutputTokens === undefined ? {} : {maxOutputTokens: data.common.maxOutputTokens}), runtime: 'openai-agents-sdk', sdk};
+  const execution = resolveOpenAITextRequestPurpose({requestUrl: new URL('https://api.deepseek.com/v1/chat/completions'),
+    protocol: 'chat_completions', model: MODEL, runtimeKind: 'openai-agents-sdk', purpose: purpose === 'review' ? 'final_semantic' : purpose,
+    sdkIdentity: sdk, sdkCapabilities: {surface: 'openai_chat', thinking: 'optional', efforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      reasoningRoundtrip: 'unknown', source: 'contract_test'},
+    effective: {...(purpose === 'classification' ? {maxTurns: 100} : {}), maxOutputTokens: cap}});
+  const controls = buildRuntimeAppliedModelControls({requestedOutput: sourceLifecycle.TREATMENT_OUTPUTS[sample.side], commonConfig: common,
+    appliedSettings: {model: MODEL, temperature: 0, stream: true, ...execution.options, ...(cap === undefined ? {} : {max_tokens: cap})},
+    profiles: [buildRuntimeExecutionProfileObservation(execution.profile, {role: 'stage_policy', purpose})!]})!;
+  const event = {eventKey: hash(`stage-${purpose}-${sample.pairId}-${sample.side}`), sequence: 1, offsetMs: 0, kind: 'stage_dispatch',
+    stageCallKey: hash(`stage-call-${purpose}-${sample.pairId}-${sample.side}`), purpose, configuredModelHash: hash(MODEL), providerOriginHash: hash(ORIGIN), controls};
+  observation.events.unshift(event);
+  observation.events.forEach((item: Json, index: number) => {item.sequence = index + 1;});
+  report.executionMetrics.performance.modelCalls.unshift({purpose, modelHash: hash(MODEL), providerOriginHash: hash(ORIGIN),
+    modelSource, startOffsetMs: 0, durationMs: 30, outcome: 'ok'});
+  rehashTransport(report); data.resave(sample, report);
+}
+
+function bindSyntheticMaterialReviews(data: ReturnType<typeof treatmentScoreFixture>) {
+  for (const pairId of new Set(data.samples.map(sample => sample.pairId))) {
+    const pair = data.samples.filter(sample => sample.pairId === pairId);
+    data.materialReview(pair.find(sample => sample.side === 'base')!, pair.find(sample => sample.side === 'candidate')!);
+  }
+}
+
+describe('W0 versioned representation-treatment scoring', () => {
+  let root: string;
+  beforeEach(() => {root = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-treatment-score-'));});
+  afterEach(() => fs.rmSync(root, {recursive: true, force: true}));
+
+  it('keeps the synthetic full-chain fixture inconclusive without independent material review', () => {
+    const data = treatmentScoreFixture(root), result = data.score();
+    expect(result.cells[0].pairs.map((pair: any) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].pairs.map((pair: any) => pair.quality)).toEqual(Array.from({length: 3}, () => ({status: 'inconclusive', reason: 'material_review_required'})));
+    expect(result.cells[0].performance).toMatchObject({status: 'inconclusive', reason: 'incomplete_pair'});
+    expect(result.status).toBe('inconclusive');
+  });
+
+  it('exercises a qualified cell with explicit bound synthetic reviews, without claiming real-provider or full-matrix acceptance', () => {
+    const data = treatmentScoreFixture(root);
+    for (let repetition = 1; repetition <= 3; repetition++) {
+      const pair = data.samples.filter(sample => sample.repetition === repetition);
+      data.materialReview(pair.find(sample => sample.side === 'base')!, pair.find(sample => sample.side === 'candidate')!);
+    }
+    const result = data.score();
+    expect(result.cells[0].pairs.map((pair: any) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].performance.status).toBe('passed');
+    expect(result.status).toBe('inconclusive'); // Synthetic reader exercise, one cell, not real-provider evidence.
+  });
+
+  it('checks real stage SDK profiles and permits fewer bounded reviews as an outcome, not a parameter exemption', () => {
+    const data = treatmentScoreFixture(root);
+    for (const sample of data.samples) addStageObservation(data, sample, 'classification');
+    addStageObservation(data, data.samples.find(sample => sample.side === 'candidate')!, 'review');
+    for (let repetition = 1; repetition <= 3; repetition++) {
+      const pair = data.samples.filter(sample => sample.repetition === repetition);
+      data.materialReview(pair.find(sample => sample.side === 'base')!, pair.find(sample => sample.side === 'candidate')!);
+    }
+    const result = data.score();
+    expect(result.cells[0].pairs.map((pair: any) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].performance.status).toBe('passed');
+    expect(result.status).toBe('inconclusive');
+  });
+
+  it('does not use a configured stage model as evidence of the actual provider model', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!;
+    addStageObservation(data, sample, 'classification', 'configured');
+    const result = data.score();
+    expect(result.cells[0].pairs[0].issues).toContain('stage_actual_model_source_unproven');
+    expect(result.cells[0].performance.status).toBe('inconclusive');
+  });
+
+  it('rejects a one-sided review parameter mutation even after every observation hash is refreshed', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!;
+    addStageObservation(data, sample, 'review');
+    const report = data.reportFor(sample), controls = report.executionMetrics.performance.finalTransportObservation.events[0].controls;
+    controls.appliedSettings.find((row: Json) => row.field === '/temperature').valueCommitment = canonicalContentHash(['number', '0.8']);
+    const {fullFingerprint: _full, ...body} = controls; controls.fullFingerprint = canonicalContentHash(body);
+    rehashTransport(report); data.resave(sample, report);
+    expect(data.score().cells[0].pairs[0].issues).toContain('actual_stage_settings_unproven');
+  });
+
+  it.each(['classification', 'review'] as const)('rejects a reported no-tool call without its actual stage controls: %s', purpose => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(sample => sample.side === 'candidate')!;
+    addStageObservation(data, sample, purpose);
+    const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+    observation.events = observation.events.filter((event: Json) => event.kind !== 'stage_dispatch');
+    observation.events.forEach((event: Json, index: number) => {event.sequence = index + 1;});
+    rehashTransport(report); data.resave(sample, report);
+    for (let repetition = 1; repetition <= 3; repetition++) {
+      const pair = data.samples.filter(item => item.repetition === repetition);
+      data.materialReview(pair.find(item => item.side === 'base')!, pair.find(item => item.side === 'candidate')!);
+    }
+    const cell = data.score().cells[0];
+    expect({status: cell.performance.status, issues: cell.pairs[0].issues}).toEqual({status: 'inconclusive',
+      issues: expect.arrayContaining(['stage_controls_coverage_incomplete'])});
+  });
+
+  it('requires every logical no-tool call, not merely one same-purpose stage observation', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'candidate')!;
+    addStageObservation(data, sample, 'classification');
+    const report = data.reportFor(sample);
+    report.executionMetrics.performance.modelCalls.unshift({...report.executionMetrics.performance.modelCalls[0]});
+    data.resave(sample, report);
+    expect(data.score().cells[0].pairs[0].issues).toContain('stage_controls_coverage_incomplete');
+  });
+
+  it('counts retries with one stageCallKey as one logical call and leaves absent purposes unexercised', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'candidate')!;
+    addStageObservation(data, sample, 'classification');
+    const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+    observation.events.splice(1, 0, {...observation.events[0], eventKey: hash('retry-event')});
+    observation.events.forEach((event: Json, index: number) => {event.sequence = index + 1;});
+    rehashTransport(report); data.resave(sample, report);
+    expect(data.score().cells[0].pairs[0].issues).toEqual([]);
+  });
+
+  it.each(['opposite_side', 'other_cell'] as const)('rejects initial probes completed after any first paid sample: %s', location => {
+    const data = treatmentScoreFixture(root, location === 'other_cell' ? ['scheduler', 'startup'] : ['scheduler']);
+    const firstPaid = Math.min(...data.samples.map(sample => sample.lifecycle.preparedAt));
+    const initial = data.benchmark.preflights.find((proof: Json) => proof.side === 'candidate' &&
+      proof.cellId === (location === 'other_cell' ? 'startup' : 'scheduler'));
+    initial.lifecycle.settledAt = firstPaid + 1;
+    data.save(); bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect({status: result.cells[0].performance.status, issues: result.issues}).toEqual({status: 'inconclusive',
+      issues: expect.arrayContaining(['initial_preflight_not_before_first_sample'])});
+  });
+
+  it('accepts ordinary continuation with the production toolChoice none override while retaining every other control', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'base')!;
+    const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+    const controls = buildRuntimeAppliedModelControls({requestedOutput: sourceLifecycle.TREATMENT_OUTPUTS.base, commonConfig: data.common,
+      appliedSettings: {maxTokens: 4096, parallelToolCalls: false, store: false, toolChoice: 'none'}})!;
+    observation.events.splice(2, 0, {eventKey: hash('ordinary-continuation'), sequence: 3, offsetMs: 0, kind: 'main_dispatch',
+      attemptKey: hash('continuation-attempt'), logicalCallKey: hash('continuation-call'), purpose: 'continuation',
+      configuredModelHash: hash(MODEL), providerOriginHash: hash(ORIGIN), controls});
+    observation.events.forEach((event: Json, index: number) => {event.sequence = index + 1;});
+    report.executionMetrics.performance.modelCalls.push({purpose: 'continuation', modelHash: hash(MODEL), providerOriginHash: hash(ORIGIN),
+      startOffsetMs: 0, durationMs: 30, outcome: 'error'});
+    rehashTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect({status: result.cells[0].performance.status, issues: result.cells[0].pairs[0].issues}).toEqual({status: 'passed', issues: []});
+    expect(result.status).toBe('inconclusive'); // Synthetic single-cell reader fixture remains non-admissible evidence.
+  });
+
+  it.each([{toolChoice: 'auto'}, {maxTokens: 99999}, {store: true}, {newBehavior: true}])(
+    'rejects ordinary continuation control drift: %j', mutation => {
+      const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'base')!;
+      const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+      const controls = buildRuntimeAppliedModelControls({requestedOutput: sourceLifecycle.TREATMENT_OUTPUTS.base, commonConfig: data.common,
+        appliedSettings: {maxTokens: 4096, parallelToolCalls: false, store: false, toolChoice: 'none', ...mutation}})!;
+      observation.events.splice(2, 0, {eventKey: hash('changed-continuation'), sequence: 3, offsetMs: 0, kind: 'main_dispatch',
+        attemptKey: hash('continuation-attempt'), logicalCallKey: hash('continuation-call'), purpose: 'continuation',
+        configuredModelHash: hash(MODEL), providerOriginHash: hash(ORIGIN), controls});
+      observation.events.forEach((event: Json, index: number) => {event.sequence = index + 1;});
+      rehashTransport(report); data.resave(sample, report);
+      expect(data.score().cells[0].pairs[0].issues).toContain('continuation_controls_unproven');
+    });
+
+  it('rejects a review cap deleted consistently from common config, profile and applied settings', () => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'candidate')!;
+    addStageObservation(data, sample, 'review');
+    const report = data.reportFor(sample), controls = report.executionMetrics.performance.finalTransportObservation.events[0].controls;
+    const remove = (rows: Json[], path: string) => {
+      const result = rows.filter(row => row.field !== path), parent = path.slice(0, path.lastIndexOf('/'));
+      const keys = result.filter(row => row.field.startsWith(`${parent}/`) && !row.field.slice(parent.length + 1).includes('/'))
+        .map(row => row.field.slice(parent.length + 1).replace(/~1/g, '/').replace(/~0/g, '~')).sort();
+      result.find(row => row.field === parent)!.valueCommitment = canonicalContentHash(['object', keys]);
+      return result;
+    };
+    controls.commonConfig = remove(controls.commonConfig, '/maxOutputTokens');
+    controls.profiles[0].fields = remove(controls.profiles[0].fields, '/effective/maxOutputTokens');
+    controls.profiles[0].structureFingerprint = sourceLifecycle.configFieldsFingerprint(controls.profiles[0].fields);
+    controls.appliedSettings = remove(controls.appliedSettings, '/max_tokens');
+    const {fullFingerprint: _full, ...body} = controls; controls.fullFingerprint = canonicalContentHash(body);
+    rehashTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const cell = data.score().cells[0];
+    expect({status: cell.performance.status, issues: cell.pairs[0].issues}).toEqual({status: 'inconclusive',
+      issues: expect.arrayContaining(['actual_common_controls_mismatch'])});
+  });
+
+  it.each([{configured: 4096, actual: 4096}, {configured: 1000, actual: 2048}])(
+    'rejects a classifier cap that violates the production min formula: %j', ({configured, actual}) => {
+      const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: configured}), sample = data.samples.find(item => item.side === 'candidate')!;
+      addStageObservation(data, sample, 'classification', 'provider_reported', actual);
+      bindSyntheticMaterialReviews(data);
+      const cell = data.score().cells[0];
+      expect({status: cell.performance.status, issues: cell.pairs[0].issues}).toEqual({status: 'inconclusive',
+        issues: expect.arrayContaining(['actual_profile_contract_unproven'])});
+    });
+
+  it.each([
+    {label: 'absent', config: {}, expected: 2048},
+    {label: 'larger configured cap', config: {maxOutputTokens: 4096}, expected: 2048},
+    {label: 'smaller configured cap', config: {maxOutputTokens: 1000}, expected: 1000},
+  ])('uses the exact trusted classifier cap: $label', ({config, expected}) => {
+    const data = treatmentScoreFixture(root, ['scheduler'], config);
+    for (const sample of data.samples) addStageObservation(data, sample, 'classification');
+    addStageObservation(data, data.samples.find(item => item.side === 'candidate')!, 'review');
+    const sample = data.samples.find(item => item.side === 'base')!, report = data.reportFor(sample);
+    const stage = report.executionMetrics.performance.finalTransportObservation.events.find((event: Json) => event.kind === 'stage_dispatch');
+    expect(stage.controls.appliedSettings.find((row: Json) => row.field === '/max_tokens').valueCommitment)
+      .toBe(canonicalContentHash(['number', String(expected)]));
+    bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].pairs.map((pair: Json) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].performance.status).toBe('passed');
+    expect(result.status).toBe('inconclusive');
+  });
+
+  it.each(['wrong_field', 'wrong_type', 'extra_field'])('rejects a malformed applied token limit against the trusted purpose contract: %s', mutation => {
+    const data = treatmentScoreFixture(root), sample = data.samples.find(item => item.side === 'candidate')!;
+    addStageObservation(data, sample, 'review');
+    const report = data.reportFor(sample), controls = report.executionMetrics.performance.finalTransportObservation.events[0].controls;
+    const row = controls.appliedSettings.find((row: Json) => row.field === '/max_tokens');
+    if (mutation === 'wrong_type') {row.type = 'string'; row.valueCommitment = canonicalContentHash(['string', '4096']);}
+    else {
+      if (mutation === 'wrong_field') row.field = '/max_completion_tokens';
+      else controls.appliedSettings.push({...row, field: '/max_output_tokens'});
+      controls.appliedSettings.sort((a: Json, b: Json) => a.field < b.field ? -1 : a.field > b.field ? 1 : 0);
+      const keys = controls.appliedSettings.filter((row: Json) => /^\/[^/]+$/.test(row.field)).map((row: Json) => row.field.slice(1)).sort();
+      controls.appliedSettings[0].valueCommitment = canonicalContentHash(['object', keys]);
+    }
+    const {fullFingerprint: _full, ...body} = controls; controls.fullFingerprint = canonicalContentHash(body);
+    rehashTransport(report); data.resave(sample, report);
+    expect(data.score().cells[0].pairs[0].issues).toContain('actual_stage_settings_unproven');
+  });
+
+  it.each(['missing_contract', 'old_probe', 'node_version'])('rejects stale purpose/SDK preflight provenance: %s', mutation => {
+    const data = treatmentScoreFixture(root), sample = data.samples[0], report = data.reportFor(sample), proof = sample.preflights[0];
+    const receipt = JSON.parse(fs.readFileSync(path.join(root, proof.receipt), 'utf8'));
+    if (mutation === 'missing_contract') delete receipt.purposeContracts;
+    if (mutation === 'old_probe') receipt.schemaVersion = 'llm_target_preflight@1';
+    if (mutation === 'node_version') receipt.sdk.nodeVersion = '1.0.0';
+    proof.receiptHash = write(root, proof.receipt, receipt);
+    report.executionTarget.declaredPreflightFingerprint = hash(stableStringify(sample.preflights));
+    data.resave(sample, report);
+    const result = data.score();
+    expect(result.cells[0].pairs[0].issues.length).toBeGreaterThan(0);
+    expect(result.cells[0].performance.status).toBe('inconclusive');
+  });
+
+  it.each(['requested_only', 'wrong_model', 'undrained', 'wrong_carrier', 'wrong_version', 'wrong_candidate', 'missing_author', 'truncated', 'profile_cap'])
+    ('keeps independent actual-transport mutations inconclusive even when report quality still passes: %s', mutation => {
+      const data = treatmentScoreFixture(root), sample = data.benchmark.samples.find((item: Json) => item.side === 'candidate');
+      const report = data.reportFor(sample), observation = report.executionMetrics.performance.finalTransportObservation;
+      const native = observation.events.find((event: Json) => event.kind === 'typed_issued_after_drain');
+      const retained = observation.events.find((event: Json) => event.kind === 'candidate_retained');
+      if (mutation === 'requested_only') delete report.executionMetrics.performance.finalTransportObservation;
+      if (mutation === 'wrong_model') native.actualModel.hash = hash('wrong-model');
+      if (mutation === 'undrained') native.drainStatus = 'rejected';
+      if (mutation === 'wrong_carrier') retained.carrier = 'assistant_text';
+      if (mutation === 'wrong_version') native.representationVersion = 'authored_claim_document@1';
+      if (mutation === 'wrong_candidate') observation.events.find((event: Json) => event.kind === 'finalizer_selected').canonicalCandidateKey = hash('foreign');
+      if (mutation === 'missing_author') retained.authors = [];
+      if (mutation === 'truncated') observation.truncated = 1;
+      if (mutation === 'profile_cap') {
+        const controls = observation.events[0].controls;
+        const row = controls.profiles[0].fields.find((row: Json) => row.field === '/effective/maxOutputTokens');
+        row.valueCommitment = canonicalContentHash(['number', '999999']);
+        controls.profiles[0].structureFingerprint = sourceLifecycle.configFieldsFingerprint(controls.profiles[0].fields);
+        const {fullFingerprint: _full, ...body} = controls; controls.fullFingerprint = canonicalContentHash(body);
+      }
+      if (mutation !== 'requested_only') rehashTransport(report);
+      data.resave(sample, report);
+      const result = data.score();
+      expect(result.cells[0].performance.status).toBe('inconclusive');
+      expect(result.cells[0].pairs[0].issues.length).toBeGreaterThan(0);
+    });
+
+  it('refuses a stale preflight with self-consistent local hashes and preserves the failed baseline rule', () => {
+    const data = treatmentScoreFixture(root), sample = data.benchmark.samples[0], report = data.reportFor(sample);
+    const proof = sample.preflights[0], receipt = JSON.parse(fs.readFileSync(path.join(root, proof.receipt), 'utf8'));
+    receipt.observedSourceFingerprint = hash('stale-source'); proof.receiptHash = write(root, proof.receipt, receipt);
+    report.executionTarget.declaredPreflightFingerprint = hash(stableStringify(sample.preflights));
+    data.resave(sample, report);
+    expect(data.score().cells[0].performance.status).toBe('inconclusive');
   });
 });

@@ -67,6 +67,8 @@ import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendor
 import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorResolver';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {createRuntimePerformanceRecorder, type RuntimePerformanceOutcome} from '../../agentRuntime/runtimePerformance';
+import * as performanceObservation from '../../agentRuntime/runtimePerformance';
+import {readConclusionTransportObservation} from '../../services/security/conclusionProtocolProjection';
 import {createRuntimePerformanceScope} from '../../agentRuntime/runtimePerformanceContext';
 import {createRuntimeAdmissionScope} from '../../agentRuntime/runtimeTaskDeadline';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
@@ -95,6 +97,7 @@ function classify(value: AnalysisTurnIntentDecision = decision) {
   });
 }
 const realAdmitDeliveryCall = runtimeCallStats.admitDeliveryCall;
+const realOpenAiIntentTransport = intentTransport.runOpenAiIntentTransport;
 // Mocked providers answer at once inside test-sized deadlines, far below the fixed delivery-call
 // estimates; budget skips have their own tests below.
 beforeEach(() => {
@@ -215,6 +218,37 @@ describe('OpenAI actual typed final main integration', () => {
     expect(Object.keys(candidates[0].function.parameters.properties)).toEqual(['documentJson']);
     return candidates[0].function.name as string;
   };
+
+  it('records typed authorship only from the actual issued-after-drain snapshot', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(typedConfig());
+    const runtime = createOpenAiRuntimeForTest(), runId = 'observed-typed-run', sessionId = 'observed-typed-session';
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId, sessionId,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+      chatCompletionToolCall('observed-typed-response', finalFromRequest(init), {documentJson}));
+    try {
+      const result = await scope.run(() => runtime.analyze('Question', sessionId, 'trace', {...options, runId}));
+      const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+      const native = context.getNativeDeclaration(result, new AbortController().signal)!;
+      const identity = readConclusionTransportObservation(native)!;
+      const events = recorder.seal().finalTransportObservation!.events;
+      const dispatch = events.find(event => event.kind === 'main_dispatch');
+      const issued = events.find(event => event.kind === 'typed_issued_after_drain');
+      const retained = events.find(event => event.kind === 'candidate_retained');
+      expect(dispatch).toMatchObject({kind: 'main_dispatch', purpose: 'answer_turn',
+        controls: {requestedOutput: {finalSubmission: 'authored_claim_document_v1', declarationSyntax: 'canonical_v1'},
+          profiles: [expect.objectContaining({role: 'typed_admission'})]}});
+      expect(issued).toMatchObject({kind: 'typed_issued_after_drain', nativeStatus: 'completed', drainStatus: 'fulfilled',
+        responseKey: performanceObservation.runtimeObservationHash('observed-typed-response'),
+        actualModel: {status: 'observed', hash: performanceObservation.runtimeObservationHash('pinned-primary')}});
+      expect(retained).toMatchObject({kind: 'candidate_retained', nativeCandidateKey: identity.nativeCandidateKey,
+        carrier: 'model_tool_arguments', authors: [{role: 'body_and_declaration', terminalEventKey: issued!.eventKey}]});
+      expect(events.filter(event => event.kind === 'typed_issued_after_drain')).toHaveLength(1);
+      expect(request).toHaveBeenCalledTimes(1); expect(result.conclusion).toBe(body);
+      expect(JSON.stringify(events)).not.toContain(body);
+    } finally {scope.dispose();}
+  });
 
   it('reads actual installed identity and admits only the captured possible-main profiles', () => {
     expect(__testing.installedOpenAiSdkCompatibility()).toEqual({agentsCoreVersion: '0.13.0', agentsOpenAiVersion: '0.13.0',
@@ -3704,6 +3738,7 @@ describe('OpenAI finalization handoff', () => {
     const call = jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls[1][0];
     expect(jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls[0][0].purpose).toBe('classification');
     expect(call.purpose).toBe('final_semantic');
+    expect(call.config.outputConfig).toBe(config.outputConfig);
     expect(call).toMatchObject({config: {lightModel: 'pinned-primary', apiKey: 'test-only',
       baseURL: 'https://provider.invalid/v1', protocol: 'responses'}});
     if (maxOutputTokens === undefined) expect(call).not.toHaveProperty('maxOutputTokens');
@@ -3713,6 +3748,55 @@ describe('OpenAI finalization handoff', () => {
     expect(call.deadlineMs).toBeLessThanOrEqual(context.deadlineMs);
     expect(call.signal).not.toBe(jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls[0][0].signal);
     expect(call.signal?.aborted).toBe(false);
+  });
+  it('carries the captured output observation through actual SDK handoff and the existing review transport', async () => {
+    const capturedOutput = Object.freeze({finalSubmission: 'assistant_text' as const, declarationSyntax: 'canonical_v1' as const});
+    const config = createOpenAiConfigForTest({protocol: 'chat_completions', baseURL: 'https://gateway.example/v1',
+      model: 'gpt-5.6-sol', lightModel: 'gpt-5.4-mini', maxOutputTokens: 16_384, outputConfig: capturedOutput});
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(config);
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const main = `Retained answer.\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []})}`;
+    const request = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(chatCompletionResponse('sidecar-main', {role: 'assistant', content: main}, 'stop'))
+      .mockResolvedValueOnce(chatCompletionResponse('sidecar-review', {role: 'assistant', content: 'Review complete.'}, 'stop'));
+    const id = 'captured-review-output', recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({recorder, identity: {runId: id, sessionId: id,
+      scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}});
+    try {
+      await scope.run(async () => {
+        const result = await runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'});
+        const context = takeContext(result);
+        config.maxOutputTokens = 7;
+        config.outputConfig = Object.freeze({finalSubmission: 'assistant_text', declarationSyntax: 'authoring_v2'});
+        jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...config, model: 'later-primary',
+          lightModel: 'later-light', baseURL: 'https://later.invalid/v1'});
+        jest.mocked(intentTransport.runOpenAiIntentTransport).mockImplementation(realOpenAiIntentTransport);
+        const reviewed = await context.dispatchText(transportInput());
+        expect(reviewed).toMatchObject({status: 'ok', text: 'Review complete.'});
+        expect(intentTransport.runOpenAiIntentTransport).toHaveBeenCalledTimes(2);
+        const call = jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls[1][0];
+        expect(call.purpose).toBe('final_semantic');
+        expect(call.config).toMatchObject({lightModel: 'gpt-5.6-sol', maxOutputTokens: 16_384,
+          baseURL: 'https://gateway.example/v1', protocol: 'chat_completions'});
+        expect(call.deadlineMs).toBeLessThanOrEqual(context.deadlineMs);
+        expect(call.signal?.aborted).toBe(false);
+        expect(result.completion?.status).toBe('completed');
+      });
+      const review = recorder.seal().finalTransportObservation?.events.find(event => event.kind === 'stage_dispatch' && event.purpose === 'review');
+      expect(review).toMatchObject({kind: 'stage_dispatch', purpose: 'review', controls: {requestedOutput: capturedOutput}});
+      const call = jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls[1][0];
+      expect(call.config.outputConfig).toBe(capturedOutput);
+      expect(configModule.loadOpenAIConfig).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(2);
+      const bodies = request.mock.calls.map(([, init]) => JSON.parse(String(init?.body)));
+      expect(bodies.map(body => body.model)).toEqual(['gpt-5.4-mini', 'gpt-5.6-sol']);
+      expect(bodies[1].max_completion_tokens).toBe(16_384);
+      expect(bodies[1]).not.toHaveProperty('outputConfig');
+      expect(bodies[1]).not.toHaveProperty('finalSubmission');
+      expect(request.mock.calls.map(([input]) => input instanceof Request ? input.url : String(input)))
+        .toEqual(['https://gateway.example/v1/chat/completions', 'https://gateway.example/v1/chat/completions']);
+    } finally {scope.dispose();}
   });
   it('does not restart the original run deadline for semantic review', async () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun();
@@ -4242,5 +4326,194 @@ describe('OpenAI selected foundation preflight', () => {
       expect(h.focus).not.toHaveBeenCalled(); expect(h.selected).toHaveBeenCalledTimes(1);
       expect(h.queryBounded).toHaveBeenCalledTimes(1); expect(h.legacy).not.toHaveBeenCalled();
     } finally {h.release.resolve(); await outcome;}
+  });
+});
+
+describe('OpenAI common final-transport observation at actual SDK boundaries', () => {
+  const declaration = {schemaVersion: 'conclusion_contract_v1' as const, mode: 'focused_answer' as const,
+    conclusions: [], clusters: [], evidenceChain: [], claims: [], uncertainties: [], nextSteps: []};
+  const originalBody = 'PRIVATE_OBSERVED_BODY: the sampled interval is retained.';
+  const valid = `${originalBody}\n${renderConclusionContractSidecar(declaration)}`;
+  const invalid = `${originalBody}\n${renderConclusionContractSidecar({...declaration, clusters: undefined} as any)}`;
+  const configure = () => jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+    protocol: 'chat_completions', baseURL: 'https://gateway.example/v1', model: 'gpt-5.6-sol', lightModel: 'gpt-5.6-sol',
+    analysisReasoningEffort: 'low', quickMaxTurns: 3, quickTargetTurns: 2}));
+  const scopeFor = (runId: string, sessionId = runId) => {
+    const recorder = createRuntimePerformanceRecorder();
+    return {recorder, scope: createRuntimePerformanceScope({recorder,
+      identity: {runId, sessionId, scope: {tenantId: 'test', workspaceId: 'test'}}, assertCurrent() {}})};
+  };
+
+  it.each([
+    ['https://open.bigmodel.cn/api/coding/paas/v4', 'glm-5.3-flash'],
+    ['https://api.deepseek.com/v1', 'deepseek-flash'],
+  ])('records actual provider origin while preserving the full endpoint: %s', async (baseURL, model) => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue(createOpenAiConfigForTest({
+      protocol: 'chat_completions', baseURL, model, lightModel: model}));
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const request = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+      chatCompletionResponse('origin-response', {role: 'assistant', content: valid}, 'stop'));
+    const id = `observed-origin-${model}`, {recorder, scope} = scopeFor(id);
+    try {
+      const result = await scope.run(() => runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+      const dispatch = recorder.seal().finalTransportObservation!.events.find(event => event.kind === 'main_dispatch')!;
+      const origin = new URL(baseURL).origin;
+      expect(dispatch.providerOriginHash).toBe(performanceObservation.runtimeObservationHash(origin));
+      expect(dispatch.providerOriginHash).not.toBe(performanceObservation.runtimeObservationHash(baseURL));
+      const baseURLCommitment = dispatch.controls.commonConfig.find(field => field.field === '/baseURL');
+      const expected = performanceObservation.buildRuntimeConfigCommitments({baseURL})!.find(field => field.field === '/baseURL');
+      const shortened = performanceObservation.buildRuntimeConfigCommitments({baseURL: origin})!.find(field => field.field === '/baseURL');
+      expect(baseURLCommitment).toEqual(expected);
+      expect(baseURLCommitment?.valueCommitment).not.toBe(shortened?.valueCommitment);
+      expect(request).toHaveBeenCalledTimes(1);
+      const [input, init] = request.mock.calls[0];
+      expect(input instanceof Request ? input.url : String(input)).toBe(`${baseURL}/chat/completions`);
+      expect(JSON.parse(String(init?.body)).model).toBe(model);
+      expect(result.completion?.status).toBe('completed');
+    } finally {scope.dispose();}
+  });
+
+  it.each(['native', 'repair', 'repair_prose', 'restore', 'continuation'] as const)(
+    'keeps exact terminal facts and the retained %s authors separate', async mode => {
+      configure(); const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const first = mode === 'native' ? valid : mode === 'continuation' ? 'Truncated original answer.' : invalid;
+      const second = mode === 'repair' ? JSON.stringify(declaration)
+        : mode === 'repair_prose' ? `Unselected repair prose.\n${renderConclusionContractSidecar(declaration)}`
+          : mode === 'restore' ? JSON.stringify({...declaration, mode: 'PRIVATE_INVALID_REPAIR'}) : valid;
+      const responses = [chatCompletionResponse('original-response', {role: 'assistant', content: first}, mode === 'continuation' ? 'length' : 'stop'),
+        chatCompletionResponse('later-response', {role: 'assistant', content: second}, 'stop')];
+      const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => responses.shift()!);
+      const id = `observed-${mode}`, {recorder, scope} = scopeFor(id);
+      try {
+        const result = await scope.run(() => runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+        const context = finalization.takeFinalizationContext(result)!; finalizationContexts.push(context);
+        const identity = readConclusionTransportObservation(context.getNativeDeclaration(result, new AbortController().signal)!)!;
+        const receipt = recorder.seal().finalTransportObservation!;
+        const dispatches = receipt.events.filter(event => event.kind === 'main_dispatch');
+        const terminals = receipt.events.filter(event => event.kind === 'native_terminal');
+        const retained = receipt.events.find(event => event.kind === 'candidate_retained');
+        expect(receipt.truncated).toBe(0); expect(dispatches).toHaveLength(mode === 'native' ? 1 : 2);
+        expect(terminals).toHaveLength(dispatches.length); expect(request).toHaveBeenCalledTimes(dispatches.length);
+        expect(terminals[0]).toMatchObject({fact: {response: {status: 'observed', hash: performanceObservation.runtimeObservationHash('original-response')},
+          actualModel: {status: 'observed', hash: performanceObservation.runtimeObservationHash('pinned-primary')},
+          rawMaterial: {status: 'observed', hash: performanceObservation.runtimeObservationHash(first)},
+          nativeStatus: mode === 'continuation' ? 'incomplete' : 'completed', sdkStreamCompleted: true}, drainStatus: 'fulfilled'});
+        if (mode !== 'native') {
+          expect(terminals[1]).toMatchObject({fact: {response: {status: 'observed', hash: performanceObservation.runtimeObservationHash('later-response')},
+            rawMaterial: {status: 'observed', hash: performanceObservation.runtimeObservationHash(second)}, nativeStatus: 'completed'}, drainStatus: 'fulfilled'});
+          expect(terminals[1].fact.attemptKey).not.toBe(terminals[0].fact.attemptKey);
+          expect(terminals[1].fact.logicalCallKey).not.toBe(terminals[0].fact.logicalCallKey);
+        }
+        const repaired = mode === 'repair' || mode === 'repair_prose';
+        const authors = repaired ? [{role: 'body', terminalEventKey: terminals[0].eventKey},
+          {role: 'declaration', terminalEventKey: terminals[1].eventKey}]
+          : [{role: 'body_and_declaration', terminalEventKey: terminals[mode === 'continuation' ? 1 : 0].eventKey}];
+        expect(retained).toMatchObject({nativeCandidateKey: identity.nativeCandidateKey, carrier: 'assistant_text',
+          transform: repaired ? 'declaration_repair' : 'native', authors, productStatus: 'completed'});
+        if (mode === 'repair_prose') {
+          expect(inspectCandidateProtocol(result.conclusion).canonicalBody.trim()).toBe(originalBody);
+          expect(result.conclusion).not.toContain('Unselected repair prose.');
+        }
+        expect(receipt.events.filter(event => event.kind === 'candidate_retained')).toHaveLength(1);
+        expect(JSON.stringify(receipt)).not.toMatch(/PRIVATE_OBSERVED_BODY|gateway\.example|pinned-primary|test-only/);
+        expect(dispatches[0].controls.profiles).toEqual([expect.objectContaining({role: 'main_controls', purpose: 'answer_turn'})]);
+        if (repaired || mode === 'restore') {
+          expect(dispatches[1].controls.profiles).toEqual([expect.objectContaining({role: 'stage_policy', purpose: 'declaration_repair'})]);
+          expect(dispatches[1].controls.appliedSettings).not.toEqual(dispatches[0].controls.appliedSettings);
+        }
+      } finally {scope.dispose();}
+    });
+
+  it('freezes completed native closeout before product status retains turn exhaustion', async () => {
+    configure(); const runtime = createOpenAiRuntimeForTest();
+    const read = tool({name: 'observe_fixture', description: 'Read fixture', parameters: z.object({}), execute: async () => 'fixture data'});
+    prepareStub(runtime).mockImplementation(async (...args: any[]) => ({systemPrompt: 'test system prompt', tools: [read], allowedTools: [],
+      sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns, hypotheses: []}));
+    const request = jest.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(chatCompletionToolCall('tool-one', 'observe_fixture', {}))
+      .mockResolvedValueOnce(chatCompletionToolCall('tool-two', 'observe_fixture', {}))
+      .mockResolvedValueOnce(chatCompletionResponse('closeout-response', {role: 'assistant', content: valid}, 'stop'));
+    const id = 'observed-native-product-distinction', {recorder, scope} = scopeFor(id);
+    try {
+      const result = await scope.run(() => runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+      const events = recorder.seal().finalTransportObservation!.events;
+      const terminals = events.filter(event => event.kind === 'native_terminal');
+      const terminal = terminals[terminals.length - 1]!;
+      const retained = events.find(event => event.kind === 'candidate_retained');
+      expect(request).toHaveBeenCalledTimes(3);
+      expect(terminal).toMatchObject({fact: {nativeStatus: 'completed', finish: 'stop', sdkStreamCompleted: true,
+        response: {status: 'observed', hash: performanceObservation.runtimeObservationHash('closeout-response')}}, drainStatus: 'fulfilled'});
+      expect(retained).toMatchObject({productStatus: 'incomplete', authors: [{role: 'body_and_declaration', terminalEventKey: terminal.eventKey}]});
+      expect(result.completion).toMatchObject({status: 'incomplete', reason: 'turn_limit'});
+    } finally {scope.dispose();}
+  });
+
+  it('never substitutes configured model identity when the actual terminal omits model', async () => {
+    configure(); const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const chunks = [{id: 'unknown-model', choices: [{index: 0, delta: {role: 'assistant', content: valid}, finish_reason: null}]},
+      {id: 'unknown-model', choices: [{index: 0, delta: {}, finish_reason: 'stop'}]}];
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+      {headers: {'content-type': 'text/event-stream'}}));
+    const id = 'observed-unknown-model', {recorder, scope} = scopeFor(id);
+    try {
+      const result = await scope.run(() => runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+      expect(recorder.seal().finalTransportObservation!.events.find(event => event.kind === 'native_terminal'))
+        .toMatchObject({fact: {actualModel: {status: 'unknown'}}});
+    } finally {scope.dispose();}
+  });
+
+  it('does not invent a dispatch from a mocked-away fetch and native SDK start', async () => {
+    configure(); const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    mockRun().mockResolvedValue(sdkStream(valid));
+    const id = 'observed-no-fetch', {recorder, scope} = scopeFor(id);
+    try {
+      const result = await scope.run(() => runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+      expect(recorder.seal().finalTransportObservation?.events.some(event => event.kind === 'main_dispatch')).not.toBe(true);
+    } finally {scope.dispose();}
+  });
+
+  it.each(['throw', 'missing', 'early_seal'] as const)('keeps request bytes and product outcome unchanged when observation is %s', async failure => {
+    configure(); const requestBodies: string[] = [];
+    const request = jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      requestBodies.push(String(init?.body)); return chatCompletionResponse('neutral-response', {role: 'assistant', content: valid}, 'stop');
+    });
+    const execute = async (id: string) => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); const {recorder, scope} = scopeFor(id);
+      try {
+        if (failure === 'early_seal' && id.endsWith('changed')) recorder.seal();
+        const result = await scope.run(() => runtime.analyze('Same question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+        const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+        return {body: result.conclusion, success: result.success, completion: result.completion?.status};
+      } finally {scope.dispose();}
+    };
+    const before = await execute(`neutral-${failure}-before`);
+    const observer = failure === 'throw' ? jest.spyOn(performanceObservation, 'recordRuntimeFinalTransportEvent').mockImplementation(() => {throw new Error('PRIVATE_OBSERVER');})
+      : failure === 'missing' ? jest.spyOn(performanceObservation, 'buildRuntimeAppliedModelControls').mockReturnValue(undefined) : undefined;
+    try {expect(await execute(`neutral-${failure}-changed`)).toEqual(before);} finally {observer?.mockRestore();}
+    expect(request).toHaveBeenCalledTimes(2); expect(requestBodies[1]).toBe(requestBodies[0]);
+  });
+
+  it('records no native terminal while the actual fetch is pending', async () => {
+    configure(); const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    const entered = createDeferred<void>(), release = createDeferred<void>();
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      entered.resolve(); await release.promise; return chatCompletionResponse('held-response', {role: 'assistant', content: valid}, 'stop');
+    });
+    const id = 'observed-pending-fetch', {recorder, scope} = scopeFor(id);
+    const record = jest.spyOn(recorder, 'recordFinalTransportEvent');
+    const work = scope.run(() => runtime.analyze('Question', id, 'trace', {providerId: null, runId: id, analysisMode: 'fast'}));
+    void work.catch(() => undefined);
+    try {
+      await entered.promise;
+      expect(record.mock.calls.some(([event]) => event.kind === 'main_dispatch')).toBe(true);
+      expect(record.mock.calls.some(([event]) => event.kind === 'native_terminal')).toBe(false);
+      release.resolve(); const result = await work;
+      const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
+      expect(recorder.seal().finalTransportObservation!.events.find(event => event.kind === 'native_terminal')).toMatchObject({drainStatus: 'fulfilled'});
+    } finally {release.resolve(); await work.catch(() => undefined); scope.dispose();}
   });
 });

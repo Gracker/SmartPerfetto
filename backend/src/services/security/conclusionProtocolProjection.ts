@@ -81,6 +81,17 @@ const authoredDeliveries = new WeakMap<AnalysisDeliveryContext, {
   candidate: AnalysisCandidateIdentity;
 }>();
 
+/** Observation only. Reads issued identities without checking or changing capability lifetime. */
+export function readConclusionTransportObservation(value: NativeConclusionDeclaration): Readonly<{
+  nativeCandidateKey: string; displayCandidateKey: string;
+}> | undefined {
+  const token = nativeDeclarations.get(value);
+  const state = token && issued.get(token);
+  if (!state) return undefined;
+  return Object.freeze({nativeCandidateKey: analysisDeliveryFingerprint(state.nativeCandidate),
+    displayCandidateKey: analysisDeliveryFingerprint(state.displayCandidate)});
+}
+
 export function isIssuedNativeConclusionDeclaration(value: NativeConclusionDeclaration): boolean {
   const token = nativeDeclarations.get(value);
   const state = token && issued.get(token);

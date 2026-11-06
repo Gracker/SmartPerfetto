@@ -4,7 +4,7 @@
 import {createHash} from 'node:crypto';
 import {MODEL_REQUEST_COMPONENTS, RUNTIME_MODEL_CALL_PURPOSES, RUNTIME_MODEL_CALL_TRIGGERS,
   RUNTIME_MODEL_REASONING_EFFORTS, RUNTIME_DECLARATION_AUTHORING_STATUSES, RUNTIME_DECLARATION_AUTHORING_VERSIONS,
-  projectRuntimeModelPolicyReceipt} from '../agentRuntime/runtimePerformance';
+  projectRuntimeModelPolicyReceipt, projectRuntimeFinalTransportObservation} from '../agentRuntime/runtimePerformance';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import type {RunManifestScope, RunManifestV1} from '../types/selfEvolution';
@@ -45,6 +45,14 @@ function optionalHash(value: unknown): string | undefined {
     ? createHash('sha256').update(value).digest('hex') : undefined;
 }
 
+function modelSource(row: Record<string, unknown>) {
+  if (row.modelSource === undefined) return {};
+  const source = member(row.modelSource, ['configured', 'provider_reported']);
+  if (typeof row.model !== 'string' || !row.model || row.model.trim() !== row.model || row.model.length > 128 ||
+      /[\u0000-\u001f\u007f]/.test(row.model)) throw new Error('metrics_model_source_invalid');
+  return {modelSource: source};
+}
+
 function modelOutput(value: unknown) {
   const source = record(value);
   if (source.declarationAuthoringVersion !== undefined && source.declarationAuthoringStatus !== 'expanded') {
@@ -62,6 +70,9 @@ function modelOutput(value: unknown) {
 export function projectAgentE2ePerformance(value: unknown) {
   const source = record(value);
   if (source.schemaVersion !== 1) throw new Error('metrics_version_invalid');
+  const finalTransportObservation = source.finalTransportObservation === undefined ? undefined
+    : projectRuntimeFinalTransportObservation(source.finalTransportObservation);
+  if (source.finalTransportObservation !== undefined && !finalTransportObservation) throw new Error('metrics_final_transport_invalid');
   return {
     schemaVersion: 1,
     ...numbers(source, ['firstOutputMs']),
@@ -80,7 +91,7 @@ export function projectAgentE2ePerformance(value: unknown) {
     ...(source.modelCalls === undefined ? {} : {modelCalls: rows(source.modelCalls, row => ({
       purpose: member(row.purpose, RUNTIME_MODEL_CALL_PURPOSES), outcome: member(row.outcome, OUTCOMES),
       ...(row.trigger === undefined ? {} : {trigger: member(row.trigger, RUNTIME_MODEL_CALL_TRIGGERS)}),
-      modelHash: optionalHash(row.model), providerOriginHash: optionalHash(row.providerOrigin),
+      modelHash: optionalHash(row.model), ...modelSource(row), providerOriginHash: optionalHash(row.providerOrigin),
       ...numbers(row, ['startOffsetMs', 'durationMs', 'firstOutputMs']),
       ...(row.reasoning === undefined ? {} : {reasoning: member(row.reasoning, ['provider_default', 'disabled', 'enabled'])}),
       ...(row.reasoningEffort === undefined ? {} : {reasoningEffort: member(row.reasoningEffort, RUNTIME_MODEL_REASONING_EFFORTS)}),
@@ -108,6 +119,7 @@ export function projectAgentE2ePerformance(value: unknown) {
         },
       };
     })}),
+    ...(finalTransportObservation ? {finalTransportObservation} : {}),
     ...(source.policyObservations === undefined ? {} : {policyObservations: rows(source.policyObservations, row => {
       const receipt = projectRuntimeModelPolicyReceipt(row);
       if (!receipt || !Number.isSafeInteger(row.observationOrdinal) || (row.observationOrdinal as number) < 1
@@ -139,6 +151,10 @@ export function readAgentE2eMetrics(input: {scope: RunManifestScope; sessionId: 
       ...(manifest.conclusionDeclarationSyntax === undefined ? {} : {
         conclusionDeclarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
       }),
+      ...(manifest.finalSubmission === undefined ? {} : {requestedOutputConfig: {
+        finalSubmission: member(manifest.finalSubmission, ['assistant_text', 'authored_claim_document_v1', 'authored_claim_document_v2']),
+        declarationSyntax: member(manifest.conclusionDeclarationSyntax, ['canonical_v1', 'authoring_v1', 'authoring_v2']),
+      }}),
       providerSnapshotHash: typeof manifest.providerSnapshotHash === 'string' &&
         /^(?:sha256:)?[a-f0-9]{64}$/.test(manifest.providerSnapshotHash) ? manifest.providerSnapshotHash : undefined,
       performance: projectAgentE2ePerformance(manifest.performance)};

@@ -3,11 +3,13 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'crypto';
+import {types as nodeUtilTypes} from 'node:util';
 import {RuntimeActivityRecorder, type RuntimeActivitySnapshot, type RuntimeActivitySpan, type RuntimeCaptureActivityInput} from './runtimeActivity';
 import {resolveRuntimePerformanceRecorder, type RuntimePerformanceSource} from './runtimePerformanceContext';
 import {performance as nodePerformance} from 'perf_hooks';
 
-import {immutableCanonicalSnapshot} from '../services/selfEvolution/canonicalJson';
+import {canonicalContentHash, immutableCanonicalSnapshot} from '../services/selfEvolution/canonicalJson';
+import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity} from '../types/analysisDelivery';
 import {isPlainObject} from '../utils/llmJson';
 import type {RuntimeToolConcurrencyFallbackReason} from './runtimeToolConcurrency';
 import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1} from '../types/sceneEntryEvidence';
@@ -137,6 +139,390 @@ export function projectRuntimeModelPolicyReceipt(value: unknown): RuntimeModelPo
   } catch { return undefined; }
 }
 
+/** Internal observation schema. None of these values confer execution or evidence authority. */
+export interface RuntimeConfigFieldCommitment {
+  readonly field: string;
+  readonly presence: 'absent' | 'present';
+  readonly type: 'absent' | 'undefined' | 'null' | 'boolean' | 'number' | 'string' | 'object' | 'array';
+  readonly valueCommitment: string;
+}
+export interface RuntimeBenchmarkConfigCommitmentsV2 {
+  readonly schemaVersion: 'benchmark_config_commitments@2';
+  readonly fields: readonly RuntimeConfigFieldCommitment[];
+  readonly fullFingerprint: string;
+  readonly controlsFingerprint: string;
+  readonly legacyConfigFingerprint: string;
+}
+export interface RuntimeObservedOutputConfig {
+  readonly finalSubmission: 'assistant_text' | 'authored_claim_document_v1' | 'authored_claim_document_v2';
+  readonly declarationSyntax: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
+}
+export interface RuntimeExecutionProfileObservation {
+  readonly schemaVersion: 'execution_profile_observation@1';
+  readonly role: 'main_controls' | 'stage_policy' | 'typed_admission';
+  readonly purpose: RuntimeModelCallPurpose;
+  readonly modelHash: string;
+  readonly originalFingerprint: {readonly schemaVersion: 'model_execution_fingerprint@1'; readonly value: string};
+  readonly fields: readonly RuntimeConfigFieldCommitment[];
+  readonly structureFingerprint: string;
+}
+export interface RuntimeAppliedModelControls {
+  readonly schemaVersion: 'applied_model_controls@1';
+  readonly requestedOutput: RuntimeObservedOutputConfig;
+  readonly commonConfig: readonly RuntimeConfigFieldCommitment[];
+  readonly appliedSettings: readonly RuntimeConfigFieldCommitment[];
+  readonly profiles: readonly RuntimeExecutionProfileObservation[];
+  readonly fullFingerprint: string;
+}
+export type RuntimeObservedHash = Readonly<{status: 'observed'; hash: string}> | Readonly<{status: 'unknown'}>;
+export type RuntimeObservedNativeStatus = 'completed' | 'incomplete' | 'failed' | 'cancelled' | 'unknown';
+export type RuntimeObservedDrainStatus = 'fulfilled' | 'rejected' | 'unavailable';
+export interface RuntimeObservedNativeFact {
+  readonly attemptKey: string;
+  readonly logicalCallKey: string;
+  readonly response: RuntimeObservedHash;
+  readonly actualModel: RuntimeObservedHash;
+  readonly nativeStatus: RuntimeObservedNativeStatus;
+  readonly finish: 'stop' | 'length' | 'tool_calls' | 'completed' | 'incomplete' | 'failed' | 'other' | 'unknown';
+  readonly rawMaterial: RuntimeObservedHash;
+  readonly nativeContract: 'openai_native_completion_observer@1';
+  readonly sdkStreamCompleted: boolean;
+}
+export type RuntimeFinalTransportEventInput =
+  | Readonly<{kind: 'main_dispatch'; attemptKey: string; logicalCallKey: string;
+      purpose: 'answer_turn' | 'declaration_repair' | 'continuation'; configuredModelHash: string;
+      providerOriginHash: string; controls: RuntimeAppliedModelControls}>
+  | Readonly<{kind: 'stage_dispatch'; stageCallKey: string; purpose: RuntimeModelCallPurpose;
+      configuredModelHash: string; providerOriginHash: string; controls: RuntimeAppliedModelControls}>
+  | Readonly<{kind: 'native_terminal'; fact: RuntimeObservedNativeFact; drainStatus: RuntimeObservedDrainStatus}>
+  | Readonly<{kind: 'typed_issued_after_drain'; attemptKey: string; logicalCallKey: string; responseKey: string;
+      callKey: string; actualModel: RuntimeObservedHash; nativeStatus: 'completed'; drainStatus: 'fulfilled';
+      nativeBodyHash: string; representationVersion: 'authored_claim_document@1' | 'authored_claim_document@2';
+      compilerVersion: string; admissionVersion: string}>
+  | Readonly<{kind: 'candidate_retained'; nativeCandidateKey: string; carrier: 'assistant_text' | 'model_tool_arguments';
+      transform: 'native' | 'declaration_repair';
+      authors: readonly Readonly<{role: 'body' | 'declaration' | 'body_and_declaration'; terminalEventKey: string}>[];
+      declaredBody: 'present' | 'absent'; declaredClaims: 'present' | 'absent' | 'invalid' | 'unknown';
+      productStatus: RuntimeObservedNativeStatus}>
+  | Readonly<{kind: 'finalizer_selected'; retainedEventKey: string; nativeCandidateKey: string; displayCandidateKey: string;
+      canonicalSourceCandidateKey: string; canonicalCandidateKey: string; productStatus: RuntimeObservedNativeStatus}>
+  | Readonly<{kind: 'not_exercised'; reason: 'program_ack' | 'direct_without_main'}>;
+export type RuntimeFinalTransportEvent = RuntimeFinalTransportEventInput & Readonly<{
+  eventKey: string; sequence: number; offsetMs: number;
+}>;
+export interface RuntimeFinalTransportObservation {
+  readonly schemaVersion: 'final_transport_observation@1';
+  readonly events: readonly RuntimeFinalTransportEvent[];
+  readonly truncated: number;
+}
+
+const observationOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);
+const OBSERVATION_HASH = /^[a-f0-9]{64}$/;
+const CONFIG_TYPES = ['absent', 'undefined', 'null', 'boolean', 'number', 'string', 'object', 'array'] as const;
+const OUTPUT_MODES = ['assistant_text', 'authored_claim_document_v1', 'authored_claim_document_v2'] as const;
+const OUTPUT_SYNTAXES = ['canonical_v1', 'authoring_v1', 'authoring_v2'] as const;
+const FINAL_NATIVE_STATUSES = ['completed', 'incomplete', 'failed', 'cancelled', 'unknown'] as const;
+const TREATMENT_CONFIG_FIELDS = ['/environment/SMARTPERFETTO_FINAL_SUBMISSION',
+  '/environment/SMARTPERFETTO_CONCLUSION_AUTHORING'] as const;
+const MAX_CONFIG_FIELDS = 4096;
+const MAX_CONFIG_BYTES = 1024 * 1024;
+
+/** Exact UTF-8 hash, not the older shortened/salted timing identifier. */
+export function runtimeObservationHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+/** Keep the actual issued object's property order, matching the existing projection's identity. */
+export function runtimeCandidateObservationKey(candidate: AnalysisCandidateIdentity): string {
+  return analysisDeliveryFingerprint(candidate);
+}
+function observationData(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || nodeUtilTypes.isProxy(value) || !isPlainObject(value)) {
+    throw new Error('runtime_observation_object_invalid');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(value).length !== Object.keys(descriptors).length ||
+      Object.values(descriptors).some(item => !item.enumerable || !observationOwn(item, 'value'))) {
+    throw new Error('runtime_observation_data_invalid');
+  }
+  return value as Record<string, unknown>;
+}
+function exactObservationObject(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
+  const object = observationData(value);
+  if (keys.some(key => !observationOwn(object, key)) || Object.keys(object).some(key => !keys.includes(key) && !optional.includes(key))) {
+    throw new Error('runtime_observation_fields_invalid');
+  }
+  return object;
+}
+function observationMember<T extends string>(value: unknown, members: readonly T[]): T {
+  if (typeof value !== 'string' || !members.includes(value as T)) throw new Error('runtime_observation_enum_invalid');
+  return value as T;
+}
+function observationHash(value: unknown): string {
+  if (typeof value !== 'string' || !OBSERVATION_HASH.test(value)) throw new Error('runtime_observation_hash_invalid');
+  return value;
+}
+function absentConfigField(field: string): RuntimeConfigFieldCommitment {
+  return {field, presence: 'absent', type: 'absent', valueCommitment: canonicalContentHash(['absent'])};
+}
+/** Leaf values and container structure are committed separately, so a treatment leaf can be masked alone. */
+export function buildRuntimeConfigCommitments(value: unknown): readonly RuntimeConfigFieldCommitment[] | undefined {
+  try {
+    const rows: RuntimeConfigFieldCommitment[] = [];
+    const ancestors = new Set<object>();
+    let bytes = 0;
+    const visit = (item: unknown, field: string, depth: number): void => {
+      if (rows.length >= MAX_CONFIG_FIELDS || depth > 24 || field.length > 4096) throw new Error('runtime_observation_limit');
+      const add = (type: RuntimeConfigFieldCommitment['type'], material: unknown) => {
+        rows.push({field, presence: 'present', type, valueCommitment: canonicalContentHash(material)});
+      };
+      if (item === undefined) {add('undefined', ['undefined']); return;}
+      if (item === null) {add('null', ['null']); return;}
+      if (typeof item === 'string') {
+        bytes += Buffer.byteLength(item, 'utf8');
+        if (bytes > MAX_CONFIG_BYTES) throw new Error('runtime_observation_limit');
+        add('string', ['string', item]); return;
+      }
+      if (typeof item === 'boolean') {add('boolean', ['boolean', item]); return;}
+      if (typeof item === 'number' && Number.isFinite(item)) {
+        add('number', ['number', Object.is(item, -0) ? '-0' : String(item)]); return;
+      }
+      if (!item || typeof item !== 'object' || nodeUtilTypes.isProxy(item) || ancestors.has(item)) throw new Error('runtime_observation_value_invalid');
+      ancestors.add(item);
+      try {
+        const array = Array.isArray(item);
+        const descriptors = Object.getOwnPropertyDescriptors(item);
+        const keys = Object.keys(descriptors).filter(key => !(array && key === 'length'));
+        if (Reflect.ownKeys(item).length !== Object.keys(descriptors).length ||
+            keys.some(key => !descriptors[key].enumerable || !observationOwn(descriptors[key], 'value'))) throw new Error('runtime_observation_data_invalid');
+        if (array) {
+          if (item.length > MAX_CONFIG_FIELDS || keys.some(key => !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length)) throw new Error('runtime_observation_array_invalid');
+          add('array', ['array', item.length, keys.map(Number).sort((a, b) => a - b)]);
+        } else {
+          observationData(item);
+          add('object', ['object', [...keys].sort()]);
+        }
+        for (const key of keys.sort()) visit(descriptors[key].value,
+          `${field}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`, depth + 1);
+      } finally {ancestors.delete(item);}
+    };
+    visit(value, '', 0);
+    return immutableCanonicalSnapshot(rows.sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : 0));
+  } catch { return undefined; }
+}
+function parseConfigFields(value: unknown): readonly RuntimeConfigFieldCommitment[] {
+  if (!Array.isArray(value) || nodeUtilTypes.isProxy(value) || value.length === 0 || value.length > MAX_CONFIG_FIELDS) throw new Error('runtime_observation_fields_invalid');
+  let previous: string | undefined;
+  const fields = value.map(item => {
+    const row = exactObservationObject(item, ['field', 'presence', 'type', 'valueCommitment']);
+    if (typeof row.field !== 'string' || row.field.length > 4096 || !/^(?:\/(?:[^~\/]|~[01])*)*$/.test(row.field) ||
+        previous !== undefined && row.field <= previous) throw new Error('runtime_observation_path_invalid');
+    previous = row.field;
+    const presence = observationMember(row.presence, ['absent', 'present']);
+    const type = observationMember(row.type, CONFIG_TYPES);
+    const valueCommitment = observationHash(row.valueCommitment);
+    if ((presence === 'absent') !== (type === 'absent') || presence === 'absent' && valueCommitment !== absentConfigField(row.field).valueCommitment) throw new Error('runtime_observation_absence_invalid');
+    return {field: row.field, presence, type, valueCommitment};
+  });
+  if (fields[0]?.field !== '') throw new Error('runtime_observation_root_missing');
+  return fields;
+}
+export function runtimeConfigCommitmentsFingerprint(fields: readonly RuntimeConfigFieldCommitment[]): string | undefined {
+  try {return canonicalContentHash({schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields)});}
+  catch {return undefined;}
+}
+export function runtimeConfigControlsFingerprint(fields: readonly RuntimeConfigFieldCommitment[]): string | undefined {
+  try {
+    return canonicalContentHash({schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields).map(row =>
+      TREATMENT_CONFIG_FIELDS.includes(row.field as typeof TREATMENT_CONFIG_FIELDS[number])
+        ? {...row, valueCommitment: canonicalContentHash(['treatment_value', row.field])} : row)});
+  } catch {return undefined;}
+}
+export function alignRuntimeConfigCommitments(left: readonly RuntimeConfigFieldCommitment[], right: readonly RuntimeConfigFieldCommitment[]):
+  readonly [readonly RuntimeConfigFieldCommitment[], readonly RuntimeConfigFieldCommitment[]] | undefined {
+  try {
+    const sides = [new Map(parseConfigFields(left).map(row => [row.field, row])), new Map(parseConfigFields(right).map(row => [row.field, row]))];
+    const keys = [...new Set(sides.flatMap(side => [...side.keys()]))].sort();
+    if (keys.length > MAX_CONFIG_FIELDS) return undefined;
+    return [keys.map(key => sides[0].get(key) ?? absentConfigField(key)), keys.map(key => sides[1].get(key) ?? absentConfigField(key))];
+  } catch {return undefined;}
+}
+export function parseRuntimeBenchmarkConfigCommitments(value: unknown): RuntimeBenchmarkConfigCommitmentsV2 | undefined {
+  try {
+    const input = exactObservationObject(value, ['schemaVersion', 'fields', 'fullFingerprint', 'controlsFingerprint', 'legacyConfigFingerprint']);
+    if (input.schemaVersion !== 'benchmark_config_commitments@2') return undefined;
+    const fields = parseConfigFields(input.fields);
+    if (runtimeConfigCommitmentsFingerprint(fields) !== input.fullFingerprint || runtimeConfigControlsFingerprint(fields) !== input.controlsFingerprint) return undefined;
+    return immutableCanonicalSnapshot({schemaVersion: 'benchmark_config_commitments@2', fields,
+      fullFingerprint: observationHash(input.fullFingerprint), controlsFingerprint: observationHash(input.controlsFingerprint),
+      legacyConfigFingerprint: observationHash(input.legacyConfigFingerprint)});
+  } catch {return undefined;}
+}
+/** Raw values remain caller-local until committed; credentials/output choices are never common controls. */
+export function buildRuntimeCommonModelConfig(config: unknown, context?: Readonly<{runtime: 'openai-agents-sdk';
+  sdk: Readonly<{agentsCoreVersion: string; agentsOpenAiVersion: string; identity: 'matched' | 'unknown'}> |
+    Readonly<{packageName: string; version: string; adapterContractVersion: string}>}>): Readonly<Record<string, unknown>> | undefined {
+  try {
+    const source = observationData(config);
+    const common = Object.fromEntries(Object.entries(source).filter(([key]) => key !== 'apiKey' && key !== 'outputConfig')
+      .map(([key, value]) => [key, key === 'cwd' && value === process.cwd() ? '<process.cwd>' : value]));
+    if (context) {
+      const identity = exactObservationObject(context, ['runtime', 'sdk']);
+      const sdk = observationData(identity.sdk);
+      if (identity.runtime !== 'openai-agents-sdk' || observationOwn(common, 'runtime') || observationOwn(common, 'sdk')) return undefined;
+      if (observationOwn(sdk, 'packageName')) {
+        exactObservationObject(sdk, ['packageName', 'version', 'adapterContractVersion']);
+        if ([sdk.packageName, sdk.version, sdk.adapterContractVersion].some(value => typeof value !== 'string' ||
+            !/^[a-zA-Z0-9@:_./+-]{1,128}$/.test(value))) return undefined;
+      } else {
+        exactObservationObject(sdk, ['agentsCoreVersion', 'agentsOpenAiVersion', 'identity']);
+        if ([sdk.agentsCoreVersion, sdk.agentsOpenAiVersion].some(value => typeof value !== 'string' ||
+            !/^(?:unknown|[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?)$/.test(value))) return undefined;
+        observationMember(sdk.identity, ['matched', 'unknown']);
+      }
+      common.runtime = identity.runtime; common.sdk = {...sdk};
+    }
+    return buildRuntimeConfigCommitments(common) ? common : undefined;
+  } catch {return undefined;}
+}
+function parseOutputConfig(value: unknown): RuntimeObservedOutputConfig {
+  const input = exactObservationObject(value, ['finalSubmission', 'declarationSyntax']);
+  return {finalSubmission: observationMember(input.finalSubmission, OUTPUT_MODES),
+    declarationSyntax: observationMember(input.declarationSyntax, OUTPUT_SYNTAXES)};
+}
+function parseProfileObservation(value: unknown): RuntimeExecutionProfileObservation {
+  const input = exactObservationObject(value, ['schemaVersion', 'role', 'purpose', 'modelHash', 'originalFingerprint', 'fields', 'structureFingerprint']);
+  const fingerprint = exactObservationObject(input.originalFingerprint, ['schemaVersion', 'value']);
+  const fields = parseConfigFields(input.fields);
+  if (input.schemaVersion !== 'execution_profile_observation@1' || fingerprint.schemaVersion !== 'model_execution_fingerprint@1' ||
+      typeof fingerprint.value !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(fingerprint.value) ||
+      runtimeConfigCommitmentsFingerprint(fields) !== input.structureFingerprint) throw new Error('runtime_observation_profile_invalid');
+  return {schemaVersion: 'execution_profile_observation@1', role: observationMember(input.role, ['main_controls', 'stage_policy', 'typed_admission']),
+    purpose: observationMember(input.purpose, RUNTIME_MODEL_CALL_PURPOSES), modelHash: observationHash(input.modelHash),
+    originalFingerprint: {schemaVersion: 'model_execution_fingerprint@1', value: fingerprint.value}, fields, structureFingerprint: observationHash(input.structureFingerprint)};
+}
+export function buildRuntimeExecutionProfileObservation(profile: unknown,
+  identity: Pick<RuntimeExecutionProfileObservation, 'role' | 'purpose'>): RuntimeExecutionProfileObservation | undefined {
+  try {
+    const input = observationData(profile), model = observationData(input.model);
+    const fingerprint = exactObservationObject(input.fingerprint, ['schemaVersion', 'value']);
+    const body = Object.fromEntries(Object.entries(input).filter(([key]) => key !== 'fingerprint'));
+    const fields = buildRuntimeConfigCommitments(body);
+    if (!fields || typeof model.requestedId !== 'string' || !model.requestedId || input.schemaVersion !== 'model_execution_profile@1' ||
+        fingerprint.value !== `sha256:${runtimeObservationHash(JSON.stringify(body))}`) return undefined;
+    return immutableCanonicalSnapshot(parseProfileObservation({schemaVersion: 'execution_profile_observation@1', ...identity,
+      modelHash: runtimeObservationHash(model.requestedId), originalFingerprint: fingerprint, fields,
+      structureFingerprint: runtimeConfigCommitmentsFingerprint(fields)}));
+  } catch {return undefined;}
+}
+function parseAppliedControls(value: unknown): RuntimeAppliedModelControls {
+  const input = exactObservationObject(value, ['schemaVersion', 'requestedOutput', 'commonConfig', 'appliedSettings', 'profiles', 'fullFingerprint']);
+  if (input.schemaVersion !== 'applied_model_controls@1' || !Array.isArray(input.profiles) || input.profiles.length > 16) throw new Error('runtime_observation_controls_invalid');
+  const body = {schemaVersion: 'applied_model_controls@1' as const, requestedOutput: parseOutputConfig(input.requestedOutput),
+    commonConfig: parseConfigFields(input.commonConfig), appliedSettings: parseConfigFields(input.appliedSettings),
+    profiles: input.profiles.map(parseProfileObservation)};
+  if (canonicalContentHash(body) !== input.fullFingerprint) throw new Error('runtime_observation_controls_hash_invalid');
+  return {...body, fullFingerprint: observationHash(input.fullFingerprint)};
+}
+export function buildRuntimeAppliedModelControls(input: {requestedOutput: RuntimeObservedOutputConfig; commonConfig: unknown;
+  appliedSettings: unknown; profiles?: readonly RuntimeExecutionProfileObservation[]}): RuntimeAppliedModelControls | undefined {
+  try {
+    const commonConfig = buildRuntimeConfigCommitments(input.commonConfig), appliedSettings = buildRuntimeConfigCommitments(input.appliedSettings);
+    if (!commonConfig || !appliedSettings) return undefined;
+    const body = {schemaVersion: 'applied_model_controls@1' as const, requestedOutput: parseOutputConfig(input.requestedOutput),
+      commonConfig, appliedSettings, profiles: (input.profiles ?? []).map(parseProfileObservation)};
+    return immutableCanonicalSnapshot({...body, fullFingerprint: canonicalContentHash(body)});
+  } catch {return undefined;}
+}
+
+function parseObservedHash(value: unknown): RuntimeObservedHash {
+  const input = observationData(value);
+  if (input.status === 'unknown') {exactObservationObject(input, ['status']); return {status: 'unknown'};}
+  exactObservationObject(input, ['status', 'hash']);
+  if (input.status !== 'observed') throw new Error('runtime_observation_status_invalid');
+  return {status: 'observed', hash: observationHash(input.hash)};
+}
+function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInput {
+  // Check descriptors/proxies before any nested read, including arrays of references/profiles.
+  if (!buildRuntimeConfigCommitments(value)) throw new Error('runtime_observation_data_invalid');
+  const input = observationData(value);
+  const keys = (required: readonly string[]) => exactObservationObject(input, ['kind', ...required]);
+  switch (input.kind) {
+    case 'main_dispatch':
+      keys(['attemptKey', 'logicalCallKey', 'purpose', 'configuredModelHash', 'providerOriginHash', 'controls']);
+      return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
+        purpose: observationMember(input.purpose, ['answer_turn', 'declaration_repair', 'continuation']),
+        configuredModelHash: observationHash(input.configuredModelHash), providerOriginHash: observationHash(input.providerOriginHash),
+        controls: parseAppliedControls(input.controls)};
+    case 'stage_dispatch':
+      keys(['stageCallKey', 'purpose', 'configuredModelHash', 'providerOriginHash', 'controls']);
+      return {kind: input.kind, stageCallKey: observationHash(input.stageCallKey), purpose: observationMember(input.purpose, RUNTIME_MODEL_CALL_PURPOSES),
+        configuredModelHash: observationHash(input.configuredModelHash), providerOriginHash: observationHash(input.providerOriginHash),
+        controls: parseAppliedControls(input.controls)};
+    case 'native_terminal': {
+      keys(['fact', 'drainStatus']);
+      const fact = exactObservationObject(input.fact, ['attemptKey', 'logicalCallKey', 'response', 'actualModel', 'nativeStatus',
+        'finish', 'rawMaterial', 'nativeContract', 'sdkStreamCompleted']);
+      if (fact.nativeContract !== 'openai_native_completion_observer@1' || typeof fact.sdkStreamCompleted !== 'boolean') throw new Error('runtime_observation_contract_invalid');
+      return {kind: input.kind, fact: {attemptKey: observationHash(fact.attemptKey), logicalCallKey: observationHash(fact.logicalCallKey),
+        response: parseObservedHash(fact.response), actualModel: parseObservedHash(fact.actualModel),
+        nativeStatus: observationMember(fact.nativeStatus, FINAL_NATIVE_STATUSES),
+        finish: observationMember(fact.finish, ['stop', 'length', 'tool_calls', 'completed', 'incomplete', 'failed', 'other', 'unknown']),
+        rawMaterial: parseObservedHash(fact.rawMaterial), nativeContract: fact.nativeContract, sdkStreamCompleted: fact.sdkStreamCompleted},
+        drainStatus: observationMember(input.drainStatus, ['fulfilled', 'rejected', 'unavailable'])};
+    }
+    case 'typed_issued_after_drain':
+      keys(['attemptKey', 'logicalCallKey', 'responseKey', 'callKey', 'actualModel', 'nativeStatus', 'drainStatus',
+        'nativeBodyHash', 'representationVersion', 'compilerVersion', 'admissionVersion']);
+      if (input.nativeStatus !== 'completed' || input.drainStatus !== 'fulfilled') throw new Error('runtime_observation_typed_invalid');
+      return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
+        responseKey: observationHash(input.responseKey), callKey: observationHash(input.callKey), actualModel: parseObservedHash(input.actualModel),
+        nativeStatus: input.nativeStatus, drainStatus: input.drainStatus, nativeBodyHash: observationHash(input.nativeBodyHash),
+        representationVersion: observationMember(input.representationVersion, ['authored_claim_document@1', 'authored_claim_document@2']),
+        compilerVersion: observationMember(input.compilerVersion, ['authored_claim_document_compiler@1', 'authored_claim_document_compiler@2']),
+        admissionVersion: observationMember(input.admissionVersion, ['openai_typed_final_admission@1', 'openai_typed_final_admission@2'])};
+    case 'candidate_retained':
+      keys(['nativeCandidateKey', 'carrier', 'transform', 'authors', 'declaredBody', 'declaredClaims', 'productStatus']);
+      if (!Array.isArray(input.authors) || input.authors.length > 2) throw new Error('runtime_observation_authors_invalid');
+      return {kind: input.kind, nativeCandidateKey: observationHash(input.nativeCandidateKey),
+        carrier: observationMember(input.carrier, ['assistant_text', 'model_tool_arguments']),
+        transform: observationMember(input.transform, ['native', 'declaration_repair']), authors: input.authors.map(value => {
+          const author = exactObservationObject(value, ['role', 'terminalEventKey']);
+          return {role: observationMember(author.role, ['body', 'declaration', 'body_and_declaration']), terminalEventKey: observationHash(author.terminalEventKey)};
+        }), declaredBody: observationMember(input.declaredBody, ['present', 'absent']),
+        declaredClaims: observationMember(input.declaredClaims, ['present', 'absent', 'invalid', 'unknown']),
+        productStatus: observationMember(input.productStatus, FINAL_NATIVE_STATUSES)};
+    case 'finalizer_selected':
+      keys(['retainedEventKey', 'nativeCandidateKey', 'displayCandidateKey', 'canonicalSourceCandidateKey', 'canonicalCandidateKey', 'productStatus']);
+      return {kind: input.kind, retainedEventKey: observationHash(input.retainedEventKey), nativeCandidateKey: observationHash(input.nativeCandidateKey),
+        displayCandidateKey: observationHash(input.displayCandidateKey), canonicalSourceCandidateKey: observationHash(input.canonicalSourceCandidateKey),
+        canonicalCandidateKey: observationHash(input.canonicalCandidateKey), productStatus: observationMember(input.productStatus, FINAL_NATIVE_STATUSES)};
+    case 'not_exercised':
+      keys(['reason']);
+      return {kind: input.kind, reason: observationMember(input.reason, ['program_ack', 'direct_without_main'])};
+    default: throw new Error('runtime_observation_event_invalid');
+  }
+}
+/** Strict shared stored-receipt projection, not an authority check or a quality verdict. */
+export function projectRuntimeFinalTransportObservation(value: unknown): RuntimeFinalTransportObservation | undefined {
+  try {
+    const input = exactObservationObject(value, ['schemaVersion', 'events', 'truncated']);
+    if (input.schemaVersion !== 'final_transport_observation@1' || !Array.isArray(input.events) || nodeUtilTypes.isProxy(input.events) ||
+        input.events.length > DEFAULT_MAX_RECEIPT_ITEMS || !Number.isSafeInteger(input.truncated) || (input.truncated as number) < 0) return undefined;
+    const seen = new Set<string>();
+    let previousOffset = -1;
+    const events = input.events.map((value, index) => {
+      const event = observationData(value);
+      const {eventKey, sequence, offsetMs, ...payload} = event;
+      const parsed = parseFinalTransportInput(payload);
+      if (sequence !== index + 1 || typeof offsetMs !== 'number' || !Number.isFinite(offsetMs) || offsetMs < previousOffset || offsetMs < 0 ||
+          typeof eventKey !== 'string' || seen.has(eventKey) || eventKey !== canonicalContentHash({sequence, offsetMs, ...parsed})) throw new Error('runtime_observation_event_identity_invalid');
+      previousOffset = offsetMs; seen.add(eventKey);
+      return {...parsed, eventKey, sequence, offsetMs} as RuntimeFinalTransportEvent;
+    });
+    return immutableCanonicalSnapshot({schemaVersion: 'final_transport_observation@1', events, truncated: input.truncated as number});
+  } catch {return undefined;}
+}
+
 /** Provider-reported token counts, copied only when the provider returns them. */
 export interface RuntimeModelCallUsageV1 {
   inputTokens?: number;
@@ -180,6 +566,8 @@ export interface RuntimePerformanceModelCallReceiptV1 {
   trigger?: RuntimeModelCallTrigger;
   /** Model the provider reported, else the one requested. Internal receipt only. */
   model?: string;
+  /** Explicit producer provenance; a configured fallback never certifies the provider model. */
+  modelSource?: 'configured' | 'provider_reported';
   /** Origin of the configured provider base URL (`runtimeProviderOrigin`). Internal receipt only. */
   providerOrigin?: string;
   inputBytesBucket?: RuntimeModelCallInputBytesBucket;
@@ -274,6 +662,7 @@ export interface RuntimePerformanceReceiptV1 {
   modelCalls?: RuntimePerformanceModelCallReceiptV1[];
   modelRequests?: RuntimeModelRequestReceiptV1[];
   policyObservations?: RuntimeModelPolicyObservation[];
+  finalTransportObservation?: RuntimeFinalTransportObservation;
   finalReview?: RuntimePerformanceFinalReviewReceiptV1;
   declaration?: RuntimePerformanceDeclarationReceiptV1;
   deliveryBudgets?: RuntimePerformanceDeliveryBudgetReceiptV1[];
@@ -307,8 +696,10 @@ export interface RuntimeModelCallStart {
 
 export interface RuntimeModelCallEnd {
   outcome?: RuntimePerformanceOutcome;
-  /** Replaces the requested model when the provider reported the one it used. */
+  /** Replaces the requested model; without provenance its source remains unknown. */
   model?: string;
+  /** Only the actual producer may attach this to the same valid end.model. */
+  modelSource?: 'provider_reported';
   /** Request-side reasoning control, when only the transport knows it. */
   reasoning?: RuntimeModelCallReasoning;
   reasoningEffort?: RuntimeModelReasoningEffort;
@@ -333,6 +724,7 @@ export interface RuntimePerformanceRecorderOptions {
   maxModelCalls?: number;
   maxModelRequests?: number;
   maxPolicyObservations?: number;
+  maxFinalTransportEvents?: number;
   maxHashInputBytes?: number;
   onActivity?(snapshot: RuntimeActivitySnapshot): void;
 }
@@ -422,6 +814,7 @@ export class RuntimePerformanceRecorder {
   private readonly maxModelCalls: number;
   private readonly maxModelRequests: number;
   private readonly maxPolicyObservations: number;
+  private readonly maxFinalTransportEvents: number;
   private readonly maxHashInputBytes: number;
   private readonly startedAt: number;
   private lastOffsetMs = 0;
@@ -432,6 +825,8 @@ export class RuntimePerformanceRecorder {
   private readonly modelCalls: RuntimePerformanceModelCallReceiptV1[] = [];
   private readonly modelRequests: RuntimeModelRequestReceiptV1[] = [];
   private readonly policyObservations: RuntimeModelPolicyObservation[] = [];
+  private readonly finalTransportEvents: RuntimeFinalTransportEvent[] = [];
+  private finalTransportTruncated = 0;
   private finalReview: RuntimePerformanceFinalReviewReceiptV1 | undefined;
   private declaration: RuntimePerformanceDeclarationReceiptV1 | undefined;
   // Independent of capped timing arrays. Absence from those arrays cannot
@@ -463,6 +858,7 @@ export class RuntimePerformanceRecorder {
     this.maxModelRequests = positiveCap(options.maxModelRequests, DEFAULT_MAX_RECEIPT_ITEMS);
     this.maxPolicyObservations = Math.min(DEFAULT_MAX_RECEIPT_ITEMS,
       positiveCap(options.maxPolicyObservations, DEFAULT_MAX_RECEIPT_ITEMS));
+    this.maxFinalTransportEvents = Math.min(DEFAULT_MAX_RECEIPT_ITEMS, positiveCap(options.maxFinalTransportEvents, DEFAULT_MAX_RECEIPT_ITEMS));
     this.maxHashInputBytes = positiveCap(
       options.maxHashInputBytes,
       DEFAULT_MAX_HASH_INPUT_BYTES,
@@ -511,6 +907,8 @@ export class RuntimePerformanceRecorder {
       || this.modelCalls.length > 0
       || this.modelRequests.length > 0
       || this.policyObservations.length > 0
+      || this.finalTransportEvents.length > 0
+      || this.finalTransportTruncated > 0
       || this.finalReview !== undefined
       || this.declaration !== undefined
       || this.deliveryBudgets.length > 0
@@ -629,6 +1027,24 @@ export class RuntimePerformanceRecorder {
     });
   }
 
+  recordFinalTransportEvent(input: RuntimeFinalTransportEventInput): string | undefined {
+    this.assertCollecting('record_final_transport');
+    if (this.finalTransportEvents.length >= this.maxFinalTransportEvents) {this.finalTransportTruncated++; return undefined;}
+    let payload: RuntimeFinalTransportEventInput;
+    try {payload = parseFinalTransportInput(input);} catch {this.finalTransportTruncated++; return undefined;}
+    const event = {sequence: this.finalTransportEvents.length + 1, offsetMs: this.offsetMs(), ...payload};
+    const eventKey = canonicalContentHash(event);
+    this.finalTransportEvents.push(immutableCanonicalSnapshot({...event, eventKey}));
+    return eventKey;
+  }
+
+  findFinalTransportRetainedEvent(nativeCandidateKey: string): Readonly<{eventKey: string; nativeCandidateKey: string}> | undefined {
+    if (this.sealedReceipt || this.finalTransportTruncated) return undefined;
+    const found = this.finalTransportEvents.filter(event => event.kind === 'candidate_retained' && event.nativeCandidateKey === nativeCandidateKey);
+    if (found.length !== 1) return undefined;
+    return Object.freeze({eventKey: found[0].eventKey, nativeCandidateKey});
+  }
+
   recordModelExecutionPolicy(input: unknown): void {
     this.assertCollecting('record_model_execution_policy');
     const receipt = projectRuntimeModelPolicyReceipt(input);
@@ -712,6 +1128,9 @@ export class RuntimePerformanceRecorder {
           this.declarationRepair = end.outcome === 'cancelled' || end.outcome === 'error' ? end.outcome : 'not_completed';
         }
         const model = boundedModelName(end.model) ?? boundedModelName(input.model);
+        const modelSource = model && end.modelSource === 'provider_reported' && typeof end.model === 'string' &&
+          end.model === model && end.model.length <= MAX_MODEL_NAME_CHARS ? 'provider_reported'
+          : model && end.model === undefined && end.modelSource === undefined ? 'configured' : undefined;
         const usage = normalizeModelCallUsage(end.usage ?? doneUsage);
         const requestedReasoning = end.reasoning ?? input.reasoning;
         const reasoning = requestedReasoning && ['provider_default', 'disabled', 'enabled'].includes(requestedReasoning)
@@ -732,6 +1151,7 @@ export class RuntimePerformanceRecorder {
           purpose: input.purpose,
           ...(input.trigger ? {trigger: input.trigger} : {}),
           ...(model ? {model} : {}),
+          ...(modelSource ? {modelSource} : {}),
           ...(runtimeProviderOrigin(input.providerOrigin) ? {providerOrigin: runtimeProviderOrigin(input.providerOrigin)} : {}),
           ...(input.inputBytesBucket && RUNTIME_MODEL_CALL_INPUT_BYTES_BUCKETS.includes(input.inputBytesBucket)
             ? {inputBytesBucket: input.inputBytesBucket} : {}),
@@ -836,6 +1256,8 @@ export class RuntimePerformanceRecorder {
       ...(this.modelCalls.length > 0 ? {modelCalls: [...this.modelCalls]} : {}),
       ...(this.modelRequests.length > 0 ? {modelRequests: [...this.modelRequests]} : {}),
       ...(this.policyObservations.length > 0 ? {policyObservations: [...this.policyObservations]} : {}),
+      ...(this.finalTransportEvents.length || this.finalTransportTruncated ? {finalTransportObservation: {
+        schemaVersion: 'final_transport_observation@1' as const, events: [...this.finalTransportEvents], truncated: this.finalTransportTruncated}} : {}),
       ...(this.finalReview ? {finalReview: this.finalReview} : {}),
       ...(this.declaration ? {declaration: this.declaration} : {}),
       ...(this.deliveryBudgets.length > 0 ? {deliveryBudgets: [...this.deliveryBudgets]} : {}),
@@ -986,6 +1408,19 @@ export function startRuntimeModelCall(
 export function recordRuntimeModelExecutionPolicy(source: RuntimePerformanceSource | undefined, receipt: unknown): void {
   try { resolveRuntimePerformanceRecorder(source)?.recordModelExecutionPolicy(receipt); }
   catch { /* A policy observation cannot change provider execution. */ }
+}
+
+/** Observation-only append. Missing/currentness/seal failures never affect execution. */
+export function recordRuntimeFinalTransportEvent(source: RuntimePerformanceSource | undefined,
+  input: RuntimeFinalTransportEventInput): string | undefined {
+  try {return resolveRuntimePerformanceRecorder(source)?.recordFinalTransportEvent(input);}
+  catch {return undefined;}
+}
+/** Lookup a recorded lineage summary; this does not grant or recreate any native capability. */
+export function findRuntimeRetainedTransportEvent(source: RuntimePerformanceSource | undefined,
+  nativeCandidateKey: string): Readonly<{eventKey: string; nativeCandidateKey: string}> | undefined {
+  try {return resolveRuntimePerformanceRecorder(source)?.findFinalTransportRetainedEvent(nativeCandidateKey);}
+  catch {return undefined;}
 }
 
 /** Record the finalizer's review decision on an optional recorder; never throws. */

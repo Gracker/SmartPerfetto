@@ -18,10 +18,25 @@ import {
   startRuntimeModelCall,
   projectRuntimeModelPolicyReceipt,
   recordRuntimeModelExecutionPolicy,
+  buildRuntimeConfigCommitments,
+  runtimeConfigCommitmentsFingerprint,
+  runtimeConfigControlsFingerprint,
+  alignRuntimeConfigCommitments,
+  parseRuntimeBenchmarkConfigCommitments,
+  buildRuntimeCommonModelConfig,
+  buildRuntimeAppliedModelControls,
+  buildRuntimeExecutionProfileObservation,
+  recordRuntimeFinalTransportEvent,
+  findRuntimeRetainedTransportEvent,
+  projectRuntimeFinalTransportObservation,
+  runtimeCandidateObservationKey,
+  runtimeObservationHash,
   RUNTIME_DECLARATION_AUTHORING_STATUSES,
   RUNTIME_DECLARATION_AUTHORING_VERSIONS,
 } from '../runtimePerformance';
 import {createRuntimePerformanceScope, resolveRuntimePerformanceRecorder, bindRuntimePerformanceContext, withRuntimePerformanceSuppressed} from '../runtimePerformanceContext';
+import {resolveModelExecutionProfile} from '../../services/providerManager/modelExecutionProfile';
+import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {parseRuntimeActivitySnapshot} from '../runtimeActivity';
 import {dispatchWithModelCallRecord} from '../intentTransport';
 
@@ -938,5 +953,145 @@ describe('run activity observation', () => {
     expect(() => parseRuntimeActivitySnapshot({...activity, sql: 'private'})).toThrow('runtime_activity_invalid');
     expect(() => parseRuntimeActivitySnapshot({...activity, attempted: 0})).toThrow('runtime_activity_invalid');
     expect(() => parseRuntimeActivitySnapshot({...activity, observation: 'partial'})).toThrow('runtime_activity_invalid');
+  });
+});
+
+
+describe('W0 actual transport observations and private configuration commitments', () => {
+  const output = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'} as const;
+  const hash = (value: string) => runtimeObservationHash(value);
+  const rows = (value: unknown) => buildRuntimeConfigCommitments(value)!;
+
+  it('masks only the two treatment leaves after side alignment, without descendant values in parent commitments', () => {
+    const base = rows({environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'assistant_text',
+      SMARTPERFETTO_CONCLUSION_AUTHORING: 'canonical_v1', OPENAI_MAX_TURNS: '100'}, settings: [0, false]});
+    const candidate = rows({environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v2',
+      SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2', OPENAI_MAX_TURNS: '100'}, settings: [0, false]});
+    const aligned = alignRuntimeConfigCommitments(base, candidate)!;
+    expect(runtimeConfigCommitmentsFingerprint(aligned[0])).not.toBe(runtimeConfigCommitmentsFingerprint(aligned[1]));
+    expect(runtimeConfigControlsFingerprint(aligned[0])).toBe(runtimeConfigControlsFingerprint(aligned[1]));
+    expect(aligned[0].find(row => row.field === '/environment')).toEqual(aligned[1].find(row => row.field === '/environment'));
+    const artifact = {schemaVersion: 'benchmark_config_commitments@2', fields: aligned[0],
+      fullFingerprint: runtimeConfigCommitmentsFingerprint(aligned[0]), controlsFingerprint: runtimeConfigControlsFingerprint(aligned[0]),
+      legacyConfigFingerprint: 'a'.repeat(64)};
+    expect(parseRuntimeBenchmarkConfigCommitments(artifact)).toEqual(artifact);
+    expect(parseRuntimeBenchmarkConfigCommitments({...artifact, fullFingerprint: 'b'.repeat(64)})).toBeUndefined();
+  });
+
+  it.each([{settings: [false, 0]}, {settings: [0, false, null]}, {newControl: true}, {effort: 'low'}])(
+    'retains array order/structure and every non-treatment control: %j', mutation => {
+      const original = rows({settings: [0, false], effort: 'high'});
+      const changed = rows({settings: [0, false], effort: 'high', ...mutation});
+      const [left, right] = alignRuntimeConfigCommitments(original, changed)!;
+      expect(runtimeConfigControlsFingerprint(left)).not.toBe(runtimeConfigControlsFingerprint(right));
+    });
+
+  it('uses collision-free JSON Pointer paths and explicit absent/undefined/number types', () => {
+    const result = rows({'a/b': {'~': 0}, a: {b: -0}, '0': false, undefinedValue: undefined, values: [0]});
+    expect(result.map(row => row.field)).toEqual(expect.arrayContaining(['/a~1b/~0', '/a/b', '/0', '/values/0']));
+    expect(result.find(row => row.field === '/a~1b/~0')!.valueCommitment).not.toBe(result.find(row => row.field === '/a/b')!.valueCommitment);
+    const [left, right] = alignRuntimeConfigCommitments(rows({}), rows({extra: undefined}))!;
+    expect(left.find(row => row.field === '/extra')).toMatchObject({presence: 'absent', type: 'absent'});
+    expect(right.find(row => row.field === '/extra')).toMatchObject({presence: 'present', type: 'undefined'});
+    expect(runtimeConfigCommitmentsFingerprint(left)).not.toBe(runtimeConfigCommitmentsFingerprint(right));
+  });
+
+  it('does not inspect proxies or getters and never exposes committed private values', () => {
+    const getter = jest.fn(() => 'PRIVATE');
+    const value = Object.defineProperty({}, 'secret', {enumerable: true, get: getter});
+    const trap = jest.fn();
+    expect(buildRuntimeConfigCommitments(value)).toBeUndefined();
+    expect(buildRuntimeConfigCommitments(new Proxy({}, {ownKeys: () => {trap(); return [];}}))).toBeUndefined();
+    expect(getter).not.toHaveBeenCalled(); expect(trap).not.toHaveBeenCalled();
+    expect(JSON.stringify(rows({url: 'https://user:PRIVATE@example.invalid/?key=PRIVATE'}))).not.toContain('PRIVATE');
+    const cycle: any = {}; cycle.self = cycle;
+    expect(buildRuntimeConfigCommitments(cycle)).toBeUndefined();
+  });
+
+  it('keeps all actual controls, normalizes only exact cwd, and excludes credentials/output choices', () => {
+    const common = buildRuntimeCommonModelConfig({cwd: process.cwd(), apiKey: 'PRIVATE', outputConfig: output,
+      newlyAddedBehavior: {budget: 7}}, {runtime: 'openai-agents-sdk',
+      sdk: {packageName: 'node:fetch', version: process.versions.node, adapterContractVersion: 'openai-text-http@1'}})!;
+    expect(common).toMatchObject({cwd: '<process.cwd>', newlyAddedBehavior: {budget: 7}});
+    expect(common).not.toHaveProperty('apiKey'); expect(common).not.toHaveProperty('outputConfig');
+    expect(buildRuntimeCommonModelConfig({cwd: `${process.cwd()}/custom`})!.cwd).toBe(`${process.cwd()}/custom`);
+    const controls = buildRuntimeAppliedModelControls({requestedOutput: output, commonConfig: common,
+      appliedSettings: {providerData: {thinking: {type: 'disabled'}}, extraActualParameter: true}})!;
+    expect(controls.appliedSettings.some(row => row.field === '/extraActualParameter')).toBe(true);
+    expect(JSON.stringify(controls)).not.toContain('PRIVATE');
+  });
+
+  it('preserves the real complete profile fingerprint and commits its structure without re-running eligibility', () => {
+    const profile = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions',
+      modelId: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1',
+      sdk: {packageName: 'node:fetch', version: process.versions.node, adapterContractVersion: 'openai-text-http@1'},
+      sdkCapabilities: {surface: 'openai_chat', thinking: 'optional', reasoningRoundtrip: 'unknown', source: 'contract_test'},
+      effective: {maxOutputTokens: 3000}});
+    const observed = buildRuntimeExecutionProfileObservation(profile, {role: 'stage_policy', purpose: 'review'})!;
+    expect(observed.originalFingerprint).toEqual(profile.fingerprint);
+    expect(observed.structureFingerprint).toBe(runtimeConfigCommitmentsFingerprint(observed.fields));
+    expect(buildRuntimeExecutionProfileObservation({...profile, fingerprint: {...profile.fingerprint, value: `sha256:${'0'.repeat(64)}`}},
+      {role: 'stage_policy', purpose: 'review'})).toBeUndefined();
+  });
+
+  it('records a bounded immutable event sequence and only looks up the exact retained candidate', () => {
+    const recorder = createRuntimePerformanceRecorder({now: () => 10});
+    const source = {runtimePerformanceRecorder: recorder};
+    const nativeCandidate = {runId: 'run', attemptId: 'attempt', candidateRef: 'run:attempt', conclusionFingerprint: hash('body')};
+    const candidate = runtimeCandidateObservationKey(nativeCandidate);
+    expect(candidate).toBe(analysisDeliveryFingerprint(nativeCandidate));
+    const terminal = recordRuntimeFinalTransportEvent(source, {kind: 'native_terminal', fact: {attemptKey: hash('attempt'),
+      logicalCallKey: hash('call'), response: {status: 'observed', hash: hash('response')}, actualModel: {status: 'unknown'},
+      nativeStatus: 'completed', finish: 'stop', rawMaterial: {status: 'observed', hash: hash('body')},
+      nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: true}, drainStatus: 'fulfilled'})!;
+    const retained = recordRuntimeFinalTransportEvent(source, {kind: 'candidate_retained', nativeCandidateKey: candidate,
+      carrier: 'assistant_text', transform: 'native', authors: [{role: 'body_and_declaration', terminalEventKey: terminal}],
+      declaredBody: 'present', declaredClaims: 'absent', productStatus: 'completed'})!;
+    expect(findRuntimeRetainedTransportEvent(source, candidate)).toEqual({eventKey: retained, nativeCandidateKey: candidate});
+    expect(findRuntimeRetainedTransportEvent(source, hash('other'))).toBeUndefined();
+    const receipt = recorder.seal().finalTransportObservation!;
+    expect(receipt.events.map(event => event.sequence)).toEqual([1, 2]);
+    expect(projectRuntimeFinalTransportObservation(receipt)).toEqual(receipt);
+    expect(Object.isFrozen(receipt.events[0])).toBe(true);
+    expect(recordRuntimeFinalTransportEvent(source, {kind: 'not_exercised', reason: 'program_ack'})).toBeUndefined();
+    expect(findRuntimeRetainedTransportEvent(source, candidate)).toBeUndefined();
+  });
+
+  it('keeps malformed/dropped observations incomplete and never echoes unknown private event fields', () => {
+    const recorder = createRuntimePerformanceRecorder({maxFinalTransportEvents: 1});
+    const source = {runtimePerformanceRecorder: recorder};
+    expect(recordRuntimeFinalTransportEvent(source, {kind: 'not_exercised', reason: 'program_ack'})).toMatch(/^[a-f0-9]{64}$/);
+    expect(recordRuntimeFinalTransportEvent(source, {kind: 'not_exercised', reason: 'direct_without_main'})).toBeUndefined();
+    expect(recorder.seal().finalTransportObservation!.truncated).toBe(1);
+    const invalid = createRuntimePerformanceRecorder();
+    expect(recordRuntimeFinalTransportEvent({runtimePerformanceRecorder: invalid},
+      {kind: 'not_exercised', reason: 'program_ack', privatePrompt: 'PRIVATE'} as any)).toBeUndefined();
+    expect(invalid.seal().finalTransportObservation).toEqual({schemaVersion: 'final_transport_observation@1', events: [], truncated: 1});
+    expect(JSON.stringify(invalid.seal())).not.toContain('PRIVATE');
+  });
+});
+
+
+describe('explicit provider model provenance', () => {
+  it.each([
+    [{}, 'configured', 'configured'],
+    [{model: 'provider', modelSource: 'provider_reported'}, 'provider', 'provider_reported'],
+    [{model: 'provider'}, 'provider', undefined],
+    [{modelSource: 'provider_reported'}, 'configured', undefined],
+    [{model: '', modelSource: 'provider_reported'}, 'configured', undefined],
+    [{model: ' provider ', modelSource: 'provider_reported'}, 'provider', undefined],
+    [{model: 'provider', modelSource: 'invented'}, 'provider', undefined],
+  ] as const)('requires the producer tag and that same exact valid end model: %j', (end, expectedModel, source) => {
+    const recorder = createRuntimePerformanceRecorder();
+    recorder.startModelCall({purpose: 'classification', model: 'configured'}).end(end as any);
+    expect(recorder.seal().modelCalls![0].model).toBe(expectedModel);
+    expect(recorder.seal().modelCalls![0].modelSource).toBe(source);
+  });
+
+  it('never claims a model source when no model exists', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    recorder.startModelCall({purpose: 'review'}).end({modelSource: 'provider_reported'});
+    expect(recorder.seal().modelCalls![0]).not.toHaveProperty('model');
+    expect(recorder.seal().modelCalls![0]).not.toHaveProperty('modelSource');
   });
 });

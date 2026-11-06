@@ -41,6 +41,9 @@ import {investigationRequirementNeedsReview} from '../finalInvestigationContract
 import {createRunManifestLifecycle, withRunManifestLifecycle, clearRunManifestLifecyclesForTests} from '../selfEvolution/runManifestLifecycle';
 import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
 import {buildAnalysisReceipt} from '../analysisReceiptBuilder';
+import {readConclusionTransportObservation} from '../security/conclusionProtocolProjection';
+import * as protocolProjection from '../security/conclusionProtocolProjection';
+import {recordRuntimeFinalTransportEvent} from '../../agentRuntime/runtimePerformance';
 import locationFault from '../../../tests/fixtures/location-verdict/fault.json';
 import locationNormal from '../../../tests/fixtures/location-verdict/normal.json';
 
@@ -338,6 +341,54 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 }
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
+
+describe('finalizer transport selection observation', () => {
+  it.each(['retained', 'missing', 'sealed'] as const)('keeps finalization intact with %s observation', async mode => {
+    const target = fixture({nativeProjection: true});
+    const native = target.context.getNativeDeclaration(target.result, target.owner.signal);
+    if (!native) throw new Error('Missing issued native declaration in fixture');
+    const identity = readConclusionTransportObservation(native);
+    if (!identity) throw new Error('Missing issued transport identities in fixture');
+    const lifecycle = createRunManifestLifecycle({runId: 'run', sessionId: target.result.sessionId,
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}, runtime: 'openai-agents-sdk', outputLanguage: 'en',
+      analysisMode: 'fast', skillRegistry: {registryFingerprint: 'registry', evolutionOverlayGeneration: 'builtin', skills: []}});
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    // This synthetic retained event isolates finalizer mapping. Native-author admission has separate graph tests.
+    const retainedKey = mode === 'missing' ? undefined : recordRuntimeFinalTransportEvent({identity: lifecycle.identity, runtimePerformanceRecorder: recorder}, {
+      kind: 'candidate_retained', nativeCandidateKey: identity.nativeCandidateKey, carrier: 'assistant_text',
+      transform: 'native', authors: [], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed',
+    });
+    if (mode !== 'missing') expect(retainedKey).toMatch(/^[a-f0-9]{64}$/);
+    if (mode === 'sealed') recorder.seal();
+    const final = await withRunManifestLifecycle(lifecycle, () => target.run());
+    expect(final.result.conclusion).toBe('\nThe captured value is 49.\n');
+    expect(final.result.completion?.status).toBe('completed');
+    expect(final.result.claimVerificationResult?.claimResults[0].deterministicProof?.status).toBe('proved');
+    expect(target.dispatch).toHaveBeenCalledTimes(1);
+    const selected = recorder.seal().finalTransportObservation?.events.filter(event => event.kind === 'finalizer_selected') ?? [];
+    if (mode === 'retained') {
+      expect(selected).toHaveLength(1);
+      expect(selected[0]).toMatchObject({kind: 'finalizer_selected', retainedEventKey: retainedKey,
+        nativeCandidateKey: identity.nativeCandidateKey, displayCandidateKey: identity.displayCandidateKey,
+        canonicalSourceCandidateKey: identity.displayCandidateKey, productStatus: 'completed'});
+      expect(selected[0].kind === 'finalizer_selected' && selected[0].canonicalCandidateKey).toMatch(/^[a-f0-9]{64}$/);
+    } else expect(selected).toEqual([]);
+  });
+
+  it('keeps verification and delivery intact when the identity observer throws', async () => {
+    const target = fixture({nativeProjection: true});
+    const observe = jest.spyOn(protocolProjection, 'readConclusionTransportObservation')
+      .mockImplementation(() => {throw new Error('PRIVATE_OBSERVATION_FAILURE');});
+    try {
+      const final = await target.run();
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(target.dispatch).toHaveBeenCalledTimes(1);
+      expect(final.result.conclusion).toBe('\nThe captured value is 49.\n');
+      expect(final.result.completion?.status).toBe('completed');
+      expect(final.result.claimVerificationResult?.claimResults[0].deterministicProof?.status).toBe('proved');
+    } finally {observe.mockRestore();}
+  });
+});
 
 describe('actual typed submission semantic transport admission', () => {
   it.each(['missing_submission', 'transport_failure', 'submitted'] as const)

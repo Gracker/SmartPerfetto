@@ -18,7 +18,7 @@ import {captureEvidenceTable} from '../evidence/evidenceCapture';
 import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {claimConclusionProtocolProjection, readConclusionProtocolProjection, releaseConclusionProtocolProjection,
-  projectConclusionSemanticInput, projectConclusionProtocol} from '../security/conclusionProtocolProjection';
+  projectConclusionSemanticInput, projectConclusionProtocol, readConclusionTransportObservation} from '../security/conclusionProtocolProjection';
 import {registerOnDemandSourceLookupForEcho, registerCodeAwareCanary, registerPrivateAnalysisQueryForEcho,
   revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards, withOwnerCodeAwareProjection} from '../security/codeAwareOutputRegistry';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot} from '../evidence/claimEvidencePreparation';
@@ -105,6 +105,36 @@ function authoredFixture(options: {payload?: Record<string, unknown>; parts?: un
   return {source, compiled, live, handoff, delivery, context, token, read,
     cleanup: () => {if (token) releaseConclusionProtocolProjection(token); clearCodeAwareOutputGuards(source.sessionId);}};
 }
+
+describe('issued transport identity observation', () => {
+  it('reads only issued frozen identities and leaves native authority checks unchanged', () => {
+    const f = authoredFixture();
+    try {
+      const native = f.read();
+      const before = structuredClone(f.source);
+      const observed = readConclusionTransportObservation(native);
+      expect(observed).toEqual({
+        nativeCandidateKey: analysisDeliveryFingerprint(f.delivery.acceptedCandidate),
+        displayCandidateKey: analysisDeliveryFingerprint(f.context.acceptedCandidate),
+      });
+      expect(Object.isFrozen(observed)).toBe(true);
+      expect(readConclusionTransportObservation({...native})).toBeUndefined();
+      expect(readConclusionTransportObservation(JSON.parse(JSON.stringify(native)))).toBeUndefined();
+      f.live.active = false;
+      // The observer cannot revoke or bless a capability. The original read still rejects it.
+      expect(readConclusionTransportObservation(native)).toEqual(observed);
+      expect(() => f.read()).toThrow('authored_final_submission_inactive');
+      expect(f.source).toEqual(before);
+    } finally {f.cleanup();}
+  });
+
+  it('returns no identities after the issuing projection is released', () => {
+    const f = authoredFixture();
+    const native = f.read();
+    f.cleanup();
+    expect(readConclusionTransportObservation(native)).toBeUndefined();
+  });
+});
 
 describe('issued authored-document consumers', () => {
   it.each(['valid', 'partially_valid', 'invalid'] as const)('observes the issued original %s declaration without scanning body or dropping invalid entries', status => {

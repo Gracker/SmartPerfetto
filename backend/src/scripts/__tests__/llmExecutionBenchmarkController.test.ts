@@ -6,6 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
+import {buildRuntimeConfigCommitments, alignRuntimeConfigCommitments, runtimeConfigCommitmentsFingerprint,
+  runtimeConfigControlsFingerprint, parseRuntimeBenchmarkConfigCommitments} from '../../agentRuntime/runtimePerformance';
+import {parseArgs as parseVerifierArgs} from '../verifyAgentSseScrolling';
 import {CONCLUSION_AUTHORING_ENV} from '../../agent/core/conclusionAuthoring';
 import {SMARTPERFETTO_FINAL_SUBMISSION_ENV} from '../../agentRuntime/finalSubmissionConfig';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../../agentRuntime/runtimeCandidateAdmission';
@@ -413,5 +416,126 @@ describe('LLM execution benchmark controller contracts', () => {
     const exitCode = await new Promise<number | null>((resolve, reject) => {child.once('error', reject); child.once('close', resolve);});
     expect(exitCode).toBe(0);
     expect(Number(stdout.trim())).toBe(child.pid);
+  });
+});
+
+
+describe('W0 default-text to native-v2 controller', () => {
+  type ProbeInput = {args: string[]; label: string; backendRoot: string; env: NodeJS.ProcessEnv; request: {port: number}};
+  type ProbeLifecycle = {preparedAt: number; settledAt: number; processId: number; exitCode: number;
+    signal: null; outcome: 'exited' | 'nonzero_exit'; censored: false; cleanup: 'confirmed'};
+  const directories: string[] = [];
+  afterEach(() => {for (const directory of directories.splice(0)) fs.rmSync(directory, {recursive: true, force: true});});
+  function treatmentFixture(mutation?: (input: any, request: any, result: any) => void) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-treatment-')); directories.push(directory);
+    const fixture = controllerFixture(directory);
+    fixture.options.treatment = lifecycle.TREATMENT_ID;
+    const load = fixture.dependencies.loadCheckout;
+    fixture.dependencies.loadCheckout = (root: string) => {
+      write(root, 'backend/src/scripts/agentE2eMetrics.ts', 'common observed projection');
+      const loaded: any = load(root);
+      const prepare = loaded.api.prepareProviderChild;
+      loaded.api.prepareProviderChild = (input: any, env: any) => ({...prepare(), env: {...env,
+        OPENAI_MODEL: 'glm-5.3-flash', SMARTPERFETTO_BACKEND_DATA_DIR: path.join(input.isolatedRoot, 'data'),
+        SMARTPERFETTO_BACKEND_LOG_DIR: path.join(input.isolatedRoot, 'logs')}});
+      loaded.observer = lifecycle.fingerprintObserver(root, HOOK, true);
+      return loaded;
+    };
+    const order: string[] = [];
+    const paid = fixture.dependencies.runOwnedVerifier;
+    fixture.dependencies.runOwnedVerifier = jest.fn(async (input: any) => {order.push('paid'); return paid(input);});
+    let probeOrdinal = 0;
+    const probe = jest.fn(async (input: ProbeInput): Promise<ProbeLifecycle> => {
+      const ordinal = ++probeOrdinal;
+      const requestPath = input.args[input.args.indexOf('--input') + 1], outputPath = input.args[input.args.indexOf('--output') + 1];
+      const request = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+      order.push(`probe:${request.side}`);
+      const sdk = {agentsCoreVersion: '0.13.0', agentsOpenAiVersion: '0.13.0', identity: 'matched'};
+      const result: any = {schemaVersion: 'llm_target_preflight@2', nonce: request.nonce, side: request.side, cellId: request.cellId,
+        requestedMode: request.requestedMode, observedSourceFingerprint: request.expectedSourceFingerprint,
+        declaredConfigFingerprint: request.declaredConfig.fullFingerprint, declaredControlsFingerprint: request.declaredConfig.controlsFingerprint,
+        declaredTreatmentHash: request.treatmentHash, status: 'ready', capturedOutput: lifecycle.TREATMENT_OUTPUTS[request.side], sdk: {...sdk, nodeVersion: process.versions.node},
+        actualResolvedConfig: lifecycle.buildConfigCommitments({model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash',
+          baseURL: 'https://open.bigmodel.cn/api/coding/paas/v4', protocol: 'chat_completions',
+          runtime: 'openai-agents-sdk', sdk, outputConfig: lifecycle.TREATMENT_OUTPUTS[request.side]}),
+        purposeContracts: {schemaVersion: 'llm_purpose_controls@1', classification: {
+          commonConfig: lifecycle.buildConfigCommitments({model: 'glm-5.3-flash', lightModel: 'glm-5.3-flash'}),
+          tokenLimit: {status: 'explicit', field: 'max_tokens', valueCommitment: lifecycle.hash(lifecycle.canonicalJson(['number', '2048']))}},
+          review: {commonConfig: lifecycle.buildConfigCommitments({lightModel: 'glm-5.3-flash'}), tokenLimit: {status: 'absent'}}}};
+      mutation?.(input, request, result);
+      fs.writeFileSync(outputPath, JSON.stringify(result));
+      return {preparedAt: Date.now(), settledAt: Date.now(), processId: 900 + ordinal,
+        exitCode: result.status === 'ready' ? 0 : 1, signal: null, outcome: result.status === 'ready' ? 'exited' : 'nonzero_exit',
+        censored: false, cleanup: 'confirmed'};
+    });
+    return {...fixture, probe, order, dependencies: {...fixture.dependencies, runPreflight: probe}};
+  }
+
+  it('keeps TS/native-CLI config commitments identical across private values, paths, arrays and treatment masking', () => {
+    const base = {environment: {SMARTPERFETTO_FINAL_SUBMISSION: 'assistant_text', SMARTPERFETTO_CONCLUSION_AUTHORING: 'canonical_v1',
+      OPENAI_PRIVATE_TEST: 'VALUE_CANARY_9beec'}, weird: {'a/b': {'~': -0}}, options: [true, null, undefined]};
+    const candidate = {...base, environment: {...base.environment, SMARTPERFETTO_FINAL_SUBMISSION: 'authored_claim_document_v2',
+      SMARTPERFETTO_CONCLUSION_AUTHORING: 'authoring_v2'}, extra: false};
+    const left = lifecycle.buildConfigCommitments(base), right = lifecycle.buildConfigCommitments(candidate);
+    expect(left).toEqual(buildRuntimeConfigCommitments(base)); expect(right).toEqual(buildRuntimeConfigCommitments(candidate));
+    expect(lifecycle.alignConfigCommitments(left, right)).toEqual(alignRuntimeConfigCommitments(left, right));
+    for (const fields of lifecycle.alignConfigCommitments(left, right)) {
+      const config = lifecycle.makeConfigCommitments(fields, 'a'.repeat(64));
+      expect(config.fullFingerprint).toBe(runtimeConfigCommitmentsFingerprint(fields));
+      expect(config.controlsFingerprint).toBe(runtimeConfigControlsFingerprint(fields));
+      expect(parseRuntimeBenchmarkConfigCommitments(config)).toEqual(config);
+      expect(JSON.stringify(config)).not.toContain('VALUE_CANARY_9beec');
+    }
+  });
+
+  it.each([
+    [], ['--mode', 'full'], ['--mode', 'fast'], ['--mode', 'smart'], ['--provider-id', ' ENV '],
+    ['--follow-up-query', 'next', '--follow-up-mode', 'fast'],
+  ].map(extra => ({extra})))('matches maintained verifier mode/provider selection: %j', ({extra}) => {
+    const args = ['--trace', 'fixture.pftrace', '--output', 'unused.json', ...extra];
+    const parsed = parseVerifierArgs(args);
+    const expected = [{requestedMode: parsed.analysisMode ?? 'auto', ...(parsed.providerId === undefined ? {} : {providerId: parsed.providerId})}];
+    if (parsed.followUpQuery) expected.push({requestedMode: parsed.followUpAnalysisMode, ...(parsed.providerId === undefined ? {} : {providerId: parsed.providerId})});
+    expect(lifecycle.cellPreflightSelections(args)).toEqual(expected);
+  });
+
+  it('awaits both initial real-gate receipts before any sample, and rechecks every sample without granting admission', async () => {
+    const fixture = treatmentFixture();
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(fixture.order.slice(0, 2)).toEqual(['probe:base', 'probe:candidate']);
+    expect(fixture.order.indexOf('paid')).toBeGreaterThanOrEqual(3);
+    expect(fixture.probe).toHaveBeenCalledTimes(8);
+    expect(new Set(fixture.probe.mock.calls.map((call: [ProbeInput]) => call[0].label)).size).toBe(8);
+    expect(result.artifact).toMatchObject({schemaVersion: 'llm_execution_benchmark@2', candidate: lifecycle.TREATMENT_ID,
+      measurementOrigin: 'synthetic', performanceAdmission: 'not_scored', qualityAdmission: 'not_scored'});
+    expect(result.artifact.samples).toHaveLength(6);
+    expect(result.artifact.samples.every((sample: any) => sample.schemaVersion === 'llm_execution_sample@2' && sample.preflights.length === 1)).toBe(true);
+    const [base, candidate] = ['base', 'candidate'].map(side => result.artifact.samples.find((sample: any) => sample.side === side).configuration);
+    expect(base.fullFingerprint).not.toBe(candidate.fullFingerprint);
+    expect(base.controlsFingerprint).toBe(candidate.controlsFingerprint);
+  });
+
+  it.each(['sdk', 'nonce', 'mode', 'gate', 'captured', 'actual_control'])('fails before both sides pay for a candidate preflight fault: %s', fault => {
+    const fixture = treatmentFixture((_input, request, result) => {
+      if (request.side !== 'candidate') return;
+      if (fault === 'sdk') result.sdk.agentsCoreVersion = 'unknown';
+      if (fault === 'nonce') result.nonce = 'f'.repeat(32);
+      if (fault === 'mode') result.requestedMode = 'invalid';
+      if (fault === 'gate') {result.status = 'failed'; result.failureCode = 'unsupported_final_submission';}
+      if (fault === 'captured') result.capturedOutput = lifecycle.TREATMENT_OUTPUTS.base;
+      if (fault === 'actual_control') result.actualResolvedConfig = lifecycle.buildConfigCommitments({changedBudget: 42});
+    });
+    return expect(controller.runBenchmark(fixture.options, fixture.dependencies)).rejects.toThrow('benchmark_').then(() => {
+      expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    });
+  });
+
+  it('refuses a later probe change before dispatching that sample', async () => {
+    let count = 0;
+    const fixture = treatmentFixture((_input, _request, result) => {if (++count === 3) result.sdk.agentsCoreVersion = '0.14.0';});
+    const result = await controller.runBenchmark(fixture.options, fixture.dependencies);
+    expect(fixture.dependencies.runOwnedVerifier).not.toHaveBeenCalled();
+    expect(result.artifact.lifecycle).toBe('incomplete');
+    expect(result.artifact.samples[0].failureCode).toBe('benchmark_preflight_changed');
   });
 });

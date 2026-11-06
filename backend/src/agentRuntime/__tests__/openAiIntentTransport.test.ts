@@ -5,8 +5,10 @@
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {runOpenAiIntentTransport, type OpenAiIntentTransportInput} from '../engines/openai/openAiIntentTransport';
 import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import * as runtimePerformance from '../runtimePerformance';
 import {createRuntimePerformanceScope} from '../runtimePerformanceContext';
 import type {ModelExecutionPolicyReceipt} from '../modelExecutionPolicy';
+import {createRunManifestLifecycle, withRunManifestLifecycle} from '../../services/selfEvolution/runManifestLifecycle';
 
 interface ResponseMessageFixture {
   type: 'message';
@@ -46,6 +48,80 @@ function fixture(protocol: 'chat_completions' | 'responses') {
 describe('OpenAI native intent transport', () => {
   beforeEach(() => {jest.useFakeTimers({now: 1000});});
   afterEach(() => {jest.useRealTimers();});
+
+  it('records actual stage controls while preserving request bytes and keeping content private', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    input.purpose = 'classification';
+    input.config.outputConfig = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'};
+    input.prompt = 'PRIVATE_REQUEST_PROMPT';
+    input.systemPrompt = 'PRIVATE_SYSTEM_PROMPT';
+    expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+    const firstRequest = fetchImpl.mock.calls[0][1];
+    const lifecycle = createRunManifestLifecycle({runId: 'stage-run', sessionId: 'stage-session',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}, runtime: 'openai-agents-sdk', outputLanguage: 'en',
+      analysisMode: 'fast', skillRegistry: {registryFingerprint: 'registry', skills: []}});
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    try {
+      expect(await withRunManifestLifecycle(lifecycle, () => runOpenAiIntentTransport(input))).toMatchObject({status: 'ok'});
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const observedRequest = fetchImpl.mock.calls[1][1];
+      expect(observedRequest?.body).toBe(firstRequest?.body);
+      expect(observedRequest?.headers).toEqual(firstRequest?.headers);
+      expect(observedRequest?.method).toBe(firstRequest?.method);
+      const events = recorder.seal().finalTransportObservation?.events;
+      expect(events).toHaveLength(1);
+      expect(events?.[0]).toMatchObject({kind: 'stage_dispatch', purpose: 'classification',
+        controls: {requestedOutput: input.config.outputConfig, profiles: [{role: 'stage_policy', purpose: 'classification'}]}});
+      expect(JSON.stringify(events)).not.toMatch(/PRIVATE_REQUEST_PROMPT|PRIVATE_SYSTEM_PROMPT|SECRET_API_CANARY|pinned\.example|gpt-5\.6-mini/);
+    } finally {lifecycle.dispose();}
+  });
+
+  it('keeps missing captured output unknown without inventing a stage configuration', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    input.purpose = 'classification';
+    const recorder = createRuntimePerformanceRecorder();
+    const scope = createRuntimePerformanceScope({identity: {runId: 'unknown-stage-run', sessionId: 'unknown-stage-session',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}}, recorder, assertCurrent: () => {}});
+    try {
+      expect(await scope.run(() => runOpenAiIntentTransport(input))).toMatchObject({status: 'ok'});
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(recorder.seal().finalTransportObservation).toBeUndefined();
+    } finally {scope.dispose();}
+  });
+
+  it('preserves a valid request when observation identity hashing throws', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    input.purpose = 'classification';
+    input.config.outputConfig = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'};
+    expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+    const originalBody = fetchImpl.mock.calls[0][1]?.body;
+    const observe = jest.spyOn(runtimePerformance, 'runtimeObservationHash')
+      .mockImplementation(() => {throw new Error('PRIVATE_OBSERVATION_HASH_FAILURE');});
+    try {
+      expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(fetchImpl.mock.calls[1][1]?.body).toBe(originalBody);
+      const sent = JSON.parse(String(fetchImpl.mock.calls[1][1]?.body));
+      expect(sent.messages).toEqual([{role: 'system', content: input.systemPrompt}, {role: 'user', content: input.prompt}]);
+      expect(sent.model).toBe(input.config.lightModel);
+    } finally {observe.mockRestore();}
+  });
+
+  it('preserves the actual no-tool request when observation throws', async () => {
+    const {input, fetchImpl} = fixture('chat_completions');
+    input.purpose = 'classification';
+    input.config.outputConfig = {finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'};
+    const observe = jest.spyOn(runtimePerformance, 'buildRuntimeAppliedModelControls')
+      .mockImplementation(() => {throw new Error('PRIVATE_OBSERVATION_FAILURE');});
+    try {
+      expect(await runOpenAiIntentTransport(input)).toMatchObject({status: 'ok'});
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const sent = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+      expect(sent.messages).toEqual([{role: 'system', content: input.systemPrompt}, {role: 'user', content: input.prompt}]);
+    } finally {observe.mockRestore();}
+  });
 
   it('observes the standalone no-tool fetch after provider options without changing request policy', async () => {
     const {input, response} = fixture('chat_completions');
@@ -236,10 +312,20 @@ describe('OpenAI native intent transport', () => {
     expect(JSON.parse(fetchImpl.mock.calls[0][1]!.body as string)).toMatchObject({thinking: {type: 'disabled'}, max_tokens: 2048});
   });
 
+  it.each(['responses', 'chat_completions'] as const)('keeps absent provider model provenance unknown for %s', async protocol => {
+    const {input, output, fetchImpl} = fixture(protocol);
+    delete output.model;
+    const result = await runOpenAiIntentTransport(input);
+    expect(result).toMatchObject({status: 'ok', text: '{}'});
+    expect(result).not.toHaveProperty('actualModel');
+    expect(result).not.toHaveProperty('modelSource');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['responses', 'chat_completions'] as const)('pins endpoint/auth/model for one %s request without history or retries', async protocol => {
     const {input, fetchImpl} = fixture(protocol);
     await expect(runOpenAiIntentTransport(input)).resolves.toEqual({
-      status: 'ok', text: '{}', actualModel: 'actual-model', finishReason: protocol === 'responses' ? 'completed' : 'stop',
+      status: 'ok', text: '{}', actualModel: 'actual-model', modelSource: 'provider_reported', finishReason: protocol === 'responses' ? 'completed' : 'stop',
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, rawRequest] = fetchImpl.mock.calls[0];
@@ -524,7 +610,7 @@ describe('OpenAI native intent transport streaming', () => {
       'data: [DONE]\n\n',
     ]));
     await expect(runOpenAiIntentTransport(input('chat_completions', fetchImpl)))
-      .resolves.toEqual({status: 'ok', text: '{"a":"中文"}', actualModel: 'glm-actual', finishReason: 'stop'});
+      .resolves.toEqual({status: 'ok', text: '{"a":"中文"}', actualModel: 'glm-actual', modelSource: 'provider_reported', finishReason: 'stop'});
   });
 
   it('returns after the terminal event and releases a connection the server keeps open', async () => {
@@ -632,7 +718,7 @@ describe('OpenAI native intent transport streaming', () => {
         final('completed'),
       ]));
       await expect(runOpenAiIntentTransport(input('responses', fetchImpl, 10)))
-        .resolves.toEqual({status: 'ok', text: '{}', actualModel: 'm', finishReason: 'completed'});
+        .resolves.toEqual({status: 'ok', text: '{}', actualModel: 'm', modelSource: 'provider_reported', finishReason: 'completed'});
     });
 
     it.each<[string, string[], object]>([

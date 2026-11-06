@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {randomUUID} from 'node:crypto';
 import type {OpenAIAgentConfig} from './openAiConfig';
 import {
   buildOpenAIChatCompletionsTokenLimit,
@@ -21,8 +22,11 @@ import {
 import {readChatCompletionStream, readResponsesStream} from './openAiIntentStream';
 import {createModelRequestMetricsFetch} from '../../modelRequestMetrics';
 import {withModelRequestPurpose} from '../../runtimePerformanceContext';
+import {buildRuntimeAppliedModelControls, buildRuntimeCommonModelConfig, buildRuntimeExecutionProfileObservation,
+  recordRuntimeFinalTransportEvent, runtimeObservationHash} from '../../runtimePerformance';
 import type {ModelEffectiveSettings, ResolveModelExecutionProfileInput} from '../../../services/providerManager/modelExecutionProfile';
 import type {ModelExecutionPolicyReceipt} from '../../modelExecutionPolicy';
+import {currentRunManifestAttributionSink} from '../../../services/selfEvolution/runManifestLifecycle';
 
 export interface OpenAiIntentTransportInput extends IntentTransportInput {
   config: Pick<OpenAIAgentConfig, 'baseURL' | 'apiKey' | 'lightModel' | 'protocol'> & Partial<OpenAIAgentConfig>;
@@ -60,6 +64,8 @@ function chatResult(body: Record<string, unknown>, input: OpenAiIntentTransportI
   }
   return intentTransportTextResult(output.text, input, {
     ...(typeof body.model === 'string' ? {actualModel: body.model} : {}),
+    ...(typeof body.model === 'string' && body.model.length > 0 && body.model.trim() === body.model
+      ? {modelSource: 'provider_reported' as const} : {}),
     finishReason: output.finishReason,
   });
 }
@@ -95,6 +101,8 @@ function responsesResult(body: Record<string, unknown>, input: OpenAiIntentTrans
   }
   return intentTransportTextResult(text.join(''), input, {
     ...(typeof body.model === 'string' ? {actualModel: body.model} : {}),
+    ...(typeof body.model === 'string' && body.model.length > 0 && body.model.trim() === body.model
+      ? {modelSource: 'provider_reported' as const} : {}),
     finishReason: body.status,
   });
 }
@@ -140,6 +148,7 @@ type ValidatedIntentConfig = {
   maxOutputTokens?: number;
   url: URL;
   execution: ReturnType<typeof resolveOpenAITextRequestPurpose>;
+  stageCallKey?: string;
 };
 
 /**
@@ -181,6 +190,8 @@ export function runOpenAiIntentTransport(input: OpenAiIntentTransportInput) {
       validated = {baseURL: config.baseURL, apiKey: config.apiKey, lightModel: config.lightModel,
         protocol: config.protocol, purpose, maxOutputTokens, url, execution};
     } catch {return {status: 'unavailable', reason: 'invalid_configuration'};}
+    try {validated.stageCallKey = runtimeObservationHash(randomUUID());}
+    catch { /* Missing observation identity cannot refuse an otherwise valid request. */ }
     for (let attempt = 1; ; attempt++) {
       // A thrown fetch error (connection reset, gateway drop) is as transient
       // as a 5xx; runIntentTransport's outer catch would otherwise swallow it
@@ -243,14 +254,36 @@ async function dispatchOneRequest(
   // Injected fetch owns its observation (the runtime fences it after compat).
   // The standalone no-tool path uses the same final-body observer directly.
   const response = await withModelRequestPurpose({purpose: config.purpose === 'final_semantic' ? 'review' : config.purpose},
-    () => (input.fetchImpl ?? createModelRequestMetricsFetch(fetch))(url, {
-    method: 'POST', signal: scope.signal,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(config.apiKey ? {Authorization: `Bearer ${config.apiKey}`} : {}),
-    },
-    body: JSON.stringify(body),
-  }));
+    () => {
+      try {
+        const purpose = config.purpose === 'final_semantic' ? 'review' : config.purpose;
+        const requestedOutput = input.config.outputConfig;
+        if (purpose && requestedOutput && config.stageCallKey) {
+          const commonConfig = buildRuntimeCommonModelConfig(input.config, {
+            runtime: 'openai-agents-sdk', sdk: execution.profile.sdk,
+          });
+          const profile = buildRuntimeExecutionProfileObservation(execution.profile, {role: 'stage_policy', purpose});
+          const appliedSettings = Object.fromEntries(Object.entries(body)
+            .filter(([key]) => !['messages', 'input', 'instructions'].includes(key)));
+          const controls = commonConfig && profile ? buildRuntimeAppliedModelControls({
+            requestedOutput, commonConfig, appliedSettings, profiles: [profile],
+          }) : undefined;
+          if (controls) recordRuntimeFinalTransportEvent(currentRunManifestAttributionSink(), {
+            kind: 'stage_dispatch', stageCallKey: config.stageCallKey, purpose,
+            configuredModelHash: runtimeObservationHash(config.lightModel),
+            providerOriginHash: runtimeObservationHash(url.origin), controls,
+          });
+        }
+      } catch { /* Observe the built request without changing policy, retries or transport. */ }
+      return (input.fetchImpl ?? createModelRequestMetricsFetch(fetch))(url, {
+        method: 'POST', signal: scope.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.apiKey ? {Authorization: `Bearer ${config.apiKey}`} : {}),
+        },
+        body: JSON.stringify(body),
+      });
+    });
   scope.throwIfInactive();
   if (!response.ok) return {status: 'unavailable', reason: 'provider_error',
     // Only 4xx/5xx carry triage value; anything else stays codeless so exact

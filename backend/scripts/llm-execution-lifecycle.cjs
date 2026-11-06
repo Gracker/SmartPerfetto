@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const {createHash} = require('node:crypto');
+const {types: utilTypes} = require('node:util');
 
 const TARGET_ENV = 'SMARTPERFETTO_E2E_BENCHMARK_TARGET_JSON';
 const CELLS = Object.freeze(['scheduler', 'startup', 'scrolling', 'source', 'dual']);
@@ -36,6 +37,138 @@ function canonicalJson(value) {
     : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort()
       .filter(key => value[key] !== undefined).map(key => [key, sort(value[key])])) : value;
   return JSON.stringify(sort(value));
+}
+
+// The native CLI cannot import TypeScript. Keep this bounded commitment codec in parity
+// with runtimePerformance.ts; owning fixtures compare exact rows and fingerprints.
+const TREATMENT_ID = 'assistant_text_to_native_v2@1';
+const TREATMENT_OUTPUTS = Object.freeze({
+  base: Object.freeze({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'}),
+  candidate: Object.freeze({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'}),
+});
+const TREATMENT_FIELDS = ['/environment/SMARTPERFETTO_FINAL_SUBMISSION', '/environment/SMARTPERFETTO_CONCLUSION_AUTHORING'];
+const configHash = value => hash(canonicalJson(value));
+function buildConfigCommitments(value) {
+  const rows = [], ancestors = new Set();
+  let bytes = 0;
+  const fail = () => {throw new Error('benchmark_config_observation_invalid');};
+  const visit = (item, field, depth) => {
+    if (rows.length >= 4096 || depth > 24 || field.length > 4096) fail();
+    const add = (type, material) => rows.push({field, presence: 'present', type, valueCommitment: configHash(material)});
+    if (item === undefined) {add('undefined', ['undefined']); return;}
+    if (item === null) {add('null', ['null']); return;}
+    if (typeof item === 'string') {bytes += Buffer.byteLength(item); if (bytes > 1024 * 1024) fail(); add('string', ['string', item]); return;}
+    if (typeof item === 'boolean') {add('boolean', ['boolean', item]); return;}
+    if (typeof item === 'number' && Number.isFinite(item)) {add('number', ['number', Object.is(item, -0) ? '-0' : String(item)]); return;}
+    if (!item || typeof item !== 'object' || utilTypes.isProxy(item) || ancestors.has(item)) fail();
+    ancestors.add(item);
+    try {
+      const array = Array.isArray(item), descriptors = Object.getOwnPropertyDescriptors(item);
+      const keys = Object.keys(descriptors).filter(key => !(array && key === 'length'));
+      if (Reflect.ownKeys(item).length !== Object.keys(descriptors).length || keys.some(key => !descriptors[key].enumerable || !Object.hasOwn(descriptors[key], 'value'))) fail();
+      if (array) {
+        if (item.length > 4096 || keys.some(key => !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= item.length)) fail();
+        add('array', ['array', item.length, keys.map(Number).sort((a, b) => a - b)]);
+      } else {
+        if (![Object.prototype, null].includes(Object.getPrototypeOf(item))) fail();
+        add('object', ['object', [...keys].sort()]);
+      }
+      for (const key of keys.sort()) visit(descriptors[key].value,
+        `${field}/${key.replace(/~/g, '~0').replace(/\//g, '~1')}`, depth + 1);
+    } finally {ancestors.delete(item);}
+  };
+  visit(value, '', 0);
+  return rows.sort((a, b) => a.field < b.field ? -1 : a.field > b.field ? 1 : 0);
+}
+function absentConfigField(field) {return {field, presence: 'absent', type: 'absent', valueCommitment: configHash(['absent'])};}
+function parseConfigFields(fields) {
+  if (!Array.isArray(fields) || fields.length < 1 || fields.length > 4096) throw new Error('benchmark_config_fields_invalid');
+  let previous;
+  for (const row of fields) {
+    if (!row || Object.keys(row).sort().join(',') !== 'field,presence,type,valueCommitment' ||
+        typeof row.field !== 'string' || row.field.length > 4096 || !/^(?:\/(?:[^~\/]|~[01])*)*$/.test(row.field) ||
+        previous !== undefined && row.field <= previous || !['absent', 'present'].includes(row.presence) ||
+        !['absent', 'undefined', 'null', 'boolean', 'number', 'string', 'object', 'array'].includes(row.type) ||
+        !HASH.test(row.valueCommitment || '') || (row.presence === 'absent') !== (row.type === 'absent') ||
+        row.presence === 'absent' && row.valueCommitment !== absentConfigField(row.field).valueCommitment) throw new Error('benchmark_config_fields_invalid');
+    previous = row.field;
+  }
+  if (fields[0].field !== '') throw new Error('benchmark_config_fields_invalid');
+  return fields;
+}
+function alignConfigCommitments(left, right) {
+  const sides = [new Map(parseConfigFields(left).map(row => [row.field, row])), new Map(parseConfigFields(right).map(row => [row.field, row]))];
+  const keys = [...new Set(sides.flatMap(side => [...side.keys()]))].sort();
+  if (keys.length > 4096) throw new Error('benchmark_config_fields_invalid');
+  return sides.map(side => keys.map(key => side.get(key) ?? absentConfigField(key)));
+}
+function configFieldsFingerprint(fields) {return configHash({schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields)});}
+function configControlsFingerprint(fields) {
+  return configHash({schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields).map(row =>
+    TREATMENT_FIELDS.includes(row.field) ? {...row, valueCommitment: configHash(['treatment_value', row.field])} : row)});
+}
+function makeConfigCommitments(fields, legacyConfigFingerprint) {
+  if (!HASH.test(legacyConfigFingerprint || '')) throw new Error('benchmark_config_hash_invalid');
+  return {schemaVersion: 'benchmark_config_commitments@2', fields: parseConfigFields(fields),
+    fullFingerprint: configFieldsFingerprint(fields), controlsFingerprint: configControlsFingerprint(fields), legacyConfigFingerprint};
+}
+function parseConfigCommitments(value) {
+  if (!value || Object.keys(value).sort().join(',') !== 'controlsFingerprint,fields,fullFingerprint,legacyConfigFingerprint,schemaVersion' ||
+      value.schemaVersion !== 'benchmark_config_commitments@2' || canonicalJson(value) !== canonicalJson(makeConfigCommitments(value.fields, value.legacyConfigFingerprint))) {
+    throw new Error('benchmark_config_receipt_invalid');
+  }
+  return value;
+}
+function parsePurposeContracts(value) {
+  const exact = (object, keys) => object && typeof object === 'object' && !Array.isArray(object) &&
+    Object.keys(object).sort().join(',') === [...keys].sort().join(',');
+  if (!exact(value, ['schemaVersion', 'classification', 'review']) || value.schemaVersion !== 'llm_purpose_controls@1') {
+    throw new Error('benchmark_purpose_contract_invalid');
+  }
+  for (const purpose of ['classification', 'review']) {
+    const contract = value[purpose], limit = contract?.tokenLimit;
+    if (!exact(contract, ['commonConfig', 'tokenLimit'])) throw new Error('benchmark_purpose_contract_invalid');
+    parseConfigFields(contract.commonConfig);
+    if (limit?.status === 'absent') {
+      if (!exact(limit, ['status']) || purpose === 'classification') throw new Error('benchmark_purpose_contract_invalid');
+    } else if (!exact(limit, ['status', 'field', 'valueCommitment']) || limit.status !== 'explicit' ||
+      !['max_tokens', 'max_completion_tokens', 'max_output_tokens'].includes(limit.field) || !HASH.test(limit.valueCommitment || '')) {
+      throw new Error('benchmark_purpose_contract_invalid');
+    }
+  }
+  return value;
+}
+
+function makeRepresentationTreatment(base, candidate) {
+  const sides = {base: parseConfigCommitments(base), candidate: parseConfigCommitments(candidate)};
+  if (base.controlsFingerprint !== candidate.controlsFingerprint) throw new Error('benchmark_config_mismatch');
+  for (const side of ['base', 'candidate']) {
+    for (const [field, value] of [[TREATMENT_FIELDS[0], TREATMENT_OUTPUTS[side].finalSubmission],
+      [TREATMENT_FIELDS[1], TREATMENT_OUTPUTS[side].declarationSyntax]]) {
+      const row = sides[side].fields.find(item => item.field === field);
+      if (!row || row.presence !== 'present' || row.type !== 'string' || row.valueCommitment !== configHash(['string', value])) throw new Error('benchmark_treatment_mismatch');
+    }
+  }
+  return {schemaVersion: 'representation_treatment@1', id: TREATMENT_ID, sides: TREATMENT_OUTPUTS,
+    implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {
+      representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
+      admissionVersion: 'openai_typed_final_admission@2'}}, controlsFingerprint: base.controlsFingerprint,
+    sideFullFingerprints: {base: base.fullFingerprint, candidate: candidate.fullFingerprint}};
+}
+/** Mirrors only maintained cell selection flags; owning tests compare the real verifier parser. */
+function cellPreflightSelections(args) {
+  const get = key => {
+    const indices = args.map((value, index) => value === key ? index : -1).filter(index => index >= 0);
+    if (indices.length > 1 || indices.length && (!args[indices[0] + 1] || args[indices[0] + 1].startsWith('--'))) throw new Error('benchmark_preflight_selection_invalid');
+    return indices.length ? args[indices[0] + 1] : undefined;
+  };
+  const requested = get('--mode'), follow = get('--follow-up-mode'), provider = get('--provider-id');
+  const mode = requested === 'smart' || requested === undefined ? 'auto' : requested;
+  if (!['auto', 'fast', 'full'].includes(mode) || follow !== undefined && !['auto', 'fast', 'full'].includes(follow)) throw new Error('benchmark_preflight_selection_invalid');
+  const selectedProvider = provider === undefined ? {} : {providerId: ['null', 'env', 'none', 'default'].includes(provider.trim().toLowerCase()) ? null : provider};
+  const selections = [{requestedMode: mode, ...selectedProvider}];
+  if (get('--follow-up-query')) selections.push({requestedMode: follow ?? 'auto', ...selectedProvider});
+  return selections.filter((value, index) => selections.findIndex(other => canonicalJson(other) === canonicalJson(value)) === index);
 }
 
 function fingerprintFiles(root, inputs) {
@@ -201,13 +334,14 @@ function createSourceFacetSettlement({repositoryRoot, reportPath, request}) {
   };
 }
 
-function fingerprintObserver(root, reviewedHookContractFingerprint) {
+function fingerprintObserver(root, reviewedHookContractFingerprint, finalTransport = false) {
   if (!HASH.test(reviewedHookContractFingerprint || '')) throw new Error('benchmark_observer_hook_fingerprint_invalid');
-  for (const relative of OBSERVER_INPUTS) {
+  const inputs = finalTransport ? [...OBSERVER_INPUTS, 'backend/src/scripts/agentE2eMetrics.ts'] : OBSERVER_INPUTS;
+  for (const relative of inputs) {
     const stat = fs.lstatSync(path.join(root, relative));
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('benchmark_observer_source_missing');
   }
-  const coreFingerprint = fingerprintFiles(fs.realpathSync(root), OBSERVER_INPUTS);
+  const coreFingerprint = fingerprintFiles(fs.realpathSync(root), inputs);
   return {coreFingerprint, reviewedHookContractFingerprint,
     fingerprint: hash(canonicalJson({coreFingerprint, reviewedHookContractFingerprint})),
     hookEvidence: 'reviewed_contract_not_automatic_wire_equivalence'};
@@ -218,9 +352,13 @@ function parseTargetRequest(value) {
   try {request = typeof value === 'string' ? JSON.parse(value) : value;} catch {throw new Error('benchmark_target_invalid');}
   const fields = ['schemaVersion', 'nonce', 'side', 'pairId', 'cellId', 'repetition', 'port',
     'expectedSourceFingerprint', 'observerFingerprint', 'configFingerprint', 'dataRootHash', 'sourceFacet'];
+  const version2 = request?.schemaVersion === 'llm_execution_target_request@2';
+  const treatmentFields = ['configFullFingerprint', 'configControlsFingerprint', 'treatmentHash', 'preflightFingerprint'];
+  if (version2) fields.push(...treatmentFields);
   if (!request || typeof request !== 'object' || Array.isArray(request) ||
       Object.keys(request).some(key => !fields.includes(key)) ||
-      request.schemaVersion !== 'llm_execution_target_request@1' || !NONCE.test(request.nonce || '') ||
+      (!version2 && request.schemaVersion !== 'llm_execution_target_request@1') ||
+      version2 && treatmentFields.some(key => !HASH.test(request[key] || '')) || !NONCE.test(request.nonce || '') ||
       !['base', 'candidate'].includes(request.side) || !SAFE_ID.test(request.pairId || '') ||
       !CELLS.includes(request.cellId) || !Number.isSafeInteger(request.repetition) || request.repetition < 1 ||
       !Number.isSafeInteger(request.port) || request.port < 1024 || request.port > 65535 ||
@@ -240,17 +378,24 @@ function observeExecutionTarget(input) {
   const origin = `http://127.0.0.1:${input.port}`;
   const matched = input.port === request.port && sourceFingerprint === request.expectedSourceFingerprint &&
     dataRootHash === request.dataRootHash;
-  return {schemaVersion: 'llm_execution_target@1', nonce: request.nonce, side: request.side,
+  return {schemaVersion: request.schemaVersion === 'llm_execution_target_request@2' ? 'llm_execution_target@2' : 'llm_execution_target@1', nonce: request.nonce, side: request.side,
     pairId: request.pairId, cellId: request.cellId, repetition: request.repetition,
     origin, processId: input.processId ?? process.pid, sourceFingerprint, dataRootHash,
     // These are controller declarations, explicitly separate from observed values.
     declaredObserverFingerprint: request.observerFingerprint, declaredConfigFingerprint: request.configFingerprint,
+    ...(request.schemaVersion === 'llm_execution_target_request@2' ? {declaredConfigFullFingerprint: request.configFullFingerprint,
+      declaredConfigControlsFingerprint: request.configControlsFingerprint, declaredTreatmentHash: request.treatmentHash,
+      declaredPreflightFingerprint: request.preflightFingerprint} : {}),
     ...(request.sourceFacet ? {sourceFacet: request.sourceFacet} : {}),
     status: matched ? 'matched' : 'mismatch'};
 }
 
 function assertExecutionTarget(target, request, processId) {
-  if (!target || target.schemaVersion !== 'llm_execution_target@1' || target.status !== 'matched' ||
+  const version2 = request.schemaVersion === 'llm_execution_target_request@2';
+  if (!target || target.schemaVersion !== (version2 ? 'llm_execution_target@2' : 'llm_execution_target@1') || target.status !== 'matched' ||
+      version2 && (target.declaredConfigFullFingerprint !== request.configFullFingerprint ||
+        target.declaredConfigControlsFingerprint !== request.configControlsFingerprint || target.declaredTreatmentHash !== request.treatmentHash ||
+        target.declaredPreflightFingerprint !== request.preflightFingerprint) ||
       target.nonce !== request.nonce || target.side !== request.side || target.pairId !== request.pairId ||
       target.cellId !== request.cellId || target.repetition !== request.repetition || target.processId !== processId ||
       target.origin !== `http://127.0.0.1:${request.port}` ||
@@ -389,7 +534,9 @@ async function runOwnedVerifier(input, dependencies) {
     censored: deadlineExpired || Boolean(harness.receivedSignal) || Boolean(exit?.error)};
 }
 
-module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
+module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
+  configFieldsFingerprint, configControlsFingerprint, makeConfigCommitments, parseConfigCommitments, parsePurposeContracts, makeRepresentationTreatment,
+  cellPreflightSelections, canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
   sourceFacetContext, evaluateSourceFacetPending, validateSourceFacetCollection, createSourceFacetSettlement,
   parseTargetRequest, observeExecutionTarget, assertExecutionTarget, prepareFreshOutputDirectory,
   writeNewJson, isolateChildDotenv, buildCell, pairedSchedule, assertPortFree, runOwnedVerifier};
