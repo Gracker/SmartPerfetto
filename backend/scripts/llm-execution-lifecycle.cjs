@@ -43,10 +43,18 @@ function canonicalJson(value) {
 // with runtimePerformance.ts; owning fixtures compare exact rows and fingerprints.
 const TREATMENT_ID = 'assistant_text_to_native_v2@1';
 const MIXED_CONTENT_TREATMENT_ID = 'assistant_text_to_native_v2@2';
+const DUAL_CARRIER_TREATMENT_ID = 'assistant_text_to_native_v2_dual@1';
 const TREATMENT_OUTPUTS = Object.freeze({
   base: Object.freeze({finalSubmission: 'assistant_text', declarationSyntax: 'canonical_v1'}),
   candidate: Object.freeze({finalSubmission: 'authored_claim_document_v2', declarationSyntax: 'authoring_v2'}),
 });
+const DUAL_CARRIER_OUTPUTS = Object.freeze({base: TREATMENT_OUTPUTS.base,
+  candidate: Object.freeze({finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'})});
+function treatmentOutputs(id = TREATMENT_ID) {
+  if (id === TREATMENT_ID || id === MIXED_CONTENT_TREATMENT_ID) return TREATMENT_OUTPUTS;
+  if (id === DUAL_CARRIER_TREATMENT_ID) return DUAL_CARRIER_OUTPUTS;
+  throw new Error('benchmark_treatment_invalid');
+}
 const TREATMENT_FIELDS = ['/environment/SMARTPERFETTO_FINAL_SUBMISSION', '/environment/SMARTPERFETTO_CONCLUSION_AUTHORING'];
 const configHash = value => hash(canonicalJson(value));
 function buildConfigCommitments(value) {
@@ -149,6 +157,8 @@ const TYPED_FINAL_CONTRACTS = Object.freeze({
     compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@2', wireVersion: 'openai_chat_final_wire@1'}),
   'openai_typed_final_admission@3': Object.freeze({representationVersion: 'authored_claim_document@2',
     compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@3', wireVersion: 'openai_chat_final_wire@2'}),
+  'openai_typed_final_admission@4': Object.freeze({representationVersion: 'authored_claim_document@2',
+    compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3'}),
 });
 function getOpenAiTypedFinalContractIdentity(admissionVersion) {
   return typeof admissionVersion === 'string' && Object.hasOwn(TYPED_FINAL_CONTRACTS, admissionVersion)
@@ -173,11 +183,12 @@ function parseOutputImplementation(value) {
   return Object.freeze(expected);
 }
 function treatmentOutputImplementation(id, side) {
-  if (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID].includes(id) || !['base', 'candidate'].includes(side)) {
+  if (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID].includes(id) || !['base', 'candidate'].includes(side)) {
     throw new Error('benchmark_treatment_invalid');
   }
   return side === 'base' ? {kind: 'assistant', nativeContract: 'openai_native_completion_observer@1'} : {kind: 'typed',
-    ...getOpenAiTypedFinalContractIdentity(id === TREATMENT_ID ? 'openai_typed_final_admission@2' : 'openai_typed_final_admission@3')};
+    ...getOpenAiTypedFinalContractIdentity(id === TREATMENT_ID ? 'openai_typed_final_admission@2' : id === MIXED_CONTENT_TREATMENT_ID
+      ? 'openai_typed_final_admission@3' : 'openai_typed_final_admission@4')};
 }
 /** An old receipt contains no implementation observation; never synthesize one. */
 function parsePreflightOutputImplementation(result, id, side) {
@@ -190,20 +201,20 @@ function parsePreflightOutputImplementation(result, id, side) {
 }
 
 function makeRepresentationTreatment(base, candidate, id = TREATMENT_ID) {
-  const expected = treatmentOutputImplementation(id, 'candidate');
+  const expected = treatmentOutputImplementation(id, 'candidate'), outputs = treatmentOutputs(id);
   const sides = {base: parseConfigCommitments(base), candidate: parseConfigCommitments(candidate)};
   if (base.controlsFingerprint !== candidate.controlsFingerprint) throw new Error('benchmark_config_mismatch');
   for (const side of ['base', 'candidate']) {
-    for (const [field, value] of [[TREATMENT_FIELDS[0], TREATMENT_OUTPUTS[side].finalSubmission],
-      [TREATMENT_FIELDS[1], TREATMENT_OUTPUTS[side].declarationSyntax]]) {
+    for (const [field, value] of [[TREATMENT_FIELDS[0], outputs[side].finalSubmission],
+      [TREATMENT_FIELDS[1], outputs[side].declarationSyntax]]) {
       const row = sides[side].fields.find(item => item.field === field);
       if (!row || row.presence !== 'present' || row.type !== 'string' || row.valueCommitment !== configHash(['string', value])) throw new Error('benchmark_treatment_mismatch');
     }
   }
-  return {schemaVersion: id === TREATMENT_ID ? 'representation_treatment@1' : 'representation_treatment@2', id, sides: TREATMENT_OUTPUTS,
+  return {schemaVersion: id === TREATMENT_ID ? 'representation_treatment@1' : 'representation_treatment@2', id, sides: outputs,
     implementationContracts: {base: {nativeContract: 'openai_native_completion_observer@1'}, candidate: {
       representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
-      admissionVersion: expected.admissionVersion, ...(id === MIXED_CONTENT_TREATMENT_ID ? {wireVersion: expected.wireVersion} : {})}}, controlsFingerprint: base.controlsFingerprint,
+      admissionVersion: expected.admissionVersion, ...(id !== TREATMENT_ID ? {wireVersion: expected.wireVersion} : {})}}, controlsFingerprint: base.controlsFingerprint,
     sideFullFingerprints: {base: base.fullFingerprint, candidate: candidate.fullFingerprint}};
 }
 /** Mirrors only maintained cell selection flags; owning tests compare the real verifier parser. */
@@ -389,6 +400,7 @@ function fingerprintObserver(root, reviewedHookContractFingerprint, finalTranspo
   if (!HASH.test(reviewedHookContractFingerprint || '')) throw new Error('benchmark_observer_hook_fingerprint_invalid');
   const inputs = finalTransport ? [...OBSERVER_INPUTS, 'backend/src/scripts/agentE2eMetrics.ts',
     'backend/src/agentRuntime/typedOutputMaterial.ts', 'backend/src/agentRuntime/finalSubmissionImplementation.ts',
+    'backend/src/agentRuntime/openAiCandidateIdentity.ts',
     'backend/src/agentRuntime/engines/openai/openAiTypedFinalOutputMaterial.ts'] : OBSERVER_INPUTS;
   for (const relative of inputs) {
     const stat = fs.lstatSync(path.join(root, relative));
@@ -587,7 +599,7 @@ async function runOwnedVerifier(input, dependencies) {
     censored: deadlineExpired || Boolean(harness.receivedSignal) || Boolean(exit?.error)};
 }
 
-module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID,
+module.exports = {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, treatmentOutputs,
   getOpenAiTypedFinalContractIdentity, parseOutputImplementation, treatmentOutputImplementation, parsePreflightOutputImplementation, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
   configFieldsFingerprint, configControlsFingerprint, makeConfigCommitments, parseConfigCommitments, parsePurposeContracts, makeRepresentationTreatment,
   cellPreflightSelections, canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,

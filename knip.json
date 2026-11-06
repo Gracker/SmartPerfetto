@@ -35,6 +35,7 @@
         "src/agentRuntime/engines/pi/piIntentTransport.ts!",
         "src/agentRuntime/finalSubmissionImplementation.ts!",
         "src/agentRuntime/modelRequestMetrics.ts!",
+        "src/agentRuntime/openAiCandidateIdentity.ts!",
         "src/agentRuntime/runtimePerformance.ts!",
         "src/agentRuntime/runtimePerformanceContext.ts!",
         "src/agentRuntime/typedOutputMaterial.ts!",

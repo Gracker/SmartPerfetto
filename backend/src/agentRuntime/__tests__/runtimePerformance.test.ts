@@ -1472,3 +1472,46 @@ describe('R11 Stage B exact typed issued implementation tuples', () => {
     expect(recorder.seal().finalTransportObservation).toEqual({schemaVersion: 'final_transport_observation@1', events: [], truncated: 1});
   });
 });
+
+
+describe('R13 assistant document observation schema', () => {
+  function assistantIssued(): RuntimeFinalTransportEventInput {
+    return {kind: 'assistant_document_issued_after_drain', sourceKind: 'assistant_json', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      responseKey: 'c'.repeat(64), messageKey: 'c'.repeat(64), nativeTerminalEventKey: 'd'.repeat(64), rawAssistantTextHash: 'e'.repeat(64),
+      compiledBodyHash: 'f'.repeat(64), nativeCandidateKey: '1'.repeat(64), actualModel: {status: 'observed', hash: '2'.repeat(64)},
+      nativeStatus: 'completed', drainStatus: 'fulfilled', representationVersion: 'authored_claim_document@2',
+      compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3'};
+  }
+  it('records the disjoint assistant source without inventing function identity or material', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    const key = recorder.recordFinalTransportEvent(assistantIssued());
+    expect(key).toBeDefined();
+    expect(recorder.recordFinalTransportEvent({kind: 'candidate_retained', nativeCandidateKey: '1'.repeat(64), carrier: 'assistant_document',
+      transform: 'native', authors: [{role: 'body_and_declaration', terminalEventKey: key!}], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed'})).toBeDefined();
+    const result = recorder.seal().finalTransportObservation!;
+    expect(projectRuntimeFinalTransportObservation(result)).toEqual(result);
+    expect(result.events[0]).not.toHaveProperty('callKey');
+    expect(result.events[0]).not.toHaveProperty('rawArguments');
+    expect(result.events[0]).not.toHaveProperty('material');
+  });
+  it('drops every missing required source field and all function-only or private additions', () => {
+    const source = assistantIssued() as unknown as Record<string, unknown>;
+    for (const field of Object.keys(source)) {
+      const input = {...source}; delete input[field];
+      const recorder = createRuntimePerformanceRecorder();
+      expect(recorder.recordFinalTransportEvent(input as unknown as RuntimeFinalTransportEventInput)).toBeUndefined();
+      expect(recorder.seal().finalTransportObservation?.truncated).toBe(1);
+    }
+    for (const field of ['callKey', 'rawArguments', 'rawAssistantText', 'handlerAck']) {
+      const recorder = createRuntimePerformanceRecorder();
+      expect(recorder.recordFinalTransportEvent({...source, [field]: 'PRIVATE'} as unknown as RuntimeFinalTransportEventInput)).toBeUndefined();
+      expect(JSON.stringify(recorder.seal())).not.toContain('PRIVATE');
+    }
+  });
+  it.each([{sourceKind: 'function'}, {messageKey: '9'.repeat(64)}, {nativeStatus: 'failed'}, {drainStatus: 'rejected'},
+    {admissionVersion: 'openai_typed_final_admission@3'}, {wireVersion: 'openai_chat_final_wire@2'},
+    {compilerVersion: 'authored_claim_document_compiler@1'}, {nativeTerminalEventKey: ''}])('rejects contradictory assistant facts: %j', mutation => {
+    const recorder = createRuntimePerformanceRecorder();
+    expect(recorder.recordFinalTransportEvent({...assistantIssued(), ...mutation} as RuntimeFinalTransportEventInput)).toBeUndefined();
+  });
+});

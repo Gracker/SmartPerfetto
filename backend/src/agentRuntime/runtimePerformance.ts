@@ -16,7 +16,8 @@ import {isSceneEntryNotRunReason, type RuntimePerformanceSceneEvidenceReceiptV1}
 import type {ModelExecutionPolicyReceipt} from './modelExecutionPolicy';
 import type {ReasoningSetting} from '../services/providerManager/modelExecutionProfile';
 import {CONCLUSION_PROTOCOL_VALUES} from '../agent/core/conclusionContract';
-import {getOpenAiTypedFinalContractIdentity, type OpenAiTypedFinalContractIdentity} from './finalSubmissionImplementation';
+import {getFinalSubmissionModeDescriptor, getOpenAiTypedFinalContractIdentity,
+  type FinalSubmissionModeKey, type OpenAiTypedFinalContractIdentity} from './finalSubmissionImplementation';
 import {TYPED_OUTPUT_MATERIAL_LIMITS, TYPED_OUTPUT_WIRE_FINISH_REASONS, type RuntimeTypedOutputMaterial, type RuntimeTypedOutputCollection,
   type RuntimeTypedOutputStructure, type RuntimeTypedOutputDecoded} from './typedOutputMaterial';
 
@@ -158,7 +159,7 @@ export interface RuntimeBenchmarkConfigCommitmentsV2 {
   readonly legacyConfigFingerprint: string;
 }
 export interface RuntimeObservedOutputConfig {
-  readonly finalSubmission: 'assistant_text' | 'authored_claim_document_v1' | 'authored_claim_document_v2';
+  readonly finalSubmission: FinalSubmissionModeKey;
   readonly declarationSyntax: 'canonical_v1' | 'authoring_v1' | 'authoring_v2';
 }
 export interface RuntimeExecutionProfileObservation {
@@ -205,7 +206,12 @@ export type RuntimeFinalTransportEventInput =
       callKey: string; actualModel: RuntimeObservedHash; nativeStatus: 'completed'; drainStatus: 'fulfilled';
       nativeBodyHash: string; representationVersion: 'authored_claim_document@1' | 'authored_claim_document@2';
       compilerVersion: string; admissionVersion: string; wireVersion?: OpenAiTypedFinalContractIdentity['wireVersion']}>
-  | Readonly<{kind: 'candidate_retained'; nativeCandidateKey: string; carrier: 'assistant_text' | 'model_tool_arguments';
+  | Readonly<{kind: 'assistant_document_issued_after_drain'; sourceKind: 'assistant_json'; attemptKey: string; logicalCallKey: string;
+      responseKey: string; messageKey: string; nativeTerminalEventKey: string; rawAssistantTextHash: string; compiledBodyHash: string;
+      nativeCandidateKey: string; actualModel: RuntimeObservedHash; nativeStatus: 'completed'; drainStatus: 'fulfilled';
+      representationVersion: 'authored_claim_document@2'; compilerVersion: 'authored_claim_document_compiler@2';
+      admissionVersion: 'openai_typed_final_admission@4'; wireVersion: 'openai_chat_final_wire@3'}>
+  | Readonly<{kind: 'candidate_retained'; nativeCandidateKey: string; carrier: 'assistant_text' | 'model_tool_arguments' | 'assistant_document';
       transform: 'native' | 'declaration_repair';
       authors: readonly Readonly<{role: 'body' | 'declaration' | 'body_and_declaration'; terminalEventKey: string}>[];
       declaredBody: 'present' | 'absent'; declaredClaims: 'present' | 'absent' | 'invalid' | 'unknown';
@@ -225,7 +231,6 @@ export interface RuntimeFinalTransportObservation {
 const observationOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);
 const OBSERVATION_HASH = /^[a-f0-9]{64}$/;
 const CONFIG_TYPES = ['absent', 'undefined', 'null', 'boolean', 'number', 'string', 'object', 'array'] as const;
-const OUTPUT_MODES = ['assistant_text', 'authored_claim_document_v1', 'authored_claim_document_v2'] as const;
 const OUTPUT_SYNTAXES = ['canonical_v1', 'authoring_v1', 'authoring_v2'] as const;
 const FINAL_NATIVE_STATUSES = ['completed', 'incomplete', 'failed', 'cancelled', 'unknown'] as const;
 const TREATMENT_CONFIG_FIELDS = ['/environment/SMARTPERFETTO_FINAL_SUBMISSION',
@@ -392,7 +397,8 @@ export function buildRuntimeCommonModelConfig(config: unknown, context?: Readonl
 }
 function parseOutputConfig(value: unknown): RuntimeObservedOutputConfig {
   const input = exactObservationObject(value, ['finalSubmission', 'declarationSyntax']);
-  return {finalSubmission: observationMember(input.finalSubmission, OUTPUT_MODES),
+  if (!getFinalSubmissionModeDescriptor(input.finalSubmission)) throw new Error('runtime_observation_enum_invalid');
+  return {finalSubmission: input.finalSubmission as FinalSubmissionModeKey,
     declarationSyntax: observationMember(input.declarationSyntax, OUTPUT_SYNTAXES)};
 }
 function parseProfileObservation(value: unknown): RuntimeExecutionProfileObservation {
@@ -637,7 +643,8 @@ function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInp
       const wireObserved = observationOwn(input, 'wireVersion');
       if (input.nativeStatus !== 'completed' || input.drainStatus !== 'fulfilled' || !identity ||
           input.representationVersion !== identity.representationVersion || input.compilerVersion !== identity.compilerVersion ||
-          (wireObserved ? input.wireVersion !== identity.wireVersion : identity.admissionVersion === 'openai_typed_final_admission@3')) {
+          (wireObserved ? input.wireVersion !== identity.wireVersion :
+            !['openai_typed_final_admission@1', 'openai_typed_final_admission@2'].includes(identity.admissionVersion))) {
         throw new Error('runtime_observation_typed_invalid');
       }
       return {kind: input.kind, attemptKey: observationHash(input.attemptKey), logicalCallKey: observationHash(input.logicalCallKey),
@@ -646,11 +653,28 @@ function parseFinalTransportInput(value: unknown): RuntimeFinalTransportEventInp
         representationVersion: identity.representationVersion, compilerVersion: identity.compilerVersion, admissionVersion: identity.admissionVersion,
         ...(wireObserved ? {wireVersion: identity.wireVersion} : {})};
     }
+    case 'assistant_document_issued_after_drain': {
+      keys(['sourceKind', 'attemptKey', 'logicalCallKey', 'responseKey', 'messageKey', 'nativeTerminalEventKey', 'rawAssistantTextHash',
+        'compiledBodyHash', 'nativeCandidateKey', 'actualModel', 'nativeStatus', 'drainStatus',
+        'representationVersion', 'compilerVersion', 'admissionVersion', 'wireVersion']);
+      const identity = getOpenAiTypedFinalContractIdentity('openai_typed_final_admission@4')!;
+      if (input.sourceKind !== 'assistant_json' || input.nativeStatus !== 'completed' || input.drainStatus !== 'fulfilled' ||
+          input.messageKey !== input.responseKey || Object.entries(identity).some(([key, value]) => input[key] !== value)) {
+        throw new Error('runtime_observation_typed_invalid');
+      }
+      return {kind: input.kind, sourceKind: input.sourceKind, attemptKey: observationHash(input.attemptKey),
+        logicalCallKey: observationHash(input.logicalCallKey), responseKey: observationHash(input.responseKey), messageKey: observationHash(input.messageKey),
+        nativeTerminalEventKey: observationHash(input.nativeTerminalEventKey), rawAssistantTextHash: observationHash(input.rawAssistantTextHash),
+        compiledBodyHash: observationHash(input.compiledBodyHash), nativeCandidateKey: observationHash(input.nativeCandidateKey),
+        actualModel: parseObservedHash(input.actualModel), nativeStatus: input.nativeStatus, drainStatus: input.drainStatus,
+        representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
+        admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3'};
+    }
     case 'candidate_retained':
       keys(['nativeCandidateKey', 'carrier', 'transform', 'authors', 'declaredBody', 'declaredClaims', 'productStatus']);
       if (!Array.isArray(input.authors) || input.authors.length > 2) throw new Error('runtime_observation_authors_invalid');
       return {kind: input.kind, nativeCandidateKey: observationHash(input.nativeCandidateKey),
-        carrier: observationMember(input.carrier, ['assistant_text', 'model_tool_arguments']),
+        carrier: observationMember(input.carrier, ['assistant_text', 'model_tool_arguments', 'assistant_document']),
         transform: observationMember(input.transform, ['native', 'declaration_repair']), authors: input.authors.map(value => {
           const author = exactObservationObject(value, ['role', 'terminalEventKey']);
           return {role: observationMember(author.role, ['body', 'declaration', 'body_and_declaration']), terminalEventKey: observationHash(author.terminalEventKey)};

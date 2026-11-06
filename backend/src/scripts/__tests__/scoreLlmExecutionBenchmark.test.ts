@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import fs from 'node:fs';
+import {createOpenAiCandidateIdentity} from '../../agentRuntime/openAiCandidateIdentity';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {createRuntimePerformanceRecorder, buildRuntimeConfigCommitments, buildRuntimeAppliedModelControls,
   buildRuntimeExecutionProfileObservation} from '../../agentRuntime/runtimePerformance';
@@ -538,9 +539,11 @@ function syntheticPurposeContracts(common: {baseURL: string; protocol: string; m
 
 /** Synthetic reader fixtures only: these never constitute real benchmark evidence. */
 function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: {maxOutputTokens?: number} = {maxOutputTokens: 4096},
-  treatmentId: string = sourceLifecycle.TREATMENT_ID) {
-  const mixed = treatmentId === sourceLifecycle.MIXED_CONTENT_TREATMENT_ID;
-  const identity = OPENAI_TYPED_FINAL_CONTRACTS[mixed ? 'openai_typed_final_admission@3' : 'openai_typed_final_admission@2'];
+  treatmentId: string = sourceLifecycle.TREATMENT_ID, carrier: 'function' | 'assistant' = 'function') {
+  const dual = treatmentId === sourceLifecycle.DUAL_CARRIER_TREATMENT_ID;
+  const mixed = treatmentId === sourceLifecycle.MIXED_CONTENT_TREATMENT_ID || dual;
+  const outputs = sourceLifecycle.treatmentOutputs(treatmentId);
+  const identity = OPENAI_TYPED_FINAL_CONTRACTS[dual ? 'openai_typed_final_admission@4' : mixed ? 'openai_typed_final_admission@3' : 'openai_typed_final_admission@2'];
   const {wireVersion: _wireVersion, ...historicalIdentity} = identity;
   const {maxOutputTokens} = configured;
   const data = fixture(root, cells);
@@ -549,8 +552,8 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
     maxOutputTokens, maxTurns: 100, runtime: 'openai-agents-sdk', sdk};
   const materials = Object.fromEntries(['base', 'candidate'].map(side => [side, {configuration: {provider: 'deepseek',
     model: MODEL, lightModel: MODEL, baseUrl: 'https://api.deepseek.com/v1'}, runtime: 'openai-agents-sdk', timeoutMs: 1200000,
-    environment: {SMARTPERFETTO_FINAL_SUBMISSION: sourceLifecycle.TREATMENT_OUTPUTS[side].finalSubmission,
-      SMARTPERFETTO_CONCLUSION_AUTHORING: sourceLifecycle.TREATMENT_OUTPUTS[side].declarationSyntax,
+    environment: {SMARTPERFETTO_FINAL_SUBMISSION: outputs[side].finalSubmission,
+      SMARTPERFETTO_CONCLUSION_AUTHORING: outputs[side].declarationSyntax,
       ...(maxOutputTokens === undefined ? {} : {OPENAI_MAX_OUTPUT_TOKENS: String(maxOutputTokens)})}}]));
   const aligned = sourceLifecycle.alignConfigCommitments(sourceLifecycle.buildConfigCommitments(materials.base), sourceLifecycle.buildConfigCommitments(materials.candidate));
   const configurations: Json = Object.fromEntries(['base', 'candidate'].map((side, index) => [side,
@@ -561,11 +564,14 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
   const initial = new Set<string>();
   for (const sample of data.benchmark.samples) {
     const report = data.reportFor(sample), side = sample.side, configuration = configurations[side];
-    const output = sourceLifecycle.TREATMENT_OUTPUTS[side];
-    const nativeCandidate = {runId: report.executionMetrics.runId, attemptId: `attempt-${sample.repetition}-${side}`,
-      candidateRef: `candidate-${sample.repetition}-${side}`, conclusionFingerprint: hash(report.summary.terminalAnalysis.conclusion)};
+    const output = outputs[side];
+    const assistantLane = side === 'candidate' && dual && carrier === 'assistant';
+    const nativeCandidate = assistantLane ? createOpenAiCandidateIdentity({runId: report.executionMetrics.runId,
+      attemptId: `attempt-${sample.repetition}-${side}`, conclusionFingerprint: hash(report.summary.terminalAnalysis.conclusion)}) :
+      {runId: report.executionMetrics.runId, attemptId: `attempt-${sample.repetition}-${side}`,
+        candidateRef: `candidate-${sample.repetition}-${side}`, conclusionFingerprint: hash(report.summary.terminalAnalysis.conclusion)};
     const nativeKey = hash(JSON.stringify(nativeCandidate));
-    report.summary.terminalAnalysis.completion = {schemaVersion: 1, runtimeKind: 'openai-agents-sdk', ...nativeCandidate, status: 'completed', sdkFinishReason: side === 'base' ? 'stop' : 'tool_calls'};
+    report.summary.terminalAnalysis.completion = {schemaVersion: 1, runtimeKind: 'openai-agents-sdk', ...nativeCandidate, status: 'completed', sdkFinishReason: side === 'base' || assistantLane ? 'stop' : 'tool_calls'};
     const profiles = [];
     if (side === 'candidate') {
       const profile = resolveModelExecutionProfile({runtimeKind: 'openai-agents-sdk', protocol: 'chat_completions', modelId: MODEL,
@@ -580,19 +586,32 @@ function treatmentScoreFixture(root: string, cells = ['scheduler'], configured: 
     const controls = buildRuntimeAppliedModelControls({requestedOutput: output, commonConfig: common,
       appliedSettings: {...(maxOutputTokens === undefined ? {} : {maxTokens: maxOutputTokens}), parallelToolCalls: false, store: false}, profiles})!;
     const recorder = createRuntimePerformanceRecorder({now: () => 100});
-    const attemptKey = hash(nativeCandidate.attemptId), logicalCallKey = hash(`${sample.pairId}-${side}-call`);
+    const attemptKey = assistantLane ? hash(JSON.stringify({runId: nativeCandidate.runId, attemptId: nativeCandidate.attemptId})) : hash(nativeCandidate.attemptId);
+    const logicalCallKey = hash(`${sample.pairId}-${side}-call`);
     recorder.recordFinalTransportEvent({kind: 'main_dispatch', attemptKey, logicalCallKey, purpose: 'answer_turn',
       configuredModelHash: hash(MODEL), providerOriginHash: hash(ORIGIN), controls});
-    const terminal = side === 'base' ? recorder.recordFinalTransportEvent({kind: 'native_terminal', fact: {attemptKey, logicalCallKey,
+    let terminal: string;
+    if (side === 'base') terminal = recorder.recordFinalTransportEvent({kind: 'native_terminal', fact: {attemptKey, logicalCallKey,
       response: {status: 'observed', hash: hash('native-response')}, actualModel: {status: 'observed', hash: hash(MODEL)},
       nativeStatus: 'completed', finish: 'stop', rawMaterial: {status: 'observed', hash: nativeCandidate.conclusionFingerprint},
-      nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: true}, drainStatus: 'fulfilled'})!
-      : recorder.recordFinalTransportEvent({kind: 'typed_issued_after_drain', attemptKey, logicalCallKey,
-        responseKey: hash('native-response'), callKey: hash('native-call'), actualModel: {status: 'observed', hash: hash(MODEL)},
-        nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: nativeCandidate.conclusionFingerprint,
-        ...(mixed ? identity : historicalIdentity)})!;
+      nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: true}, drainStatus: 'fulfilled'})!;
+    else if (assistantLane) {
+      const rawAssistantTextHash = hash('synthetic assistant source material');
+      const nativeTerminalEventKey = recorder.recordFinalTransportEvent({kind: 'native_terminal', fact: {attemptKey, logicalCallKey,
+        response: {status: 'observed', hash: hash('native-response')}, actualModel: {status: 'observed', hash: hash(MODEL)},
+        nativeStatus: 'completed', finish: 'stop', rawMaterial: {status: 'observed', hash: rawAssistantTextHash},
+        nativeContract: 'openai_native_completion_observer@1', sdkStreamCompleted: true}, drainStatus: 'fulfilled'})!;
+      terminal = recorder.recordFinalTransportEvent({kind: 'assistant_document_issued_after_drain', sourceKind: 'assistant_json', attemptKey, logicalCallKey,
+        responseKey: hash('native-response'), messageKey: hash('native-response'), nativeTerminalEventKey, rawAssistantTextHash,
+        compiledBodyHash: nativeCandidate.conclusionFingerprint, nativeCandidateKey: nativeKey, actualModel: {status: 'observed', hash: hash(MODEL)},
+        nativeStatus: 'completed', drainStatus: 'fulfilled', representationVersion: 'authored_claim_document@2',
+        compilerVersion: 'authored_claim_document_compiler@2', admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3'})!;
+    } else terminal = recorder.recordFinalTransportEvent({kind: 'typed_issued_after_drain', attemptKey, logicalCallKey,
+      responseKey: hash('native-response'), callKey: hash('native-call'), actualModel: {status: 'observed', hash: hash(MODEL)},
+      nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: nativeCandidate.conclusionFingerprint,
+      ...(mixed ? identity : historicalIdentity)})!;
     const retained = recorder.recordFinalTransportEvent({kind: 'candidate_retained', nativeCandidateKey: nativeKey,
-      carrier: side === 'base' ? 'assistant_text' : 'model_tool_arguments', transform: 'native',
+      carrier: side === 'base' ? 'assistant_text' : assistantLane ? 'assistant_document' : 'model_tool_arguments', transform: 'native',
       authors: [{role: 'body_and_declaration', terminalEventKey: terminal}], declaredBody: 'present', declaredClaims: 'present', productStatus: 'completed'})!;
     recorder.recordFinalTransportEvent({kind: 'finalizer_selected', retainedEventKey: retained, nativeCandidateKey: nativeKey,
       displayCandidateKey: nativeKey, canonicalSourceCandidateKey: nativeKey, canonicalCandidateKey: nativeKey, productStatus: 'completed'});
@@ -634,6 +653,7 @@ function rehashTransport(report: Json) {
     const oldKey = event.eventKey;
     for (const author of event.authors ?? []) author.terminalEventKey = changed.get(author.terminalEventKey) ?? author.terminalEventKey;
     if (event.retainedEventKey) event.retainedEventKey = changed.get(event.retainedEventKey) ?? event.retainedEventKey;
+    if (event.nativeTerminalEventKey) event.nativeTerminalEventKey = changed.get(event.nativeTerminalEventKey) ?? event.nativeTerminalEventKey;
     const {eventKey: _eventKey, ...body} = event;
     event.eventKey = canonicalContentHash(body); changed.set(oldKey, event.eventKey);
   }
@@ -790,6 +810,96 @@ describe('W0 versioned representation-treatment scoring', () => {
     expect(result.cells[0].performance.status).toBe('inconclusive');
     expect(result.cells[0].pairs.every((pair: Json) => pair.issues.includes('llm_score_preflight_implementation_unproven'))).toBe(true);
   });
+
+  it.each(['function', 'assistant'] as const)('validates the explicit dual %s lane as synthetic evidence only', carrier => {
+    const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.DUAL_CARRIER_TREATMENT_ID, carrier);
+    bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].pairs.map((pair: Json) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].performance.status).toBe('passed');
+    expect(result.status).toBe('inconclusive');
+  });
+
+  it.each(['base', 'candidate'] as const)('rejects an unreferenced assistant issuance on %s after legitimate artifact rehashing', side => {
+    const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.DUAL_CARRIER_TREATMENT_ID, 'assistant');
+    const candidate = data.samples.find(item => item.side === 'candidate')!;
+    const template = data.reportFor(candidate).executionMetrics.performance.finalTransportObservation.events
+      .find((event: Json) => event.kind === 'assistant_document_issued_after_drain');
+    const sample = data.samples.find(item => item.side === side)!, report = data.reportFor(sample);
+    const events = report.executionMetrics.performance.finalTransportObservation.events;
+    events.push({...template, logicalCallKey: hash(`unretained-${side}-logical`), eventKey: hash(`unretained-${side}-temporary`),
+      sequence: events.length + 1, offsetMs: events[events.length - 1].offsetMs});
+    rehashTransport(report); data.resave(sample, report); bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].performance.status).toBe('inconclusive');
+    expect(result.cells[0].pairs.some((pair: Json) => pair.issues.includes('assistant_issuance_not_retained'))).toBe(true);
+  });
+
+  it('binds the native compiled body independently of a legitimate privacy-projected display body', () => {
+    const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.DUAL_CARRIER_TREATMENT_ID, 'assistant');
+    for (const sample of data.samples.filter(item => item.side === 'candidate')) {
+      const report = data.reportFor(sample), terminal = report.summary.terminalAnalysis;
+      terminal.conclusion = 'The selected private interval is 33 ms.';
+      terminal.completion.conclusionFingerprint = hash(terminal.conclusion);
+      const displayKey = hash(JSON.stringify(createOpenAiCandidateIdentity({runId: report.executionMetrics.runId,
+        attemptId: terminal.completion.attemptId, conclusionFingerprint: terminal.completion.conclusionFingerprint})));
+      const final = report.executionMetrics.performance.finalTransportObservation.events.find((event: Json) => event.kind === 'finalizer_selected');
+      final.displayCandidateKey = displayKey; final.canonicalSourceCandidateKey = displayKey; final.canonicalCandidateKey = displayKey;
+      rehashTransport(report); data.resave(sample, report);
+    }
+    bindSyntheticMaterialReviews(data);
+    const result = data.score();
+    expect(result.cells[0].pairs.map((pair: Json) => pair.issues)).toEqual([[], [], []]);
+    expect(result.cells[0].performance.status).toBe('passed');
+    expect(result.status).toBe('inconclusive');
+  });
+
+  it.each(['compiled_body', 'attempt', 'completion_attempt', 'terminal_key', 'raw_text', 'native_raw', 'response', 'message',
+    'logical', 'native_key', 'wrong_carrier', 'model', 'native_finish', 'native_drain', 'native_stream', 'source_kind', 'fake_call', 'order', 'both_lanes'])(
+    'rejects an independently rehashed assistant lineage mutation: %s', mutation => {
+      const data = treatmentScoreFixture(root, ['scheduler'], {maxOutputTokens: 4096}, sourceLifecycle.DUAL_CARRIER_TREATMENT_ID, 'assistant');
+      const sample = data.samples.find(item => item.side === 'candidate')!, report = data.reportFor(sample);
+      const events = report.executionMetrics.performance.finalTransportObservation.events;
+      const issued = events.find((event: Json) => event.kind === 'assistant_document_issued_after_drain');
+      const native = events.find((event: Json) => event.kind === 'native_terminal');
+      const retained = events.find((event: Json) => event.kind === 'candidate_retained'), final = events.find((event: Json) => event.kind === 'finalizer_selected');
+      if (mutation === 'compiled_body') issued.compiledBodyHash = hash('substituted body');
+      if (mutation === 'attempt') {const replacement = hash('foreign attempt'); events[0].attemptKey = replacement; native.fact.attemptKey = replacement; issued.attemptKey = replacement;}
+      if (mutation === 'completion_attempt') {
+        const completion = report.summary.terminalAnalysis.completion; completion.attemptId = 'different-attempt';
+        completion.candidateRef = `${completion.runId}:${completion.attemptId}`;
+        final.canonicalCandidateKey = hash(JSON.stringify(createOpenAiCandidateIdentity({runId: completion.runId,
+          attemptId: completion.attemptId, conclusionFingerprint: completion.conclusionFingerprint})));
+      }
+      if (mutation === 'terminal_key') issued.nativeTerminalEventKey = hash('foreign terminal');
+      if (mutation === 'raw_text') issued.rawAssistantTextHash = hash('other raw text');
+      if (mutation === 'native_raw') native.fact.rawMaterial.hash = hash('other native text');
+      if (mutation === 'response') {issued.responseKey = hash('other response'); issued.messageKey = issued.responseKey;}
+      if (mutation === 'message') issued.messageKey = hash('other message');
+      if (mutation === 'logical') issued.logicalCallKey = hash('other logical call');
+      if (mutation === 'native_key') {issued.nativeCandidateKey = hash('foreign candidate'); retained.nativeCandidateKey = issued.nativeCandidateKey; final.nativeCandidateKey = issued.nativeCandidateKey;}
+      if (mutation === 'wrong_carrier') retained.carrier = 'model_tool_arguments';
+      if (mutation === 'model') {native.fact.actualModel.hash = hash('other model'); issued.actualModel.hash = native.fact.actualModel.hash;}
+      if (mutation === 'native_finish') native.fact.finish = 'length';
+      if (mutation === 'native_drain') native.drainStatus = 'rejected';
+      if (mutation === 'native_stream') native.fact.sdkStreamCompleted = false;
+      if (mutation === 'source_kind') issued.sourceKind = 'function';
+      if (mutation === 'fake_call') issued.callKey = hash('invented call');
+      if (mutation === 'order') {events.splice(events.indexOf(native), 1); events.splice(events.indexOf(issued) + 1, 0, native);}
+      if (mutation === 'both_lanes') events.splice(events.indexOf(issued), 0, {kind: 'typed_issued_after_drain', attemptKey: issued.attemptKey,
+        logicalCallKey: issued.logicalCallKey, responseKey: issued.responseKey, callKey: hash('synthetic extra function'),
+        actualModel: issued.actualModel, nativeStatus: 'completed', drainStatus: 'fulfilled', nativeBodyHash: issued.compiledBodyHash,
+        ...OPENAI_TYPED_FINAL_CONTRACTS['openai_typed_final_admission@4'], eventKey: hash('temporary event key'), offsetMs: issued.offsetMs});
+      events.forEach((event: Json, index: number) => {event.sequence = index + 1;});
+      rehashTransport(report);
+      if (mutation === 'order') {issued.nativeTerminalEventKey = native.eventKey; rehashTransport(report);}
+      data.resave(sample, report); bindSyntheticMaterialReviews(data);
+      const result = data.score();
+      expect(result.cells[0].performance.status).toBe('inconclusive');
+      const expected = mutation === 'both_lanes' ? 'duplicate_final_carrier' : ['message', 'source_kind', 'fake_call'].includes(mutation)
+        ? 'actual_transport_observation_unproven' : 'assistant_document_author_unproven';
+      expect(result.cells[0].pairs.some((pair: Json) => pair.issues.includes(expected))).toBe(true);
+    });
 
   it('checks real stage SDK profiles and permits fewer bounded reviews as an outcome, not a parameter exemption', () => {
     const data = treatmentScoreFixture(root);

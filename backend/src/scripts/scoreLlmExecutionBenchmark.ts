@@ -8,22 +8,24 @@ import {parseStoredJson} from '../utils/storedData';
 import {stableStringify} from '../utils/stableJson';
 import {PRODUCTION_RUNTIME_KINDS} from '../agentRuntime/runtimeKinds';
 import {RUNTIME_MODEL_CALL_PURPOSES, projectRuntimeFinalTransportObservation, parseRuntimeBenchmarkConfigCommitments,
-  buildRuntimeConfigCommitments, runtimeConfigCommitmentsFingerprint, type RuntimeConfigFieldCommitment,
+  buildRuntimeConfigCommitments, runtimeConfigCommitmentsFingerprint, runtimeCandidateObservationKey, type RuntimeConfigFieldCommitment,
   type RuntimeFinalTransportEvent, type RuntimeExecutionProfileObservation} from '../agentRuntime/runtimePerformance';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {resolveModelExecutionProfile} from '../services/providerManager/modelExecutionProfile';
 import {resolveOpenAITextRequestPurpose} from '../services/providerManager/openAiChatCompletionsCompat';
 import type {LlmPurposeContractsV1} from './preflightLlmExecutionTarget';
+import {createOpenAiCandidateIdentity} from '../agentRuntime/openAiCandidateIdentity';
 import type {OpenAiOutputImplementation} from '../agentRuntime/finalSubmissionImplementation';
 import {adjudicateLlmSourceFacet, buildLlmExecutionQuality, compareLlmExecutionQuality, elapsedIntervalUnion, scoreLlmExecutionLatency,
   type LlmExecutionQuality, type LlmExecutionLatencyPair, type LlmMaterialChangeReview} from './llmExecutionBenchmark';
 
-const {CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, TREATMENT_OUTPUTS, makeRepresentationTreatment,
+const {CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, treatmentOutputs, makeRepresentationTreatment,
   treatmentOutputImplementation, parsePreflightOutputImplementation, parsePurposeContracts, sourceFacetContext, validateSourceFacetCollection, assertExecutionTarget} = require('../../scripts/llm-execution-lifecycle.cjs') as {
   CELLS: readonly string[];
   TREATMENT_ID: string;
   MIXED_CONTENT_TREATMENT_ID: string;
-  TREATMENT_OUTPUTS: Record<'base' | 'candidate', {finalSubmission: string; declarationSyntax: string}>;
+  DUAL_CARRIER_TREATMENT_ID: string;
+  treatmentOutputs(id: string): Record<'base' | 'candidate', {finalSubmission: string; declarationSyntax: string}>;
   makeRepresentationTreatment(base: unknown, candidate: unknown, id?: string): Record<string, unknown>;
   treatmentOutputImplementation(id: string, side: string): OpenAiOutputImplementation;
   parsePreflightOutputImplementation(result: unknown, id: string, side: string): OpenAiOutputImplementation | undefined;
@@ -36,7 +38,8 @@ const {CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, TREATMENT_
   assertExecutionTarget(target: unknown, request: Record<string, unknown>, processId: number): void;
 };
 type RecordValue = Record<string, unknown>;
-interface ValidatedTreatment {id: string; candidate: Extract<OpenAiOutputImplementation, {kind: 'typed'}>}
+interface ValidatedTreatment {id: string; candidate: Extract<OpenAiOutputImplementation, {kind: 'typed'}>;
+  outputs: ReturnType<typeof treatmentOutputs>}
 
 const HASH = /^[a-f0-9]{64}$/;
 const ID = /^[a-z0-9][a-z0-9_-]{0,100}$/;
@@ -277,7 +280,7 @@ function inspectPreflight(proofValue: unknown, sample: RecordValue, benchmark: R
       stableStringify(request.declaredConfig) !== stableStringify(configuration) || result.declaredConfigFingerprint !== configuration.fullFingerprint ||
       result.declaredControlsFingerprint !== configuration.controlsFingerprint || request.treatmentHash !== sample.treatmentHash ||
       result.declaredTreatmentHash !== sample.treatmentHash || result.status !== 'ready' ||
-      stableStringify(result.capturedOutput) !== stableStringify(TREATMENT_OUTPUTS[sample.side as 'base' | 'candidate']) ||
+      stableStringify(result.capturedOutput) !== stableStringify(treatment.outputs[sample.side as 'base' | 'candidate']) ||
       sdk?.identity !== 'matched' || sdk.nodeVersion !== benchmark.nodeVersion || typeof sdk.agentsCoreVersion !== 'string' || typeof sdk.agentsOpenAiVersion !== 'string' ||
       !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sdk.agentsCoreVersion) || !/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(sdk.agentsOpenAiVersion) ||
       !runtimeConfigCommitmentsFingerprint(result.actualResolvedConfig as Fields)) fail('llm_score_preflight_binding_unproven');
@@ -304,7 +307,7 @@ function profileContractMatches(profile: RuntimeExecutionProfileObservation, dis
     const common = purpose?.commonConfig ?? stripRootFields(probe.resolved, ['outputConfig']);
     const model = dispatch.purpose === 'classification' ? String(benchmark.lightModel) : String(benchmark.model);
     if (profile.purpose !== dispatch.purpose || profile.modelHash !== hash(model)) return false;
-    if (profile.role === 'typed_admission' && controls.requestedOutput.finalSubmission !== 'authored_claim_document_v2') return false;
+    if (profile.role === 'typed_admission' && controls.requestedOutput.finalSubmission !== treatment.outputs.candidate.finalSubmission) return false;
     const baseUrl = knownConfigString(probe.resolved, '/baseURL', ['https://api.deepseek.com', 'https://api.deepseek.com/',
       'https://api.deepseek.com/v1', 'https://api.deepseek.com/v1/', 'https://open.bigmodel.cn/api/coding/paas/v4', 'https://open.bigmodel.cn/api/coding/paas/v4/']);
     if (!baseUrl) return false;
@@ -383,7 +386,7 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
   const observed = projectRuntimeFinalTransportObservation(performance?.finalTransportObservation);
   const side = raw.side as 'base' | 'candidate';
   require(observed && observed.truncated === 0, 'actual_transport_observation_unproven');
-  require(stableStringify(metrics?.requestedOutputConfig) === stableStringify(TREATMENT_OUTPUTS[side]), 'requested_treatment_mismatch');
+  require(stableStringify(metrics?.requestedOutputConfig) === stableStringify(treatment.outputs[side]), 'requested_treatment_mismatch');
   if (!observed) return {};
   const events = observed.events, byKey = new Map(events.map(event => [event.eventKey, event]));
   const dispatches = events.filter((event): event is Extract<RuntimeFinalTransportEvent, {kind: 'main_dispatch' | 'stage_dispatch'}> =>
@@ -402,7 +405,7 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
         previous.providerOriginHash === dispatch.providerOriginHash && previous.controls.fullFingerprint === controls.fullFingerprint, 'stage_dispatch_identity_conflict');
       stageCalls.set(dispatch.stageCallKey, dispatch);
     }
-    require(stableStringify(controls.requestedOutput) === stableStringify(TREATMENT_OUTPUTS[side]), 'dispatch_requested_treatment_mismatch');
+    require(stableStringify(controls.requestedOutput) === stableStringify(treatment.outputs[side]), 'dispatch_requested_treatment_mismatch');
     require(dispatch.configuredModelHash === hash(String(dispatch.purpose === 'classification' ? benchmark.lightModel : benchmark.model)), 'dispatch_model_pin_mismatch');
     require(dispatch.providerOriginHash === hash(benchmark.provider === 'glm' ? 'https://open.bigmodel.cn' : 'https://api.deepseek.com'), 'dispatch_provider_mismatch');
     const purpose = stageContract(dispatch, probe);
@@ -440,11 +443,15 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
     const key = `${dispatch.kind}:${dispatch.purpose}`;
     (signatures[key] ??= new Set()).add(signature);
   }
-  const terminalCalls = new Set<string>();
+  const terminalCalls = new Set<string>(), issuedCarriers = new Set<string>();
   for (const event of events) {
     // Monotonic offsets are rounded, while the manifest uses millisecond wall-clock ticks.
     require(event.offsetMs <= Number(metrics?.wallclockMs) + 1, 'transport_time_outside_run');
-    if (event.kind !== 'native_terminal' && event.kind !== 'typed_issued_after_drain') continue;
+    if (event.kind !== 'native_terminal' && event.kind !== 'typed_issued_after_drain' && event.kind !== 'assistant_document_issued_after_drain') continue;
+    if (event.kind !== 'native_terminal') {
+      require(!issuedCarriers.has(event.logicalCallKey), 'duplicate_final_carrier'); issuedCarriers.add(event.logicalCallKey);
+    }
+    if (event.kind === 'assistant_document_issued_after_drain') require(side === 'candidate' && treatment.id === DUAL_CARRIER_TREATMENT_ID, 'assistant_carrier_not_selected');
     const key = `${event.kind}:${event.kind === 'native_terminal' ? event.fact.logicalCallKey : event.logicalCallKey}`;
     require(!terminalCalls.has(key), 'duplicate_logical_terminal'); terminalCalls.add(key);
   }
@@ -453,11 +460,14 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
   require(retained.length === 1 && selected.length === 1, 'retained_selected_lineage_missing');
   if (retained.length !== 1 || selected.length !== 1) return Object.fromEntries(Object.entries(signatures).map(([key, values]) => [key, [...values].sort()]));
   const kept = retained[0], final = selected[0];
-  require(kept.carrier === (side === 'base' ? 'assistant_text' : 'model_tool_arguments') && kept.productStatus === 'completed' &&
+  const candidateCarrierAllowed = kept.carrier === 'model_tool_arguments' ||
+    treatment.id === DUAL_CARRIER_TREATMENT_ID && kept.carrier === 'assistant_document';
+  require((side === 'base' ? kept.carrier === 'assistant_text' : candidateCarrierAllowed) && kept.productStatus === 'completed' &&
     kept.declaredBody === 'present' && final.productStatus === 'completed' && final.sequence > kept.sequence && final.retainedEventKey === kept.eventKey &&
     final.nativeCandidateKey === kept.nativeCandidateKey && final.canonicalSourceCandidateKey === final.displayCandidateKey, 'retained_selected_lineage_mismatch');
   const roles = kept.authors.map(author => author.role).sort();
   require(stableStringify(roles) === stableStringify(kept.transform === 'native' ? ['body_and_declaration'] : ['body', 'declaration']), 'author_roles_incomplete');
+  const completion = object(object(object(report.summary)?.terminalAnalysis)?.completion);
   const terminals = new Set<string>();
   for (const author of kept.authors) {
     const event = byKey.get(author.terminalEventKey);
@@ -469,14 +479,35 @@ function inspectActualTransport(raw: RecordValue, benchmark: RecordValue, report
         fact.actualModel.status === 'observed' && fact.actualModel.hash === hash(String(benchmark.model)) && event.drainStatus === 'fulfilled', 'assistant_native_author_unproven');
     } else if (event?.kind === 'typed_issued_after_drain') {
       const dispatched = logical.get(event.logicalCallKey);
-      require(side === 'candidate' && dispatched && dispatched.sequence < event.sequence && dispatched.attemptKey === event.attemptKey &&
+      require(side === 'candidate' && kept.carrier === 'model_tool_arguments' && dispatched && dispatched.sequence < event.sequence && dispatched.attemptKey === event.attemptKey &&
         event.actualModel.status === 'observed' && event.actualModel.hash === hash(String(benchmark.model)) &&
         event.representationVersion === treatment.candidate.representationVersion && event.compilerVersion === treatment.candidate.compilerVersion &&
         event.admissionVersion === treatment.candidate.admissionVersion &&
         (event.wireVersion === undefined ? treatment.id === TREATMENT_ID : event.wireVersion === treatment.candidate.wireVersion), 'typed_native_author_unproven');
+    } else if (event?.kind === 'assistant_document_issued_after_drain') {
+      const dispatched = logical.get(event.logicalCallKey), terminal = byKey.get(event.nativeTerminalEventKey);
+      const expectedIdentity = textId(metrics?.runId) && textId(completion?.attemptId) ? createOpenAiCandidateIdentity({
+        runId: metrics.runId, attemptId: completion.attemptId, conclusionFingerprint: event.compiledBodyHash}) : undefined;
+      const fact = terminal?.kind === 'native_terminal' ? terminal.fact : undefined;
+      require(side === 'candidate' && treatment.id === DUAL_CARRIER_TREATMENT_ID && kept.carrier === 'assistant_document' && kept.transform === 'native' &&
+        dispatched && terminal?.kind === 'native_terminal' && dispatched.sequence < terminal.sequence && terminal.sequence < event.sequence &&
+        dispatched.attemptKey === event.attemptKey && fact?.attemptKey === event.attemptKey && fact.logicalCallKey === event.logicalCallKey &&
+        fact.nativeStatus === 'completed' && fact.finish === 'stop' && fact.sdkStreamCompleted && terminal.drainStatus === 'fulfilled' &&
+        fact.response.status === 'observed' && fact.response.hash === event.responseKey && event.messageKey === event.responseKey &&
+        fact.rawMaterial.status === 'observed' && fact.rawMaterial.hash === event.rawAssistantTextHash &&
+        fact.actualModel.status === 'observed' && event.actualModel.status === 'observed' && fact.actualModel.hash === event.actualModel.hash &&
+        event.actualModel.hash === hash(String(benchmark.model)) && event.representationVersion === treatment.candidate.representationVersion &&
+        event.compilerVersion === treatment.candidate.compilerVersion && event.admissionVersion === treatment.candidate.admissionVersion &&
+        event.wireVersion === treatment.candidate.wireVersion && event.nativeCandidateKey === kept.nativeCandidateKey &&
+        event.nativeCandidateKey === final.nativeCandidateKey && expectedIdentity &&
+        runtimeCandidateObservationKey(expectedIdentity) === event.nativeCandidateKey &&
+        event.attemptKey === hash(JSON.stringify({runId: expectedIdentity.runId, attemptId: expectedIdentity.attemptId})), 'assistant_document_author_unproven');
     } else require(false, 'native_author_missing');
   }
-  const completion = object(object(object(report.summary)?.terminalAnalysis)?.completion);
+  // This new kind is emitted only for the actually retained candidate, never for abandoned work.
+  for (const event of events) if (event.kind === 'assistant_document_issued_after_drain') {
+    require(terminals.has(event.eventKey), 'assistant_issuance_not_retained');
+  }
   require(completion?.schemaVersion === 1 && completion.runId === metrics?.runId && completion.runtimeKind === metrics?.runtime &&
     completion.status === 'completed' && completion.reason === undefined && textId(completion.attemptId) && textId(completion.candidateRef) && validHash(completion.conclusionFingerprint), 'actual_completion_identity_unproven');
   if (completion) require(final.canonicalCandidateKey === hash(JSON.stringify({runId: completion.runId, attemptId: completion.attemptId,
@@ -658,7 +689,7 @@ export interface ScoreLlmExecutionBenchmarkOptions {input: string; reviews?: str
 export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOptions) {
   const input = explicitInput(options.input), saved = readJsonFile(input.file), benchmark = object(saved.value);
   if (!benchmark || !['llm_execution_benchmark@1', 'llm_execution_benchmark@2'].includes(String(benchmark.schemaVersion)) ||
-      (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? ![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID].includes(String(benchmark.candidate)) : benchmark.candidate !== 'llm-execution-v1') ||
+      (benchmark.schemaVersion === 'llm_execution_benchmark@2' ? ![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID].includes(String(benchmark.candidate)) : benchmark.candidate !== 'llm-execution-v1') ||
       typeof benchmark.nonce !== 'string' || !/^[a-f0-9]{32}$/.test(benchmark.nonce) ||
       !['glm', 'deepseek'].includes(String(benchmark.provider)) ||
       !PRODUCTION_RUNTIME_KINDS.includes(benchmark.runtime as typeof PRODUCTION_RUNTIME_KINDS[number]) ||
@@ -681,7 +712,7 @@ export function scoreLlmExecutionBenchmark(options: ScoreLlmExecutionBenchmarkOp
           typeof benchmark.nodeVersion !== 'string' || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(benchmark.nodeVersion) ||
           stableStringify(described) !== stableStringify(benchmark.treatment)) {
         artifactIssues.push('representation_treatment_unproven');
-      } else treatment = {id: String(described.id), candidate: implementation};
+      } else treatment = {id: String(described.id), candidate: implementation, outputs: treatmentOutputs(String(described.id))};
     } catch {artifactIssues.push('representation_treatment_unproven');}
   }
   if (benchmark.schemaVersion === 'llm_execution_benchmark@2') {

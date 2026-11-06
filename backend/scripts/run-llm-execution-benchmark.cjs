@@ -9,7 +9,7 @@ const path = require('node:path');
 const {randomBytes} = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {ProcessHarness} = require('../../scripts/e2e/process-harness.cjs');
-const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, TREATMENT_OUTPUTS, buildConfigCommitments, alignConfigCommitments,
+const {TARGET_ENV, CELLS, SOURCE_FACET, TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID, treatmentOutputs, buildConfigCommitments, alignConfigCommitments,
   configFieldsFingerprint, makeConfigCommitments, parsePurposeContracts, makeRepresentationTreatment, parsePreflightOutputImplementation, cellPreflightSelections,
   sourceFacetContext, validateSourceFacetCollection,
   canonicalJson, hash, fingerprintSourceTree, fingerprintFixtureDirectory, fingerprintObserver,
@@ -55,7 +55,7 @@ function parseArgs(argv) {
   if (!/^[a-z][a-z0-9-]+$/.test(values['--runtime'])) throw new Error('benchmark_runtime_invalid');
   if ((values['--sample-kind'] ?? 'local-cold') !== 'local-cold') throw new Error('benchmark_warm_not_configured');
   if (!/^[a-f0-9]{64}$/.test(values['--observer-hook-fingerprint'])) throw new Error('benchmark_observer_hook_fingerprint_invalid');
-  if (values['--treatment'] !== undefined && (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID].includes(values['--treatment']) || values['--runtime'] !== 'openai-agents-sdk')) {
+  if (values['--treatment'] !== undefined && (![TREATMENT_ID, MIXED_CONTENT_TREATMENT_ID, DUAL_CARRIER_TREATMENT_ID].includes(values['--treatment']) || values['--runtime'] !== 'openai-agents-sdk')) {
     throw new Error('benchmark_treatment_invalid');
   }
   const cells = values['--cells'] === undefined ? [...CELLS] : values['--cells'].split(',');
@@ -135,16 +135,17 @@ function readReport(filename, maximumBytes = 64 * 1024 * 1024) {
   } catch (error) {return {status: error.code === 'ENOENT' ? 'missing' : 'invalid'};}
 }
 
-function treatmentEnvironment(environment, side) {
-  return {...environment, SMARTPERFETTO_FINAL_SUBMISSION: TREATMENT_OUTPUTS[side].finalSubmission,
-    SMARTPERFETTO_CONCLUSION_AUTHORING: TREATMENT_OUTPUTS[side].declarationSyntax};
+function treatmentEnvironment(environment, side, id = TREATMENT_ID) {
+  const outputs = treatmentOutputs(id);
+  return {...environment, SMARTPERFETTO_FINAL_SUBMISSION: outputs[side].finalSubmission,
+    SMARTPERFETTO_CONCLUSION_AUTHORING: outputs[side].declarationSyntax};
 }
 function prepareTreatmentChild(checkout, options, side, isolatedRoot, environment) {
   fs.mkdirSync(path.join(isolatedRoot, 'data'), {recursive: true, mode: 0o700});
   fs.mkdirSync(path.join(isolatedRoot, 'logs'), {recursive: true, mode: 0o700});
   const prepared = checkout.api.prepareProviderChild({runtimeKind: options.runtime, isolatedRoot,
     provider: options.provider === 'glm' ? 'zai-coding-cn' : 'deepseek', model: options.model, lightModel: options.lightModel},
-    treatmentEnvironment(environment, side));
+    treatmentEnvironment(environment, side, options.treatment));
   if (!prepared.availability.available) throw new Error('benchmark_provider_unavailable');
   const childEnv = isolateChildDotenv(prepared.env, isolatedRoot);
   const material = configMaterial({env: childEnv, configuration: prepared.configuration, repositoryRoot: checkout.root,
@@ -181,7 +182,7 @@ async function runTreatmentProbe({checkout, options, side, cell, directory, prep
       result.side !== side || result.cellId !== cell.id || result.requestedMode !== mode.requestedMode ||
       result.observedSourceFingerprint !== checkout.sourceFingerprint || result.declaredConfigFingerprint !== configuration.fullFingerprint ||
       result.declaredControlsFingerprint !== configuration.controlsFingerprint || result.declaredTreatmentHash !== request.treatmentHash ||
-      canonicalJson(result.capturedOutput) !== canonicalJson(TREATMENT_OUTPUTS[side]) || result.sdk?.identity !== 'matched' ||
+      canonicalJson(result.capturedOutput) !== canonicalJson(treatmentOutputs(treatment.id)[side]) || result.sdk?.identity !== 'matched' ||
       result.sdk.nodeVersion !== process.versions.node ||
       !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(result.sdk.agentsCoreVersion || '') ||
       !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(result.sdk.agentsOpenAiVersion || '') ||
@@ -317,7 +318,7 @@ async function runBenchmark(options, injectedDependencies) {
           const prepared = checkout.api.prepareProviderChild({runtimeKind: options.runtime, isolatedRoot,
             provider: options.provider === 'glm' ? 'zai-coding-cn' : 'deepseek',
             model: options.model, lightModel: options.lightModel}, options.treatment
-              ? treatmentEnvironment(environment, side) : dependencies.environment ?? process.env);
+              ? treatmentEnvironment(environment, side, options.treatment) : dependencies.environment ?? process.env);
           if (!prepared.availability.available) throw new Error('benchmark_provider_unavailable');
           pin = {provider: prepared.configuration.provider, model: prepared.configuration.model,
             lightModel: prepared.configuration.lightModel, origin: new URL(prepared.configuration.baseUrl).origin,
@@ -456,7 +457,7 @@ async function runBenchmark(options, injectedDependencies) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1|assistant_text_to_native_v2@2]');
+    console.log('Usage: run-llm-execution-benchmark.cjs --baseline-root <checkout> --candidate-root <checkout> --provider glm|deepseek --runtime <canonical-runtime> --model <id> --light-model <id> --base-port <port> --candidate-port <port> --observer-hook-fingerprint <sha256> --output-dir test-output/runtime-concurrency/llm-execution-v1/<fresh-run> [--repetitions 3] [--cells scheduler,startup,scrolling,source,dual] [--sample-kind local-cold] [--treatment assistant_text_to_native_v2@1|assistant_text_to_native_v2@2|assistant_text_to_native_v2_dual@1]');
     console.log('Collects paired lifecycle/report evidence. It does not grant quality or performance admission. Warm provider cache is not controlled.');
     return;
   }

@@ -301,3 +301,20 @@ describe('R11 Stage B issued tuple metrics', () => {
     expect(result).toEqual({schemaVersion: 'llm_execution_metrics_artifact@1', status: 'invalid_receipt'});
   });
 });
+
+
+describe('R13 observed assistant document metrics', () => {
+  it('retains the actual dual requested configuration and distinct issued source, without treating either as proof', () => {
+    const event = {kind: 'assistant_document_issued_after_drain', sourceKind: 'assistant_json', attemptKey: 'a'.repeat(64), logicalCallKey: 'b'.repeat(64),
+      responseKey: 'c'.repeat(64), messageKey: 'c'.repeat(64), nativeTerminalEventKey: 'd'.repeat(64), rawAssistantTextHash: 'e'.repeat(64),
+      compiledBodyHash: 'f'.repeat(64), nativeCandidateKey: '1'.repeat(64), actualModel: {status: 'observed', hash: '2'.repeat(64)},
+      nativeStatus: 'completed', drainStatus: 'fulfilled', representationVersion: 'authored_claim_document@2', compilerVersion: 'authored_claim_document_compiler@2',
+      admissionVersion: 'openai_typed_final_admission@4', wireVersion: 'openai_chat_final_wire@3', sequence: 1, offsetMs: 1};
+    const finalTransportObservation = {schemaVersion: 'final_transport_observation@1', events: [{...event, eventKey: canonicalContentHash(event)}], truncated: 0};
+    const stored = {...manifest, finalSubmission: 'authored_claim_document_v2_dual', conclusionDeclarationSyntax: 'authoring_v2',
+      performance: {...performance, finalTransportObservation}} as unknown as RunManifestV1;
+    expect(readAgentE2eMetrics(identity, () => stored)).toMatchObject({status: 'sealed',
+      requestedOutputConfig: {finalSubmission: 'authored_claim_document_v2_dual', declarationSyntax: 'authoring_v2'}, performance: {finalTransportObservation}});
+    expect(JSON.stringify(readAgentE2eMetrics(identity, () => stored))).not.toContain('rawArguments');
+  });
+});
