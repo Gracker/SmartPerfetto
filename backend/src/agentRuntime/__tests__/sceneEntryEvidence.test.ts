@@ -368,3 +368,139 @@ describe('scene_evidence prompt data', () => {
       .toEqual({status: 'not_run', skillId: 'scrolling_analysis', reason: 'timeout'});
   });
 });
+
+describe('quote addresses are downstream of real scene budgets', () => {
+  type Data = import('../sceneEntryEvidence').SceneEvidencePromptData;
+  type Address = {viewId: string; artifactId?: string; evidenceRefId?: string};
+  type Factory = (input: {store: ArtifactStore; scope: {runId: string; allowedTraces: Array<{traceId: string; traceSide: 'current'}>};
+    assertCurrent(): void; productSignal: AbortSignal; deadlineAtMs: number}) => ReturnType<typeof import('../../services/evidence/evidenceQuoteContext').createEvidenceQuoteContext>;
+  function context(store: ArtifactStore, runId = RUN, traceId = TRACE, extra: {assertCurrent?: () => void; productSignal?: AbortSignal; deadlineAtMs?: number} = {}) {
+    const file = require('node:path').resolve(__dirname, '../../services/evidence/evidenceQuoteContext.ts') as string;
+    expect(require('node:fs').existsSync(file)).toBe(true);
+    const module = jest.requireActual<{createEvidenceQuoteContext?: Factory}>(file);
+    expect(typeof module.createEvidenceQuoteContext).toBe('function');
+    if (!module.createEvidenceQuoteContext) throw new Error('Missing B2 quote context');
+    return module.createEvidenceQuoteContext({store, scope: {runId, allowedTraces: [{traceId, traceSide: 'current'}]},
+      assertCurrent: extra.assertCurrent ?? (() => {}), productSignal: extra.productSignal ?? new AbortController().signal,
+      deadlineAtMs: extra.deadlineAtMs ?? Date.now() + 60_000});
+  }
+  const bytes = (data: Data) => Buffer.byteLength(JSON.stringify({context: 'scene_evidence', data}));
+  function addresses(value: Data & {quoteViews?: Address[]}): Address[] {
+    expect(value.quoteViews?.length).toBeGreaterThan(0);
+    for (const address of value.quoteViews ?? []) {
+      expect(Object.keys(address).sort()).toEqual(['viewId', typeof address.artifactId === 'string' ? 'artifactId' : 'evidenceRefId'].sort());
+      expect(typeof address.viewId).toBe('string');
+    }
+    return value.quoteViews!;
+  }
+
+  it('adds only small addresses after the actual scene-wide producer and preserves its data verbatim', async () => {
+    const h = harness(), quote = context(h.store);
+    try {
+      const outcome = await h.run(), original = buildSceneEvidencePromptData(outcome)!;
+      const before = JSON.stringify(original);
+      const enriched = quote.prepareSceneQuoteProjection(original, SCENE_EVIDENCE_MAX_BYTES);
+      expect(addresses(enriched).map(item => item.artifactId)).toEqual(original.artifacts!.map(item => item.artifactId));
+      const {quoteViews: _addresses, ...unchanged} = enriched;
+      expect(unchanged).toEqual(original);
+      expect(JSON.stringify(original)).toBe(before);
+      expect(enriched.cells).toEqual(original.cells);
+      expect(bytes(enriched)).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    } finally {quote.dispose();}
+  });
+
+  it('uses the optional quote context at the actual collectSceneEvidenceForPrompt call site', async () => {
+    const {collectSceneEvidenceForPrompt} = require('../sceneEntryEvidence') as typeof import('../sceneEntryEvidence');
+    const h = harness(), quote = context(h.store);
+    try {
+      const input = {...h.input, quoteContext: quote};
+      const data = await withRunManifestLifecycle(h.lifecycle, () => collectSceneEvidenceForPrompt(input));
+      expect(data).toBeDefined();
+      addresses(data!);
+      expect(data).toMatchObject({status: 'ran', cells: {key: [expect.arrayContaining(['freq', 1234, 'kHz'])]}});
+      expect(bytes(data!)).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    } finally {quote.dispose();}
+  });
+
+  it('does not fill the sparse last row after the real 24-cell producer removes one cell', async () => {
+    const columns = Array.from({length: 5}, (_, index) => `c${index}`);
+    const skill = entrySkillDefinition({
+      output: {display: {layer: 'overview', level: 'key', format: 'table', columns: columns.map(name => ({name, type: 'number'}))}}});
+    delete skill.investigation_evidence;
+    const service = {query: async () => ({columns, rows: Array.from({length: 5}, (_, row) => columns.map((_, column) => row * 10 + column)),
+      durationMs: 1})} as unknown as import('../../services/traceProcessorService').TraceProcessorService;
+    const executor = new SkillExecutor(service); executor.registerSkill(skill);
+    const h = harness({skill, overrides: {skillExecutor: executor}}), quote = context(h.store);
+    try {
+      const outcome = await h.run(), original = buildSceneEvidencePromptData(outcome)!;
+      expect(outcome.keyCells).toHaveLength(25);
+      expect(original.cells!.key).toHaveLength(SCENE_EVIDENCE_MAX_CELLS);
+      const enriched = quote.prepareSceneQuoteProjection(original, SCENE_EVIDENCE_MAX_BYTES);
+      addresses(enriched);
+      expect(enriched.cells).toEqual(original.cells);
+      expect(enriched.omittedCellCount).toBe(1);
+      expect(enriched.cells!.key.some(cell => cell[1] === 4 && cell[2] === 'c4')).toBe(false);
+      expect(enriched.cells!.key.filter(cell => cell[1] === 4).map(cell => cell[2])).toEqual(['c0', 'c1', 'c2', 'c3']);
+    } finally {quote.dispose();}
+  });
+
+  it('uses only actual remaining bytes and never evicts an existing cell to make a view address fit', async () => {
+    const small = harness({row: [10, 110, 42, 43, '0.1', 'observed', 100, 100]});
+    const smallData = buildSceneEvidencePromptData(await small.run())!;
+    const remaining = SCENE_EVIDENCE_MAX_BYTES - bytes(smallData);
+    const exactValue = `0.${'0'.repeat(remaining)}1`;
+    const h = harness({row: [10, 110, 42, 43, exactValue, 'observed', 100, 100]}), quote = context(h.store);
+    try {
+      const original = buildSceneEvidencePromptData(await h.run())!;
+      expect(original.cells!.key[0][3]).toBe(exactValue);
+      expect(bytes(original)).toBe(SCENE_EVIDENCE_MAX_BYTES);
+      const enriched = quote.prepareSceneQuoteProjection(original, SCENE_EVIDENCE_MAX_BYTES);
+      expect(enriched).toEqual(original);
+      expect(enriched).not.toHaveProperty('quoteViews');
+    } finally {quote.dispose();}
+  });
+
+  it('handles the real selected native row and metric tuples without adding queries or changing identity/window', async () => {
+    const {createSelectedFoundationFixture, installSelectedNativeSignerMocks} = require('../../../tests/helpers/selectedEvidenceFoundationFixture') as typeof import('../../../tests/helpers/selectedEvidenceFoundationFixture');
+    const {collectSelectedEvidenceForPrompt} = require('../sceneEntryEvidence') as typeof import('../sceneEntryEvidence');
+    const restore = installSelectedNativeSignerMocks();
+    const h = await createSelectedFoundationFixture();
+    const quote = context(h.store, h.input.runId!, h.input.traceId);
+    try {
+      const input = {...h.input, quoteContext: quote};
+      const result = await collectSelectedEvidenceForPrompt(input);
+      expect(result.handled).toBe(true);
+      if (!result.handled || !result.data || !('kind' in result.data)) throw new Error('Expected actual selected data');
+      const data = result.data;
+      expect(data.native).toMatchObject({status: 'captured', row: {id: 7, ts: 10, dur: 100, track_id: 9}});
+      expect(data.identity).toEqual({upid: 42, utid: 43, startNs: 10, endNs: 110});
+      const offered = addresses(data);
+      if (data.native.status !== 'captured') throw new Error('Expected captured native row');
+      expect(offered).toEqual(expect.arrayContaining([expect.objectContaining({evidenceRefId: data.native.evidenceRefId})]));
+      expect(offered.some(item => item.artifactId === data.artifacts?.[0]?.artifactId)).toBe(true);
+      expect(data.cells?.selected.some(cell => cell[2] === 'value_ns' && cell[3] === 80)).toBe(true);
+      expect(h.queryBounded).toHaveBeenCalledTimes(3); expect(h.query).toHaveBeenCalledTimes(1);
+      expect(bytes(data)).toBeLessThanOrEqual(SCENE_EVIDENCE_MAX_BYTES);
+    } finally {quote.dispose(); h.resolveIdentity.mockRestore(); restore();}
+  });
+
+  it.each(['revoke', 'cancel', 'dispose'] as const)('refuses new prepared scene addresses after %s', async mode => {
+    const h = harness(), data = buildSceneEvidencePromptData(await h.run())!;
+    let current = true; const product = new AbortController();
+    const quote = context(h.store, RUN, TRACE, {assertCurrent() {if (!current) throw new Error('quote_owner_revoked');},
+      productSignal: product.signal, deadlineAtMs: Date.now() + 60_000});
+    if (mode === 'revoke') current = false;
+    if (mode === 'cancel') product.abort();
+    if (mode === 'dispose') quote.dispose();
+    try {expect(() => quote.prepareSceneQuoteProjection(data, SCENE_EVIDENCE_MAX_BYTES)).toThrow();}
+    finally {quote.dispose();}
+  });
+
+  it('rejects an already-expired original deadline before returning prepared addresses', async () => {
+    const h = harness(), data = buildSceneEvidencePromptData(await h.run())!;
+    expect(() => {
+      const quote = context(h.store, RUN, TRACE, {deadlineAtMs: Date.now() - 1});
+      try {quote.prepareSceneQuoteProjection(data, SCENE_EVIDENCE_MAX_BYTES);} finally {quote.dispose();}
+    }).toThrow();
+  });
+});

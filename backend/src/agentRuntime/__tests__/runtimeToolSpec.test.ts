@@ -1086,3 +1086,305 @@ describe('schema-owned literal JSON subtree', () => {
       .toEqual({document: {parts: ['{"literal":true}']}});
   });
 });
+
+// B2 leaf contract: local call identities below do not establish actual HTTP visibility.
+describe('private quote sidecars at the actual normalized tool output', () => {
+  type Call = {responseId: string; callId: string; nativeName: string; rawArguments: string;
+    sdkArguments: unknown; normalizedArguments: unknown; collector: object; collectorDispatchOrdinal: number};
+  type Factory = (input: {store: import('../../agentv3/artifactStore').ArtifactStore;
+    scope: {runId: string; allowedTraces: Array<{traceId: string; traceSide: 'current'}>}; assertCurrent(): void;
+    productSignal: AbortSignal; deadlineAtMs: number}) => ReturnType<typeof import('../../services/evidence/evidenceQuoteContext').createEvidenceQuoteContext>;
+  function api() {
+    const file = path.resolve(__dirname, '../../services/evidence/evidenceQuoteContext.ts');
+    expect(fs.existsSync(file)).toBe(true);
+    const module = jest.requireActual<{createEvidenceQuoteContext?: Factory}>(file);
+    expect(typeof module.createEvidenceQuoteContext).toBe('function');
+    const results = jest.requireActual<typeof import('../runtimeToolResult') & {
+      readRuntimeToolQuoteProjection?: (result: unknown) => object | undefined}>('../runtimeToolResult');
+    expect(typeof results.readRuntimeToolQuoteProjection).toBe('function');
+    if (!module.createEvidenceQuoteContext || !results.readRuntimeToolQuoteProjection) throw new Error('Missing B2 quote API');
+    return {create: module.createEvidenceQuoteContext, read: results.readRuntimeToolQuoteProjection, normalize: results.normalizeRuntimeToolResult};
+  }
+  async function prepared() {
+    const quote = api();
+    const {ArtifactStore} = require('../../agentv3/artifactStore') as typeof import('../../agentv3/artifactStore');
+    const {captureEvidenceTable} = require('../../services/evidence/evidenceCapture') as typeof import('../../services/evidence/evidenceCapture');
+    const {buildTraceProcessorQueryProvenance} = require('../../services/traceProcessorConnectionModel') as typeof import('../../services/traceProcessorConnectionModel');
+    const {createClaudeMcpServer} = require('../../agentv3/claudeMcpServer') as typeof import('../../agentv3/claudeMcpServer');
+    const {SkillExecutor} = require('../../services/skillEngine/skillExecutor') as typeof import('../../services/skillEngine/skillExecutor');
+    const {createOpenAIToolsFromMcpDefinitions} = require('../engines/openai/openAiToolAdapter') as typeof import('../engines/openai/openAiToolAdapter');
+    const store = new ArtifactStore(), data = {columns: ['duration'], rows: [[4], [null], ['0004.50']]};
+    const witness = captureEvidenceTable(data, {duration: {unit: 'ns', metricId: 'B2_PRIVATE_METRIC_CANARY',
+      populationKey: 'B2_PRIVATE_POPULATION_CANARY', origin: {kind: 'skill_literal', definitionFingerprint: 'B2_PRIVATE_DEFINITION_CANARY'}}});
+    const artifactId = store.store({skillId: 'quote-spec-fixture', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'quote-spec-trace', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(artifactId, witness, {evidenceRefId: 'quote-spec-evidence', originRunId: 'quote-spec-run'})).toBe(true);
+    const product = new AbortController(); let current = true;
+    const context = quote.create({store, scope: {runId: 'quote-spec-run', allowedTraces: [{traceId: 'quote-spec-trace', traceSide: 'current'}]},
+      assertCurrent() {if (!current) throw new Error('quote_owner_revoked');}, productSignal: product.signal, deadlineAtMs: Date.now() + 60_000});
+    const service = {query: jest.fn(async () => ({columns: [], rows: [], durationMs: 0}))} as unknown as import('../../services/traceProcessorService').TraceProcessorService;
+    const options = {traceId: 'quote-spec-trace', runId: 'quote-spec-run', sessionId: 'quote-spec-session', artifactStore: store,
+      traceProcessorService: service, skillExecutor: new SkillExecutor(service), quoteContext: context};
+    const server = createClaudeMcpServer(options);
+    const definition = server.toolDefinitions.find(item => item.name === 'fetch_artifact');
+    if (!definition) throw new Error('Expected actual fetch definition');
+    const args = {artifactId, detail: 'rows'};
+    const result = await definition.shared.handler(args, {toolCallId: 'quote-fetch-call'});
+    expect(result.structuredContent).toBeDefined();
+    const projection = quote.read(result); expect(projection).toBeDefined();
+    const tool = createOpenAIToolsFromMcpDefinitions([definition])[0];
+    const call: Call = {responseId: 'unit-response', callId: 'quote-fetch-call', nativeName: definition.name,
+      rawArguments: JSON.stringify(args), sdkArguments: args, normalizedArguments: args, collector: {}, collectorDispatchOrdinal: 1};
+    return {quote, result, projection: projection!, payload: result.structuredContent!, tool, call, context, product,
+      revoke: () => {current = false;}, query: service.query};
+  }
+
+  it('keeps issued preparation through actual normalization, one decoration and final receipt serialization', async () => {
+    const h = await prepared();
+    try {
+      const decorate = jest.fn((text: string) => `Trusted warning\n${text}\nTrusted reminder`);
+      const options = {quoteProjection: h.projection, decorate};
+      const raw = createRuntimeToolResult(h.payload, options);
+      const spec = withRuntimeToolTiming({name: 'quote-fixture', description: 'Quote fixture', exposure: 'internal', inputSchema: {}, handler: async () => raw});
+      const normalized = await spec.handler({}, {});
+      expect(h.quote.read(normalized)).toBe(h.projection);
+      expect(h.quote.normalize(normalized)).toBe(normalized);
+      expect(decorate).toHaveBeenCalledTimes(1);
+      const output = stringifyRuntimeToolResult(normalized);
+      expect(h.payload.rows).toEqual([{rowIndex: 0, values: [4]}, {rowIndex: 1, values: [null]}, {rowIndex: 2, values: ['0004.50']}]);
+      expect(JSON.parse(output)).toEqual({_meta: raw._meta, content: raw.content});
+      expect(h.context.sealToolQuoteOutput(normalized, h.tool, h.call, output)).toBeDefined();
+      expect(output).not.toContain('prepared_quote_projection');
+      expect(output).not.toMatch(/B2_PRIVATE_(METRIC|POPULATION|DEFINITION)_CANARY/);
+      expect(h.query).not.toHaveBeenCalled();
+    } finally {h.context.dispose();}
+  });
+
+  it.each(['clone', 'spread', 'content_mutation', 'receipt_mutation', 'duplicate_payload', 'changed_payload', 'fake_token', 'changed_final_string'] as const)(
+    'does not seal %s from public facts or copied sidecars', async mode => {
+      const h = await prepared();
+      try {
+        let result: unknown = h.result;
+        if (mode === 'clone') result = JSON.parse(JSON.stringify(h.result));
+        if (mode === 'spread') result = {...h.result};
+        if (mode === 'content_mutation') {
+          const content = h.result.content[0];
+          if (content.type !== 'text') throw new Error('Expected actual text content');
+          content.text += '\nALTERED';
+        }
+        if (mode === 'receipt_mutation') Object.assign(h.result._meta ?? {}, {unexpected: true});
+        if (mode === 'duplicate_payload') {
+          const options = {quoteProjection: h.projection, decorate: (text: string) => text + '\n' + text};
+          result = createRuntimeToolResult(h.payload, options);
+        }
+        if (mode === 'changed_payload') {
+          const options = {quoteProjection: h.projection, facts: {success: true}};
+          result = createRuntimeToolResult({...h.payload, rows: [{rowIndex: 0, values: [11]}]}, options);
+        }
+        if (mode === 'fake_token') {
+          const options = {quoteProjection: {kind: 'prepared_tool_quote_projection'}, facts: {success: true}};
+          result = createRuntimeToolResult(h.payload, options);
+        }
+        const output = stringifyRuntimeToolResult(result) + (mode === 'changed_final_string' ? '\nALTERED' : '');
+        expect(h.context.sealToolQuoteOutput(result, h.tool, h.call, output)).toBeUndefined();
+      } finally {h.context.dispose();}
+    });
+
+  it.each(['revoke', 'cancel', 'dispose'] as const)('does not use pending preparation after %s', async mode => {
+    const h = await prepared();
+    if (mode === 'revoke') h.revoke();
+    if (mode === 'cancel') h.product.abort();
+    if (mode === 'dispose') h.context.dispose();
+    try {expect(() => h.context.sealToolQuoteOutput(h.result, h.tool, h.call, stringifyRuntimeToolResult(h.result))).toThrow();}
+    finally {h.context.dispose();}
+  });
+});
+
+// The input is captured before the first external owner guard can reenter.
+describe('quote preparation input snapshot', () => {
+  it('submits the original frozen locator, page and scope when the first owner guard rewrites callers to another valid capture', () => {
+    const file = path.resolve(__dirname, '../../services/evidence/evidenceQuoteContext.ts');
+    expect(fs.existsSync(file)).toBe(true);
+    const module = jest.requireActual<{createEvidenceQuoteContext?: typeof import('../../services/evidence/evidenceQuoteContext').createEvidenceQuoteContext}>(file);
+    expect(typeof module.createEvidenceQuoteContext).toBe('function');
+    if (!module.createEvidenceQuoteContext) throw new Error('Missing B2 createEvidenceQuoteContext');
+    const {ArtifactStore} = require('../../agentv3/artifactStore') as typeof import('../../agentv3/artifactStore');
+    const {captureEvidenceTable} = require('../../services/evidence/evidenceCapture') as typeof import('../../services/evidence/evidenceCapture');
+    const {buildTraceProcessorQueryProvenance} = require('../../services/traceProcessorConnectionModel') as typeof import('../../services/traceProcessorConnectionModel');
+    const store = new ArtifactStore();
+    const register = (runId: string, traceId: string, column: string, rows: number[][]) => {
+      const data = {columns: [column], rows};
+      const witness = captureEvidenceTable(data, {[column]: {unit: 'ns',
+        origin: {kind: 'skill_literal', definitionFingerprint: `${runId}-producer`}}});
+      const id = store.store({skillId: 'quote-guard-fixture', data,
+        traceProvenance: buildTraceProcessorQueryProvenance({traceId, traceSide: 'current'})});
+      expect(store.registerEvidenceCapture(id, witness, {evidenceRefId: `${runId}-evidence`, originRunId: runId})).toBe(true);
+      return id;
+    };
+    const artifactA = register('run-A', 'trace-A', 'duration', [[4]]);
+    const artifactB = register('run-B', 'trace-B', 'alternate', [[0], [11]]);
+    const locator = {artifactId: artifactA};
+    const scope = {runId: 'run-A', allowedTraces: [{traceId: 'trace-A', traceSide: 'current' as const}]};
+    const page = {rows: [0], columns: ['duration'], cells: [{rowIndex: 0, column: 'duration', value: 4, unit: 'ns', availability: 'visible' as const}],
+      page: {hasMore: 'no' as const, coverage: 'visible_page_only' as const}};
+    const originalPage = structuredClone(page), originalScope = structuredClone(scope);
+    let armed = false, mutations = 0;
+    const order: string[] = [];
+    const context = module.createEvidenceQuoteContext({store, scope, productSignal: new AbortController().signal,
+      deadlineAtMs: Date.now() + 60_000, assertCurrent() {
+        if (!armed || mutations) return;
+        mutations++; order.push('guard-mutated-callers');
+        locator.artifactId = artifactB;
+        scope.runId = 'run-B'; scope.allowedTraces[0].traceId = 'trace-B';
+        page.rows[0] = 1; page.columns[0] = 'alternate';
+        page.cells[0].rowIndex = 1; page.cells[0].column = 'alternate'; page.cells[0].value = 11;
+      }});
+    const actualPrepare = store.prepareQuoteProjectionBinding.bind(store);
+    let submittedPage: unknown, actualBinding: unknown;
+    const prepare = jest.spyOn(store, 'prepareQuoteProjectionBinding').mockImplementation((receivedLocator, actual) => {
+      order.push('store-prepared');
+      expect(receivedLocator).toEqual({artifactId: artifactA});
+      expect(receivedLocator).not.toBe(locator);
+      expect(actual.scope).toEqual(originalScope); expect(actual.scope).not.toBe(scope);
+      expect(actual.page).toEqual(originalPage); expect(actual.page).not.toBe(page);
+      for (const value of [receivedLocator, actual.scope, actual.scope.allowedTraces, actual.scope.allowedTraces[0],
+        actual.page, actual.page.rows, actual.page.columns, actual.page.cells, actual.page.cells[0], actual.page.page]) {
+        expect(Object.isFrozen(value)).toBe(true);
+      }
+      submittedPage = actual.page;
+      // Call the real registration checker: neither a boolean stub nor a raw getter.
+      const binding = actualPrepare(receivedLocator, actual);
+      actualBinding = binding;
+      return binding;
+    });
+    try {
+      armed = true;
+      expect(context.prepareModelQuoteView(locator, page)).toBeDefined();
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(actualBinding).toBeDefined();
+      expect(prepare.mock.calls[0][1].page).toBe(submittedPage);
+      expect(order).toEqual(['guard-mutated-callers', 'store-prepared']);
+      expect(mutations).toBe(1);
+      expect(locator).toEqual({artifactId: artifactB});
+      expect(scope).toEqual({runId: 'run-B', allowedTraces: [{traceId: 'trace-B', traceSide: 'current'}]});
+      expect(page).toEqual({rows: [1], columns: ['alternate'], cells: [{rowIndex: 1, column: 'alternate', value: 11, unit: 'ns', availability: 'visible'}],
+        page: {hasMore: 'no', coverage: 'visible_page_only'}});
+      for (const value of [locator, scope, scope.allowedTraces, scope.allowedTraces[0], page, page.rows, page.columns, page.cells, page.cells[0]]) {
+        expect(Object.isFrozen(value)).toBe(false);
+      }
+    } finally {prepare.mockRestore(); context.dispose(); store.clear();}
+  });
+});
+
+// Local request parsing only: this does not attest an HTTP dispatch or native issuer.
+describe('quote request visibility is independent of declaration and diagnostic byte caps', () => {
+  it('recognizes an actually sealed tool page in a readable request larger than 2 MiB', async () => {
+    const file = path.resolve(__dirname, '../../services/evidence/evidenceQuoteContext.ts');
+    expect(fs.existsSync(file)).toBe(true);
+    const api = jest.requireActual<typeof import('../../services/evidence/evidenceQuoteContext')>(file);
+    expect(typeof api.createEvidenceQuoteContext).toBe('function');
+    const {ArtifactStore} = require('../../agentv3/artifactStore') as typeof import('../../agentv3/artifactStore');
+    const {captureEvidenceTable} = require('../../services/evidence/evidenceCapture') as typeof import('../../services/evidence/evidenceCapture');
+    const {buildTraceProcessorQueryProvenance} = require('../../services/traceProcessorConnectionModel') as typeof import('../../services/traceProcessorConnectionModel');
+    const {createClaudeMcpServer} = require('../../agentv3/claudeMcpServer') as typeof import('../../agentv3/claudeMcpServer');
+    const {SkillExecutor} = require('../../services/skillEngine/skillExecutor') as typeof import('../../services/skillEngine/skillExecutor');
+    const {createOpenAIToolsFromMcpDefinitions} = require('../engines/openai/openAiToolAdapter') as typeof import('../engines/openai/openAiToolAdapter');
+    const store = new ArtifactStore(), data = {columns: ['duration'], rows: [[4]]};
+    const artifactId = store.store({skillId: 'large-request-view', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'large-request-trace', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(artifactId, captureEvidenceTable(data),
+      {evidenceRefId: 'large-request-evidence', originRunId: 'large-request-run'})).toBe(true);
+    const context = api.createEvidenceQuoteContext({store, scope: {runId: 'large-request-run',
+      allowedTraces: [{traceId: 'large-request-trace', traceSide: 'current'}]}, assertCurrent() {},
+      productSignal: new AbortController().signal, deadlineAtMs: Date.now() + 60_000});
+    const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
+    const service = {query} as unknown as import('../../services/traceProcessorService').TraceProcessorService;
+    const server = createClaudeMcpServer({traceId: 'large-request-trace', runId: 'large-request-run', artifactStore: store,
+      traceProcessorService: service, skillExecutor: new SkillExecutor(service), quoteContext: context});
+    const stringify = jest.spyOn(runtimeToolSpec, 'stringifyRuntimeToolResult');
+    try {
+      const definition = server.toolDefinitions.find(item => item.name === 'fetch_artifact');
+      if (!definition) throw new Error('Expected actual fetch_artifact');
+      const args = {artifactId, detail: 'rows'}, rawArguments = JSON.stringify(args);
+      const result = await definition.shared.handler(args, {toolCallId: 'large-request-call'});
+      const installed = createOpenAIToolsFromMcpDefinitions([definition])[0], output = runtimeToolSpec.stringifyRuntimeToolResult(result);
+      expect(context.sealToolQuoteOutput(result, installed, {responseId: 'unit-producing-response', callId: 'large-request-call',
+        nativeName: definition.name, rawArguments, sdkArguments: args, normalizedArguments: args,
+        collector: {}, collectorDispatchOrdinal: 1}, output)).toBeDefined();
+      const unrelated = 'x'.repeat(2 * 1024 * 1024 + 1);
+      const body = JSON.stringify({messages: [{role: 'assistant', content: null,
+        tool_calls: [{id: 'large-request-call', type: 'function', function: {name: definition.name, arguments: rawArguments}}]},
+      {role: 'tool', tool_call_id: 'large-request-call', content: output}, {role: 'user', content: unrelated}]});
+      expect(Buffer.byteLength(body)).toBeGreaterThan(2 * 1024 * 1024);
+      expect(context.observeProducingRequest({}, 2, body)).toEqual({status: 'observed', viewCount: 1});
+      const retryWithoutPage = JSON.stringify({messages: [{role: 'user', content: unrelated}]});
+      expect(context.observeProducingRequest({}, 3, retryWithoutPage)).toEqual({status: 'observed', viewCount: 0});
+      expect(stringify).toHaveBeenCalledTimes(1);
+      expect(query).not.toHaveBeenCalled();
+    } finally {stringify.mockRestore(); context.dispose(); store.clear();}
+  });
+});
+
+// Exceptional JavaScript callers must not run conversion/prototype hooks at these leaf boundaries.
+describe('quote transport leaf zero-side-effect input guards', () => {
+  async function realSealedCarrier() {
+    const api = jest.requireActual<typeof import('../../services/evidence/evidenceQuoteContext')>(
+      '../../services/evidence/evidenceQuoteContext');
+    const {ArtifactStore} = require('../../agentv3/artifactStore') as typeof import('../../agentv3/artifactStore');
+    const {captureEvidenceTable} = require('../../services/evidence/evidenceCapture') as typeof import('../../services/evidence/evidenceCapture');
+    const {buildTraceProcessorQueryProvenance} = require('../../services/traceProcessorConnectionModel') as typeof import('../../services/traceProcessorConnectionModel');
+    const {createClaudeMcpServer} = require('../../agentv3/claudeMcpServer') as typeof import('../../agentv3/claudeMcpServer');
+    const {SkillExecutor} = require('../../services/skillEngine/skillExecutor') as typeof import('../../services/skillEngine/skillExecutor');
+    const {createOpenAIToolsFromMcpDefinitions} = require('../engines/openai/openAiToolAdapter') as typeof import('../engines/openai/openAiToolAdapter');
+    const store = new ArtifactStore(), data = {columns: ['duration'], rows: [[4]]};
+    const artifactId = store.store({skillId: 'zero-trap-fixture', data,
+      traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'zero-trap-trace', traceSide: 'current'})});
+    expect(store.registerEvidenceCapture(artifactId, captureEvidenceTable(data),
+      {evidenceRefId: 'zero-trap-evidence', originRunId: 'zero-trap-run'})).toBe(true);
+    const context = api.createEvidenceQuoteContext({store, scope: {runId: 'zero-trap-run',
+      allowedTraces: [{traceId: 'zero-trap-trace', traceSide: 'current'}]}, assertCurrent() {},
+      productSignal: new AbortController().signal, deadlineAtMs: Date.now() + 60_000});
+    const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
+    const service = {query} as unknown as import('../../services/traceProcessorService').TraceProcessorService;
+    const server = createClaudeMcpServer({traceId: 'zero-trap-trace', runId: 'zero-trap-run', artifactStore: store,
+      traceProcessorService: service, skillExecutor: new SkillExecutor(service), quoteContext: context});
+    try {
+      const definition = server.toolDefinitions.find(item => item.name === 'fetch_artifact');
+      if (!definition) throw new Error('Expected actual fetch_artifact');
+      const args = {artifactId, detail: 'rows'}, rawArguments = JSON.stringify(args);
+      const result = await definition.shared.handler(args, {toolCallId: 'zero-trap-call'});
+      const tool = createOpenAIToolsFromMcpDefinitions([definition])[0];
+      const output = runtimeToolSpec.stringifyRuntimeToolResult(result);
+      const call = {responseId: 'unit-zero-trap-response', callId: 'zero-trap-call', nativeName: definition.name,
+        rawArguments, sdkArguments: args, normalizedArguments: args, collector: {}, collectorDispatchOrdinal: 1};
+      expect(context.sealToolQuoteOutput(result, tool, call, output)).toBeDefined();
+      const body = JSON.stringify({messages: [{role: 'assistant', content: null,
+        tool_calls: [{id: call.callId, type: 'function', function: {name: call.nativeName, arguments: rawArguments}}]},
+      {role: 'tool', tool_call_id: call.callId, content: output}]});
+      expect(context.observeProducingRequest({}, 2, body)).toEqual({status: 'observed', viewCount: 1});
+      expect(query).not.toHaveBeenCalled();
+      return {context, result, tool, call, output, body, dispose: () => {context.dispose(); store.clear();}};
+    } catch (error) {context.dispose(); store.clear(); throw error;}
+  }
+
+  it('rejects a Proxy Uint8Array without invoking its getPrototypeOf trap after real carrier preparation', async () => {
+    const h = await realSealedCarrier();
+    const prototypeTrap = jest.fn((target: Uint8Array) => Reflect.getPrototypeOf(target));
+    const malicious = new Proxy(new TextEncoder().encode(h.body), {getPrototypeOf: prototypeTrap});
+    try {
+      const outcome = h.context.observeProducingRequest({}, 3, malicious);
+      expect({outcome, traps: prototypeTrap.mock.calls.length}).toEqual({outcome: {status: 'unavailable', viewCount: 0}, traps: 0});
+    } finally {h.dispose();}
+  });
+
+  it('rejects an object exactOutput without invoking ToPrimitive on a real issued carrier', async () => {
+    const h = await realSealedCarrier();
+    const toPrimitive = jest.fn(() => h.output);
+    const malicious = {[Symbol.toPrimitive]: toPrimitive};
+    try {
+      // Reflect.apply models a JavaScript caller violating the TS signature; it invents no backing token.
+      const seal: unknown = Reflect.apply(h.context.sealToolQuoteOutput, undefined, [h.result, h.tool, h.call, malicious]);
+      expect({accepted: seal !== undefined, coercions: toPrimitive.mock.calls.length}).toEqual({accepted: false, coercions: 0});
+    } finally {h.dispose();}
+  });
+});

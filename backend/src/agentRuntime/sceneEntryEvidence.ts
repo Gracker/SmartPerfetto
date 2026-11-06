@@ -75,6 +75,8 @@ const MAX_CANDIDATES = 5;
 export const ENTRY_SKILL_TOOL_ACCESS = {exposure: 'public', evidenceEffect: 'acquire'} as const;
 
 export interface SceneEntryEvidenceInput {
+  /** Internal run-bound preparation only; native request activation is a later boundary. */
+  quoteContext?: import('../services/evidence/evidenceQuoteContext').EvidenceQuoteContext;
   /** The run id the MCP registry would bind; observations and captures join under it. */
   runId?: string;
   traceId: string;
@@ -150,6 +152,7 @@ export interface SceneEntryEvidenceOutcome {
 
 /** What the `scene_evidence` segment carries; JSON, at most SCENE_EVIDENCE_MAX_BYTES. */
 export interface SceneWideEvidencePromptData {
+  quoteViews?: import('../services/evidence/evidenceQuoteContext').QuoteViewAddress[];
   status: 'ran' | 'not_run';
   skillId: string;
   reason?: SceneEntryNotRunReason;
@@ -164,6 +167,7 @@ export interface SceneWideEvidencePromptData {
 }
 
 export interface SelectedEvidencePromptData {
+  quoteViews?: import('../services/evidence/evidenceQuoteContext').QuoteViewAddress[];
   kind: 'selected_foundation';
   native: SelectedFoundationResult['native'];
   metric: Omit<SelectedFoundationResult['metric'], 'cells' | 'omittedCellCount' | 'artifacts'>;
@@ -523,7 +527,8 @@ export function buildSceneEvidencePromptData(outcome: SceneEntryEvidenceOutcome 
 export async function collectSceneEvidenceForPrompt(
   input: SceneEntryEvidenceInput,
 ): Promise<SceneEvidencePromptData | undefined> {
-  return buildSceneEvidencePromptData(await acquireSceneEntryEvidence(input));
+  const data = buildSceneEvidencePromptData(await acquireSceneEntryEvidence(input));
+  return data && input.quoteContext ? input.quoteContext.prepareSceneQuoteProjection(data, SCENE_EVIDENCE_MAX_BYTES) : data;
 }
 
 /** A handled failure is still handled: never reacquire after stateful prefetch. */
@@ -551,7 +556,9 @@ export async function collectSelectedEvidenceForPrompt(
   while (selected.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) selected.pop();
   while (artifacts.length && byteLength(build()) > SCENE_EVIDENCE_MAX_BYTES) artifacts.pop();
   // Private metadata is never truncated into an apparently valid locator.
-  return {handled: true, data: byteLength(build()) <= SCENE_EVIDENCE_MAX_BYTES ? build() : undefined};
+  const data = byteLength(build()) <= SCENE_EVIDENCE_MAX_BYTES ? build() : undefined;
+  return {handled: true, data: data && input.quoteContext
+    ? input.quoteContext.prepareSceneQuoteProjection(data, SCENE_EVIDENCE_MAX_BYTES) : data};
 }
 
 /**

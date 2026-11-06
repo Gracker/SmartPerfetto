@@ -13,6 +13,7 @@ import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysis
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER, CONCLUSION_AUTHORING_FENCE, CONCLUSION_AUTHORING_FENCE_V2,
   type ConclusionDeclarationSyntax} from '../agent/core/conclusionContract';
 import {CONCLUSION_AUTHORING_LIMITS} from '../agent/core/conclusionAuthoring';
+import {types} from 'util';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
 import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
 import type {FinalSubmissionMode} from '../agentRuntime/finalSubmissionConfig';
@@ -77,6 +78,56 @@ export interface SystemPromptParts {
   droppedLabels: string[];
   /** Labels of sections truncated to fit the token budget. */
   truncatedLabels: string[];
+}
+
+interface SceneQuotePromptState {seal: object; parts: SystemPromptParts; sceneData: object;
+  sceneJson: string; fullPrompt: string; partsJson: string; lengths: {segments: number; droppedLabels: number; truncatedLabels: number}}
+const sceneQuoteParts = new WeakMap<object, SceneQuotePromptState>();
+const sceneQuoteSeals = new WeakMap<object, SceneQuotePromptState>();
+function scenePartsUnchanged(parts: object, state: SceneQuotePromptState): boolean {
+  if (types.isProxy(parts) || Object.getPrototypeOf(parts) !== Object.prototype) return false;
+  const fields = Object.getOwnPropertyDescriptors(parts);
+  const scalar = ['stablePrefix', 'volatileSuffix', 'fullPrompt'];
+  const arrays = ['segments', 'droppedLabels', 'truncatedLabels'] as const;
+  if (Reflect.ownKeys(parts).length !== scalar.length + arrays.length ||
+      scalar.some(key => !fields[key] || !('value' in fields[key]) || typeof fields[key].value !== 'string')) return false;
+  const segmentFields = ['tier', 'label', 'content', 'droppable', 'truncatable', 'charCount', 'estimatedTokens',
+    'originalCharCount', 'originalEstimatedTokens', 'truncated'];
+  for (const key of arrays) {
+    const descriptor = fields[key];
+    if (!descriptor || !('value' in descriptor)) return false;
+    const values: unknown = descriptor.value;
+    if (types.isProxy(values) || !Array.isArray(values) || Object.getPrototypeOf(values) !== Array.prototype ||
+        values.length !== state.lengths[key] || Reflect.ownKeys(values).length !== values.length + 1) return false;
+    for (let index = 0; index < values.length; index++) {
+      const entry = Object.getOwnPropertyDescriptor(values, String(index));
+      if (!entry || !('value' in entry)) return false;
+      if (key !== 'segments') {if (typeof entry.value !== 'string') return false; continue;}
+      const segment: unknown = entry.value;
+      if (!segment || typeof segment !== 'object' || types.isProxy(segment) || Object.getPrototypeOf(segment) !== Object.prototype) return false;
+      for (const field of Reflect.ownKeys(segment)) {
+        if (typeof field !== 'string' || !segmentFields.includes(field)) return false;
+        const value = Object.getOwnPropertyDescriptor(segment, field)!;
+        if (!('value' in value) || (value.value !== undefined && !['string', 'number', 'boolean'].includes(typeof value.value))) return false;
+      }
+    }
+  }
+  return JSON.stringify(parts) === state.partsJson;
+}
+/** Only successful actual assembly issues this private identity; JSON/spread copies have none. */
+export function readSceneQuotePromptSeal(parts: unknown): object | undefined {
+  if (!parts || typeof parts !== 'object') return undefined;
+  const state = sceneQuoteParts.get(parts);
+  if (!state || !scenePartsUnchanged(parts, state)) return undefined;
+  return state.seal;
+}
+export function matchesSceneQuotePromptSeal(seal: unknown, expected: {
+  sceneData: object; parts: unknown; fullPrompt: string; expectedSceneJson: string;
+}): boolean {
+  if (!seal || typeof seal !== 'object') return false;
+  const state = sceneQuoteSeals.get(seal);
+  return Boolean(state && readSceneQuotePromptSeal(expected.parts) === seal && expected.parts === state.parts &&
+    expected.sceneData === state.sceneData && expected.fullPrompt === state.fullPrompt && expected.expectedSceneJson === state.sceneJson);
 }
 
 function joinSegments(segments: PromptSegment[], tierFilter?: (segment: PromptSegment) => boolean): string {
@@ -179,6 +230,7 @@ function buildTypedTurnSystemPromptParts(
   const preflight = narrowerPreflight(policy.preflight, context.preflight);
   const language = context.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
   const segments: PromptSegment[] = [];
+  let assembledScene: {data: NonNullable<ClaudeAnalysisContext['sceneEvidence']>; json: string} | undefined;
   const push = (tier: PromptTier, label: string, content: string, droppable = false, truncatable = false) => {
     if (!content) return;
     segments.push({tier, label, content, droppable, truncatable,
@@ -324,10 +376,13 @@ function buildTypedTurnSystemPromptParts(
   // Product-run evidence for this turn: never dropped whole, and bounded at its
   // source (buildSceneEvidencePromptData) so it cannot evict other context.
   if (context.sceneEvidence) {
-    const template = 'kind' in context.sceneEvidence && context.sceneEvidence.kind === 'selected_foundation'
+    const sceneData = context.sceneEvidence;
+    const template = 'kind' in sceneData && sceneData.kind === 'selected_foundation'
       ? 'prompt-selected-evidence' : 'prompt-scene-evidence';
-    push(2, 'scene_evidence', `${requiredAsset(template)}\n\n${JSON.stringify({
-      context: 'scene_evidence', data: context.sceneEvidence})}`);
+    const instructions = requiredAsset(template);
+    const sceneJson = JSON.stringify({context: 'scene_evidence', data: sceneData});
+    push(2, 'scene_evidence', `${instructions}\n\n${sceneJson}`);
+    assembledScene = {data: sceneData, json: sceneJson};
   }
   const focusApp = buildFocusAppPromptData(context.focusTarget);
   const currentPackage = packageProvenance(context.packageName, context.focusTarget);
@@ -472,11 +527,19 @@ function buildTypedTurnSystemPromptParts(
   }
   // Preserve cache order as well as segment metadata in both public builders.
   segments.sort((a, b) => a.tier - b.tier);
-  return {
+  const parts: SystemPromptParts = {
     stablePrefix: joinSegments(segments, segment => segment.tier <= 3),
     volatileSuffix: joinSegments(segments, segment => segment.tier === 4),
     fullPrompt: joinSegments(segments), segments, droppedLabels, truncatedLabels,
   };
+  if (assembledScene?.data.quoteViews?.length) {
+    const seal = Object.freeze({kind: 'scene_quote_prompt_seal'});
+    const state: SceneQuotePromptState = {seal, parts, sceneData: assembledScene.data, sceneJson: assembledScene.json,
+      fullPrompt: parts.fullPrompt, partsJson: JSON.stringify(parts), lengths: {segments: parts.segments.length,
+        droppedLabels: parts.droppedLabels.length, truncatedLabels: parts.truncatedLabels.length}};
+    sceneQuoteParts.set(parts, state); sceneQuoteSeals.set(seal, state);
+  }
+  return parts;
 }
 
 /** All callers use the same pinned intent, evidence and delivery contract. */

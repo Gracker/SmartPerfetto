@@ -13,6 +13,36 @@ const RECEIPT_VERSION = 'tool_result_v1';
 
 type JsonObject = Record<string, unknown>;
 
+// Transport-only sidecar. The quote context, not this carrier, recognizes issued tokens.
+interface QuoteCarrier {token: object; payload: object; payloadText: string;
+  content: object; block: object; text: string; metadata: object; receipt: object;
+  receiptFields: ReadonlyArray<readonly [string, unknown]>; isError: unknown}
+const quoteProjections = new WeakMap<object, QuoteCarrier>();
+function ownData(value: object, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+function unchangedQuoteCarrier(value: unknown): QuoteCarrier | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const state = quoteProjections.get(value);
+  if (!state || ownData(value, 'structuredContent') !== state.payload || ownData(value, 'isError') !== state.isError) return undefined;
+  const errorField = Object.getOwnPropertyDescriptor(value, 'isError');
+  if (state.isError === undefined ? errorField !== undefined : !errorField || !('value' in errorField)) return undefined;
+  const content = ownData(value, 'content'), metadata = ownData(value, '_meta');
+  if (content !== state.content || metadata !== state.metadata || Object.getPrototypeOf(state.content) !== Array.prototype ||
+      [state.block, state.metadata, state.receipt].some(item => Object.getPrototypeOf(item) !== Object.prototype) ||
+      ownData(state.content, 'length') !== 1 ||
+      Reflect.ownKeys(state.content).length !== 2 || ownData(state.content, '0') !== state.block ||
+      Reflect.ownKeys(state.block).length !== 2 || ownData(state.block, 'type') !== 'text' || ownData(state.block, 'text') !== state.text ||
+      Reflect.ownKeys(state.metadata).length !== 1 || ownData(state.metadata, TOOL_RESULT_RECEIPT_KEY) !== state.receipt ||
+      Reflect.ownKeys(state.receipt).length !== state.receiptFields.length ||
+      !state.receiptFields.every(([key, expected]) => Object.is(ownData(state.receipt, key), expected))) return undefined;
+  return state;
+}
+export function readRuntimeToolQuoteProjection(value: unknown): object | undefined {return unchangedQuoteCarrier(value)?.token;}
+/** Actual JSON already serialized by this carrier, not a backing-store/raw-evidence reader. */
+export function readRuntimeToolQuotePayload(value: unknown): string | undefined {return unchangedQuoteCarrier(value)?.payloadText;}
+
 function asObject(value: unknown): JsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as JsonObject : undefined;
@@ -178,17 +208,30 @@ export function createRuntimeToolResult(
     facts?: RuntimeToolResultFacts;
     isError?: boolean;
     decorate?: (text: string) => string;
+    /** Opaque carrier only. A forged object never becomes issued quote authority. */
+    quoteProjection?: object;
   } = {},
 ) {
   const facts = options.facts === undefined ? payloadFacts(payload) : pickFacts({...options.facts});
   const effectiveFacts = options.isError === true ? {...facts, success: false} : facts;
   const text = JSON.stringify(payload);
-  return {
+  const result = {
     _meta: runtimeToolReceiptMetadata(effectiveFacts),
     structuredContent: payload,
     content: [{type: 'text' as const, text: options.decorate ? options.decorate(text) : text}],
     ...(options.isError === true ? {isError: true} : {}),
   };
+  if (options.quoteProjection && typeof options.quoteProjection === 'object') {
+    const decorated = result.content[0].text;
+    const offset = decorated.indexOf(text);
+    if (offset >= 0 && decorated.indexOf(text, offset + text.length) < 0) {
+      const receipt = result._meta[TOOL_RESULT_RECEIPT_KEY] as JsonObject;
+      quoteProjections.set(result, {token: options.quoteProjection, payload, payloadText: text,
+        content: result.content, block: result.content[0], text: decorated, metadata: result._meta, receipt,
+        receiptFields: Object.freeze(Object.entries(receipt).map(entry => Object.freeze(entry))), isError: result.isError});
+    }
+  }
+  return result;
 }
 
 /** Preserve legacy results with no facts; normalize known results once at the shared boundary. */
